@@ -676,8 +676,25 @@ pub struct EnvFile {
     pub name: String,
     /// The process stem `<p>`.
     pub process: String,
-    /// `KEY=VALUE` pairs in file order.
+    /// `KEY=VALUE` pairs in file order, each value as Compose hands it to the container (quotes removed).
     pub entries: Vec<(String, String)>,
+    /// Keys whose value this gate cannot read the way Compose does (interpolation, escapes, inline comments,
+    /// unbalanced quotes): named as `value_unreadable`, never judged on their raw text (PR #2 round 7).
+    pub unreadable: Vec<String>,
+}
+
+/// One env_file value as Compose reads it, or `None` when reading it faithfully would need Compose's interpolation
+/// or escape handling: `'…'` is literal (no `'` inside); `"…"` loses its quotes unless it holds `"`, `$` or `\`;
+/// an unquoted value is taken as is unless it holds `$`, a quote, or ` #` (an inline comment).
+fn compose_value(raw: &str) -> Option<&str> {
+    let quoted = |q: char| raw.strip_prefix(q).and_then(|r| r.strip_suffix(q));
+    if let Some(inner) = quoted('\'') {
+        return (!inner.contains('\'')).then_some(inner);
+    }
+    if let Some(inner) = quoted('"') {
+        return (!inner.contains(['"', '$', '\\'])).then_some(inner);
+    }
+    (!raw.contains(['$', '"', '\'']) && !raw.contains(" #")).then_some(raw)
 }
 
 impl EnvFile {
@@ -685,18 +702,30 @@ impl EnvFile {
     /// comments and blank lines are skipped and a leading `export ` is dropped; a repeated key keeps every
     /// occurrence so [`Self::value`] can take the last and [`Self::duplicated_keys`] can name the repeat.
     pub fn parse(name: &str, process: &str, text: &str) -> Self {
-        let entries = text
+        let mut entries = Vec::new();
+        let mut unreadable = Vec::new();
+        for (key, raw) in text
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(|line| line.strip_prefix("export ").map_or(line, str::trim_start))
             .filter_map(|line| line.split_once('='))
-            .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
-            .collect();
+            .map(|(key, value)| (key.trim(), value.trim()))
+        {
+            if let Some(value) = compose_value(raw) {
+                entries.push((key.to_owned(), value.to_owned()));
+            } else {
+                entries.push((key.to_owned(), raw.to_owned()));
+                if !unreadable.iter().any(|k| k == key) {
+                    unreadable.push(key.to_owned());
+                }
+            }
+        }
         Self {
             name: name.to_owned(),
             process: process.to_owned(),
             entries,
+            unreadable,
         }
     }
 
@@ -758,6 +787,11 @@ pub fn placement_reasons(files: &[EnvFile]) -> Vec<String> {
         // Review fix 9 (ISO-8): a repeated key is an ambiguity the operator must resolve, never a silent last-wins.
         for key in file.duplicated_keys() {
             reasons.push(format!("key_duplicated:{}:{key}", file.name));
+        }
+        // PR #2 round 7: `KEY=""` is an empty value to Compose and `${X}` an interpolation; a value this gate cannot
+        // read the way Compose does is named, not judged as non-empty text.
+        for key in &file.unreadable {
+            reasons.push(format!("value_unreadable:{}:{key}", file.name));
         }
         for (key, value) in &file.entries {
             if DEV_ONLY_KEYS.contains(&key.as_str()) && !value.is_empty() {
@@ -857,6 +891,7 @@ pub fn compose_env_sources(doc: &Value) -> (Vec<EnvFile>, Vec<String>) {
                 name: format!("compose/{name}:environment"),
                 process: process.to_owned(),
                 entries,
+                unreadable: Vec::new(),
             });
         }
         for path in env_file_paths(svc) {
@@ -1352,6 +1387,39 @@ pub fn running_reasons(doc: &Value, inspect: &Value) -> Vec<String> {
             {
                 reasons.push(format!("docker_socket_bind:{name}"));
             }
+        }
+    }
+    // PR #2 round 7: a third-party resident (pg, qdrant, netns, the observability stack) that stopped or restarted
+    // after `up --wait` is red too; its limits and identity are judged on the compose document (`escape_reasons`).
+    // Health is required where the container has a healthcheck.
+    for (name, _) in services(doc).filter(|(_, s)| {
+        !is_humaux(s)
+            && s.get("profiles").is_none()
+            && s.get("restart").and_then(Value::as_str) == Some(RESTART_RESIDENT)
+    }) {
+        let mine: Vec<&&Value> = containers
+            .iter()
+            .filter(|c| service_of(c).as_deref() == Some(name))
+            .collect();
+        if mine.is_empty()
+            || mine
+                .iter()
+                .any(|c| c.pointer("/State/Status").and_then(Value::as_str) != Some("running"))
+        {
+            reasons.push(format!("service_not_running:{name}"));
+        }
+        if mine.iter().any(|c| {
+            c.pointer("/State/Health/Status")
+                .and_then(Value::as_str)
+                .is_some_and(|h| h != "healthy")
+        }) {
+            reasons.push(format!("service_unhealthy:{name}"));
+        }
+        if mine
+            .iter()
+            .any(|c| number(c.pointer("/RestartCount")) != Some(0.0))
+        {
+            reasons.push(format!("service_restarted:{name}"));
         }
     }
     for c in &containers {
@@ -2780,6 +2848,28 @@ mod tests {
         assert!(!bind_source_denied("/srv/humaux-repo"));
     }
 
+    /// PR #2 round 7: quotes are removed the way Compose removes them, so `KEY=""` is empty (and a required secret
+    /// written that way is `secret_empty`), and a value that needs interpolation, escapes or an inline-comment strip
+    /// is `value_unreadable` instead of passing as non-empty text. Fault: keep the raw text ⇒ red.
+    #[test]
+    fn env_file_values_follow_compose_quoting() {
+        let file = EnvFile::parse(
+            "secrets/gateway.secret.env",
+            "gateway",
+            "A=\"\"\nB='lit$x'\nC=\"plain\"\nD=${UNSET}\nE=\"a$b\"\nF=v # note\nG=it's\nH=raw\n",
+        );
+        for (key, want) in [("A", ""), ("B", "lit$x"), ("C", "plain"), ("H", "raw")] {
+            assert_eq!(file.value(key), Some(want), "{key}");
+        }
+        assert_eq!(file.unreadable, vec!["D", "E", "F", "G"]);
+        assert_eq!(
+            placement_reasons(&[file]),
+            ["D", "E", "F", "G"]
+                .map(|k| format!("value_unreadable:secrets/gateway.secret.env:{k}"))
+                .to_vec()
+        );
+    }
+
     /// ISO-8: the parser agrees with Compose — `export ` is stripped, the last occurrence wins, and a repeated key
     /// is named by placement. Faults: first-wins, or keep the `export ` prefix ⇒ red.
     #[test]
@@ -2862,6 +2952,49 @@ mod tests {
                 "case {pointer}"
             );
         }
+    }
+
+    /// PR #2 round 7: third-party residents are in the running gate — missing, exited, unhealthy (where a
+    /// healthcheck exists) or restarted is red; a one-shot (`restart: "no"`) and a profiled service are not
+    /// required. Fault: judge Humaux services only ⇒ red.
+    #[test]
+    fn running_checks_third_party_residents() {
+        let doc = json!({ "services": {
+            "otel-collector": { "image": "otel/collector:1", "restart": "unless-stopped" },
+            "pg": { "image": "humaux-pg:t", "restart": "unless-stopped" },
+            "volume-init": { "image": "busybox:1", "restart": "no" },
+            "alert-sink": { "image": "python:3", "restart": "no", "profiles": ["rehearsal"] } } });
+        let c = |svc: &str, status: &str, health: Option<&str>, restarts: u64| {
+            let mut v = json!({ "Config": { "Labels": { "com.docker.compose.service": svc }, "Env": [] },
+                "State": { "Status": status }, "RestartCount": restarts, "HostConfig": {} });
+            if let Some(h) = health {
+                v["State"]["Health"] = json!({ "Status": h });
+            }
+            v
+        };
+        let green = json!([
+            c("otel-collector", "running", None, 0),
+            c("pg", "running", Some("healthy"), 0)
+        ]);
+        assert_eq!(running_reasons(&doc, &green), Vec::<String>::new());
+        let red = json!([
+            c("otel-collector", "exited", None, 0),
+            c("pg", "running", Some("unhealthy"), 2)
+        ]);
+        assert_eq!(
+            running_reasons(&doc, &red),
+            [
+                "service_not_running:otel-collector",
+                "service_unhealthy:pg",
+                "service_restarted:pg"
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        );
+        assert_eq!(
+            running_reasons(&doc, &json!([c("pg", "running", Some("healthy"), 0)])),
+            vec!["service_not_running:otel-collector".to_owned()]
+        );
     }
 
     /// PR #2 Codex P1 (round 3): every process image must be in the manifest, an unknown one is named, the A5

@@ -1180,12 +1180,20 @@ $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr de
 echo "PRECHECK ok $NEXT git_sha=$SHA"
 ```
 
-U4 stops every writer (OPS-9); PostgreSQL, Qdrant and observability keep running.
+U4 stops every writer (OPS-9); PostgreSQL, Qdrant and observability keep running. It also removes every container of
+the project whose service the next release's `prod.yml` no longer defines (a removed or renamed writer would
+otherwise keep using the database through the migration, and `deploy-check --running` only sees the new document's
+services; PR #2 round 7). U7's `up` passes `--remove-orphans` for the same reason.
 
 <!-- step: U4 expect: 0 -->
 ```sh
 C="sh deploy/release/compose.sh"
 $C stop gateway consolidation private-distill private-rpc retrieval-serve retrieval-rpc maintenance-serve maintenance-health
+S=" $($C --profile ops --profile rehearsal config --services | tr '\n' ' ') "
+for c in $(docker ps -aq --filter "label=com.docker.compose.project=$HUMAUX_NODE_PROJECT"); do
+  s=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")
+  case "$S" in *" $s "*) ;; *) echo "upgrade: removing $s (a service the next release's prod.yml no longer has)"; docker rm -f "$c" >/dev/null ;; esac
+done
 ```
 
 <!-- step: U5 expect: 0 match: migrate: pass ( -->
@@ -1217,7 +1225,7 @@ SHA=$($C run --rm -T admin version | sed -n 's/.* git_sha=\([0-9a-f]\{40\}\).*/\
 [ -n "$SHA" ] || { echo "upgrade: humaux-admin version printed no sha"; exit 1; }
 umask 022
 sh deploy/prometheus/render.sh "$(nv HUMAUX_OBSERVABILITY_RENDERED_DIR)" "$SHA" /run/humaux-alert-urls
-$C up -d --wait --wait-timeout 300
+$C up -d --wait --wait-timeout 300 --remove-orphans
 $C restart prometheus alertmanager
 echo "SWITCHED to $NEXT git_sha=$SHA"
 ```
@@ -1305,19 +1313,37 @@ refusal cannot see the old project: RB2's `down` is the only guard against two c
 never skip RB2. It boots the restored cluster socket-only, sets NOLOGIN on every LOGIN role but `postgres`,
 `role_maintenance` and `role_retrieval_worker`, records those roles (`nologin_roles`) and the in-flight state in the
 evidence file, then boots with TCP: the restored cluster archives on its new timeline and is the new production.
-From here on, every step reads the project from `node.env`.
+From here on, every step reads the project from `node.env`. A retried RB3 keeps the same target (PR #2 round 7):
+the target name is written to `evidence/rb3.target` before `node.env` changes and removed only after a restore, so a
+retry after a part-way failure re-uses `<project>-rb1` (never `<project>-rb1-rb1`, which would leave the partial
+cluster running beside a second one archiving into the same stanza), removes that partial target (`down -v`: its
+volumes are a copy of the backup, never the upgraded project's) and restores again; a target whose evidence already
+says `restored` STOPs with "continue at RB4".
 
 <!-- step: RB3 expect: 0 match: RESTORED -->
 ```sh
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 : "${PREV_TAG:?captured by U1}" "${PRE_UPGRADE_LABEL:?captured by U2}"
-NEW="$(nv HUMAUX_NODE_PROJECT)-rb1"; E="$HUMAUX_NODE_DIR/node.env"
-awk -v t="$PREV_TAG" -v p="$NEW" '/^HUMAUX_IMAGE_TAG=/ { print "HUMAUX_IMAGE_TAG=" t; next } /^HUMAUX_PG_IMAGE=/ { print "HUMAUX_PG_IMAGE=humaux-pg:" t; next } /^HUMAUX_NODE_PROJECT=/ { print "HUMAUX_NODE_PROJECT=" p; next } { print }' "$E" > "$E.new"
-mv "$E.new" "$E"
-export HUMAUX_NODE_PROJECT="$NEW"
+E="$HUMAUX_NODE_DIR/node.env"; EVF="$(nv HUMAUX_NODE_EVIDENCE_DIR)/rollback-1.json"
+MK="$HUMAUX_NODE_DIR/evidence/rb3.target"  # exists only while an RB3 is in flight or failed part-way
+if [ -r "$MK" ]; then
+  NEW=$(cat "$MK")
+  [ "$(nv HUMAUX_NODE_PROJECT)" = "$NEW" ] || { echo "rollback: $MK names $NEW but node.env names $(nv HUMAUX_NODE_PROJECT)"; exit 1; }
+  S=""; [ -r "$EVF" ] && S=$(tr -d ' \t\r\n' < "$EVF")
+  case "$S" in *'"outcome":"restored"'*) echo "rollback: $NEW is already restored ($EVF): continue at RB4"; exit 1 ;; esac
+  export HUMAUX_NODE_PROJECT="$NEW"
+  echo "rollback: removing the partial target $NEW a failed RB3 left (its volumes are a copy of the backup)"
+  $C --profile ops --profile rehearsal down -v --remove-orphans
+else
+  NEW="$(nv HUMAUX_NODE_PROJECT)-rb1"; echo "$NEW" > "$MK"
+  awk -v t="$PREV_TAG" -v p="$NEW" '/^HUMAUX_IMAGE_TAG=/ { print "HUMAUX_IMAGE_TAG=" t; next } /^HUMAUX_PG_IMAGE=/ { print "HUMAUX_PG_IMAGE=humaux-pg:" t; next } /^HUMAUX_NODE_PROJECT=/ { print "HUMAUX_NODE_PROJECT=" p; next } { print }' "$E" > "$E.new"
+  mv "$E.new" "$E"
+  export HUMAUX_NODE_PROJECT="$NEW"
+fi
 $C run --rm -T dr restore pitr --compose-file "$(nv HUMAUX_NODE_DEPLOY_DIR)/compose/prod.yml" --project "$NEW" \
-  --target-backup "$PRE_UPGRADE_LABEL" --evidence "$(nv HUMAUX_NODE_EVIDENCE_DIR)/rollback-1.json"
+  --target-backup "$PRE_UPGRADE_LABEL" --evidence "$EVF"
+rm -f "$MK"
 echo "RESTORED project=$NEW tag=$PREV_TAG backup=$PRE_UPGRADE_LABEL"
 ```
 

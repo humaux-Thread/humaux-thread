@@ -4,7 +4,7 @@
 //!   x=[private.read_continuity_project_storage_v1], PostgreSQL(role_gateway), subprocess(true)];
 //!   env=[CARGO_MANIFEST_DIR, HUMAUX_MIGRATOR_PG_DSN, OUT_DIR]; modules=[maintenance::migration_manifest,
 //!   maintenance::rls_check]
-//! Called-by: [maintenance::main, maintenance::rls_check, xtask::migrate]
+//! Called-by: [maintenance::main, maintenance::rls_check, tests, xtask::migrate]
 //! Invariants: [each PENDING migration runs in one explicit transaction (ADR-0050 D-D) unless its manifest says
 //!   transaction = "none" (only that value, only for a CONCURRENTLY body; ADR-0052 D-G); a second run is idempotent;
 //!   an applied file whose checksum changed is drift and stops the run; 0011 pending with one of its roles missing is

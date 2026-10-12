@@ -1021,6 +1021,8 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #31 (`rls_check.rs` `flag_without_value`, PR #2 owner review P2): a bare `--spec` / `--dsn` read as absent | the guard disabled | `value_flags_without_a_value_are_usage_errors` red, EXIT 101 |
 | `c39_red_fix9` #32 (`migrate.rs` `run`, PR #2 Codex P1 round 5): a bare `--migrations-dir` / `--dsn` / `--through` read as absent | the guard filtered out | `bare_value_flags_are_usage_errors_before_any_default` red (exit 1, not 2: the embedded set and a connect attempt), EXIT 101 |
 | `c39_red_fix9` #33 (`migrate.rs`, gate-reviewer round 5 P2): the guard filtered out, against the strengthened test (each case discriminates, all judged before the assert) | the guard filtered out | `bare_value_flags_are_usage_errors_before_any_default` red naming all four cases (exit 1 each), EXIT 101 |
+| `c39_red_fix9` #34 (`deploy_check.rs` `EnvFile::parse`, PR #2 Codex P2 round 7): values kept as raw text | `compose_value` bypassed | `env_file_values_follow_compose_quoting` red, EXIT 101 |
+| `c39_red_fix9` #35 (`deploy_check.rs` `running_reasons`, PR #2 Codex P2 round 7): third-party residents skipped | the resident filter made empty | `running_checks_third_party_residents` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1057,6 +1059,19 @@ blocks changed: P2, R2, U2, U3, RB1, RB2, A2, A3, A4. Gate-reviewer on 5ce5814 (
 `humaux-dr:NEXT` ran; RB1 now exports `HUMAUX_IMAGE_TAG=$PREV_TAG` before the check (the previous release's verifier,
 under its own checkout). The four host checks name an image that is not loaded as `<not loaded>`; the bare-flag test's
 second case now discriminates without the guard and all cases are judged before the assert (red #33).
+
+**PR #2 round 7 (2026-10-13, Codex on bea2f5f).** (1) `deploy-check --env` reads env_file values the way Compose
+does: `'…'` literal, `"…"` and unquoted values lose their quotes, so `KEY=""` is empty (`secret_empty` fires); a value
+that would need Compose's interpolation, escapes or inline-comment strip (`$`, `\`, a stray quote, ` #`) is
+`value_unreadable:<file>:<key>` instead of passing as non-empty text. (2) `deploy-check --running` also requires every
+third-party resident without a profile (`restart: unless-stopped`: pg, qdrant, netns, prometheus, alertmanager,
+otel-collector) to be running, not restarted, and healthy where the container has a healthcheck. (3) Upgrade: U4 removes
+every project container whose service the next `prod.yml` no longer defines, and U7's `up` passes `--remove-orphans`.
+(4) Rollback: RB3 records its target in `evidence/rb3.target` before `node.env` changes and removes it only after a
+restore, so a retry re-uses `<project>-rb1`, removes the partial target (`down -v`, a copy of the backup) and restores
+again; a target whose evidence already says `restored` STOPs ("continue at RB4"). (5) `migrate.rs`'s `Called-by`
+gains `tests` (dep-map red since 5ce5814: rls_check's tests call `migrate::flag_without_value`). Runbook blocks
+changed: U4, U7, RB3.
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 
