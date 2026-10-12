@@ -172,13 +172,24 @@ enum Probe {
 /// on its own when the probe times out (a blocked `connect` cannot be interrupted portably); the caller treats
 /// `Unknown` as occupied and never unlinks the file.
 fn probe_stale(path: &Path, timeout: std::time::Duration) -> Probe {
-    let (tx, rx) = std::sync::mpsc::channel();
     let owned = path.to_path_buf();
-    std::thread::spawn(move || {
+    probe_with(timeout, move || {
         // dep: UDS(private-worker) — stale-socket probe of the path this server is about to bind; the same site
         // probes the retrieval worker's path (UDS(retrieval-worker)) when that server boots
-        let live = std::os::unix::net::UnixStream::connect(&owned).is_ok();
-        let _ = tx.send(live);
+        std::os::unix::net::UnixStream::connect(&owned).is_ok()
+    })
+}
+
+/// Runs `probe` (true = a server answered) on a detached thread and waits at most `timeout` for its answer: an answer
+/// already queued when the wait starts is read (`Live` / `Dead`), no answer in time is `Unknown`. The probe is a
+/// parameter so the timeout arm is testable without a listener whose backlog is full (PR #2 review).
+fn probe_with(
+    timeout: std::time::Duration,
+    probe: impl FnOnce() -> bool + Send + 'static,
+) -> Probe {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(probe());
     });
     match rx.recv_timeout(timeout) {
         Ok(true) => Probe::Live,
@@ -434,28 +445,34 @@ mod tests {
         );
     }
 
-    /// PR #2 review: the probe is bounded — Live / Dead are read, and a probe that cannot answer in time is
-    /// `Unknown` (here forced with a zero timeout against a live listener), which keeps the socket in place.
-    /// Fault: unbounded `connect` (no timeout arm) ⇒ no `Unknown` outcome ⇒ red.
+    /// PR #2 review: the probe is bounded — a probe that does not answer within the budget is `Unknown` (a probe
+    /// that sleeps past a 50 ms budget: deterministic, no scheduling race), an answer already queued is read
+    /// (`Live`), and the real socket probe reads Live / Dead. Fault: unbounded wait (no timeout arm) ⇒ no `Unknown`
+    /// outcome ⇒ red.
     #[tokio::test]
     async fn stale_probe_is_bounded() {
+        use std::time::Duration;
+        assert_eq!(
+            probe_with(Duration::from_millis(50), || {
+                std::thread::sleep(Duration::from_millis(400));
+                true
+            }),
+            Probe::Unknown,
+            "a probe that overruns its budget is Unknown"
+        );
+        assert_eq!(probe_with(Duration::from_secs(2), || true), Probe::Live);
+        assert_eq!(probe_with(Duration::from_secs(2), || false), Probe::Dead);
         let dir = Dir::new("probe", 0o700);
         let path = dir.0.join("s.sock");
-        let _listener = bind_guarded(&path).expect("bind");
-        assert_eq!(
-            probe_stale(&path, std::time::Duration::from_secs(2)),
-            Probe::Live
+        let listener = bind_guarded(&path).expect("bind");
+        assert_eq!(probe_stale(&path, Duration::from_secs(2)), Probe::Live);
+        drop(listener);
+        assert!(
+            bind_guarded(&path).is_ok(),
+            "a dead socket file is replaced"
         );
         assert_eq!(
-            probe_stale(&path, std::time::Duration::ZERO),
-            Probe::Unknown,
-            "a zero budget cannot be answered"
-        );
-        drop(_listener);
-        let err = bind_guarded(&path).map(drop);
-        assert!(err.is_ok(), "a dead socket is replaced: {err:?}");
-        assert_eq!(
-            probe_stale(&dir.0.join("none.sock"), std::time::Duration::from_secs(2)),
+            probe_stale(&dir.0.join("none.sock"), Duration::from_secs(2)),
             Probe::Dead
         );
     }

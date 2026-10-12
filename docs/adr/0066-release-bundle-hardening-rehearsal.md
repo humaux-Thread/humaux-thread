@@ -912,6 +912,12 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
   --restart … =file:`, review fix 1); one `# ponytail:` line says the `sh -c` fallback is unreachable in that image.
 - OP-1: the runbook's PG-lost / rollback prose says `restore pitr` refusal 3 sees only the dr project's own pg (review
   fix 7); RB2's `down` of the previous project is the guard against a second cluster on the stanza.
+- PR #2 (2026-10-13), third round — Codex (P1: every process image must be in the manifest —
+  `manifest_image_missing:<t>` / `manifest_image_unknown:<t>`, `loadgen` optional; P1: the A5 release check passes
+  `--checkout-tree`; P2: `cargo xtask rls-check` adds `--spec` / `--dsn` defaults only when absent) and two
+  owner-account comments (the probe's timeout arm is tested with an injected slow probe, not a zero budget;
+  `secrets_readable_reports_names_only` is `not_applicable` under root, where DAC_OVERRIDE makes the premise false —
+  CI runs this crate with sudo).
 - PR #2 (2026-10-13), second round — Codex P1/P2 and six owner-account inline comments (one P1), all closed in the
   same PR: `deploy-check --release` compares the PostgreSQL image too (`PGIMAGE` line: `manifest_pgimage_missing`,
   `pg_image_missing`, `pg_image_id_mismatch`, `pg_image_sha_mismatch`); `cargo xtask migrate` honours an explicit
@@ -1006,8 +1012,10 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #23 (`pg_image_reasons`): a manifest without a `PGIMAGE` line accepted | the arm mutated | same test red, EXIT 101 |
 | `c39_red_fix9` #24 (`xtask/src/migrate.rs`, PR #2 Codex P2): the dev `--migrations-dir` default inserted ahead of an explicit one | the shaping mutated | `explicit_migrations_dir_is_not_shadowed_by_the_default` red, EXIT 101 |
 | `c39_red_fix9` #25 (`deploy_check.rs` `uid_key_reasons`, PR #2 review): first source wins again | `.next_back()` → `.next()` | `compose_peer_uid_keys_mismatch_is_red` red, EXIT 101 |
-| `c39_red_fix9` #26 (`uds.rs` `probe_stale`, PR #2 review): the timeout arm dropped (every probe answers Live/Dead) | the `Err(_)` arm mutated | `stale_probe_is_bounded` red, EXIT 101 |
+| `c39_red_fix9` #26 (`uds.rs` `probe_with`, PR #2 review): the timeout arm dropped (no answer in time read as Dead) | the `Err(_)` arm mutated | `stale_probe_is_bounded` red (deterministic: an injected probe that overruns a 50 ms budget), EXIT 101 |
 | `c39_red_fix9` #27 (`derived_dispatch_e2e.rs` M1, PR #2 review): safety bounds moved back behind the capacity skip — recorded by reading only: the live test needs MiniMax and a capacity-starved round to differ; the reorder is a pure statement move | — | not run (named here, not claimed) |
+| `c39_red_fix9` #27 (`deploy_check.rs` `manifest_target_reasons`, PR #2 Codex P1 round 3): a missing process image accepted | the filter mutated | `manifest_target_reasons_each_named` red, EXIT 101 |
+| `c39_red_fix9` #28 (`xtask/src/rls_check.rs`, PR #2 Codex P2): the `--spec` default always prepended | the guard dropped | `explicit_flags_are_not_shadowed_by_the_defaults` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |

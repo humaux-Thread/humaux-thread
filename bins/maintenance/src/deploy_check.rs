@@ -940,6 +940,32 @@ pub struct ManifestImage {
     pub git_sha: String,
 }
 
+/// Images a release manifest may carry beyond [`TARGETS`] (built with `--with-loadgen` for the A5 run, D-S; never in
+/// prod.yml).
+const OPTIONAL_TARGETS: [&str; 1] = ["loadgen"];
+
+/// `manifest_image_missing:<target>` for every process image of [`TARGETS`] the manifest does not record and
+/// `manifest_image_unknown:<target>` for a recorded image outside [`TARGETS`] / [`OPTIONAL_TARGETS`] (PR #2 Codex P1: a
+/// truncated manifest used to be accepted and only its remaining subset inspected, while prod.yml still started the
+/// omitted image).
+pub fn manifest_target_reasons(images: &[ManifestImage]) -> Vec<String> {
+    let mut reasons: Vec<String> = TARGETS
+        .iter()
+        .filter(|t| !images.iter().any(|i| i.target == **t))
+        .map(|t| format!("manifest_image_missing:{t}"))
+        .collect();
+    reasons.extend(
+        images
+            .iter()
+            .filter(|i| {
+                !TARGETS.contains(&i.target.as_str())
+                    && !OPTIONAL_TARGETS.contains(&i.target.as_str())
+            })
+            .map(|i| format!("manifest_image_unknown:{}", i.target)),
+    );
+    reasons
+}
+
 /// `manifest_line_malformed:<line number>` for every `IMAGE …` line [`parse_manifest_line`] cannot read (a missing
 /// `id=` / `binary=` / `git_sha=`): such a line used to be dropped silently, so its image was never inspected and the
 /// release gate passed around it (PR #2 independent review P2-3).
@@ -1093,6 +1119,7 @@ fn release_check(
         return Ok(vec!["manifest_empty".to_owned()]);
     }
     let mut reasons = malformed_image_lines(&text);
+    reasons.extend(manifest_target_reasons(&images));
     // ponytail: the images are inspected and run one after another (about eight containers in series); parallel
     // `docker run`s if the release gate ever takes too long on a node.
     for image in &images {
@@ -2439,10 +2466,19 @@ mod tests {
     /// carries a file's content. Fault: report every file (or its content) ⇒ red.
     #[test]
     fn secrets_readable_reports_names_only() {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let dir = std::env::temp_dir().join(format!("humaux_c39_secrets_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dir");
+        // PR #2 review: under root (CI runs this crate's tests with sudo) DAC_OVERRIDE reads a 0000 file, so the
+        // premise does not hold — the measurement's missing object is an unprivileged uid (§57.1).
+        if std::fs::metadata(&dir).expect("dir metadata").uid() == 0 {
+            println!(
+                "not_applicable: missing object = an unprivileged test uid (root reads a 0000 file)"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
         let readable = dir.join("gateway.secret.env");
         let unreadable = dir.join("private-worker.secret.env");
         std::fs::write(&readable, "HUMAUX_X=readable-secret-value\n").expect("write");
@@ -2693,6 +2729,35 @@ mod tests {
                 "case {pointer}"
             );
         }
+    }
+
+    /// PR #2 Codex P1 (round 3): every process image must be in the manifest, an unknown one is named, the A5
+    /// `loadgen` image is allowed. Faults: drop the missing arm, or accept any target ⇒ red.
+    #[test]
+    fn manifest_target_reasons_each_named() {
+        let line = |t: &str| {
+            parse_manifest_line(&format!(
+                "IMAGE humaux-{t}:x id=sha256:a size=1 binary=humaux-{t} git_sha=0"
+            ))
+            .expect("manifest line")
+        };
+        let full: Vec<ManifestImage> = TARGETS.iter().map(|t| line(t)).collect();
+        assert_eq!(manifest_target_reasons(&full), Vec::<String>::new());
+        let mut with_loadgen = full.clone();
+        with_loadgen.push(line("loadgen"));
+        assert_eq!(manifest_target_reasons(&with_loadgen), Vec::<String>::new());
+        let mut short = full.clone();
+        short.retain(|i| i.target != "dr");
+        assert_eq!(
+            manifest_target_reasons(&short),
+            vec!["manifest_image_missing:dr".to_owned()]
+        );
+        let mut stray = full;
+        stray.push(line("public-worker"));
+        assert_eq!(
+            manifest_target_reasons(&stray),
+            vec!["manifest_image_unknown:public-worker".to_owned()]
+        );
     }
 
     /// PR #2 Codex P1: the PostgreSQL image is compared too — each outcome by name. Faults: skip the id or the label
