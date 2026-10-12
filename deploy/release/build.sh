@@ -141,9 +141,12 @@ if [ "$DRY" = 0 ]; then
     [ "$m" = "b700" ] || fail "arch:$(basename "$b") e_machine=$m is not AArch64 (b700)"
   done
 fi
+# Recreated, never merged into: a file the commit removed or renamed must not survive into the ops / dr images
+# (deploy-check --env reads every file there; PR #2 round 8).
 if [ "$DRY" = 1 ]; then
-  echo "DRY cp -R $CTX/deploy/env/example/. $OUT/env-example/"
+  echo "DRY rm -rf $OUT/env-example && mkdir -p $OUT/env-example && cp -R $CTX/deploy/env/example/. $OUT/env-example/"
 else
+  rm -rf "$OUT/env-example" && mkdir -p "$OUT/env-example" || fail env-example
   cp -R "$CTX/deploy/env/example/." "$OUT/env-example/" || fail env-example
 fi
 

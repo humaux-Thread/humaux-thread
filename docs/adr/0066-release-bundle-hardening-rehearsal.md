@@ -1023,6 +1023,9 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #33 (`migrate.rs`, gate-reviewer round 5 P2): the guard filtered out, against the strengthened test (each case discriminates, all judged before the assert) | the guard filtered out | `bare_value_flags_are_usage_errors_before_any_default` red naming all four cases (exit 1 each), EXIT 101 |
 | `c39_red_fix9` #34 (`deploy_check.rs` `EnvFile::parse`, PR #2 Codex P2 round 7): values kept as raw text | `compose_value` bypassed | `env_file_values_follow_compose_quoting` red, EXIT 101 |
 | `c39_red_fix9` #35 (`deploy_check.rs` `running_reasons`, PR #2 Codex P2 round 7): third-party residents skipped | the resident filter made empty | `running_checks_third_party_residents` red, EXIT 101 |
+| `c39_red_fix9` #36 (`budget_sums.sh` drill arm, PR #2 Codex P1 round 8): a copy of `sizing-a5.env` whose drill PostgreSQL cap is 4g (the pre-round-8 A5 numbers were red the same way, reserve 1392 MiB) | the input | `budget: fail — reserve 1392 MiB < 4096 MiB`, EXIT 1; the real file passes (reserve 4464) |
+| `c39_red_fix9` #37 (`deploy_check.rs` `secret_file_reasons`, PR #2 Codex P1 round 8): own values / secret files not required | the new arm skipped | `compose_fix9_arms_each_red` red (case `own secret file dropped`), EXIT 101 |
+| `c39_red_fix9` #38 (`serve.rs` `df_free_bytes`, PR #2 Codex P2 round 8): the in-flight guard dropped | the guard made always-true | `statvfs_keeps_one_read_in_flight_per_path` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1072,6 +1075,18 @@ restore, so a retry re-uses `<project>-rb1`, removes the partial target (`down -
 again; a target whose evidence already says `restored` STOPs ("continue at RB4"). (5) `migrate.rs`'s `Called-by`
 gains `tests` (dep-map red since 5ce5814: rls_check's tests call `migrate::flag_without_value`). Runbook blocks
 changed: U4, U7, RB3.
+
+**PR #2 round 8 (2026-10-13, Codex on d19f5ce).** (1) `deploy-check --compose-json` also requires every Humaux
+service to load its OWN files: the values file of its binary (`values_file_missing:<svc>:values/<p>.env`) and its
+secret file(s) (`secret_file_missing:<svc>:<f>.secret.env`; `migrate` → `migrate`, `dr` → `dr` + `pg`), since the
+presence check reads `--secrets-dir`, not what a service loads. (2) `budget_sums.sh` counts the restore drill's
+`HUMAUX_DRILL_*_MEM_LIMIT` (it runs beside production); the A5 numbers were red (reserve 1392 MiB at the 22 GiB floor),
+so 1.5 GiB of PostgreSQL's in-cgroup page cache moves to the drill: `HUMAUX_SIZE_PG_MEM` 8704 → 7168 MiB
+(`effective_cache_size` 6 → 5 GB; shared_buffers and the ~4.7 GiB working set unchanged), drill caps 2g / 1g → 1g /
+512m; reserve 4464 MiB again. These stay dev-host start values under L-1 / O-1. (3) `serve.rs` keeps at most one
+`statvfs` read in flight per DR path, so a hung mount pins one blocking thread, not one per cycle (ponytail: a
+killable helper if that ever matters). (4) `build.sh` recreates `$OUT/env-example` before copying, so a removed
+example cannot survive into the ops / dr images.
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 

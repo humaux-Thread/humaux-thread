@@ -549,6 +549,34 @@ fn secret_file_reasons(name: &str, svc: &Value, reasons: &mut Vec<String>) {
             reasons.push(format!("secret_file_foreign:{name}:{file}"));
         }
     }
+    // PR #2 round 8: and it loads its OWN files — the values file of its binary and its secret file(s). A release
+    // that drops one passed R2 / U3 (the presence check reads `--secrets-dir`, not what a service loads) and the
+    // process crash-looped after the old one had been stopped.
+    let Some(target) = humaux_target(svc) else {
+        return;
+    };
+    let own = match target {
+        "ops" | "dr" => "maintenance",
+        t => t,
+    };
+    let secrets: &[&str] = match name {
+        MIGRATOR_SERVICE => &["migrate"],
+        DR_SERVICE => &["dr", "pg"],
+        _ => &[own],
+    };
+    let files: Vec<&str> = env_file_paths(svc)
+        .into_iter()
+        .map(|p| p.rsplit('/').next().unwrap_or(p))
+        .collect();
+    if process_of(svc) != Some(own) {
+        reasons.push(format!("values_file_missing:{name}:values/{own}.env"));
+    }
+    for stem in secrets {
+        let want = format!("{stem}.secret.env");
+        if !files.contains(&want.as_str()) {
+            reasons.push(format!("secret_file_missing:{name}:{want}"));
+        }
+    }
 }
 
 /// Every failing reason of an unresolved compose document (ADR-0066 D-R `--compose-json`). Call
@@ -2704,7 +2732,7 @@ mod tests {
     #[allow(clippy::too_many_lines)] // one table: a case per arm
     fn compose_fix9_arms_each_red() {
         type Mutation = fn(&mut Value);
-        let cases: [(&str, Mutation, &[&str]); 12] = [
+        let cases: [(&str, Mutation, &[&str]); 14] = [
             (
                 "security_opt extra on a Humaux service",
                 |d| {
@@ -2774,6 +2802,36 @@ mod tests {
                         .push(json!({ "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env" }));
                 },
                 &["secret_file_foreign:gateway:maintenance.secret.env"],
+            ),
+            (
+                "own secret file dropped",
+                |d| {
+                    service(d, "gateway")["env_file"]
+                        .as_array_mut()
+                        .expect("env_file")
+                        .retain(|e| {
+                            !e["path"]
+                                .as_str()
+                                .unwrap_or("")
+                                .ends_with("gateway.secret.env")
+                        });
+                },
+                &["secret_file_missing:gateway:gateway.secret.env"],
+            ),
+            (
+                "own values file dropped",
+                |d| {
+                    service(d, "dr")["env_file"]
+                        .as_array_mut()
+                        .expect("env_file")
+                        .retain(|e| {
+                            !e["path"]
+                                .as_str()
+                                .unwrap_or("")
+                                .ends_with("/values/maintenance.env")
+                        });
+                },
+                &["values_file_missing:dr:values/maintenance.env"],
             ),
             (
                 "writable bind on a Humaux service",

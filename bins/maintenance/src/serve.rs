@@ -361,11 +361,36 @@ async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     }
 }
 
+/// Paths whose `statvfs` still runs on a blocking thread. A timed-out read cannot be cancelled, so a hung mount
+/// holds at most ONE blocking thread per path instead of one more every cycle (PR #2 round 8).
+/// ponytail: a hung read still pins its thread until the kernel answers (shutdown waits on it too); a forked
+/// helper that can be killed if a hung DR mount ever outlives a cycle in practice.
+static STATVFS_IN_FLIGHT: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 /// Free bytes of the filesystem holding `path`, read in process on a blocking thread and bounded by CYCLE_SECONDS
 /// (a hung mount must not stall the loop). ADR-0066 review fix 5: the release image is distroless, it has no `df`.
+/// While an earlier read of the same path is still blocked, the cycle fails at once without a new thread.
 async fn df_free_bytes(path: &str, cycle: Duration) -> std::result::Result<i64, String> {
+    let in_flight = || {
+        STATVFS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if !in_flight().insert(path.to_owned()) {
+        return Err(format!(
+            "statvfs {path}: an earlier read is still blocked (one thread per path)"
+        ));
+    }
     let owned = path.to_owned();
-    let read = tokio::task::spawn_blocking(move || statvfs_free_bytes(&owned));
+    let read = tokio::task::spawn_blocking(move || {
+        let free = statvfs_free_bytes(&owned);
+        STATVFS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&owned);
+        free
+    });
     match tokio::time::timeout(cycle, read).await {
         Ok(Ok(free)) => free,
         Ok(Err(e)) => Err(format!("statvfs {path}: {e}")),
@@ -754,7 +779,31 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
-    use super::{available_bytes, statvfs_free_bytes};
+    use super::{STATVFS_IN_FLIGHT, available_bytes, df_free_bytes, statvfs_free_bytes};
+    use std::time::Duration;
+
+    /// PR #2 round 8: a path whose read is still in flight gets no second blocking thread — the cycle fails at once
+    /// naming it — and a finished read frees the path for the next cycle. Fault: drop the in-flight guard ⇒ red.
+    #[tokio::test]
+    async fn statvfs_keeps_one_read_in_flight_per_path() {
+        let stuck = "/nonexistent/humaux-round8-stuck";
+        STATVFS_IN_FLIGHT
+            .lock()
+            .expect("lock")
+            .insert(stuck.to_owned());
+        let err = df_free_bytes(stuck, Duration::from_secs(1))
+            .await
+            .expect_err("in flight");
+        assert!(err.contains("still blocked"), "{err}");
+        STATVFS_IN_FLIGHT.lock().expect("lock").remove(stuck);
+        assert!(
+            df_free_bytes(".", Duration::from_secs(5))
+                .await
+                .expect("statvfs .")
+                > 0
+        );
+        assert!(!STATVFS_IN_FLIGHT.lock().expect("lock").contains("."));
+    }
 
     /// ADR-0066 review fix 5: Available = f_bavail × f_frsize, with every other field set apart so a swap shows.
     #[test]

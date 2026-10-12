@@ -8,7 +8,8 @@
 #   *_MEM budget line but the parse-sandbox peak to be some service's `mem_limit:`, and every live `mem_limit:` /
 #   `memswap_limit:` line of FILE to read a HUMAUX_SIZE_*_MEM key of SIZING_ENV.
 # Output: one `budget: …` line (sum, reserve) and one `budget: fail …` line per violation; no secret (the files hold none).
-# Exit: 0 = reserve = N - sum >= 4096 and every key-set / compose check holds; 1 = a violation; 2 = usage.
+# Exit: 0 = reserve = N - (sum of HUMAUX_SIZE_*_MEM + the drill's HUMAUX_DRILL_*_MEM_LIMIT) >= 4096 and every key-set /
+#   compose check holds; 1 = a violation; 2 = usage.
 set -u
 usage() { echo "usage: budget_sums.sh --mem-total-mib N [--compose FILE] SIZING_ENV [OTHER_SIZING_ENV ...]" >&2; exit 2; }
 N=; COMPOSE=
@@ -28,9 +29,18 @@ MAIN=$1; shift
 for f in "$MAIN" "$@" ${COMPOSE:+"$COMPOSE"}; do [ -r "$f" ] || { echo "budget: fail — cannot read $f"; exit 1; }; done
 keys() { grep -E '^[A-Z0-9_]+=' "$1" | cut -d= -f1 | sort; }
 fails=0
-SUM=$(grep -E '^HUMAUX_SIZE_[A-Z0-9_]+_MEM=' "$MAIN" | cut -d= -f2 | awk '{ s += $1 } END { print s + 0 }')
+SIZE=$(grep -E '^HUMAUX_SIZE_[A-Z0-9_]+_MEM=' "$MAIN" | cut -d= -f2 | awk '{ s += $1 } END { print s + 0 }')
+# PR #2 round 8: the scheduled restore drill (deploy/compose/drill.yml) runs its PostgreSQL and Qdrant beside
+# production, so their ceilings count too. Their unit is compose's (`<n>g` / `<n>m`); anything else is a fail.
+DRILL=$(grep -E '^HUMAUX_DRILL_[A-Z0-9_]+_MEM_LIMIT=' "$MAIN" | cut -d= -f2 | awk '
+  /^[0-9]+[gG]$/ { s += $1 * 1024; next }
+  /^[0-9]+[mM]$/ { s += $1; next }
+  { bad = 1 }
+  END { if (bad || NR == 0) print "bad"; else print s + 0 }')
+[ "$DRILL" != bad ] || { echo "budget: fail — HUMAUX_DRILL_*_MEM_LIMIT missing or not <n>g / <n>m in $MAIN"; exit 1; }
+SUM=$((SIZE + DRILL))
 RES=$((N - SUM))
-echo "budget: $MAIN sum(HUMAUX_SIZE_*_MEM)=${SUM} MiB mem_total=${N} MiB reserve=${RES} MiB (need >= $RESERVE_MIN)"
+echo "budget: $MAIN sum(HUMAUX_SIZE_*_MEM)=${SIZE} MiB + drill=${DRILL} MiB mem_total=${N} MiB reserve=${RES} MiB (need >= $RESERVE_MIN)"
 if [ "$RES" -lt "$RESERVE_MIN" ]; then echo "budget: fail — reserve ${RES} MiB < $RESERVE_MIN MiB"; fails=1; fi
 for other in "$@"; do
   if [ "$(keys "$MAIN")" != "$(keys "$other")" ]; then
