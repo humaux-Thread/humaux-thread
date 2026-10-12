@@ -912,6 +912,12 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
   --restart … =file:`, review fix 1); one `# ponytail:` line says the `sh -c` fallback is unreachable in that image.
 - OP-1: the runbook's PG-lost / rollback prose says `restore pitr` refusal 3 sees only the dr project's own pg (review
   fix 7); RB2's `down` of the previous project is the guard against a second cluster on the stanza.
+- PR #2 (2026-10-13) independent review (PASS, six P2) and Codex review (one P1), all closed in the same PR: the host
+  crontab reads `HUMAUX_NODE_DEPLOY_DIR` from `node.env` at run time so a checkout switch moves the schedule (Codex
+  P1); the ADR-0037 addendum says `unless-stopped` (P2-1); `deploy-check --release` names a malformed `IMAGE` line
+  (`manifest_line_malformed:<n>`, P2-3) and `--compose-json` refuses a `humaux-*` image outside the target list
+  (`unknown_humaux_image:<svc>:<target>`, P2-4); Baseline §25.3 names `bins/maintenance/src/rls_check.rs` and §78.6 lists
+  it (P2-5); L-20 records the checkout-tree guard's scope (P2-6); the PR title says what the chain evidence is (P2-2).
 - OP-5: `restore pitr` wrote its evidence file only after promotion (an unwritable path lost `nologin_roles`, which
   RB4 now reads); ruled to the main line's Rust window — open the file before any refusal or restore, print the
   receipt to stdout first.
@@ -983,6 +989,8 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #17: drill evidence_arg: the write probe never fails (is_dir-only era) | the fault named | `drill_and_pitr_refuse_an_evidence_path` red, EXIT 101 |
 | `c39_red_fix9` #18 (live MiniMax, C39-F8-4): poison-live phase-B accounting given one unexplained attempt (`explained + 1`) | the identity mutated | `distill_poison_live` red on a live green run (37 s), EXIT 101; unmutated green again (27 s) |
 | `c39_red_fix9` #19 (`drill.rs` `locked_roles_sql`, agent3 RB5 finding): list `NOT rolcanlogin` (the post-quarantine reading) | the query mutated | `locked_roles_sql_selects_login_roles_outside_keep` red, EXIT 101 |
+| `c39_red_fix9` #20 (`deploy_check.rs` `malformed_image_lines`, PR #2 review P2-3): a malformed `IMAGE` line dropped silently again | the filter mutated | `malformed_manifest_lines_and_unknown_humaux_images_are_red` red, EXIT 101 |
+| `c39_red_fix9` #21 (`deploy_check.rs` `unknown_humaux_image`, PR #2 review P2-4): the call dropped | the arm dropped | same test red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1223,7 +1231,7 @@ commented out.
 | L-15 | Unchanged files keep their mtimes only through `rsync -c` staging and the builder's named target volume (R-2); a cache loss recompiles every crate (correct, slower) | builds run on the build host, never on a node | a warm build 2 in S8 that rebuilds more than the sha-reading crates (W-3); then `build.sh` touches those crates |
 | L-16 | Chain and rehearsal images carry the sha of an unreferenced snapshot commit; `git gc` prunes it after the default expiry | the manifest records sha and tree; production releases are commits on main (`build.sh` refuses others without `--unreleased`) | a snapshot sha needed after its expiry (an investigation of a chain image) — then keep a ref for chain builds |
 
-## Known limits (L-1–L-19; consolidated)
+## Known limits (L-1–L-20; consolidated)
 
 - **L-1** Every size, pool and PostgreSQL number is a dev-host start value, frozen only by `a5_load_remeasure` (O-1);
   runbook §8.1 stays "(dev-host)"; no `ops.mechanism_observations` row from this host.
@@ -1269,6 +1277,10 @@ Follow-ups: card 38b (pool keys of every process; would lower `max_connections`)
 exposure, schema-crossing rollback), card 54 (secrets), card 37d (offsite), the public-worker deployment when Public
 Evolution is enabled.
 
+- **L-20** The checkout-tree guard (`deploy-check --release --checkout-tree`) compares `CHECKOUT_TREE`, a label shipped
+  inside the checkout, with the manifest: it detects a wrong or stale tarball, not a hand-edited `deploy/` on the node.
+  Accepted under the single-operator model (L-13); reopening signal: a second operator or an audit requirement — then
+  the executor hashes the checkout tree itself (PR #2 independent review P2-6).
 ## S8 / S9 — main-line runs (2026-10-08; design §5, rulings R-1 / R-6 / R-8 / R-12)
 
 Evidence root: `TW/c39_image_build/` (S8 logs `run1..run11.log`, `releases/*.manifest`) and `TW/card39_rehearsal/<id>/`
@@ -1322,6 +1334,8 @@ Both are in the card-39 tree too.
 ## Spec text changed (§78.6)
 
 - Baseline §41.2: row `dns_pin_deferred_total` (S3, D-P).
+- Baseline §25.3 (D0 checker owner note): the rls checker path is `bins/maintenance/src/rls_check.rs` (D-Q; xtask keeps a
+  delegation shell) — PR #2 independent review P2-5.
 - Baseline §42: row "DNS pin deferred" (`DnsPinDeferred`, S3, D-P).
 - Baseline §41.2: row `backup_disk_free_bytes` — the free bytes are `statvfs(3)` of the path (f_bavail × f_frsize),
   in-process, not a `df -Pk` child (review fix 5's mechanism; wording by review fix 9, C9 / OP-8 / F11).

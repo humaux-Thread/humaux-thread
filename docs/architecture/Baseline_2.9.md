@@ -2956,7 +2956,7 @@ SECURITY DEFINER function signatures / exact per-role EXECUTE matrix** 尚未被
 registry/matrix 精确注册而红；任何 owner、RLS、ACL、definer owner/search path 或其他 checker
 violation 都不得被标为 expected。
 
-独立 D0 只可在 A provisional 之后，由 checker owner 编辑 `xtask/src/rls_check.rs` 及其 focused
+独立 D0 只可在 A provisional 之后，由 checker owner 编辑 `bins/maintenance/src/rls_check.rs`（ADR-0066 D-Q；`xtask/src/rls_check.rs` 只是委托壳）及其 focused
 checker test/fixture，把 `private.contribution_executions`、
 `private.contribution_execution_sources` 与 `ops.contribution_execution_job_links`，以及 A
 provisional 冻结的 schema-qualified typed SECURITY DEFINER function signatures，注册到**同一套**

@@ -259,16 +259,18 @@ Two readiness numbers an operator has to size probes against, both observed:
 
 ## Addendum (2026-10-07, ADR-0066 D-N / D-D) — the exit-code contract
 
-Card 39 packs the five resident processes into containers whose restart policy is `on-failure:5`
-(`deploy/compose/prod.yml`). A supervisor can only act on what an exit code means, so every binary now
+Card 39 packs the five resident processes into containers whose restart policy is `unless-stopped`
+(`deploy/compose/prod.yml`; ADR-0066 review fix 9 C1 — residents come back after a host reboot or a daemon
+restart; the earlier `on-failure:5` cap on exit 2 moved into the gates around `up`: `deploy-check --env` before,
+`deploy-check --running` after, where a restarted container is red). A supervisor can only act on what an exit code means, so every binary now
 keeps one contract (§78.6; the code is ADR-0066 S2, the tests `bins/*/tests/exit_codes.rs`):
 
 | exit | meaning | what the supervisor does |
 |---|---|---|
 | 0 | clean stop after a drain (SIGTERM), or a one-shot that succeeded | nothing; a resident mode never exits 0 on its own |
-| 1 | runtime failure (a dependency, an I/O error) | restart helps: `on-failure` restarts it |
+| 1 | runtime failure (a dependency, an I/O error) | restart helps: `unless-stopped` restarts it (exponential backoff) |
 | 101 | panic | restart helps; the panic is a defect to file |
-| 2 | usage or configuration (an unknown or missing argument, a missing or invalid key, a refused same-uid peer policy, a `--version` without a burned-in sha) | restarting is pointless: Docker retries five times and leaves it `Exited (2)`; an operator fixes the configuration (`deploy-check --env` before `up` catches most of it) |
+| 2 | usage or configuration (an unknown or missing argument, a missing or invalid key, a refused same-uid peer policy, a `--version` without a burned-in sha) | restarting is pointless: under `unless-stopped` Docker keeps retrying with backoff, so the guard is before `up` (`deploy-check --env`, runbook R2/U2) and after it (`deploy-check --running`: `service_restarted` is red); the operator fixes the named key |
 | 3 | refused (a maintenance door's named refusal; `deploy-check` with a failed check) | nothing; the operator reads the named reason |
 
 - **No argument-less success.** A binary started without its mode argument prints its usage and exits 2;

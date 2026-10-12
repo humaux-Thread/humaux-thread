@@ -231,12 +231,28 @@ const TARGETS: [&str; 8] = [
 /// A Humaux process service: its image repository (after the last `/`) is `humaux-<target>` for a D-A target. The
 /// pg image may be named `humaux-…` too, so the prefix alone is not the rule.
 fn is_humaux(svc: &Value) -> bool {
+    humaux_target(svc).is_some_and(|target| TARGETS.contains(&target))
+}
+
+/// The `<target>` of an image repository named `humaux-<target>` (any tag, any registry prefix); `None` otherwise.
+fn humaux_target(svc: &Value) -> Option<&str> {
     svc.get("image")
         .and_then(Value::as_str)
         .and_then(|image| image.rsplit('/').next())
         .and_then(|repo| repo.split(':').next())
         .and_then(|repo| repo.strip_prefix("humaux-"))
-        .is_some_and(|target| TARGETS.contains(&target))
+}
+
+/// `unknown_humaux_image:<svc>:<target>` for a `humaux-*` image outside [`TARGETS`]: a new process image (the planned
+/// public worker, a typo) must be added to the target list, never run outside the Humaux rules (PR #2 independent
+/// review P2-4). The pg image is `humaux-pg` and is listed as the one non-process exception.
+fn unknown_humaux_image(name: &str, svc: &Value, reasons: &mut Vec<String>) {
+    if let Some(target) = humaux_target(svc)
+        && target != "pg"
+        && !TARGETS.contains(&target)
+    {
+        reasons.push(format!("unknown_humaux_image:{name}:{target}"));
+    }
 }
 
 /// The numeric uid of `user: "<uid>[:<gid>]"`; `None` when absent or not numeric.
@@ -530,6 +546,7 @@ pub fn compose_reasons(doc: &Value) -> Vec<String> {
             service_reasons(name, svc, &mut reasons);
             secret_file_reasons(name, svc, &mut reasons);
         } else {
+            unknown_humaux_image(name, svc, &mut reasons);
             escape_reasons(name, svc, &mut reasons);
         }
         port_reasons(name, svc, &mut reasons);
@@ -921,6 +938,18 @@ pub struct ManifestImage {
     pub git_sha: String,
 }
 
+/// `manifest_line_malformed:<line number>` for every `IMAGE …` line [`parse_manifest_line`] cannot read (a missing
+/// `id=` / `binary=` / `git_sha=`): such a line used to be dropped silently, so its image was never inspected and the
+/// release gate passed around it (PR #2 independent review P2-3).
+pub fn malformed_image_lines(manifest: &str) -> Vec<String> {
+    manifest
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("IMAGE ") && parse_manifest_line(line).is_none())
+        .map(|(n, _)| format!("manifest_line_malformed:{}", n + 1))
+        .collect()
+}
+
 /// Parses `IMAGE humaux-<t>:<tag> id=<id> size=<n> binary=<bin> git_sha=<sha40>`; `None` for any other line.
 pub fn parse_manifest_line(line: &str) -> Option<ManifestImage> {
     let mut words = line.split_whitespace();
@@ -1024,7 +1053,7 @@ fn release_check(
     if images.is_empty() {
         return Ok(vec!["manifest_empty".to_owned()]);
     }
-    let mut reasons = Vec::new();
+    let mut reasons = malformed_image_lines(&text);
     // ponytail: the images are inspected and run one after another (about eight containers in series); parallel
     // `docker run`s if the release gate ever takes too long on a node.
     for image in &images {
@@ -2584,6 +2613,39 @@ mod tests {
                 "case {pointer}"
             );
         }
+    }
+
+    /// PR #2 independent review P2-3 / P2-4: a malformed `IMAGE` line is named, never dropped; a `humaux-*` image
+    /// outside the target list is red. Faults: drop `malformed_image_lines` / `unknown_humaux_image` ⇒ red.
+    #[test]
+    fn malformed_manifest_lines_and_unknown_humaux_images_are_red() {
+        let m = "IMAGE humaux-gateway:t id=sha256:a size=1 binary=humaux-gateway git_sha=0\n\
+                 IMAGE humaux-admin:t size=1 binary=humaux-admin\nPGIMAGE humaux-pg:t id=sha256:b size=1\n";
+        assert_eq!(
+            malformed_image_lines(m),
+            vec!["manifest_line_malformed:2".to_owned()]
+        );
+        assert_eq!(
+            malformed_image_lines("IMAGE humaux-x:t id=a size=1 binary=b git_sha=0\n"),
+            Vec::<String>::new()
+        );
+        assert_case(
+            "unknown humaux image",
+            |d| {
+                service(d, "pg").insert(
+                    "image".into(),
+                    json!("ghcr.io/x/humaux-public-worker:0.1.0"),
+                );
+            },
+            &["unknown_humaux_image:pg:public-worker"],
+        );
+        assert_case(
+            "the pg image is the listed exception",
+            |d| {
+                service(d, "pg").insert("image".into(), json!("humaux-pg:0.1.0-abc"));
+            },
+            &[],
+        );
     }
 
     /// OP-4 / C2: the checkout-tree comparison, each outcome by name. Faults: compare only `tree`, or accept a

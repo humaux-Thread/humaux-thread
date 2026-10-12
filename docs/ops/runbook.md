@@ -597,10 +597,12 @@ git), `$HUMAUX_SECRETS_DIR/<process>.secret.env` (secrets and the provider route
 | DNS pin check | monthly, and on `DnsPinDeferred` | §10.5 | `dns_pin_deferred_total` flat |
 | image rebuild | every release | §2 R0 on the build host, then §R | the release manifest |
 
-The two cron lines run `deploy/release/compose.sh` with `HUMAUX_NODE_SIZING`, `HUMAUX_NODE_DIR` and
-`HUMAUX_NODE_PROJECT` set in the crontab's environment; install them once with `crontab -l | cat - <checkout>/
-deploy/pgbackrest/humaux-backup.crontab | crontab -` after editing the three values. No gate proves the crontab is
-installed: `BackupFailure` and `RestoreDrillFailure` are the proof that it runs (ADR-0064 L6).
+The two cron lines run `deploy/release/compose.sh` of the ACTIVE checkout — each line reads `HUMAUX_NODE_DEPLOY_DIR`
+from `node.env` at run time, so a checkout switch (§R) moves the schedule with it and the crontab is never
+re-installed for an upgrade — with `HUMAUX_NODE_SIZING`, `HUMAUX_NODE_DIR` and `HUMAUX_NODE_PROJECT` set in the
+crontab's environment; install them once with `crontab -l | cat - <checkout>/deploy/pgbackrest/humaux-backup.crontab
+| crontab -` after editing the three values. No gate proves the crontab is installed: `BackupFailure` and
+`RestoreDrillFailure` are the proof that it runs (ADR-0064 L6).
 
 ### 5.1 Scheduled maintenance (`maintenance-serve`, card 35, ADR-0062)
 
@@ -1090,8 +1092,9 @@ checkout STOPs there: `prod.yml`, `values/*.env`, the renderer and the executor 
 remedy: check `releases/humaux-checkout-<tag>.tar.gz` against its `humaux-checkout-<tag>.sha256`, unpack it as
 `<node dir>/checkout-<tag>/` (read-only for services, §1), set `HUMAUX_NODE_DEPLOY_DIR` in `node.env` to its
 `deploy/`, and restart the section from its first step (U1, or RB1 for a rollback onto the previous release's
-checkout) with the executor of that checkout. A release built from the running checkout's tree (the S9 rehearsal
-pair: the snapshot and its `--child`) matches without an install.
+checkout) with the executor of that checkout; the host crontab (§5) follows `node.env` and needs no change. A
+release built from the running checkout's tree (the S9 rehearsal pair: the snapshot and its `--child`) matches
+without an install.
 
 <!-- step: U1 expect: 0 match: NEXT IMAGES ok value: PREV_TAG=PREV_TAG=[0-9A-Za-z._-]+ -->
 ```sh
