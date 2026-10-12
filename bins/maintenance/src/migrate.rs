@@ -111,6 +111,18 @@ fn dsn_from_args(args: &[String]) -> Option<String> {
     flag_value(args, "--dsn")
 }
 
+/// The first of `names` present without a value (last, empty, or followed by another `--flag`). PR #2 review: a bare
+/// value flag read as absent let a default stand in for it (`--migrations-dir` → the embedded set, `--dsn` → the
+/// environment DSN, `--spec` → no table-set check); callers refuse it as a usage error (exit 2) before any default.
+pub(crate) fn flag_without_value(args: &[String], names: &[&'static str]) -> Option<&'static str> {
+    names.iter().copied().find(|name| {
+        args.iter().position(|a| a == name).is_some_and(|i| {
+            args.get(i + 1)
+                .is_none_or(|v| v.is_empty() || v.starts_with("--"))
+        })
+    })
+}
+
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
@@ -584,6 +596,10 @@ fn live_runtime_sessions(client: &mut Client) -> Result<Vec<String>, String> {
 /// [--allow-live-sessions]`: 0 pass (every migration recorded, newly applied or already applied), 1 fail (names the
 /// migration), 2 usage (no DSN), 3 refused (live runtime sessions in the target database, nothing applied).
 pub fn run(args: &[String]) -> i32 {
+    if let Some(name) = flag_without_value(args, &["--dsn", "--migrations-dir", "--through"]) {
+        eprintln!("migrate: usage — {name} needs a value");
+        return 2;
+    }
     let dsn = dsn_from_args(args).or_else(|| std::env::var(DSN_ENV).ok().filter(|v| !v.is_empty()));
     let Some(dsn) = dsn else {
         eprintln!("migrate: missing --dsn or environment variable {DSN_ENV}");
@@ -678,6 +694,21 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::Instant;
+
+    /// PR #2 Codex P1 round 5: a bare `--migrations-dir`, `--dsn` or `--through` is a usage error (exit 2) before
+    /// the embedded set or the environment DSN can stand in (no database is reached). Fault: drop the guard ⇒ red.
+    #[test]
+    fn bare_value_flags_are_usage_errors_before_any_default() {
+        let own = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        for args in [
+            own(&["--dsn", "postgres://127.0.0.1:1/x", "--migrations-dir"]),
+            own(&["--migrations-dir", "/tmp/m", "--dsn"]),
+            own(&["--migrations-dir", "--dsn", "postgres://127.0.0.1:1/x"]),
+            own(&["--dsn", "postgres://127.0.0.1:1/x", "--through", ""]),
+        ] {
+            assert_eq!(run(&args), 2, "{args:?}");
+        }
+    }
 
     /// A minimal in-memory manifest: only the two checks matter to `apply_all`.
     fn manifest(id: &str, precheck: &str, postcheck: &str) -> Manifest {

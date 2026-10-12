@@ -1019,6 +1019,7 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #29 (`deploy_check.rs` `rehearsal_probe`, PR #2 Codex P2 round 4): exempt by the rehearsal profile alone | the allow-list bypassed | `compose_identity_uid_rules` red (case `unlisted rehearsal helper`), EXIT 101 |
 | `c39_red_fix9` #30 (`deploy_check.rs` `release_reasons`, PR #2 Codex P1 round 4): version comparisons judged before the identity holds | `None` read as an empty line | `release_identity_is_judged_before_the_version_run` red, EXIT 101 |
 | `c39_red_fix9` #31 (`rls_check.rs` `flag_without_value`, PR #2 owner review P2): a bare `--spec` / `--dsn` read as absent | the guard disabled | `value_flags_without_a_value_are_usage_errors` red, EXIT 101 |
+| `c39_red_fix9` #32 (`migrate.rs` `run`, PR #2 Codex P1 round 5): a bare `--migrations-dir` / `--dsn` / `--through` read as absent | the guard filtered out | `bare_value_flags_are_usage_errors_before_any_default` red (exit 1, not 2: the embedded set and a connect attempt), EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1040,6 +1041,17 @@ the action), so a retry cannot pass on an earlier run's Watchdog / firing / reso
 changed: V3, A2, A3, A4, U2, U3 (S9 agent-run evidence predates them, as with review fix 9). (6) `rls-check` refuses
 `--spec` / `--dsn` without a value (last, empty, or another `--flag` next) with exit 2 before any check, so a bare
 `cargo xtask rls-check --spec` no longer suppresses the Baseline default and exits 0 on `not_applicable`.
+
+**PR #2 round 5 (2026-10-13, Codex on 1a5a039).** (1) The release verifier is checked before it runs: R2, U2, U3
+and RB1 compare `humaux-dr:<tag>`'s image id with the manifest's `dr` line from the host (`docker image inspect`)
+before `run dr deploy-check --release`, which would otherwise start an unverified root image holding the docker
+socket. (2) RB2 is `down --remove-orphans` and ends only when no container carries the project label (a service the
+upgraded release added is not in the previous `prod.yml`). (3) `migrate` refuses a bare `--dsn` / `--migrations-dir`
+/ `--through` (exit 2) before the embedded set or the environment DSN can stand in; the guard
+(`migrate::flag_without_value`) is shared with `rls-check`. (4) `alert-sink` writes to its own
+`$HUMAUX_NODE_EVIDENCE_DIR/alerts` (P2: mode 1733), not the operator's 0700 evidence dir it cannot write as uid
+10199 without capabilities; A2–A4 read `alerts/alert_receipts.jsonl`; the fixture's bind source follows. Runbook
+blocks changed: P2, R2, U2, U3, RB1, RB2, A2, A3, A4.
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 

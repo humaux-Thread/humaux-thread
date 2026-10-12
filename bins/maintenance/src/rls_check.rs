@@ -5169,21 +5169,10 @@ pub fn check_rebuild_generation_boundary(client: &mut impl GenericClient) -> Gat
     }
 }
 
-/// `--spec` or `--dsn` present without a value (last, empty, or followed by another `--flag`), by name. PR #2 review:
-/// a bare `--spec` read as absent turned the table-set check into `not_applicable` and the run could exit 0.
-fn flag_without_value(args: &[String]) -> Option<&'static str> {
-    ["--spec", "--dsn"].into_iter().find(|name| {
-        args.iter().position(|a| a == name).is_some_and(|i| {
-            args.get(i + 1)
-                .is_none_or(|v| v.is_empty() || v.starts_with("--"))
-        })
-    })
-}
-
 /// `rls-check [--spec PATH] [--dsn URL]`: every §48.2/§62 check, three-state; exit 1 on any `fail`, exit 2 on a
 /// value flag without its value (ADR-0037 usage).
 pub fn run(args: &[String]) -> i32 {
-    if let Some(name) = flag_without_value(args) {
+    if let Some(name) = crate::migrate::flag_without_value(args, &["--spec", "--dsn"]) {
         eprintln!("rls-check: usage — {name} needs a value");
         return 2;
     }
@@ -5298,7 +5287,11 @@ mod tests {
             ),
             (own(&[]), None),
         ] {
-            assert_eq!(flag_without_value(&args), want, "{args:?}");
+            assert_eq!(
+                crate::migrate::flag_without_value(&args, &["--spec", "--dsn"]),
+                want,
+                "{args:?}"
+            );
         }
         assert_eq!(run(&own(&["--dsn", "postgres://x", "--spec"])), 2);
     }

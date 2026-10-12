@@ -578,8 +578,10 @@ services:
         source: ../rehearsal/alert_sink.py
         target: /opt/humaux/alert_sink.py
         read_only: true
+      # Its own directory (runbook P2: mode 1733), not the 0700 evidence dir: the sink writes as uid 10199 with no
+      # capabilities (PR #2 round 5); the bind root is reached without traversing the 0700 parent.
       - type: bind
-        source: ${HUMAUX_NODE_EVIDENCE_DIR:?}
+        source: ${HUMAUX_NODE_EVIDENCE_DIR:?}/alerts
         target: /out
     mem_limit: ${HUMAUX_SIZE_ALERT_SINK_MEM:?}m
     memswap_limit: ${HUMAUX_SIZE_ALERT_SINK_MEM:?}m

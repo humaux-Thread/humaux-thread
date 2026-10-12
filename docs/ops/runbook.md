@@ -67,7 +67,7 @@ number in both sizing files is a **dev-host start value, A5 re-measure required*
 | `checkout/` | the release's `deploy/`, `docs/ops/runbook.md`, `migrations/0011_roles_and_grants.sql` and the one-line file `CHECKOUT_TREE` (`tree=… runbook=… roles=…`, the git ids the manifest's `CHECKOUT` line pins): the unpacked `humaux-checkout-<tag>.tar.gz` of `releases/` (a `git archive` of the release commit made on the build host; verify `humaux-checkout-<tag>.sha256` first); the executor runs from here, and `HUMAUX_NODE_DEPLOY_DIR` is its `deploy/`. A release with a different checkout is unpacked beside it as `checkout-<tag>/` (§R) | read-only for services |
 | `secrets/` (`HUMAUX_SECRETS_DIR`) | the per-process `*.secret.env`, `migrate.secret.env`, `dr.secret.env`, `pg.secret.env`, `pg_superuser` | dir 0700, files 0600 |
 | `releases/` (`HUMAUX_NODE_RELEASES_DIR`) | `release-<tag>.manifest` per release, and for a shipped release `humaux-<tag>.tar.gz` + `humaux-<tag>.sha256` (images) and `humaux-checkout-<tag>.tar.gz` + `humaux-checkout-<tag>.sha256` (its checkout) | 0644 |
-| `evidence/` | the executor's `exec.log`, `values.env`, `steps/` (and `HUMAUX_NODE_EVIDENCE_DIR` for `dr` evidence and the alert receipts) | 0700 |
+| `evidence/` | the executor's `exec.log`, `values.env`, `steps/` (and `HUMAUX_NODE_EVIDENCE_DIR` for `dr` evidence; its `alerts/` (mode 1733: alert-sink, uid 10199, creates and appends `alert_receipts.jsonl`; other uids cannot list it, and the 0700 parent keeps host users out) for the alert receipts) | 0700 |
 | `smoke/` | the smoke tenants' receipts, API-key header files and canary tokens (written by §3 / §7) | 0700 |
 | `rendered/`, `alert-urls/` | the rendered observability configs (step R8) and the two Alertmanager URL files `log_sink.url`, `watchdog.url` (the operator's; during §A they point at `http://127.0.0.1:19194/log` and `/watchdog`) | dirs 0755, files 0644: R8 renders under `umask 022`, because Prometheus and Alertmanager run as their images' unprivileged user and must read them; nothing in them is secret (the sha, the URL file paths). Declared limit L-19: the two URL files are world-readable on the node; reopening signal: a URL that carries a secret token (move to a `user:`-pinned Alertmanager or a secret-bearing file mount, card 53) |
 | `home/` | `HOME` of every step | 0700 |
@@ -158,6 +158,8 @@ done
 grep -q "^HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS=.*$(pv HUMAUX_NODE_ROUTE_EGRESS_PROCESSOR_ID)=" "$S/private-worker.secret.env" \
   || { echo "secrets: HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS does not name HUMAUX_NODE_ROUTE_EGRESS_PROCESSOR_ID"; exit 1; }
 for d in evidence smoke home; do mkdir -p "$HUMAUX_NODE_DIR/$d"; chmod 0700 "$HUMAUX_NODE_DIR/$d"; done
+A="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alerts"  # alert-sink (uid 10199, no capabilities) appends its receipts here
+mkdir -p "$A"; chmod 1733 "$A"
 echo "SECRETS ok (names only)"
 ```
 
@@ -212,6 +214,9 @@ TAG=$(nv HUMAUX_IMAGE_TAG); M="$(nv HUMAUX_NODE_RELEASES_DIR)/release-$TAG.manif
 SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$M" | head -n 1)
 case "$TAG" in *-"$(printf '%s' "$SHA" | cut -c1-12)") ;; *) echo "precheck: tag $TAG does not end in the manifest's sha $SHA"; exit 1 ;; esac
 [ -r CHECKOUT_TREE ] || { echo "precheck: $PWD/CHECKOUT_TREE is missing (unpack humaux-checkout-$TAG.tar.gz, §1)"; exit 1; }
+DR=$(awk -v r="humaux-dr:$TAG" '$1 == "IMAGE" && $2 == r { sub(/^id=/, "", $3); print $3 }' "$M")  # the verifier, checked from the host before it runs
+[ -n "$DR" ] && [ "$(docker image inspect -f '{{.Id}}' "humaux-dr:$TAG" 2>/dev/null)" = "$DR" ] \
+  || { echo "precheck: humaux-dr:$TAG is not the manifest's dr image ${DR:-<none>}"; exit 1; }
 $C run --rm -T dr deploy-check --release "$TAG" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
 $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr deploy-check --compose-json - --env \
   --values-dir "$(nv HUMAUX_NODE_DEPLOY_DIR)/env/values" --secrets-dir "$(nv HUMAUX_SECRETS_DIR)" \
@@ -1033,7 +1038,7 @@ echo "PEERCRED ok"
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 TAG=$(nv HUMAUX_IMAGE_TAG); SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$(nv HUMAUX_NODE_RELEASES_DIR)/release-$TAG.manifest" | head -n 1)
-F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alert_receipts.jsonl"
+F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alerts/alert_receipts.jsonl"
 O=0; [ -e "$F" ] && O=$(wc -c < "$F")  # only receipts written after this step began count (a retry's old lines do not)
 $C up -d alert-sink
 i=0
@@ -1047,7 +1052,7 @@ echo "ALERT watchdog ok git_sha=$SHA"
 ```sh
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
-F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alert_receipts.jsonl"
+F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alerts/alert_receipts.jsonl"
 O=0; [ -e "$F" ] && O=$(wc -c < "$F")  # only receipts written after this step began count (a retry's old lines do not)
 $C stop maintenance-health
 i=0
@@ -1061,7 +1066,7 @@ echo "ALERT firing ok HealthGaugesAbsent"
 ```sh
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
-F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alert_receipts.jsonl"
+F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alerts/alert_receipts.jsonl"
 O=0; [ -e "$F" ] && O=$(wc -c < "$F")  # only receipts written after this step began count (a retry's old lines do not)
 $C start maintenance-health
 i=0
@@ -1134,6 +1139,9 @@ M="$(nv HUMAUX_NODE_RELEASES_DIR)/release-$PREV_TAG.manifest"
 SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$M" | head -n 1)
 [ "$(nv HUMAUX_IMAGE_TAG)" = "$PREV_TAG" ] || { echo "upgrade: node.env's tag is not the running tag $PREV_TAG"; exit 1; }
 [ -r CHECKOUT_TREE ] || { echo "upgrade: $PWD/CHECKOUT_TREE is missing (the running release's checkout, §R)"; exit 1; }
+DR=$(awk -v r="humaux-dr:$PREV_TAG" '$1 == "IMAGE" && $2 == r { sub(/^id=/, "", $3); print $3 }' "$M")  # the verifier, checked from the host before it runs
+[ -n "$DR" ] && [ "$(docker image inspect -f '{{.Id}}' "humaux-dr:$PREV_TAG" 2>/dev/null)" = "$DR" ] \
+  || { echo "upgrade: humaux-dr:$PREV_TAG is not the manifest's dr image ${DR:-<none>}"; exit 1; }
 $C run --rm -T dr deploy-check --release "$PREV_TAG" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
 O="$HUMAUX_NODE_DIR/evidence/backup-U2.json"
 if ! $C run --rm -T dr backup run > "$O"; then cat "$O"; exit 1; fi
@@ -1156,6 +1164,9 @@ SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$M" | head -n 1)
 case "$NEXT" in *-"$(printf '%s' "$SHA" | cut -c1-12)") ;; *) echo "precheck: tag $NEXT does not end in the manifest's sha $SHA"; exit 1 ;; esac
 export HUMAUX_IMAGE_TAG="$NEXT" HUMAUX_PG_IMAGE="humaux-pg:$NEXT"
 [ -r CHECKOUT_TREE ] || { echo "precheck: $PWD/CHECKOUT_TREE is missing (unpack humaux-checkout-$NEXT.tar.gz, §R)"; exit 1; }
+DR=$(awk -v r="humaux-dr:$NEXT" '$1 == "IMAGE" && $2 == r { sub(/^id=/, "", $3); print $3 }' "$M")  # the verifier, checked from the host before it runs
+[ -n "$DR" ] && [ "$(docker image inspect -f '{{.Id}}' "humaux-dr:$NEXT" 2>/dev/null)" = "$DR" ] \
+  || { echo "precheck: humaux-dr:$NEXT is not the manifest's dr image ${DR:-<none>}"; exit 1; }
 $C run --rm -T dr deploy-check --release "$NEXT" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
 $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr deploy-check --compose-json - --env \
   --values-dir "$(nv HUMAUX_NODE_DEPLOY_DIR)/env/values" --secrets-dir "$(nv HUMAUX_SECRETS_DIR)" \
@@ -1259,16 +1270,24 @@ M="$(nv HUMAUX_NODE_RELEASES_DIR)/release-$PREV_TAG.manifest"
 SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$M" | head -n 1)
 case "$PREV_TAG" in *-"$(printf '%s' "$SHA" | cut -c1-12)") ;; *) echo "rollback: tag $PREV_TAG does not end in the manifest's sha $SHA"; exit 1 ;; esac
 [ -r CHECKOUT_TREE ] || { echo "rollback: $PWD/CHECKOUT_TREE is missing (unpack humaux-checkout-$PREV_TAG.tar.gz, §R)"; exit 1; }
+DR=$(awk -v r="humaux-dr:$PREV_TAG" '$1 == "IMAGE" && $2 == r { sub(/^id=/, "", $3); print $3 }' "$M")  # the verifier, checked from the host before it runs
+[ -n "$DR" ] && [ "$(docker image inspect -f '{{.Id}}' "humaux-dr:$PREV_TAG" 2>/dev/null)" = "$DR" ] \
+  || { echo "rollback: humaux-dr:$PREV_TAG is not the manifest's dr image ${DR:-<none>}"; exit 1; }
 $C run --rm -T dr deploy-check --release "$PREV_TAG" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
 echo "PREV IMAGES ok $PREV_TAG git_sha=$SHA"
 ```
 
 RB2 stops and removes the upgraded project's containers. **Never `-v`**: the old volumes stay for forensics.
+`--remove-orphans` takes the containers of services the upgraded release added or renamed (RB1 switched the executor
+to the previous checkout, whose `prod.yml` does not name them), and the step ends only when no container carries the
+project's label (PR #2 round 5).
 
 <!-- step: RB2 expect: 0 -->
 ```sh
 C="sh deploy/release/compose.sh"
-$C --profile ops --profile rehearsal down
+$C --profile ops --profile rehearsal down --remove-orphans
+L="label=com.docker.compose.project=$HUMAUX_NODE_PROJECT"
+[ -z "$(docker ps -aq --filter "$L")" ] || { echo "rollback: containers of $HUMAUX_NODE_PROJECT remain after down:"; docker ps -a --filter "$L" --format '{{.Names}}'; exit 1; }
 ```
 
 RB3 points the node at a new project `<project>-rb1` on the previous tag and restores the pre-upgrade backup into

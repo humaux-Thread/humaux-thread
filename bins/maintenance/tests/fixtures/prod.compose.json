@@ -130,7 +130,7 @@
         },
         {
           "type": "bind",
-          "source": "/srv/humaux-node/evidence",
+          "source": "/srv/humaux-node/evidence/alerts",
           "target": "/out"
         }
       ]
