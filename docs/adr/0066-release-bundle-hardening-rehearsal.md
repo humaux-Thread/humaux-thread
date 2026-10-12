@@ -1026,6 +1026,8 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #36 (`budget_sums.sh` drill arm, PR #2 Codex P1 round 8): a copy of `sizing-a5.env` whose drill PostgreSQL cap is 4g (the pre-round-8 A5 numbers were red the same way, reserve 1392 MiB) | the input | `budget: fail — reserve 1392 MiB < 4096 MiB`, EXIT 1; the real file passes (reserve 4464) |
 | `c39_red_fix9` #37 (`deploy_check.rs` `secret_file_reasons`, PR #2 Codex P1 round 8): own values / secret files not required | the new arm skipped | `compose_fix9_arms_each_red` red (case `own secret file dropped`), EXIT 101 |
 | `c39_red_fix9` #38 (`serve.rs` `df_free_bytes`, PR #2 Codex P2 round 8): the in-flight guard dropped | the guard made always-true | `statvfs_keeps_one_read_in_flight_per_path` red, EXIT 101 |
+| `c39_red_fix9` #39 (`deploy_check.rs` `pg_service_image_reasons`, PR #2 Codex P1 round 9): the pg image not compared | the call dropped | `compose_fix9_arms_each_red` red (case `pg on an upstream image`), EXIT 101 |
+| `c39_red_fix9` #40 (`deploy_check.rs` `secret_key_foreign_reasons`, PR #2 Codex P1 round 9): only the key's expected home examined | the reason never pushed | `secret_key_in_a_foreign_file_is_red` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1092,6 +1094,17 @@ anything) instead of inside a pipeline, whose hidden failure removed every proje
 qdrant; RB3's first run sets an earlier rollback's `rollback-1.json` aside (timestamped), so a retry after a refused
 restore is never told "already restored". Both exercised on stubs (U4: config ok → only the orphan removed, config
 failing → exit 1, nothing removed; RB3: stale evidence + refused first run → the retry restores).
+
+**PR #2 round 9 (2026-10-13, Codex on a2b75a4).** (1) `--compose-json`: the `pg` service runs exactly
+`humaux-pg:<tag>` with the one tag every process image carries (`pg_image_unverified:<image>`), so an upstream or
+another release's PostgreSQL image cannot start while `--release` verifies an unused `humaux-pg:<tag>`. (2) `--env`:
+a key some example declares may sit only in a secret file whose process holds it (its own example declares it; `dr`
+holds the maintenance example's keys; `migrate` its DSN and the role passwords): `secret_key_foreign:<file>:<key>`
+even when the key's own home is set. (3) RB3 writes `evidence/rb3.done` after a restore and U1 clears it; a rerun of a
+completed RB3 STOPs ("continue at RB4") instead of deriving `<project>-rb1-rb1` beside the promoted cluster. (4) RB4
+starts only pg, qdrant and the projector `retrieval-serve`; RB5 brings up the gateway and every other service only
+after `projection rebuild --all`. Not changed: the checkout-content finding (the executor trusts the shipped
+`CHECKOUT_TREE` marker) is the declared limit L-20. Runbook blocks changed: U1, RB3, RB4, RB5.
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 

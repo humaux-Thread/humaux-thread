@@ -616,7 +616,37 @@ pub fn compose_reasons(doc: &Value) -> Vec<String> {
     for pair in &PAIRS {
         reasons.extend(pair_reasons(pair, doc, &all));
     }
+    reasons.extend(pg_service_image_reasons(&all));
     reasons
+}
+
+/// PR #2 round 9: the `pg` service runs exactly the release's `humaux-pg:<tag>` — the tag every process image
+/// carries — since `deploy-check --release` verifies that image (PGIMAGE line) and nothing else would notice an
+/// upstream or stale PostgreSQL image lacking the bundled pgBackRest: `pg_image_unverified:<image>`.
+fn pg_service_image_reasons(all: &BTreeMap<&String, &Value>) -> Vec<String> {
+    fn image(svc: &Value) -> &str {
+        svc.get("image").and_then(Value::as_str).unwrap_or("")
+    }
+    let tags: std::collections::BTreeSet<&str> = all
+        .values()
+        .filter(|svc| is_humaux(svc))
+        .filter_map(|svc| image(svc).rsplit_once(':').map(|(_, tag)| tag))
+        .collect();
+    let Some(pg) = all.get(&"pg".to_owned()) else {
+        return vec!["pg_image_unverified:<no pg service>".to_owned()];
+    };
+    let pg_image = image(pg);
+    let ok = tags.len() == 1
+        && pg_image
+            .rsplit('/')
+            .next()
+            .and_then(|r| r.strip_prefix("humaux-pg:"))
+            .is_some_and(|tag| tags.contains(tag));
+    if ok {
+        Vec::new()
+    } else {
+        vec![format!("pg_image_unverified:{pg_image}")]
+    }
 }
 
 /// ADR-0066 D-C uid rule (review P1, 2026-10-08: the peer-only check let `admin` take the gateway's uid and be
@@ -885,6 +915,40 @@ pub fn presence_reasons(
         .all(String::is_empty)
     {
         reasons.push("migrator_dsn_missing".to_owned());
+    }
+    reasons
+}
+
+/// PR #2 round 9: a key some example declares sits only in a secret file whose process may hold it — its own
+/// example declares it there (`dr` holds what the maintenance example declares: it is a mode of that binary), or
+/// it is `migrate`'s migrator DSN / a role password. A copy elsewhere hands that process another process's secret
+/// (Compose injects every entry of the file) although its correct home is also set: `secret_key_foreign:<file>:<key>`.
+pub fn secret_key_foreign_reasons(examples: &[EnvFile], secrets: &[EnvFile]) -> Vec<String> {
+    let declares = |process: &str, key: &str| {
+        examples
+            .iter()
+            .any(|e| e.process == process && e.entries.iter().any(|(k, _)| k == key))
+    };
+    let mut reasons = Vec::new();
+    for file in secrets {
+        let own = if file.process == DR_SERVICE {
+            "maintenance"
+        } else {
+            file.process.as_str()
+        };
+        for (key, _) in &file.entries {
+            let known = examples
+                .iter()
+                .any(|e| e.entries.iter().any(|(k, _)| k == key));
+            let allowed = if file.process == MIGRATOR_SERVICE {
+                key == MIGRATOR_DSN_KEY || key.starts_with(ROLE_PASSWORD_PREFIX)
+            } else {
+                declares(own, key) && secret_home(own, key) == Some(own)
+            };
+            if known && !allowed {
+                reasons.push(format!("secret_key_foreign:{}:{key}", file.name));
+            }
+        }
     }
     reasons
 }
@@ -1611,6 +1675,7 @@ fn env_checks(
         }
         let (compose, mut reasons) = compose_env_sources(doc);
         reasons.extend(presence_reasons(&examples, &values, &secrets, &compose));
+        reasons.extend(secret_key_foreign_reasons(&examples, &secrets));
         checks.push(check("env_presence", reasons));
     }
     if let Some(doc) = doc {
@@ -2732,7 +2797,7 @@ mod tests {
     #[allow(clippy::too_many_lines)] // one table: a case per arm
     fn compose_fix9_arms_each_red() {
         type Mutation = fn(&mut Value);
-        let cases: [(&str, Mutation, &[&str]); 14] = [
+        let cases: [(&str, Mutation, &[&str]); 16] = [
             (
                 "security_opt extra on a Humaux service",
                 |d| {
@@ -2802,6 +2867,20 @@ mod tests {
                         .push(json!({ "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env" }));
                 },
                 &["secret_file_foreign:gateway:maintenance.secret.env"],
+            ),
+            (
+                "pg on an upstream image",
+                |d| {
+                    service(d, "pg").insert("image".into(), json!("postgres:18.6"));
+                },
+                &["pg_image_unverified:postgres:18.6"],
+            ),
+            (
+                "pg on another release's image",
+                |d| {
+                    service(d, "pg").insert("image".into(), json!("humaux-pg:0.0.9-ffffffffffff"));
+                },
+                &["pg_image_unverified:humaux-pg:0.0.9-ffffffffffff"],
             ),
             (
                 "own secret file dropped",
@@ -2904,6 +2983,80 @@ mod tests {
         assert!(bind_source_denied("/run/x"));
         assert!(!bind_source_denied("/runway/x"));
         assert!(!bind_source_denied("/srv/humaux-repo"));
+    }
+
+    /// PR #2 round 9: a key copied into another process's secret file is named even though its own home is set;
+    /// `dr` may hold what the maintenance example declares, `migrate` its DSN and the role passwords, nothing else.
+    /// Fault: check only the key's expected home ⇒ red.
+    #[test]
+    fn secret_key_in_a_foreign_file_is_red() {
+        let parse = |name: &str, process: &str, text: &str| EnvFile::parse(name, process, text);
+        let examples = [
+            parse(
+                "example/gateway.env",
+                "gateway",
+                "HUMAUX_GATEWAY_TOKEN_HMAC_KEY=\n",
+            ),
+            parse(
+                "example/maintenance.env",
+                "maintenance",
+                "HUMAUX_MAINTENANCE_PG_DSN=\nHUMAUX_ROLE_PASSWORD_ADMIN=\n",
+            ),
+            parse(
+                "example/private-worker.env",
+                "private-worker",
+                "HUMAUX_PRIVATE_WORKER_PG_DSN=\n",
+            ),
+        ];
+        let green = [
+            parse(
+                "secrets/gateway.secret.env",
+                "gateway",
+                "HUMAUX_GATEWAY_TOKEN_HMAC_KEY=k\n",
+            ),
+            parse(
+                "secrets/dr.secret.env",
+                "dr",
+                "HUMAUX_MAINTENANCE_PG_DSN=d\n",
+            ),
+            parse(
+                "secrets/migrate.secret.env",
+                "migrate",
+                "HUMAUX_MIGRATOR_PG_DSN=m\nHUMAUX_ROLE_PASSWORD_ADMIN=p\n",
+            ),
+            parse(
+                "secrets/pg.secret.env",
+                "pg",
+                "PGBACKREST_REPO1_CIPHER_PASS=c\n",
+            ),
+            parse(
+                "secrets/private-worker.secret.env",
+                "private-worker",
+                "HUMAUX_PRIVATE_WORKER_PG_DSN=d\n",
+            ),
+        ];
+        assert_eq!(
+            secret_key_foreign_reasons(&examples, &green),
+            Vec::<String>::new()
+        );
+        let mut red = green.to_vec();
+        red[4] = parse(
+            "secrets/private-worker.secret.env",
+            "private-worker",
+            "HUMAUX_PRIVATE_WORKER_PG_DSN=d\nHUMAUX_GATEWAY_TOKEN_HMAC_KEY=k\n",
+        );
+        red[3] = parse(
+            "secrets/pg.secret.env",
+            "pg",
+            "PGBACKREST_REPO1_CIPHER_PASS=c\nHUMAUX_MAINTENANCE_PG_DSN=d\n",
+        );
+        assert_eq!(
+            secret_key_foreign_reasons(&examples, &red),
+            vec![
+                "secret_key_foreign:secrets/pg.secret.env:HUMAUX_MAINTENANCE_PG_DSN".to_owned(),
+                "secret_key_foreign:secrets/private-worker.secret.env:HUMAUX_GATEWAY_TOKEN_HMAC_KEY".to_owned(),
+            ]
+        );
     }
 
     /// PR #2 round 7: quotes are removed the way Compose removes them, so `KEY=""` is empty (and a required secret
@@ -3146,12 +3299,20 @@ mod tests {
                     json!("ghcr.io/x/humaux-public-worker:0.1.0"),
                 );
             },
-            &["unknown_humaux_image:pg:public-worker"],
+            &[
+                "unknown_humaux_image:pg:public-worker",
+                // PR #2 round 9: and pg no longer runs the release's humaux-pg image.
+                "pg_image_unverified:ghcr.io/x/humaux-public-worker:0.1.0",
+            ],
         );
         assert_case(
             "the pg image is the listed exception",
             |d| {
-                service(d, "pg").insert("image".into(), json!("humaux-pg:0.1.0-abc"));
+                // The release's tag (round 9: another tag is `pg_image_unverified`), behind a registry prefix.
+                service(d, "pg").insert(
+                    "image".into(),
+                    json!("registry.local/humaux-pg:0.1.0-000000000000"),
+                );
             },
             &[],
         );

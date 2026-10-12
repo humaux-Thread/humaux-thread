@@ -1117,6 +1117,7 @@ without an install.
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 PREV=$(nv HUMAUX_IMAGE_TAG); NEXT=$(cat "$HUMAUX_NODE_DIR/release.next"); REL=$(nv HUMAUX_NODE_RELEASES_DIR)
 [ -n "$NEXT" ] && [ "$NEXT" != "$PREV" ] || { echo "upgrade: release.next is empty or equals the running tag $PREV"; exit 1; }
+rm -f "$HUMAUX_NODE_DIR/evidence/rb3.done"  # a new upgrade: an earlier rollback's completion marker no longer applies
 M="$REL/release-$NEXT.manifest"; [ -r "$M" ] || { echo "upgrade: missing manifest $M"; exit 1; }
 if [ -r "$REL/humaux-$NEXT.tar.gz" ]; then
   if command -v sha256sum >/dev/null; then (cd "$REL" && sha256sum -c "humaux-$NEXT.sha256"); else (cd "$REL" && shasum -a 256 -c "humaux-$NEXT.sha256"); fi
@@ -1338,6 +1339,9 @@ if [ -r "$MK" ]; then
   echo "rollback: removing the partial target $NEW a failed RB3 left (its volumes are a copy of the backup)"
   $C --profile ops --profile rehearsal down -v --remove-orphans
 else
+  DONE="$HUMAUX_NODE_DIR/evidence/rb3.done"  # this upgrade's completed restore (U1 clears it)
+  [ ! -r "$DONE" ] || [ "$(cat "$DONE")" != "$(nv HUMAUX_NODE_PROJECT)" ] \
+    || { echo "rollback: $(nv HUMAUX_NODE_PROJECT) is this rollback's restored project: continue at RB4"; exit 1; }
   [ -e "$EVF" ] && mv "$EVF" "$EVF.$(date -u +%Y%m%dT%H%M%SZ)"  # an earlier rollback's evidence is not this one's
   NEW="$(nv HUMAUX_NODE_PROJECT)-rb1"; echo "$NEW" > "$MK"
   awk -v t="$PREV_TAG" -v p="$NEW" '/^HUMAUX_IMAGE_TAG=/ { print "HUMAUX_IMAGE_TAG=" t; next } /^HUMAUX_PG_IMAGE=/ { print "HUMAUX_PG_IMAGE=humaux-pg:" t; next } /^HUMAUX_NODE_PROJECT=/ { print "HUMAUX_NODE_PROJECT=" p; next } { print }' "$E" > "$E.new"
@@ -1346,13 +1350,16 @@ else
 fi
 $C run --rm -T dr restore pitr --compose-file "$(nv HUMAUX_NODE_DEPLOY_DIR)/compose/prod.yml" --project "$NEW" \
   --target-backup "$PRE_UPGRADE_LABEL" --evidence "$EVF"
+echo "$NEW" > "$HUMAUX_NODE_DIR/evidence/rb3.done"
 rm -f "$MK"
 echo "RESTORED project=$NEW tag=$PREV_TAG backup=$PRE_UPGRADE_LABEL"
 ```
 
 RB4 re-enables exactly the roles `restore pitr` locked — the `nologin_roles` array of the evidence file
-`rollback-1.json` (§11.6 step 4); it refuses when the file or the field is missing — and starts every service of the
-new project in order. Before `up`, RB4 re-renders the observability configs with the PREVIOUS release's sha (U7 had rendered the upgrade's; the shared `rendered/` directory would otherwise make every later alert and the Watchdog report the rolled-back version — PR #2 review).
+`rollback-1.json` (§11.6 step 4); it refuses when the file or the field is missing — and starts the
+new project's PostgreSQL, Qdrant and the retrieval projector (`retrieval-serve`) — nothing that serves or writes:
+the gateway and the other writers start in RB5 only after the rebuild, so no recall sees an empty or half-built index
+and no write moves the rebuild boundary (PR #2 round 9). Before `up`, RB4 re-renders the observability configs with the PREVIOUS release's sha (U7 had rendered the upgrade's; the shared `rendered/` directory would otherwise make every later alert and the Watchdog report the rolled-back version — PR #2 review).
 
 <!-- step: RB4 expect: 0 -->
 ```sh
@@ -1376,7 +1383,7 @@ SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$(nv HUMAUX_NODE_R
 [ -n "$SHA" ] || { echo "rollback: the previous manifest carries no git_sha"; exit 1; }
 umask 022
 sh deploy/prometheus/render.sh "$(nv HUMAUX_OBSERVABILITY_RENDERED_DIR)" "$SHA" /run/humaux-alert-urls
-$C up -d --wait --wait-timeout 300
+$C up -d --wait --wait-timeout 300 pg qdrant retrieval-serve  # no gateway, no writer until RB5's rebuild completes
 ```
 
 RB5 rebuilds Qdrant from the restored PostgreSQL (the new project's Qdrant volume is empty; ADR-0064 rebuild
@@ -1395,6 +1402,7 @@ HUMAUX_NODE_PROJECT=$(nv HUMAUX_NODE_PROJECT); export HUMAUX_NODE_PROJECT
 REL=$(nv HUMAUX_NODE_RELEASES_DIR); M="$REL/release-$PREV_TAG.manifest"; MN="$REL/release-$(cat "$HUMAUX_NODE_DIR/release.next").manifest"
 SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$M" | head -n 1)
 $C run --rm -T ops projection rebuild --all --batch 100 --wait-seconds 900
+$C up -d --wait --wait-timeout 300  # the gateway and every other service, only now
 $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr deploy-check --running --project "$HUMAUX_NODE_PROJECT" --compose-json -
 $C run --rm -T admin version | grep -F "git_sha=$SHA"
 for pair in gateway:gateway retrieval-rpc:retrieval-worker retrieval-serve:retrieval-worker private-rpc:private-worker \
