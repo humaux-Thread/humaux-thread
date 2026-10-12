@@ -912,6 +912,17 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
   --restart … =file:`, review fix 1); one `# ponytail:` line says the `sh -c` fallback is unreachable in that image.
 - OP-1: the runbook's PG-lost / rollback prose says `restore pitr` refusal 3 sees only the dr project's own pg (review
   fix 7); RB2's `down` of the previous project is the guard against a second cluster on the stanza.
+- PR #2 (2026-10-13), second round — Codex P1/P2 and six owner-account inline comments (one P1), all closed in the
+  same PR: `deploy-check --release` compares the PostgreSQL image too (`PGIMAGE` line: `manifest_pgimage_missing`,
+  `pg_image_missing`, `pg_image_id_mismatch`, `pg_image_sha_mismatch`); `cargo xtask migrate` honours an explicit
+  `--migrations-dir`; `dr` gains `CAP_DAC_OVERRIDE` (L-14) so the evidence files can be created in the operator's
+  0700 directory on Linux; RB4 re-renders the observability configs with the previous release's sha before `up`;
+  `build.sh` pins the builder to `--platform linux/arm64` and refuses a binary whose ELF `e_machine` is not AArch64;
+  `expected_uid_keys` reads the value the container gets (values → secrets → other env_files → `environment:`, last
+  wins); the stale-socket probe in `uds::bind_guarded` is bounded (1 s; no answer = occupied, socket left in place);
+  the fairness M1 safety bounds (`max_bound`, I-SLOT) are asserted before the provider-capacity skip. Rehearsal-only:
+  the `alert-sink` probe (uid 10199) writes the same evidence directory — on a Linux node that needs a group-writable
+  evidence dir; it is not a production service (declared with L-14's reopening signal).
 - PR #2 (2026-10-13) independent review (PASS, six P2) and Codex review (one P1), all closed in the same PR: the host
   crontab reads `HUMAUX_NODE_DEPLOY_DIR` from `node.env` at run time so a checkout switch moves the schedule (Codex
   P1); the ADR-0037 addendum says `unless-stopped` (P2-1); `deploy-check --release` names a malformed `IMAGE` line
@@ -991,6 +1002,12 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #19 (`drill.rs` `locked_roles_sql`, agent3 RB5 finding): list `NOT rolcanlogin` (the post-quarantine reading) | the query mutated | `locked_roles_sql_selects_login_roles_outside_keep` red, EXIT 101 |
 | `c39_red_fix9` #20 (`deploy_check.rs` `malformed_image_lines`, PR #2 review P2-3): a malformed `IMAGE` line dropped silently again | the filter mutated | `malformed_manifest_lines_and_unknown_humaux_images_are_red` red, EXIT 101 |
 | `c39_red_fix9` #21 (`deploy_check.rs` `unknown_humaux_image`, PR #2 review P2-4): the call dropped | the arm dropped | same test red, EXIT 101 |
+| `c39_red_fix9` #22 (`deploy_check.rs` `pg_image_reasons`, PR #2 Codex P1): the id comparison skipped | the arm dropped | `pg_image_reasons_each_named` red, EXIT 101 |
+| `c39_red_fix9` #23 (`pg_image_reasons`): a manifest without a `PGIMAGE` line accepted | the arm mutated | same test red, EXIT 101 |
+| `c39_red_fix9` #24 (`xtask/src/migrate.rs`, PR #2 Codex P2): the dev `--migrations-dir` default inserted ahead of an explicit one | the shaping mutated | `explicit_migrations_dir_is_not_shadowed_by_the_default` red, EXIT 101 |
+| `c39_red_fix9` #25 (`deploy_check.rs` `uid_key_reasons`, PR #2 review): first source wins again | `.next_back()` → `.next()` | `compose_peer_uid_keys_mismatch_is_red` red, EXIT 101 |
+| `c39_red_fix9` #26 (`uds.rs` `probe_stale`, PR #2 review): the timeout arm dropped (every probe answers Live/Dead) | the `Err(_)` arm mutated | `stale_probe_is_bounded` red, EXIT 101 |
+| `c39_red_fix9` #27 (`derived_dispatch_e2e.rs` M1, PR #2 review): safety bounds moved back behind the capacity skip — recorded by reading only: the live test needs MiniMax and a capacity-starved round to differ; the reorder is a pure statement move | — | not run (named here, not claimed) |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1226,7 +1243,7 @@ commented out.
 | id | deviation | why it is acceptable now | reopening signal |
 |---|---|---|---|
 | L-13 | The node keeps a PostgreSQL superuser DSN permanently (`migrate.secret.env`, loaded only by the `migrate` one-shot; deploy-check refuses any other placement) — plan amendment 5 asks for a non-superuser migrator with a 0210 grant/revoke window | single node, the owner is the only operator; 0210's `ALTER FUNCTION … OWNER TO` needs SET on `role_health_reader` otherwise (ADR-0063 L14, F26) | a second operator or an external tenant; a managed PostgreSQL; OpenBao dynamic credentials (card 54) |
-| L-14 | `dr` can read every secret on the node while it runs (`CAP_DAC_READ_SEARCH` + the secrets mount) and holds the docker socket (L-5) | backup / restore / deploy-check need the compose CLI with every env_file; the owner already holds all of them | a second operator; a dedicated repository host or provider backup (ADR-0064 L5) |
+| L-14 | `dr` can read every secret on the node while it runs (`CAP_DAC_READ_SEARCH` + the secrets mount), writes into the operator's evidence directory as root (`CAP_DAC_OVERRIDE`, PR #2 review P1: a native-Linux node could not create `rollback-1.json` without it) and holds the docker socket (L-5) | backup / restore / deploy-check need the compose CLI with every env_file; the owner already holds all of them | a second operator; a dedicated repository host or provider backup (ADR-0064 L5) |
 | (D-J) | Per-process 0600 env files outside git instead of compose `secrets:` for the Rust processes (the values are container env, visible to `docker inspect`, L-4) | the processes read env, not files; one operator | as L-13 (card 54 OpenBao) |
 | L-15 | Unchanged files keep their mtimes only through `rsync -c` staging and the builder's named target volume (R-2); a cache loss recompiles every crate (correct, slower) | builds run on the build host, never on a node | a warm build 2 in S8 that rebuilds more than the sha-reading crates (W-3); then `build.sh` touches those crates |
 | L-16 | Chain and rehearsal images carry the sha of an unreferenced snapshot commit; `git gc` prunes it after the default expiry | the manifest records sha and tree; production releases are commits on main (`build.sh` refuses others without `--unreleased`) | a snapshot sha needed after its expiry (an investigation of a chain image) — then keep a ref for chain builds |

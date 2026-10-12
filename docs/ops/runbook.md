@@ -1277,7 +1277,7 @@ echo "RESTORED project=$NEW tag=$PREV_TAG backup=$PRE_UPGRADE_LABEL"
 
 RB4 re-enables exactly the roles `restore pitr` locked — the `nologin_roles` array of the evidence file
 `rollback-1.json` (§11.6 step 4); it refuses when the file or the field is missing — and starts every service of the
-new project in order.
+new project in order. Before `up`, RB4 re-renders the observability configs with the PREVIOUS release's sha (U7 had rendered the upgrade's; the shared `rendered/` directory would otherwise make every later alert and the Watchdog report the rolled-back version — PR #2 review).
 
 <!-- step: RB4 expect: 0 -->
 ```sh
@@ -1296,6 +1296,11 @@ for r in $ROLES; do
 done
 if [ -n "$SQL" ]; then $C exec -T pg psql -U postgres -d humaux -v ON_ERROR_STOP=1 -c "$SQL"; fi
 echo "rollback: LOGIN re-enabled: ${ROLES:-none}"
+: "${PREV_TAG:?captured by U1}"
+SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$(nv HUMAUX_NODE_RELEASES_DIR)/release-$PREV_TAG.manifest" | head -n 1)
+[ -n "$SHA" ] || { echo "rollback: the previous manifest carries no git_sha"; exit 1; }
+umask 022
+sh deploy/prometheus/render.sh "$(nv HUMAUX_OBSERVABILITY_RENDERED_DIR)" "$SHA" /run/humaux-alert-urls
 $C up -d --wait --wait-timeout 300
 ```
 

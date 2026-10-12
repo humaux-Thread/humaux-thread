@@ -117,7 +117,9 @@ fi
 
 # (2) Compile inside the capped builder (R-2). RUSTUP_TOOLCHAIN pins the image's toolchain, so rustup never reads the
 # toolchain file's component list and never downloads (the builder's rustc must equal it: gate c39_builder_matches_toolchain).
-run docker run --name "$BUILD_NAME" \
+# PR #2 review: the builder is pinned to linux/arm64 (a multi-arch builder on an x86-64 host would compile x86-64
+# ELFs that the COPY-only Dockerfile packs unseen); the e_machine check below refuses anything but AArch64 (0xB7).
+run docker run --name "$BUILD_NAME" --platform linux/arm64 \
   --memory "${MEM_MIB}m" --memory-swap "${MEM_MIB}m" --cpus "$CPUS" \
   -e CARGO_BUILD_JOBS="$JOBS" -e HUMAUX_BUILD_GIT_SHA="$SHA" -e HUMAUX_BUILD_TIME="$BUILD_TIME" \
   -e RUSTUP_TOOLCHAIN="$TOOLCHAIN" -e HOST_IDS="$(id -u):$(id -g)" \
@@ -133,6 +135,12 @@ run docker run --name "$BUILD_NAME" \
     fail "compile (docker run exit $rc)"
   }
 run docker rm "$BUILD_NAME"
+if [ "$DRY" = 0 ]; then
+  for b in "$OUT"/bin/*; do
+    m=$(od -An -tx1 -j18 -N2 "$b" | tr -d ' \n')
+    [ "$m" = "b700" ] || fail "arch:$(basename "$b") e_machine=$m is not AArch64 (b700)"
+  done
+fi
 if [ "$DRY" = 1 ]; then
   echo "DRY cp -R $CTX/deploy/env/example/. $OUT/env-example/"
 else

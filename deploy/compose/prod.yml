@@ -504,7 +504,10 @@ services:
     # DAC_READ_SEARCH (reads the operator's 0600 secret files, E-13, L-14); holds the docker socket (L-5).
     image: humaux-dr:${HUMAUX_IMAGE_TAG:?}
     user: "0:0"
-    cap_add: [DAC_READ_SEARCH]
+    # DAC_READ_SEARCH: every secret and the repository (L-14). DAC_OVERRIDE: the evidence directory is the operator's
+    # (0700, runbook P2) and dr runs as uid 0 with ALL dropped — without it a native-Linux node cannot write
+    # rollback-1.json / drill-<date>.json (PR #2 review P1); the files stay 0644 so the operator reads them back.
+    cap_add: [DAC_READ_SEARCH, DAC_OVERRIDE]
     # `restore drill` reaches the drill cluster on its published 127.0.0.1 port (card 37), so dr runs in the host's
     # network namespace (on Docker Desktop: the VM's). ponytail: host netns for one arm, publish the drill on the
     # project network and dial it by name when the drill moves off loopback.

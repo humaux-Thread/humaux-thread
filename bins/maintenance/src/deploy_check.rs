@@ -43,7 +43,9 @@ const MIGRATOR_SERVICE: &str = "migrate";
 
 /// ADR-0066 D-H: the one service that runs as root, with exactly this capability added.
 const DR_SERVICE: &str = "dr";
-const DR_CAP_ADD: &str = "DAC_READ_SEARCH";
+/// `dr`'s two capabilities (D-H, L-14; PR #2 review P1): read every secret / the repository, and create its evidence
+/// files inside the operator's 0700 evidence directory as uid 0 with ALL dropped.
+const DR_CAP_ADD: [&str; 2] = ["DAC_READ_SEARCH", "DAC_OVERRIDE"];
 
 /// ADR-0066 D-J, review fix 6: `dr`'s secret file — the maintenance DSN at the host-network address
 /// (`127.0.0.1:<HUMAUX_PG_PORT>`, `dr` runs with `network_mode: host`); loaded by `dr` only.
@@ -408,11 +410,7 @@ fn service_reasons(name: &str, svc: &Value, reasons: &mut Vec<String>) {
 /// beside [`SECURITY_OPT`] drops the daemon's default confinement (ISO-5).
 fn escape_reasons(name: &str, svc: &Value, reasons: &mut Vec<String>) {
     let cap_add = strings(svc.get("cap_add"));
-    let allowed: &[&str] = if name == DR_SERVICE {
-        &[DR_CAP_ADD]
-    } else {
-        &[]
-    };
+    let allowed: &[&str] = if name == DR_SERVICE { &DR_CAP_ADD } else { &[] };
     if cap_add != allowed {
         reasons.push(format!("cap_add_unexpected:{name}"));
     }
@@ -894,6 +892,9 @@ pub fn host_network_dsn_reasons(doc: &Value, secrets: &[EnvFile]) -> Vec<String>
 }
 
 /// ADR-0066 D-R: with `--env` and `--compose-json` together, each expected-uid key equals its peer's `user` uid.
+/// `files` is in Compose precedence order (values, secrets, the service's other env_files, then its `environment:`
+/// entries) and the LAST source that sets the key wins — the value the container actually reads (PR #2 review:
+/// a `compose/<svc>:environment` override of the uid key used to pass unseen).
 pub fn uid_key_reasons(doc: &Value, files: &[EnvFile]) -> Vec<String> {
     let uid = |service: &str| {
         services(doc)
@@ -904,7 +905,8 @@ pub fn uid_key_reasons(doc: &Value, files: &[EnvFile]) -> Vec<String> {
         files
             .iter()
             .filter(|f| f.process == process)
-            .find_map(|f| f.value(key))
+            .filter_map(|f| f.value(key))
+            .next_back()
             .and_then(|v| v.parse::<u32>().ok())
     };
     let mut reasons = Vec::new();
@@ -948,6 +950,43 @@ pub fn malformed_image_lines(manifest: &str) -> Vec<String> {
         .filter(|(_, line)| line.starts_with("IMAGE ") && parse_manifest_line(line).is_none())
         .map(|(n, _)| format!("manifest_line_malformed:{}", n + 1))
         .collect()
+}
+
+/// Parses `PGIMAGE humaux-pg:<tag> id=<id> size=<n>` into `(reference, id)`; `None` for any other line.
+pub fn parse_pg_manifest_line(line: &str) -> Option<(String, String)> {
+    let mut words = line.split_whitespace();
+    if words.next()? != "PGIMAGE" {
+        return None;
+    }
+    let reference = words.next()?.to_owned();
+    let id = words.find_map(|w| w.strip_prefix("id="))?.to_owned();
+    Some((reference, id))
+}
+
+/// The PostgreSQL image's comparisons (PR #2 Codex P1: only `IMAGE` lines were parsed, so a swapped or tampered
+/// `humaux-pg:<tag>` passed the release gate unchecked): the manifest carries a `PGIMAGE` line
+/// (`manifest_pgimage_missing`), the local image exists (`pg_image_missing`), its id is the recorded one
+/// (`pg_image_id_mismatch`) and its revision label is the expected sha (`pg_image_sha_mismatch`; build.sh labels
+/// the pg image with `org.opencontainers.image.revision`).
+pub fn pg_image_reasons(
+    manifest: &str,
+    expect_sha: &str,
+    inspected: Option<(&str, &str)>,
+) -> Vec<String> {
+    let Some((_, want_id)) = manifest.lines().find_map(parse_pg_manifest_line) else {
+        return vec!["manifest_pgimage_missing".to_owned()];
+    };
+    let Some((id, label)) = inspected else {
+        return vec!["pg_image_missing".to_owned()];
+    };
+    let mut reasons = Vec::new();
+    if id != want_id {
+        reasons.push("pg_image_id_mismatch".to_owned());
+    }
+    if label != expect_sha {
+        reasons.push("pg_image_sha_mismatch".to_owned());
+    }
+    reasons
 }
 
 /// Parses `IMAGE humaux-<t>:<tag> id=<id> size=<n> binary=<bin> git_sha=<sha40>`; `None` for any other line.
@@ -1081,6 +1120,22 @@ fn release_check(
         .unwrap_or_default();
         reasons.extend(release_reasons(image, expect_sha, id, label, &version));
     }
+    let pg_reference = format!("humaux-pg:{tag}");
+    let pg_inspected = docker(&[
+        "image",
+        "inspect",
+        &pg_reference,
+        "--format",
+        "{{.Id}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}",
+    ])
+    .ok();
+    reasons.extend(pg_image_reasons(
+        &text,
+        expect_sha,
+        pg_inspected
+            .as_deref()
+            .map(|i| i.split_once(' ').unwrap_or((i, ""))),
+    ));
     reasons.extend(checkout_tree_reasons(&text, checkout_tree));
     Ok(reasons)
 }
@@ -1356,7 +1411,19 @@ fn env_checks(
         checks.push(check("env_presence", reasons));
     }
     if let Some(doc) = doc {
-        checks.push(check("expected_uid_keys", uid_key_reasons(doc, &all)));
+        // Compose precedence: env files (values, secrets, the other env_files) then `environment:` — the last
+        // source wins, so the compose sources are appended after the files.
+        let (compose, _) = compose_env_sources(doc);
+        let (env_files, environment): (Vec<EnvFile>, Vec<EnvFile>) = compose
+            .into_iter()
+            .partition(|f| !f.name.ends_with(":environment"));
+        let effective: Vec<EnvFile> = all
+            .iter()
+            .cloned()
+            .chain(env_files)
+            .chain(environment)
+            .collect();
+        checks.push(check("expected_uid_keys", uid_key_reasons(doc, &effective)));
         checks.push(check(
             "host_network_dsn",
             host_network_dsn_reasons(doc, &secrets),
@@ -1518,6 +1585,17 @@ mod tests {
     fn compose_peer_uid_keys_mismatch_is_red() {
         let doc = fixture();
         assert_eq!(uid_key_reasons(&doc, &uid_values()), Vec::<String>::new());
+        // PR #2 review: a `compose/<svc>:environment` entry overrides the values file (last source wins).
+        let mut overridden = uid_values();
+        overridden.push(EnvFile::parse(
+            "compose/retrieval-rpc:environment",
+            "retrieval-worker",
+            "HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID=10106",
+        ));
+        assert_eq!(
+            uid_key_reasons(&doc, &overridden),
+            vec!["expected_uid_mismatch:HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID".to_owned()]
+        );
         let mut wrong = uid_values();
         wrong[1] = EnvFile::parse(
             "values/retrieval-worker.env",
@@ -1619,8 +1697,10 @@ mod tests {
             (
                 "dr cap_add exact",
                 |d| {
-                    service(d, "dr")
-                        .insert("cap_add".into(), json!(["DAC_READ_SEARCH", "SYS_ADMIN"]));
+                    service(d, "dr").insert(
+                        "cap_add".into(),
+                        json!(["DAC_READ_SEARCH", "DAC_OVERRIDE", "SYS_ADMIN"]),
+                    );
                 },
                 &["cap_add_unexpected:dr"],
             ),
@@ -2613,6 +2693,46 @@ mod tests {
                 "case {pointer}"
             );
         }
+    }
+
+    /// PR #2 Codex P1: the PostgreSQL image is compared too — each outcome by name. Faults: skip the id or the label
+    /// comparison, or accept a manifest without a PGIMAGE line ⇒ red.
+    #[test]
+    fn pg_image_reasons_each_named() {
+        let m = "IMAGE humaux-gateway:t id=sha256:a size=1 binary=humaux-gateway git_sha=0\n\
+                 PGIMAGE humaux-pg:t id=sha256:b size=1\n";
+        assert_eq!(
+            parse_pg_manifest_line("PGIMAGE humaux-pg:t id=sha256:b size=1"),
+            Some(("humaux-pg:t".to_owned(), "sha256:b".to_owned()))
+        );
+        assert_eq!(
+            parse_pg_manifest_line("IMAGE humaux-pg:t id=sha256:b size=1"),
+            None
+        );
+        assert_eq!(
+            pg_image_reasons(m, "0", Some(("sha256:b", "0"))),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            pg_image_reasons(m, "0", Some(("sha256:x", "0"))),
+            vec!["pg_image_id_mismatch".to_owned()]
+        );
+        assert_eq!(
+            pg_image_reasons(m, "0", Some(("sha256:b", "1"))),
+            vec!["pg_image_sha_mismatch".to_owned()]
+        );
+        assert_eq!(
+            pg_image_reasons(m, "0", None),
+            vec!["pg_image_missing".to_owned()]
+        );
+        assert_eq!(
+            pg_image_reasons(
+                "IMAGE humaux-gateway:t id=a size=1 binary=b git_sha=0\n",
+                "0",
+                Some(("a", "0"))
+            ),
+            vec!["manifest_pgimage_missing".to_owned()]
+        );
     }
 
     /// PR #2 independent review P2-3 / P2-4: a malformed `IMAGE` line is named, never dropped; a `humaux-*` image

@@ -153,6 +153,40 @@ pub fn admit_peer(process: &str, peer_uid: Option<u32>, expected: u32) -> bool {
     }
 }
 
+/// How long [`bind_guarded`] waits for the stale-socket probe (PR #2 review: an unbounded `connect` to a listener
+/// that stopped accepting with a full backlog hung the boot before `AddrInUse`).
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the stale-socket probe learnt about an existing socket file.
+#[derive(Debug, PartialEq, Eq)]
+enum Probe {
+    /// The connect succeeded: a server accepts there.
+    Live,
+    /// The connect failed at once (ECONNREFUSED, ENOENT, a non-socket file): nothing serves it.
+    Dead,
+    /// No answer within the timeout: a listener exists but does not accept (full backlog, stuck process).
+    Unknown,
+}
+
+/// Probes `path` with a blocking `connect` on a detached thread, bounded by `timeout`. The thread is left to finish
+/// on its own when the probe times out (a blocked `connect` cannot be interrupted portably); the caller treats
+/// `Unknown` as occupied and never unlinks the file.
+fn probe_stale(path: &Path, timeout: std::time::Duration) -> Probe {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = path.to_path_buf();
+    std::thread::spawn(move || {
+        // dep: UDS(private-worker) — stale-socket probe of the path this server is about to bind; the same site
+        // probes the retrieval worker's path (UDS(retrieval-worker)) when that server boots
+        let live = std::os::unix::net::UnixStream::connect(&owned).is_ok();
+        let _ = tx.send(live);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(true) => Probe::Live,
+        Ok(false) => Probe::Dead,
+        Err(_) => Probe::Unknown,
+    }
+}
+
 /// ADR-0066 D-M: binds a server socket at `path`. The parent directory must be owned by this process's uid with
 /// mode `& 0o027 == 0` (0750 or stricter); an existing file at `path` is removed only after a connect probe to it
 /// failed (a live server keeps its socket); the bound socket is chmod 0660 explicitly and re-checked.
@@ -179,15 +213,25 @@ pub fn bind_guarded(path: &Path) -> std::io::Result<UnixListener> {
         ));
     }
     if std::fs::symlink_metadata(path).is_ok() {
-        // dep: UDS(private-worker) — stale-socket probe of the path this server is about to bind; the same site
-        // probes the retrieval worker's path (UDS(retrieval-worker)) when that server boots
-        if std::os::unix::net::UnixStream::connect(path).is_ok() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                format!("a live server already answers on {}", path.display()),
-            ));
+        match probe_stale(path, PROBE_TIMEOUT) {
+            Probe::Dead => std::fs::remove_file(path)?,
+            Probe::Live => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!("a live server already answers on {}", path.display()),
+                ));
+            }
+            Probe::Unknown => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!(
+                        "a server on {} did not answer the probe within {PROBE_TIMEOUT:?} (accept backlog full or \
+                         stuck); the socket is left in place",
+                        path.display()
+                    ),
+                ));
+            }
         }
-        std::fs::remove_file(path)?;
     }
     // dep: UDS(serve) — the one worker RPC bind site (ADR-0012 transport)
     let listener = UnixListener::bind(path)?;
@@ -387,6 +431,32 @@ mod tests {
         assert!(
             accepted.is_ok_and(|a| a.is_ok()),
             "the first listener did not get the dial"
+        );
+    }
+
+    /// PR #2 review: the probe is bounded — Live / Dead are read, and a probe that cannot answer in time is
+    /// `Unknown` (here forced with a zero timeout against a live listener), which keeps the socket in place.
+    /// Fault: unbounded `connect` (no timeout arm) ⇒ no `Unknown` outcome ⇒ red.
+    #[tokio::test]
+    async fn stale_probe_is_bounded() {
+        let dir = Dir::new("probe", 0o700);
+        let path = dir.0.join("s.sock");
+        let _listener = bind_guarded(&path).expect("bind");
+        assert_eq!(
+            probe_stale(&path, std::time::Duration::from_secs(2)),
+            Probe::Live
+        );
+        assert_eq!(
+            probe_stale(&path, std::time::Duration::ZERO),
+            Probe::Unknown,
+            "a zero budget cannot be answered"
+        );
+        drop(_listener);
+        let err = bind_guarded(&path).map(drop);
+        assert!(err.is_ok(), "a dead socket is replaced: {err:?}");
+        assert_eq!(
+            probe_stale(&dir.0.join("none.sock"), std::time::Duration::from_secs(2)),
+            Probe::Dead
         );
     }
 

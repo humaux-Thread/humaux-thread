@@ -5316,6 +5316,10 @@ fn distill_fairness_live() {
             // the budget), M1–M8 cannot be measured on this account today. A stalled backlog with no
             // deferral is still the scheduler's fault and stays red. Card-39 lane, 2026-10-08:
             // in_flight=1 drained 48/50 in 900 s with 26 of 74 attempts deferred (card 38: 50/50 in 541 s).
+            // The two safety bounds hold whatever the provider's capacity (PR #2 review): a concurrency or
+            // I-SLOT violation seen in this round is a red before the capacity skip can apply.
+            assert!(served.max_bound <= i64::from(in_flight));
+            assert_eq!(served.i_slot_breaks, 0, "I-SLOT");
             if !served.met && served.report.deferred > 0 {
                 println!(
                     "not_applicable: missing object = provider capacity at in_flight={in_flight} \
@@ -5325,8 +5329,6 @@ fn distill_fairness_live() {
                 return;
             }
             assert!(served.met, "M1 in_flight={in_flight}: backlog not drained");
-            assert!(served.max_bound <= i64::from(in_flight));
-            assert_eq!(served.i_slot_breaks, 0, "I-SLOT");
             rates.push(rate);
         }
         println!("M1 ratio in_flight4/in_flight1={:.2}", rates[1] / rates[0]);

@@ -287,7 +287,8 @@
         "ops"
       ],
       "cap_add": [
-        "DAC_READ_SEARCH"
+        "DAC_READ_SEARCH",
+        "DAC_OVERRIDE"
       ],
       "cap_drop": [
         "ALL"
