@@ -172,8 +172,11 @@ deploy/env/sizing-<profile>.env` compiles inside a memory-capped builder contain
 `IMAGE humaux-<target>:<tag> id=<image id> size=<bytes> binary=<binary> git_sha=<sha40>`, and writes them to
 `release-<tag>.manifest`: the manifest is the identity every later check compares against. To ship: an image archive
 (Docker's `save`) of the manifest's images through `gzip` into `humaux-<tag>.tar.gz`, and `humaux-<tag>.sha256` over the tarball
-and the manifest; copy the three files into `releases/`. On the rehearsal node the images are already local and
-step R1 only checks them.
+and the manifest; copy the three files (and the checkout pair) into `releases/` **over ssh from the build host**
+(`scp` / `rsync -e ssh`): the `.sha256` files travel with the archives, so they detect corruption, not a substituted
+bundle — the authenticated copy is the trust anchor (declared deviation L-21, ADR-0066; never stage a release through
+a shared drive, an artifact store or another person). On the rehearsal node the images are already local and step R1
+only checks them.
 
 <!-- step: R1 expect: 0 match: IMAGES ok -->
 ```sh
@@ -1095,7 +1098,7 @@ echo "BACKUP ok"
 The system is **forward-only**: no migration has a down step. An upgrade is R1–R10 for the next tag with a backup
 and a worker stop around the migration; a rollback is a restore of the pre-upgrade backup into a new project on the
 previous tag. Put the next tag into `$HUMAUX_NODE_DIR/release.next` and its manifest (and tarballs) into
-`releases/` first.
+`releases/` first, copied over ssh from the build host as in §2 (L-21).
 
 **The checkout belongs to the release** (ADR-0066 review fix 9, OP-4). U3 and RB1 compare the checkout the executor
 runs from — its `CHECKOUT_TREE`, the git ids of `deploy/`, the runbook and the 0011 roles file — with the release
