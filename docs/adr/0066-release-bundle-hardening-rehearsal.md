@@ -810,7 +810,7 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
   manifest line `CHECKOUT tree=<id of SHA:deploy> runbook=<id of SHA:docs/ops/runbook.md>
   roles=<id of SHA:migrations/0011_roles_and_grants.sql>` and `humaux-checkout-<tag>.tar.gz` (+ `.sha256`), a
   `git archive` of those paths plus the one-line `CHECKOUT_TREE`; `deploy-check --release --checkout-tree "<line>"`
-  reds `checkout_tree_mismatch:<field>`, `checkout_tree_missing`, `checkout_tree_not_in_manifest`. Runbook R2 / U2 / RB1 pass
+  reds `checkout_tree_mismatch:<field>`, `checkout_tree_missing`, `checkout_tree_not_in_manifest`. Runbook R2 / U3 / RB1 pass
   `--checkout-tree "$(cat CHECKOUT_TREE)"`; a mismatch is a STOP whose remedy is installing that tarball (`.sha256`
   verified) as `<node dir>/checkout-<tag>/` and restarting the section inside it. The S9 pair (snapshot + `--child`,
   one tree) matches without an install.
@@ -1016,10 +1016,27 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #27 (`derived_dispatch_e2e.rs` M1, PR #2 review): safety bounds moved back behind the capacity skip — recorded by reading only: the live test needs MiniMax and a capacity-starved round to differ; the reorder is a pure statement move | — | not run (named here, not claimed) |
 | `c39_red_fix9` #27 (`deploy_check.rs` `manifest_target_reasons`, PR #2 Codex P1 round 3): a missing process image accepted | the filter mutated | `manifest_target_reasons_each_named` red, EXIT 101 |
 | `c39_red_fix9` #28 (`xtask/src/rls_check.rs`, PR #2 Codex P2): the `--spec` default always prepended | the guard dropped | `explicit_flags_are_not_shadowed_by_the_defaults` red, EXIT 101 |
+| `c39_red_fix9` #29 (`deploy_check.rs` `rehearsal_probe`, PR #2 Codex P2 round 4): exempt by the rehearsal profile alone | the allow-list bypassed | `compose_identity_uid_rules` red (case `unlisted rehearsal helper`), EXIT 101 |
+| `c39_red_fix9` #30 (`deploy_check.rs` `release_reasons`, PR #2 Codex P1 round 4): version comparisons judged before the identity holds | `None` read as an empty line | `release_identity_is_judged_before_the_version_run` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #3 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | humaux-admin version answers another git_sha (admin_version_sha check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
+
+**PR #2 round 4 (2026-10-13, Codex on 2a18379).** (1) `deploy-check --release` runs an image's `--version` only
+after its id and revision label match the manifest, by the inspected immutable id (`--pull never`, no network,
+read-only root, `--cap-drop ALL`, `no-new-privileges`, the image's own non-root `USER`, 128 MiB / 32 pids / 1 cpu), and removes a run that
+has not answered in 30 s by name (`image_version_timeout:<target>`); a stale or retargeted tag is now named by
+`image_id_mismatch` / `image_sha_mismatch` alone and its entrypoint never runs (the S9 rehearsal's RB1 fault (a)
+now expects `image_id_mismatch:gateway` for its second reason too). (2) The rehearsal exemption from the uid and pair rules is
+an allow-list of the five probes by name with their exact `user` and gids (`REHEARSAL_PROBES`); the profile alone
+exempts nothing. (3) Runbook: the pre-upgrade backup moves to U2, before the next release's checkout or images are
+used, and first proves the executor's checkout is the running release's (`deploy-check --release PREV_TAG
+--checkout-tree`); the precheck on the next release is U3, and a checkout switch continues from U3. (4) V3's
+cross-tenant negative check counts only on a successful tool result (`curl --fail`, a `"result"` without
+`"isError":true`). (5) A2–A4 search only the alert receipts written after the step began (byte offset taken before
+the action), so a retry cannot pass on an earlier run's Watchdog / firing / resolved lines. Runbook step blocks
+changed: V3, A2, A3, A4, U2, U3 (S9 agent-run evidence predates them, as with review fix 9).
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 
@@ -1208,7 +1225,7 @@ commented out.
 - (Closed by review fix 1, 2026-10-08.) `deploy-check --env` presence now counts the compose `environment:` and
   env_file sources, accepts declared-empty non-secret keys, requires every secret non-empty, and the generator routes
   the role passwords to `migrate.secret.env` and the private-worker route keys to `private-worker.secret.env`; runbook
-  R2/U2 pass `--examples-dir`. What remains is L-17.
+  R2/U3 pass `--examples-dir`. What remains is L-17.
 - `HUMAUX_RETRIEVAL_WORKER_GITLEAKS_SHA256` was empty in `values/{retrieval-worker,maintenance}.env` until S8 read it
   from the built image (2026-10-08, main line: `docker create humaux-retrieval-worker:<tag>` + `docker cp` of
   `/usr/local/bin/gitleaks`, sha256 `db4d43dd4ab54f047a2d18d210a8d2294e2e5cc26d1e26a299a9675916f5647d`, 21 904 478 bytes —
@@ -1263,7 +1280,7 @@ commented out.
 - **L-2** (rewritten by review fix 9, C1) Residents run `restart: unless-stopped`, so a node comes back after a host
   reboot or a dockerd restart with no operator. Docker cannot tell exit 2 from a crash: a configuration error now
   restarts under Docker's exponential backoff instead of stopping after five tries. Guards: `deploy-check --env`
-  before every `up` (R2 / U2) and `deploy-check --running` (`service_restarted:<svc>` is red), so a looping resident
+  before every `up` (R2 / U3) and `deploy-check --running` (`service_restarted:<svc>` is red), so a looping resident
   cannot pass R10 or the U-steps.
 - **L-3** The rollback rehearsal crosses no schema change (both builds share migration head 0234); the first
   schema-crossing rollback is rehearsed at go-live (card 53).

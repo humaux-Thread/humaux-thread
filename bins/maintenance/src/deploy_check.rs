@@ -133,7 +133,7 @@ const SHARED_IDENTITIES: [&[&str]; 3] = [
 ];
 
 /// ADR-0066 D-C / §5: the profile of the rehearsal-only probes (`scratch-as-*` carry their twins' uid and pair group
-/// on purpose; `alert-sink`). Only a non-Humaux service in exactly this profile is exempt from the identity rules.
+/// on purpose; `alert-sink`). Only a [`REHEARSAL_PROBES`] row in this profile is exempt from the identity rules.
 const REHEARSAL_PROFILE: &str = "rehearsal";
 
 /// ADR-0066 D-J: the role passwords `migrate roles rotate` sets live in `migrate.secret.env` (loaded only by the
@@ -291,9 +291,27 @@ fn profiles(svc: &Value) -> Vec<&str> {
     strings(svc.get("profiles"))
 }
 
-/// A non-Humaux service that only runs in the rehearsal profile (D-C §5 probes): exempt from the identity rules.
-fn rehearsal_probe(svc: &Value) -> bool {
-    !is_humaux(svc) && profiles(svc) == [REHEARSAL_PROFILE]
+/// ADR-0066 D-C / §5 (PR #2 round 4): the rehearsal probes by name, each with the exact `user` and gids (`user` gid
+/// first, then `group_add`) it carries in prod.yml — its twin's uid and pair group, `scratch-client` none.
+const REHEARSAL_PROBES: [(&str, &str, &[u32]); 5] = [
+    ("scratch-as-gateway", "10101:10101", &[10101, 10201]),
+    ("scratch-as-retrieval", "10102:10201", &[10201]),
+    ("scratch-as-private", "10103:10202", &[10202]),
+    ("scratch-as-consolidation", "10104:10104", &[10104, 10202]),
+    ("scratch-client", "65534:65534", &[65534]),
+];
+
+/// A declared rehearsal probe (D-C §5), exempt from the identity and pair rules: a non-Humaux service only in the
+/// rehearsal profile whose name, `user` and gids are one [`REHEARSAL_PROBES`] row. The profile alone exempts
+/// nothing: any other rehearsal helper, or a probe whose identity drifted, is checked like every other service.
+fn rehearsal_probe(name: &str, svc: &Value) -> bool {
+    !is_humaux(svc)
+        && profiles(svc) == [REHEARSAL_PROFILE]
+        && REHEARSAL_PROBES.iter().any(|(probe, user, gids)| {
+            *probe == name
+                && svc.get("user").and_then(Value::as_str) == Some(*user)
+                && gids_of(svc) == *gids
+        })
 }
 
 /// The gids a service runs with: the `user` gid and every `group_add` entry (numeric ones only).
@@ -588,7 +606,7 @@ fn identity_reasons(all: &BTreeMap<&String, &Value>) -> Vec<String> {
                 reasons.push(format!("uid_out_of_range:{name}"));
             }
             humaux.push((name.as_str(), uid));
-        } else if !rehearsal_probe(svc) && IDENTITY_UIDS.contains(&uid) {
+        } else if !rehearsal_probe(name, svc) && IDENTITY_UIDS.contains(&uid) {
             reasons.push(format!("uid_identity_foreign:{name}"));
         }
     }
@@ -609,7 +627,7 @@ fn pair_reasons(pair: &Pair, doc: &Value, all: &BTreeMap<&String, &Value>) -> Ve
     let mut reasons = Vec::new();
     for (name, svc) in all
         .iter()
-        .filter(|(n, s)| !rehearsal_probe(s) && !pair.members.contains(&n.as_str()))
+        .filter(|(n, s)| !rehearsal_probe(n, s) && !pair.members.contains(&n.as_str()))
     {
         if gids_of(svc).contains(&pair.gid) {
             reasons.push(format!("pair_group_unexpected:{name}:{}", pair.gid));
@@ -1034,13 +1052,15 @@ pub fn parse_manifest_line(line: &str) -> Option<ManifestImage> {
 
 /// ADR-0066 D-R `--release`, the four comparisons, each with its own reason: (1) the inspected image id is the
 /// manifest's; (2) the revision label and the manifest's `git_sha=` are the expected sha; (3) the `--version` first
-/// token is the manifest's binary; (4) the `--version` line's `git_sha=` is the expected sha.
+/// token is the manifest's binary; (4) the `--version` line's `git_sha=` is the expected sha. `version_line` is
+/// `None` while (1)–(2) are unchecked or red: the image's entrypoint runs only after its identity holds (PR #2
+/// round 4), so (3)–(4) are judged only on a verified image.
 pub fn release_reasons(
     image: &ManifestImage,
     expect_sha: &str,
     inspected_id: &str,
     revision_label: &str,
-    version_line: &str,
+    version_line: Option<&str>,
 ) -> Vec<String> {
     let t = &image.target;
     let mut reasons = Vec::new();
@@ -1050,6 +1070,9 @@ pub fn release_reasons(
     if revision_label != expect_sha || image.git_sha != expect_sha {
         reasons.push(format!("image_sha_mismatch:{t}"));
     }
+    let Some(version_line) = version_line else {
+        return reasons;
+    };
     if version_line.split_whitespace().next() != Some(image.binary.as_str()) {
         reasons.push(format!("image_binary_mismatch:{t}"));
     }
@@ -1105,6 +1128,57 @@ fn docker(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// PR #2 round 4: the `--version` run of an image whose id and revision already match the manifest, by that
+/// immutable id (a retargeted tag cannot swap the image in between), with no network, a read-only root, no
+/// capabilities, the image's own non-root `USER` and fixed memory / pid / cpu ceilings. A run that has not returned after
+/// [`VERSION_TIMEOUT`] is removed by its name and yields `None`; a failed run yields `Some("")` (the comparisons
+/// then name it).
+fn version_of(id: &str, target: &str) -> Option<String> {
+    let name = format!("humaux-release-check-{target}-{}", std::process::id());
+    let args: Vec<String> = [
+        "run",
+        "--rm",
+        "--name",
+        &name,
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--memory",
+        "128m",
+        "--memory-swap",
+        "128m",
+        "--pids-limit",
+        "32",
+        "--cpus",
+        "1",
+        id,
+        "--version",
+    ]
+    .iter()
+    .map(|a| (*a).to_owned())
+    .collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(docker(&args).unwrap_or_default());
+    });
+    if let Ok(version) = rx.recv_timeout(VERSION_TIMEOUT) {
+        Some(version)
+    } else {
+        let _ = docker(&["rm", "--force", &name]);
+        None
+    }
+}
+
+/// How long one image's `--version` may take (a static binary printing one line returns in well under a second).
+const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `--release TAG --manifest FILE --expect-sha SHA40 [--checkout-tree LINE]` over every `IMAGE` line of the
 /// manifest, then the checkout-tree comparison.
 fn release_check(
@@ -1135,17 +1209,23 @@ fn release_check(
             continue;
         };
         let (id, label) = inspected.split_once(' ').unwrap_or((&inspected, ""));
-        let version = docker(&[
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--read-only",
-            &reference,
-            "--version",
-        ])
-        .unwrap_or_default();
-        reasons.extend(release_reasons(image, expect_sha, id, label, &version));
+        let identity = release_reasons(image, expect_sha, id, label, None);
+        if !identity.is_empty() {
+            reasons.extend(identity);
+            continue;
+        }
+        match version_of(id, &image.target) {
+            Some(version) => {
+                reasons.extend(release_reasons(
+                    image,
+                    expect_sha,
+                    id,
+                    label,
+                    Some(&version),
+                ));
+            }
+            None => reasons.push(format!("image_version_timeout:{}", image.target)),
+        }
     }
     let pg_reference = format!("humaux-pg:{tag}");
     let pg_inspected = docker(&[
@@ -1898,11 +1978,43 @@ mod tests {
     /// and mounts the socket) is red; so is any other Humaux service sharing a uid outside its binary's modes, a
     /// uid outside 10101–10107, and a non-Humaux service outside the rehearsal profile running as an identity uid.
     /// The fixture's shared uids (two modes of one binary; `ops` with the maintenance daemon) and the rehearsal
-    /// probes stay green. Faults: compare the four peers only ⇒ the admin case is red; drop the range ⇒ red.
+    /// probes stay green. PR #2 round 4: the rehearsal profile alone exempts nothing — an unlisted helper in it with
+    /// a probe's identity, and a listed probe whose uid drifted, get the uid and pair rules. Faults: compare the four
+    /// peers only ⇒ the admin case is red; drop the range ⇒ red; exempt by profile only ⇒ the two probe cases red.
     #[test]
+    #[allow(clippy::too_many_lines)] // one table: a case per rule
     fn compose_identity_uid_rules() {
         type Mutation = fn(&mut Value);
-        let cases: [(&str, Mutation, &[&str]); 5] = [
+        let cases: [(&str, Mutation, &[&str]); 7] = [
+            (
+                "unlisted rehearsal helper",
+                |d| {
+                    let probe = d["services"]["scratch-as-gateway"].clone();
+                    d["services"]
+                        .as_object_mut()
+                        .expect("services")
+                        .insert("scratch-helper".into(), probe);
+                },
+                &[
+                    "uid_identity_foreign:scratch-helper",
+                    "pair_group_unexpected:scratch-helper:10201",
+                    "socket_volume_unexpected:scratch-helper:sock-retrieval",
+                    "socket_volume_unexpected:scratch-helper:sock-inference",
+                ],
+            ),
+            (
+                "probe identity drifted",
+                |d| {
+                    service(d, "scratch-as-consolidation")
+                        .insert("user".into(), json!("10101:10101"));
+                },
+                &[
+                    "uid_identity_foreign:scratch-as-consolidation",
+                    "socket_volume_unexpected:scratch-as-consolidation:sock-retrieval",
+                    "pair_group_unexpected:scratch-as-consolidation:10202",
+                    "socket_volume_unexpected:scratch-as-consolidation:sock-inference",
+                ],
+            ),
             (
                 "admin as gateway",
                 |d| {
@@ -2312,8 +2424,9 @@ mod tests {
         );
         let image = parse_manifest_line(&line).expect("manifest line");
         let version = format!("humaux-maintenance 0.1.0 git_sha={sha} build_time=t");
-        let case =
-            |id: &str, label: &str, version: &str| release_reasons(&image, sha, id, label, version);
+        let case = |id: &str, label: &str, version: &str| {
+            release_reasons(&image, sha, id, label, Some(version))
+        };
         assert_eq!(
             case("sha256:aaa", sha, &version),
             Vec::<String>::new(),
@@ -2342,8 +2455,28 @@ mod tests {
         // A manifest recorded for another commit, the image itself consistent: comparison (2)'s manifest half.
         let stale = parse_manifest_line(&line.replace(sha, other)).expect("manifest line");
         assert_eq!(
-            release_reasons(&stale, sha, "sha256:aaa", sha, &version),
+            release_reasons(&stale, sha, "sha256:aaa", sha, Some(&version)),
             vec!["image_sha_mismatch:ops".to_owned()]
+        );
+    }
+
+    /// PR #2 round 4: before the entrypoint runs (`version_line = None`) only the identity comparisons are made, so
+    /// a stale or retargeted image is named without its `--version` and a verified one owes no version reason yet.
+    /// Fault: judge the version comparisons on `None` as an empty line ⇒ red.
+    #[test]
+    fn release_identity_is_judged_before_the_version_run() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let line = format!(
+            "IMAGE humaux-ops:0.1.0-0123456789ab id=sha256:aaa size=1 binary=humaux-maintenance git_sha={sha}"
+        );
+        let image = parse_manifest_line(&line).expect("manifest line");
+        assert_eq!(
+            release_reasons(&image, sha, "sha256:bbb", sha, None),
+            vec!["image_id_mismatch:ops".to_owned()]
+        );
+        assert_eq!(
+            release_reasons(&image, sha, "sha256:aaa", sha, None),
+            Vec::<String>::new()
         );
     }
 

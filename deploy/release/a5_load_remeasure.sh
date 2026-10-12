@@ -98,7 +98,7 @@ else
     TAG=$(nv HUMAUX_IMAGE_TAG); RELEASES=$(nv HUMAUX_NODE_RELEASES_DIR); SECRETS=$(nv HUMAUX_SECRETS_DIR)
     SHA=$(grep -E '^IMAGE humaux-loadgen:' "$RELEASES/release-$TAG.manifest" | sed -n 's/.* git_sha=\([0-9a-f]\{40\}\).*/\1/p')
     # The loadgen identity: the manifest's four comparisons (D-R) over the release the node runs.
-    # PR #2 Codex P1: the release gate also compares the checkout (R2 / U2 / RB1 pass the same line).
+    # PR #2 Codex P1: the release gate also compares the checkout (R2 / U3 / RB1 pass the same line).
     CKTREE=$(cat "$DEPLOY/../CHECKOUT_TREE" 2>/dev/null || true)
     if [ -n "$CKTREE" ] && sh "$DEPLOY/release/compose.sh" run --rm -T dr deploy-check --release "$TAG" --manifest "$RELEASES/release-$TAG.manifest" \
          --expect-sha "$SHA" --checkout-tree "$CKTREE" >> "$OUT/deploy.log" 2>&1; then echo "MANIFEST_IDENTITY pass" >> "$LOADLOG"

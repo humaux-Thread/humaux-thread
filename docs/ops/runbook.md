@@ -790,7 +790,7 @@ other's question in its own workspace and must not see the other's canary (a hit
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 P=$(nv HUMAUX_NODE_GATEWAY_HOST_PORT); D="$HUMAUX_NODE_DIR/smoke"
 mcp() { # $1 = API-key header file, $2 = tool, $3 = arguments JSON
-  curl -sS -X POST "http://127.0.0.1:$P/mcp" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  curl -sS --fail -X POST "http://127.0.0.1:$P/mcp" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H "Mcp-Name: $2" -H "Origin: http://127.0.0.1:$P" -H @"$1" \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3,\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientInfo\":{\"name\":\"runbook-v2\",\"version\":\"1\"},\"io.modelcontextprotocol/clientCapabilities\":{}}}}"
 }
@@ -804,8 +804,12 @@ until mcp "$D/b.auth" recall "{\"query\":\"What is the node smoke canary codenam
   i=$((i + 1)); [ "$i" -lt 60 ] || { echo "smoke: recall did not return canary $TOK within 600 s"; exit 1; }; sleep 10
 done
 grep -q "$TOKA" "$D/b.recall.json" && { echo "smoke: smoke-b sees smoke-a's canary: cross-tenant read"; exit 1; }
-mcp "$D/a.auth" recall "{\"query\":\"What is the node smoke canary codename?\",\"workspace_id\":\"$WSA\",\"mode\":\"semantic\"}" | grep -q "$TOK" \
-  && { echo "smoke: smoke-a sees smoke-b's canary: cross-tenant read"; exit 1; }
+X="$D/a.cross.json"  # the negative check counts only on a successful tool result (a failed call shows no canary either)
+mcp "$D/a.auth" recall "{\"query\":\"What is the node smoke canary codename?\",\"workspace_id\":\"$WSA\",\"mode\":\"semantic\"}" > "$X" \
+  || { echo "smoke: smoke-a cross-tenant recall failed (curl exit $?)"; exit 1; }
+grep -q '"result"' "$X" && ! grep -q '"isError":true' "$X" \
+  || { echo "smoke: smoke-a cross-tenant recall returned no tool result: $(head -c 300 "$X")"; exit 1; }
+grep -q "$TOK" "$X" && { echo "smoke: smoke-a sees smoke-b's canary: cross-tenant read"; exit 1; }
 echo "SMOKE ok smoke-b cross_tenant=0"
 ```
 
@@ -1030,9 +1034,10 @@ C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 TAG=$(nv HUMAUX_IMAGE_TAG); SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$(nv HUMAUX_NODE_RELEASES_DIR)/release-$TAG.manifest" | head -n 1)
 F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alert_receipts.jsonl"
+O=0; [ -e "$F" ] && O=$(wc -c < "$F")  # only receipts written after this step began count (a retry's old lines do not)
 $C up -d alert-sink
 i=0
-until [ -r "$F" ] && grep -F 'Watchdog' "$F" | grep -qF "$SHA"; do
+until [ -r "$F" ] && tail -c +$((O + 1)) "$F" | grep -F 'Watchdog' | grep -qF "$SHA"; do
   i=$((i + 1)); [ "$i" -lt 60 ] || { echo "alert: no Watchdog receipt carrying git_sha=$SHA within 600 s"; exit 1; }; sleep 10
 done
 echo "ALERT watchdog ok git_sha=$SHA"
@@ -1043,9 +1048,10 @@ echo "ALERT watchdog ok git_sha=$SHA"
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alert_receipts.jsonl"
+O=0; [ -e "$F" ] && O=$(wc -c < "$F")  # only receipts written after this step began count (a retry's old lines do not)
 $C stop maintenance-health
 i=0
-until grep -F 'HealthGaugesAbsent' "$F" | grep -qF '"status":"firing"'; do
+until tail -c +$((O + 1)) "$F" | grep -F 'HealthGaugesAbsent' | grep -qF '"status":"firing"'; do
   i=$((i + 1)); [ "$i" -lt 60 ] || { echo "alert: HealthGaugesAbsent did not fire within 600 s"; exit 1; }; sleep 10
 done
 echo "ALERT firing ok HealthGaugesAbsent"
@@ -1056,9 +1062,10 @@ echo "ALERT firing ok HealthGaugesAbsent"
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
 F="$(nv HUMAUX_NODE_EVIDENCE_DIR)/alert_receipts.jsonl"
+O=0; [ -e "$F" ] && O=$(wc -c < "$F")  # only receipts written after this step began count (a retry's old lines do not)
 $C start maintenance-health
 i=0
-until grep -F 'HealthGaugesAbsent' "$F" | grep -qF '"status":"resolved"'; do
+until tail -c +$((O + 1)) "$F" | grep -F 'HealthGaugesAbsent' | grep -qF '"status":"resolved"'; do
   i=$((i + 1)); [ "$i" -lt 90 ] || { echo "alert: HealthGaugesAbsent did not resolve within 900 s"; exit 1; }; sleep 10
 done
 echo "ALERT resolved ok HealthGaugesAbsent"
@@ -1084,15 +1091,15 @@ and a worker stop around the migration; a rollback is a restore of the pre-upgra
 previous tag. Put the next tag into `$HUMAUX_NODE_DIR/release.next` and its manifest (and tarballs) into
 `releases/` first.
 
-**The checkout belongs to the release** (ADR-0066 review fix 9, OP-4). U2 and RB1 compare the checkout the executor
+**The checkout belongs to the release** (ADR-0066 review fix 9, OP-4). U3 and RB1 compare the checkout the executor
 runs from — its `CHECKOUT_TREE`, the git ids of `deploy/`, the runbook and the 0011 roles file — with the release
 manifest's `CHECKOUT` line (`deploy-check --release --checkout-tree`: `checkout_tree_mismatch:<field>`,
 `checkout_tree_missing`, `checkout_tree_not_in_manifest`). An upgrade or a rollback whose release carries a different
 checkout STOPs there: `prod.yml`, `values/*.env`, the renderer and the executor would be the other release's. The
 remedy: check `releases/humaux-checkout-<tag>.tar.gz` against its `humaux-checkout-<tag>.sha256`, unpack it as
 `<node dir>/checkout-<tag>/` (read-only for services, §1), set `HUMAUX_NODE_DEPLOY_DIR` in `node.env` to its
-`deploy/`, and restart the section from its first step (U1, or RB1 for a rollback onto the previous release's
-checkout) with the executor of that checkout; the host crontab (§5) follows `node.env` and needs no change. A
+`deploy/`, and continue from U3 with the executor of that checkout (U1–U2 stay done: U2's backup was taken under
+the running release, which is the rollback point; RB1 for a rollback onto the previous release's checkout); the host crontab (§5) follows `node.env` and needs no change. A
 release built from the running checkout's tree (the S9 rehearsal pair: the snapshot and its `--child`) matches
 without an install.
 
@@ -1111,7 +1118,36 @@ echo "NEXT IMAGES ok $NEXT"
 echo "PREV_TAG=$PREV"
 ```
 
-<!-- step: U2 expect: 0 match: PRECHECK ok -->
+U2 takes the pre-upgrade backup and records the schema head; the rollback restores exactly the end of this backup
+(`--target-backup`, PostgreSQL `--type=immediate`: no WAL after it is needed, ADR-0066 D-H). The executor captures
+its label as `PRE_UPGRADE_LABEL`. It runs before anything of the next release is used (PR #2 round 4): the `dr`
+image, `prod.yml` and the environment layout are all the running release's, and U2 first proves the executor's
+checkout is that release's (`deploy-check --release PREV_TAG --checkout-tree`, which also proves the rollback images
+are still loaded) — a backup taken with one release's image under another release's checkout is no rollback point.
+
+<!-- step: U2 expect: 0 match: VERIFIED value: PRE_UPGRADE_LABEL=PRE_UPGRADE_LABEL=[0-9A-Za-z_-]+ -->
+```sh
+C="sh deploy/release/compose.sh"
+nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
+: "${PREV_TAG:?captured by U1}"
+M="$(nv HUMAUX_NODE_RELEASES_DIR)/release-$PREV_TAG.manifest"
+SHA=$(sed -n 's/^IMAGE .* git_sha=\([0-9a-f]\{40\}\).*/\1/p' "$M" | head -n 1)
+[ "$(nv HUMAUX_IMAGE_TAG)" = "$PREV_TAG" ] || { echo "upgrade: node.env's tag is not the running tag $PREV_TAG"; exit 1; }
+[ -r CHECKOUT_TREE ] || { echo "upgrade: $PWD/CHECKOUT_TREE is missing (the running release's checkout, §R)"; exit 1; }
+$C run --rm -T dr deploy-check --release "$PREV_TAG" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
+O="$HUMAUX_NODE_DIR/evidence/backup-U2.json"
+if ! $C run --rm -T dr backup run > "$O"; then cat "$O"; exit 1; fi
+cat "$O"
+L=$(sed -n 's/.*"backup_label": *"\([^"]*\)".*/\1/p' "$O" | head -n 1)
+[ -n "$L" ] || { echo "upgrade: the backup receipt names no backup_label"; exit 1; }
+$C exec -T pg psql -U postgres -d humaux -Atc 'select max(migration_id) from ops.schema_migrations' > "$HUMAUX_NODE_DIR/smoke/schema_head.pre"
+echo "schema head before upgrade: $(cat "$HUMAUX_NODE_DIR/smoke/schema_head.pre")"
+echo "VERIFIED backup PRE_UPGRADE_LABEL=$L"
+```
+
+U3 is the gate on the next release: its images, its checkout (`--checkout-tree`) and the next environment.
+
+<!-- step: U3 expect: 0 match: PRECHECK ok -->
 ```sh
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
@@ -1125,23 +1161,6 @@ $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr de
   --values-dir "$(nv HUMAUX_NODE_DEPLOY_DIR)/env/values" --secrets-dir "$(nv HUMAUX_SECRETS_DIR)" \
   --examples-dir /usr/share/humaux/env/example
 echo "PRECHECK ok $NEXT git_sha=$SHA"
-```
-
-U3 takes the pre-upgrade backup and records the schema head; the rollback restores exactly the end of this backup
-(`--target-backup`, PostgreSQL `--type=immediate`: no WAL after it is needed, ADR-0066 D-H). The executor captures
-its label as `PRE_UPGRADE_LABEL`.
-
-<!-- step: U3 expect: 0 match: VERIFIED value: PRE_UPGRADE_LABEL=PRE_UPGRADE_LABEL=[0-9A-Za-z_-]+ -->
-```sh
-C="sh deploy/release/compose.sh"
-O="$HUMAUX_NODE_DIR/evidence/backup-U3.json"
-if ! $C run --rm -T dr backup run > "$O"; then cat "$O"; exit 1; fi
-cat "$O"
-L=$(sed -n 's/.*"backup_label": *"\([^"]*\)".*/\1/p' "$O" | head -n 1)
-[ -n "$L" ] || { echo "upgrade: the backup receipt names no backup_label"; exit 1; }
-$C exec -T pg psql -U postgres -d humaux -Atc 'select max(migration_id) from ops.schema_migrations' > "$HUMAUX_NODE_DIR/smoke/schema_head.pre"
-echo "schema head before upgrade: $(cat "$HUMAUX_NODE_DIR/smoke/schema_head.pre")"
-echo "VERIFIED backup PRE_UPGRADE_LABEL=$L"
 ```
 
 U4 stops every writer (OPS-9); PostgreSQL, Qdrant and observability keep running.
@@ -1265,7 +1284,7 @@ From here on, every step reads the project from `node.env`.
 ```sh
 C="sh deploy/release/compose.sh"
 nv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/node.env" | tail -n 1; }
-: "${PREV_TAG:?captured by U1}" "${PRE_UPGRADE_LABEL:?captured by U3}"
+: "${PREV_TAG:?captured by U1}" "${PRE_UPGRADE_LABEL:?captured by U2}"
 NEW="$(nv HUMAUX_NODE_PROJECT)-rb1"; E="$HUMAUX_NODE_DIR/node.env"
 awk -v t="$PREV_TAG" -v p="$NEW" '/^HUMAUX_IMAGE_TAG=/ { print "HUMAUX_IMAGE_TAG=" t; next } /^HUMAUX_PG_IMAGE=/ { print "HUMAUX_PG_IMAGE=humaux-pg:" t; next } /^HUMAUX_NODE_PROJECT=/ { print "HUMAUX_NODE_PROJECT=" p; next } { print }' "$E" > "$E.new"
 mv "$E.new" "$E"

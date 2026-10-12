@@ -34,7 +34,7 @@ x-humaux: &humaux
   security_opt: ["no-new-privileges:true"]
   # Review fix 9 (OP-3, L-2): every resident service is `unless-stopped`, so a node comes back after a host reboot or
   # a dockerd restart with no operator. An exit-2 configuration error therefore restarts under Docker's exponential
-  # backoff instead of stopping after five tries; the guards are `deploy-check --env` before every `up` (R2 / U2) and
+  # backoff instead of stopping after five tries; the guards are `deploy-check --env` before every `up` (R2 / U3) and
   # `deploy-check --running` (`service_restarted:<svc>` is red), so a looping resident cannot pass R10 / the U-steps.
   # One-shots (profiles ops / rehearsal) keep the policy "no"; deploy-check rule `restart_policy:<svc>:<value>`.
   restart: unless-stopped

@@ -218,7 +218,7 @@ alike — after a delay that doubles from 100 ms up to one minute and resets onc
 starts it again after a host reboot or a dockerd restart (runbook R10, "After a host reboot"); only a container the
 operator stopped stays down, and `down` removes it. Exit 2 (ADR-0037 addendum) is still a configuration error that
 restarting cannot fix: it now loops under that backoff instead of stopping (ADR-0066 L-2). The guards are
-`deploy-check --env` before every `up` (runbook R2 / U2) and `deploy-check --running`, red on
+`deploy-check --env` before every `up` (runbook R2 / U3) and `deploy-check --running`, red on
 `service_restarted:<svc>` (any non-zero restart count), so a looping resident cannot pass R10 or the U-steps.
 Healthchecks are each binary's own `--readyz` / `readyz serve|health-serve` in exec form (no shell in the image); `unhealthy` never
 restarts a container, it only holds back the services that `depends_on` it with `condition: service_healthy`.
