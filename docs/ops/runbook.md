@@ -1189,7 +1189,9 @@ services; PR #2 round 7). U7's `up` passes `--remove-orphans` for the same reaso
 ```sh
 C="sh deploy/release/compose.sh"
 $C stop gateway consolidation private-distill private-rpc retrieval-serve retrieval-rpc maintenance-serve maintenance-health
-S=" $($C --profile ops --profile rehearsal config --services | tr '\n' ' ') "
+SV=$($C --profile ops --profile rehearsal config --services)  # a failure stops the step (no pipeline hides it)
+case "$SV" in *gateway*) ;; *) echo "upgrade: config --services listed no gateway; refusing to remove anything"; exit 1 ;; esac
+S=" $(printf '%s\n' "$SV" | tr '\n' ' ') "
 for c in $(docker ps -aq --filter "label=com.docker.compose.project=$HUMAUX_NODE_PROJECT"); do
   s=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")
   case "$S" in *" $s "*) ;; *) echo "upgrade: removing $s (a service the next release's prod.yml no longer has)"; docker rm -f "$c" >/dev/null ;; esac
@@ -1336,6 +1338,7 @@ if [ -r "$MK" ]; then
   echo "rollback: removing the partial target $NEW a failed RB3 left (its volumes are a copy of the backup)"
   $C --profile ops --profile rehearsal down -v --remove-orphans
 else
+  [ -e "$EVF" ] && mv "$EVF" "$EVF.$(date -u +%Y%m%dT%H%M%SZ)"  # an earlier rollback's evidence is not this one's
   NEW="$(nv HUMAUX_NODE_PROJECT)-rb1"; echo "$NEW" > "$MK"
   awk -v t="$PREV_TAG" -v p="$NEW" '/^HUMAUX_IMAGE_TAG=/ { print "HUMAUX_IMAGE_TAG=" t; next } /^HUMAUX_PG_IMAGE=/ { print "HUMAUX_PG_IMAGE=humaux-pg:" t; next } /^HUMAUX_NODE_PROJECT=/ { print "HUMAUX_NODE_PROJECT=" p; next } { print }' "$E" > "$E.new"
   mv "$E.new" "$E"

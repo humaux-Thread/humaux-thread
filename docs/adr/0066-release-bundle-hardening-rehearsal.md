@@ -1086,7 +1086,12 @@ so 1.5 GiB of PostgreSQL's in-cgroup page cache moves to the drill: `HUMAUX_SIZE
 512m; reserve 4464 MiB again. These stay dev-host start values under L-1 / O-1. (3) `serve.rs` keeps at most one
 `statvfs` read in flight per DR path, so a hung mount pins one blocking thread, not one per cycle (ponytail: a
 killable helper if that ever matters). (4) `build.sh` recreates `$OUT/env-example` before copying, so a removed
-example cannot survive into the ops / dr images.
+example cannot survive into the ops / dr images. Gate-reviewer on eac06b6 (PASS) P2s fixed in the same round: U4 takes
+`config --services` as its own command (a failure stops the step; a list without `gateway` refuses to remove
+anything) instead of inside a pipeline, whose hidden failure removed every project container including pg and
+qdrant; RB3's first run sets an earlier rollback's `rollback-1.json` aside (timestamped), so a retry after a refused
+restore is never told "already restored". Both exercised on stubs (U4: config ok → only the orphan removed, config
+failing → exit 1, nothing removed; RB3: stale evidence + refused first run → the retry restores).
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 
