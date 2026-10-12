@@ -1018,6 +1018,7 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #28 (`xtask/src/rls_check.rs`, PR #2 Codex P2): the `--spec` default always prepended | the guard dropped | `explicit_flags_are_not_shadowed_by_the_defaults` red, EXIT 101 |
 | `c39_red_fix9` #29 (`deploy_check.rs` `rehearsal_probe`, PR #2 Codex P2 round 4): exempt by the rehearsal profile alone | the allow-list bypassed | `compose_identity_uid_rules` red (case `unlisted rehearsal helper`), EXIT 101 |
 | `c39_red_fix9` #30 (`deploy_check.rs` `release_reasons`, PR #2 Codex P1 round 4): version comparisons judged before the identity holds | `None` read as an empty line | `release_identity_is_judged_before_the_version_run` red, EXIT 101 |
+| `c39_red_fix9` #31 (`rls_check.rs` `flag_without_value`, PR #2 owner review P2): a bare `--spec` / `--dsn` read as absent | the guard disabled | `value_flags_without_a_value_are_usage_errors` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1036,7 +1037,9 @@ used, and first proves the executor's checkout is the running release's (`deploy
 cross-tenant negative check counts only on a successful tool result (`curl --fail`, a `"result"` without
 `"isError":true`). (5) A2–A4 search only the alert receipts written after the step began (byte offset taken before
 the action), so a retry cannot pass on an earlier run's Watchdog / firing / resolved lines. Runbook step blocks
-changed: V3, A2, A3, A4, U2, U3 (S9 agent-run evidence predates them, as with review fix 9).
+changed: V3, A2, A3, A4, U2, U3 (S9 agent-run evidence predates them, as with review fix 9). (6) `rls-check` refuses
+`--spec` / `--dsn` without a value (last, empty, or another `--flag` next) with exit 2 before any check, so a bare
+`cargo xtask rls-check --spec` no longer suppresses the Baseline default and exits 0 on `not_applicable`.
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 

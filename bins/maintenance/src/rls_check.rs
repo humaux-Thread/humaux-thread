@@ -5169,8 +5169,24 @@ pub fn check_rebuild_generation_boundary(client: &mut impl GenericClient) -> Gat
     }
 }
 
-/// `rls-check [--spec PATH] [--dsn URL]`: every §48.2/§62 check, three-state; exit 1 on any `fail`.
+/// `--spec` or `--dsn` present without a value (last, empty, or followed by another `--flag`), by name. PR #2 review:
+/// a bare `--spec` read as absent turned the table-set check into `not_applicable` and the run could exit 0.
+fn flag_without_value(args: &[String]) -> Option<&'static str> {
+    ["--spec", "--dsn"].into_iter().find(|name| {
+        args.iter().position(|a| a == name).is_some_and(|i| {
+            args.get(i + 1)
+                .is_none_or(|v| v.is_empty() || v.starts_with("--"))
+        })
+    })
+}
+
+/// `rls-check [--spec PATH] [--dsn URL]`: every §48.2/§62 check, three-state; exit 1 on any `fail`, exit 2 on a
+/// value flag without its value (ADR-0037 usage).
 pub fn run(args: &[String]) -> i32 {
+    if let Some(name) = flag_without_value(args) {
+        eprintln!("rls-check: usage — {name} needs a value");
+        return 2;
+    }
     let flag = |name: &str| {
         args.iter()
             .position(|a| a == name)
@@ -5262,6 +5278,30 @@ pub fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PR #2 review: a trailing `--spec` / `--dsn`, an empty value, or another flag in the value slot is a usage
+    /// error (exit 2) before any check runs; explicit values pass the guard. Fault: read a bare flag as absent ⇒ red.
+    #[test]
+    fn value_flags_without_a_value_are_usage_errors() {
+        let own = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        for (args, want) in [
+            (own(&["--dsn", "postgres://x", "--spec"]), Some("--spec")),
+            (own(&["--spec", "/tmp/spec.md", "--dsn"]), Some("--dsn")),
+            (own(&["--spec", "--dsn", "postgres://x"]), Some("--spec")),
+            (
+                own(&["--spec", "", "--dsn", "postgres://x"]),
+                Some("--spec"),
+            ),
+            (
+                own(&["--spec", "/tmp/spec.md", "--dsn", "postgres://x"]),
+                None,
+            ),
+            (own(&[]), None),
+        ] {
+            assert_eq!(flag_without_value(&args), want, "{args:?}");
+        }
+        assert_eq!(run(&own(&["--dsn", "postgres://x", "--spec"])), 2);
+    }
 
     // ------------------------------------------------------------------
     // Item 2 — pure text, no DB. Fixture spec strings exercise both the
