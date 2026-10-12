@@ -1,6 +1,6 @@
-//! `xtask::switch_visible` — §16.2 serve switch: live visible_* counts taken from Qdrant/Postgres.
+//! `maintenance::switch_visible` — §16.2 serve switch: live visible_* counts taken from Qdrant/Postgres.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any) r=[projection.stream_checkpoints, projection.stream_log, projection.tenant_placements], PostgreSQL(owner) w=[control.private_reasoning_domains, control.tenants, control.users, control.workspaces, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_URL]; modules=[adapters::qdrant, adapters::retrieve, domain::ids, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving]
-//! Called-by: [xtask::projection_serve, xtask::soak]
+//! Called-by: [maintenance::projection_serve, xtask::soak]
 //! Invariants: [visible_serving/visible_shadow are real Qdrant/Postgres counts, never operator-supplied numbers;
 //!   both count every point of the stream whatever its visibility class (ADR-0057 D-C)]
 //! Spec: Baseline §16.2; §16.3; §23.1②; ADR-0057
@@ -8,7 +8,7 @@
 //! §16.2 serve switch — the two `visible_*` counts, taken live from Qdrant.
 //!
 //! Both ops-side callers of `projection::serving::evaluate_switch`
-//! (`xtask::projection_serve` → `adapters::serving_repo::switch_projection_version`, and
+//! (`maintenance::projection_serve` → `adapters::serving_repo::switch_projection_version`, and
 //! `xtask::soak`'s promotion report) used to hand the evaluator a number nobody had measured:
 //! `projection-serve` took `--visible-shadow <n>` from the operator's command line (the
 //! rehearsal filled it with `count(*) FROM projection.private_memory_points`, a PostgreSQL row
@@ -518,7 +518,7 @@ mod tests {
     }
 
     /// test 26 on the production wiring (ADR-0057 D-C; review P1): the real
-    /// `cargo xtask projection-serve` entry point — `visible_inputs` → [`read_candidate_facts`]
+    /// `humaux-maintenance projection serve` entry point — `visible_inputs` → [`read_candidate_facts`]
     /// → [`visible_pair`] → `serving_repo::switch_projection_version` — promotes a first
     /// activation whose stream holds another user's live USER_PRIVATE point, and the pair it
     /// hands the switch counts both points. Fault: re-add a USER_PRIVATE refusal anywhere on that

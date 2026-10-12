@@ -612,6 +612,8 @@ A5 re-measure required; the load step's `LOAD_GW_ENV` pins both because assertio
 as themselves (`/128`); any other IPv6 address keys as `{masked}/{bits}`. No migration: the dev rows are already
 `/64`, and a subject string from another prefix ages out through card 35's idle-bucket purge.
 
+Cross-reference (ADR-0066 review fix 4): the ten bucket keys `HUMAUX_GATEWAY_RATE_{PREAUTH_IP,CREDENTIAL,USER,TENANT,OPERATION}_{CAPACITY,REFILL_PER_SECOND}` are now literal (`bootstrap::RATE_BUCKET_KEYS`) and declared in the module header, so `dep-map` lists them for the gateway and the bundle's `values/gateway.env` carries them.
+
 Evidence (DB tests each on their own throwaway database `humaux_thread_c38_rate_<pid>_<n>`, dropped WITH (FORCE) by the
 fixture's Drop; each shown red once under its named fault, `TW/c38_red_s3.log`; structural gate reds in
 `TW/c38_gate_reds_s3.log`):

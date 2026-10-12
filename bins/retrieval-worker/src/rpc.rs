@@ -1,9 +1,9 @@
 //! `retrieval-worker::rpc` — ADR-0012 query-embedding RPC — the Unix-domain-socket side `humaux-retrieval-worker`
 //!   serves.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-domain, humaux-local-secret-scan, humaux-retrieval,
+//! Depends-on: crates=[axum, humaux-adapters, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-retrieval,
 //!   humaux-retrieval-provider, serde, sha2, tokio, tracing,
 //!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres, adapters::retrieval_embedding_rpc, domain::error,
-//!   domain::identity, domain::ids, humaux-local-secret-scan, retrieval-provider::contract, retrieval::request]
+//!   domain::identity, domain::ids, humaux-local-secret-scan, infra-cell::uds, retrieval-provider::contract, retrieval::request]
 //! Called-by: [retrieval-worker::main, tests]
 //! Invariants: [a malformed or unauthenticated RPC frame is rejected before it reaches the embedding provider call]
 //! Spec: Baseline §2; §6; §7.5; ADR-0012; ADR-0056
@@ -119,7 +119,12 @@ async fn require_gateway_uid(
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Response {
-    if !peer.ok || peer.uid != state.expected_gateway_uid {
+    // ADR-0066 D-K: a refusal is logged; an accepted same-uid peer (dev opt-in only) logs a WARN.
+    if !humaux_infra_cell::uds::admit_peer(
+        "humaux-retrieval-worker",
+        peer.ok.then_some(peer.uid),
+        state.expected_gateway_uid,
+    ) {
         return StatusCode::FORBIDDEN.into_response();
     }
     next.run(request).await

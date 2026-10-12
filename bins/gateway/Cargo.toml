@@ -23,7 +23,7 @@ humaux-retrieval = { path = "../../crates/retrieval" }
 # why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls; used-by: [gateway::bootstrap, gateway::recall, gateway::retrieval_embedding_client, tests]
 humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0061 D-A/D-B: the §41.2 family table, text encoder and loopback ops listener (no metrics crate).
-# why: metrics exposition, degrade counters and the loopback ops listener; used-by: [gateway::guard, gateway::main, gateway::status]
+# why: metrics exposition, degrade counters, the loopback ops listener and the version line `binary_build` reuses; used-by: [gateway::context, gateway::guard, gateway::main, gateway::status]
 humaux-telemetry = { path = "../../crates/telemetry" }
 # why: object-safe async traits for ports and transports; used-by: [gateway::mcp_application, gateway::retrieval_embedding_client, tests]
 async-trait = "0.1"
@@ -33,7 +33,7 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 # why: JSON payloads and envelopes; used-by: [gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
 serde_json = { version = "1", features = ["raw_value"] }
-# why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [gateway::context, gateway::guard, gateway::retrieval_embedding_client, tests]
+# why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [gateway::guard, gateway::retrieval_embedding_client, tests]
 sha2 = "0.10"
 # why: hex encoding of digests and tokens; used-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::memory, tests]
 hex = "0.4"

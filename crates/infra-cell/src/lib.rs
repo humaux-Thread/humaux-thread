@@ -1,7 +1,7 @@
 //! `humaux-infra-cell` — ADR-0003 / §83.4 Layer 1B: same-Cell resource access.
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-admin), crate(humaux-gateway), crate(humaux-maintenance),
-//!   crate(humaux-private-worker), crate(humaux-public-worker), crate(humaux-retrieval-worker), crate(xtask)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-admin), crate(humaux-consolidation-worker), crate(humaux-gateway),
+//!   crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
 //! Invariants: [crate root: reaches reqwest only through humaux-infra-network's re-export (G80-3); CellAccessPermit
 //!   never leaves the Cell and never touches ops.data_disclosures]
 //! Spec: Baseline §7.4; §83.4
@@ -42,6 +42,7 @@
 pub mod permit;
 pub mod resource;
 pub mod transport;
+pub mod uds;
 
 pub use permit::{CallerId, CellAccessPermit, CellId, PermitError, authorize_cell_access};
 pub use resource::{

@@ -235,6 +235,19 @@ pub(crate) async fn rotate(args: &Args) -> Result<Output> {
     Ok(output)
 }
 
+/// The four catalog/probe checks when no maintenance connection can be formed (§57.1).
+fn maintenance_not_applicable(missing: &str) -> Vec<CheckResult> {
+    [
+        "placeholder_login",
+        "probe_valid",
+        "owner_nologin",
+        "schema_migrations_write",
+    ]
+    .into_iter()
+    .map(|name| CheckResult::not_applicable(name, missing))
+    .collect()
+}
+
 fn check_json(check: &CheckResult) -> Value {
     json!({ "name": check.name, "status": check.status.as_str(), "detail": check.detail })
 }
@@ -249,6 +262,44 @@ fn without_superuser(check: CheckResult, superuser: Option<&String>) -> CheckRes
     }
 }
 
+const MAINTENANCE_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";
+const MIGRATOR_DSN: &str = "HUMAUX_MIGRATOR_PG_DSN";
+/// Receipt `maintenance_dsn_source` of a DSN derived from the migrate one-shot's two variables.
+const DERIVED_SOURCE: &str = "derived:HUMAUX_MIGRATOR_PG_DSN+HUMAUX_ROLE_PASSWORD_MAINTENANCE";
+
+/// The catalog connection of deploy-check and its receipt source: an explicit
+/// `HUMAUX_MAINTENANCE_PG_DSN` wins; else the migrator URL logging in as `role_maintenance` with
+/// `HUMAUX_ROLE_PASSWORD_MAINTENANCE` (ADR-0066 review fix 3: the release bundle gives the migrate
+/// one-shot only those). `Err` = the §57.1 missing objects, names only.
+fn maintenance_dsn(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> std::result::Result<(String, &'static str), String> {
+    let get = |name: &str| lookup(name).filter(|v| !v.trim().is_empty());
+    if let Some(dsn) = get(MAINTENANCE_DSN) {
+        return Ok((dsn, "env"));
+    }
+    let password_var = env_name(ROLE_MAINTENANCE);
+    match (get(MIGRATOR_DSN), get(&password_var)) {
+        (Some(migrator), Some(password)) => {
+            role_hygiene::role_dsn(&migrator, ROLE_MAINTENANCE, &password)
+                .map(|dsn| (dsn, DERIVED_SOURCE))
+                .ok_or_else(|| {
+                    format!("{MAINTENANCE_DSN} (and {MIGRATOR_DSN} is not a PostgreSQL URL)")
+                })
+        }
+        (migrator, password) => {
+            let missing: Vec<&str> = [
+                migrator.is_none().then_some(MIGRATOR_DSN),
+                password.is_none().then_some(password_var.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            Err(format!("{MAINTENANCE_DSN} or {}", missing.join("+")))
+        }
+    }
+}
+
 /// `deploy-check --roles-sql <0011>` (ADR-0059 D-F): five named checks, read-only, names only.
 pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
     let placeholders = placeholders_from(args)?;
@@ -259,23 +310,12 @@ pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
     probed.push(ROLE_MIGRATION_OWNER.to_owned());
     probed.extend(superuser.clone());
 
-    const MAINTENANCE_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";
-    let maintenance = std::env::var(MAINTENANCE_DSN)
-        .ok()
-        .filter(|v| !v.trim().is_empty());
+    let maintenance = maintenance_dsn(|name| std::env::var(name).ok());
+    let source = maintenance.as_ref().ok().map(|(_, source)| *source);
     let mut checks = Vec::with_capacity(5);
     match maintenance {
-        None => {
-            for name in [
-                "placeholder_login",
-                "probe_valid",
-                "owner_nologin",
-                "schema_migrations_write",
-            ] {
-                checks.push(CheckResult::not_applicable(name, MAINTENANCE_DSN));
-            }
-        }
-        Some(dsn) => {
+        Err(missing) => checks.extend(maintenance_not_applicable(&missing)),
+        Ok((dsn, _)) => {
             let probe = role_hygiene::probe_options(&dsn).ok_or_else(|| {
                 Failure::Usage(format!("{MAINTENANCE_DSN}: not a PostgreSQL URL"))
             })?;
@@ -301,6 +341,7 @@ pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
     let refused = checks.iter().any(|c| c.status != CheckStatus::Pass);
     let mut output = Output::ok(json!({
         "command": "deploy-check",
+        "maintenance_dsn_source": source,
         "checks": checks.iter().map(check_json).collect::<Vec<_>>(),
     }));
     output.refused = refused;
@@ -455,5 +496,102 @@ mod tests {
         assert_eq!(receipt.matches(generated).count(), 0);
         assert_eq!(stdout.matches(rotated[1].1.expose()).count(), 0);
         assert!(receipt.contains("\"source\":\"generated\""), "{receipt}");
+    }
+
+    fn lookup_of(pairs: Vec<(&str, String)>) -> impl Fn(&str) -> Option<String> + use<> {
+        let pairs: Vec<(String, String)> =
+            pairs.into_iter().map(|(n, v)| (n.to_owned(), v)).collect();
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    /// Review fix 3 (ADR-0066): the migrate one-shot has no `HUMAUX_MAINTENANCE_PG_DSN`; the DSN is
+    /// derived from the migrator URL with `role_maintenance` and its password variable.
+    #[test]
+    fn maintenance_dsn_is_derived_from_the_migrator_url_and_the_role_password() {
+        let (migrator_pw, maintenance_pw) = (random_token(32), random_token(32));
+        let lookup = lookup_of(vec![
+            (
+                "HUMAUX_MIGRATOR_PG_DSN",
+                format!(
+                    "postgres://role_migrator:{migrator_pw}@db-host:6543/humaux?sslmode=require"
+                ),
+            ),
+            (env_name(ROLE_MAINTENANCE).as_str(), maintenance_pw.clone()),
+        ]);
+        let (dsn, source) = maintenance_dsn(lookup).expect("derived");
+        assert_eq!(source, DERIVED_SOURCE);
+        assert!(
+            dsn == format!(
+                "postgres://role_maintenance:{maintenance_pw}@db-host:6543/humaux?sslmode=require"
+            ),
+            "derived DSN keeps host/port/db/query, user role_maintenance, the env password"
+        );
+        let options = role_hygiene::probe_options(&dsn).expect("a PostgreSQL URL");
+        assert_eq!(options.get_username(), ROLE_MAINTENANCE);
+        assert_eq!((options.get_host(), options.get_port()), ("db-host", 6543));
+        assert_eq!(options.get_database(), Some("humaux"));
+    }
+
+    #[test]
+    fn an_explicit_maintenance_dsn_wins_over_derivation() {
+        let explicit = format!(
+            "postgres://role_maintenance:{}@ops-host/humaux",
+            random_token(32)
+        );
+        let lookup = lookup_of(vec![
+            ("HUMAUX_MAINTENANCE_PG_DSN", explicit.clone()),
+            (
+                "HUMAUX_MIGRATOR_PG_DSN",
+                format!(
+                    "postgres://role_migrator:{}@db-host/humaux",
+                    random_token(32)
+                ),
+            ),
+            (env_name(ROLE_MAINTENANCE).as_str(), random_token(32)),
+        ]);
+        let (dsn, source) = maintenance_dsn(lookup).expect("explicit");
+        assert_eq!(source, "env");
+        assert!(
+            dsn == explicit,
+            "the explicit HUMAUX_MAINTENANCE_PG_DSN is used as given"
+        );
+    }
+
+    #[test]
+    fn without_either_route_the_four_checks_name_both_missing_objects() {
+        for pairs in [vec![], vec![("HUMAUX_MAINTENANCE_PG_DSN", "  ".to_owned())]] {
+            let missing = maintenance_dsn(lookup_of(pairs)).expect_err("no route");
+            let checks = maintenance_not_applicable(&missing);
+            assert_eq!(checks.len(), 4);
+            for check in &checks {
+                assert_eq!(check.status, CheckStatus::NotApplicable);
+                for object in [
+                    "HUMAUX_MAINTENANCE_PG_DSN",
+                    "HUMAUX_MIGRATOR_PG_DSN",
+                    env_name(ROLE_MAINTENANCE).as_str(),
+                ] {
+                    assert!(
+                        check.detail.contains(object),
+                        "{}: {} lacks {object}",
+                        check.name,
+                        check.detail
+                    );
+                }
+            }
+        }
+        let only_migrator = lookup_of(vec![(
+            "HUMAUX_MIGRATOR_PG_DSN",
+            "postgres://role_migrator@db-host/humaux".to_owned(),
+        )]);
+        let missing = maintenance_dsn(only_migrator).expect_err("no password");
+        assert_eq!(
+            missing,
+            "HUMAUX_MAINTENANCE_PG_DSN or HUMAUX_ROLE_PASSWORD_MAINTENANCE"
+        );
     }
 }

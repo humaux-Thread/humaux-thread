@@ -1,9 +1,9 @@
 //! `xtask::soak` — endurance + crash-recovery harness driving continuous load against the four-process deployment.
-//! Depends-on: crates=[humaux-domain, humaux-projection, postgres, serde_json, tokio, uuid];
+//! Depends-on: crates=[humaux-domain, humaux-maintenance, humaux-projection, postgres, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance) r=[ops.jobs, ops.outbox, projection.private_memory_points,
 //!   projection.processing_gaps, projection.stream_checkpoints, projection.stream_log], Qdrant(*), subprocess(ps),
 //!   subprocess(sh), HTTP(gateway)]; env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_SOAK_TEST_BEARER];
-//!   modules=[domain::ids, projection::serving, xtask::switch_visible]
+//!   modules=[domain::ids, projection::serving, maintenance::switch_visible]
 //! Called-by: [xtask::e2e_onboard, xtask::load, xtask::main]
 //! Invariants: [continuous concurrent load against the real four-process deployment while a chaos hook kills/restarts a worker; every read is asserted live against the database]
 //! Spec: Baseline §15.1; §15.3; §15.5; §31; §61; §6.1; ADR-0037; ADR-0050; ADR-0052; ADR-0055; ADR-0065
@@ -76,7 +76,9 @@ use humaux_projection::serving::{
 use postgres::{Client, NoTls};
 use uuid::Uuid;
 
-use crate::switch_visible::{Candidate, VisibleFace, read_candidate_facts, visible_pair};
+use humaux_maintenance::switch_visible::{
+    Candidate, VisibleFace, read_candidate_facts, visible_pair,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Configuration (§78.1: required flags only, no defaults)
@@ -286,7 +288,7 @@ pub fn parse_config(args: &[String]) -> Result<Config, String> {
             "--max-op-failure-rate {max_op_failure_rate} must be a fraction in 0..=1"
         ));
     }
-    let (qdrant_host, qdrant_port) = crate::switch_visible::qdrant_endpoint(args)?;
+    let (qdrant_host, qdrant_port) = humaux_maintenance::switch_visible::qdrant_endpoint(args)?;
     let probe_cmds = values(args, "--probe-cmd");
     if probe_cmds.is_empty() {
         return Err(format!(

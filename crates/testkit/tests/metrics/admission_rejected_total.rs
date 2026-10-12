@@ -15,9 +15,15 @@ use humaux_telemetry::admission::{
     AdmissionRefusal, admission_rejected_total, count_admission_rejected, render,
 };
 
+/// The counters are process-global and libtest runs these tests on parallel threads: an increment by the render test
+/// between the delta test's `before` and its read made the delta off by one (a red that came and went with thread
+/// timing, 2026-10-08). Both tests hold this lock for their whole body.
+static COUNTERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Each refusal adds exactly 1 to its own reason and nothing to the others.
 #[test]
 fn each_refusal_adds_one_to_its_own_reason() {
+    let _serial = COUNTERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for reason in AdmissionRefusal::ALL {
         let before = AdmissionRefusal::ALL.map(admission_rejected_total);
         count_admission_rejected(reason);
@@ -37,6 +43,7 @@ fn each_refusal_adds_one_to_its_own_reason() {
 /// The exposition carries the §41.2 label keys `class`, `reason` with `class="gateway_inbound"` and a non-zero sample.
 #[test]
 fn family_renders_class_and_reason_with_samples() {
+    let _serial = COUNTERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     count_admission_rejected(AdmissionRefusal::QueueFull);
     let mut out = String::new();
     render(&mut out);

@@ -1,20 +1,21 @@
 //! `consolidation-worker::main` — `humaux-consolidation-worker` process entry (§4.2 minimal process set; §4.4 admin
 //!   probe contract; §11.7/§11.8 T4.6+T4.7).
-//! Depends-on: crates=[humaux-adapters, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback),
-//!   PostgreSQL(role_consolidation_worker), UDS(private-worker)]; env=[CARGO_PKG_VERSION, CONSOLIDATION_WORKER_PG_DSN,
-//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_CONSOLIDATION_WORKER_BATCH,
+//! Depends-on: crates=[humaux-adapters, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback),
+//!   PostgreSQL(role_consolidation_worker), UDS(private-worker)]; env=[CARGO_PKG_VERSION,
+//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_CONSOLIDATION_WORKER_BATCH,
 //!   HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS, HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS, HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS,
 //!   HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS, HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS,
-//!   HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH, HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR];
-//!   modules=[adapters::postgres, consolidation-worker::inference_client, humaux-consolidation-worker,
-//!   telemetry::metrics]
+//!   HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH,
+//!   HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR];
+//!   modules=[adapters::postgres, consolidation-worker::dsn, consolidation-worker::inference_client, humaux-consolidation-worker, humaux-telemetry,
+//!   infra-cell::uds, telemetry::metrics]
 //! Called-by: [process(humaux-consolidation-worker)]
 //! Invariants: [missing/invalid env or an unreachable role_consolidation_worker DSN exits non-zero before any claim;
 //!   `--readyz` fails unless both PG and the private worker's inference socket answer one live round trip;
 //!   `--serve` reads its own HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR (required, loopback) and the one-shot
 //!   modes open no listener; --metrics-families reads no configuration]
-//! Spec: ADR-0036; ADR-0037; §11.6; ADR-0061 D-B; ADR-0061 E10
+//! Spec: ADR-0036; ADR-0037; §11.6; ADR-0061 D-B; ADR-0061 E10; ADR-0066 D-D; ADR-0066 D-N; ADR-0066 D-O
 //!
 //! The actual orchestration ([`run_once`] and friends) lives
 //! in `src/lib.rs` — see that module's doc comment for why: a binary-only crate has no target
@@ -22,7 +23,10 @@
 //! and `tests/consolidation_hop_e2e.rs` possible at all.
 //!
 //! Modes:
-//! * no flag / `--probe-connection`: the original Phase 4 typed-role probe.
+//! * no flag: usage on stderr, exit 2 (ADR-0066 D-N; before card 39 it ran the probe and exited 0).
+//!   `--probe-connection`: the original Phase 4 typed-role probe, explicit only.
+//! * `--version`: `humaux-consolidation-worker <version> git_sha=<40 hex> build_time=…`, exit 0; exit 2 when the
+//!   build carries no sha (ADR-0066 D-D). `--serve` prints the start line first.
 //! * `--run-once`: ONE bounded cross-tenant dispatch pass, then exit — including when there was
 //!   nothing to claim (before ADR-0036 this flag looped forever on an env-pinned pair and never
 //!   exited on an empty tenant, which is what the deployment report flagged).
@@ -62,6 +66,7 @@ use humaux_consolidation_worker::{
     DispatchConfig, dispatch_pass, inference_client::UdsInferenceClient,
 };
 use humaux_telemetry::metrics::{OpsListener, parse_ops_addr, process_routes, serve_loopback};
+use humaux_telemetry::{ModeFailure, start_line, version_mode};
 use uuid::Uuid;
 
 fn required(name: &str) -> Result<String, String> {
@@ -75,7 +80,7 @@ fn parse<T: std::str::FromStr>(name: &str) -> Result<T, String> {
 }
 
 fn usage() -> &'static str {
-    "usage: humaux-consolidation-worker (--probe-connection | --readyz | --run-once | --serve | --metrics-families)"
+    "usage: humaux-consolidation-worker (--probe-connection | --readyz | --run-once | --serve | --metrics-families | --version)"
 }
 
 /// §78.1 / ADR-0061 D-B: `--serve`'s own ops listener address (loopback only, no default).
@@ -101,77 +106,103 @@ fn ops_listener() -> Result<OpsListener, String> {
     serve_loopback(SERVE_METRICS_ADDR, addr, routes).map_err(|e| e.to_string())
 }
 
+const BIN: &str = "humaux-consolidation-worker";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_SHA: Option<&str> = option_env!("HUMAUX_BUILD_GIT_SHA");
+
+/// ADR-0066 D-O: the role_consolidation_worker DSN under its `HUMAUX_` name (or the deprecated alias, with one WARN).
+fn pg_dsn() -> Result<String, String> {
+    let (dsn, warn) = humaux_consolidation_worker::dsn::resolve(|k| env::var(k).ok())?;
+    if let Some(warn) = warn {
+        eprintln!("{warn}");
+    }
+    Ok(dsn)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    match args.first().map(String::as_str) {
-        None => {
-            probe_connection().await;
-            ExitCode::SUCCESS
-        }
-        Some("--probe-connection") => {
-            probe_connection().await;
-            ExitCode::SUCCESS
-        }
+    // ADR-0066 D-N: exactly one mode argument; none (formerly the probe, exit 0) or more is usage, exit 2.
+    if args.len() != 1 {
+        eprintln!("{BIN}: {}", usage());
+        return ExitCode::from(2);
+    }
+    match args[0].as_str() {
+        "--probe-connection" => probe_connection().await,
+        "--version" => version_mode(BIN, VERSION, GIT_SHA, option_env!("HUMAUX_BUILD_TIME")),
         // ADR-0061 D-C: before any configuration is read.
-        Some("--metrics-families") => {
+        "--metrics-families" => {
             let mut out = String::new();
             render_metrics(&mut out);
             print!("{out}");
             ExitCode::SUCCESS
         }
-        Some("--readyz") => match readyz().await {
+        "--readyz" => match readyz().await {
             Ok(()) => ExitCode::SUCCESS,
             Err(missing) => {
-                eprintln!("humaux-consolidation-worker: not ready — missing object: {missing}");
+                eprintln!("{BIN}: not ready — missing object: {missing}");
                 ExitCode::from(2)
             }
         },
-        Some(mode @ ("--run-once" | "--serve")) => match dispatch_mode(mode == "--serve").await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("humaux-consolidation-worker: {error}");
-                ExitCode::from(2)
+        mode @ ("--run-once" | "--serve") => {
+            let resident = mode == "--serve";
+            // ADR-0066 D-D: the resident mode's first line names the build it runs.
+            if resident {
+                eprintln!("{}", start_line(BIN, "serve", VERSION, GIT_SHA));
             }
-        },
-        Some(_) => {
-            eprintln!("humaux-consolidation-worker: {}", usage());
+            // ADR-0066 D-N: a failure marked runtime (database down, a failed pass) exits 1, configuration 2.
+            match dispatch_mode(resident).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(failure) => {
+                    eprintln!("{BIN}: {failure}");
+                    failure.exit_code()
+                }
+            }
+        }
+        _ => {
+            eprintln!("{BIN}: {}", usage());
             ExitCode::from(2)
         }
     }
 }
 
-/// Original Phase 4 scaffold probe, preserved as the argument-less default so an existing
-/// deploy invocation with no flags keeps behaving exactly as before this task.
-async fn probe_connection() {
-    match env::var("CONSOLIDATION_WORKER_PG_DSN") {
-        Err(_) => {
-            println!(
-                "humaux-consolidation-worker: CONSOLIDATION_WORKER_PG_DSN not set, not wired yet (Phase 4 scaffold)"
-            );
+/// `--probe-connection`: the original Phase 4 typed-role probe, now an explicit mode only (ADR-0066 D-N): connected
+/// ⇒ 0, a missing / conflicting DSN ⇒ 2, a failed connect ⇒ 1.
+async fn probe_connection() -> ExitCode {
+    let dsn = match pg_dsn() {
+        Ok(dsn) => dsn,
+        Err(error) => {
+            eprintln!("{BIN}: {error}");
+            return ExitCode::from(2);
         }
-        // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
-        Ok(dsn) => match ConsolidationDbPool::connect(&dsn).await {
-            Ok(_pool) => {
-                println!("humaux-consolidation-worker: connected as role_consolidation_worker")
-            }
-            Err(e) => eprintln!("humaux-consolidation-worker: {e}"),
-        },
+    };
+    // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
+    match ConsolidationDbPool::connect(&dsn).await {
+        Ok(_pool) => {
+            println!("{BIN}: connected as role_consolidation_worker");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{BIN}: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
 /// ADR-0036 `--run-once` (one bounded pass, then exit — `claimed == 0` exits zero promptly
 /// instead of spinning) / `--serve` (the same pass on
 /// `HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS` until the process is killed).
-async fn dispatch_mode(resident: bool) -> Result<(), String> {
+async fn dispatch_mode(resident: bool) -> Result<(), ModeFailure> {
     // ADR-0061 D-B: only the resident mode is scraped; `--run-once` opens no listener.
     let _ops = if resident {
         Some(ops_listener()?)
     } else {
         None
     };
-    let dsn = required("CONSOLIDATION_WORKER_PG_DSN")?;
+    let dsn = pg_dsn()?;
     let socket_path = required("HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH")?;
+    // ADR-0066 D-L: the private worker's uid; every dial refuses any other serving uid.
+    let server_uid = parse::<u32>("HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID")?;
     let call_ttl = Duration::from_secs(parse::<u64>("HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS")?);
     let dial_timeout = Duration::from_secs(parse::<u64>(
         "HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS",
@@ -197,10 +228,12 @@ async fn dispatch_mode(resident: bool) -> Result<(), String> {
     };
 
     // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
-    let pool = ConsolidationDbPool::connect(&dsn)
-        .await
-        .map_err(|e| format!("consolidation worker database role connection failed: {e}"))?;
-    let mut shutdown = Shutdown::install()?;
+    let pool = ConsolidationDbPool::connect(&dsn).await.map_err(|e| {
+        ModeFailure::runtime(format!(
+            "consolidation worker database role connection failed: {e}"
+        ))
+    })?;
+    let mut shutdown = Shutdown::install().map_err(ModeFailure::runtime)?;
 
     loop {
         let report = dispatch_pass(
@@ -209,6 +242,7 @@ async fn dispatch_mode(resident: bool) -> Result<(), String> {
                 UdsInferenceClient::new(
                     &pool,
                     socket_path.clone(),
+                    server_uid,
                     tenant_id,
                     call_ttl,
                     dial_timeout,
@@ -235,7 +269,11 @@ async fn dispatch_mode(resident: bool) -> Result<(), String> {
             Err(error) if poll_interval.is_some() => {
                 eprintln!("humaux-consolidation-worker: dispatch pass failed: {error}")
             }
-            Err(error) => return Err(format!("dispatch pass failed: {error}")),
+            Err(error) => {
+                return Err(ModeFailure::runtime(format!(
+                    "dispatch pass failed: {error}"
+                )));
+            }
         }
         let Some(interval) = poll_interval else {
             return Ok(());
@@ -303,17 +341,18 @@ impl Shutdown {
 ///    calling it as a probe would take a real job off the queue and hand it to a process that
 ///    is about to exit. Connectivity + role identity is the readable half; the callable half is
 ///    proven by the first real pass.
-/// 2. The private worker's UDS peer accepts a connection — the §11.8 hop every claimed
-///    USER_REASONING job must make. Dialled and immediately dropped: no request is sent.
+/// 2. The private worker's UDS peer accepts a connection and is served by the registered uid (ADR-0066 D-L) —
+///    the §11.8 hop every claimed USER_REASONING job must make. Dialled and immediately dropped: no request is sent.
 async fn readyz() -> Result<(), String> {
-    let dsn = required("CONSOLIDATION_WORKER_PG_DSN")?;
+    let dsn = pg_dsn()?;
     // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
     ConsolidationDbPool::connect(&dsn)
         .await
         .map_err(|e| format!("PostgreSQL as role_consolidation_worker ({e})"))?;
     let socket_path = required("HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH")?;
-    // dep: UDS(private-worker) — readyz dials the private worker's inference RPC socket
-    tokio::net::UnixStream::connect(&socket_path)
+    let server_uid = parse::<u32>("HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID")?;
+    // dep: UDS(private-worker) — readyz dials the private worker's inference RPC socket, verified (ADR-0066 D-L)
+    humaux_infra_cell::uds::connect_verified(&socket_path, server_uid)
         .await
         .map_err(|e| format!("the private worker's inference RPC socket at {socket_path} ({e})"))?;
     println!(

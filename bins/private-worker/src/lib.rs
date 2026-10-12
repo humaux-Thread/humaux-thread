@@ -19,6 +19,7 @@
 //! R4 claim, reserve, single-dispatch, scan, completion, and reconciliation state machine.
 
 pub mod distill;
+pub mod dsn;
 pub mod inference_rpc;
 pub mod route_providers;
 

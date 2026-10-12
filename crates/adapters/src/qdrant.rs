@@ -5,7 +5,7 @@
 //!   projection::card, projection::dense]
 //! Called-by: [adapters::placement_repo, adapters::projection_worker, adapters::provisioning,
 //!   adapters::public_projection, adapters::rebuild, adapters::retrieve, adapters::stream_repo, gateway::recall,
-//!   maintenance::drill, retrieval-worker::main, tests, xtask::switch_visible]
+//!   maintenance::drill, retrieval-worker::main, tests, maintenance::switch_visible]
 //! Invariants: [every wire call takes &dyn IntraCellHttpTransport carrying a CellAccessPermit; Qdrant down ->
 //!   QdrantTransportError to the caller, no fallback search; tombstoned points are filtered by the overlay, never
 //!   counted as visible; the count takes a VisibleCountFilter (one stream) only, search/scroll take a

@@ -898,6 +898,7 @@ Adapters depend on Domain; Domain does not depend on Adapters.
 `bins/admin/build.rs` 负责（环境没给 `HUMAUX_BUILD_GIT_SHA` 时用 `git rev-parse HEAD` 兜底，
 发布构建显式传入的值优先）—— 在它之前仓库里没有任何构建设过这个变量，于是本节声称 live 的探针
 在每一次 gate 里实测都走 `MissingObject`：**契约写了 live，实测是 missing，就是名与实对不上**。
+**发布包（卡 39）把同一条名实对齐挪到上线之前**：五个常驻二进制与 admin 都有 `--version`（无烧入 sha 即 exit 2），发布构建一次提交一套镜像并写发布清单（每镜像 image id / 二进制名 / git sha）；`humaux-maintenance deploy-check --release` 在启动任何服务前逐镜像比对四项（image id、`org.opencontainers.image.revision` 标签、二进制名、镜像内 `--version` 自报的 sha）与清单，任一不符即拒绝部署或回滚（ADR-0066 D-R，§78.6）。
 
 **存活/就绪与监管契约（§4.2 五进程）**：`humaux-gateway` 出 `GET /livez` 与 `GET /readyz`
 （收到终止信号后 `/readyz` 先转 503，**并继续 accept 一个排空窗口（5 s，`DRAIN_ANNOUNCE_WINDOW`）**
@@ -2955,7 +2956,7 @@ SECURITY DEFINER function signatures / exact per-role EXECUTE matrix** 尚未被
 registry/matrix 精确注册而红；任何 owner、RLS、ACL、definer owner/search path 或其他 checker
 violation 都不得被标为 expected。
 
-独立 D0 只可在 A provisional 之后，由 checker owner 编辑 `xtask/src/rls_check.rs` 及其 focused
+独立 D0 只可在 A provisional 之后，由 checker owner 编辑 `bins/maintenance/src/rls_check.rs`（ADR-0066 D-Q；`xtask/src/rls_check.rs` 只是委托壳）及其 focused
 checker test/fixture，把 `private.contribution_executions`、
 `private.contribution_execution_sources` 与 `ops.contribution_execution_job_links`，以及 A
 provisional 冻结的 schema-qualified typed SECURITY DEFINER function signatures，注册到**同一套**
@@ -9729,6 +9730,7 @@ Trace / logs with protected access
 | `oldest_pending_age_seconds` | §31 同一次 `ops.health_snapshot()` 采样取 `now() - min(enqueued_at)`（`ops.jobs` 的入队时刻列名是 `created_at`）· 1（ADR-0061 D-D） | gauge·秒 | §39 NO_OUTPUT；§42 队列停摆（规则未装载，ADR-0061 limits） |
 | `admission_rejected_total{class, reason}` | §67 admission control 返 503 处 · 1（`class` = `gateway_inbound`；`reason` ∈ {`queue_full`, `wait_timeout`, `key_limit`}；ADR-0065 D-C） | counter·次 | §67 单机档；§54；§42 admission rejected |
 | `private_distill_runs_total` / `private_distill_outputs_total` | §11 每次 run / 每条产出 · 各 1 | counter·次 / counter·条 | §39 Stage Liveness；§42 no-output stage |
+| `dns_pin_deferred_total` | §11.4 distill 作业以 class `TRANSPORT` 结算 RETRY、且 `HUMAUX_PRIVATE_WORKER_DNS_PINS` 至少钉了一个主机时，`telemetry::metrics::count_dns_pin_deferred` 内唯一 `.inc()` · 1（无 label；只由 `humaux-private-worker` 导出；任一 pin 存在即计每一次 TRANSPORT 延期，不分主机；ADR-0066 D-P，§78.6） | counter·次 | §42 DNS pin deferred；runbook §O-DNS |
 | `public_releases_total` / `public_syntheses_total` / `public_conflicts_total` / `public_provenance_orphans_total` | §12 公共管线各阶段 · 各 1 | counter·条 | §42 public provenance orphan |
 | `private_reasoning_usage_total` / `public_reasoning_usage_total` | §11 / §12 推理调用返回读 usage · 各 1 | counter·token | §35 quota |
 | `maintenance_task_runs_total{task,outcome}` | §4.2 `humaux-maintenance --serve` 每次门调用（每租户一次）收尾，`adapters::maintenance_repo::count_task_call` 内唯一 `.inc()` · 1；租户页读失败也计一次 `failed`（ADR-0062 D-S；只由 `--serve` 导出，ADR-0061 D-C） | counter·次 | §39 Stage Liveness；§42 MaintenanceTaskFailing；§42 maintenance counters absent |
@@ -9750,7 +9752,7 @@ Trace / logs with protected access
 | `backup_last_success_timestamp_seconds{target}` ⊕ | §44 `humaux-maintenance --serve` 的 DR_EVIDENCE 任务每次成功运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：最新一条回执为 VERIFIED 的备份集里最新的 `backup_stopped_at`（`ops.backup_receipts` 按 `backup_label` 取最新一条，表 CHECK 推导 VERIFIED；从未 = 0）；`target` 只有 `local`（`telemetry::dr::TARGET_LOCAL`，裁定 E17：卡 37 只有本机 posix 仓库，不能表达任何异地副本）；运行失败保留旧值、绝不 reset（ADR-0064 D-K / 10.11 D；只由 `--serve` 导出） | gauge·unix 秒 | §42 backup failure；§1.9 P0-2 的异地部分仍开放，归卡 37d |
 | `restore_drill_last_success_timestamp_seconds{target}` ⊕ | §44 同一次 DR_EVIDENCE 运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：表推导 `succeeded` 的最新演练的 `finished_at`（`ops.restore_drills`；从未 = 0；`target` 只有 `local`） | gauge·unix 秒 | §42 restore drill failure |
 | `backup_repo_bytes` | §44 同一次 DR_EVIDENCE 运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：最新一条带 `repo_bytes` 的备份回执（预算拒绝行也算，10.11 D）记下的仓库字节数；无回执 = 0 | gauge·字节 | runbook 磁盘表；`backup status` |
-| `backup_disk_free_bytes{volume}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`df -Pk` 现量 `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`（`repo`，仓库自己的文件系统）与 `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`（`pgdata`）的可用字节 | gauge·字节 | §42 disk free low |
+| `backup_disk_free_bytes{volume}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：进程内 statvfs(3)（f_bavail × f_frsize，不派生 `df` 子进程）现量 `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`（`repo`，仓库自己的文件系统）与 `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`（`pgdata`）的可用字节 | gauge·字节 | §42 disk free low |
 | `backup_budget_headroom_bytes{limit}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`repo_max` = 回执记下的 `repo_max_bytes` − `repo_bytes` − 估算；`free_floor` = 仓库文件系统现量可用 − 回执记下的 `min_free_bytes` − 估算；估算 = 最新 VERIFIED 集 `set_repo_bytes` × 1.25，否则该回执的 `estimate_bytes`；尚无回执两者 = 0；守护进程不读预算键（ADR-0064 D-V / 10.11 D） | gauge·字节 | §42 backup budget low |
 | `wal_archive_failing` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`ops.wal_archive_failures` 里有晚于最新 VERIFIED 全量开始时刻的观测行（闩锁，只有更晚开始的 VERIFIED 全量才解除），或 `pg_stat_archiver` 此刻在失败 ⇒ 1，否则 0（ADR-0064 10.11 D） | gauge·0/1 | §42 WAL archive failing |
 | `tenant_isolation_canary_failures_total{probe}` ⊕ | §45 cross-tenant canary 每次探测判定处 · 1 | counter·次 | §42；§54 cross-tenant violation = 0 |
@@ -9857,6 +9859,7 @@ Prometheus + Alertmanager。
 | cost budget 拒绝（绝对兜底） | `sum by (budget) (increase(budget_denied_total[5m])) > 0` | WARN | 把 rerank 日预算调到 1 分钱后跑一次检索 ⇒ §72 COST BUDGET 判定拒绝 ⇒ 对应 budget 的分量由 0 变 1 ⇒ firing。**不写字面 `{budget="rerank"}`**：§41.2 只给 `result` / `age_bucket` / `code` 冻结了取值集，`budget` 这个 label 全文没有真源，§72 起的三个名字（RATE LIMIT / ENTITLEMENT·QUOTA / COST BUDGET）里也没有字面 `rerank` —— 写死一个没有真源的取值就是 §41.4② 的 label 版：matcher 静默匹配不到任何序列，规则自写下之日起永不触发。按 `budget` 分组则任何一个预算被拒都响，取值叫什么都不影响 |
 | rerank cost anomaly（同比） | `sum(rate(rerank_cost_total[1h])) > 3 * sum(rate(rerank_cost_total[1h] offset 7d))` | WARN | 把 rerank stub 单价 ×10 跑一轮 ⇒ 1h 速率超上周同期 3 倍。**两条必须并存**：上线首周 `offset 7d` 无数据 ⇒ 同比规则输出空向量、永不触发，与 §41.4② 是同一个病，绝对阈值那条是它的兜底 |
 | admission rejected（单机档） | `increase(admission_rejected_total[5m]) > 0` | WARN | 把 §67 admission 上限调到 1 并发两个请求 ⇒ 计数 +1 |
+| DNS pin deferred | `increase(dns_pin_deferred_total[30m]) > 0 and increase(private_distill_outputs_total[30m]) == 0 for 15m` | WARN | 把 `HUMAUX_PRIVATE_WORKER_DNS_PINS` 里 provider 主机钉到一个不应答的地址（过期 pin）⇒ 每次蒸馏调用 TRANSPORT ⇒ RETRY ⇒ `dns_pin_deferred_total` 涨、`private_distill_outputs_total` 不涨 ⇒ 15m 后 firing；outputs 同时在涨 ⇒ 静默（一次抖动被重试吸收，不是 pin 失效）。刷新流程见 runbook §O-DNS（ADR-0066 D-P，§78.6） |
 | auth 暴力尝试 | `increase(mcp_auth_attempts_total{result="bad_credential"}[5m]) > 20` | WARN | 连续 21 次错凭据 ⇒ 计数越阈 |
 | 鉴权拒绝出现 | `increase(mcp_authz_denied_total[5m]) > 0` | WARN | 用无该 scope 的 grant 调一次 tool ⇒ 计数 +1 |
 | backup failure | `time() - backup_last_success_timestamp_seconds{target="local"} > 93600` | CRITICAL | 26 h 没有新的 VERIFIED 本地备份集：让 `backup run` 的校验失败（或不跑）⇒ 只写 FAILED 回执 ⇒ 时间戳不推进 ⇒ 26 h 后 firing（ADR-0064 D-K；卡 37 只有本机仓库，裁定 E17）。**时间戳只由表推导的 VERIFIED 回执推进**（verify 退出 0 且拉回的 manifest 等于该标签首次校验值），本地写完不算；§1.9 P0-2 的异地部分归卡 37d |
@@ -12583,8 +12586,8 @@ snapshot 未产生 或 未上传 ⇒ dead-man 告警（67.4）
 
 | 债务 | 旧状 | 冻结对策 |
 |---|---|---|
-| **红了没人知道** | 告警靠"出事时发出来"，而进程死了就发不出 | **dead-man 心跳**：每进程每 60 s 向外部 healthchecks 端点 ping；**心跳缺失本身即告警**（外部服务 5 min 无 ping 即邮件+推送）。方向反过来 —— 不是"红了发告警"，是"不说话就是红了"。心跳载荷带 `humaux-admin q deploy.binary` 的 git sha，跑错版本（坑 2 的三臂旧镜像）也能从外部看见 |
-| **sidecar 源码无异地备份** | 只在生产机上，机器没了就没了 | 部署产物（compose / helm / 配置 / 全部 sidecar 源码）纳入 git，且每日随 §44 备份推异地；`deploy/` 与 sidecar 目录不在备份清单内 ⇒ CI 红 |
+| **红了没人知道** | 告警靠"出事时发出来"，而进程死了就发不出 | **dead-man 心跳**：每进程每 60 s 向外部 healthchecks 端点 ping；**心跳缺失本身即告警**（外部服务 5 min 无 ping 即邮件+推送）。方向反过来 —— 不是"红了发告警"，是"不说话就是红了"。心跳载荷带 `humaux-admin q deploy.binary` 的 git sha，跑错版本（坑 2 的三臂旧镜像）也能从外部看见；容器发布包里该 sha 由 render 步骤取自已部署镜像的 `humaux-admin version`，且部署前已由 `deploy-check --release` 对过发布清单（ADR-0066 D-I / D-R，§78.6） |
+| **sidecar 源码无异地备份** | 只在生产机上，机器没了就没了 | 部署产物（compose / helm / 配置 / 全部 sidecar 源码）纳入 git，且每日随 §44 备份推异地；`deploy/` 与 sidecar 目录不在备份清单内 ⇒ CI 红。卡 39：清单文件为 `deploy/OFFSITE.list`（列 `deploy/**`），异地副本本身待卡 37d（ADR-0066 L-10，§78.6） |
 | **TLS 续期本机看不见** | 证书过期靠用户报障 | `humaux-admin q tls.expiry` 入探针目录（§4.4）：剩余 < 21 d WARN、< 7 d CRITICAL；该探针自身也走 dead-man —— 24 h 未上报即告警，避免"检查本身停了"重演坑 3 |
 
 ## 67.5 Kubernetes Production

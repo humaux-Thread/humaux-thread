@@ -345,6 +345,26 @@ pub fn dsn_user(dsn: &str) -> Option<String> {
         .filter(|u| !u.is_empty())
 }
 
+/// The same PostgreSQL URL (scheme, host, port, database, query) logging in as `role` with
+/// `password` (percent-encoded into the userinfo). `None` = `dsn` is not a PostgreSQL URL.
+pub fn role_dsn(dsn: &str, role: &str, password: &str) -> Option<String> {
+    probe_options(dsn)?;
+    let (scheme, rest) = dsn.split_once("://")?;
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let encoded: String = password
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    Some(format!("{scheme}://{role}:{encoded}@{host}{tail}"))
+}
+
 fn path_of(probe: &PgConnectOptions) -> String {
     format!("{}:{}", probe.get_host(), probe.get_port())
 }

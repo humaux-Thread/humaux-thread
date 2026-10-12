@@ -697,6 +697,10 @@ weekly restore drill and a provider-free Qdrant rebuild; offsite is NOT YET (hos
 Card 38 (ADR-0065, §6.26) closes P1-13 on the gateway: §67.2 admission with a per-credential limit and a
 body-read bound, sized pool and startup-option timeouts, one-transaction rate buckets; the numbers are dev-host start
 values until card 39's `a5_load_remeasure` (open item O-1), and the other processes' pools are card 38b.
+Card 39 (ADR-0066, §6.27) packages the system as a linux/arm64 container bundle with process hardening and runbook v2
+(ARCH-6 / SEC-5 / OPS-5, SEC-4, OPS-6 rest, OPS-7, OPS-9, OPS-10); S8 / S9 ran on the 2026-10-08 tree (image pair,
+clean-node replay 25/25, cheap agent 39/39), but the gate chain over the card-39 tree is not yet green (review fixes 8
+and 9), so DEPLOYABLE is **not claimed** until it is green on the final tree; O-1 stays open.
 
 ### 6.11 Folded debts closed by card 26 (ADR-0051 D-L)
 
@@ -1125,6 +1129,46 @@ values until card 39's `a5_load_remeasure` (open item O-1), and the other proces
 - **Open (ADR-0065 known limits):** the fairness key is per credential, not per tenant (L3); a dropped request's PG
   slot is held up to statement_timeout (L13); a connection stalled inside its headers is unbounded (L14); writes and
   recall are not load-measured (L15); a correlated provider blip still fills C through recall (L12).
+
+### 6.27 Card 39 (ADR-0066) — release bundle, process hardening, runbook v2; S8 / S9 run, DEPLOYABLE not claimed (chain not green)
+
+| Audit row | Before | After | Gate / witness |
+|---|---|---|---|
+| **ARCH-6 / SEC-5 / OPS-5**: same-uid peer-cred is vacuous | the retrieval and private workers skipped the check when the peer uid equalled their own; every dev run used one uid | one bind / connect module (`infra-cell::uds`); a server whose expected client uid is its own uid or 0 refuses to boot (exit 2, key named) unless the dev-only `HUMAUX_<PROCESS>_ALLOW_SAME_UID=1`, which WARNs on every accepted same-uid peer and which `deploy-check` refuses on a node; four distinct container uids in the bundle | `c39_uds_unit`, `c39_same_uid_boot_retrieval`, `c39_same_uid_boot_private`, `c39_one_uds_site`, `c39_deploy_check_live`; runbook v2 §A1 (exact 403 / 200 / 403 / 422, S9) |
+| **SEC-4**: one-way UDS auth, no socket permissions | clients never checked who serves; 0755 under umask 022 | clients verify the server uid before writing a byte (wrong uid = TRANSPORT naming it); socket dir owned by the server, mode `& 027 == 0`, socket 0660, pair groups 10201 / 10202 | `c39_client_peer_uid_gateway`, `c39_client_peer_uid_consolidation`, `c39_uds_unit` |
+| **OPS-7**: env table, DSN prefixes, private-worker exit code | 4 of ~125 keys in supervision.md; `PRIVATE_WORKER_PG_DSN` / `CONSOLIDATION_WORKER_PG_DSN` without prefix; private worker with no argument exited 0 | generated `deploy/env/example/<process>.env` + secret fixture from `env_vars.md`; `HUMAUX_` DSN names with a one-release alias + deprecation WARN; every binary: no argument → usage + exit 2, `--version` (exit 2 without a burned-in sha), probe modes 0 / 2, a start line first (ADR-0037 addendum) | `c39_env_examples_unit`, `c39_env_examples_generated`, `c39_dsn_alias`, `c39_exit_codes`, `c39_no_none_arm`, `c39_version_modes`, `c39_probe_modes`; rehearsal `version_line_present` |
+| **OPS-9**: migrate while workers run | nothing refused a migration under live runtime sessions | `migrate` refuses `live_runtime_sessions:<role>=<n>` for sessions in `current_database()`; runbook v2 stops the writers first (U4) | `c39_migrate_live_sessions` |
+| **OPS-10**: static DNS pins go stale silently | a dead pinned address surfaced only as TRANSPORT retries | `dns_pin_deferred_total` (§41.2) + `DnsPinDeferred` (§42, promtool + mutation); refresh procedure runbook §10.5 (§O-DNS) | `c39_dns_pin_counter`, `c39_dns_pin_rule`, `promtool_mutations` |
+| **OPS-6 rest**: routine ops needed `cargo xtask` | migrate, rls-check, projection serve, member lived in xtask | moved into `humaux-maintenance` (migrations embedded; xtask keeps thin delegations); a node runs images only | `c39_migrate_embedded`, `c39_loadgen_no_repo_reads`, `arch_check` |
+| Deployment unit (plan §2) | debug binaries on the dev host, one uid | `deploy/compose/prod.yml` (one service per §4.2 process, distinct uids, cgroup limits, read-only root, `cap_drop: ALL`, `no-new-privileges`, healthchecks = the binaries' probes, `depends_on` order, PG / Qdrant / observability / backup scheduler / `dr`), COPY-only images built in a memory-capped builder (R-2), release manifest + `deploy-check --release` (four comparisons per image), runbook v2 as 39 executor-run steps with a no-toolchain assertion per step | `c39_compose_config`, `c39_compose_check`, `c39_deploy_check_compose`, `c39_deploy_check_release`, `c39_budget_sums`, `c39_pg_connect_sites`, `c39_no_secrets_in_deploy`, `c39_runbook_steps`, `c39_steplog_classifier`; S8 `c39_image_build`, S9 `rehearse_node_c39`, `c39_cheap_agent_log` |
+
+- **S8 / S9 (main line, R-1; ADR-0066 "S8 / S9"), on the 2026-10-08 tree:** S8 image pair `c39_build_images.sh` run11
+  `RESULT pass`; S9 clean-node replay prep16: 25/25 assertions PASS, 39/39 runbook steps `RESULT ok` +
+  `NOTOOLCHAIN ok`, rollback rehearsal included; S9 cheap-agent run agent1: 39/39 steps `RESULT ok`, 0 improvised calls
+  (transcript `cagent1/node/evidence/agent_calls.jsonl`, E-11). `c39_cheap_agent_log` reads the newest evidence dir
+  that carries a transcript and is `not_applicable` (naming that dir) only when none exists; it checks every step's
+  block hash against the current runbook, so a runbook change after agent1 (review fix 9 changed steps R8, U2, U7,
+  RB1, RB4, RB5) needs a new cheap-agent run before it is green again.
+- **Gate chain:** 2026-10-08 — lane 126/126 green, chain `CHAIN_EXIT 1` with 3 red gates, root-caused in review
+  fix 8; chain #2 (2026-10-12) — red on one test (`workers_tests`,
+  `derived_dispatch_e2e::one_hung_provider_call_does_not_cost_siblings`), carried by review fix 9 together with the
+  findings of the pre-PR review. **DEPLOYABLE is not claimed** until the chain (which includes `c39_image_build` and
+  `rehearse_node_c39`) is green on the final tree.
+- **Open item O-1 (unchanged):** every sizing, pool and PostgreSQL number of the bundle is a dev-host start value,
+  A5 re-measure required; `a5_load_remeasure` prints `not_applicable: missing object = A5 runner` on this Mac; O-1
+  closes only on `pass` + `SIGNAL L16 hold` (ADR-0066 "O-1").
+- **Declared deviations (ADR-0066 R-4), each with its own reopening signal:**
+  - L-13, the node keeps a superuser DSN in `migrate.secret.env`: a second operator or an external tenant; a managed
+    PostgreSQL; OpenBao dynamic credentials (card 54).
+  - L-14, `dr` can read every secret while it runs and holds the docker socket: a second operator; a dedicated
+    repository host or provider backup (ADR-0064 L5).
+  - (D-J) per-process 0600 env files instead of compose secrets for the Rust processes: as L-13 (card 54 OpenBao).
+- **Open (ADR-0066 known limits):** residents restart `unless-stopped`, so an exit-2 configuration error loops under
+  Docker's backoff instead of stopping — guarded by `deploy-check --env` before every `up` and
+  `service_restarted:<svc>` in `deploy-check --running` (L-2); the two Alertmanager URL files are world-readable on
+  the node (L-19); the rollback crosses no schema change (L-3); secrets are container env (L-4); `dr` holds the docker
+  socket (L-5); deploy artifacts offsite only by list until card 37d (L-10); loopback-only gateway, TLS is card 53
+  (L-12).
 
 ## 7. Housekeeping — done on 2026-09-26 with the user's approval
 

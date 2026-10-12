@@ -17,7 +17,7 @@
 //!
 //! Phases, in order: `L<n>` for each level (LA, 16 keys round-robin, warm-up then measured window), `BURST` (LA),
 //! `ISO-BASE-<i>` / `ISO-BURST-<i>` pairs (LB alone, then LA on ONE key plus LB), and `BURST-W` (LA, after a restart
-//! command given with `--restart BURST-W=<sh>`; skipped without one). Each phase scrapes the gateway's ops `/metrics`
+//! command given with `--restart BURST-W=<sh>` or, shell-less, `--restart BURST-W=file:<dir>` (ADR-0066 D-S); skipped without one). Each phase scrapes the gateway's ops `/metrics`
 //! before and after it and samples `pg_stat_activity` at 1 Hz on its own read-only connection; a second read-only
 //! connection samples the rate advisory-lock waits of `role_gateway` every `--lock-sample-ms` (the `LOCKWAIT` line:
 //! ADR-0065 D-D's measure of the tenant lock's cost).
@@ -33,10 +33,15 @@
 //!
 //! §78.1: every duration, ceiling and endpoint is a required flag; the bearers are named by env var and never printed.
 //! The gateway is dialed with std's `TcpStream` for the reason `xtask::soak` gives (no HTTP dependency in xtask).
+//!
+//! ADR-0066 D-S (A5 re-measure): `--host-class <name>` prefixes every `host=` label, and `--meminfo-path <file>` reads
+//! MemTotal/MemAvailable from that file instead of `docker exec <pg container> cat /proc/meminfo`, so the loadgen
+//! container on the A5 runner labels its lines with the host it measured and never `vm?`.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -51,8 +56,8 @@ const USAGE: &str = "usage: cargo xtask load \
 --levels <n,n,..> --burst <n> --warmup-secs <n> --level-secs <n> --burst-secs <n> \
 --iso-pairs <n> --iso-secs <n> --iso-base-clients <n> --iso-burst-clients <n> --burst-w-secs <n> \
 --max-wait-ms <n> --burst-w-max-wait-ms <n> --handler-timeout-secs <n> --pool-max <n> --max-backends <n> \
---iso-floor-ms <n> --ready-timeout-secs <n> --lock-sample-ms <n> --pg-dsn-env <VAR> --pg-container <name> --report <path> \
-[--restart <PHASE>=<sh> (repeat)] [--only <PHASE_PREFIX,..>] [--rfc7239-lane <letter>]";
+--iso-floor-ms <n> --ready-timeout-secs <n> --lock-sample-ms <n> --pg-dsn-env <VAR> (--pg-container <name> | --meminfo-path <file>) --report <path> \
+[--host-class <name>] [--restart <PHASE>=<sh>|file:<dir> (repeat)] [--only <PHASE_PREFIX,..>] [--rfc7239-lane <letter>]";
 
 /// Share of `memory.enumerate` in each client's closed loop, in tenths (the rest is `tools/list`).
 const ENUMERATE_TENTHS: usize = 7;
@@ -92,13 +97,32 @@ pub struct Config {
     /// Interval of the rate advisory-lock wait sampler: the resolution of every `LOCKWAIT` number.
     lock_sample: Duration,
     pg_dsn: Option<String>,
-    pg_container: String,
+    meminfo: MemInfo,
+    /// ADR-0066 D-S: `--host-class <name>` prefixes the `host=` label (`a5` on the A5 runner).
+    host_class: Option<String>,
     restarts: BTreeMap<String, String>,
     report_path: String,
     /// Phase-name prefixes to run; empty = the whole plan.
     only: Vec<String>,
     /// The lane whose clients send the RFC 7239 quoted form (S7 fault F-FWD); it gets the extra phase `FWD`.
     rfc7239_lane: Option<char>,
+}
+
+/// Where `MemTotal` / `MemAvailable` come from (ADR-0066 D-S, F25): `docker exec <pg container> cat /proc/meminfo`
+/// (`--pg-container`, the card-38 default), or a meminfo file read directly (`--meminfo-path`, the A5 loadgen
+/// container's `/proc/meminfo`, which shows the host's on native Linux).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MemInfo {
+    Docker(String),
+    File(String),
+}
+
+/// `--meminfo-path <file>` wins; without it `--pg-container` is required (§78.1).
+fn meminfo_source(args: &[String]) -> Result<MemInfo, String> {
+    match values(args, "--meminfo-path").pop() {
+        Some(path) => Ok(MemInfo::File(path)),
+        None => one(args, "--pg-container").map(MemInfo::Docker),
+    }
 }
 
 fn values(args: &[String], flag: &str) -> Vec<String> {
@@ -239,7 +263,8 @@ pub fn parse_config(args: &[String]) -> Result<Config, String> {
         lock_sample: Duration::from_millis(num(args, "--lock-sample-ms")?)
             .max(Duration::from_millis(1)),
         pg_dsn,
-        pg_container: one(args, "--pg-container")?,
+        meminfo: meminfo_source(args)?,
+        host_class: values(args, "--host-class").pop(),
         restarts,
         report_path: one(args, "--report")?,
         only,
@@ -1103,6 +1128,31 @@ fn get(host_port: &str, path: &str) -> Result<Response, String> {
 }
 
 /// Poll `/readyz` until 200 or the timeout (assertion 0).
+/// ADR-0066 D-S: `--restart <PHASE>=file:<dir>` — the restart is asked of a launcher outside this process (the A5
+/// runner's gate script; the loadgen image has no shell for `sh -c`): a stale `<dir>/load_<phase>.ack` is removed,
+/// `<dir>/load_<phase>.req` is created, and the hook succeeds once the ack appears within `timeout` (the same
+/// `--ready-timeout-secs` bound the readiness wait uses). `<phase>` is the phase name lower-cased, `-` → `_`
+/// (BURST-W ⇒ `load_burst_w`, rehearse.sh's names).
+fn file_hook(dir: &Path, phase: &str, timeout: Duration) -> bool {
+    let stem = format!("load_{}", phase.to_ascii_lowercase().replace('-', "_"));
+    let (req, ack) = (
+        dir.join(format!("{stem}.req")),
+        dir.join(format!("{stem}.ack")),
+    );
+    let _ = std::fs::remove_file(&ack);
+    if std::fs::write(&req, b"").is_err() {
+        return false;
+    }
+    let started = Instant::now();
+    while started.elapsed() <= timeout {
+        if ack.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    false
+}
+
 fn wait_ready(cfg: &Config) -> Result<Duration, String> {
     let started = Instant::now();
     let mut last = String::from("no attempt");
@@ -1165,9 +1215,14 @@ fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// `MemTotal` and `MemAvailable` of the Docker VM in kB, read inside the PG container (read-only).
-fn vm_meminfo(container: &str) -> Option<(u64, u64)> {
-    let text = run_cmd("docker", &["exec", container, "cat", "/proc/meminfo"])?;
+/// `MemTotal` and `MemAvailable` in kB of the VM (inside the PG container, read-only) or of a meminfo file.
+fn vm_meminfo(source: &MemInfo) -> Option<(u64, u64)> {
+    let text = match source {
+        MemInfo::Docker(container) => {
+            run_cmd("docker", &["exec", container, "cat", "/proc/meminfo"])?
+        }
+        MemInfo::File(path) => std::fs::read_to_string(path).ok()?,
+    };
     let field = |name: &str| {
         text.lines()
             .find(|l| l.starts_with(name))
@@ -1177,15 +1232,17 @@ fn vm_meminfo(container: &str) -> Option<(u64, u64)> {
     Some((field("MemTotal:")?, field("MemAvailable:")?))
 }
 
-/// `host=<cpus>cpu-vm<GiB>` (ADR-0065 R14: every number names the host it was measured on).
-fn host_label(container: &str) -> String {
+/// `host=[<class>-]<cpus>cpu-vm<GiB>` (ADR-0065 R14: every number names the host it was measured on; ADR-0066 D-S:
+/// the A5 runner's lines carry `a5-`).
+fn host_label(class: Option<&str>, source: &MemInfo) -> String {
     let cpus = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
     #[expect(clippy::cast_precision_loss, reason = "kB of one VM")]
-    let vm = vm_meminfo(container).map_or_else(
+    let vm = vm_meminfo(source).map_or_else(
         || "?".to_string(),
         |(t, _)| format!("{:.1}", t as f64 / 1_048_576.0),
     );
-    format!("{cpus}cpu-vm{vm}")
+    let prefix = class.map_or_else(String::new, |c| format!("{c}-"));
+    format!("{prefix}{cpus}cpu-vm{vm}")
 }
 
 fn utc_now() -> String {
@@ -1222,7 +1279,7 @@ const GROUPS_SQL: &str = "select 'wait:' || coalesce(wait_event_type, '-'), coun
  select 'who:' || coalesce(usename::text, '-') || '/' || coalesce(state, '-'), count(*) from pg_stat_activity \
  where backend_type = 'client backend' group by 1";
 
-fn sample_once(db: &mut Client, container: &str, peaks: &mut PgPeaks) -> Result<(), String> {
+fn sample_once(db: &mut Client, container: &MemInfo, peaks: &mut PgPeaks) -> Result<(), String> {
     // dep: PostgreSQL(any) — pg_stat_activity, read-only.
     let row = db
         .query_one(ACTIVITY_SQL, &[])
@@ -1254,7 +1311,7 @@ fn sample_once(db: &mut Client, container: &str, peaks: &mut PgPeaks) -> Result<
 }
 
 /// 1 Hz until `stop`; the first error ends sampling for the phase and is recorded.
-fn sampler(db: Option<&mut Client>, container: &str, stop: &AtomicBool) -> PgPeaks {
+fn sampler(db: Option<&mut Client>, container: &MemInfo, stop: &AtomicBool) -> PgPeaks {
     let mut peaks = PgPeaks::default();
     let Some(db) = db else {
         peaks.error = Some("no sampler session".to_string());
@@ -1406,8 +1463,8 @@ fn iso_noise(cfg: &Config, pair: &str, host: &str) -> String {
         || "?".to_string(),
         |s| s.lines().collect::<Vec<_>>().join(","),
     );
-    let mem = vm_meminfo(&cfg.pg_container)
-        .map_or_else(|| "?".to_string(), |(t, a)| format!("{t}/{a}kB"));
+    let mem =
+        vm_meminfo(&cfg.meminfo).map_or_else(|| "?".to_string(), |(t, a)| format!("{t}/{a}kB"));
     format!(
         "ISO_NOISE pair={pair} loadavg={load} docker_cpu=[{cpu}] vm_mem_total/available={mem} host={host} measured_at={}",
         utc_now()
@@ -1462,7 +1519,7 @@ fn run_phase(
     let stop = AtomicBool::new(false);
     let started = Instant::now();
     let (samples, pg, lock) = std::thread::scope(|s| {
-        let sampler = s.spawn(|| sampler(db, &cfg.pg_container, &stop));
+        let sampler = s.spawn(|| sampler(db, &cfg.meminfo, &stop));
         let locks = s.spawn(|| {
             let dsn = cfg.pg_dsn.as_deref()?;
             Some(lock_sampler(dsn, lock?, cfg.lock_sample, &stop))
@@ -1641,7 +1698,7 @@ pub fn execute(cfg: &Config) -> i32 {
             return 1;
         }
     }
-    let host = host_label(&cfg.pg_container);
+    let host = host_label(cfg.host_class.as_deref(), &cfg.meminfo);
     let mut db = cfg
         .pg_dsn
         .as_deref()
@@ -1670,11 +1727,14 @@ pub fn execute(cfg: &Config) -> i32 {
     for phase in plan {
         let name = phase.0.clone();
         if let Some(cmd) = cfg.restarts.get(&name) {
-            // dep: subprocess(sh) — the launcher's own restart hook (it owns the gateway's pidfile and env).
-            let ok = Command::new("sh")
-                .args(["-c", cmd])
-                .status()
-                .is_ok_and(|s| s.success());
+            let ok = match cmd.strip_prefix("file:") {
+                Some(dir) => file_hook(Path::new(dir), &name, cfg.ready_timeout),
+                // dep: subprocess(sh) — the launcher's own restart hook (it owns the gateway's pidfile and env).
+                None => Command::new("sh")
+                    .args(["-c", cmd])
+                    .status()
+                    .is_ok_and(|s| s.success()),
+            };
             match (ok, wait_ready(cfg)) {
                 (true, Ok(t)) => {
                     ready_after_restarts.push(format!("{name}:{:.1}s", t.as_secs_f64()))
@@ -2035,7 +2095,8 @@ mod tests {
             ready_timeout: Duration::from_secs(1),
             lock_sample: Duration::from_millis(10),
             pg_dsn: None,
-            pg_container: "humaux-c38-load-none".to_string(),
+            meminfo: MemInfo::Docker("humaux-c38-load-none".to_string()),
+            host_class: None,
             restarts: BTreeMap::new(),
             report_path,
             only: Vec::new(),
@@ -2259,5 +2320,94 @@ mod tests {
                 "LOCKWAIT L64 lock=tenant group=LA acquisitions=1000 observed_waits=11 p50=<10ms p99=11.0ms max=500.0ms other_rate_lock_waits=1 other_max=3.0ms resolution=10ms samples=4500 host=h measured_at=2026-10-07T00:00:00Z"
             )
         );
+    }
+
+    /// A meminfo file with `MemTotal` 22 GiB (in kB), removed when dropped.
+    struct MeminfoFile(std::path::PathBuf);
+
+    impl MeminfoFile {
+        fn new(purpose: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "humaux_c39_meminfo_{purpose}_{}",
+                std::process::id()
+            ));
+            std::fs::write(
+                &path,
+                "MemTotal:       23068672 kB\nMemFree:  1 kB\nMemAvailable:   20971520 kB\n",
+            )
+            .expect("write meminfo");
+            Self(path)
+        }
+    }
+
+    impl Drop for MeminfoFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// ADR-0066 D-S: `--host-class a5` prefixes the label; without it the card-38 label is unchanged.
+    /// Fault: ignore the class ⇒ red.
+    #[test]
+    fn host_class_prefixes_the_label() {
+        let file = MeminfoFile::new("class");
+        let source = MemInfo::File(file.0.display().to_string());
+        let cpus = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
+        assert_eq!(
+            host_label(Some("a5"), &source),
+            format!("a5-{cpus}cpu-vm22.0")
+        );
+        assert_eq!(host_label(None, &source), format!("{cpus}cpu-vm22.0"));
+    }
+
+    /// ADR-0066 D-S / F25: `--meminfo-path` is read directly (no `docker exec`, no `--pg-container` needed), so the
+    /// label carries the file's MemTotal and never `vm?`. Fault: ignore the flag (fall back to the container) ⇒ red.
+    #[test]
+    fn meminfo_path_is_read_without_docker() {
+        let file = MeminfoFile::new("path");
+        let args: Vec<String> = ["--meminfo-path", &file.0.display().to_string()]
+            .iter()
+            .map(|a| (*a).to_string())
+            .collect();
+        let source = meminfo_source(&args).expect("--meminfo-path alone is enough");
+        assert_eq!(vm_meminfo(&source), Some((23_068_672, 20_971_520)));
+        let label = host_label(Some("a5"), &source);
+        assert!(
+            label.ends_with("cpu-vm22.0") && !label.contains("vm?"),
+            "{label}"
+        );
+    }
+
+    /// ADR-0066 D-S / review P1 (2026-10-08): the shell-less restart hook. With a launcher that answers, the hook
+    /// writes `load_burst_w.req` and succeeds on the ack; with none it fails at the bound instead of skipping the
+    /// phase. Faults: write a different request name, or return success without the ack ⇒ red.
+    #[test]
+    fn file_hook_waits_for_the_launcher_ack() {
+        let dir = std::env::temp_dir().join(format!("humaux_c39_hook_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("hook dir");
+        let launcher_dir = dir.clone();
+        let launcher = std::thread::spawn(move || {
+            let req = launcher_dir.join("load_burst_w.req");
+            let started = Instant::now();
+            while !req.exists() && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let seen = req.exists();
+            std::fs::write(launcher_dir.join("load_burst_w.ack"), b"").expect("ack");
+            seen
+        });
+        let answered = file_hook(&dir, "BURST-W", Duration::from_secs(10));
+        let saw_request = launcher.join().expect("launcher");
+        let unanswered = file_hook(&dir.join("absent"), "BURST-W", Duration::from_millis(300));
+        let _ = std::fs::remove_file(dir.join("load_burst_w.ack"));
+        let silent = file_hook(&dir, "BURST-W", Duration::from_millis(300));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            saw_request && answered,
+            "req seen {saw_request}, ack honoured {answered}"
+        );
+        assert!(!unanswered, "an unwritable hook dir fails");
+        assert!(!silent, "no ack within the bound fails");
     }
 }

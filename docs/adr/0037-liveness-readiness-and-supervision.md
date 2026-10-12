@@ -256,3 +256,30 @@ Two readiness numbers an operator has to size probes against, both observed:
    shared crate all five binaries depend on that carries a tokio dependency it would be
    appropriate to extend; deduplicating means creating one. Not worth it for 60 lines —
    revisit when a fifth process needs the same shape.
+
+## Addendum (2026-10-07, ADR-0066 D-N / D-D) — the exit-code contract
+
+Card 39 packs the five resident processes into containers whose restart policy is `unless-stopped`
+(`deploy/compose/prod.yml`; ADR-0066 review fix 9 C1 — residents come back after a host reboot or a daemon
+restart; the earlier `on-failure:5` cap on exit 2 moved into the gates around `up`: `deploy-check --env` before,
+`deploy-check --running` after, where a restarted container is red). A supervisor can only act on what an exit code means, so every binary now
+keeps one contract (§78.6; the code is ADR-0066 S2, the tests `bins/*/tests/exit_codes.rs`):
+
+| exit | meaning | what the supervisor does |
+|---|---|---|
+| 0 | clean stop after a drain (SIGTERM), or a one-shot that succeeded | nothing; a resident mode never exits 0 on its own |
+| 1 | runtime failure (a dependency, an I/O error) | restart helps: `unless-stopped` restarts it (exponential backoff) |
+| 101 | panic | restart helps; the panic is a defect to file |
+| 2 | usage or configuration (an unknown or missing argument, a missing or invalid key, a refused same-uid peer policy, a `--version` without a burned-in sha) | restarting is pointless: under `unless-stopped` Docker keeps retrying with backoff, so the guard is before `up` (`deploy-check --env`, runbook R2/U2) and after it (`deploy-check --running`: `service_restarted` is red); the operator fixes the named key |
+| 3 | refused (a maintenance door's named refusal; `deploy-check` with a failed check) | nothing; the operator reads the named reason |
+
+- **No argument-less success.** A binary started without its mode argument prints its usage and exits 2;
+  the private and consolidation workers' former argument-less probe (exit 0) is gone, so `Restart=always`
+  can no longer loop on a misconfigured unit that "succeeds" every second.
+- **Probe modes** (`--readyz`, `--livez`, `readyz serve|health-serve`) exit 0 ready / 2 not ready, naming the
+  object that is down, and are the containers' healthchecks (exec form, no shell in the image).
+- **`--version`** prints `<binary> <semver> git_sha=<40 hex> build_time=<t>` and exits 0, or exits 2 when no
+  sha was burned in (D5 above, extended to every binary). Every resident mode prints
+  `<binary>: start mode=<m> version=<v> git_sha=<sha|missing>` as its first stderr line.
+- D6's four OS users become four distinct container uids with one pair group per socket; the boot-time
+  same-uid refusal and the client-side server-uid check are ADR-0066 D-K / D-L.

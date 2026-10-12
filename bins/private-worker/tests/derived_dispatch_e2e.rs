@@ -9,7 +9,7 @@
 //!   control.reasoning_route_policies, control.tenants, control.users, ops.jobs, ops.outbox, ops.provider_slots,
 //!   ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.events,
 //!   private.evidence_objects], PostgreSQL(role_maintenance), PostgreSQL(role_private_worker) x=[ops.claim_derived_work_v2],
-//!   HTTP(loopback), subprocess(humaux-private-worker), subprocess(kill)]; env=[CARGO_BIN_EXE_humaux-private-worker,
+//!   HTTP(literal endpoint), HTTP(loopback), subprocess(humaux-private-worker), subprocess(kill)]; env=[CARGO_BIN_EXE_humaux-private-worker,
 //!   HUMAUX_CARD15_TEST_SECRET, HUMAUX_LIVE_P2_KEY_ENV, HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS,
 //!   HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID, HUMAUX_PRIVATE_WORKER_CREDENTIALS,
 //!   HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS,
@@ -362,6 +362,7 @@ fn dispatch_config(owner: &str, lease_seconds: f64) -> DistillDispatchConfig {
         max_attempts: 5,
         budget: TEST_BUDGET,
         health_renew_seconds: HEALTH_RENEW_SECS,
+        dns_pins_configured: false,
     }
 }
 
@@ -1278,6 +1279,7 @@ fn dispatch_discovers_pending_evidence_in_two_tenants() {
 /// else breaks); (b) seats forced to 1 ⇒ a B row waits behind the hang. Red on v1's serial pass
 /// (card 30b evidence).
 #[test]
+#[allow(clippy::too_many_lines)] // one scenario: seed, sweep-after-claim sampler, pass, ordered assertions
 fn one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_tenant() {
     run(
         "one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_tenant",
@@ -1296,6 +1298,12 @@ fn one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_t
             // be acted on), and the sampler records the hung job's state: with its heartbeat the
             // job stays DISPATCH_INTENT for the whole hang; without it, T5 makes it UNCERTAIN.
             let stop = std::sync::Arc::new(AtomicBool::new(false));
+            // Job ids (b_rows are evidence ids; the ordering probe below keys on those).
+            let seeded: Vec<Uuid> = b_rows
+                .iter()
+                .map(|e| handle.job_of(*e))
+                .chain([hung_job])
+                .collect();
             let sampler = {
                 let (stop, dsn) = (stop.clone(), handle.dsn.clone());
                 std::thread::spawn(move || {
@@ -1305,13 +1313,85 @@ fn one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_t
                     let mut sweeper =
                         Client::connect(&dsn_as_role(&dsn, "role_private_worker"), NoTls)
                             .expect("sweeper connection");
-                    std::thread::sleep(Duration::from_millis(300));
+                    // Sweep only once the pass has claimed every seeded job: a fixed 300 ms delay raced the
+                    // pass on a loaded host and the sweeper took a READY B row (card-39 chain, 2026-10-12).
+                    // READY is the claim's own predicate (0206 `ops.claim_derived_work_v2`) over the four
+                    // seeded jobs; nothing else of this tenant pair is claimable.
+                    let claim_deadline = std::time::Instant::now() + Duration::from_secs(10);
+                    loop {
+                        let ready: i64 = admin
+                            .query_one(
+                                "SELECT count(*) FROM ops.jobs WHERE job_id = ANY($1) \
+                                   AND ((status IN ('PENDING', 'RETRY_WAIT') AND next_retry_at <= clock_timestamp()) \
+                                        OR (status = 'PROCESSING' AND lease_expires_at < clock_timestamp()))",
+                                &[&seeded],
+                            )
+                            .expect("ready probe")
+                            .get(0);
+                        if ready == 0 {
+                            break;
+                        }
+                        assert!(
+                            std::time::Instant::now() < claim_deadline,
+                            "{ready} seeded jobs still READY 10 s after the pass started"
+                        );
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     let mut uncertain = 0_u32;
+                    // The claim is DB-wide (lane(a:shared_db)): a READY DERIVED_DISTILL job of another tenant
+                    // (the rehearsal's inspection tenants, an interrupted run — card-39 chain #2, 2026-10-12: the
+                    // untyped assert went red on exactly that, alone and without load) would be claimed by the
+                    // sweep, hold a provider slot and delay B's rows behind the hang. So a sweep runs only while
+                    // the shared queue holds no foreign READY job; a skipped sweep is counted and the scenario is
+                    // inconclusive (§57.1 below) instead of red or quietly green.
+                    let (mut sweeps, mut sweeps_skipped) = (0_u32, 0_u32);
                     while !stop.load(Ordering::SeqCst) {
-                        let swept = sweeper
-                            .query("SELECT job_id FROM ops.claim_derived_work_v2('c32-e1-sweeper', 1, 12)", &[])
-                            .expect("sweep claim");
-                        assert!(swept.is_empty(), "nothing else is READY");
+                        let foreign: i64 = admin
+                            .query_one(
+                                "SELECT count(*) FROM ops.jobs WHERE job_type = 'DERIVED_DISTILL' \
+                                   AND NOT (job_id = ANY($1)) \
+                                   AND ((status IN ('PENDING', 'RETRY_WAIT') AND next_retry_at <= clock_timestamp()) \
+                                        OR (status = 'PROCESSING' AND lease_expires_at < clock_timestamp()))",
+                                &[&seeded],
+                            )
+                            .expect("foreign READY probe")
+                            .get(0);
+                        if foreign == 0 {
+                            let swept = sweeper
+                                .query("SELECT job_id FROM ops.claim_derived_work_v2('c32-e1-sweeper', 1, 12)", &[])
+                                .expect("sweep claim");
+                            let mine: Vec<Uuid> =
+                                swept.iter().map(|r| r.get::<_, Uuid>(0)).collect();
+                            assert!(
+                                mine.is_empty(),
+                                "nothing else of this scenario is READY: {mine:?}"
+                            );
+                            sweeps += 1;
+                        } else {
+                            if sweeps_skipped == 0 {
+                                // Name the residue once (tenant, status, class): the operator tears it down.
+                                let rows = admin
+                                    .query(
+                                        "SELECT t.name, j.status, coalesce(j.last_error_class, '-') FROM ops.jobs j \
+                                           JOIN control.tenants t ON t.tenant_id = j.tenant_id \
+                                         WHERE j.job_type = 'DERIVED_DISTILL' AND NOT (j.job_id = ANY($1)) \
+                                           AND ((j.status IN ('PENDING', 'RETRY_WAIT') AND j.next_retry_at <= clock_timestamp()) \
+                                                OR (j.status = 'PROCESSING' AND j.lease_expires_at < clock_timestamp())) \
+                                         LIMIT 5",
+                                        &[&seeded],
+                                    )
+                                    .expect("residue probe");
+                                for r in rows {
+                                    eprintln!(
+                                        "E1 residue: tenant={} status={} class={}",
+                                        r.get::<_, String>(0),
+                                        r.get::<_, String>(1),
+                                        r.get::<_, String>(2)
+                                    );
+                                }
+                            }
+                            sweeps_skipped += 1;
+                        }
                         let state: Option<String> = admin
                             .query_one(
                                 "SELECT dispatch_state FROM ops.jobs WHERE job_id = $1",
@@ -1322,13 +1402,23 @@ fn one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_t
                         uncertain += u32::from(state.as_deref() == Some("EXECUTION_UNCERTAIN"));
                         std::thread::sleep(Duration::from_millis(100));
                     }
-                    uncertain
+                    (uncertain, sweeps, sweeps_skipped)
                 })
             };
             let started = std::time::Instant::now();
             let report = handle.pass(&provider, &dispatch_config("c32-e1", 1.0));
             stop.store(true, Ordering::SeqCst);
-            let uncertain_samples = sampler.join().expect("sampler");
+            let (uncertain_samples, sweeps, sweeps_skipped) = sampler.join().expect("sampler");
+            if sweeps_skipped > 0 {
+                // §57.1: the measurement's missing object is an empty shared queue; the scenario needs the sweep to
+                // act on an expired lease, so a run without one proves nothing and says so.
+                println!(
+                    "not_applicable: missing object = an empty shared DERIVED_DISTILL queue \
+                     ({sweeps_skipped} sweep(s) skipped behind READY jobs of other tenants, {sweeps} done; \
+                     tear the rehearsal's inspection tenants down: xtask e2e-seed --teardown <tenant>)"
+                );
+                return;
+            }
             println!(
                 "E1 report {report:?} wall {:?} uncertain_samples {uncertain_samples}",
                 started.elapsed()
@@ -2200,6 +2290,7 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 max_attempts: 5,
                 budget: TEST_BUDGET,
                 health_renew_seconds: HEALTH_RENEW_SECS,
+                dns_pins_configured: false,
             };
             let replied = std::sync::Arc::new(AtomicBool::new(false));
             let called = std::sync::Arc::new(AtomicBool::new(false));
@@ -3689,10 +3780,15 @@ fn slow_provider_tenant_cannot_take_all_slots() {
                     let (mut max_b, mut samples) = (0_i64, 0_u32);
                     while started.elapsed() < Duration::from_secs_f64(3.0 * TIMEOUT_SECS) {
                         // ADR-0060 D-F is a contention invariant: B's share is bounded only while A
-                        // still has claimable DISTILL work. Once A's 500 distill jobs are drained (a
+                        // still has claimable DISTILL work. Claimable = the claim's own READY predicate
+                        // (0206 `ops.claim_derived_work_v2`: PENDING/RETRY_WAIT due now, or a PROCESSING
+                        // job whose lease expired), copied verbatim (review fix 9, C39-F8-1); a PROCESSING
+                        // job with a live lease already holds its slot, so once A's last job is in flight
+                        // B may take the other three (card-39 chain, 2026-10-08: max_slots_b=3 with
+                        // done_a=500 under a PENDING+PROCESSING guard). Once A's 500 distill jobs are drained (a
                         // warm host does it inside this window: card 34b chain, done_a=500 max_b=4)
                         // B is the only tenant with READY jobs and may hold every slot — so both
-                        // counters fold a sample in only while A has a PENDING or PROCESSING
+                        // counters fold a sample in only while A has a READY
                         // DERIVED_DISTILL job. The job_type predicate matters: 0164's trigger
                         // enqueues one DERIVED_CONSOLIDATE job per accepted Evidence that nothing in
                         // this test claims, so an untyped count never drops to 0 and the drained
@@ -3704,7 +3800,8 @@ fn slow_provider_tenant_cannot_take_all_slots() {
                                    JOIN ops.jobs j ON j.job_id = s.job_id WHERE j.tenant_id = $1), \
                                         (SELECT count(*) FROM ops.jobs \
                                    WHERE tenant_id = $2 AND job_type = 'DERIVED_DISTILL' \
-                                     AND status IN ('PENDING', 'PROCESSING'))",
+                                     AND ((status IN ('PENDING', 'RETRY_WAIT') AND next_retry_at <= clock_timestamp()) \
+                                          OR (status = 'PROCESSING' AND lease_expires_at < clock_timestamp())))",
                                 &[&tenant_b, &tenant_a],
                             )
                             .expect("slots held by B / A's open jobs");
@@ -4266,6 +4363,7 @@ const LITERAL_CHAT_ADDR: &str = "192.88.99.1:443";
 fn literal_endpoint_black_holes() -> bool {
     use std::io::{ErrorKind, Read, Write};
     let addr = LITERAL_CHAT_ADDR.parse().expect("literal socket address");
+    // dep: HTTP(literal endpoint) — the black-hole probe of the literal chat address, never a loopback stub
     let mut stream = match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
         Ok(stream) => stream,
         Err(e) => return e.kind() == ErrorKind::TimedOut,
@@ -4474,17 +4572,32 @@ fn sigterm_to_the_inference_rpc_listener_exits_zero() {
             let credentials =
                 credentials_spec(&mut handle.admin, &tenants, "HUMAUX_CARD15_TEST_SECRET");
             // Short `/tmp` path: macOS's temp dir plus a uuid overruns `sockaddr_un.sun_path`.
-            let socket_path = format!("/tmp/hp15-rpc-{}.sock", Uuid::now_v7().simple());
-            let _ = std::fs::remove_file(&socket_path);
+            // ADR-0066 D-M: the socket lives in a 0700 directory of this uid (a shared `/tmp` refuses the bind).
+            struct RmDir(String);
+            impl Drop for RmDir {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+            let sock_dir = RmDir(format!("/tmp/hp15-rpc-{}", Uuid::now_v7().simple()));
+            std::fs::create_dir(&sock_dir.0).expect("create the socket dir");
+            std::fs::set_permissions(
+                &sock_dir.0,
+                std::os::unix::fs::PermissionsExt::from_mode(0o700),
+            )
+            .expect("chmod the socket dir");
+            let socket_path = format!("{}/rpc.sock", sock_dir.0);
             let dsn = dsn_as_role(&handle.dsn, "role_private_worker");
             let ops = free_ops_addr();
             let mut child = distill_serve_command(&dsn, &credentials)
                 .arg("--serve-rpc")
                 .env("HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR", &ops)
                 .env("HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH", &socket_path)
+                // ADR-0066 D-K: a uid nobody here runs as — the listener is never dialled, and its own uid
+                // would refuse boot without the dev-only opt-in.
                 .env(
                     "HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID",
-                    own_uid().to_string(),
+                    own_uid().wrapping_add(1).to_string(),
                 )
                 .spawn_reaped("spawn humaux-private-worker --serve-rpc");
             let deadline = std::time::Instant::now() + Duration::from_secs(60);
@@ -4730,6 +4843,7 @@ fn live_config(owner: &str, lease_seconds: f64, in_flight: u32) -> DistillDispat
         max_attempts: 5,
         budget: TEST_BUDGET,
         health_renew_seconds: HEALTH_RENEW_SECS,
+        dns_pins_configured: false,
     }
 }
 
@@ -5095,9 +5209,29 @@ fn distill_poison_live() {
             "a poison lane never spends another job's budget"
         );
         assert!(phase_b.met, "M6 phase B: the good jobs did not settle");
+        // Every good job is DONE, and every attempt phase B spent is its DONE call, a provider RETRY
+        // deferral (capacity is the provider's, never the scheduler's: §57.1; card-39 lane 2026-10-12:
+        // one good job DONE at attempt 2 after one deferral) or an ADR-0048 re-ask (empty / malformed
+        // reply: each is another `begin_call`, review fix 9 C39-F8-2). Exact accounting, no slack: phase A
+        // left every good attempt at 0 (asserted above), so attempts = jobs + deferrals + re-asks.
+        let good_attempts_total: u32 = good_final
+            .iter()
+            .map(|(_, a)| u32::try_from(*a).expect("attempt"))
+            .sum();
+        let explained = u32::try_from(good_rows.len()).expect("good rows")
+            + phase_b.report.deferred
+            + phase_b.report.empty_retries
+            + phase_b.report.malformed_retries;
         assert!(
-            good_final.iter().all(|(s, a)| s == "DONE" && *a == 1),
-            "every good job DONE at attempt 1"
+            good_final.iter().all(|(s, _)| s == "DONE")
+                && good_attempts_total == phase_b.report.attempts
+                && phase_b.report.attempts == explained,
+            "every good job DONE at attempt 1 + its deferrals and re-asks: good_final={good_final:?} \
+             phase_b attempts={} deferred={} empty_retries={} malformed_retries={}",
+            phase_b.report.attempts,
+            phase_b.report.deferred,
+            phase_b.report.empty_retries,
+            phase_b.report.malformed_retries
         );
         assert_eq!(good_done, good_rows.len());
         assert_eq!(
@@ -5177,9 +5311,24 @@ fn distill_fairness_live() {
                 served.max_bound,
                 served.report.summary_line()
             );
-            assert!(served.met, "M1 in_flight={in_flight}: backlog not drained");
+            // Provider capacity is the measurement's missing object, never a red (§57.1): when the
+            // backlog did not drain AND the provider deferred calls (RETRY_WAIT backoffs of 30–240 s eat
+            // the budget), M1–M8 cannot be measured on this account today. A stalled backlog with no
+            // deferral is still the scheduler's fault and stays red. Card-39 lane, 2026-10-08:
+            // in_flight=1 drained 48/50 in 900 s with 26 of 74 attempts deferred (card 38: 50/50 in 541 s).
+            // The two safety bounds hold whatever the provider's capacity (PR #2 review): a concurrency or
+            // I-SLOT violation seen in this round is a red before the capacity skip can apply.
             assert!(served.max_bound <= i64::from(in_flight));
             assert_eq!(served.i_slot_breaks, 0, "I-SLOT");
+            if !served.met && served.report.deferred > 0 {
+                println!(
+                    "not_applicable: missing object = provider capacity at in_flight={in_flight} \
+                     ({} of {} attempts deferred by RETRY_WAIT, {done} of 50 drained within the budget)",
+                    served.report.deferred, served.report.attempts
+                );
+                return;
+            }
+            assert!(served.met, "M1 in_flight={in_flight}: backlog not drained");
             rates.push(rate);
         }
         println!("M1 ratio in_flight4/in_flight1={:.2}", rates[1] / rates[0]);

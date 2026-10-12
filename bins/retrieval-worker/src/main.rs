@@ -2,7 +2,7 @@
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-domain, humaux-infra-cell,
 //!   humaux-local-secret-scan, humaux-retrieval-provider, humaux-telemetry, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(serve)]; env=[CARGO_PKG_VERSION,
-//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_RETRIEVAL_WORKER_BACKOFF_BASE_SECS,
+//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID, HUMAUX_RETRIEVAL_WORKER_BACKOFF_BASE_SECS,
 //!   HUMAUX_RETRIEVAL_WORKER_BACKOFF_MAX_SECS, HUMAUX_RETRIEVAL_WORKER_BATCH, HUMAUX_RETRIEVAL_WORKER_CALLER,
 //!   HUMAUX_RETRIEVAL_WORKER_CELL_ID, HUMAUX_RETRIEVAL_WORKER_DIMENSION, HUMAUX_RETRIEVAL_WORKER_EGRESS_PROCESSOR_ID,
 //!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER,
@@ -18,8 +18,8 @@
 //!   modules=[adapters::disclosure,
 //!   adapters::postgres, adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant,
 //!   adapters::stream_repo, domain::egress,
-//!   domain::error, domain::ids, humaux-local-secret-scan, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, retrieval-provider::adapters, retrieval-provider::contract, retrieval-provider::metrics,
+//!   domain::error, domain::ids, humaux-local-secret-scan, humaux-telemetry, infra-cell::permit, infra-cell::resource,
+//!   infra-cell::transport, infra-cell::uds, retrieval-provider::adapters, retrieval-provider::contract, retrieval-provider::metrics,
 //!   retrieval-worker::rpc, telemetry::metrics]
 //! Called-by: [process(humaux-retrieval-worker)]
 //! Invariants: [the UDS server binds only the configured socket path; a peer without kernel peer-credential auth is
@@ -30,7 +30,7 @@
 //!   open no listener; --metrics-families reads no configuration; --serve / --run-once bind
 //!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION to the configured model's fingerprint before the first pass and exit 2
 //!   when the label is bound to another one (ADR-0064 D-C)]
-//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C
+//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N
 //!
 //! §4.2 (line 818): the owning process of `humaux_adapters::projection_worker::run_once` —
 //! there is no separate `projection-worker` process. Env wiring mirrors
@@ -89,6 +89,7 @@ use humaux_telemetry::metrics::{
     OpsListener, families, parse_ops_addr, process_routes, serve_loopback, write_family,
     write_histogram,
 };
+use humaux_telemetry::{start_line, version_line};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -103,8 +104,12 @@ fn parse<T: std::str::FromStr>(name: &str) -> Result<T, String> {
 }
 
 fn usage() -> &'static str {
-    "usage: humaux-retrieval-worker (--readyz | --run-once | --serve | --serve-rpc | --metrics-families)"
+    "usage: humaux-retrieval-worker (--readyz | --run-once | --serve | --serve-rpc | --metrics-families | --version)"
 }
+
+const BIN: &str = "humaux-retrieval-worker";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_SHA: Option<&str> = option_env!("HUMAUX_BUILD_GIT_SHA");
 
 /// §78.1 / ADR-0061 D-B: `--serve-rpc`'s own ops listener address (loopback only, no default).
 const SERVE_RPC_METRICS_ADDR: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR";
@@ -283,12 +288,20 @@ async fn main() -> ExitCode {
             eprintln!("humaux-retrieval-worker: {error}");
             ExitCode::from(2)
         }
+        Err(Outcome::Runtime(error)) => {
+            eprintln!("humaux-retrieval-worker: {error}");
+            ExitCode::from(1)
+        }
     }
 }
 
+/// Why a mode stopped (ADR-0066 D-N): `NotApplicable` / `Failed` = a missing key, usage or configuration (exit 2,
+/// an operator must change something; `From<String>` is this case for every `?` on a parse helper); `Runtime` = a
+/// dependency down at boot, a failed one-shot pass or the serve loop failing (exit 1, a restart can help).
 enum Outcome {
     NotApplicable(String),
     Failed(String),
+    Runtime(String),
 }
 
 impl From<String> for Outcome {
@@ -310,10 +323,23 @@ async fn run() -> Result<(), Outcome> {
             print!("{out}");
             Ok(())
         }
+        // ADR-0066 D-D: reads no configuration; a build without its sha exits 2 like any other refusal here.
+        "--version" => {
+            let line = version_line(BIN, VERSION, GIT_SHA, option_env!("HUMAUX_BUILD_TIME"))?;
+            println!("{line}");
+            Ok(())
+        }
         "--readyz" => readyz().await,
         "--run-once" => projection_mode(false).await,
-        "--serve" => projection_mode(true).await,
-        "--serve-rpc" => rpc_mode::run().await,
+        // ADR-0066 D-D: a resident mode's first line names the build it runs.
+        "--serve" => {
+            eprintln!("{}", start_line(BIN, "serve", VERSION, GIT_SHA));
+            projection_mode(true).await
+        }
+        "--serve-rpc" => {
+            eprintln!("{}", start_line(BIN, "serve-rpc", VERSION, GIT_SHA));
+            rpc_mode::run().await
+        }
         _ => Err(Outcome::Failed(usage().to_owned())),
     }
 }
@@ -411,7 +437,7 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
 
     // Both handlers are installed before the first pass (the consolidation worker's reason:
     // a signal during pass one must not hit the default disposition mid-pass).
-    let mut shutdown = Shutdown::install()?;
+    let mut shutdown = Shutdown::install().map_err(Outcome::Runtime)?;
     // Connected lazily and kept: a database that is down at start (or later) is a logged failed
     // pass in `--serve`, retried next poll — never a crash loop the supervisor has to absorb.
     let mut shared: Option<SharedProjectionDeps> = None;
@@ -434,12 +460,12 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
                     Some(error) if resident => {
                         eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
                     }
-                    Some(error) => return Err(Outcome::Failed(error)),
+                    Some(error) => return Err(Outcome::Runtime(error)),
                 },
                 Err(error) if resident => {
                     eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
                 }
-                Err(error) => return Err(Outcome::Failed(error)),
+                Err(error) => return Err(Outcome::Runtime(error)),
             }
         }
         if let Some(deps) = &shared {
@@ -449,7 +475,7 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
                     eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
                 }
                 Err(error) => {
-                    return Err(Outcome::Failed(format!("projection pass failed: {error}")));
+                    return Err(Outcome::Runtime(format!("projection pass failed: {error}")));
                 }
             }
         }
@@ -535,7 +561,9 @@ async fn connect_shared(
     let embedder = build_embedder(dsn, dimension)
         .await
         .map_err(|outcome| match outcome {
-            Outcome::NotApplicable(reason) | Outcome::Failed(reason) => reason,
+            Outcome::NotApplicable(reason) | Outcome::Failed(reason) | Outcome::Runtime(reason) => {
+                reason
+            }
         })?;
     let transport: Arc<dyn IntraCellHttpTransport> = transport.clone();
     let registry = registry.clone();
@@ -703,7 +731,9 @@ async fn build_embedding_provider(
     };
     // dep: PostgreSQL(role_retrieval_worker) — opens a pool for the RPC server's request handling
     let embedder_pool = RetrievalWorkerDbPool::connect(dsn).await.map_err(|_| {
-        "retrieval worker database role connection failed (embedder pool)".to_owned()
+        Outcome::Runtime(
+            "retrieval worker database role connection failed (embedder pool)".to_owned(),
+        )
     })?;
     // §78.1: the provider is configuration, not code — the id selects the adapter inside
     // `humaux_retrieval_provider::adapters` (§19 Gate 3/7 keeps the concrete type there).
@@ -758,6 +788,16 @@ mod rpc_mode {
             ));
         }
         let gateway_uid = parse::<u32>("HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID")?;
+        // ADR-0066 D-K: before any connection is opened — a vacuous peer check refuses boot (exit 2).
+        humaux_infra_cell::uds::server_policy(
+            "humaux-retrieval-worker",
+            "HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID",
+            gateway_uid,
+            "HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID",
+            std::env::var("HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID")
+                .ok()
+                .as_deref(),
+        )?;
         let socket_path = required("HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH")?;
         let dsn = required("HUMAUX_RETRIEVAL_WORKER_PG_DSN")?;
 
@@ -766,7 +806,9 @@ mod rpc_mode {
         let scanner = Arc::new(build_scanner()?);
         // dep: PostgreSQL(role_retrieval_worker) — opens a pool for the readiness check
         let calls = RetrievalWorkerDbPool::connect(&dsn).await.map_err(|_| {
-            "retrieval worker database role connection failed (rpc pool)".to_owned()
+            Outcome::Runtime(
+                "retrieval worker database role connection failed (rpc pool)".to_owned(),
+            )
         })?;
 
         let state = Arc::new(RpcState {
@@ -780,11 +822,11 @@ mod rpc_mode {
             provider_id: required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER")?,
         });
 
-        let _ = std::fs::remove_file(&socket_path);
-        // dep: UDS(serve) — binds the ADR-0012 embedding RPC socket
-        let listener = tokio::net::UnixListener::bind(&socket_path).map_err(|error| {
-            format!("failed to bind retrieval embedding RPC socket {socket_path}: {error}")
-        })?;
+        // dep: UDS(serve) — binds the ADR-0012 embedding RPC socket at the one guarded site (ADR-0066 D-M)
+        let listener = humaux_infra_cell::uds::bind_guarded(std::path::Path::new(&socket_path))
+            .map_err(|error| {
+                format!("failed to bind retrieval embedding RPC socket {socket_path}: {error}")
+            })?;
         eprintln!("humaux-retrieval-worker RPC listening on {socket_path}");
         // Card 15 / ADR-0037: same graceful pattern the gateway has had. This listener holds no
         // lease, so "drain" here means exactly what axum's shutdown does — stop accepting, let
@@ -819,7 +861,9 @@ mod rpc_mode {
         )
         .with_graceful_shutdown(shutdown)
         .await
-        .map_err(|error| format!("retrieval embedding RPC server failed: {error}"))?;
+        .map_err(|error| {
+            Outcome::Runtime(format!("retrieval embedding RPC server failed: {error}"))
+        })?;
         Ok(())
     }
 }

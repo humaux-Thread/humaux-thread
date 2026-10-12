@@ -1,5 +1,5 @@
 //! `xtask::e2e_seed` — persistent tenant/credential/quota seed for deployment-point rehearsals.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-protocol, humaux-testkit, postgres, rand, serde_json, time,
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-maintenance, humaux-protocol, humaux-testkit, postgres, rand, serde_json, time,
 //!   tokio, uuid];
 //!   services=[PostgreSQL(any) r=[control.audit_event_identity, control.audit_events, control.memberships,
 //!   control.quota_windows, control.workspace_memberships, control.workspaces, ops.jobs, ops.model_call_identity,
@@ -791,7 +791,7 @@ fn teardown(client: &mut Client, tenant_id: Uuid) -> Result<(), String> {
         .map_err(|e| format!("commit teardown txn: {}", db_detail(&e)))
 }
 
-/// `cargo xtask e2e-seed --pepper-hex <hex> --scopes <a,b> [--limit 1000] \
+/// `cargo xtask e2e-seed (--pepper-hex <hex> | --pepper-hex-env <ENV_NAME>) --scopes <a,b> [--limit 1000] \
 ///   --processor-id <uuid> --region <s> --service-tier <s> --endpoint-ref <url> \
 ///   --provider-id <s> --provider-model-id <s> --model-revision <s> --capabilities <CSV> \
 ///   --account-ref <text> --request-extras <JSON object> --collection <name> --dimension <u32> [--qdrant-host 127.0.0.1] [--qdrant-port 6333] \
@@ -871,9 +871,25 @@ pub fn run(args: &[String]) -> i32 {
         return 0;
     }
 
-    let Some(pepper_hex) = arg(args, "--pepper-hex") else {
-        eprintln!("e2e-seed: fail (missing required flag --pepper-hex — §78.1: no default)");
-        return 1;
+    // ADR-0066 D-S (review P1, 2026-10-08): on a node the pepper is a secret, so it travels by NAME
+    // (`--pepper-hex-env <ENV_NAME>`, like `--credential-env`) and never through argv, `ps` or `docker inspect` Args.
+    let pepper_hex = match (arg(args, "--pepper-hex"), arg(args, "--pepper-hex-env")) {
+        (Some(hex), None) => hex,
+        (None, Some(name)) => match std::env::var(&name) {
+            Ok(hex) if !hex.is_empty() => hex,
+            _ => {
+                eprintln!(
+                    "e2e-seed: fail (missing object: ${name} env var named by --pepper-hex-env)"
+                );
+                return 1;
+            }
+        },
+        _ => {
+            eprintln!(
+                "e2e-seed: fail (exactly one of --pepper-hex / --pepper-hex-env is required — §78.1: no default)"
+            );
+            return 1;
+        }
     };
     let pepper = match decode_hex(&pepper_hex) {
         Ok(p) => p,
@@ -1689,7 +1705,7 @@ mod tests {
     /// purge's `EXCEPTION WHEN syntax_error …` handler ⇒ (b) raises a bare `relation … does not exist` ⇒ red.
     #[test]
     fn purges_share_a_transaction_and_a_vanished_table_is_named() {
-        let Some((_db, dsn)) = crate::migrate::tests::throwaway(
+        let Some((_db, dsn)) = humaux_maintenance::throwaway::throwaway(
             "purges_share_a_transaction_and_a_vanished_table_is_named",
             "purge_edges",
         ) else {
@@ -1775,7 +1791,7 @@ mod tests {
         reason = "one linear fixture script (seed -> assert -> teardown -> assert); splitting it hides which seed each assertion reads"
     )]
     fn teardown_leaves_no_fk_orphan_and_no_identity_garbage() {
-        let Some((_db, dsn)) = crate::migrate::tests::throwaway(
+        let Some((_db, dsn)) = humaux_maintenance::throwaway::throwaway(
             "teardown_leaves_no_fk_orphan_and_no_identity_garbage",
             "purge",
         ) else {

@@ -3,7 +3,7 @@
 //!   provider capability and the only INSERT on `memory_records`/`memory_evidence` (no RPC needed, contrast
 //!   ADR-0015's Consolidate hop). Dispatch is ADR-0058's: one `DERIVED_DISTILL` job = one Evidence, claimed through
 //!   the four provider slots, worked by at most IN_FLIGHT seats of one task.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, tokio, uuid]; services=[PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS]; modules=[adapters::affect_repo, adapters::byok, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ids, domain::memory, domain::policy, humaux-private-worker, projection::fingerprint]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-telemetry, serde_json, sha2, tokio, uuid]; services=[PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS]; modules=[adapters::affect_repo, adapters::byok, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ids, domain::memory, domain::policy, humaux-private-worker, projection::fingerprint, telemetry::metrics]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [a candidate over the §10.1 origin-bound ceiling is rejected, never downgraded; one job = one Evidence
 //!   and a job only takes its own Evidence's outbox row; at most IN_FLIGHT seats per process and four bound slots
@@ -15,9 +15,10 @@
 //!   no_slot or no_work (R5); a route whose credential reference is not in the worker's key map is NOT_READY
 //!   CREDENTIAL_NOT_MAPPED before any ledger row or provider call (refused by its route instance, ADR-0060 D-B);
 //!   a route parked for its health is NOT_READY ROUTE_HEALTH_STALE / ROUTE_HEALTH_DENIED; a SUCCEEDED call renews
-//!   its route's health near expiry and a provider 401 records the credential INVALID (ruling E3)]
+//!   its route's health near expiry and a provider 401 records the credential INVALID (ruling E3); a RETRY settle
+//!   with class TRANSPORT counts `dns_pin_deferred_total` only while a DNS pin is configured (ADR-0066 D-P)]
 //! Spec: Baseline §16.1.1; §10.1; ADR-0016; §15.7; §67.2; §11; §11.2.5; ADR-0058; ADR-0059; ADR-0060 D-B; ADR-0060 D-M;
-//!   ADR-0060 E3
+//!   ADR-0060 E3; §41.2; ADR-0066 D-P
 //!
 //! One job (ADR-0058 D-C): take the job's own outbox row, (a) check the Evidence still names the
 //! job's reasoning domain, resolve the admitted Distill route, load the Evidence, record the
@@ -78,6 +79,7 @@ use humaux_domain::{
     policy::OriginBoundAuthorityPolicy,
 };
 use humaux_projection::fingerprint::{ProcessingInputFingerprintInputs, source_hash};
+use humaux_telemetry::metrics::count_dns_pin_deferred;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::time::Instant;
@@ -110,6 +112,9 @@ pub struct DistillDispatchConfig {
     /// SUCCEEDED call renews (only once less than half of it is left) and of the INVALID verdict
     /// a provider-rejected credential records.
     pub health_renew_seconds: i64,
+    /// ADR-0066 D-P: `HUMAUX_PRIVATE_WORKER_DNS_PINS` names at least one host, so a TRANSPORT deferral counts
+    /// `dns_pin_deferred_total`.
+    pub dns_pins_configured: bool,
 }
 
 /// ADR-0058 R2: the `ops.provider_slots` rows `migrations/0190_distill_dispatch_v2.sql` seeds
@@ -453,6 +458,22 @@ impl Settled {
     }
 }
 
+/// `ReasoningProviderError::Transport`'s ADR-0058 D-N class (pinned against `class()` by the counter test).
+const TRANSPORT_CLASS: &str = "TRANSPORT";
+
+/// ADR-0066 D-P: a job settled RETRY with class TRANSPORT while a DNS pin is configured counts one
+/// `dns_pin_deferred_total`; a stale pin surfaces exactly so (connect refused / timed out on the pinned address).
+// ponytail: counts every TRANSPORT deferral while any pin is configured; per-host attribution needs the route's
+// endpoint host at settle time — add a {host} label (bounded by the pin map) when a second pinned provider exists.
+fn count_dns_pin_deferral(settled: &Settled, dns_pins_configured: bool) {
+    if dns_pins_configured
+        && settled.outcome == JobOutcome::Retry
+        && settled.class == Some(TRANSPORT_CLASS)
+    {
+        count_dns_pin_deferred();
+    }
+}
+
 /// Everything the seats share: one pool, one reasoner, one config.
 struct Dispatcher<'a> {
     pool: &'a PrivateWorkerDbPool,
@@ -710,7 +731,10 @@ async fn run_claimed(
     match settled.outcome {
         JobOutcome::Done => report.completed += 1,
         JobOutcome::Failed => report.failed += 1,
-        JobOutcome::Retry => report.deferred += 1,
+        JobOutcome::Retry => {
+            report.deferred += 1;
+            count_dns_pin_deferral(&settled, dispatch.dns_pins_configured);
+        }
         JobOutcome::NotReady => report.not_ready += 1,
         JobOutcome::Parked => report.parked += 1,
         JobOutcome::Dead => {
@@ -1658,6 +1682,7 @@ mod tests {
                 max_calls: 120,
             },
             health_renew_seconds: 1800,
+            dns_pins_configured: false,
         }
     }
 
@@ -1820,6 +1845,60 @@ mod tests {
         assert_eq!(
             rejection_reason(CandidateRejection::UntrustedInstruction),
             "untrusted_instruction"
+        );
+    }
+
+    // ADR-0066 D-P: the counter is process-global, so the two tests that read its delta take turns.
+    static DNS_PIN_COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn transport_retry_with_pins_counts_dns_pin_deferred() {
+        let _turn = DNS_PIN_COUNTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            TRANSPORT_CLASS,
+            ReasoningProviderError::Transport(String::new()).class()
+        );
+        let before = humaux_telemetry::metrics::dns_pin_deferred_total();
+        count_dns_pin_deferral(
+            &Settled::new(JobOutcome::Retry, Some(TRANSPORT_CLASS)),
+            true,
+        );
+        assert_eq!(
+            humaux_telemetry::metrics::dns_pin_deferred_total(),
+            before + 1,
+            "a TRANSPORT retry while a pin is configured is one deferral (ADR-0066 D-P)"
+        );
+        // Neither another class nor another settle of a TRANSPORT failure is a deferral.
+        for settled in [
+            Settled::new(JobOutcome::Retry, Some("RETRY_WAIT")),
+            Settled::new(JobOutcome::Retry, None),
+            Settled::new(JobOutcome::Dead, Some(TRANSPORT_CLASS)),
+            Settled::new(JobOutcome::NotReady, Some(TRANSPORT_CLASS)),
+        ] {
+            count_dns_pin_deferral(&settled, true);
+        }
+        assert_eq!(
+            humaux_telemetry::metrics::dns_pin_deferred_total(),
+            before + 1
+        );
+    }
+
+    #[test]
+    fn no_pins_no_count() {
+        let _turn = DNS_PIN_COUNTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = humaux_telemetry::metrics::dns_pin_deferred_total();
+        count_dns_pin_deferral(
+            &Settled::new(JobOutcome::Retry, Some(TRANSPORT_CLASS)),
+            false,
+        );
+        assert_eq!(
+            humaux_telemetry::metrics::dns_pin_deferred_total(),
+            before,
+            "without a configured pin a TRANSPORT retry is no DNS pin deferral (ADR-0066 D-P)"
         );
     }
 }

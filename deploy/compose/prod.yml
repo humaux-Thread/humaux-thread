@@ -1,0 +1,650 @@
+# deploy/compose/prod.yml — the release bundle: one compose project per node, one service per Baseline §4.2 process
+# (ADR-0066 D-B, D-C). Run only through deploy/release/compose.sh, which passes
+#   --env-file deploy/env/sizing-$HUMAUX_NODE_SIZING.env --env-file $HUMAUX_NODE_DIR/node.env -p $HUMAUX_NODE_PROJECT
+# so every ${HUMAUX_SIZE_*:?} ceiling comes from the sizing file (D-E) and every ${HUMAUX_NODE_*:?} / path from the node
+# file (deploy/env/node.env.example). Every value is required with no default (§78.1).
+# Layout (D-F): pg and qdrant have their own network namespaces on the project bridge `humaux`; every Humaux process,
+# prometheus, alertmanager, otel-collector and alert-sink share the namespace of the pause container `netns`, so the
+# ops listeners stay on 127.0.0.1:19101-19108 (ADR-0061 D-B) and the gateway binds ${HUMAUX_NODE_NETNS_IP}:8080 (the
+# bootstrap refuses 0.0.0.0), published on 127.0.0.1 only (E-10). Apps reach pg as pg:5432 and Qdrant at its fixed
+# address. Each process has its own numeric uid (10101-10107; the four peer-cred participants pairwise distinct,
+# Baseline §4.2); pair groups 10201 (retrieval RPC) / 10202 (inference RPC) open the 0750 socket volumes to exactly
+# the client of each pair (D-C, D-M). env_file = values/<process>.env (bundle constants, in git) +
+# $HUMAUX_SECRETS_DIR/<process>.secret.env (0600, outside git; D-J declared deviation L-13/L-14, ADR-0066 R-4).
+# Checked by: deploy-check --compose-json / --env / --running (bins/maintenance/src/deploy_check.rs, ADR-0066 D-R),
+# deploy/prometheus/check-compose.sh (digest pins, loopback, no write ingress), deploy/release/budget_sums.sh
+# (--compose: every ceiling reads a sizing key), gates c39_compose_config and c39_deploy_check_live.
+# Every image that is not built from this repo is pinned `name:tag@sha256:<index digest>`, resolved 2026-10-07 with
+# `docker buildx imagetools inspect` (linux/arm64 present in each index).
+
+x-probe-timing: &probe-timing
+  # Supervision parameters (readiness, never a restart signal: Docker restarts on exit, not on `unhealthy`).
+  interval: 15s
+  timeout: 5s
+  retries: 4
+  start_period: 30s
+
+x-humaux: &humaux
+  # ADR-0066 D-C: every Humaux process service; deploy-check --compose-json asserts each line.
+  network_mode: "service:netns"
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  # Review fix 9 (OP-3, L-2): every resident service is `unless-stopped`, so a node comes back after a host reboot or
+  # a dockerd restart with no operator. An exit-2 configuration error therefore restarts under Docker's exponential
+  # backoff instead of stopping after five tries; the guards are `deploy-check --env` before every `up` (R2 / U3) and
+  # `deploy-check --running` (`service_restarted:<svc>` is red), so a looping resident cannot pass R10 / the U-steps.
+  # One-shots (profiles ops / rehearsal) keep the policy "no"; deploy-check rule `restart_policy:<svc>:<value>`.
+  restart: unless-stopped
+  stop_grace_period: 60s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+x-oneshot: &oneshot
+  <<: *humaux
+  restart: "no"
+  mem_limit: ${HUMAUX_SIZE_ONESHOT_MEM:?}m
+  memswap_limit: ${HUMAUX_SIZE_ONESHOT_MEM:?}m
+  cpus: ${HUMAUX_SIZE_ONESHOT_CPUS:?}
+  pids_limit: ${HUMAUX_SIZE_ONESHOT_PIDS:?}
+
+services:
+  netns:
+    # The anchor of the shared network namespace; publishes the gateway on loopback only (E-10, L-12).
+    image: registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a # 2026-10-07
+    user: "65535:65535"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    mem_limit: ${HUMAUX_SIZE_NETNS_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_NETNS_MEM:?}m
+    cpus: ${HUMAUX_SIZE_NETNS_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_NETNS_PIDS:?}
+    networks:
+      humaux:
+        ipv4_address: ${HUMAUX_NODE_NETNS_IP:?}
+    ports:
+      - "127.0.0.1:${HUMAUX_NODE_GATEWAY_HOST_PORT:?}:8080"
+
+  pg:
+    # The card-37 PostgreSQL 18 + pgBackRest image (deploy/images/postgres), built by build.sh beside the release.
+    # D-G: static settings in deploy/postgres/postgresql.conf, numbers in the sizing conf; listen_addresses stays a flag
+    # because `restore pitr` boots the restored cluster socket-only through HUMAUX_PG_LISTEN_ADDRESSES (card 37 D-U).
+    image: ${HUMAUX_PG_IMAGE:?the image build.sh built from deploy/images/postgres}
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/humaux/postgresql.conf
+      - -c
+      - listen_addresses=${HUMAUX_PG_LISTEN_ADDRESSES?set it; empty = socket only}
+    environment:
+      POSTGRES_DB: humaux
+      # D-J: read by the root entrypoint before it drops to uid 999; the only compose secret of the bundle.
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_superuser
+    # PGBACKREST_REPO1_CIPHER_PASS (archive-push encrypts WAL, ADR-0064 9.6 custody).
+    env_file:
+      - ${HUMAUX_SECRETS_DIR:?}/pg.secret.env
+    secrets:
+      - pg_superuser
+    security_opt: ["no-new-privileges:true"]
+    shm_size: ${HUMAUX_PG_SHM_SIZE:?}
+    mem_limit: ${HUMAUX_SIZE_PG_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_PG_MEM:?}m
+    cpus: ${HUMAUX_SIZE_PG_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_PG_PIDS:?}
+    restart: unless-stopped
+    stop_grace_period: 120s
+    ports:
+      - "127.0.0.1:${HUMAUX_PG_PORT:?}:5432"
+    networks:
+      - humaux
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - type: bind
+        source: ../postgres/postgresql.conf
+        target: /etc/humaux/postgresql.conf
+        read_only: true
+      - type: bind
+        source: ${HUMAUX_PG_SIZING_CONF:?}
+        target: /etc/humaux/pg-sizing.conf
+        read_only: true
+      - type: bind
+        source: ../pgbackrest/pgbackrest.conf
+        target: /etc/pgbackrest/pgbackrest.conf
+        read_only: true
+      # Card 37: the repository is a host bind of its own filesystem, never created by Docker (c37_repo_is_bind_mount).
+      - type: bind
+        source: ${HUMAUX_PG_REPO_DIR:?the mount point of the repository filesystem}
+        target: /var/lib/pgbackrest
+        bind:
+          create_host_path: false
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "pg_isready", "-h", "/var/run/postgresql", "-U", "postgres"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  qdrant:
+    # W-6: the unprivileged variant (uid 1000). No healthcheck: retrieval's own --readyz proves Qdrant answers (D-C).
+    image: qdrant/qdrant:v1.19.0-unprivileged@sha256:a0e04fe623cb064502cd869cefc1dc7ce359d8edd481063b5bd351c0a0a2c91e # 2026-10-07
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # The listen host is the service's own project address, never 0.0.0.0 (check-compose.sh).
+      QDRANT__SERVICE__HOST: ${HUMAUX_NODE_QDRANT_IP:?}
+    mem_limit: ${HUMAUX_SIZE_QDRANT_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_QDRANT_MEM:?}m
+    cpus: ${HUMAUX_SIZE_QDRANT_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_QDRANT_PIDS:?}
+    restart: unless-stopped
+    networks:
+      humaux:
+        ipv4_address: ${HUMAUX_NODE_QDRANT_IP:?}
+    volumes:
+      - qdrant:/qdrant/storage
+      - type: bind
+        source: ../qdrant/config.yaml
+        target: /qdrant/config/production.yaml
+        read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  private-rpc:
+    <<: *humaux
+    image: humaux-private-worker:${HUMAUX_IMAGE_TAG:?}
+    command: ["--serve-rpc"]
+    # Server of the inference pair: primary group 10202 owns the socket (sock-inference uid=10103,gid=10202,0750).
+    user: "10103:10202"
+    env_file:
+      - ../env/values/private-worker.env
+      - ${HUMAUX_SECRETS_DIR:?}/private-worker.secret.env
+    volumes:
+      - sock-inference:/run/humaux/sock-inference
+    mem_limit: ${HUMAUX_SIZE_PRIVATE_RPC_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_PRIVATE_RPC_MEM:?}m
+    cpus: ${HUMAUX_SIZE_PRIVATE_RPC_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_PRIVATE_RPC_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-private-worker", "--readyz"]
+    depends_on:
+      pg:
+        condition: service_healthy
+
+  retrieval-rpc:
+    <<: *humaux
+    image: humaux-retrieval-worker:${HUMAUX_IMAGE_TAG:?}
+    command: ["--serve-rpc"]
+    # Server of the retrieval pair: primary group 10201 owns the socket (sock-retrieval uid=10102,gid=10201,0750).
+    user: "10102:10201"
+    env_file:
+      - ../env/values/retrieval-worker.env
+      - ${HUMAUX_SECRETS_DIR:?}/retrieval-worker.secret.env
+    environment: &retrieval-node
+      HUMAUX_RETRIEVAL_WORKER_CELL_ID: ${HUMAUX_NODE_CELL_ID:?}
+      HUMAUX_RETRIEVAL_WORKER_EGRESS_PROCESSOR_ID: ${HUMAUX_NODE_RETRIEVAL_EGRESS_PROCESSOR_ID:?}
+      HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST: ${HUMAUX_NODE_QDRANT_IP:?}
+      HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR: ${HUMAUX_NODE_QDRANT_IP:?}/32
+    volumes:
+      - sock-retrieval:/run/humaux/sock-retrieval
+    mem_limit: ${HUMAUX_SIZE_RETRIEVAL_RPC_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_RETRIEVAL_RPC_MEM:?}m
+    cpus: ${HUMAUX_SIZE_RETRIEVAL_RPC_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_RETRIEVAL_RPC_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-retrieval-worker", "--readyz"]
+    depends_on:
+      pg:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      private-rpc:
+        condition: service_healthy
+
+  retrieval-serve:
+    <<: *humaux
+    image: humaux-retrieval-worker:${HUMAUX_IMAGE_TAG:?}
+    command: ["--serve"]
+    # The second mode of one binary shares its uid (supervision.md §4 rule 3); it opens no socket.
+    user: "10102:10201"
+    stop_grace_period: 120s
+    env_file:
+      - ../env/values/retrieval-worker.env
+      - ${HUMAUX_SECRETS_DIR:?}/retrieval-worker.secret.env
+    environment: *retrieval-node
+    mem_limit: ${HUMAUX_SIZE_RETRIEVAL_SERVE_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_RETRIEVAL_SERVE_MEM:?}m
+    cpus: ${HUMAUX_SIZE_RETRIEVAL_SERVE_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_RETRIEVAL_SERVE_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-retrieval-worker", "--readyz"]
+    depends_on:
+      retrieval-rpc:
+        condition: service_healthy
+
+  consolidation:
+    <<: *humaux
+    image: humaux-consolidation-worker:${HUMAUX_IMAGE_TAG:?}
+    command: ["--serve"]
+    # Client of the inference pair: supplementary group 10202 opens the 0750 socket dir; its own uid stays distinct.
+    user: "10104:10104"
+    group_add: ["10202"]
+    env_file:
+      - ../env/values/consolidation-worker.env
+      - ${HUMAUX_SECRETS_DIR:?}/consolidation-worker.secret.env
+    volumes:
+      - sock-inference:/run/humaux/sock-inference
+    mem_limit: ${HUMAUX_SIZE_CONSOLIDATION_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_CONSOLIDATION_MEM:?}m
+    cpus: ${HUMAUX_SIZE_CONSOLIDATION_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_CONSOLIDATION_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-consolidation-worker", "--readyz"]
+    depends_on:
+      private-rpc:
+        condition: service_healthy
+      retrieval-serve:
+        condition: service_healthy
+
+  private-distill:
+    <<: *humaux
+    image: humaux-private-worker:${HUMAUX_IMAGE_TAG:?}
+    command: ["--distill-serve"]
+    user: "10103:10202"
+    # supervision §3: HTTP_TIMEOUT 120 s + lease 30 s + margin.
+    stop_grace_period: 180s
+    env_file:
+      - ../env/values/private-worker.env
+      - ${HUMAUX_SECRETS_DIR:?}/private-worker.secret.env
+    environment:
+      # Its own socket file in the same volume (rehearse.sh runs one socket per mode).
+      HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH: /run/humaux/sock-inference/inference-distill.sock
+    volumes:
+      - sock-inference:/run/humaux/sock-inference
+    mem_limit: ${HUMAUX_SIZE_PRIVATE_DISTILL_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_PRIVATE_DISTILL_MEM:?}m
+    cpus: ${HUMAUX_SIZE_PRIVATE_DISTILL_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_PRIVATE_DISTILL_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-private-worker", "--readyz"]
+    depends_on:
+      consolidation:
+        condition: service_healthy
+
+  maintenance-health:
+    <<: *humaux
+    image: humaux-maintenance:${HUMAUX_IMAGE_TAG:?}
+    command: ["health", "serve"]
+    user: "10105:10105"
+    env_file:
+      - ../env/values/maintenance.env
+      - ${HUMAUX_SECRETS_DIR:?}/maintenance.secret.env
+    environment: &maintenance-node
+      HUMAUX_MAINTENANCE_QDRANT_HOST: ${HUMAUX_NODE_QDRANT_IP:?}
+      HUMAUX_MAINTENANCE_QDRANT_CIDR: ${HUMAUX_NODE_QDRANT_IP:?}/32
+    mem_limit: ${HUMAUX_SIZE_MAINTENANCE_HEALTH_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_MAINTENANCE_HEALTH_MEM:?}m
+    cpus: ${HUMAUX_SIZE_MAINTENANCE_HEALTH_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_MAINTENANCE_HEALTH_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-maintenance", "readyz", "health-serve"]
+    depends_on:
+      private-distill:
+        condition: service_healthy
+
+  maintenance-serve:
+    <<: *humaux
+    image: humaux-maintenance:${HUMAUX_IMAGE_TAG:?}
+    command: ["--serve"]
+    user: "10105:10105"
+    env_file:
+      - ../env/values/maintenance.env
+      - ${HUMAUX_SECRETS_DIR:?}/maintenance.secret.env
+    environment: *maintenance-node
+    # dr_evidence statvfs targets (values/maintenance.env DR_*_FS_PATH): the repository filesystem and the pgdata volume,
+    # read-only. The daemon never holds the docker socket (D-H rejected list).
+    volumes:
+      - type: bind
+        source: ${HUMAUX_PG_REPO_DIR:?}
+        target: /srv/humaux/repo
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: pgdata
+        target: /srv/humaux/pgdata
+        read_only: true
+    mem_limit: ${HUMAUX_SIZE_MAINTENANCE_SERVE_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_MAINTENANCE_SERVE_MEM:?}m
+    cpus: ${HUMAUX_SIZE_MAINTENANCE_SERVE_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_MAINTENANCE_SERVE_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-maintenance", "readyz", "serve"]
+    depends_on:
+      maintenance-health:
+        condition: service_healthy
+
+  gateway:
+    <<: *humaux
+    image: humaux-gateway:${HUMAUX_IMAGE_TAG:?}
+    # Client of the retrieval pair: supplementary group 10201 opens the 0750 socket dir.
+    user: "10101:10101"
+    group_add: ["10201"]
+    env_file:
+      - ../env/values/gateway.env
+      - ${HUMAUX_SECRETS_DIR:?}/gateway.secret.env
+    environment:
+      HUMAUX_GATEWAY_BIND_ADDR: ${HUMAUX_NODE_NETNS_IP:?}:8080
+      HUMAUX_GATEWAY_ALLOWED_HOSTS: 127.0.0.1:${HUMAUX_NODE_GATEWAY_HOST_PORT:?}
+      HUMAUX_GATEWAY_ALLOWED_ORIGINS: http://127.0.0.1:${HUMAUX_NODE_GATEWAY_HOST_PORT:?}
+      HUMAUX_GATEWAY_CELL_ID: ${HUMAUX_NODE_CELL_ID:?}
+      HUMAUX_GATEWAY_QDRANT_HOST: ${HUMAUX_NODE_QDRANT_IP:?}
+      HUMAUX_GATEWAY_QDRANT_CIDR: ${HUMAUX_NODE_QDRANT_IP:?}/32
+      HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID: ${HUMAUX_NODE_REMEMBER_REASONING_DOMAIN_ID:?}
+    volumes:
+      - sock-retrieval:/run/humaux/sock-retrieval
+    mem_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
+    cpus: ${HUMAUX_SIZE_GATEWAY_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_GATEWAY_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "/usr/local/bin/humaux-gateway", "--readyz"]
+    depends_on:
+      pg:
+        condition: service_healthy
+      retrieval-rpc:
+        condition: service_healthy
+      maintenance-serve:
+        condition: service_healthy
+
+  # ---- observability (ADR-0066 D-I: moved from the retired observability.yml; card-34 pins, flags and 30 d) ----
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:6b41f7a45cfbd1d259a78701ee5e14fc2ad9383c9aa5d0427345a18539bc3c91 # card 34 pin, resolved 2026-10-04 (linux/arm64 manifest of the index)
+    network_mode: "service:netns"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=127.0.0.1:9090
+    volumes:
+      # deploy/prometheus/render.sh output: prometheus.yml (git sha), the two rule files, targets/humaux.json.
+      - ${HUMAUX_OBSERVABILITY_RENDERED_DIR:?}/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    mem_limit: ${HUMAUX_SIZE_PROMETHEUS_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_PROMETHEUS_MEM:?}m
+    cpus: ${HUMAUX_SIZE_PROMETHEUS_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_PROMETHEUS_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+    depends_on:
+      gateway:
+        condition: service_started
+      alertmanager:
+        condition: service_started
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1@sha256:47a1dc7e74f1e755e29f74d392262f8d1da41f2ada5653911199bf07219e41d9 # card 34 pin, resolved 2026-10-04 (linux/arm64 manifest of the index)
+    network_mode: "service:netns"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=127.0.0.1:9093
+      - --cluster.listen-address=
+    volumes:
+      - ${HUMAUX_OBSERVABILITY_RENDERED_DIR:?}/alertmanager:/etc/alertmanager:ro
+      - ${HUMAUX_ALERTMANAGER_URL_DIR:?}:/run/humaux-alert-urls:ro
+      - alertmanager-data:/alertmanager
+    mem_limit: ${HUMAUX_SIZE_ALERTMANAGER_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_ALERTMANAGER_MEM:?}m
+    cpus: ${HUMAUX_SIZE_ALERTMANAGER_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_ALERTMANAGER_PIDS:?}
+    healthcheck:
+      <<: *probe-timing
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+    depends_on:
+      gateway:
+        condition: service_started
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.162.0@sha256:ef772ad07ca455ad83fabbf3da792f0f298a3d41a08e9099367364c0d1349801 # card 34 pin, resolved 2026-10-04 (linux/arm64 manifest of the index)
+    network_mode: "service:netns"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    command:
+      - --config=/etc/otelcol/otel-collector.yml
+    volumes:
+      - type: bind
+        source: ../prometheus/otel-collector.yml
+        target: /etc/otelcol/otel-collector.yml
+        read_only: true
+    mem_limit: ${HUMAUX_SIZE_OTEL_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_OTEL_MEM:?}m
+    cpus: ${HUMAUX_SIZE_OTEL_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_OTEL_PIDS:?}
+    depends_on:
+      gateway:
+        condition: service_started
+
+  # ---- one-shots (profile ops): `deploy/release/compose.sh run --rm -T <service> …`, one at a time ----
+  admin:
+    <<: *oneshot
+    profiles: [ops]
+    image: humaux-admin:${HUMAUX_IMAGE_TAG:?}
+    # Joins both pair groups for its connect-level cell probe; each server's uid check still answers it 403.
+    user: "10106:10106"
+    group_add: ["10201", "10202"]
+    env_file:
+      - ../env/values/admin.env
+      - ${HUMAUX_SECRETS_DIR:?}/admin.secret.env
+    environment:
+      HUMAUX_CELL_ID: ${HUMAUX_NODE_CELL_ID:?}
+      HUMAUX_QDRANT_HOST: ${HUMAUX_NODE_QDRANT_IP:?}
+      HUMAUX_QDRANT_CIDR: ${HUMAUX_NODE_QDRANT_IP:?}/32
+    volumes:
+      - sock-retrieval:/run/humaux/sock-retrieval
+      - sock-inference:/run/humaux/sock-inference
+
+  ops:
+    <<: *oneshot
+    profiles: [ops]
+    # The maintenance doors, rls-check, projection serve/rebuild, member (D-Q); never the migrator DSN.
+    image: humaux-ops:${HUMAUX_IMAGE_TAG:?}
+    user: "10105:10105"
+    env_file:
+      - ../env/values/maintenance.env
+      - ${HUMAUX_SECRETS_DIR:?}/maintenance.secret.env
+    environment: *maintenance-node
+
+  migrate:
+    <<: *oneshot
+    profiles: [ops]
+    # D-J / L-13: the only service whose env_file list holds migrate.secret.env, the only file holding
+    # HUMAUX_MIGRATOR_PG_DSN (the superuser path) and the role passwords `roles rotate` sets. deploy-check asserts both.
+    image: humaux-ops:${HUMAUX_IMAGE_TAG:?}
+    user: "10107:10107"
+    env_file:
+      - ../env/values/maintenance.env
+      - ${HUMAUX_SECRETS_DIR:?}/migrate.secret.env
+
+  dr:
+    <<: *oneshot
+    profiles: [ops]
+    # D-H: backup / restore / drill / deploy-check --release/--running. Root with ALL capabilities dropped but
+    # DAC_READ_SEARCH (reads the operator's 0600 secret files, E-13, L-14); holds the docker socket (L-5).
+    image: humaux-dr:${HUMAUX_IMAGE_TAG:?}
+    user: "0:0"
+    # DAC_READ_SEARCH: every secret and the repository (L-14). DAC_OVERRIDE: the evidence directory is the operator's
+    # (0700, runbook P2) and dr runs as uid 0 with ALL dropped — without it a native-Linux node cannot write
+    # rollback-1.json / drill-<date>.json (PR #2 review P1); the files stay 0644 so the operator reads them back.
+    cap_add: [DAC_READ_SEARCH, DAC_OVERRIDE]
+    # `restore drill` reaches the drill cluster on its published 127.0.0.1 port (card 37), so dr runs in the host's
+    # network namespace (on Docker Desktop: the VM's). ponytail: host netns for one arm, publish the drill on the
+    # project network and dial it by name when the drill moves off loopback.
+    network_mode: host
+    # The compose CLI inside dr interpolates prod.yml and drill.yml: it needs the sizing and node values in its env,
+    # and the maintenance DSN (backup connects; restore reads the database name). That DSN comes from dr.secret.env:
+    # same role and password as maintenance.secret.env, host 127.0.0.1:${HUMAUX_PG_PORT} (pg:5432 does not resolve
+    # on the host network; ADR-0066 review fix 6, deploy-check `host_network_dsn_internal`). Never
+    # migrate.secret.env: restore refuses while HUMAUX_MIGRATOR_PG_DSN is set (F21).
+    env_file:
+      - ../env/sizing-${HUMAUX_NODE_SIZING:?}.env
+      - ${HUMAUX_NODE_ENV_FILE:?}
+      - ../env/values/maintenance.env
+      - ${HUMAUX_SECRETS_DIR:?}/dr.secret.env
+      - ${HUMAUX_SECRETS_DIR:?}/pg.secret.env
+    environment:
+      <<: *maintenance-node
+      HOME: /tmp
+      HUMAUX_MAINTENANCE_BACKUP_COMPOSE_FILE: ${HUMAUX_NODE_DEPLOY_DIR:?}/compose/prod.yml
+      HUMAUX_MAINTENANCE_BACKUP_PROJECT: ${HUMAUX_NODE_PROJECT:?}
+      HUMAUX_MAINTENANCE_DRILL_COMPOSE_FILE: ${HUMAUX_NODE_DEPLOY_DIR:?}/compose/drill.yml
+      HUMAUX_PG_REPO_DIR: ${HUMAUX_PG_REPO_DIR:?}
+    # Same absolute paths as on the host: the compose CLI here opens every env_file / secrets file of prod.yml while
+    # the daemon mounts from the host's filesystem (D-H).
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${HUMAUX_NODE_DEPLOY_DIR:?}
+        target: ${HUMAUX_NODE_DEPLOY_DIR:?}
+        read_only: true
+      - type: bind
+        source: ${HUMAUX_SECRETS_DIR:?}
+        target: ${HUMAUX_SECRETS_DIR:?}
+        read_only: true
+      - type: bind
+        source: ${HUMAUX_PG_REPO_DIR:?}
+        target: ${HUMAUX_PG_REPO_DIR:?}
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HUMAUX_NODE_EVIDENCE_DIR:?}
+        target: ${HUMAUX_NODE_EVIDENCE_DIR:?}
+      - type: bind
+        source: ${HUMAUX_NODE_RELEASES_DIR:?}
+        target: ${HUMAUX_NODE_RELEASES_DIR:?}
+        read_only: true
+      # deploy-check --env reads every env_file of the compose document at the host's path (D-R (a)); node.env is the
+      # one outside the deploy and secrets dirs.
+      - type: bind
+        source: ${HUMAUX_NODE_ENV_FILE:?}
+        target: ${HUMAUX_NODE_ENV_FILE:?}
+        read_only: true
+
+  # ---- rehearsal only (profile rehearsal, ADR-0066 §5) ----
+  alert-sink:
+    profiles: [rehearsal]
+    image: python:3.13-slim@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c # 2026-10-07
+    command: ["python3", "/opt/humaux/alert_sink.py", "19194", "/out/alert_receipts.jsonl"]
+    user: "10199:10199"
+    network_mode: "service:netns"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ../rehearsal/alert_sink.py
+        target: /opt/humaux/alert_sink.py
+        read_only: true
+      # Its own directory (runbook P2: mode 1733), not the 0700 evidence dir: the sink writes as uid 10199 with no
+      # capabilities (PR #2 round 5); the bind root is reached without traversing the 0700 parent.
+      - type: bind
+        source: ${HUMAUX_NODE_EVIDENCE_DIR:?}/alerts
+        target: /out
+    mem_limit: ${HUMAUX_SIZE_ALERT_SINK_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_ALERT_SINK_MEM:?}m
+    cpus: ${HUMAUX_SIZE_ALERT_SINK_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_ALERT_SINK_PIDS:?}
+
+  # The peer-cred proof's four identities (§5): each has exactly the uid and pair group of its real twin and mounts
+  # both socket volumes; scratch-client (no pair group) is the EACCES negative control.
+  scratch-as-gateway: &scratch
+    profiles: [rehearsal]
+    image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6 # 2026-10-07
+    user: "10101:10101"
+    group_add: ["10201"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    volumes:
+      - sock-retrieval:/run/humaux/sock-retrieval
+      - sock-inference:/run/humaux/sock-inference
+  scratch-as-retrieval:
+    <<: *scratch
+    user: "10102:10201"
+    group_add: []
+  scratch-as-private:
+    <<: *scratch
+    user: "10103:10202"
+    group_add: []
+  scratch-as-consolidation:
+    <<: *scratch
+    user: "10104:10104"
+    group_add: ["10202"]
+  scratch-client:
+    <<: *scratch
+    user: "65534:65534"
+    group_add: []
+
+volumes:
+  pgdata:
+  qdrant:
+  prometheus-data:
+  alertmanager-data:
+  # D-M: tmpfs-backed, created with the server's uid, the pair group and 0750 (lives in the Linux VM, never virtiofs).
+  sock-retrieval:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=10102,gid=10201,mode=0750"
+  sock-inference:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=10103,gid=10202,mode=0750"
+
+networks:
+  humaux:
+    ipam:
+      config:
+        - subnet: ${HUMAUX_NODE_SUBNET:?}
+
+secrets:
+  pg_superuser:
+    file: ${HUMAUX_SECRETS_DIR:?}/pg_superuser

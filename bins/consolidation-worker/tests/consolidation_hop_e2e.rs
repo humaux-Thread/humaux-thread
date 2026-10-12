@@ -189,6 +189,26 @@ fn temp_socket_path(tag: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/hq-{tag}-{}.sock", Uuid::now_v7().simple()))
 }
 
+/// A 0700 socket directory owned by this test (ADR-0066 D-M: `bind_socket` refuses a shared `/tmp`), removed on
+/// drop. Short `/tmp` path: a macOS temp dir plus a name overflows `sockaddr_un`.
+struct SockDir(std::path::PathBuf);
+
+impl Drop for SockDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_socket_dir(tag: &str) -> (SockDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::path::PathBuf::from(format!("/tmp/hq-{tag}-{}", Uuid::now_v7().simple()));
+    std::fs::create_dir(&dir).expect("create the socket dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .expect("chmod the socket dir");
+    let socket = dir.join("rpc.sock");
+    (SockDir(dir), socket)
+}
+
 /// Learns this test process's own real uid — same technique
 /// `bins/gateway/tests/query_embedding_rpc.rs::own_uid` uses, no `libc`/`nix` dependency.
 async fn own_uid() -> u32 {
@@ -641,7 +661,7 @@ fn t11_consolidation_uses_the_provider_of_its_admitted_route() {
     let rt = tokio::runtime::Runtime::new().expect("rt");
     let outcomes = rt.block_on(async {
         let uid = own_uid().await;
-        let socket_path = temp_socket_path("t11");
+        let (_sock_dir, socket_path) = temp_socket_dir("t11");
         let private_pool =
             // dep: PostgreSQL(role_private_worker) — role-scoped pool call
             PrivateWorkerDbPool::connect(&dsn_as_role(&one.dsn, "role_private_worker"))
@@ -662,6 +682,7 @@ fn t11_consolidation_uses_the_provider_of_its_admitted_route() {
                         UdsInferenceClient::new(
                             &consolidation_pool,
                             socket_path.to_string_lossy(),
+                            uid,
                             f.tenant_id,
                             call_ttl(),
                             call_ttl(),
@@ -731,7 +752,7 @@ fn t1_full_inference_hop_publishes_ticket() {
     let rt = tokio::runtime::Runtime::new().expect("rt");
     let outcome = rt.block_on(async {
         let uid = own_uid().await;
-        let socket_path = temp_socket_path("t1");
+        let (_sock_dir, socket_path) = temp_socket_dir("t1");
         let private_pool =
             // dep: PostgreSQL(role_private_worker) — role-scoped pool call
             PrivateWorkerDbPool::connect(&dsn_as_role(&f.dsn, "role_private_worker"))
@@ -750,6 +771,7 @@ fn t1_full_inference_hop_publishes_ticket() {
                 UdsInferenceClient::new(
                     &consolidation_pool,
                     socket_path.to_string_lossy(),
+                    uid,
                     f.tenant_id,
                     call_ttl(),
                     call_ttl(),
@@ -1014,7 +1036,7 @@ fn t2_wrong_peer_uid_rejected_before_body() {
     let rt = tokio::runtime::Runtime::new().expect("rt");
     rt.block_on(async {
         let uid = own_uid().await;
-        let socket_path = temp_socket_path("t2");
+        let (_sock_dir, socket_path) = temp_socket_dir("t2");
         let private_pool =
             // dep: PostgreSQL(role_private_worker) — role-scoped pool call
             PrivateWorkerDbPool::connect(&dsn_as_role(&f.dsn, "role_private_worker"))
@@ -1261,7 +1283,7 @@ fn t5_manifest_mismatch_fails_closed_without_provider_call() {
     let rt = tokio::runtime::Runtime::new().expect("rt");
     let outcome = rt.block_on(async {
         let uid = own_uid().await;
-        let socket_path = temp_socket_path("t5");
+        let (_sock_dir, socket_path) = temp_socket_dir("t5");
         let private_pool =
             // dep: PostgreSQL(role_private_worker) — role-scoped pool call
             PrivateWorkerDbPool::connect(&dsn_as_role(&f.dsn, "role_private_worker"))
@@ -1279,6 +1301,7 @@ fn t5_manifest_mismatch_fails_closed_without_provider_call() {
                 inner: UdsInferenceClient::new(
                     &consolidation_pool,
                     socket_path.to_string_lossy(),
+                    uid,
                     f.tenant_id,
                     call_ttl(),
                     call_ttl(),

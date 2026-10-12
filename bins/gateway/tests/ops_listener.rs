@@ -185,10 +185,24 @@ fn random_hex(marker: &str) -> String {
     format!("{marker}{}", &random[marker.len()..])
 }
 
+/// This test's own uid, as the owner of a file it just created (the fake worker it binds runs as this uid).
+fn own_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::env::temp_dir().join(format!("hq-gw-uid-{}", Uuid::now_v7().simple()));
+    std::fs::write(&path, b"").expect("create the uid probe file");
+    let uid = std::fs::metadata(&path)
+        .expect("stat the uid probe file")
+        .uid();
+    let _ = std::fs::remove_file(&path);
+    uid
+}
+
 /// Turns semantic recall on: the retrieval socket at `socket`, Qdrant at the test port.
 fn with_semantic(env: &mut BTreeMap<String, String>, socket: &str, qdrant_port: &str) {
     for (k, v) in [
         ("RETRIEVAL_RPC_SOCKET_PATH", socket.to_owned()),
+        // ADR-0066 D-L: the fake worker runs as this test's uid.
+        ("RETRIEVAL_RPC_SERVER_UID", own_uid().to_string()),
         ("RETRIEVAL_RPC_PERMIT_TTL_SECONDS", "30".into()),
         ("EMBEDDING_DIMENSION", "4".into()),
         ("EMBEDDING_VERSION", "embed-v1".into()),
@@ -284,6 +298,9 @@ impl FakeWorker {
         let _ = std::fs::remove_file(path);
         // dep: UDS(serve) — the test's own retrieval-worker stand-in
         let listener = UnixListener::bind(path).expect("bind the fake worker socket");
+        // ADR-0066 D-L: the gateway's dial refuses a socket with `other` bits; a server socket is 0660.
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o660))
+            .expect("chmod the fake worker socket");
         listener.set_nonblocking(true).expect("nonblocking");
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);

@@ -7,7 +7,7 @@
 //!   HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS, HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS, HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS,
 //!   HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS, HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS,
-//!   HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH, HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR]; modules=[]
+//!   HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH, HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR]; modules=[]
 //! Called-by: [cargo-test]
 //! Invariants: [touches no shared state: PostgreSQL is a loopback port this test bound and never answers, so every
 //!   mode is observed while it is still booting; every listener is a free loopback port taken at run time; the test
@@ -74,6 +74,8 @@ fn boot_env(pg_port: u16, ops: SocketAddr) -> Vec<(&'static str, String)> {
             "HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH",
             format!("/tmp/hc-c34ops-{}.sock", std::process::id()),
         ),
+        // ADR-0066 D-L: required beside the socket path; never dialled by these tests.
+        ("HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID", "1".into()),
         ("HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS", "5".into()),
         ("HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS", "5".into()),
         ("HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS", "120".into()),

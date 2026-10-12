@@ -1,0 +1,1569 @@
+{
+  "name": "humaux-fixture",
+  "networks": {
+    "humaux": {
+      "name": "humaux-fixture_humaux",
+      "ipam": {
+        "config": [
+          {
+            "subnet": "10.239.39.0/24"
+          }
+        ]
+      }
+    }
+  },
+  "secrets": {
+    "pg_superuser": {
+      "name": "humaux-fixture_pg_superuser",
+      "file": "/srv/humaux-node/repo/deploy/env/secret-fixture/pg_superuser"
+    }
+  },
+  "services": {
+    "admin": {
+      "profiles": [
+        "ops"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": null,
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_CELL_ID": "00000000-0000-4000-8000-000000000001",
+        "HUMAUX_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_QDRANT_HOST": "10.239.39.20"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/admin.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/admin.secret.env"
+        }
+      ],
+      "group_add": [
+        "10201",
+        "10202"
+      ],
+      "image": "humaux-admin:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10106:10106",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "alert-sink": {
+      "profiles": [
+        "rehearsal"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.1,
+      "command": [
+        "python3",
+        "/opt/humaux/alert_sink.py",
+        "19194",
+        "/out/alert_receipts.jsonl"
+      ],
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "image": "python:3.13-slim@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c",
+      "network_mode": "service:netns",
+      "pids_limit": 32,
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "10199:10199",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/rehearsal/alert_sink.py",
+          "target": "/opt/humaux/alert_sink.py",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/evidence/alerts",
+          "target": "/out"
+        }
+      ]
+    },
+    "alertmanager": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.25,
+      "command": [
+        "--config.file=/etc/alertmanager/alertmanager.yml",
+        "--storage.path=/alertmanager",
+        "--web.listen-address=127.0.0.1:9093",
+        "--cluster.listen-address="
+      ],
+      "depends_on": {
+        "gateway": {
+          "condition": "service_started",
+          "required": true
+        },
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:9093/-/ready"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "prom/alertmanager:v0.34.1@sha256:47a1dc7e74f1e755e29f74d392262f8d1da41f2ada5653911199bf07219e41d9",
+      "mem_limit": "134217728",
+      "memswap_limit": "134217728",
+      "network_mode": "service:netns",
+      "pids_limit": 64,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/rendered/alertmanager",
+          "target": "/etc/alertmanager",
+          "read_only": true,
+          "bind": {}
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/alert-urls",
+          "target": "/run/humaux-alert-urls",
+          "read_only": true,
+          "bind": {}
+        },
+        {
+          "type": "volume",
+          "source": "alertmanager-data",
+          "target": "/alertmanager",
+          "volume": {}
+        }
+      ]
+    },
+    "consolidation": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": [
+        "--serve"
+      ],
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        },
+        "private-rpc": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "retrieval-serve": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/consolidation-worker.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/consolidation-worker.secret.env"
+        }
+      ],
+      "group_add": [
+        "10202"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-consolidation-worker",
+          "--readyz"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-consolidation-worker:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "268435456",
+      "memswap_limit": "268435456",
+      "network_mode": "service:netns",
+      "pids_limit": 128,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10104:10104",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "dr": {
+      "profiles": [
+        "ops"
+      ],
+      "cap_add": [
+        "DAC_READ_SEARCH",
+        "DAC_OVERRIDE"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "HOME": "/tmp",
+        "HUMAUX_MAINTENANCE_BACKUP_COMPOSE_FILE": "../compose/prod.yml",
+        "HUMAUX_MAINTENANCE_BACKUP_PROJECT": "humaux-node",
+        "HUMAUX_MAINTENANCE_DRILL_COMPOSE_FILE": "../compose/drill.yml",
+        "HUMAUX_MAINTENANCE_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_MAINTENANCE_QDRANT_HOST": "10.239.39.20",
+        "HUMAUX_PG_REPO_DIR": "/srv/humaux-repo"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/sizing-a5.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/node.env.example"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/maintenance.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/dr.secret.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/pg.secret.env"
+        }
+      ],
+      "image": "humaux-dr:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "host",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "0:0",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/var/run/docker.sock",
+          "target": "/var/run/docker.sock",
+          "bind": {}
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy",
+          "target": "..",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/env/secret-fixture",
+          "target": "../env/secret-fixture",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-repo",
+          "target": "/srv/humaux-repo",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/evidence",
+          "target": "/srv/humaux-node/evidence"
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/releases",
+          "target": "/srv/humaux-node/releases",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/env/node.env.example",
+          "target": "../env/node.env.example",
+          "read_only": true
+        }
+      ]
+    },
+    "gateway": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 2,
+      "command": null,
+      "depends_on": {
+        "maintenance-serve": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        },
+        "pg": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "retrieval-rpc": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_GATEWAY_ALLOWED_HOSTS": "127.0.0.1:8080",
+        "HUMAUX_GATEWAY_ALLOWED_ORIGINS": "http://127.0.0.1:8080",
+        "HUMAUX_GATEWAY_BIND_ADDR": "10.239.39.10:8080",
+        "HUMAUX_GATEWAY_CELL_ID": "00000000-0000-4000-8000-000000000001",
+        "HUMAUX_GATEWAY_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_GATEWAY_QDRANT_HOST": "10.239.39.20",
+        "HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID": "00000000-0000-4000-8000-000000000003"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/gateway.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/gateway.secret.env"
+        }
+      ],
+      "group_add": [
+        "10201"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-gateway",
+          "--readyz"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-gateway:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "1073741824",
+      "memswap_limit": "1073741824",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10101:10101",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        }
+      ]
+    },
+    "maintenance-health": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": [
+        "health",
+        "serve"
+      ],
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        },
+        "private-distill": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_MAINTENANCE_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_MAINTENANCE_QDRANT_HOST": "10.239.39.20"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/maintenance.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-maintenance",
+          "readyz",
+          "health-serve"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-maintenance:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "268435456",
+      "memswap_limit": "268435456",
+      "network_mode": "service:netns",
+      "pids_limit": 128,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10105:10105"
+    },
+    "maintenance-serve": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": [
+        "--serve"
+      ],
+      "depends_on": {
+        "maintenance-health": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_MAINTENANCE_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_MAINTENANCE_QDRANT_HOST": "10.239.39.20"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/maintenance.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-maintenance",
+          "readyz",
+          "serve"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-maintenance:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "268435456",
+      "memswap_limit": "268435456",
+      "network_mode": "service:netns",
+      "pids_limit": 128,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10105:10105",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/humaux-repo",
+          "target": "/srv/humaux/repo",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "volume",
+          "source": "pgdata",
+          "target": "/srv/humaux/pgdata",
+          "read_only": true
+        }
+      ]
+    },
+    "migrate": {
+      "profiles": [
+        "ops"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": null,
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/maintenance.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/migrate.secret.env"
+        }
+      ],
+      "image": "humaux-ops:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10107:10107"
+    },
+    "netns": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.05,
+      "command": null,
+      "entrypoint": null,
+      "image": "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a",
+      "mem_limit": "16777216",
+      "memswap_limit": "16777216",
+      "networks": {
+        "humaux": {
+          "ipv4_address": "10.239.39.10"
+        }
+      },
+      "pids_limit": 16,
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 8080,
+          "published": "8080",
+          "protocol": "tcp"
+        }
+      ],
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "65535:65535"
+    },
+    "ops": {
+      "profiles": [
+        "ops"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": null,
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_MAINTENANCE_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_MAINTENANCE_QDRANT_HOST": "10.239.39.20"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/maintenance.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env"
+        }
+      ],
+      "image": "humaux-ops:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10105:10105"
+    },
+    "otel-collector": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.25,
+      "command": [
+        "--config=/etc/otelcol/otel-collector.yml"
+      ],
+      "depends_on": {
+        "gateway": {
+          "condition": "service_started",
+          "required": true
+        },
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "image": "otel/opentelemetry-collector:0.162.0@sha256:ef772ad07ca455ad83fabbf3da792f0f298a3d41a08e9099367364c0d1349801",
+      "mem_limit": "268435456",
+      "memswap_limit": "268435456",
+      "network_mode": "service:netns",
+      "pids_limit": 128,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/prometheus/otel-collector.yml",
+          "target": "/etc/otelcol/otel-collector.yml",
+          "read_only": true
+        }
+      ]
+    },
+    "pg": {
+      "cpus": 2,
+      "command": [
+        "postgres",
+        "-c",
+        "config_file=/etc/humaux/postgresql.conf",
+        "-c",
+        "listen_addresses=*"
+      ],
+      "entrypoint": null,
+      "environment": {
+        "POSTGRES_DB": "humaux",
+        "POSTGRES_PASSWORD_FILE": "/run/secrets/pg_superuser"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/pg.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "pg_isready",
+          "-h",
+          "/var/run/postgresql",
+          "-U",
+          "postgres"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-pg:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "9126805504",
+      "memswap_limit": "9126805504",
+      "networks": {
+        "humaux": null
+      },
+      "pids_limit": 512,
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 5432,
+          "published": "5432",
+          "protocol": "tcp"
+        }
+      ],
+      "restart": "unless-stopped",
+      "secrets": [
+        {
+          "source": "pg_superuser",
+          "target": "/run/secrets/pg_superuser"
+        }
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "shm_size": "1073741824",
+      "stop_grace_period": "2m0s",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "pgdata",
+          "target": "/var/lib/postgresql",
+          "volume": {}
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/postgres/postgresql.conf",
+          "target": "/etc/humaux/postgresql.conf",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/postgres/sizing-a5.conf",
+          "target": "/etc/humaux/pg-sizing.conf",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/pgbackrest/pgbackrest.conf",
+          "target": "/etc/pgbackrest/pgbackrest.conf",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-repo",
+          "target": "/var/lib/pgbackrest",
+          "bind": {
+            "create_host_path": false
+          }
+        }
+      ]
+    },
+    "private-distill": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": [
+        "--distill-serve"
+      ],
+      "depends_on": {
+        "consolidation": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH": "/run/humaux/sock-inference/inference-distill.sock"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/private-worker.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/private-worker.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-private-worker",
+          "--readyz"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-private-worker:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "3m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10103:10202",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "private-rpc": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": [
+        "--serve-rpc"
+      ],
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        },
+        "pg": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/private-worker.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/private-worker.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-private-worker",
+          "--readyz"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-private-worker:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10103:10202",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "prometheus": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 0.5,
+      "command": [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus",
+        "--storage.tsdb.retention.time=30d",
+        "--web.listen-address=127.0.0.1:9090"
+      ],
+      "depends_on": {
+        "alertmanager": {
+          "condition": "service_started",
+          "required": true
+        },
+        "gateway": {
+          "condition": "service_started",
+          "required": true
+        },
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:9090/-/ready"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "prom/prometheus:v3.15.0@sha256:6b41f7a45cfbd1d259a78701ee5e14fc2ad9383c9aa5d0427345a18539bc3c91",
+      "mem_limit": "1073741824",
+      "memswap_limit": "1073741824",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/rendered/prometheus",
+          "target": "/etc/prometheus",
+          "read_only": true,
+          "bind": {}
+        },
+        {
+          "type": "volume",
+          "source": "prometheus-data",
+          "target": "/prometheus",
+          "volume": {}
+        }
+      ]
+    },
+    "qdrant": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "QDRANT__SERVICE__HOST": "10.239.39.20"
+      },
+      "image": "qdrant/qdrant:v1.19.0-unprivileged@sha256:a0e04fe623cb064502cd869cefc1dc7ce359d8edd481063b5bd351c0a0a2c91e",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "3221225472",
+      "memswap_limit": "3221225472",
+      "networks": {
+        "humaux": {
+          "ipv4_address": "10.239.39.20"
+        }
+      },
+      "pids_limit": 256,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "1000:1000",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "qdrant",
+          "target": "/qdrant/storage",
+          "volume": {}
+        },
+        {
+          "type": "bind",
+          "source": "/srv/humaux-node/repo/deploy/qdrant/config.yaml",
+          "target": "/qdrant/config/production.yaml",
+          "read_only": true
+        }
+      ]
+    },
+    "retrieval-rpc": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": [
+        "--serve-rpc"
+      ],
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        },
+        "pg": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "private-rpc": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "qdrant": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_RETRIEVAL_WORKER_CELL_ID": "00000000-0000-4000-8000-000000000001",
+        "HUMAUX_RETRIEVAL_WORKER_EGRESS_PROCESSOR_ID": "00000000-0000-4000-8000-000000000002",
+        "HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST": "10.239.39.20"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/retrieval-worker.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/retrieval-worker.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-retrieval-worker",
+          "--readyz"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-retrieval-worker:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "1m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10102:10201",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        }
+      ]
+    },
+    "retrieval-serve": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": 1,
+      "command": [
+        "--serve"
+      ],
+      "depends_on": {
+        "netns": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        },
+        "retrieval-rpc": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "HUMAUX_RETRIEVAL_WORKER_CELL_ID": "00000000-0000-4000-8000-000000000001",
+        "HUMAUX_RETRIEVAL_WORKER_EGRESS_PROCESSOR_ID": "00000000-0000-4000-8000-000000000002",
+        "HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR": "10.239.39.20/32",
+        "HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST": "10.239.39.20"
+      },
+      "env_file": [
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/values/retrieval-worker.env"
+        },
+        {
+          "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/retrieval-worker.secret.env"
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/usr/local/bin/humaux-retrieval-worker",
+          "--readyz"
+        ],
+        "timeout": "5s",
+        "interval": "15s",
+        "retries": 4,
+        "start_period": "30s"
+      },
+      "image": "humaux-retrieval-worker:0.1.0-000000000000",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "5",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "536870912",
+      "memswap_limit": "536870912",
+      "network_mode": "service:netns",
+      "pids_limit": 256,
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "stop_grace_period": "2m0s",
+      "tmpfs": [
+        "/tmp:size=16m,mode=1777"
+      ],
+      "user": "10102:10201"
+    },
+    "scratch-as-consolidation": {
+      "profiles": [
+        "rehearsal"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "group_add": [
+        "10202"
+      ],
+      "image": "curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+      "network_mode": "none",
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "10104:10104",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "scratch-as-gateway": {
+      "profiles": [
+        "rehearsal"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "group_add": [
+        "10201"
+      ],
+      "image": "curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+      "network_mode": "none",
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "10101:10101",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "scratch-as-private": {
+      "profiles": [
+        "rehearsal"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "image": "curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+      "network_mode": "none",
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "10103:10202",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "scratch-as-retrieval": {
+      "profiles": [
+        "rehearsal"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "image": "curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+      "network_mode": "none",
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "10102:10201",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    },
+    "scratch-client": {
+      "profiles": [
+        "rehearsal"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "image": "curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+      "network_mode": "none",
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "65534:65534",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "sock-retrieval",
+          "target": "/run/humaux/sock-retrieval",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "sock-inference",
+          "target": "/run/humaux/sock-inference",
+          "volume": {}
+        }
+      ]
+    }
+  },
+  "volumes": {
+    "alertmanager-data": {
+      "name": "humaux-fixture_alertmanager-data"
+    },
+    "pgdata": {
+      "name": "humaux-fixture_pgdata"
+    },
+    "prometheus-data": {
+      "name": "humaux-fixture_prometheus-data"
+    },
+    "qdrant": {
+      "name": "humaux-fixture_qdrant"
+    },
+    "sock-inference": {
+      "name": "humaux-fixture_sock-inference",
+      "driver": "local",
+      "driver_opts": {
+        "device": "tmpfs",
+        "o": "uid=10103,gid=10202,mode=0750",
+        "type": "tmpfs"
+      }
+    },
+    "sock-retrieval": {
+      "name": "humaux-fixture_sock-retrieval",
+      "driver": "local",
+      "driver_opts": {
+        "device": "tmpfs",
+        "o": "uid=10102,gid=10201,mode=0750",
+        "type": "tmpfs"
+      }
+    }
+  },
+  "x-humaux": {
+    "cap_drop": [
+      "ALL"
+    ],
+    "logging": {
+      "driver": "json-file",
+      "options": {
+        "max-file": "5",
+        "max-size": "10m"
+      }
+    },
+    "network_mode": "service:netns",
+    "read_only": true,
+    "restart": "unless-stopped",
+    "security_opt": [
+      "no-new-privileges:true"
+    ],
+    "stop_grace_period": "60s",
+    "tmpfs": [
+      "/tmp:size=16m,mode=1777"
+    ]
+  },
+  "x-oneshot": {
+    "cap_drop": [
+      "ALL"
+    ],
+    "cpus": "1.0",
+    "logging": {
+      "driver": "json-file",
+      "options": {
+        "max-file": "5",
+        "max-size": "10m"
+      }
+    },
+    "mem_limit": "512m",
+    "memswap_limit": "512m",
+    "network_mode": "service:netns",
+    "pids_limit": "256",
+    "read_only": true,
+    "restart": "no",
+    "security_opt": [
+      "no-new-privileges:true"
+    ],
+    "stop_grace_period": "60s",
+    "tmpfs": [
+      "/tmp:size=16m,mode=1777"
+    ]
+  },
+  "x-probe-timing": {
+    "interval": "15s",
+    "retries": 4,
+    "start_period": "30s",
+    "timeout": "5s"
+  }
+}

@@ -315,9 +315,10 @@ fn drill_refuses_with_the_migrator_dsn_in_env() {
     assert!(!evidence.exists(), "nothing written");
 }
 
-/// T-M4b (review finding: crontab evidence directory): `restore drill` and `restore pitr` refuse an `--evidence`
-/// path whose directory does not exist (exit 2) before anything is read, created or recorded, because the evidence
-/// is written after the receipt. Fault: drop the check → both go on to connect → not exit 2 → red.
+/// T-M4b (review finding: crontab evidence directory; ADR-0066 review fix 9 OP-5): `restore drill` and `restore
+/// pitr` refuse an `--evidence` path that cannot be opened for writing (exit 2, here: its directory does not exist)
+/// before anything is read, created or recorded, because the evidence is written after the receipt. Fault: drop
+/// the open → both go on to connect → not exit 2 → red.
 #[test]
 fn drill_and_pitr_refuse_an_evidence_path_whose_directory_is_missing() {
     let dir = TempDir::new("tm4b");
@@ -332,7 +333,7 @@ fn drill_and_pitr_refuse_an_evidence_path_whose_directory_is_missing() {
     let evidence = evidence.to_string_lossy();
     let compose = drill_yml();
     let compose = compose.to_string_lossy();
-    let named = format!("directory {} does not exist", missing.display());
+    let named = format!("--evidence {evidence}: cannot be written");
     for args in [
         vec!["restore", "drill", "--evidence", &evidence],
         vec![
@@ -353,6 +354,105 @@ fn drill_and_pitr_refuse_an_evidence_path_whose_directory_is_missing() {
         assert!(both(&out).contains(&named), "{args:?}: {}", both(&out));
     }
     assert!(!missing.exists(), "nothing created");
+}
+
+/// ADR-0066 review fix 7 (ADR-0064 D-U refusal 3): `restore pitr` refuses `production_pg_running` only for a
+/// running PostgreSQL (compose service `pg`) of the backup project, never for the `dr` one-shot container that is
+/// itself running the restore inside that project. A `docker` shell shim on PATH answers `ps` per its filters: the
+/// project filter alone lists `all`, with `label=com.docker.compose.service=pg` it lists `pg`. Fault: drop the
+/// service filter → the `dr-run-…` case refuses with its own name → red.
+#[test]
+fn pitr_refusal_3_names_only_a_running_pg_of_the_backup_project() {
+    use std::os::unix::fs::PermissionsExt as _;
+    const PROD: &str = "humaux-prod-rehearsal-fix7-rb1";
+    let dr = format!("{PROD}-dr-run-74c71c8469fe");
+    let pg = format!("{PROD}-pg-1");
+    let compose = drill_yml();
+    let compose = compose.to_string_lossy();
+    for (all, only_pg, refused) in [
+        (dr.as_str(), "", None),
+        (pg.as_str(), pg.as_str(), Some(&pg)),
+    ] {
+        let dir = TempDir::new("fix7");
+        let log = dir.0.join("docker.log");
+        let shim = dir.0.join("docker");
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$*\" in\n\
+                 compose*' config --format json') echo '{{\"services\":{{\"pg\":{{\"image\":\"shim\",\
+                 \"volumes\":[{{\"target\":\"/var/lib/pgbackrest\",\"source\":\"/nonexistent\",\
+                 \"read_only\":true}}]}}}}}}'; exit 0 ;;\n\
+                 'ps '*'label=com.docker.compose.project={PROD} '*'label=com.docker.compose.service=pg '*) \
+                 echo '{only_pg}'; exit 0 ;;\n\
+                 'ps '*'label=com.docker.compose.project={PROD} '*) echo '{all}'; exit 0 ;;\n\
+                 esac\necho \"shim: unanswered\" >&2\nexit 1\n",
+                log = log.display()
+            ),
+        )
+        .expect("write docker shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+        let mut env = drill_env(
+            "postgres://role_maintenance:x@127.0.0.1:1/none",
+            &dir.0,
+            &drill_yml(),
+            None,
+        );
+        set_env(
+            &mut env,
+            "HUMAUX_MAINTENANCE_BACKUP_PROJECT",
+            PROD.to_owned(),
+        );
+        set_env(
+            &mut env,
+            "HUMAUX_MAINTENANCE_BACKUP_COMPOSE_FILE",
+            compose.clone().into_owned(),
+        );
+        set_env(
+            &mut env,
+            "PATH",
+            format!("{}:/usr/bin:/bin", dir.0.display()),
+        );
+        let evidence = dir.0.join("e.json");
+        let evidence = evidence.to_string_lossy();
+        let args = [
+            "restore",
+            "pitr",
+            "--compose-file",
+            &compose,
+            "--project",
+            "humaux-c37-fix7-target",
+            "--target",
+            "end",
+            "--evidence",
+            &evidence,
+        ];
+        let env: Vec<(&str, String)> = env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        let out = throwaway::run(&args, &env);
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            calls.lines().any(|l| l.starts_with("ps ")),
+            "refusal 3 reached: {calls}\n{}",
+            both(&out)
+        );
+        match refused {
+            Some(name) => {
+                assert_eq!(code(&out), 3, "{}", both(&out));
+                assert_eq!(
+                    receipt(&out)["reason"].as_str(),
+                    Some(format!("production_pg_running:{name}").as_str()),
+                    "{}",
+                    both(&out)
+                );
+            }
+            None => assert!(
+                !both(&out).contains("production_pg_running"),
+                "the dr one-shot refused its own restore: {}",
+                both(&out)
+            ),
+        }
+    }
 }
 
 /// T-M3 (D-L step 0/1): with no VERIFIED receipt the drill refuses `no_verified_backup` (exit 3) and creates
@@ -846,13 +946,14 @@ fn the_drill_receipt_is_written_after_destroy_with_residue() {
     assert_eq!(s.evidence["witness_b_absent"], true, "{}", s.evidence_text);
 }
 
-/// T-O3 (D-O): the evidence file is 0600 and holds no secret: no DSN, none of the source's passwords, no cipher
+/// T-O3 (D-O; ADR-0066 review fix 9 OP-5 / C3: 0644 so the operator can read `nologin_roles` back from a root-written
+/// file): the evidence file is 0644 and holds no secret: no DSN, none of the source's passwords, no cipher
 /// pass; it does carry the class and the notice. Fault: put the drill DSN in the evidence → `postgres://` → red.
 #[test]
 fn the_evidence_file_holds_no_secret() {
     let Some(s) = shared() else { return };
     assert!(!s.evidence_text.is_empty(), "{}", both(&s.drill));
-    assert_eq!(s.evidence_mode, 0o600);
+    assert_eq!(s.evidence_mode, 0o644);
     assert!(
         !s.evidence_text.contains("postgres://"),
         "a DSN in the evidence"

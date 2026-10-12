@@ -22,6 +22,7 @@
 //!   HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS, HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_GATEWAY_QDRANT_CIDR,
 //!   HUMAUX_GATEWAY_QDRANT_HOST, HUMAUX_GATEWAY_QDRANT_PORT, HUMAUX_GATEWAY_QDRANT_TLS,
+//!   HUMAUX_GATEWAY_RATE_{PREAUTH_IP,CREDENTIAL,USER,TENANT,OPERATION}_{CAPACITY,REFILL_PER_SECOND},
 //!   HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS, HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS,
 //!   HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS, HUMAUX_GATEWAY_REMEMBER_DATA_CLASS, HUMAUX_GATEWAY_REMEMBER_DOMAIN,
 //!   HUMAUX_GATEWAY_REMEMBER_EVENT_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_KIND,
@@ -31,7 +32,8 @@
 //!   HUMAUX_GATEWAY_REMEMBER_WORKSPACE_ID, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_PRODUCTION_ENABLED,
 //!   HUMAUX_GATEWAY_RETRIEVAL_PROFILE_QUERY_TRANSFORM, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K,
-//!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH,
+//!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
+//!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
 //!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::postgres, adapters::quota_repo,
 //!   adapters::retrieve, application::retrieval_embedding_port, contracts::config_registry,
@@ -111,6 +113,36 @@ const PG_IDLE_IN_TRANSACTION_TIMEOUT_KEY: &str = "HUMAUX_GATEWAY_PG_IDLE_IN_TRAN
 const RATE_LOCK_TIMEOUT_KEY: &str = "HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS";
 const RATE_PREAUTH_IPV6_PREFIX_BITS_KEY: &str = "HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS";
 const ADMISSION_CONCURRENCY_KEY: &str = "HUMAUX_GATEWAY_ADMISSION_CONCURRENCY";
+/// §67.2 / ADR-0065 D-D: `(class, capacity key, refill key)` of the five rate buckets, in `GuardRatePolicies` field
+/// order. Every key is a whole literal so `xtask dep-map` sees it (ADR-0066 review fix 4: names built with `format!`
+/// were invisible to the env examples and missing from the release bundle).
+const RATE_BUCKET_KEYS: [(&str, &str, &str); 5] = [
+    (
+        "PREAUTH_IP",
+        "HUMAUX_GATEWAY_RATE_PREAUTH_IP_CAPACITY",
+        "HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND",
+    ),
+    (
+        "CREDENTIAL",
+        "HUMAUX_GATEWAY_RATE_CREDENTIAL_CAPACITY",
+        "HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND",
+    ),
+    (
+        "USER",
+        "HUMAUX_GATEWAY_RATE_USER_CAPACITY",
+        "HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND",
+    ),
+    (
+        "TENANT",
+        "HUMAUX_GATEWAY_RATE_TENANT_CAPACITY",
+        "HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND",
+    ),
+    (
+        "OPERATION",
+        "HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY",
+        "HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND",
+    ),
+];
 const ADMISSION_QUEUE_DEPTH_KEY: &str = "HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH";
 const ADMISSION_MAX_WAIT_KEY: &str = "HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS";
 const ADMISSION_PER_KEY_LIMIT_KEY: &str = "HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT";
@@ -192,6 +224,8 @@ pub struct GatewayBootstrap {
 /// `HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH` is non-empty (`parse_semantic_recall`'s doc).
 struct SemanticRecallConfig {
     socket_path: String,
+    /// ADR-0066 D-L: the retrieval worker's uid, verified on every dial.
+    server_uid: u32,
     permit_ttl: Duration,
     embedding_dimension: u32,
     embedding_version: String,
@@ -578,11 +612,11 @@ fn parse_guard(effective: &BTreeMap<String, String>) -> Result<GuardSettings, Bo
         )?,
         tenant_network: BTreeMap::new(),
         rates: GuardRatePolicies {
-            preauth_ip: rate(effective, "PREAUTH_IP")?,
-            credential: rate(effective, "CREDENTIAL")?,
-            user: rate(effective, "USER")?,
-            tenant: rate(effective, "TENANT")?,
-            operation: rate(effective, "OPERATION")?,
+            preauth_ip: rate(effective, RATE_BUCKET_KEYS[0])?,
+            credential: rate(effective, RATE_BUCKET_KEYS[1])?,
+            user: rate(effective, RATE_BUCKET_KEYS[2])?,
+            tenant: rate(effective, RATE_BUCKET_KEYS[3])?,
+            operation: rate(effective, RATE_BUCKET_KEYS[4])?,
             lock_timeout: millis(
                 required(effective, RATE_LOCK_TIMEOUT_KEY)?,
                 RATE_LOCK_TIMEOUT_KEY,
@@ -728,6 +762,10 @@ fn parse_semantic_recall(
     }
     Ok(Some(SemanticRecallConfig {
         socket_path: socket_path.to_owned(),
+        server_uid: parse_u32(
+            required(effective, "HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID")?,
+            "HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID",
+        )?,
         permit_ttl: seconds(
             required(effective, "HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS")?,
             "HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS",
@@ -838,6 +876,7 @@ fn build_semantic_recall_runtime(
     let client = Arc::new(GatewayRetrievalEmbeddingClient::new(
         pool,
         config.socket_path.clone(),
+        config.server_uid,
         registry.clone(),
         config.permit_ttl,
     ));
@@ -970,6 +1009,8 @@ pub fn registry() -> Vec<ConfigEntry> {
     entries.extend(
         [
             ("RETRIEVAL_RPC_SOCKET_PATH", "path", false),
+            // ADR-0066 D-L: required (in this group) whenever the socket path is set.
+            ("RETRIEVAL_RPC_SERVER_UID", "u32", false),
             ("RETRIEVAL_RPC_PERMIT_TTL_SECONDS", "u64", false),
             ("EMBEDDING_DIMENSION", "u32", false),
             ("EMBEDDING_VERSION", "string", false),
@@ -985,17 +1026,9 @@ pub fn registry() -> Vec<ConfigEntry> {
             entry_with_default(&format!("{PREFIX}{suffix}"), type_name, secret, "")
         }),
     );
-    for name in ["PREAUTH_IP", "CREDENTIAL", "USER", "TENANT", "OPERATION"] {
-        entries.push(entry(
-            &format!("HUMAUX_GATEWAY_RATE_{name}_CAPACITY"),
-            "i64",
-            false,
-        ));
-        entries.push(entry(
-            &format!("HUMAUX_GATEWAY_RATE_{name}_REFILL_PER_SECOND"),
-            "i64",
-            false,
-        ));
+    for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
+        entries.push(entry(capacity_key, "i64", false));
+        entries.push(entry(refill_key, "i64", false));
     }
     entries.extend(retrieval_profile_registry().into_iter().map(|mut entry| {
         entry.name = retrieval_env_key(&entry.name);
@@ -1134,15 +1167,16 @@ fn cidrs(value: &str, key: &str) -> Result<Vec<Cidr>, BootstrapError> {
         .collect()
 }
 
-fn rate(effective: &BTreeMap<String, String>, name: &str) -> Result<RatePolicy, BootstrapError> {
-    let capacity_key = format!("HUMAUX_GATEWAY_RATE_{name}_CAPACITY");
-    let refill_key = format!("HUMAUX_GATEWAY_RATE_{name}_REFILL_PER_SECOND");
-    let capacity = required(effective, &capacity_key)?
+fn rate(
+    effective: &BTreeMap<String, String>,
+    (name, capacity_key, refill_key): (&str, &str, &str),
+) -> Result<RatePolicy, BootstrapError> {
+    let capacity = required(effective, capacity_key)?
         .parse::<i64>()
-        .map_err(|_| BootstrapError::new(&capacity_key, "invalid integer"))?;
-    let refill = required(effective, &refill_key)?
+        .map_err(|_| BootstrapError::new(capacity_key, "invalid integer"))?;
+    let refill = required(effective, refill_key)?
         .parse::<i64>()
-        .map_err(|_| BootstrapError::new(&refill_key, "invalid integer"))?;
+        .map_err(|_| BootstrapError::new(refill_key, "invalid integer"))?;
     RatePolicy::new(capacity, refill).map_err(|_| BootstrapError::new(name, "invalid rate policy"))
 }
 
@@ -1521,6 +1555,29 @@ mod tests {
 
     /// ADR-0065 D-B: statement_timeout < handler timeout, idle-in-transaction ≤ handler timeout; a violation refuses
     /// to boot naming the key. Fault: the order check removed ⇒ red.
+    /// ADR-0066 review fix 4: the five §67.2 classes, each with a literal key pair of the one spelling `rate` reads.
+    #[test]
+    fn rate_bucket_keys_are_the_five_classes_with_literal_key_pairs() {
+        let classes: Vec<&str> = RATE_BUCKET_KEYS
+            .iter()
+            .map(|(class, _, _)| *class)
+            .collect();
+        assert_eq!(
+            classes,
+            ["PREAUTH_IP", "CREDENTIAL", "USER", "TENANT", "OPERATION"]
+        );
+        for (class, capacity_key, refill_key) in RATE_BUCKET_KEYS {
+            for (key, suffix) in [
+                (capacity_key, "_CAPACITY"),
+                (refill_key, "_REFILL_PER_SECOND"),
+            ] {
+                assert!(key.starts_with("HUMAUX_GATEWAY_RATE_"), "{key}");
+                assert!(key.ends_with(suffix), "{key}");
+                assert_eq!(key, format!("HUMAUX_GATEWAY_RATE_{class}{suffix}"));
+            }
+        }
+    }
+
     #[test]
     fn timeout_ordering_is_refused_at_boot() {
         // The fixture's handler timeout is 5 s.
@@ -1833,6 +1890,7 @@ mod tests {
                 "/tmp/hgb-test.sock",
             ),
             ("HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS", "30"),
+            ("HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID", "10102"),
             ("HUMAUX_GATEWAY_EMBEDDING_DIMENSION", "4"),
             ("HUMAUX_GATEWAY_EMBEDDING_VERSION", "embed-v1"),
             ("HUMAUX_GATEWAY_QDRANT_HOST", "127.0.0.1"),
@@ -1855,6 +1913,8 @@ mod tests {
         let values = semantic_recall_enabled_values();
         GatewayBootstrap::from_raw(values.clone()).expect("fully configured semantic recall");
         for key in [
+            // ADR-0066 D-L: the dial verifies the serving uid, so the key is required with the socket path.
+            "HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID",
             "HUMAUX_GATEWAY_EMBEDDING_DIMENSION",
             "HUMAUX_GATEWAY_EMBEDDING_VERSION",
             "HUMAUX_GATEWAY_QDRANT_HOST",

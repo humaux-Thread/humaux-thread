@@ -157,3 +157,12 @@ groups:
         expr: increase(admission_rejected_total[5m]) > 0
         labels:
           severity: warning
+
+      # §42 "DNS pin deferred" (card 39, ADR-0066 D-P): distill jobs keep deferring on TRANSPORT while a DNS pin is
+      # configured and no memory record is written — the pinned address (or the provider) is unreachable, not a single
+      # blip. Both families are exported by humaux-private-worker; refresh procedure: runbook §O-DNS.
+      - alert: DnsPinDeferred
+        expr: increase(dns_pin_deferred_total[30m]) > 0 and increase(private_distill_outputs_total[30m]) == 0
+        for: 15m
+        labels:
+          severity: warning

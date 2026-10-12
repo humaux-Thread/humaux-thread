@@ -21,6 +21,7 @@
 //! `humaux_adapters::consolidation_reasoner` and are shared with `humaux-private-worker` —
 //! the two hop ends can only agree on "what was sent" if they hash the same bytes the same way.
 
+pub mod dsn;
 pub mod inference_client;
 
 use humaux_adapters::consolidate_repo::{

@@ -2,9 +2,9 @@
 //!   0.0.4 encoder, and the std-only loopback listener that serves `/metrics` and `/status` (ADR-0061 D-A, D-B).
 //! Depends-on: crates=[]; services=[HTTP(loopback)]; env=[]; modules=[telemetry::degrade]
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
-//!   gateway::guard, gateway::main, maintenance::health_serve, maintenance::resident, maintenance::serve,
-//!   private-worker::main, retrieval-worker::main, retrieval::completeness, telemetry::admission, telemetry::degrade,
-//!   telemetry::dr, telemetry::health, tests]
+//!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
+//!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
+//!   telemetry::admission, telemetry::degrade, telemetry::dr, telemetry::health, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
 //! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B
@@ -280,6 +280,15 @@ pub mod families {
         Kind::Counter,
         &[],
     );
+    // §41.2: §11.4 a distill job settled RETRY with class TRANSPORT while a DNS pin is configured — private worker
+    // (card 39; emit [`count_dns_pin_deferred`], ADR-0066 D-P).
+    /// `dns_pin_deferred_total`.
+    pub const DNS_PIN_DEFERRED_TOTAL: Family = f(
+        "dns_pin_deferred_total",
+        "Distill jobs deferred on a TRANSPORT failure while HUMAUX_PRIVATE_WORKER_DNS_PINS names a host.",
+        Kind::Counter,
+        &[],
+    );
     // §41.2: §4.2 every door call of the resident daemon — `humaux-maintenance --serve` (card 35; emit
     // `adapters::maintenance_repo::count_task_call`, ADR-0062 D-S).
     /// `maintenance_task_runs_total{task,outcome}`.
@@ -372,6 +381,23 @@ impl<const N: usize> Counters<N> {
     pub(crate) fn get(&self, slot: usize) -> u64 {
         self.0[slot].load(Ordering::Relaxed)
     }
+}
+
+// §41.2 row `dns_pin_deferred_total` (§11.4 distill RETRY settle with class TRANSPORT while a pin is configured · 1);
+// consumer §42 DnsPinDeferred. Here, not in the private worker, because the G80-6 witness may depend on library crates
+// only and `cargo xtask metrics-registry` scans `crates/` for the one `.inc(` (ADR-0066 D-P).
+static DNS_PIN_DEFERRED_TOTAL: Counters<1> = Counters::new();
+
+/// Counts one distill job deferred on a TRANSPORT failure while a DNS pin is configured (ADR-0066 D-P). Public so
+/// the witness drives the emit; the one production caller is `private-worker::distill`'s RETRY settle.
+pub fn count_dns_pin_deferred() {
+    // labels: -
+    DNS_PIN_DEFERRED_TOTAL.inc(0, 1);
+}
+
+/// This process's `dns_pin_deferred_total` (ADR-0066 D-P: the private worker renders it).
+pub fn dns_pin_deferred_total() -> u64 {
+    DNS_PIN_DEFERRED_TOTAL.get(0)
 }
 
 /// Process-local gauges (f64 bits), one slot per closed label value.

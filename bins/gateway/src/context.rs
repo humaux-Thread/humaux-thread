@@ -1,16 +1,11 @@
 //! `gateway::context` — Authenticated Context result: stable handoff diagnostics plus same-snapshot bodies.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2,
-//!   uuid]; services=[]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, adapters::serving_repo, domain::context, domain::error, domain::identity, domain::ids, gateway::recall, gateway::remember, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::request]
+//! Depends-on: crates=[humaux-adapters, humaux-contracts, humaux-domain, humaux-projection, humaux-retrieval, humaux-telemetry,
+//!   serde, serde_json, uuid]; services=[]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, adapters::serving_repo, domain::context, domain::error, domain::identity, domain::ids, gateway::recall, gateway::remember, humaux-telemetry, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [every field in a returned Context is read from the same snapshot; a partial read never yields a body silently missing a section]
-//! Spec: Baseline §22.0; §23.1; §25; ADR-0024; ADR-0031; ADR-0054
+//! Spec: Baseline §22.0; §23.1; §25; ADR-0024; ADR-0031; ADR-0054; ADR-0066 Review fix 2
 
-use std::{
-    collections::BTreeMap,
-    io::Read,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use humaux_adapters::{
     context_repo::{MaterializedContext, assemble_materialized},
@@ -39,7 +34,6 @@ use humaux_retrieval::{
 };
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -84,7 +78,7 @@ impl ContextBootstrap {
             budget,
             profile,
             family: write_policy.family().clone(),
-            binary_build: executable_fingerprint()?,
+            binary_build: binary_build()?,
             index: None,
             projection_lag,
         })
@@ -188,27 +182,19 @@ pub struct ContextResult {
     pub content: Envelope<ContextItem>,
 }
 
-fn executable_fingerprint() -> Result<String, ErrorCode> {
-    static BUILD: OnceLock<String> = OnceLock::new();
-    if let Some(build) = BUILD.get() {
-        return Ok(build.clone());
-    }
-    let path = std::env::current_exe().map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let mut file = std::fs::File::open(path).map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| ErrorCode::DependencyUnavailable)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    let build = format!("sha256:{:x}", digest.finalize());
-    let _ = BUILD.set(build.clone());
-    Ok(build)
+/// §23.1③ `binary_build`: the running binary's build identity, which is its `--version` line
+/// (`humaux_telemetry::version_line` over the build values burned in by `build.rs` / `build.sh`). `Err` when the
+/// build carries no 40-hex sha — the gateway then refuses to boot instead of reporting a placeholder.
+// ADR-0066 Review fix 2: a build-time value, never a hash of `current_exe()` — hashing the whole executable at
+// first use cost ~20 s on a cold ARM disk (272 MiB debug binary) and missed every listen deadline.
+fn binary_build() -> Result<String, ErrorCode> {
+    humaux_telemetry::version_line(
+        "humaux-gateway",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("HUMAUX_BUILD_GIT_SHA"),
+        option_env!("HUMAUX_BUILD_TIME"),
+    )
+    .map_err(|_| ErrorCode::DependencyUnavailable)
 }
 
 /// Reads the stream derived from the credential's tenant and the requested workspace
@@ -435,4 +421,43 @@ fn into_result<T>(
             accept(ContextResult { handoff, content })
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use humaux_domain::{dataclass::DataClass, identity::VisibilityClass};
+
+    /// ADR-0066 Review fix 2: `binary_build` is the burned-in `--version` line, assembled without opening the
+    /// executable. Faults: the runtime `current_exe()` hash restored (a `sha256:` value) or the sha not burned in
+    /// (`new` refuses) ⇒ red.
+    #[test]
+    fn binary_build_is_the_burned_in_version_line() {
+        let expected = humaux_telemetry::version_line(
+            "humaux-gateway",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("HUMAUX_BUILD_GIT_SHA"),
+            option_env!("HUMAUX_BUILD_TIME"),
+        )
+        .expect("build.rs burns in the sha of this checkout");
+        let policy = RememberPolicy::new(
+            ProcessFamily::new("workspace", "knowledge", "ingest", "v1").unwrap(),
+            Uuid::now_v7(),
+            Duration::from_secs(60),
+            DataClass::Internal,
+            VisibilityClass::WorkspaceShared,
+        )
+        .unwrap();
+        let bootstrap = ContextBootstrap::new(
+            ContextBudget::new(2_048, 1_024).unwrap(),
+            humaux_contracts::retrieval_config::resolve_registered_retrieval_profile(
+                &Default::default(),
+            )
+            .unwrap(),
+            &policy,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(bootstrap.binary_build, expected);
+    }
 }

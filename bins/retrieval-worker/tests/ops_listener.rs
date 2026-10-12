@@ -172,6 +172,18 @@ fn projection_env(
     env
 }
 
+/// This test's own uid, as the owner of a file it just created.
+fn own_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::env::temp_dir().join(format!("hq-c34ops-uid-{}", std::process::id()));
+    std::fs::write(&path, b"").expect("create the uid probe file");
+    let uid = std::fs::metadata(&path)
+        .expect("stat the uid probe file")
+        .uid();
+    let _ = std::fs::remove_file(&path);
+    uid
+}
+
 fn spawn(args: &[&str], env: &[(&str, String)]) -> Child {
     // dep: subprocess(humaux-retrieval-worker) — a resident mode under test
     Command::new(BIN)
@@ -353,13 +365,26 @@ fn both_modes_serve_the_four_provider_families_on_their_own_ports() {
     ]);
     let mut runner = spawn(&["--serve"], &env);
 
-    // Short `/tmp` path: a macOS temp dir plus a name overflows `sockaddr_un`.
-    let socket = format!("/tmp/hq-c34ops-{}.sock", std::process::id());
+    // Short `/tmp` path: a macOS temp dir plus a name overflows `sockaddr_un`. ADR-0066 D-M: the socket lives
+    // in a 0700 directory of this uid (a shared `/tmp` refuses the bind).
+    let sock_dir = format!("/tmp/hq-c34ops-{}", std::process::id());
+    let _ = std::fs::remove_dir_all(&sock_dir);
+    std::fs::create_dir(&sock_dir).expect("create the socket dir");
+    std::fs::set_permissions(
+        &sock_dir,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("chmod the socket dir");
+    let socket = format!("{sock_dir}/rpc.sock");
     env.retain(|(k, _)| *k != "HUMAUX_RETRIEVAL_WORKER_PG_DSN");
     env.extend([
         ("HUMAUX_RETRIEVAL_WORKER_PG_DSN", dsn),
         ("HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH", socket.clone()),
-        ("HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID", "0".into()),
+        // ADR-0066 D-K: 0 or this test's own uid would refuse boot; a uid nobody here runs as.
+        (
+            "HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID",
+            own_uid().wrapping_add(1).to_string(),
+        ),
     ]);
     let mut listener = spawn(&["--serve-rpc"], &env);
 
@@ -393,5 +418,5 @@ fn both_modes_serve_the_four_provider_families_on_their_own_ports() {
     }
     terminate(runner, serve, "--serve");
     terminate(listener, rpc, "--serve-rpc");
-    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_dir_all(&sock_dir);
 }
