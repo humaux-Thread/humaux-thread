@@ -1020,6 +1020,7 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #30 (`deploy_check.rs` `release_reasons`, PR #2 Codex P1 round 4): version comparisons judged before the identity holds | `None` read as an empty line | `release_identity_is_judged_before_the_version_run` red, EXIT 101 |
 | `c39_red_fix9` #31 (`rls_check.rs` `flag_without_value`, PR #2 owner review P2): a bare `--spec` / `--dsn` read as absent | the guard disabled | `value_flags_without_a_value_are_usage_errors` red, EXIT 101 |
 | `c39_red_fix9` #32 (`migrate.rs` `run`, PR #2 Codex P1 round 5): a bare `--migrations-dir` / `--dsn` / `--through` read as absent | the guard filtered out | `bare_value_flags_are_usage_errors_before_any_default` red (exit 1, not 2: the embedded set and a connect attempt), EXIT 101 |
+| `c39_red_fix9` #33 (`migrate.rs`, gate-reviewer round 5 P2): the guard filtered out, against the strengthened test (each case discriminates, all judged before the assert) | the guard filtered out | `bare_value_flags_are_usage_errors_before_any_default` red naming all four cases (exit 1 each), EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1051,7 +1052,11 @@ upgraded release added is not in the previous `prod.yml`). (3) `migrate` refuses
 (`migrate::flag_without_value`) is shared with `rls-check`. (4) `alert-sink` writes to its own
 `$HUMAUX_NODE_EVIDENCE_DIR/alerts` (P2: mode 1733), not the operator's 0700 evidence dir it cannot write as uid
 10199 without capabilities; A2–A4 read `alerts/alert_receipts.jsonl`; the fixture's bind source follows. Runbook
-blocks changed: P2, R2, U2, U3, RB1, RB2, A2, A3, A4.
+blocks changed: P2, R2, U2, U3, RB1, RB2, A2, A3, A4. Gate-reviewer on 5ce5814 (FAIL, one P1): RB1 ran `dr` under
+`node.env`'s tag, which U7 had already switched to the next release, so the host check inspected `humaux-dr:PREV` while
+`humaux-dr:NEXT` ran; RB1 now exports `HUMAUX_IMAGE_TAG=$PREV_TAG` before the check (the previous release's verifier,
+under its own checkout). The four host checks name an image that is not loaded as `<not loaded>`; the bare-flag test's
+second case now discriminates without the guard and all cases are judged before the assert (red #33).
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 

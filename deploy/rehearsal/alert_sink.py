@@ -2,7 +2,7 @@
 # deploy/rehearsal/alert_sink.py <port> <jsonl> — the clean-node rehearsal's Alertmanager webhook receiver (ADR-0066 §5,
 # the twin of rehearse.sh's ADR-0061 D-K sink). Runs as prod.yml's `alert-sink` (profile rehearsal) in the shared
 # network namespace, so 127.0.0.1:<port> is reachable from Alertmanager and from nothing outside the node.
-# Every POST body becomes one compact JSON line {"path", "body"} appended to <jsonl> (the evidence dir); the Watchdog
+# Every POST body becomes one compact JSON line {"path", "body"} appended to <jsonl> (the evidence dir's alerts/, mode 1733: uid 10199 writes it); the Watchdog
 # receipt carries the deployed git sha (watchdog_carries_sha). Stdlib only; no secret is read or written.
 import json
 import sys

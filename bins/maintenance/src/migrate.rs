@@ -594,7 +594,7 @@ fn live_runtime_sessions(client: &mut Client) -> Result<Vec<String>, String> {
 
 /// `humaux-maintenance migrate [--migrations-dir DIR] [--dsn URL] [--through ID] [--dev-placeholder-roles]
 /// [--allow-live-sessions]`: 0 pass (every migration recorded, newly applied or already applied), 1 fail (names the
-/// migration), 2 usage (no DSN), 3 refused (live runtime sessions in the target database, nothing applied).
+/// migration), 2 usage (no DSN, or a value flag without its value), 3 refused (live runtime sessions in the target database, nothing applied).
 pub fn run(args: &[String]) -> i32 {
     if let Some(name) = flag_without_value(args, &["--dsn", "--migrations-dir", "--through"]) {
         eprintln!("migrate: usage — {name} needs a value");
@@ -700,14 +700,22 @@ mod tests {
     #[test]
     fn bare_value_flags_are_usage_errors_before_any_default() {
         let own = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        for args in [
+        // Every case discriminates without the guard (it would reach a default and return 1), and every case is
+        // judged before the assert, so a red names them all.
+        let wrong: Vec<(Vec<String>, i32)> = [
             own(&["--dsn", "postgres://127.0.0.1:1/x", "--migrations-dir"]),
-            own(&["--migrations-dir", "/tmp/m", "--dsn"]),
+            own(&["--dsn", "--migrations-dir", "/nonexistent/migrations"]),
             own(&["--migrations-dir", "--dsn", "postgres://127.0.0.1:1/x"]),
             own(&["--dsn", "postgres://127.0.0.1:1/x", "--through", ""]),
-        ] {
-            assert_eq!(run(&args), 2, "{args:?}");
-        }
+        ]
+        .into_iter()
+        .map(|args| {
+            let code = run(&args);
+            (args, code)
+        })
+        .filter(|(_, code)| *code != 2)
+        .collect();
+        assert!(wrong.is_empty(), "not a usage error: {wrong:?}");
     }
 
     /// A minimal in-memory manifest: only the two checks matter to `apply_all`.
