@@ -11,7 +11,7 @@
 //!   CONSOLIDATION_WORKER_PG_DSN, HUMAUX_CONSOLIDATION_WORKER_BATCH, HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS, HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS, HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS,
-//!   HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH,
+//!   HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS, HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR, HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidate_repo, adapters::jobs, adapters::postgres,
 //!   application::consolidate, humaux-consolidation-worker, humaux-testkit,
 //!   testkit::fixture_purge, testkit::reaped]
@@ -1079,6 +1079,7 @@ fn run_once_binary_exits_zero_promptly_with_no_input() {
                         "HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH",
                         "/nonexistent/humaux-consolidation-worker-run-once.sock",
                     )
+                    .env("HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID", own_uid().to_string())
                     .env("HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS", "30")
                     .env("HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS", "5")
                     .env("HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS", "60")
@@ -1132,6 +1133,19 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/hc15-{tag}-{}.sock", Uuid::now_v7().simple()))
 }
 
+/// This test's own uid, as the owner of a file it just created (ADR-0066 D-L: the stand-in private worker
+/// sockets are served by this uid, so it is the consolidation worker's expected server uid).
+fn own_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::env::temp_dir().join(format!("hc-uid-{}", Uuid::now_v7().simple()));
+    std::fs::write(&path, b"").expect("create the uid probe file");
+    let uid = std::fs::metadata(&path)
+        .expect("stat the uid probe file")
+        .uid();
+    let _ = std::fs::remove_file(&path);
+    uid
+}
+
 /// The `--serve` environment card 14's `run_once_binary_exits_zero_promptly_with_no_input`
 /// established, plus the two keys resident mode adds. `socket_path` is the ONLY thing the two
 /// card-15 tests vary.
@@ -1140,6 +1154,10 @@ fn serve_command(dsn: &str, socket_path: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_humaux-consolidation-worker"));
     cmd.env("CONSOLIDATION_WORKER_PG_DSN", dsn)
         .env("HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH", socket_path)
+        .env(
+            "HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID",
+            own_uid().to_string(),
+        )
         .env("HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS", "5")
         .env("HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS", "5")
         .env("HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS", "120")
@@ -1197,9 +1215,19 @@ fn readyz_binary_probes_its_uds_peer_and_names_it_when_down() {
             // dep: UDS(serve) — unix-socket RPC
             let listener = std::os::unix::net::UnixListener::bind(&socket_path)
                 .expect("bind the stand-in private-worker socket");
+            // ADR-0066 D-L: the worker's verified dial refuses a socket with `other` bits; a server socket is 0660.
+            std::fs::set_permissions(
+                &socket_path,
+                std::os::unix::fs::PermissionsExt::from_mode(0o660),
+            )
+            .expect("chmod the stand-in socket");
             let accepting = std::thread::spawn(move || {
-                // One accept is all readiness makes; the thread ends with the test.
-                let _ = listener.accept();
+                // One accept is all readiness makes. The connection is held until the probe closes it: the
+                // verified dial reads the server's peer credential after connecting (ADR-0066 D-L), and macOS
+                // answers ENOTCONN for a peer that already hung up.
+                if let Ok((mut held, _)) = listener.accept() {
+                    let _ = std::io::Read::read_to_end(&mut held, &mut Vec::new());
+                }
             });
             let up = serve_command(&dsn, &socket_path.to_string_lossy())
                 .arg("--readyz")
@@ -1307,6 +1335,12 @@ fn drain_mid_pass_leaves_no_live_lease(signal: &str, test_name: &'static str) {
         // dep: UDS(serve) — unix-socket RPC
         let listener = std::os::unix::net::UnixListener::bind(&socket_path)
             .expect("bind the stand-in private-worker socket");
+        // ADR-0066 D-L: the worker's verified dial refuses a socket with `other` bits; a server socket is 0660.
+        std::fs::set_permissions(
+            &socket_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o660),
+        )
+        .expect("chmod the stand-in socket");
         // Accept and hold: the worker's inference hop blocks here until its call TTL, which
         // is the window this test needs the signal to land in.
         let stalling = std::thread::spawn(move || {

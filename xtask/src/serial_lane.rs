@@ -1,5 +1,5 @@
 //! `xtask::serial_lane` — card 23 serial isolated lane runner for #[ignore]d DB/Qdrant tests.
-//! Depends-on: crates=[humaux-testkit, postgres]; services=[PostgreSQL(any) r=[ops.schema_migrations]
+//! Depends-on: crates=[humaux-maintenance, humaux-testkit, postgres]; services=[PostgreSQL(any) r=[ops.schema_migrations]
 //!   w=[ops.schema_migrations], Qdrant(*), subprocess(cargo), subprocess(humaux-*)];
 //!   env=[CARGO, CARGO_MANIFEST_DIR, CARGO_TARGET_DIR, HUMAUX_0132_GATE_MODE, HUMAUX_ADMIN_PG_DSN,
 //!   HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MECHANISM_ADMIN_BIN, HUMAUX_MECHANISM_FIXTURE,
@@ -1163,7 +1163,7 @@ mod tests {
     /// throwaway ⇒ red.
     #[test]
     fn a_shared_db_missing_a_migration_is_refused_and_never_migrated() {
-        let Some((_db, dsn)) = crate::migrate::tests::throwaway(
+        let Some((_db, dsn)) = humaux_maintenance::throwaway::throwaway(
             "a_shared_db_missing_a_migration_is_refused_and_never_migrated",
             "lane_head",
         ) else {

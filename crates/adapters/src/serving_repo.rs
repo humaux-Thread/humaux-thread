@@ -3,7 +3,7 @@
 //!   r=[projection.processing_gaps] w=[projection.stream_checkpoints], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_maintenance)]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::stream_repo,
 //!   domain::error, domain::identity, projection::serving, projection::stream, retrieval::completeness]
-//! Called-by: [adapters::retrieve, gateway::context, gateway::recall, tests, xtask::projection_serve]
+//! Called-by: [adapters::retrieve, gateway::context, gateway::recall, tests, maintenance::projection_serve]
 //! Invariants: [only fetches the numbers and performs the atomic serving switch UPDATE; the switch decision is
 //!   humaux_projection::serving's pure arithmetic; cross-tenant or unauthenticated calls are typed errors;
 //!   family_read_state reads initialised/serving (and, unserved, the real ledger) in one RR READ ONLY snapshot]

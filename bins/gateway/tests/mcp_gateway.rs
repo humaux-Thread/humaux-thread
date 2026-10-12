@@ -1,7 +1,7 @@
 //! `gateway::tests::mcp_gateway` — Native MCP -> Gateway actual PostgreSQL acceptance.
 //! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval,
-//!   humaux-retrieval-provider, humaux-retrieval-worker, humaux-testkit, postgres, serde_json, sha2, time, tokio,
+//!   humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio,
 //!   uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events,
 //!   control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events,
 //!   private.evidence_affects, private.evidence_subjects, private.subject_keys, private.task_binding_grants,
@@ -14,7 +14,8 @@
 //!   private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
 //!   projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace,
 //!   control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker),
-//!   UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[CARGO_BIN_EXE_humaux-gateway,
+//!   UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION,
+//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME,
 //!   HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
 //!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR,
@@ -47,7 +48,7 @@
 //!   domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids,
 //!   domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::mcp_application,
 //!   gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan,
-//!   humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
+//!   humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
 //!   projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters,
 //!   retrieval-provider::contract, retrieval-worker::rpc, retrieval::completeness, retrieval::request]
 //! Called-by: [cargo-test]
@@ -450,6 +451,12 @@ async fn spawn_semantic_worker(expected_gateway_uid: u32) -> String {
     });
     // dep: UDS(serve) — test serves the real retrieval-worker RPC router on a temp socket
     let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind worker rpc socket");
+    // ADR-0066 D-L: the gateway's dial refuses a socket with `other` bits; a server socket is 0660.
+    std::fs::set_permissions(
+        &socket_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o660),
+    )
+    .expect("chmod the worker rpc socket");
     let app = humaux_retrieval_worker::rpc::router(state);
     tokio::spawn(async move {
         let _ = axum::serve(
@@ -1332,21 +1339,11 @@ async fn assert_workspace_context_row(
     let headers = tool_call_headers("context", bearer);
     let (status, response) = raw_request(address, &headers, &rpc(4, "tools/call", context)).await;
     assert_eq!(status, 200, "scoped context: {response}");
-    assert_context_response(
-        &response,
-        context_row.memory_id,
-        5,
-        &std::env::current_exe().expect("test binary"),
-    );
+    assert_context_response(&response, context_row.memory_id, 5);
     blocking_counts(handle)
 }
 
-fn assert_context_response(
-    response: &Value,
-    memory_id: Uuid,
-    top_k: u32,
-    binary: &std::path::Path,
-) {
+fn assert_context_response(response: &Value, memory_id: Uuid, top_k: u32) {
     let value = assert_tool_response(response, ToolName::Context);
     let handoff = &value["handoff"];
     let content = &value["content"];
@@ -1366,7 +1363,6 @@ fn assert_context_response(
         content,
         memory_id,
         top_k,
-        binary,
         humaux_retrieval::request::RetrievalIntent::trusted_context(),
     );
     // §23.3④ / ADR-0041 D-H: `context.assemble` reads `projection.stream_log` for the
@@ -1400,13 +1396,12 @@ fn assert_context_response(
     );
 }
 
-fn assert_memory_response(response: &Value, memory_id: Uuid, top_k: u32, binary: &std::path::Path) {
+fn assert_memory_response(response: &Value, memory_id: Uuid, top_k: u32) {
     let content = assert_tool_response(response, ToolName::Memory);
     assert_read_envelope(
         content,
         memory_id,
         top_k,
-        binary,
         humaux_retrieval::request::RetrievalIntent::trusted_memory_get(
             humaux_domain::authority::MemoryId(memory_id),
         ),
@@ -1455,7 +1450,6 @@ fn assert_read_envelope(
     content: &Value,
     memory_id: Uuid,
     top_k: u32,
-    binary: &std::path::Path,
     intent: humaux_retrieval::request::RetrievalIntent,
 ) {
     let items = content["items"].as_array().expect("body items");
@@ -1470,7 +1464,7 @@ fn assert_read_envelope(
         items[0]["content"],
         json!({"fixture":"operation receipt scoped context"})
     );
-    assert_read_envelope_metadata(content, 1, top_k, binary, intent);
+    assert_read_envelope_metadata(content, 1, top_k, intent);
     // §22.4: neither of these two routes enumerates an authorized universe, so neither
     // publishes a proven lower bound. The pipeline half now differs between them and is
     // asserted by each caller (ADR-0041 D-D vs D-H).
@@ -1481,10 +1475,8 @@ fn assert_read_envelope_metadata(
     content: &Value,
     returned: usize,
     top_k: u32,
-    binary: &std::path::Path,
     intent: humaux_retrieval::request::RetrievalIntent,
 ) {
-    use std::io::Read;
     assert_eq!(content["completeness"]["class"], "cannot_establish");
     assert_eq!(content["completeness"]["returned"], returned);
     assert_eq!(content["grounding"]["current"], returned);
@@ -1520,20 +1512,16 @@ fn assert_read_envelope_metadata(
         provenance["profile"]["cand_k_formula"],
         request.cand_k_formula()
     );
-    let mut input = std::fs::File::open(binary).expect("actual executing binary");
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 65536];
-    loop {
-        let len = input.read(&mut buffer).expect("read executing binary");
-        if len == 0 {
-            break;
-        }
-        digest.update(&buffer[..len]);
-    }
-    assert_eq!(
-        provenance["binary_build"],
-        format!("sha256:{:x}", digest.finalize())
-    );
+    // ADR-0066 Review fix 2: §23.1③ `binary_build` is the build's `--version` line, burned in at build time
+    // (the in-process and the spawned binary are one build of this package, so one value).
+    let expected = humaux_telemetry::version_line(
+        "humaux-gateway",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("HUMAUX_BUILD_GIT_SHA"),
+        option_env!("HUMAUX_BUILD_TIME"),
+    )
+    .expect("gateway build.rs burns in the sha of this checkout");
+    assert_eq!(provenance["binary_build"], expected);
 }
 
 fn assert_enumeration_response(response: &Value, expected: &[Uuid]) -> Option<String> {
@@ -1561,7 +1549,6 @@ fn assert_enumeration_response(response: &Value, expected: &[Uuid]) -> Option<St
         content,
         expected.len(),
         5,
-        &std::env::current_exe().expect("test binary"),
         humaux_retrieval::request::RetrievalIntent::trusted_memory_enumerate(),
     );
     assert_eq!(content["mandatory"], json!({"state":"not_run"}));
@@ -1987,6 +1974,7 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                             .expect("gateway runtime pool for the embedding client"),
                     ),
                     socket_path,
+                    gateway_uid,
                     registry.clone(),
                     Duration::from_secs(30),
                 ),
@@ -3353,6 +3341,7 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                             .expect("gateway runtime pool for the embedding client"),
                     ),
                     socket_path,
+                    gateway_uid,
                     registry.clone(),
                     Duration::from_secs(30),
                 ),
@@ -3580,6 +3569,7 @@ fn recall_harness(handle: &mut Handle, tag: &str) -> RecallHarness {
                     .expect("gateway runtime pool for the embedding client"),
             ),
             socket_path,
+            gateway_uid,
             registry.clone(),
             Duration::from_secs(30),
         ),
@@ -5013,7 +5003,6 @@ fn native_mcp_memory_get_authorization_and_lifecycle_matrix() {
                                 &response,
                                 visible.memory_id,
                                 5,
-                                &std::env::current_exe().expect("test binary"),
                             );
                         }
                         let (status, response) = raw_request(
@@ -5027,7 +5016,6 @@ fn native_mcp_memory_get_authorization_and_lifecycle_matrix() {
                             &response,
                             own_private.memory_id,
                             5,
-                            &std::env::current_exe().expect("test binary"),
                         );
                         let (status, page) = enumerate_call(address, &credential.bearer,
                             json!({"action":"enumerate","limit":100})).await;
@@ -5366,7 +5354,7 @@ fn assert_local_read_final_metric_after_settlement(
                 assert!(assert_enumeration_response(&accepted, &[memory.memory_id]).is_none());
             } else {
                 let assert_response = if tool == "memory" { assert_memory_response } else { assert_context_response };
-                assert_response(&accepted, memory.memory_id, 5, &std::env::current_exe().expect("test binary"));
+                assert_response(&accepted, memory.memory_id, 5);
             }
             assert_eq!(
                 final_completeness_count(),
@@ -5922,12 +5910,7 @@ fn gateway_binary_real_bootstrap_mcp_interaction_and_sigterm_acceptance() {
                 )
                 .await;
                 assert_eq!(status, 200, "binary context response: {response}");
-                assert_context_response(
-                    &response,
-                    context_row.memory_id,
-                    7,
-                    std::path::Path::new(env!("CARGO_BIN_EXE_humaux-gateway")),
-                );
+                assert_context_response(&response, context_row.memory_id, 7);
 
                 let (status, response) = raw_request(
                     process.address,
@@ -5943,12 +5926,7 @@ fn gateway_binary_real_bootstrap_mcp_interaction_and_sigterm_acceptance() {
                 )
                 .await;
                 assert_eq!(status, 200, "binary memory.get response: {response}");
-                assert_memory_response(
-                    &response,
-                    context_row.memory_id,
-                    7,
-                    std::path::Path::new(env!("CARGO_BIN_EXE_humaux-gateway")),
-                );
+                assert_memory_response(&response, context_row.memory_id, 7);
 
                 let args = json!({
                     "operation": "put",
@@ -11914,6 +11892,7 @@ fn native_mcp_one_process_serves_three_stream_pairs_per_request() {
                                     .expect("gateway runtime pool for the embedding client"),
                             ),
                             socket_path,
+                            gateway_uid,
                             registry.clone(),
                             Duration::from_secs(30),
                         ),
@@ -13949,12 +13928,7 @@ fn native_mcp_workspace_membership_scope() {
                 )
                 .await;
                 assert_eq!(status, 200, "unbound PAT reads workspace A: {response}");
-                assert_memory_response(
-                    &response,
-                    a_memory.memory_id,
-                    5,
-                    &std::env::current_exe().expect("test binary"),
-                );
+                assert_memory_response(&response, a_memory.memory_id, 5);
                 let (status, response) = memory_get_in(
                     address,
                     &unbound.bearer,
@@ -13967,12 +13941,7 @@ fn native_mcp_workspace_membership_scope() {
                     status, 200,
                     "same credential reads workspace B without reissue: {response}"
                 );
-                assert_memory_response(
-                    &response,
-                    b_memory.memory_id,
-                    5,
-                    &std::env::current_exe().expect("test binary"),
-                );
+                assert_memory_response(&response, b_memory.memory_id, 5);
                 // D-B: enumerate accepts any member workspace and stays workspace-exact.
                 let (status, page) = enumerate_call(
                     address,
@@ -14046,12 +14015,7 @@ fn native_mcp_workspace_membership_scope() {
                     status, 200,
                     "bound workspace is the default route: {response}"
                 );
-                assert_memory_response(
-                    &response,
-                    a_memory.memory_id,
-                    5,
-                    &std::env::current_exe().expect("test binary"),
-                );
+                assert_memory_response(&response, a_memory.memory_id, 5);
 
                 // (4) Suspension (card 12) empties the scope on the very next request:
                 // the membership is no longer ACTIVE and the epoch snapshot is stale.

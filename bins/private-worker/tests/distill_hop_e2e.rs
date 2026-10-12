@@ -623,6 +623,7 @@ fn dispatch_config(lease_owner: &str, lease_seconds: f64) -> DistillDispatchConf
         max_attempts: 5,
         budget: TEST_BUDGET,
         health_renew_seconds: 1800,
+        dns_pins_configured: false,
     }
 }
 

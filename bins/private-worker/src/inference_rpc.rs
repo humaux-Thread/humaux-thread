@@ -1,6 +1,6 @@
 //! `private-worker::inference_rpc` — §11.8 ADR-0012-pattern inference-only RPC — the Unix-domain-socket side
 //!   `humaux-private-worker` serves for `humaux-consolidation-worker`.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, humaux-private-worker]
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, humaux-private-worker, infra-cell::uds]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [the caller is authenticated by kernel peer credential before the body is read; every field reasoned
 //!   over comes from the claimed ops.private_inference_rpc_calls row, never the wire body; unknown or expired calls
@@ -124,7 +124,12 @@ async fn require_consolidation_uid(
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Response {
-    if !peer.ok || peer.uid != state.expected_consolidation_uid {
+    // ADR-0066 D-K: a refusal is logged; an accepted same-uid peer (dev opt-in only) logs a WARN.
+    if !humaux_infra_cell::uds::admit_peer(
+        "humaux-private-worker",
+        peer.ok.then_some(peer.uid),
+        state.expected_consolidation_uid,
+    ) {
         return StatusCode::FORBIDDEN.into_response();
     }
     next.run(request).await
@@ -140,13 +145,15 @@ pub fn router(state: Arc<RpcState>) -> Router {
         .with_state(state)
 }
 
-/// Binds the RPC listener, replacing a stale socket file (same shape
-/// `bins/retrieval-worker/src/main.rs::rpc_mode` uses). Split from [`serve`] so a caller binds
-/// synchronously before spawning the accept loop — the first dial must never race it.
+/// Binds the RPC listener through the one guarded site (ADR-0066 D-M: 0750-or-stricter directory owned by this
+/// uid, socket 0660, a stale file removed only after a failed connect probe). Split from [`serve`] so a caller
+/// binds synchronously before spawning the accept loop — the first dial must never race it.
+///
+/// # Errors
+/// The directory or socket refusal of [`humaux_infra_cell::uds::bind_guarded`], or the bind itself.
 pub fn bind_socket(socket_path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
-    let _ = std::fs::remove_file(socket_path);
     // dep: UDS(serve) — unix-socket RPC
-    tokio::net::UnixListener::bind(socket_path)
+    humaux_infra_cell::uds::bind_guarded(socket_path)
 }
 
 /// The one accept loop for this RPC: the binary's `--serve-rpc` mode and

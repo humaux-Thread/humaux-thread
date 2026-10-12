@@ -4,9 +4,9 @@
 //!   the same tasks for one page with cadence ignored (D-Q). The cluster-level PARTITIONS task (ADR-0063 D-K) runs once
 //!   per due run without a tenant page: it proposes candidate leaves and publishes `partition_horizon_months`. The
 //!   cluster-level DR_EVIDENCE task (ADR-0064 D-K / 10.11 D) runs the same way: one statement over the backup and
-//!   drill receipts with the WAL latch, two `df -Pk` children, and one `telemetry::dr::publish`.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, serde_json, tokio, uuid];
-//!   services=[PostgreSQL(role_maintenance), subprocess(df)]; env=[CARGO_PKG_VERSION,
+//!   drill receipts with the WAL latch, two in-process `statvfs` reads, and one `telemetry::dr::publish`.
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
+//!   services=[PostgreSQL(role_maintenance), fs(statvfs of the DR paths)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
 //!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT,
@@ -68,7 +68,8 @@ use uuid::Uuid;
 use crate::resident::{self, Last, Latch, with_statement_timeout};
 use crate::{Admin, Args, Failure, Output, Result, env, env_parsed};
 
-const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR";
+/// §78.1 / ADR-0061 D-B: `--serve`'s own ops listener address (loopback only, no default); `readyz serve` probes it.
+pub(crate) const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR";
 /// §78.1 / ADR-0062 D-B: the tick, the per-statement timeout and the cycle budget (seconds, > 0).
 const CYCLE_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS";
 /// ADR-0062 D-D: tenants per task run (one `control.maintenance_tenant_page` page).
@@ -163,7 +164,7 @@ struct Config {
     redrive_cooldown: Duration,
     /// Per [`Task::ALL`] index: (every, limit); every is zero under [`Mode::Once`].
     tasks: [(Duration, i32); Task::ALL.len()],
-    /// ADR-0064 10.11 D: the `df -Pk` path per [`Volume::ALL`] slot.
+    /// ADR-0064 10.11 D: the `statvfs` path per [`Volume::ALL`] slot.
     dr_paths: [String; Volume::ALL.len()],
 }
 
@@ -360,26 +361,40 @@ async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     }
 }
 
-/// Free bytes of the filesystem holding `path`: `df -Pk`'s Available column × 1024, bounded by CYCLE_SECONDS.
+/// Free bytes of the filesystem holding `path`, read in process on a blocking thread and bounded by CYCLE_SECONDS
+/// (a hung mount must not stall the loop). ADR-0066 review fix 5: the release image is distroless, it has no `df`.
 async fn df_free_bytes(path: &str, cycle: Duration) -> std::result::Result<i64, String> {
-    // dep: subprocess(df) — POSIX `df -Pk <path>` (ADR-0064 10.11 D: live free bytes, not a recorded value)
-    let child = tokio::process::Command::new("df")
-        .args(["-Pk", path])
-        .kill_on_drop(true)
-        .output();
-    let out = match tokio::time::timeout(cycle, child).await {
-        Ok(Ok(out)) if out.status.success() => out,
-        Ok(Ok(out)) => return Err(format!("df -Pk {path}: exit {:?}", out.status.code())),
-        Ok(Err(e)) => return Err(format!("df -Pk {path}: {e}")),
-        Err(_) => return Err(format!("df -Pk {path}: no answer within {CYCLE_SECONDS}")),
-    };
-    // ponytail: column 4 of the second line; a filesystem name with blanks breaks it (the error names the path).
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .nth(1)
-        .and_then(|l| l.split_whitespace().nth(3)?.parse::<i64>().ok())
-        .map(|kib| kib * 1024)
-        .ok_or_else(|| format!("df -Pk {path}: no Available column"))
+    let owned = path.to_owned();
+    let read = tokio::task::spawn_blocking(move || statvfs_free_bytes(&owned));
+    match tokio::time::timeout(cycle, read).await {
+        Ok(Ok(free)) => free,
+        Ok(Err(e)) => Err(format!("statvfs {path}: {e}")),
+        Err(_) => Err(format!("statvfs {path}: no answer within {CYCLE_SECONDS}")),
+    }
+}
+
+/// `statvfs(3)` of `path`; the error names the path.
+fn statvfs_free_bytes(path: &str) -> std::result::Result<i64, String> {
+    let c_path = std::ffi::CString::new(path).map_err(|e| format!("statvfs {path}: {e}"))?;
+    let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // dep: fs(statvfs of the DR paths) — libc statvfs(3), ADR-0064 10.11 D: live free bytes, not a recorded value
+    // SAFETY: `c_path` is NUL-terminated and outlives the call; `st` is valid for one `statvfs` write.
+    if unsafe { libc::statvfs(c_path.as_ptr(), st.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "statvfs {path}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: a zero return means the kernel filled `st`.
+    Ok(available_bytes(&unsafe { st.assume_init() }))
+}
+
+/// ADR-0064 10.11 D: `f_bavail × f_frsize` — the blocks an unprivileged caller may use, in fragment units
+/// (`df`'s Available column), not `f_bfree` (counts root's reserve) nor `f_bsize` (the preferred I/O size).
+#[allow(clippy::useless_conversion)] // field widths differ per platform (u32 on macOS, u64 on Linux)
+fn available_bytes(st: &libc::statvfs) -> i64 {
+    let bytes = u64::from(st.f_bavail).saturating_mul(u64::from(st.f_frsize));
+    i64::try_from(bytes).unwrap_or(i64::MAX)
 }
 
 /// ADR-0064 10.11 D: the gauges of one reading. Headroom comes from the limits the newest measuring receipt
@@ -735,4 +750,32 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
     }));
     output.failed = failed;
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{available_bytes, statvfs_free_bytes};
+
+    /// ADR-0066 review fix 5: Available = f_bavail × f_frsize, with every other field set apart so a swap shows.
+    #[test]
+    fn available_is_bavail_times_frsize() {
+        // SAFETY: `statvfs` is a plain C struct; all-zero is a valid value.
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        st.f_bsize = 4096;
+        st.f_frsize = 512;
+        st.f_bfree = 100;
+        st.f_bavail = 60;
+        assert_eq!(available_bytes(&st), 60 * 512);
+    }
+
+    #[test]
+    fn statvfs_reads_cwd_and_names_a_missing_path() {
+        assert!(statvfs_free_bytes(".").expect("statvfs .") > 0);
+        let missing = "/nonexistent/humaux-fix5";
+        let err = statvfs_free_bytes(missing).expect_err("missing path");
+        assert!(
+            err.contains(missing) && err.contains("No such file"),
+            "{err}"
+        );
+    }
 }

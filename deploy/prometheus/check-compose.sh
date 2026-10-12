@@ -1,13 +1,15 @@
 #!/bin/sh
 # check-compose.sh [compose-file [otel-collector.yml [alertmanager.yml]]] — the `compose_observability`
-# gate (ADR-0061 D-G, D-I).
+# and `c39_compose_check` gates (ADR-0061 D-G, D-I; ADR-0066 D-I: the observability services live in prod.yml).
 #
-# Renders the compose file (default deploy/compose/observability.yml) with `docker compose config`
-# (client-side; also catches YAML and interpolation errors) and reads the two configs the compose
-# services mount (defaults: this directory's otel-collector.yml and alertmanager.yml; neither carries a
-# deployer placeholder on a listener line, so the repo file is the rendered one). Fails, naming the
+# Renders the compose file (default deploy/compose/prod.yml, every profile) with `docker compose config
+# --no-env-resolution` and the checked-in interpolation values (deploy/env/sizing-a5.env + node.env.example: the
+# secret fixture, so no secret file is ever read; client-side, also catches YAML and interpolation errors) and reads
+# the two configs the compose services mount (defaults: this directory's otel-collector.yml and alertmanager.yml;
+# neither carries a deployer placeholder on a listener line, so the repo file is the rendered one). Fails, naming the
 # service or file and the offending value, on:
-#   - an image that is not `name:tag@sha256:<64 hex>` (a tag-only image is not a pin);
+#   - an image that is not `name:tag@sha256:<64 hex>` (a tag-only image is not a pin), except the images this repo
+#     builds itself (`humaux-<name>:<tag>`, no registry: identity is the release manifest's, ADR-0066 D-A / D-R);
 #   - a Prometheus / Alertmanager / Collector tag different from the pinned
 #     HUMAUX_TEST_{PROMETHEUS,ALERTMANAGER,OTELCOL}_VERSION, or HUMAUX_TEST_PROMTOOL_VERSION !=
 #     HUMAUX_TEST_PROMETHEUS_VERSION (rules are tested on the version that is deployed);
@@ -26,7 +28,7 @@
 #             is unset, or docker is absent — the missing object is named, §57.1).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-file=${1:-$here/../compose/observability.yml}
+file=${1:-$here/../compose/prod.yml}
 otel=${2:-$here/otel-collector.yml}
 am=${3:-$here/alertmanager.yml}
 for f in "$otel" "$am"; do
@@ -46,7 +48,9 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 json=$(HUMAUX_OBSERVABILITY_RENDERED_DIR=/check-compose/rendered HUMAUX_ALERTMANAGER_URL_DIR=/check-compose/urls \
-  docker compose -f "$file" config --format json) || { echo "check-compose: fail — docker compose config rejected $file"; exit 1; }
+  docker compose --env-file "$here/../env/sizing-a5.env" --env-file "$here/../env/node.env.example" -f "$file" \
+  --profile ops --profile rehearsal config --format json --no-env-resolution) \
+  || { echo "check-compose: fail — docker compose config rejected $file"; exit 1; }
 
 printf '%s' "$json" | OTEL_FILE="$otel" AM_FILE="$am" python3 -c '
 import json, os, re, sys
@@ -60,19 +64,21 @@ pins = {
 forbidden = ("--web.enable-remote-write-receiver", "--web.enable-otlp-receiver",
              "--web.enable-admin-api", "--web.enable-lifecycle")
 fails = []
+local = 0
 if env["HUMAUX_TEST_PROMTOOL_VERSION"] != env["HUMAUX_TEST_PROMETHEUS_VERSION"]:
     fails.append("HUMAUX_TEST_PROMTOOL_VERSION != HUMAUX_TEST_PROMETHEUS_VERSION")
 for name, svc in sorted(d.get("services", {}).items()):
     image = svc.get("image", "")
+    if re.fullmatch(r"humaux-[a-z0-9-]+:[A-Za-z0-9._-]+", image):
+        local += 1  # built by deploy/release/build.sh; its identity is the release manifest (ADR-0066 D-R)
+        continue
     m = re.fullmatch(r"([^@]+):([^:@/]+)@sha256:[0-9a-f]{64}", image)
     if not m:
         fails.append("%s: image is not name:tag@sha256:<digest>: %s" % (name, image))
         repo = image.split("@")[0].rsplit(":", 1)[0]
     else:
         repo, tag = m.group(1), m.group(2)
-        if repo not in pins:
-            fails.append("%s: image repo %s has no pin" % (name, repo))
-        elif tag != pins[repo]:
+        if repo in pins and tag != pins[repo]:
             fails.append("%s: tag %s != pinned %s" % (name, tag, pins[repo]))
     cmd = svc.get("command") or []
     for arg in cmd:
@@ -82,6 +88,9 @@ for name, svc in sorted(d.get("services", {}).items()):
         fails.append("%s: no --web.listen-address=127.0.0.1:<port>" % name)
     if repo == "prom/alertmanager" and "--cluster.listen-address=" not in cmd:
         fails.append("%s: no empty --cluster.listen-address= (gossip would bind 0.0.0.0:9094)" % name)
+for repo in pins:
+    if not any(svc.get("image", "").startswith(repo + ":") for svc in d.get("services", {}).values()):
+        fails.append("pinned observability image %s is the image of no service" % repo)
 for line in json.dumps(d, indent=1).splitlines():
     if "0.0.0.0" in line:
         fails.append("0.0.0.0 in rendered config: %s" % line.strip())
@@ -107,5 +116,5 @@ for f in fails:
     print("check-compose: fail — " + f)
 if fails:
     sys.exit(1)
-print("check-compose: pass — %d services pinned by digest, loopback-only, no write ingress; collector %d listeners on 127.0.0.1; alertmanager.yml opens no listener" % (len(d.get("services", {})), listeners))
+print("check-compose: pass — %d services pinned by digest (+%d humaux-* release images), loopback-only, no write ingress; collector %d listeners on 127.0.0.1; alertmanager.yml opens no listener" % (len(d.get("services", {})) - local, local, listeners))
 '

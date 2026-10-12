@@ -1,11 +1,12 @@
-//! `xtask::dep_map` — `cargo xtask dep-map`: checks every module header, `// dep:` tag and Cargo `# why:` line against the code, and generates the three dependency maps.
-//! Depends-on: crates=[humaux-testkit, postgres, toml]; services=[PostgreSQL(owner) r=[ops.schema_migrations]];
-//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[xtask::rls_check]
+//! `xtask::dep_map` — `cargo xtask dep-map`: checks every module header, `// dep:` tag and Cargo `# why:` line against the code, and generates the three dependency maps plus the per-process env examples and the placeholder secret fixture (ADR-0066 D-T).
+//! Depends-on: crates=[humaux-maintenance, humaux-testkit, postgres, toml]; services=[PostgreSQL(owner) r=[ops.schema_migrations]];
+//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[maintenance::deploy_check, maintenance::rls_check]
 //! Called-by: [xtask::gate_truth, xtask::main]
 //! Invariants: [reads the repo and the catalog only — the catalog inside a READ ONLY transaction that is rolled
 //!   back; HUMAUX_TEST_PG_DSN unset or unreachable → exit 2 (db_objects.md cannot be checked, a skip is not a pass);
-//!   generated docs are pure functions of the tree and the catalog (sorted, repo-relative, no timestamps)]
-//! Spec: Baseline §58; §6.2.2; §78; §79.2; ADR-0050; ADR-0051
+//!   generated docs are pure functions of the tree and the catalog (sorted, repo-relative, no timestamps); a
+//!   generated secret-fixture file never carries a value]
+//! Spec: Baseline §58; §6.2.2; §78; §79.2; ADR-0050; ADR-0051; ADR-0066 D-T
 //! dep-map: allow table-undeclared — unit-test fixtures name schema objects in strings
 //! dep-map: allow table-write — unit-test fixtures spell write statements in strings
 //! dep-map: allow env-undeclared — fixtures and test_target_services name HUMAUX_* variables they never read
@@ -24,7 +25,8 @@ use std::time::Instant;
 
 use postgres::{Client, NoTls};
 
-use crate::rls_check::SCHEMAS;
+use humaux_maintenance::deploy_check;
+use humaux_maintenance::rls_check::SCHEMAS;
 
 const DSN_ENV: &str = "HUMAUX_TEST_PG_DSN";
 const DOC_DEP_MAP: &str = "docs/architecture/dependency_map.md";
@@ -803,6 +805,9 @@ struct DependsOn {
     /// `env=[…, refused:NAME]` — a key the module names only to refuse it at boot (a removed
     /// configuration key, ADR-0060 E7); `env_vars.md` lists it as `refused-at-boot`, never as config.
     refused_env: BTreeSet<String>,
+    /// `env=[…, alias:NAME]` — a pre-rename key the module still reads for one release (ADR-0066 D-O); it is also
+    /// in `env` (a real read) and `env_vars.md` lists it as `deprecated-alias`.
+    alias_env: BTreeSet<String>,
     modules: Vec<String>,
 }
 
@@ -957,6 +962,8 @@ fn parse_service(item: &str) -> Result<ServiceDecl, String> {
 
 /// Prefix of an `env=[…]` item naming a key that is refused at boot, not read (see [`DependsOn`]).
 const REFUSED_ENV: &str = "refused:";
+/// Prefix of an `env=[…]` item naming a deprecated alias that is still read (see [`DependsOn`]).
+const ALIAS_ENV: &str = "alias:";
 
 fn parse_depends(value: &str) -> Result<(DependsOn, Vec<String>), String> {
     let parts = split_top(value, "; ");
@@ -990,11 +997,19 @@ fn parse_depends(value: &str) -> Result<(DependsOn, Vec<String>), String> {
         .iter()
         .flat_map(|e| brace_expand(e))
         .partition(|e| e.starts_with(REFUSED_ENV));
+    let alias_env: BTreeSet<String> = env
+        .iter()
+        .filter_map(|e| e.strip_prefix(ALIAS_ENV).map(str::to_string))
+        .collect();
+    let env = env
+        .into_iter()
+        .map(|e| e.strip_prefix(ALIAS_ENV).map_or(e.clone(), str::to_string));
     Ok((
         DependsOn {
             crates: lists[0].clone(),
             services,
-            env: env.into_iter().collect(),
+            env: env.collect(),
+            alias_env,
             refused_env: refused
                 .iter()
                 .map(|e| e[REFUSED_ENV.len()..].to_string())
@@ -1508,8 +1523,8 @@ fn detail_error(
         (Service::PostgreSQL, Some(d)) => {
             let known = d == "any"
                 || d == "owner"
-                || crate::rls_check::RUNTIME_ROLES.contains(&d)
-                || crate::rls_check::NON_RUNTIME_ROLES.contains(&d);
+                || humaux_maintenance::rls_check::RUNTIME_ROLES.contains(&d)
+                || humaux_maintenance::rls_check::NON_RUNTIME_ROLES.contains(&d);
             (!known).then(|| format!("`PostgreSQL({d})`: not a role (role_*, `owner` or `any`)"))
         }
         (Service::Uds, Some(d)) => (d != "serve" && !processes.contains(d)).then(|| {
@@ -1605,6 +1620,68 @@ impl EnvKind {
             EnvKind::Runtime => "runtime",
         }
     }
+}
+
+/// One `env_vars.md` row, aggregated over every file that declares or spells the name.
+#[derive(Default)]
+struct EnvRow {
+    kinds: BTreeSet<EnvKind>,
+    modules: BTreeSet<String>,
+    processes: BTreeSet<String>,
+    /// Processes that reach a file reading the name outside `#[cfg(test)]` code (ADR-0066 D-T).
+    prod_processes: BTreeSet<String>,
+    literal: bool,
+    refused: bool,
+    alias: bool,
+}
+
+impl EnvRow {
+    /// The `kind` column of `env_vars.md`.
+    fn kind(&self) -> String {
+        if self.refused {
+            "refused-at-boot".to_string()
+        } else if self.alias {
+            "deprecated-alias".to_string()
+        } else if self.kinds.is_empty() {
+            "runtime".to_string()
+        } else {
+            self.kinds
+                .iter()
+                .map(|k| k.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+}
+
+/// ADR-0066 D-B: the six deployed processes, as the `<p>` of `process(humaux-<p>)` and of their env file names.
+const DEPLOYED: [&str; 6] = [
+    "admin",
+    "consolidation-worker",
+    "gateway",
+    "maintenance",
+    "private-worker",
+    "retrieval-worker",
+];
+/// ADR-0066 D-T: generated per-process key lists (no values).
+const EXAMPLE_DIR: &str = "deploy/env/example";
+/// ADR-0066 D-J: generated placeholder secrets (empty values) that let `docker compose config` resolve every
+/// `env_file` in a clean checkout.
+const SECRET_FIXTURE_DIR: &str = "deploy/env/secret-fixture";
+
+/// ADR-0066 D-T: a row goes into `example/<p>.env` when it is a runtime `HUMAUX_` key read outside test code by
+/// `process`, is not test/require plumbing, not a dev-only key (D-K), not a name the binary only writes into a
+/// child's environment (`deploy_check::CHILD_ONLY_KEYS`) and not the migrator DSN (D-J: that key lives only in
+/// `migrate.secret.env`, so a process example asking for it would make D-R placement red).
+fn example_key(name: &str, row: &EnvRow, process: &str) -> bool {
+    row.kind().split(", ").any(|k| k == "runtime")
+        && row.prod_processes.contains(process)
+        && name.starts_with("HUMAUX_")
+        && !name.starts_with("HUMAUX_TEST_")
+        && !name.starts_with("HUMAUX_REQUIRE_")
+        && !deploy_check::DEV_ONLY_KEYS.contains(&name)
+        && !deploy_check::CHILD_ONLY_KEYS.contains(&name)
+        && name != deploy_check::MIGRATOR_DSN_KEY
 }
 
 fn is_humaux_name(s: &str) -> bool {
@@ -3983,22 +4060,10 @@ impl Analysis {
         s
     }
 
-    fn render_env_vars(&self) -> String {
-        let registry: BTreeSet<String> = ["gateway::bootstrap", "contracts::retrieval_config"]
-            .iter()
-            .filter_map(|c| self.file_named(c))
-            .filter_map(|f| self.files[f].header.depends.as_ref())
-            .flat_map(|d| d.env.iter().cloned())
-            .collect();
-        #[derive(Default)]
-        struct Row {
-            kinds: BTreeSet<EnvKind>,
-            modules: BTreeSet<String>,
-            processes: BTreeSet<String>,
-            literal: bool,
-            refused: bool,
-        }
-        let mut rows: BTreeMap<String, Row> = BTreeMap::new();
+    /// One row per env name over every header declaration and literal (the source of `env_vars.md` and of the
+    /// ADR-0066 D-T example files).
+    fn env_rows(&self) -> BTreeMap<String, EnvRow> {
+        let mut rows: BTreeMap<String, EnvRow> = BTreeMap::new();
         for (f, file) in self.files.iter().enumerate() {
             let declared = file
                 .header
@@ -4008,20 +4073,118 @@ impl Analysis {
             let found = self.env[f].keys();
             for name in declared.chain(found) {
                 let row = rows.entry(name.clone()).or_default();
-                row.refused |= file
-                    .header
-                    .depends
-                    .as_ref()
-                    .is_some_and(|d| d.refused_env.contains(name));
+                if let Some(d) = file.header.depends.as_ref() {
+                    row.refused |= d.refused_env.contains(name);
+                    row.alias |= d.alias_env.contains(name);
+                }
                 row.modules.insert(file.canonical.clone());
                 row.processes
                     .extend(self.processes_of(f).into_iter().map(String::from));
+                // ADR-0066 D-T: a production read is a name the header declares (a module that only names keys
+                // carries `allow env-undeclared` instead), in a file that is not a test, and — when the file
+                // spells it — read at runtime by a literal outside `#[cfg(test)]` code (an inline test module
+                // keeps the file's canonical name, so the module name cannot tell). No literal = built at runtime.
+                let declared = file
+                    .header
+                    .depends
+                    .as_ref()
+                    .is_some_and(|d| d.env.contains(name));
+                let mut lits = file.lex.lits.iter().filter(|l| &l.text == name).peekable();
+                let prod = declared
+                    && !file.all_test
+                    && !file.is_test
+                    && (lits.peek().is_none()
+                        || (lits.any(|l| !file.in_test(l.start))
+                            && self.env[f]
+                                .get(name)
+                                .is_some_and(|(_, k)| k.contains(&EnvKind::Runtime))));
+                if prod {
+                    row.prod_processes
+                        .extend(self.processes_of(f).into_iter().map(String::from));
+                }
                 if let Some((_, kinds)) = self.env[f].get(name) {
                     row.literal = true;
                     row.kinds.extend(kinds.iter().copied());
                 }
             }
         }
+        rows
+    }
+
+    /// Names declared by the §50/§78 typed registry (`gateway::bootstrap`, `contracts::retrieval_config`).
+    fn env_registry(&self) -> BTreeSet<String> {
+        ["gateway::bootstrap", "contracts::retrieval_config"]
+            .iter()
+            .filter_map(|c| self.file_named(c))
+            .filter_map(|f| self.files[f].header.depends.as_ref())
+            .flat_map(|d| d.env.iter().cloned())
+            .collect()
+    }
+
+    /// ADR-0066 D-T / D-J: `(repo path, content)` of `example/<p>.env` and `secret-fixture/<p>.secret.env` for every
+    /// deployed process, plus the fixture's `migrate.secret.env`, `pg.secret.env` and empty `pg_superuser`.
+    fn render_env_examples(&self) -> Vec<(String, String)> {
+        let rows = self.env_rows();
+        let registry = self.env_registry();
+        let mut out = Vec::new();
+        // D-J: keys whose secret home is another process's file (the role passwords: `migrate`).
+        let mut migrate_fixture = String::new();
+        let fixture_head = "# Generated by `cargo xtask dep-map --write` (ADR-0066 D-J / D-T) — do not edit.\n\
+             # Placeholder secrets for a clean checkout: names only, every value empty. Real secrets live in\n\
+             # $HUMAUX_SECRETS_DIR on the node (0600, outside git).\n";
+        for p in DEPLOYED {
+            let process = format!("process(humaux-{p})");
+            let mut example = format!(
+                "# Generated by `cargo xtask dep-map --write` (ADR-0066 D-T) — do not edit; `dep-map --check` fails on drift.\n\
+                 # humaux-{p}: every runtime key it reads (docs/architecture/env_vars.md). Each key is declared in exactly\n\
+                 # one of deploy/env/values/{p}.env, the $HUMAUX_SECRETS_DIR file its line names, or the prod.yml\n\
+                 # `environment:` of its services; a secret is non-empty (deploy-check --env, ADR-0066 D-R (a)).\n"
+            );
+            let mut fixture = fixture_head.to_string();
+            for (name, row) in rows.iter().filter(|(n, r)| example_key(n, r, &process)) {
+                let registry = if registry.contains(name) {
+                    "gateway"
+                } else {
+                    "raw"
+                };
+                let _ = write!(example, "# {}; registry: {registry}", row.kind());
+                if let Some(home) = deploy_check::secret_home(p, name) {
+                    let _ = write!(example, "; secret: goes in {home}.secret.env");
+                    let file = if home == p {
+                        &mut fixture
+                    } else {
+                        &mut migrate_fixture
+                    };
+                    let _ = writeln!(file, "{name}=");
+                }
+                let _ = writeln!(example, "\n{name}=");
+            }
+            out.push((format!("{EXAMPLE_DIR}/{p}.env"), example));
+            out.push((format!("{SECRET_FIXTURE_DIR}/{p}.secret.env"), fixture));
+        }
+        out.push((
+            format!(
+                "{SECRET_FIXTURE_DIR}/{}",
+                deploy_check::MIGRATOR_SECRET_FILE
+            ),
+            format!(
+                "{fixture_head}{}=\n{migrate_fixture}",
+                deploy_check::MIGRATOR_DSN_KEY
+            ),
+        ));
+        // D-J: the pgBackRest cipher pass reaches `pg` through `pg.secret.env` (card 37 passes the same name).
+        out.push((
+            format!("{SECRET_FIXTURE_DIR}/pg.secret.env"),
+            format!("{fixture_head}PGBACKREST_REPO1_CIPHER_PASS=\n"),
+        ));
+        // D-J: compose `secrets:` file for the pg entrypoint; empty, so it has no header either.
+        out.push((format!("{SECRET_FIXTURE_DIR}/pg_superuser"), String::new()));
+        out
+    }
+
+    fn render_env_vars(&self) -> String {
+        let registry = self.env_registry();
+        let rows = self.env_rows();
         let mut s = String::new();
         let _ = writeln!(s, "# Environment variables (generated — do not edit)\n");
         let _ = writeln!(
@@ -4029,7 +4192,9 @@ impl Analysis {
             "> Generated by `cargo xtask dep-map --write`. `registry: gateway` = declared by the §50/§78 typed \
              registry (`gateway::bootstrap`, `contracts::retrieval_config`); `raw` = read directly. \
              `declared-only` = named in a header but built at runtime (no literal). `refused-at-boot` = a \
-             removed key a module names only to refuse it (`env=[refused:NAME]`) — never set it.\n"
+             removed key a module names only to refuse it (`env=[refused:NAME]`) — never set it. \
+             `deprecated-alias` = a pre-rename key still read for one release with a boot WARN \
+             (`env=[alias:NAME]`, ADR-0066 D-O) — set the new name instead.\n"
         );
         let _ = writeln!(s, "{} variables.\n", rows.len());
         let _ = writeln!(
@@ -4038,17 +4203,7 @@ impl Analysis {
         );
         let _ = writeln!(s, "|---|---|---|---|---|---|");
         for (name, r) in &rows {
-            let kind = if r.refused {
-                "refused-at-boot".to_string()
-            } else if r.kinds.is_empty() {
-                "runtime".to_string()
-            } else {
-                r.kinds
-                    .iter()
-                    .map(|k| k.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
+            let kind = r.kind();
             let _ = writeln!(
                 s,
                 "| `{name}` | {kind} | {} | {} | {} | {} |",
@@ -4216,8 +4371,9 @@ impl Analysis {
 struct Outcome {
     violations: Vec<Finding>,
     exemptions: usize,
-    drift: Vec<&'static str>,
-    docs: Vec<(&'static str, Option<String>)>,
+    drift: Vec<String>,
+    /// `(repo path, regenerated content)`; `None` = not rendered this run (the DB doc without a catalog).
+    docs: Vec<(String, Option<String>)>,
 }
 
 fn first_diff_line(a: &str, b: &str) -> usize {
@@ -4241,18 +4397,26 @@ fn evaluate(
         Ok(None) => (None, None),
         Err(e) => (None, Some(e)),
     };
-    let docs = vec![
-        (DOC_DEP_MAP, Some(an.render_dependency_map(&exemptions))),
-        (DOC_DB, db_doc),
-        (DOC_ENV, Some(an.render_env_vars())),
+    let mut docs = vec![
+        (
+            DOC_DEP_MAP.to_string(),
+            Some(an.render_dependency_map(&exemptions)),
+        ),
+        (DOC_DB.to_string(), db_doc),
+        (DOC_ENV.to_string(), Some(an.render_env_vars())),
     ];
+    docs.extend(
+        an.render_env_examples()
+            .into_iter()
+            .map(|(path, doc)| (path, Some(doc))),
+    );
     let mut drift = Vec::new();
     for (path, doc) in &docs {
         let committed = fs::read_to_string(an.root.join(path)).ok();
         match (doc, &committed) {
             (Some(d), Some(c)) if d == c => {}
             (Some(d), Some(c)) => {
-                drift.push(*path);
+                drift.push(path.clone());
                 violations.push(finding(
                     path,
                     first_diff_line(d, c),
@@ -4261,7 +4425,7 @@ fn evaluate(
                 ));
             }
             (Some(_), None) => {
-                drift.push(*path);
+                drift.push(path.clone());
                 violations.push(finding(
                     path,
                     1,
@@ -4269,7 +4433,7 @@ fn evaluate(
                     "missing (run `cargo xtask dep-map --write`)",
                 ));
             }
-            (None, _) => drift.push(*path),
+            (None, _) => drift.push(path.clone()),
         }
     }
     violations.sort();
@@ -4322,8 +4486,12 @@ pub fn run(args: &[String]) -> i32 {
     let (out, db_err) = evaluate(&an, catalog, db_findings);
     if mode == "--write" {
         for (path, doc) in &out.docs {
+            let target = root.join(path);
             if let Some(doc) = doc
-                && let Err(e) = fs::write(root.join(path), doc)
+                && let Err(e) = target
+                    .parent()
+                    .map_or(Ok(()), fs::create_dir_all)
+                    .and_then(|()| fs::write(&target, doc))
             {
                 eprintln!("dep-map: cannot write {path}: {e}");
                 return 2;
@@ -4831,6 +4999,36 @@ mod tests {
         );
         assert!(
             doc.contains("| `HUMAUX_A_LIVE` | runtime | — | `humaux-a` | literal | raw |"),
+            "{doc}"
+        );
+    }
+
+    /// ADR-0066 D-O: a renamed key's old name is declared `alias:` — still a read (no `env-undeclared`) and rendered
+    /// `deprecated-alias`. Faults: drop the prefix handling → `env-undeclared`; drop the render arm → `runtime`.
+    #[test]
+    fn env_alias_key_is_declared_and_rendered_deprecated_alias() {
+        let fx = Fx::new("env_alias");
+        fx.pkg("crates/a", "humaux-a", "").file(
+            "crates/a/src/lib.rs",
+            &format!(
+                "{}pub fn f() {{ let _ = std::env::var(\"HUMAUX_A_NEW\"); let _ = std::env::var(\"A_OLD\"); }}\n",
+                hdr(
+                    "humaux-a",
+                    "crates=[]; services=[]; env=[HUMAUX_A_NEW, alias:A_OLD]; modules=[]",
+                    "[]",
+                    "[reads config]"
+                )
+            ),
+        );
+        let an = fx.an();
+        assert!(an.violations().0.is_empty(), "{:?}", an.violations().0);
+        let doc = an.render_env_vars();
+        assert!(
+            doc.contains("| `A_OLD` | deprecated-alias | — | `humaux-a` | literal | raw |"),
+            "{doc}"
+        );
+        assert!(
+            doc.contains("| `HUMAUX_A_NEW` | runtime | — | `humaux-a` | literal | raw |"),
             "{doc}"
         );
     }
@@ -5799,6 +5997,174 @@ mod tests {
             "{:?}",
             dirty.violations
         );
+    }
+
+    // ---- env examples and the secret fixture (ADR-0066 D-T) ---------------------------------
+
+    /// gateway reads two keys at runtime, a test DSN and (only in its inline test module) a continuity key;
+    /// private-worker reads its DSN, the dev-only allow key and the migrator DSN; retrieval-worker one key.
+    fn examples_fixture(name: &str) -> Fx {
+        let fx = Fx::new(name);
+        let main = |short: &str, env: &str, body: &str| {
+            format!(
+                "{}fn main() {{ {body} }}\n",
+                hdr(
+                    &format!("{short}::main"),
+                    &format!("crates=[]; services=[]; env=[{env}]; modules=[]"),
+                    &format!("[process(humaux-{short})]"),
+                    "[x]"
+                )
+            )
+        };
+        let read = |keys: &[&str]| {
+            keys.iter()
+                .map(|k| format!("let _ = std::env::var(\"{k}\");"))
+                .collect::<String>()
+        };
+        fx.pkg("bins/gateway", "humaux-gateway", "").file(
+            "bins/gateway/src/main.rs",
+            &format!(
+                "{}#[cfg(test)]\nmod tests {{ fn t() {{ {} }} }}\n",
+                main(
+                    "gateway",
+                    "HUMAUX_CONTINUITY_X, HUMAUX_GATEWAY_BIND_ADDR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN",
+                    &read(&[
+                        "HUMAUX_GATEWAY_PG_DSN",
+                        "HUMAUX_GATEWAY_BIND_ADDR",
+                        "HUMAUX_TEST_PG_DSN"
+                    ])
+                ),
+                read(&["HUMAUX_CONTINUITY_X"])
+            ),
+        );
+        fx.pkg("bins/private-worker", "humaux-private-worker", "").file(
+            "bins/private-worker/src/main.rs",
+            &main(
+                "private-worker",
+                "HUMAUX_MIGRATOR_PG_DSN, HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID, HUMAUX_PRIVATE_WORKER_PG_DSN",
+                &read(&[
+                    "HUMAUX_PRIVATE_WORKER_PG_DSN",
+                    "HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID",
+                    "HUMAUX_MIGRATOR_PG_DSN",
+                ]),
+            ),
+        );
+        fx.pkg("bins/retrieval-worker", "humaux-retrieval-worker", "")
+            .file(
+                "bins/retrieval-worker/src/main.rs",
+                &main(
+                    "retrieval-worker",
+                    "HUMAUX_RETRIEVAL_WORKER_BATCH",
+                    &read(&["HUMAUX_RETRIEVAL_WORKER_BATCH"]),
+                ),
+            );
+        fx
+    }
+
+    fn generated(fx: &Fx) -> BTreeMap<String, String> {
+        fx.an().render_env_examples().into_iter().collect()
+    }
+
+    /// The non-comment lines of a generated file.
+    fn keys_of(doc: &str) -> Vec<&str> {
+        doc.lines().filter(|l| !l.starts_with('#')).collect()
+    }
+
+    #[test]
+    fn example_lists_runtime_keys_of_the_process_only() {
+        let fx = examples_fixture("examples_runtime");
+        let out = generated(&fx);
+        for p in DEPLOYED {
+            let doc = &out[&format!("{EXAMPLE_DIR}/{p}.env")];
+            assert!(
+                doc.lines()
+                    .next()
+                    .is_some_and(|l| l.contains("cargo xtask dep-map --write")),
+                "{p}: first line must name the generator:\n{doc}"
+            );
+        }
+        let gateway = &out[&format!("{EXAMPLE_DIR}/gateway.env")];
+        assert_eq!(
+            keys_of(gateway),
+            ["HUMAUX_GATEWAY_BIND_ADDR=", "HUMAUX_GATEWAY_PG_DSN="],
+            "only the gateway's own runtime keys — no HUMAUX_TEST_*, no test-module key, no other process's key:\n{gateway}"
+        );
+        assert_eq!(
+            keys_of(&out[&format!("{EXAMPLE_DIR}/retrieval-worker.env")]),
+            ["HUMAUX_RETRIEVAL_WORKER_BATCH="]
+        );
+        assert!(keys_of(&out[&format!("{EXAMPLE_DIR}/admin.env")]).is_empty());
+    }
+
+    #[test]
+    fn example_excludes_dev_only_keys() {
+        let fx = examples_fixture("examples_dev_only");
+        let out = generated(&fx);
+        let example = &out[&format!("{EXAMPLE_DIR}/private-worker.env")];
+        assert_eq!(
+            keys_of(example),
+            ["HUMAUX_PRIVATE_WORKER_PG_DSN="],
+            "D-K: the dev-only allow key (and the migrator DSN, D-J) stay out:\n{example}"
+        );
+        for (path, doc) in &out {
+            for key in deploy_check::DEV_ONLY_KEYS {
+                assert!(!doc.contains(key), "{path} names the dev-only {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn secret_fixture_has_empty_values_only() {
+        let fx = examples_fixture("examples_secret_fixture");
+        let out = generated(&fx);
+        let fixtures: Vec<(&String, &String)> = out
+            .iter()
+            .filter(|(p, _)| p.starts_with(SECRET_FIXTURE_DIR))
+            .collect();
+        assert_eq!(
+            fixtures.len(),
+            DEPLOYED.len() + 3,
+            "six + migrate + pg + pg_superuser"
+        );
+        for (path, doc) in &fixtures {
+            for line in doc.lines().filter(|l| !l.starts_with('#')) {
+                let key = line.strip_suffix('=').unwrap_or_else(|| {
+                    panic!("{path}: `{line}` is not `KEY=` (a fixture never carries a value)")
+                });
+                assert!(
+                    !key.is_empty()
+                        && key
+                            .bytes()
+                            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'),
+                    "{path}: `{line}`"
+                );
+            }
+        }
+        assert_eq!(
+            keys_of(&out[&format!("{SECRET_FIXTURE_DIR}/gateway.secret.env")]),
+            ["HUMAUX_GATEWAY_PG_DSN="],
+            "secret keys only"
+        );
+        assert!(
+            out[&format!("{EXAMPLE_DIR}/gateway.env")]
+                .contains("; secret: goes in gateway.secret.env\nHUMAUX_GATEWAY_PG_DSN=\n")
+        );
+        assert_eq!(
+            keys_of(&out[&format!("{SECRET_FIXTURE_DIR}/migrate.secret.env")]),
+            ["HUMAUX_MIGRATOR_PG_DSN="]
+        );
+        assert_eq!(out[&format!("{SECRET_FIXTURE_DIR}/pg_superuser")], "");
+        // `--check` is red on a hand edit of a generated fixture file.
+        let (written, _) = evaluate(&fx.an(), Ok(None), Vec::new());
+        for (path, doc) in &written.docs {
+            if let Some(doc) = doc {
+                fx.file(path, doc);
+            }
+        }
+        let path = format!("{SECRET_FIXTURE_DIR}/gateway.secret.env");
+        fx.file(&path, &out[&path].replace("DSN=", "DSN=postgres://x"));
+        let (dirty, _) = evaluate(&fx.an(), Ok(None), Vec::new());
+        assert_eq!(dirty.drift, vec![DOC_DB.to_string(), path]);
     }
 
     // ---- test targets --------------------------------------------------------------------

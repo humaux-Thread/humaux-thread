@@ -1,9 +1,10 @@
 //! `gateway::main` — `humaux-gateway` 进程入口（最小必要进程集见 §4.2；admin 探针契约见 §4.4）。
-//! Depends-on: crates=[axum, humaux-telemetry, tokio]; services=[HTTP(loopback)]; env=[]; modules=[gateway::bootstrap,
-//!   gateway::admission, gateway::guard, gateway::status, telemetry::metrics]
+//! Depends-on: crates=[axum, humaux-telemetry, tokio]; services=[HTTP(loopback)]; env=[CARGO_PKG_VERSION,
+//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_BIND_ADDR]; modules=[gateway::bootstrap,
+//!   gateway::admission, gateway::guard, gateway::status, humaux-telemetry, telemetry::metrics]
 //! Called-by: [process(humaux-gateway)]
-//! Invariants: [/readyz flips to 503 and the accept loop keeps draining for DRAIN_ANNOUNCE_WINDOW before closing, so a k8s readinessProbe never sees ECONNREFUSED confused with a crash; the ops listener stays up through the drain window and closes after it; `--metrics-families` reads no configuration]
-//! Spec: Baseline §4.2; §4.4; §67.2; ADR-0037; ADR-0061 D-B; ADR-0061 D-F; ADR-0065 D-C
+//! Invariants: [/readyz flips to 503 and the accept loop keeps draining for DRAIN_ANNOUNCE_WINDOW before closing, so a k8s readinessProbe never sees ECONNREFUSED confused with a crash; the ops listener stays up through the drain window and closes after it; `--metrics-families` and `--version` read no configuration; `--readyz` / `--livez` read only HUMAUX_GATEWAY_BIND_ADDR; no argument = serve, any other argument = usage and exit 2; a configuration error exits 2, a runtime failure 1 (ADR-0066 D-N)]
+//! Spec: Baseline §4.2; §4.4; §67.2; ADR-0037; ADR-0061 D-B; ADR-0061 D-F; ADR-0065 D-C; ADR-0066 D-D; ADR-0066 D-N
 //!
 //! ## Supervision surface (card 15, ADR-0037)
 //!
@@ -39,7 +40,7 @@
 //! could be configured to accept. Anything that would report *what* this process is (version,
 //! fingerprint, tenant counts) belongs behind the boundary or in `humaux-admin q`, not here.
 
-use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
+use std::{error::Error, net::SocketAddr, process::ExitCode, sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, routing::get};
 use humaux_gateway::{
@@ -49,6 +50,7 @@ use humaux_gateway::{
     status::{METRICS_ADDR_KEY, Readiness, Verdict, render_metrics},
 };
 use humaux_telemetry::metrics::{Routes, serve_loopback};
+use humaux_telemetry::{probe_http, start_line, version_mode};
 
 /// How long the process keeps accepting connections AFTER readiness has gone false, so a
 /// supervisor that dials a new connection per poll actually observes `503 draining` instead of
@@ -83,15 +85,72 @@ fn supervision_routes(readiness: Arc<Readiness>) -> Router {
         )
 }
 
+const BIN: &str = "humaux-gateway";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_SHA: Option<&str> = option_env!("HUMAUX_BUILD_GIT_SHA");
+/// ADR-0066 D-D: the probe modes dial the public listener the supervision routes live on.
+const BIND_ADDR_KEY: &str = "HUMAUX_GATEWAY_BIND_ADDR";
+
+fn usage() -> &'static str {
+    "usage: humaux-gateway [--metrics-families | --version | --readyz | --livez] (no argument = serve)"
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // ADR-0061 D-C: the zero-state exposition, before any configuration is read (D-H reads it).
-    if std::env::args().nth(1).as_deref() == Some("--metrics-families") {
-        print!("{}", render_metrics(&GuardMetrics::default()));
-        return Ok(());
+async fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        // ADR-0061 D-C: the zero-state exposition, before any configuration is read (D-H reads it).
+        ["--metrics-families"] => {
+            print!("{}", render_metrics(&GuardMetrics::default()));
+            ExitCode::SUCCESS
+        }
+        ["--version"] => version_mode(BIN, VERSION, GIT_SHA, option_env!("HUMAUX_BUILD_TIME")),
+        // ADR-0066 D-D: the compose healthchecks (no shell, no curl in the image).
+        [mode @ ("--readyz" | "--livez")] => {
+            let path = if *mode == "--readyz" {
+                "/readyz"
+            } else {
+                "/livez"
+            };
+            probe_http(
+                BIND_ADDR_KEY,
+                std::env::var(BIND_ADDR_KEY).ok().as_deref(),
+                path,
+            )
+        }
+        [] => {
+            eprintln!("{}", start_line(BIN, "serve", VERSION, GIT_SHA));
+            // ADR-0066 D-N: a configuration error is an operator's to fix (2); anything after it is runtime (1).
+            let bootstrap = match GatewayBootstrap::load_from_env() {
+                Ok(bootstrap) => bootstrap,
+                Err(error) => {
+                    eprintln!("{BIN}: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            match serve(bootstrap).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{BIN}: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => {
+            eprintln!("{BIN}: {}", usage());
+            ExitCode::from(2)
+        }
     }
+}
+
+async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
     let started = std::time::SystemTime::now();
-    let mut runtime = GatewayBootstrap::load_from_env()?.build().await?;
+    let mut runtime = bootstrap.build().await?;
     let refresh = runtime.readiness_refresh();
     let probe = runtime
         .take_readiness_probe()

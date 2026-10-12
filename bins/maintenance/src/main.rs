@@ -6,23 +6,30 @@
 //!   two resident modes `health serve` (ADR-0061 D-D) and `--serve`, the maintenance daemon (ADR-0062), the
 //!   Qdrant rebuild / verify `projection rebuild | verify` (ADR-0064 D-E, D-F), and the local_only backup arms
 //!   `backup check | run | verify | status` (ADR-0064 D-J), and `restore drill [--destroy-stale] | restore pitr`
-//!   (ADR-0064 D-L, D-U).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-protocol, rand, serde, serde_json, time, tokio, uuid];
-//!   services=[PostgreSQL(role_maintenance)]; env=[HUMAUX_MAINTENANCE_CREDENTIAL_PEPPER_HEX,
+//!   (ADR-0064 D-L, D-U), plus the library subcommands moved out of xtask — `migrate`, `rls-check`, `projection serve`,
+//!   `member` — and the `deploy-check` release-gate modes (ADR-0066 D-Q, D-R).
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-protocol, humaux-telemetry, rand, serde, serde_json, time,
+//!   tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_maintenance)]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA,
+//!   HUMAUX_BUILD_TIME, HUMAUX_MAINTENANCE_CREDENTIAL_PEPPER_HEX, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR,
+//!   HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR,
 //!   HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION,
 //!   HUMAUX_MAINTENANCE_QDRANT_CIDR, HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT];
 //!   modules=[adapters::byok, adapters::membership_repo, adapters::postgres, adapters::provisioning,
 //!   adapters::quota_repo, adapters::reasoning_route_onboarding, adapters::role_hygiene,
-//!   domain::identity, domain::ids, domain::ticket_family, maintenance::backup, maintenance::drill,
+//!   domain::identity, domain::ids, domain::ticket_family, humaux-telemetry, maintenance::backup, maintenance::deploy_check,
+//!   maintenance::drill,
 //!   maintenance::health_serve,
-//!   maintenance::rebuild_cli,
-//!   maintenance::retention, maintenance::roles, maintenance::serve, protocol::edge]
+//!   maintenance::member, maintenance::migrate, maintenance::projection_serve, maintenance::rebuild_cli,
+//!   maintenance::retention, maintenance::rls_check, maintenance::roles, maintenance::serve, protocol::edge]
 //! Called-by: [process(humaux-maintenance)]
-//! Invariants: [every subcommand but `health serve` and `--serve` is one-shot; one JSON receipt on stdout per run; exit 0 created/existing, 3 refused, 2 usage, 1
+//! Invariants: [every subcommand but `health serve` and `--serve` is one-shot; one JSON receipt on stdout per run
+//!   (the library subcommands keep the line output they had in xtask, ADR-0066 D-Q); exit 0 created/existing, 3 refused, 2 usage, 1
 //!   infrastructure (PostgreSQL/Qdrant down); the wire key and generated role passwords are printed once on stdout
-//!   before the receipt, never on stderr or in a receipt; no flag or env var has a literal default]
+//!   before the receipt, never on stderr or in a receipt; no flag or env var has a literal default; `--version` and
+//!   `readyz serve|health-serve` (the compose healthchecks: GET /metrics, 200 ⇒ 0, else 2) read no other configuration;
+//!   each resident mode's first stderr line is the ADR-0066 D-D start line]
 //! Spec: Baseline §4.2; §6.2.2; §11.2.3; §41.2; §48.1; §73.5; §77; §78.1; ADR-0053; ADR-0058; ADR-0059; ADR-0060;
-//!   ADR-0061; ADR-0062; ADR-0063; ADR-0064
+//!   ADR-0061; ADR-0062; ADR-0063; ADR-0064; ADR-0066 D-D
 //!
 //! Subcommand mode (card 28). Two modes are resident: `health serve` (ADR-0061 D-D) samples the §41.2 health
 //! gauges, and `--serve` (ADR-0062) runs the scheduled maintenance tasks; each runs until SIGTERM, answers
@@ -76,12 +83,18 @@ use humaux_adapters::role_hygiene;
 use humaux_domain::identity::MembershipRole;
 use humaux_domain::ids::TenantId;
 use humaux_domain::ticket_family::TicketFamily;
+use humaux_maintenance::deploy_check;
 use humaux_protocol::edge::{api_key_log_fingerprint, compute_api_key_hash};
+use humaux_telemetry::{probe_http, start_line, version_mode};
 use rand::Rng;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
+
+const BIN: &str = "humaux-maintenance";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_SHA: Option<&str> = option_env!("HUMAUX_BUILD_GIT_SHA");
 
 const USAGE: &str = "usage: humaux-maintenance <deploy-init | onboard tenant|workspace|user | \
 apikey issue|revoke | apikey pepper-epoch advance|close | placement ensure | collection ensure | activate | status | \
@@ -89,11 +102,37 @@ jobs requeue-dead --tenant ID (--job ID | --error-class CLASS) | \
 reasoning register|bind|attest-health|profile-state|status --tenant ID | \
 roles rotate --roles-sql PATH [--role ROLE]... [--create-missing] | deploy-check --roles-sql PATH | \
 retention approve|create-partitions|execute | \
-health serve | --serve | --serve --metrics-families | sweep once | --metrics-families | \
+health serve | --serve | --serve --metrics-families | sweep once | --metrics-families | --version | \
+readyz serve|health-serve | \
 projection rebuild|verify (--tenant ID [--workspace ID] | --all) | \
 backup check|run|verify [--label SET]|status | \
 restore drill --evidence FILE [--drill-id ID] | restore drill --destroy-stale | \
-restore pitr --compose-file FILE --project P (--target end | --target-time TS) --evidence FILE> [flags]";
+restore pitr --compose-file FILE --project P (--target end | --target-time TS | --target-backup LABEL) --evidence FILE | \
+migrate [--migrations-dir DIR] [--dsn URL] [--through ID] [--allow-live-sessions] | rls-check [--spec PATH] [--dsn URL] | \
+projection serve | member invite|activate|suspend|remove|set-role | \
+deploy-check (--compose-json FILE|-) (--env --values-dir D --secrets-dir S [--examples-dir E] [--placement-only]) \
+(--release TAG --manifest FILE --expect-sha SHA40) (--running --project P) (--secrets-readable DIR)> [flags]";
+
+/// ADR-0066 D-Q / D-R: the lib subcommands. They run before the runtime is built (each owns its own, or none), keep
+/// the output form they had in xtask, and map their exit code straight through.
+fn lib_subcommand(args: &[String]) -> Option<ExitCode> {
+    let words: Vec<&str> = args.iter().take(2).map(String::as_str).collect();
+    let code = match words.as_slice() {
+        ["migrate", ..] => humaux_maintenance::migrate::run(&args[1..]),
+        ["rls-check", ..] => humaux_maintenance::rls_check::run(&args[1..]),
+        ["member", ..] => humaux_maintenance::member::run(&args[1..]),
+        ["projection", "serve"] => humaux_maintenance::projection_serve::run(&args[2..]),
+        ["deploy-check", ..]
+            if deploy_check::MODE_FLAGS
+                .iter()
+                .any(|f| args.iter().any(|a| a == f)) =>
+        {
+            i32::from(deploy_check::run(&args[1..]))
+        }
+        _ => return None,
+    };
+    Some(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+}
 
 /// A failure before or outside the provisioning library.
 enum Failure {
@@ -759,8 +798,15 @@ async fn run(args: Args) -> Result<Output> {
         ["retention", "approve"] => retention::approve(&args).await,
         ["retention", "create-partitions"] => retention::create_partitions(&args).await,
         ["retention", "execute"] => retention::execute(&args).await,
-        ["health", "serve"] => health_serve::serve().await,
-        ["--serve"] => serve::serve().await,
+        // ADR-0066 D-D: a resident mode's first line names the build it runs.
+        ["health", "serve"] => {
+            eprintln!("{}", start_line(BIN, "health-serve", VERSION, GIT_SHA));
+            health_serve::serve().await
+        }
+        ["--serve"] => {
+            eprintln!("{}", start_line(BIN, "serve", VERSION, GIT_SHA));
+            serve::serve().await
+        }
         ["sweep", "once"] => serve::sweep_once(&args).await,
         ["projection", "rebuild"] => rebuild_cli::rebuild(&args).await,
         ["projection", "verify"] => rebuild_cli::verify(&args).await,
@@ -785,6 +831,32 @@ fn main() -> ExitCode {
     if args.0 == ["--serve", "--metrics-families"] {
         print!("{}", serve::render_metrics());
         return ExitCode::SUCCESS;
+    }
+    // ADR-0066 D-D: no configuration read; the probes read only the probed mode's ops address and GET /metrics,
+    // which is that mode's readiness (200 / 503, ADR-0061 D-D).
+    match args
+        .0
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--version"] => {
+            return version_mode(BIN, VERSION, GIT_SHA, option_env!("HUMAUX_BUILD_TIME"));
+        }
+        ["readyz", mode @ ("serve" | "health-serve")] => {
+            let key = if *mode == "serve" {
+                serve::METRICS_ADDR
+            } else {
+                health_serve::METRICS_ADDR
+            };
+            // dep: HTTP(loopback) — the probed resident mode's own ops listener
+            return probe_http(key, std::env::var(key).ok().as_deref(), "/metrics");
+        }
+        _ => {}
+    }
+    if let Some(code) = lib_subcommand(&args.0) {
+        return code;
     }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

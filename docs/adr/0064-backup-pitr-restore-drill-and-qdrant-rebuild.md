@@ -316,12 +316,12 @@ on 127.0.0.1, the pinned scanner) and `collection_names` (the fresh-Qdrant check
   role_maintenance, role_retrieval_worker, role_gateway replaced by in-memory random values over stdin, every other
   LOGIN role NOLOGIN; TCP boot; checks (b) first on the pool every later step uses; the rebuild of every serving
   stream of every restored tenant with `require_stored_vector` and a pump that claims only the run's tickets
-  (`run_claimed_pass_for_run`); destroy; `repo_intact` digest after destroy; residue; receipt; evidence (0600).
+  (`run_claimed_pass_for_run`); destroy; `repo_intact` digest after destroy; residue; receipt; evidence (0644 since ADR-0066 review fix 9: `dr` runs as root in the bundle and the runbook reads it back).
 - **Destroy** is a label sweep: containers (`rm -f -v`), then volumes, then networks whose
   `com.docker.compose.project` is exactly `humaux-drill-<id>` or whose `humaux.drill` is exactly `<id>`; never a name
   prefix, never prune. A drop guard runs it on every path after `up`.
 - **`restore pitr`** refusals in 10.11 B order: `pgdata_not_empty:<volume>`, `migrator_dsn_present`,
-  `production_pg_running:<container>` (any running container of `HUMAUX_MAINTENANCE_BACKUP_PROJECT`),
+  `production_pg_running:<container>` (a running compose service `pg` of `HUMAUX_MAINTENANCE_BACKUP_PROJECT`; ADR-0066 review fix 7),
   `restore_free_bytes:<need>/<have> (restore=<a> floor=<d>)`, `repo_set_unverifiable:<label> (<why>)`. Then restore
   (`--type=default` for `end`), socket-only boot, NOLOGIN for every LOGIN role but postgres, role_maintenance and
   role_retrieval_worker, the in-flight counts, the boot with the operator's `HUMAUX_PG_LISTEN_ADDRESSES`.
@@ -401,6 +401,7 @@ on 127.0.0.1, the pinned scanner) and `collection_names` (the fresh-Qdrant check
   on `HUMAUX_MAINTENANCE_DR_{REPO,PGDATA}_FS_PATH`, the headroom in Rust (`repo_max` = recorded max − repo − estimate;
   `free_floor` = live repo free − recorded min free − estimate; both 0 before the first measuring receipt), and
   `telemetry::dr::publish`, which holds the one `.set(` per family. The daemon reads no budget key.
+  ADR-0066 review fix 5: the two `df -Pk` children are now in-process `statvfs` reads (`f_bavail × f_frsize`, same CYCLE_SECONDS bound) — the distroless image has no `df`.
 - **Failure.** A failed run publishes nothing (the last values stay) and counts `outcome="failed"`; `/metrics`
   answers 503 for that cycle (ADR-0062 D-A). No `reset()` exists in `telemetry::dr`.
 - **One value for `target`.** `telemetry::dr::TARGET_LOCAL = "local"` is the only `target` the render can emit

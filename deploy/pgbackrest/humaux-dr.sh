@@ -7,6 +7,8 @@
 # refuses (exit 3) when the binary it would exec is not on the PATH that dr.env leaves.
 # `compose ...` runs `docker compose -f $HUMAUX_MAINTENANCE_BACKUP_COMPOSE_FILE -p $HUMAUX_MAINTENANCE_BACKUP_PROJECT ...`
 # under the same environment (bringing `pg` up). No value lives in this file. Pinned by T-I1 and c37_dr_script_parses.
+# Card 39 (ADR-0066 D-H): a bundle node runs these arms in the `dr` one-shot of deploy/compose/prod.yml through
+# deploy/release/compose.sh (deploy/pgbackrest/humaux-backup.crontab); this wrapper stays for card-37 hosts.
 set -eu
 env_file="${HOME:?}/.config/humaux/dr.env"
 if [ ! -f "$env_file" ] || [ -L "$env_file" ]; then

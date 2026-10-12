@@ -4,7 +4,8 @@
 //!   isolated compose project `humaux-drill-<id>` from `deploy/compose/drill.yml`, neutralises the restored
 //!   credentials, runs the D-N checks, rebuilds the drill Qdrant from the restored PostgreSQL with no provider,
 //!   destroys only its own labelled resources and writes the receipt (source) and the evidence file. `restore pitr`
-//!   restores into a given project (the real restore) and quarantines the worker roles.
+//!   restores into a given project (the real restore) and quarantines the worker roles; its target is the end of the
+//!   archive, a time, or (ADR-0066 D-H, the rollback) a named set's own consistency point (`--type=immediate`).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, rand, serde_json, time, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker),
 //!   PostgreSQL(owner) r=[ops.jobs, ops.model_call_ledger, ops.schema_migrations, projection.stream_log], Qdrant(*),
@@ -194,25 +195,34 @@ fn refused(arm: &str, id: Option<Uuid>, reason: String) -> Output {
     }
 }
 
-/// `--evidence <file>` whose directory exists, checked before any work: the evidence is written after the receipt,
-/// so a missing directory found only then would leave a success receipt whose evidence is lost (runbook §11.1).
+/// The mode of an evidence file (D-O: it carries no secret). Readable by the operator: `dr` runs as root in the
+/// bundle and the runbook's RB4 reads `nologin_roles` back from it (ADR-0066 review fix 9, OP-5 / C3).
+const EVIDENCE_MODE: u32 = 0o644;
+
+/// `--evidence <file>`, opened (created or truncated) before any work: the evidence is written after the receipt
+/// — for `restore pitr` after the restored cluster is already the new production — so a directory or permission
+/// problem found only then would leave a success receipt whose evidence is lost (runbook §11.1; ADR-0066 review
+/// fix 9, OP-5: the pre-check used to test `is_dir` only).
 fn evidence_arg(args: &Args) -> Result<String> {
+    use std::os::unix::fs::OpenOptionsExt;
     let path = args.required("--evidence")?;
-    let dir = match std::path::Path::new(&path).parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-        _ => std::path::PathBuf::from("."),
-    };
-    if dir.is_dir() {
-        Ok(path)
-    } else {
-        Err(Failure::Usage(format!(
-            "--evidence {path}: directory {} does not exist",
-            dir.display()
-        )))
+    // A probe only: an earlier evidence file is neither truncated nor replaced here (a refused run leaves it as it
+    // was), and a file this probe created is removed again so a refusal writes nothing (T-M4a).
+    let existed = std::path::Path::new(&path).exists();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(EVIDENCE_MODE)
+        .open(&path)
+        .map(drop)
+        .map_err(|e| Failure::Usage(format!("--evidence {path}: cannot be written: {e}")))?;
+    if !existed {
+        let _ = std::fs::remove_file(&path);
     }
+    Ok(path)
 }
 
-/// Writes `value` pretty-printed to `path`, mode 0600 (the evidence of D-O; it carries no secret).
+/// Writes `value` pretty-printed to `path`, mode [`EVIDENCE_MODE`].
 fn write_evidence(path: &str, value: &Value) -> Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let body = serde_json::to_string_pretty(value)
@@ -221,10 +231,10 @@ fn write_evidence(path: &str, value: &Value) -> Result<()> {
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(0o600)
+        .mode(EVIDENCE_MODE)
         .open(path)
         .map_err(|e| Failure::Infra(format!("evidence {path}: {e}")))?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))
+    f.set_permissions(std::fs::Permissions::from_mode(EVIDENCE_MODE))
         .and_then(|()| f.write_all(body.as_bytes()))
         .and_then(|()| f.write_all(b"\n"))
         .map_err(|e| Failure::Infra(format!("evidence {path}: {e}")))
@@ -1374,6 +1384,20 @@ fn pass_config(id: Uuid) -> Step<PassConfig> {
     })
 }
 
+/// SQL that lists, comma-joined and sorted, the LOGIN roles [`neutralise_sql`] with the same `keep` is about to turn
+/// NOLOGIN — read BEFORE the quarantine, so the evidence's `nologin_roles` names exactly what the restore locked and
+/// never a role that is NOLOGIN by design (ADR-0059 D-A `role_migration_owner`, ADR-0061 `role_health_reader`;
+/// ADR-0066 review fix 9: the cheap-agent run's RB5 `rls-check` caught RB4 re-enabling those from a post-quarantine
+/// listing).
+fn locked_roles_sql(keep: &[&str]) -> String {
+    let keep: Vec<String> = keep.iter().map(|r| format!("'{r}'")).collect();
+    format!(
+        "SELECT coalesce(string_agg(rolname, ',' ORDER BY rolname), '') FROM pg_roles \
+         WHERE rolcanlogin AND rolname NOT IN ({})",
+        keep.join(", ")
+    )
+}
+
 /// SQL that sets a fresh password on every role of `keep` (values never leave this process but by stdin) and turns
 /// every other LOGIN role NOLOGIN (D-M, D-U).
 fn neutralise_sql(passwords: &BTreeMap<&str, String>, keep: &[&str]) -> String {
@@ -1449,32 +1473,73 @@ async fn rebuild_one(
 // restore pitr (D-U as amended by 10.11 B)
 // ============================================================================
 
-/// `restore pitr --compose-file <backup.yml> --project <p> (--target end | --target-time <rfc3339>) --evidence <file>`:
+/// Where `restore pitr` stops (ADR-0064 D-U; ADR-0066 D-H adds `Backup`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PitrTarget {
+    /// The end of the archive (`--type=default`).
+    End,
+    /// A point in time, for logical corruption (`--type=time`); needs WAL archived after it.
+    Time(OffsetDateTime),
+    /// ADR-0066 D-H: the named backup's own consistency point (`--set=<label> --type=immediate`), the rollback
+    /// target: its WAL is in the repository by construction (archive-check + verify), so recovery always reaches it.
+    Backup(String),
+}
+
+/// `--target end | --target-time <rfc3339> | --target-backup <label>`: exactly one (usage, exit 2, otherwise).
+fn pitr_target(args: &Args) -> Result<PitrTarget> {
+    match (
+        args.get("--target"),
+        args.get("--target-time"),
+        args.get("--target-backup"),
+    ) {
+        (Some(t), None, None) if t == "end" => Ok(PitrTarget::End),
+        (None, Some(t), None) => OffsetDateTime::parse(&t, &Rfc3339)
+            .map(PitrTarget::Time)
+            .map_err(|_| Failure::Usage("--target-time: not an RFC 3339 time".to_owned())),
+        (None, None, Some(label)) if backup::valid_label(&label) => Ok(PitrTarget::Backup(label)),
+        (None, None, Some(_)) => Err(Failure::Usage(
+            "--target-backup: not a pgBackRest set label".to_owned(),
+        )),
+        _ => Err(Failure::Usage(
+            "exactly one of --target end, --target-time <rfc3339> or --target-backup <label>"
+                .to_owned(),
+        )),
+    }
+}
+
+/// The pgBackRest restore command for `label` and `target`. A backup target restores that set to its own
+/// consistency point and never names a `--target=` time (ADR-0066 D-H, RF-5).
+fn restore_command(label: &str, target: &PitrTarget) -> String {
+    let kind = match target {
+        PitrTarget::End => "--type=default".to_owned(),
+        PitrTarget::Time(t) => format!(
+            "--type=time '--target={}' --target-action=promote",
+            pg_time(*t)
+        ),
+        PitrTarget::Backup(_) => "--type=immediate --target-action=promote".to_owned(),
+    };
+    format!(
+        "mkdir -p {PG1_PATH} && chmod 700 {PG1_PATH} && pgbackrest --stanza={STANZA} --set={label} {kind} \
+         --log-level-console=warn restore"
+    )
+}
+
+/// `restore pitr --compose-file <backup.yml> --project <p> (--target end | --target-time <rfc3339> |
+/// --target-backup <label>) --evidence <file>`:
 /// the real restore into project `<p>`. Refusals before anything is restored (exit 3), in this order: the project's
-/// `pgdata` volume is non-empty; `HUMAUX_MIGRATOR_PG_DSN` is set; a container of the production backup project is
-/// running (`production_pg_running`: only one cluster may ever archive into the stanza, so a promoted timeline can
-/// never fork beside a running one); the disk floor; `verify --set` of the set the restore will use. Then the
-/// restore, a socket-only boot, the NOLOGIN quarantine of every LOGIN role but the superuser, role_maintenance and
-/// role_retrieval_worker, and the boot with the operator's listen address. The restored cluster archives on its new
-/// timeline: it is the new production.
+/// `pgdata` volume is non-empty; `HUMAUX_MIGRATOR_PG_DSN` is set; a PostgreSQL container (compose service `pg`) of
+/// the production backup project is running (`production_pg_running`: only one cluster may ever archive into the
+/// stanza, so a promoted timeline can never fork beside a running one); the disk floor; `verify --set` of the set
+/// the restore will use. Then the restore, a socket-only boot, the NOLOGIN quarantine of every LOGIN role but the
+/// superuser, role_maintenance and role_retrieval_worker, and the boot with the operator's listen address. The
+/// restored cluster archives on its new timeline: it is the new production.
 #[allow(clippy::too_many_lines)] // one ordered list of D-U refusals (10.11 B): the order is the contract
 pub(crate) async fn pitr(args: &Args) -> Result<Output> {
     const ARM: &str = "restore pitr";
     let file = args.required("--compose-file")?;
     let name = args.required("--project")?;
     let evidence = evidence_arg(args)?;
-    let target: Option<OffsetDateTime> = match (args.get("--target"), args.get("--target-time")) {
-        (Some(t), None) if t == "end" => None,
-        (None, Some(_)) => Some(
-            OffsetDateTime::parse(&args.required("--target-time")?, &Rfc3339)
-                .map_err(|_| Failure::Usage("--target-time: not an RFC 3339 time".to_owned()))?,
-        ),
-        _ => {
-            return Err(Failure::Usage(
-                "exactly one of --target end or --target-time <rfc3339>".to_owned(),
-            ));
-        }
-    };
+    let target = pitr_target(args)?;
     let listen = env("HUMAUX_PG_LISTEN_ADDRESSES").unwrap_or_default();
     let timeout = Duration::from_secs(env_parsed(RESTORE_TIMEOUT)?);
     let floor: u64 = env_parsed(MIN_FREE_DISK)?;
@@ -1517,12 +1582,16 @@ pub(crate) async fn pitr(args: &Args) -> Result<Output> {
         ));
     }
     // Refusal 3: the production cluster still runs (it would keep archiving into the stanza beside the restore).
+    // Only service `pg` is that hazard: `restore pitr` itself may run as a `dr` one-shot of the same project
+    // (ADR-0066 review fix 7), and that container must not refuse its own restore.
     let production = env(BACKUP_PROJECT)?;
     let _ = env(BACKUP_COMPOSE_FILE)?;
     let running = docker(&[
         "ps",
         "--filter",
         &format!("label=com.docker.compose.project={production}"),
+        "--filter",
+        "label=com.docker.compose.service=pg",
         "--filter",
         "status=running",
         "--format",
@@ -1536,7 +1605,7 @@ pub(crate) async fn pitr(args: &Args) -> Result<Output> {
             format!("production_pg_running:{}", container.trim()),
         ));
     }
-    let (label, restore) = pitr_set(&project, target)?;
+    let (label, restore) = pitr_set(&project, &target)?;
     // Refusal 4: the disk floor (10.11 B).
     let df = mounts
         .oneshot(
@@ -1591,12 +1660,12 @@ pub(crate) async fn pitr(args: &Args) -> Result<Output> {
     let db = dsn_target(&env("HUMAUX_MAINTENANCE_PG_DSN")?)
         .map(|(_, db)| db)
         .ok_or_else(|| Failure::Usage("HUMAUX_MAINTENANCE_PG_DSN: no database".to_owned()))?;
-    pitr_restore(&project, &label, &db, target, timeout, &listen, &evidence).await
+    pitr_restore(&project, &label, &db, &target, timeout, &listen, &evidence).await
 }
 
-/// The set `restore pitr` will use: the newest in the repository that stopped at or before the target (any for
-/// `end`), with its restore size from `info`.
-fn pitr_set(project: &Project, target: Option<OffsetDateTime>) -> Result<(String, u64)> {
+/// The set `restore pitr` will use: the named set for `--target-backup`, else the newest in the repository that
+/// stopped at or before the target (any for `end`), with its restore size from `info`.
+fn pitr_set(project: &Project, target: &PitrTarget) -> Result<(String, u64)> {
     let info_out = project
         .run(
             "",
@@ -1629,16 +1698,16 @@ fn pitr_set(project: &Project, target: Option<OffsetDateTime>) -> Result<(String
     let set = info[0]["backup"]
         .as_array()
         .and_then(|sets| {
-            sets.iter().rev().find(|s| {
-                target.is_none_or(|t| {
-                    s["timestamp"]["stop"]
-                        .as_i64()
-                        .is_some_and(|stop| stop <= t.unix_timestamp())
-                })
+            sets.iter().rev().find(|s| match target {
+                PitrTarget::End => true,
+                PitrTarget::Time(t) => s["timestamp"]["stop"]
+                    .as_i64()
+                    .is_some_and(|stop| stop <= t.unix_timestamp()),
+                PitrTarget::Backup(label) => s["label"].as_str() == Some(label.as_str()),
             })
         })
         .cloned()
-        .ok_or_else(|| Failure::Infra("pgbackrest info: no set before the target".to_owned()))?;
+        .ok_or_else(|| Failure::Infra("pgbackrest info: no set matches the target".to_owned()))?;
     let label = set["label"]
         .as_str()
         .filter(|l| backup::valid_label(l))
@@ -1654,30 +1723,26 @@ async fn pitr_restore(
     project: &Project,
     label: &str,
     db: &str,
-    target: Option<OffsetDateTime>,
+    target: &PitrTarget,
     timeout: Duration,
     listen: &str,
     evidence: &str,
 ) -> Result<Output> {
     const ARM: &str = "restore pitr";
-    // The restore: end of archive by default (--type=default), a time only for logical corruption.
+    // The restore: end of archive by default, a time only for logical corruption, a set's own consistency point for
+    // the rollback (ADR-0066 D-H).
     let started = Instant::now();
-    let kind = match target {
-        None => "--type=default".to_owned(),
-        Some(t) => format!(
-            "--type=time '--target={}' --target-action=promote",
-            pg_time(t)
-        ),
-    };
-    let restore_cmd = format!(
-        "mkdir -p {PG1_PATH} && chmod 700 {PG1_PATH} && pgbackrest --stanza={STANZA} --set={label} {kind}          --log-level-console=warn restore"
-    );
+    let restore_cmd = restore_command(label, target);
     let mut out = class_fields(ARM);
     out.insert("project".to_owned(), json!(project.name));
     out.insert("backup_label".to_owned(), json!(label));
     out.insert(
         "target".to_owned(),
-        json!(target.map_or_else(|| "end".to_owned(), pg_time)),
+        json!(match target {
+            PitrTarget::End => "end".to_owned(),
+            PitrTarget::Time(t) => pg_time(*t),
+            PitrTarget::Backup(set) => format!("backup:{set}"),
+        }),
     );
     out.insert(
         "repo_dir".to_owned(),
@@ -1697,7 +1762,13 @@ async fn pitr_restore(
         }
         project.ok("", &["up", "-d", "pg"])?;
         project.wait_promoted("", timeout).await?;
-        // The quarantine as a database fact, before TCP opens.
+        // The quarantine as a database fact, before TCP opens: first the roles it will lock (the evidence RB4
+        // re-enables), then the lock itself.
+        let locked = project
+            .psql("", &locked_roles_sql(&PITR_LOGIN_ROLES))
+            .map_err(|e| format!("quarantine_failed: {e}"))?
+            .trim()
+            .to_owned();
         let keep: BTreeMap<&str, String> = BTreeMap::new();
         project
             .psql("", &neutralise_sql(&keep, &PITR_LOGIN_ROLES))
@@ -1707,18 +1778,15 @@ async fn pitr_restore(
             db,
             "SELECT (SELECT count(*) FROM ops.jobs WHERE status NOT IN ('DONE', 'FAILED', 'DEAD')) || ' ' || \
                     (SELECT count(*) FROM ops.model_call_ledger WHERE status = 'RESERVED') || ' ' || \
-                    (SELECT count(*) FROM projection.stream_log WHERE state = 'ISSUED'); \
-             SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles \
-              WHERE NOT rolcanlogin AND rolname LIKE 'role\\_%'",
+                    (SELECT count(*) FROM projection.stream_log WHERE state = 'ISSUED')",
         )?;
-        let mut lines = counts.lines();
-        let nums: Vec<i64> = lines
+        let nums: Vec<i64> = counts
+            .lines()
             .next()
             .unwrap_or("")
             .split_whitespace()
             .filter_map(|n| n.parse().ok())
             .collect();
-        let locked = lines.next().unwrap_or("").to_owned();
         project.ok(listen, &["up", "-d", "--force-recreate", "pg"])?;
         Ok(json!({
             "restored_in_flight": {
@@ -1727,9 +1795,11 @@ async fn pitr_restore(
                 "issued_tickets": nums.get(2),
             },
             "nologin_roles": locked.split(',').filter(|r| !r.is_empty()).collect::<Vec<_>>(),
-            "lost_window": target.map_or_else(
-                || "none: replayed to the end of the archive".to_owned(),
-                |t| format!("every write after {}", pg_time(t))),
+            "lost_window": match target {
+                PitrTarget::End => "none: replayed to the end of the archive".to_owned(),
+                PitrTarget::Time(t) => format!("every write after {}", pg_time(*t)),
+                PitrTarget::Backup(set) => format!("every write after backup {set}'s consistency point"),
+            },
         }))
     }
     .await;
@@ -1758,4 +1828,67 @@ async fn pitr_restore(
         refused: false,
         once: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Args {
+        Args(words.iter().map(|w| (*w).to_owned()).collect())
+    }
+
+    /// ADR-0066 D-H / RF-5: the rollback restore stops at the set's own consistency point — `--set=<label>
+    /// --type=immediate --target-action=promote` and never a `--target=` time. Fault: fall back to `--type=time` ⇒
+    /// red.
+    #[test]
+    fn pitr_target_backup_is_type_immediate() {
+        let Ok(target) = pitr_target(&args(&["--target-backup", "20261007-120000F"])) else {
+            panic!("--target-backup <label> is a target");
+        };
+        assert_eq!(target, PitrTarget::Backup("20261007-120000F".to_owned()));
+        let cmd = restore_command("20261007-120000F", &target);
+        assert!(
+            cmd.contains("--set=20261007-120000F --type=immediate --target-action=promote"),
+            "{cmd}"
+        );
+        assert!(!cmd.contains("--target="), "{cmd}");
+        assert!(!cmd.contains("--type=time"), "{cmd}");
+    }
+
+    /// `--target-backup` and `--target-time` (or `--target end`) together, none of them, or a label that is not a
+    /// pgBackRest set label are usage errors. Fault: let `--target-backup` win over `--target-time` ⇒ red.
+    #[test]
+    fn target_backup_and_time_are_exclusive() {
+        for words in [
+            &[
+                "--target-backup",
+                "20261007-120000F",
+                "--target-time",
+                "2026-10-07T12:00:00Z",
+            ][..],
+            &["--target-backup", "20261007-120000F", "--target", "end"][..],
+            &[][..],
+            &["--target-backup", "bad label;rm"][..],
+        ] {
+            assert!(
+                matches!(pitr_target(&args(words)), Err(Failure::Usage(_))),
+                "{words:?} must be a usage error"
+            );
+        }
+        assert_eq!(
+            pitr_target(&args(&["--target", "end"])).ok(),
+            Some(PitrTarget::End)
+        );
+    }
+    /// ADR-0066 review fix 9 (agent3 RB5): the roles the evidence names are the LOGIN roles outside `keep`, read
+    /// before the quarantine — never the NOLOGIN-by-design roles. Fault: list `NOT rolcanlogin` (the post-quarantine
+    /// reading) ⇒ red.
+    #[test]
+    fn locked_roles_sql_selects_login_roles_outside_keep() {
+        let sql = locked_roles_sql(&PITR_LOGIN_ROLES);
+        assert!(sql.contains("WHERE rolcanlogin AND rolname NOT IN ('postgres', 'role_maintenance', 'role_retrieval_worker')"), "{sql}");
+        assert!(!sql.contains("NOT rolcanlogin"), "{sql}");
+        assert!(sql.contains("ORDER BY rolname"), "{sql}");
+    }
 }

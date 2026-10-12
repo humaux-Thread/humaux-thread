@@ -51,7 +51,8 @@
 | `prometheus.yml` | scrape (file_sd `targets/*.json` + collector telemetry), both rule files, Alertmanager on loopback, `external_labels.git_sha` |
 | `alertmanager.yml` | root route `group_wait 10s / group_interval 1m / repeat_interval 4h` to the log sink; Watchdog alone to its dead-man receiver every 5 min; URLs only via `url_file` |
 | `otel-collector.yml` | OTLP receivers on `127.0.0.1:4317/4318`, `debug` exporter, own telemetry on `127.0.0.1:8888` |
-| `../compose/observability.yml` | the three bundle services for card 39 (Linux, `network_mode: host`), images pinned by digest |
+| `../compose/prod.yml` | the release bundle (ADR-0066): the three observability services share the Humaux network namespace (`network_mode: service:netns`), images pinned by digest; `observability.yml` is retired (D-I) |
+| `render.sh` | the one renderer of prometheus.yml / targets / alertmanager.yml (POSIX sh + sed + printf; ADR-0066 D-I) |
 | `pinned-tool.sh` | runs a pinned binary after checking its sha256 and version; never PATH |
 | `test-rules.sh` | `promtool test rules` + coverage grep (each alert ≥ 2 `alertname:` checks) |
 | `mutations.sh` | the §80.1 red record: 14 single-token mutations, each must be caught |
@@ -100,7 +101,7 @@ measured with the pinned 3.15.0 (W6): an assertion failure and a rule-load error
 - `alertmanager.yml`: replace `__HUMAUX_ALERTMANAGER_LOG_SINK_URL_FILE__` and
   `__HUMAUX_ALERTMANAGER_WATCHDOG_URL_FILE__` with paths of URL files kept outside the repo; start it with
   `--web.listen-address=127.0.0.1:<port> --cluster.listen-address=` (empty: no gossip listener).
-- `observability.yml` needs `HUMAUX_OBSERVABILITY_RENDERED_DIR` (the rendered configs) and
-  `HUMAUX_ALERTMANAGER_URL_DIR` (the URL files); both are required interpolations with no default.
+- `prod.yml` needs `HUMAUX_OBSERVABILITY_RENDERED_DIR` (render.sh's output) and
+  `HUMAUX_ALERTMANAGER_URL_DIR` (the URL files); both are required interpolations with no default (node.env).
 - §42.1 injection "stop Alertmanager 5 min ⇒ the external endpoint reports the missing ping" is a
   manual §69 step (runbook §7): the endpoint is external to this repo.

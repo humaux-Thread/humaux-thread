@@ -9,7 +9,11 @@
 [`docs/architecture/env_vars.md`](../architecture/env_vars.md), generated from the code by
 `cargo xtask dep-map --write`. It covers every variable, which process and module reads it, and
 whether the typed registry declares it. `cargo xtask dep-map --check` fails when the list and the
-code drift apart. Look a variable up there rather than copying it here. One gateway fact that
+code drift apart. Look a variable up there rather than copying it here. The same run generates, per deployed
+process, the key list a node must fill — `deploy/env/example/<process>.env` (every runtime key of that process,
+secret keys marked with the `<process>.secret.env` they belong in; dev-only keys such as the `*_ALLOW_SAME_UID`
+pair are never listed) — and the empty-valued placeholder secrets under `deploy/env/secret-fixture/` (ADR-0066
+D-T, D-J); `deploy-check --env` compares a node's values and secret files against those lists. One gateway fact that
 list cannot show: since card 29 (ADR-0054) the gateway needs **no default write pair** — every
 write derives (tenant, workspace) per request, and the two `REMEMBER_TENANT_ID` /
 `REMEMBER_WORKSPACE_ID` keys are accepted-and-ignored (e2e tooling only).
@@ -26,7 +30,7 @@ write derives (tenant, workspace) per request, and the two `REMEMBER_TENANT_ID` 
 | `humaux-maintenance` | `health serve`: process alive | `health serve`: `GET /metrics` on its ops address → 200 / 503 | `health serve` yes (card 34, ADR-0061 D-D); every other subcommand no (card 28) |
 | `humaux-maintenance --serve` | process alive | `GET /metrics` on `HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR` → 200 / 503 | yes — the sixth resident unit (card 35, ADR-0062 D-A): the scheduled maintenance daemon |
 | `humaux-maintenance retention …` | — | — | **never** — one-shot operator commands with the superuser migrator DSN (card 36, ADR-0063 D-H); never supervised |
-| `humaux-maintenance backup …`, `restore drill`, `restore pitr`, `projection rebuild \| verify` | — | — | **never** — one-shot (card 37, ADR-0064 D-I): `backup run` and `restore drill` from the host crontab through `deploy/pgbackrest/humaux-dr.sh` (0600 `dr.env`), the rest by the operator; they need the docker CLI (root-equivalent), so neither the docker socket nor `dr.env` ever enters the supervised environment |
+| `humaux-maintenance backup …`, `restore drill`, `restore pitr`, `projection rebuild \| verify` | — | — | **never** — one-shot (card 37, ADR-0064 D-I): `backup run` and `restore drill` from the host crontab through `deploy/pgbackrest/humaux-dr.sh` (0600 `dr.env`), the rest by the operator; they need the docker CLI (root-equivalent), so neither the docker socket nor `dr.env` ever enters the supervised environment. In the container bundle (ADR-0066 D-H) they run on the `dr` one-shot (`deploy/release/compose.sh run --rm -T dr …`, profile `ops`), the crontab calls the same wrapper, and no resident service holds the socket |
 
 `humaux-maintenance --serve` (ADR-0062) is the scheduled maintenance daemon and the eighth ops pair
 (`humaux-maintenance:serve`, ADR-0061 D-B): every
@@ -47,7 +51,8 @@ Since card 37 (ADR-0064 D-K) the daemon also runs the cluster-level `dr_evidence
 environment carries three more required keys (no default; not secrets): `HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS`,
 `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH` (the backup filesystem's mount point, e.g. `/srv/humaux/pgbackrest`) and
 `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH` (the filesystem holding Docker's data root, `/` on a single-disk host); it
-runs `df -Pk` on the two paths and reads the backup and drill receipts. It needs no budget key, no docker access and
+reads statvfs(3) of the two paths in-process (f_bavail × f_frsize; no `df` child) and reads the backup and drill
+receipts. It needs no budget key, no docker access and
 no cipher pass: the backup, `restore drill` and `restore pitr` arms are one-shot (row above, runbook §11) and the
 daemon only reports what their receipts recorded.
 
@@ -203,6 +208,21 @@ that path, precisely so a `0` can never be manufactured downstream.
 | `humaux-maintenance --serve` | always restart | ≥ one door call = `HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS` (each call is bounded by it); SIGTERM / Ctrl-C exit 0 after the call in hand with a `stopped` receipt. A SIGKILL is safe: every call is one statement in one transaction, so a purge and its receipt commit together or not at all (ADR-0062 D-E) |
 | `humaux-public-worker --run-once` | on-failure only; it is a scheduled one-shot, exit 0 is success | ≥ one outbox pass |
 
+**Container bundle (card 39, ADR-0066 D-C / D-N, review fix 9).** In `deploy/compose/prod.yml` every resident
+service — pg, qdrant, netns, the eight Humaux processes and the observability set — has `restart: unless-stopped` and
+a `stop_grace_period` that encodes the column above (60 s default, `retrieval-serve` 120 s, `private-distill` 180 s =
+`HTTP_TIMEOUT_SECS` 120 + lease 30 + margin, `pg` 120 s); the profiled one-shots (`admin`, `ops`, `migrate`, `dr`,
+the rehearsal probes) keep `restart: "no"`, and `deploy-check` pins both (`restart_policy:<svc>:<value>`). That is
+Docker's semantics, not the exit-code contract's: Docker restarts the container on every exit — 0, 1, 2 or 101
+alike — after a delay that doubles from 100 ms up to one minute and resets once a run has lasted 10 s; the daemon
+starts it again after a host reboot or a dockerd restart (runbook R10, "After a host reboot"); only a container the
+operator stopped stays down, and `down` removes it. Exit 2 (ADR-0037 addendum) is still a configuration error that
+restarting cannot fix: it now loops under that backoff instead of stopping (ADR-0066 L-2). The guards are
+`deploy-check --env` before every `up` (runbook R2 / U2) and `deploy-check --running`, red on
+`service_restarted:<svc>` (any non-zero restart count), so a looping resident cannot pass R10 or the U-steps.
+Healthchecks are each binary's own `--readyz` / `readyz serve|health-serve` in exec form (no shell in the image); `unhealthy` never
+restarts a container, it only holds back the services that `depends_on` it with `condition: service_healthy`.
+
 The bolded rows are the ones that matter. The resident derived-layer workers and the projection
 runner observe the termination signal **only between passes**, on purpose: a pass settles every job it claimed
 before it returns (card 14 / ADR-0016 leases), so exiting between passes can never leave a job
@@ -282,6 +302,10 @@ becomes a connection-storm against the database that is already unhealthy.
 
 ## 4. Dependency start order
 
+In the container bundle the order below is `depends_on` with `condition: service_healthy` in `prod.yml` (pg →
+private-rpc → retrieval-rpc → retrieval-serve → consolidation → private-distill → maintenance-health →
+maintenance-serve → gateway), and `up --wait` (runbook v2 step R9) returns only when every resident is healthy.
+
 ```
 PostgreSQL ──┬─> humaux-retrieval-worker --serve-rpc ──> humaux-retrieval-worker --serve ──> humaux-gateway
              │        (binds the query-embedding UDS)     (projection runner, ADR-0052)   (dials the UDS)
@@ -335,6 +359,18 @@ runtime role shares a pool or a credential).
 
 Deployment check, per host: `ps -o user,comm` over the four must print four distinct users.
 
+**Container bundle (card 39, ADR-0066 D-C / D-K / D-L / D-M).** The four become four numeric container uids —
+gateway 10101, retrieval 10102, private 10103, consolidation 10104 — with one pair group per socket (10201: the
+retrieval socket, server primary group + the gateway's supplementary group; 10202: the inference socket, likewise
+for consolidation), socket directories 0750 and sockets 0660 enforced at bind. Each server **refuses to boot**
+(exit 2, naming the key) when the client uid it expects is its own uid or 0, unless the dev-only
+`HUMAUX_<PROCESS>_ALLOW_SAME_UID=1` is set, which WARNs on every accepted same-uid peer and which
+`deploy-check --env` / `--running` refuse on a node; each client checks the server's uid against
+`HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID` / `HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID` before writing a byte. The
+deployment check is `deploy-check --running` (runbook v2 R10: distinct uids, limits and hardening from `docker
+inspect`); runbook v2 §A1 proves the refusal on the running node with four scratch identities (exact `403` / `200`
+/ `403` / `422`).
+
 ## 6. `humaux-admin q <name>` — the §4.4 probe catalog
 
 11 frozen probe names (§4.4). Every one either returns the frozen envelope
@@ -382,6 +418,10 @@ cannot name the revision it is running must say so.
 
 ## 7. Minimal supervisor wiring
 
+The shipped wiring is the container bundle: `deploy/compose/prod.yml`, run only through
+`deploy/release/compose.sh` by the steps of runbook v2 (ADR-0066). The systemd / Kubernetes shapes below stay as
+the contract a different supervisor must meet.
+
 systemd (one unit per process; the ordering of §4 expressed as `After=`/`ExecStartPre=`):
 
 ```ini
@@ -415,5 +455,8 @@ Restart policy: always restart, each. Start them after PostgreSQL and before tra
 nothing in the app. Prometheus's `prometheus.yml` carries `external_labels.git_sha:
 "__HUMAUX_GIT_SHA__"`: the deployer **must** replace it with the `git_sha` of
 `humaux-admin q deploy.binary`, so the Watchdog ping names the running revision (§42.1, §67.4).
-Verification is runbook §7. The rehearsal (`docs/ops/rehearse.sh` steps `observability`,
-`metrics_scrape`, `alert_drill`) runs the same configs from the pinned host binaries.
+Verification is runbook v2 R10 / V1 and the acceptance drills §A2–§A4. In the bundle the three units are services
+of `deploy/compose/prod.yml` in the shared network namespace (`deploy/compose/observability.yml` is retired, ADR-0066
+D-I), with `restart: unless-stopped` (§3); `deploy/prometheus/render.sh` (POSIX sh) writes the configs with the sha the
+deployed `humaux-admin version` prints (runbook v2 R8 / U7). The rehearsal (`docs/ops/rehearse.sh` steps
+`observability`, `metrics_scrape`, `alert_drill`) runs the same renderer and configs from the pinned host binaries.

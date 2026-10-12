@@ -580,3 +580,37 @@ tests:
       - eval_time: 25m
         alertname: AdmissionRejected
         exp_alerts: []
+
+  # DNS pin deferred fire (§42 injection, ADR-0066 D-P: the pinned address stops answering ⇒ every distill call is a
+  # TRANSPORT retry): deferrals rise one per minute, outputs stay flat. The condition holds from the second sample, so
+  # at 10m the alert is still pending (for: 15m) and at 45m it fires.
+  - interval: 1m
+    input_series:
+      - series: 'dns_pin_deferred_total{job="humaux-private-worker",mode="distill-serve"}'
+        values: '0+1x60'
+      - series: 'private_distill_outputs_total{job="humaux-private-worker",mode="distill-serve"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DnsPinDeferred
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: DnsPinDeferred
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: humaux-private-worker
+              mode: distill-serve
+
+  # DNS pin deferred silent: deferrals rise but outputs grow too — a provider blip the retries absorbed, not a dead pin
+  # (dropping the `and outputs == 0` clause makes this block fire: mutation dns_pin_and).
+  - interval: 1m
+    input_series:
+      - series: 'dns_pin_deferred_total{job="humaux-private-worker",mode="distill-serve"}'
+        values: '0+1x60'
+      - series: 'private_distill_outputs_total{job="humaux-private-worker",mode="distill-serve"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: DnsPinDeferred
+        exp_alerts: []

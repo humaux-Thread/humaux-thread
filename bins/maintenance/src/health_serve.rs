@@ -32,7 +32,7 @@ use crate::resident::{self, Last, Latch, with_statement_timeout};
 use crate::{Failure, Output, Result, env, env_parsed};
 
 /// §78.1 / ADR-0061 D-B: this resident mode's own ops listener address (loopback only, no default).
-const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR";
+pub(crate) const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR";
 /// §78.1 / ADR-0061 D-D: seconds between samples; also each sample's statement timeout (no default).
 const SAMPLE_SECONDS: &str = "HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS";
 const PG_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";

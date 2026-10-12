@@ -12,7 +12,8 @@ set -u
 # the pidfile teardown and the FAULT=revoke_claim re-GRANT on $DB. Trapped, it exits through whichever EXIT trap is armed.
 trap 'exit 143' TERM INT   # not HUP: a nohup'd run inherits it ignored and must keep ignoring it
 S=${HUMAUX_REHEARSE_WORK:-${TMPDIR:-/tmp}/humaux-rehearsal}   # work dir: pidfiles, helpers, evidence (override with HUMAUX_REHEARSE_WORK)
-EV=$S/e2e_evidence; SOCK=/tmp/hq-e2e; mkdir -p $EV $SOCK
+# ADR-0066 D-M: the workers refuse a socket directory with group-write or any `other` bit (0755 under umask 022).
+EV=$S/e2e_evidence; SOCK=/tmp/hq-e2e; mkdir -p $EV $SOCK && chmod 0750 $SOCK
 # Card 30 (ADR-0055 D-E): one build profile for every binary this script builds, spawns, probes
 # or writes into a chaos hook. `release` is what the recall stage timing is measured on; the
 # default stays `debug` so every earlier gate keeps its shape.
@@ -159,6 +160,15 @@ except Exception as e: print('0 unparsed(%s)' % type(e).__name__)")
 # ---------- 0. build ----------
 step build
 BUILD_FLAGS=(); [ "$REHEARSE_PROFILE" = release ] && BUILD_FLAGS=(--release)
+# ADR-0066 D-D / §2: every binary this run starts answers `--version` with the sha of the tree it was built from, so the
+# build carries `snapshot.sh` of this tree (the release_build gate burns the same sha; a build without it leaves the
+# start lines at git_sha=missing — card-39 chain 2026-10-08, assertion version_line_present). An explicit value wins.
+# C39-F8-6: a failed snapshot.sh must not become an empty sha behind `export` (export masks the substitution's status).
+if [ -z "${HUMAUX_BUILD_GIT_SHA:-}" ]; then
+  HUMAUX_BUILD_GIT_SHA=$(sh $R/deploy/release/snapshot.sh)
+  [ -n "$HUMAUX_BUILD_GIT_SHA" ] || { echo "rehearse: snapshot.sh failed" >&2; exit 1; }
+fi
+export HUMAUX_BUILD_GIT_SHA
 # humaux-admin: step observability renders the Watchdog's git_sha from `q deploy.binary`, and step
 # admin_probes runs the §4.4 catalog (ADR-0061 D-J / D-K).
 cargo build $BUILD_FLAGS -p humaux-gateway -p humaux-retrieval-worker -p humaux-consolidation-worker -p humaux-private-worker -p humaux-maintenance -p humaux-admin -p xtask 2>&1 | tail -2 | tee -a $EV/rehearsal.log
@@ -314,7 +324,7 @@ OPS_CW_SERVE="HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR=127.0.0.1:${OPS_POR
 # deployment nobody ran (the same argument $DS_ENV/$CW_ENV already make for the soak).
 start_pw() {
 ( export PRIVATE_WORKER_PG_DSN="postgres://role_private_worker:${HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER:?}@$PG/$DB" \
-    HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID \
+    HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID=1 \
     HUMAUX_PRIVATE_WORKER_CREDENTIALS="$HUMAUX_PRIVATE_WORKER_CREDENTIALS" HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS=$PW_HEALTH_RENEW_SECS HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS=120 HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS=60 \
     HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" $OPS_PW_RPC
   set -a; source /Volumes/data/viral-skill-eval/.env; set +a
@@ -324,7 +334,7 @@ own_pid pw $!
 start_pw; PW_PID=$(cat $S/pw.pid)
 start_rw() {
 ( export HUMAUX_RETRIEVAL_WORKER_PG_DSN="postgres://role_retrieval_worker:${HUMAUX_ROLE_PASSWORD_RETRIEVAL_WORKER:?}@$PG/$DB" \
-    HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH=$SOCK/retrieval.sock HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID=$MYUID \
+    HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH=$SOCK/retrieval.sock HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID=$MYUID HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID=1 \
     HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER=dashscope HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL=$EMB_MODEL HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION=$EMB_REV \
     HUMAUX_RETRIEVAL_WORKER_DIMENSION=$EMB_DIM HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION=$EMB_VER HUMAUX_RETRIEVAL_WORKER_REGION=$EMB_REGION HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS=$EMB_MAX_TOK \
     HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST=127.0.0.1 HUMAUX_RETRIEVAL_WORKER_QDRANT_PORT=6333 HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR=127.0.0.1/32 HUMAUX_RETRIEVAL_WORKER_QDRANT_TLS=false \
@@ -393,7 +403,7 @@ local gw_bind=${1:-127.0.0.1:8080} gw_ops=${2:-${OPS_PORTS[humaux-gateway:serve]
     HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID=$RDOM HUMAUX_GATEWAY_REMEMBER_TOKEN_TTL_SECONDS=60 HUMAUX_GATEWAY_REMEMBER_DATA_CLASS=INTERNAL \
     HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS=WORKSPACE_SHARED HUMAUX_GATEWAY_REMEMBER_EVENT_KIND=USER_MESSAGE \
     HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS=2048 HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS=1024 \
-    HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH=$SOCK/retrieval.sock HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS=60 \
+    HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH=$SOCK/retrieval.sock HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID=$MYUID HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS=60 \
     HUMAUX_GATEWAY_EMBEDDING_DIMENSION=$EMB_DIM HUMAUX_GATEWAY_EMBEDDING_VERSION=$EMB_VER \
     HUMAUX_GATEWAY_QDRANT_HOST=127.0.0.1 HUMAUX_GATEWAY_QDRANT_PORT=6333 HUMAUX_GATEWAY_QDRANT_CIDR=127.0.0.1/32 HUMAUX_GATEWAY_QDRANT_TLS=false \
     HUMAUX_GATEWAY_CELL_ID=$CELL_ID HUMAUX_GATEWAY_CALLER_ID=gateway \
@@ -569,7 +579,7 @@ rw_readyz() { ( export HUMAUX_RETRIEVAL_WORKER_PG_DSN="postgres://role_retrieval
 pw_readyz() { ( export PRIVATE_WORKER_PG_DSN="postgres://role_private_worker:${HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER:?}@$PG/$DB"
   exec "$BIN_DIR"/humaux-private-worker --readyz ) }
 cw_readyz() { ( export CONSOLIDATION_WORKER_PG_DSN="postgres://role_consolidation_worker:${HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER:?}@$PG/$DB" \
-    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock
+    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID=$MYUID
   exec "$BIN_DIR"/humaux-consolidation-worker --readyz ) }
 gw_readyz() { curl -fsS -o /dev/null http://127.0.0.1:8080/readyz; }
 READY_OK=0; READY_BAD=0
@@ -634,25 +644,18 @@ obs_stop() { # every observability process this script started, each through its
 # below fail on its port, loudly. Every exit path of THIS run stops its own processes (trap).
 rm -f $S/promd.pid $S/gwd.pid $S/prom.pid $S/am.pid $S/otel.pid $S/sink.pid $S/sink.comm
 trap obs_stop EXIT
-rm -rf $OBS; mkdir -p $OBS/targets $OBS/data $OBS/am-data
-DEPLOY_SHA=$("$BIN_DIR"/humaux-admin q deploy.binary 2>>$EV/rehearsal.log | python3 -c "import sys,json; print(json.load(sys.stdin)['detail']['git_sha'])" 2>/dev/null)
-echo "observability: deployed git_sha (humaux-admin q deploy.binary) = ${DEPLOY_SHA:-NONE}" | tee -a $EV/rehearsal.log
-python3 - $OBS/targets/humaux.json ${(kv)OPS_PORTS} <<'PYEOF'
-import json, sys
-kv = sys.argv[2:]
-t = [{"targets": ["127.0.0.1:%s" % kv[i + 1]], "labels": dict(zip(("job", "mode"), kv[i].split(":", 1)))}
-     for i in range(0, len(kv), 2)]
-json.dump(sorted(t, key=lambda e: (e["labels"]["job"], e["labels"]["mode"])), open(sys.argv[1], "w"), indent=1)
-PYEOF
-sed -e "s#__HUMAUX_GIT_SHA__#${DEPLOY_SHA:-__HUMAUX_GIT_SHA__}#" -e "s#\"127.0.0.1:9093\"#\"127.0.0.1:$AM_PORT\"#" \
-    -e "s#\"targets/\\*.json\"#\"$OBS/targets/*.json\"#" -e "s#^  - \\([a-z]*\\.rules\\.yml\\)\$#  - $R/deploy/prometheus/\\1#" \
-    $R/deploy/prometheus/prometheus.yml > $OBS/prometheus.yml
+rm -rf $OBS; mkdir -p $OBS/data $OBS/am-data
+# ADR-0066 D-I: the deployed sha from the admin `version` line (sed, no python3) and ONE renderer for this rehearsal
+# and the bundle (deploy/prometheus/render.sh); only the Alertmanager port differs here ($AM_PORT beside the dev stores).
+DEPLOY_SHA=$("$BIN_DIR"/humaux-admin version 2>>$EV/rehearsal.log | sed -n 's/.* git_sha=\([0-9a-f]\{40\}\).*/\1/p')
+echo "observability: deployed git_sha (humaux-admin version) = ${DEPLOY_SHA:-NONE}" | tee -a $EV/rehearsal.log
+PROM_CFG=$OBS/rendered/prometheus/prometheus.yml; AM_CFG=$OBS/rendered/alertmanager/alertmanager.yml
+sh $R/deploy/prometheus/render.sh $OBS/rendered "${DEPLOY_SHA:-}" $OBS >> $EV/observability.log 2>&1
+sed "s#\"127.0.0.1:9093\"#\"127.0.0.1:$AM_PORT\"#" $PROM_CFG > $PROM_CFG.port && mv $PROM_CFG.port $PROM_CFG
 print -r -- "http://127.0.0.1:$SINK_PORT/log" > $OBS/log_sink.url
 print -r -- "http://127.0.0.1:$SINK_PORT/watchdog" > $OBS/watchdog.url
-sed -e "s#__HUMAUX_ALERTMANAGER_LOG_SINK_URL_FILE__#$OBS/log_sink.url#" -e "s#__HUMAUX_ALERTMANAGER_WATCHDOG_URL_FILE__#$OBS/watchdog.url#" \
-    $R/deploy/prometheus/alertmanager.yml > $OBS/alertmanager.yml
-OBS_CFG=$( { $PT promtool check config $OBS/prometheus.yml && $PT amtool check-config $OBS/alertmanager.yml; } >> $EV/observability.log 2>&1; echo $?)
-echo "observability: targets=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" $OBS/targets/humaux.json) rendered configs check=$OBS_CFG placeholders_left=$(cat $OBS/prometheus.yml $OBS/alertmanager.yml | grep -v '^ *#' | grep -c '__HUMAUX')" | tee -a $EV/rehearsal.log
+OBS_CFG=$( { $PT promtool check config $PROM_CFG && $PT amtool check-config $AM_CFG; } >> $EV/observability.log 2>&1; echo $?)
+echo "observability: targets=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" $OBS/rendered/prometheus/targets/humaux.json) rendered configs check=$OBS_CFG placeholders_left=$(cat $PROM_CFG $AM_CFG | grep -v '^ *#' | grep -c '__HUMAUX')" | tee -a $EV/rehearsal.log
 # The webhook receiver: every POST body becomes one compact JSON line {"path", "body"} in the evidence.
 cat > $S/alert_sink.py <<'PYEOF'
 #!/usr/bin/env python3
@@ -678,10 +681,10 @@ PYEOF
 : > $EV/alert_receipts.jsonl
 ( exec python3 $S/alert_sink.py $SINK_PORT $EV/alert_receipts.jsonl >> $EV/alert_sink.log 2>&1 ) &
 own_pid sink $!; sleep 1; ps -o comm= -p "$(cat $S/sink.pid)" | sed 's#.*/##' > $S/sink.comm   # own_signal's expected name, read at spawn
-( exec "${PT[@]}" alertmanager --config.file=$OBS/alertmanager.yml --storage.path=$OBS/am-data \
+( exec "${PT[@]}" alertmanager --config.file=$AM_CFG --storage.path=$OBS/am-data \
     --web.listen-address=127.0.0.1:$AM_PORT --cluster.listen-address= >> $EV/alertmanager.log 2>&1 ) &
 own_pid am $!
-( exec "${PT[@]}" prometheus --config.file=$OBS/prometheus.yml --storage.tsdb.path=$OBS/data \
+( exec "${PT[@]}" prometheus --config.file=$PROM_CFG --storage.tsdb.path=$OBS/data \
     --storage.tsdb.retention.time=30d --web.listen-address=127.0.0.1:$PROM_PORT >> $EV/prometheus.log 2>&1 ) &
 own_pid prom $!
 ( exec "${PT[@]}" otelcol --config=$R/deploy/prometheus/otel-collector.yml >> $EV/otelcol.log 2>&1 ) &
@@ -728,6 +731,10 @@ assert_gt() { # $1=label $2=actual $3=floor
   if [ "$2" -gt "$3" ] 2>/dev/null; then assertion_line PASS "$1" "$2 > $3" | tee -a $EV/rehearsal.log; A_OK=$((A_OK+1));
   else assertion_line FAIL "$1" "got '$2' want > $3" | tee -a $EV/rehearsal.log; A_BAD=$((A_BAD+1)); fi
 }
+# ADR-0066 D-K: this rehearsal runs every process under one uid, so the retrieval worker boots only on its dev-only
+# HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID=1 and logs the opt-in at boot and on every accepted same-uid peer (the
+# gateway's readiness refresh has dialled it since step 2).
+assert_gt "same_uid_allow_warned" "$(grep -cE '^WARN humaux-retrieval-worker: (HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID=1|same-uid peer accepted)' $EV/retrieval-worker.log)" 1
 
 # ---------- 2d. load (card 38, ADR-0065 D-F) — only when LOAD_LEVELS is set ----------
 # A scratch gateway G_load (127.0.0.1:18080, ops 19109: not in OPS_PORTS, so Prometheus never scrapes it and the
@@ -935,7 +942,7 @@ distill_once() {
 distill_pass() {
 ( export PRIVATE_WORKER_PG_DSN="postgres://role_private_worker:${HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER:?}@$PG/$DB" \
     HUMAUX_PRIVATE_WORKER_CREDENTIALS="$HUMAUX_PRIVATE_WORKER_CREDENTIALS" HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS=$PW_HEALTH_RENEW_SECS HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS=120 HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS=60 \
-    HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference-distill.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID \
+    HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference-distill.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID=1 \
     HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS=86400 \
     HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS=30 HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT=4 HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS=300 HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS=600 HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS=5 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS=60 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS=120
   set -a; source /Volumes/data/viral-skill-eval/.env; set +a
@@ -952,7 +959,7 @@ PGQ "select 'memory: '||authority_class||' '||visibility_class||' '||left(conten
 step sigterm_mid_load
 ( export PRIVATE_WORKER_PG_DSN="postgres://role_private_worker:${HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER:?}@$PG/$DB" \
     HUMAUX_PRIVATE_WORKER_CREDENTIALS="$HUMAUX_PRIVATE_WORKER_CREDENTIALS" HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS=$PW_HEALTH_RENEW_SECS HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS=120 HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS=60 \
-    HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference-drain.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID \
+    HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference-drain.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID=1 \
     HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS=86400 \
     HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS=30 HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT=4 HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS=300 HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS=600 HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS=5 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS=60 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS=120 \
     HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS=3 $OPS_PW_DISTILL
@@ -974,7 +981,7 @@ tail -n 2 $EV/distill-serve.log | tee -a $EV/rehearsal.log
 # ---------- 4. consolidation (second hop, real MiniMax) ----------
 step consolidation
 ( export CONSOLIDATION_WORKER_PG_DSN="postgres://role_consolidation_worker:${HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER:?}@$PG/$DB" \
-    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 \
+    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID=$MYUID HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 \
     HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS=50 HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS=120 HUMAUX_CONSOLIDATION_WORKER_BATCH=8 HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS=5
   exec "$BIN_DIR"/humaux-consolidation-worker --run-once ) > $EV/consolidation.log 2>&1 &
 CW_PID=$!; for i in $(seq 1 180); do kill -0 $CW_PID 2>/dev/null || break; grep -q "published\|Published\|rollup" $EV/consolidation.log 2>/dev/null && sleep 3 && break; sleep 1; done; kill $CW_PID 2>/dev/null; tail -n 3 $EV/consolidation.log
@@ -1023,7 +1030,7 @@ serve_switch_tenant $TENANT_B $WS_B
 # `--run-once` is one bounded pass then exit (ADR-0036), so this waits for exit, no kill.
 consolidate_once() {
 ( export CONSOLIDATION_WORKER_PG_DSN="postgres://role_consolidation_worker:${HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER:?}@$PG/$DB" \
-    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 \
+    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID=$MYUID HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 \
     HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS=50 HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS=120 HUMAUX_CONSOLIDATION_WORKER_BATCH=8 HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS=5
   exec "$BIN_DIR"/humaux-consolidation-worker --run-once ) >> $EV/consolidation.log 2>&1
 }
@@ -1626,7 +1633,7 @@ assert_eq "no_tenant_env_for_the_projection_runner" \
 # steps drive it one pass at a time). Stopped at the end of the step; the soak starts its own.
 ( export PRIVATE_WORKER_PG_DSN="postgres://role_private_worker:${HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER:?}@$PG/$DB" \
     HUMAUX_PRIVATE_WORKER_CREDENTIALS="$HUMAUX_PRIVATE_WORKER_CREDENTIALS" HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS=$PW_HEALTH_RENEW_SECS HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS=120 HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS=60 \
-    HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference-pst.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID \
+    HUMAUX_PRIVATE_WORKER_DNS_PINS="$PW_DNS_PINS" HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH=$SOCK/inference-pst.sock HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID=$MYUID HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID=1 \
     HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS=86400 \
     HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS=30 HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT=4 HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS=300 HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS=600 HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS=5 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS=60 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS=120 \
     HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS=1 $OPS_PW_DISTILL
@@ -1638,7 +1645,7 @@ own_pid ds $!
 # front of the next rehearsal's own jobs (run 2026-09-29 #2: derived_jobs_not_done red for exactly
 # that reason). The step drains what it created before it ends.
 ( export CONSOLIDATION_WORKER_PG_DSN="postgres://role_consolidation_worker:${HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER:?}@$PG/$DB" \
-    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 \
+    HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID=$MYUID HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 \
     HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS=50 HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS=120 HUMAUX_CONSOLIDATION_WORKER_BATCH=8 HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS=5 \
     HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS=1 $OPS_CW_SERVE
   exec "$BIN_DIR"/humaux-consolidation-worker --serve >> $EV/pst-consolidation.log 2>&1 ) &
@@ -2370,7 +2377,7 @@ HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST=127.0.0.1 HUMAUX_RETRIEVAL_WORKER_QDRANT_POR
 HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR=127.0.0.1/32 HUMAUX_RETRIEVAL_WORKER_QDRANT_TLS=false \
 HUMAUX_RETRIEVAL_WORKER_CELL_ID=$CELL_ID \
 HUMAUX_RETRIEVAL_WORKER_CALLER=retrieval-worker HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH=$SOCK/retrieval.sock \
-HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID=$MYUID HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER=dashscope \
+HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID=$MYUID HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID=1 HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER=dashscope \
 HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL=$EMB_MODEL HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION=$EMB_REV \
 HUMAUX_RETRIEVAL_WORKER_DIMENSION=$EMB_DIM HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION=$EMB_VER \
 HUMAUX_RETRIEVAL_WORKER_REGION=$EMB_REGION HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS=$EMB_MAX_TOK \
@@ -2390,7 +2397,7 @@ HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS=300 HUMAUX_PRIVATE_WORKER_DISTI
 HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS=5 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS=60 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS=120 \
 HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS=3 $OPS_PW_DISTILL"
 CW_ENV="export CONSOLIDATION_WORKER_PG_DSN=\"postgres://role_consolidation_worker:\${HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER:?}@$PG/$DB\" \
-HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 \
+HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH=$SOCK/inference.sock HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID=$MYUID HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS=120 \
 HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS=10 HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS=50 \
 HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS=120 HUMAUX_CONSOLIDATION_WORKER_BATCH=8 \
 HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS=5 HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS=3 $OPS_CW_SERVE"

@@ -3,7 +3,7 @@
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, serde,
 //!   serde_json, sha2, tokio, uuid]; services=[UDS(retrieval-worker)]; env=[]; modules=[adapters::postgres,
 //!   adapters::retrieval_embedding_rpc, application::retrieval_embedding_port, domain::error, infra-cell::permit,
-//!   infra-cell::resource]
+//!   infra-cell::resource, infra-cell::uds]
 //! Called-by: [gateway::bootstrap, gateway::status, tests]
 //! Invariants: [the RPC still flows through the one closed IntraCellResource::RETRIEVAL_EMBEDDING_RPC registry/permit even though the dial bypasses IntraCellHttpTransport (a UDS path plus kernel peer-credential auth)]
 //! Spec: Baseline §2; §83.4; ADR-0012
@@ -21,7 +21,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
 use uuid::Uuid;
 
 use humaux_adapters::postgres::RuntimeDbPool;
@@ -32,6 +31,7 @@ use humaux_application::retrieval_embedding_port::{
     RetrievalEmbeddingInput, RetrievalEmbeddingOutcome, RetrievalEmbeddingPort,
 };
 use humaux_domain::error::ErrorCode;
+use humaux_infra_cell::uds::{UdsError, connect_verified};
 use humaux_infra_cell::{
     CellAccessPermit, IntraCellResource, IntraCellResourceRegistry, authorize_cell_access,
 };
@@ -73,20 +73,25 @@ struct QueryEmbeddingRpcEnvelope {
 pub struct GatewayRetrievalEmbeddingClient {
     pool: Arc<RuntimeDbPool>,
     socket_path: String,
+    /// ADR-0066 D-L: `HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID` — the dial refuses any other serving uid.
+    expected_server_uid: u32,
     cell_registry: IntraCellResourceRegistry,
     permit_ttl: Duration,
 }
 
 impl GatewayRetrievalEmbeddingClient {
+    /// `expected_server_uid` is the retrieval worker's uid (ADR-0066 D-L); every dial verifies it first.
     pub fn new(
         pool: Arc<RuntimeDbPool>,
         socket_path: impl Into<String>,
+        expected_server_uid: u32,
         cell_registry: IntraCellResourceRegistry,
         permit_ttl: Duration,
     ) -> Self {
         Self {
             pool,
             socket_path: socket_path.into(),
+            expected_server_uid,
             cell_registry,
             permit_ttl,
         }
@@ -250,44 +255,71 @@ impl GatewayRetrievalEmbeddingClient {
     /// One `Connection: close` request over a fresh connection to the worker's socket; returns the
     /// raw response, capped at [`MAX_RESPONSE_BYTES`].
     async fn exchange(&self, method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>, String> {
-        // dep: UDS(retrieval-worker) — dials humaux-retrieval-worker's ADR-0012 embedding RPC socket
-        let mut stream = UnixStream::connect(&self.socket_path)
-            .await
-            .map_err(|_| "TRANSPORT".to_owned())?;
-        let head = format!(
-            "{method} {path} HTTP/1.1\r\n\
+        exchange_on(
+            &self.socket_path,
+            self.expected_server_uid,
+            method,
+            path,
+            body,
+        )
+        .await
+    }
+}
+
+/// [`GatewayRetrievalEmbeddingClient::exchange`] without the client: the dial is verified before any byte is
+/// written (ADR-0066 D-L). A wrong serving uid is a TRANSPORT failure that names `retrieval rpc peer uid`
+/// (readiness shows it); every other dial failure stays the bare `TRANSPORT` class.
+async fn exchange_on(
+    socket_path: &str,
+    expected_server_uid: u32,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    // dep: UDS(retrieval-worker) — dials humaux-retrieval-worker's ADR-0012 embedding RPC socket
+    let mut stream = connect_verified(socket_path, expected_server_uid)
+        .await
+        .map_err(|e| match e {
+            UdsError::PeerUid { got, expected } => {
+                format!("TRANSPORT: retrieval rpc peer uid {got}, expected {expected}")
+            }
+            _ => "TRANSPORT".to_owned(),
+        })?;
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\n\
              Host: localhost\r\n\
              Content-Type: application/json\r\n\
              Content-Length: {}\r\n\
              Connection: close\r\n\r\n",
-            body.len()
-        );
-        stream
-            .write_all(head.as_bytes())
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .map_err(|_| "TRANSPORT".to_owned())?;
+    stream
+        .write_all(body)
+        .await
+        .map_err(|_| "TRANSPORT".to_owned())?;
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream
+            .read(&mut chunk)
             .await
             .map_err(|_| "TRANSPORT".to_owned())?;
-        stream
-            .write_all(body)
-            .await
-            .map_err(|_| "TRANSPORT".to_owned())?;
-        let mut raw = Vec::new();
-        let mut chunk = [0u8; 8192];
-        loop {
-            let n = stream
-                .read(&mut chunk)
-                .await
-                .map_err(|_| "TRANSPORT".to_owned())?;
-            if n == 0 {
-                break;
-            }
-            if raw.len() + n > MAX_RESPONSE_BYTES {
-                return Err("TRANSPORT_OVERSIZED_RESPONSE".to_owned());
-            }
-            raw.extend_from_slice(&chunk[..n]);
+        if n == 0 {
+            break;
         }
-        Ok(raw)
+        if raw.len() + n > MAX_RESPONSE_BYTES {
+            return Err("TRANSPORT_OVERSIZED_RESPONSE".to_owned());
+        }
+        raw.extend_from_slice(&chunk[..n]);
     }
+    Ok(raw)
+}
 
+impl GatewayRetrievalEmbeddingClient {
     /// ADR-0061 D-F `retrieval_rpc` readiness: one `GET /internal/v1/retrieval/readyz` round trip
     /// over the same socket, permit and worker-side peer-uid layer a recall uses — the worker
     /// answers it with a fresh `role_retrieval_worker` connection, so a bare `connect()` that
@@ -339,4 +371,57 @@ fn parse_http_response(raw: &[u8]) -> Result<QueryEmbeddingRpcEnvelope, String> 
         return Err(format!("TRANSPORT_HTTP_{status}"));
     }
     serde_json::from_slice(body).map_err(|_| "INVALID_RESPONSE".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exchange_on;
+    use humaux_infra_cell::uds::{bind_guarded, own_uid};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    /// ADR-0066 D-L: a socket served by any uid but the registered one is a TRANSPORT failure naming the peer
+    /// uid, and the worker side sees no byte. Fault: dial without the peer-uid check ⇒ the request head is
+    /// written ⇒ red.
+    #[tokio::test]
+    async fn wrong_server_uid_is_transport_without_a_request() {
+        // Short `/tmp` path: a macOS temp dir plus a name overflows `sockaddr_un`.
+        let dir = std::path::PathBuf::from(format!("/tmp/hq-gwpeer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("create the socket dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let path = dir.join("r.sock");
+        let listener = bind_guarded(&path).expect("bind the stand-in worker socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept the dial");
+            let mut buf = [0u8; 64];
+            match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
+                Ok(Ok(n)) => n,
+                _ => usize::MAX,
+            }
+        });
+        let wrong = own_uid().expect("own uid").wrapping_add(1);
+        let dial = tokio::time::timeout(
+            Duration::from_secs(5),
+            exchange_on(
+                path.to_str().expect("utf-8 path"),
+                wrong,
+                "GET",
+                "/internal/v1/retrieval/readyz",
+                &[],
+            ),
+        )
+        .await;
+        let written = server.await.expect("the stand-in worker task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(written, 0, "the gateway wrote to an unverified worker");
+        let err = dial
+            .expect("the dial returned")
+            .expect_err("a wrong server uid must fail");
+        assert!(
+            err.starts_with("TRANSPORT") && err.contains("retrieval rpc peer uid"),
+            "{err}"
+        );
+    }
 }

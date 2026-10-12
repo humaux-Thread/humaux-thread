@@ -1,0 +1,19 @@
+# deploy/qdrant/config.yaml — Qdrant v1.19.0 settings of the bundle's `qdrant` service (ADR-0066 D-C, W-6), mounted
+# read-only at /qdrant/config/production.yaml. The listen host is set by prod.yml (QDRANT__SERVICE__HOST = the
+# service's fixed address on the project network), never 0.0.0.0. Storage is the named volume at /qdrant/storage; the
+# snapshots dir is a tmpfs (read-only rootfs). Every number: dev-host start value, A5 re-measure required (R-10).
+log_level: INFO
+storage:
+  storage_path: /qdrant/storage
+  snapshots_path: /qdrant/snapshots
+  # Payloads on disk: the collection payload is the projection row, read back by id only.
+  on_disk_payload: true
+  performance:
+    # A5 has 4 vCPU shared with PostgreSQL and seven Rust processes.
+    max_search_threads: 2
+    max_optimization_threads: 1
+service:
+  http_port: 6333
+  grpc_port: 6334
+  enable_cors: false
+telemetry_disabled: true

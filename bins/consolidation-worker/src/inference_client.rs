@@ -1,9 +1,9 @@
 //! `consolidation-worker::inference_client` — §11.8 `UdsInferenceClient` — `humaux-consolidation-worker`'s
 //!   [`PrivateReasoningPort`] implementation: registers a call row on [`ConsolidationDbPool`]
 //!   (`role_consolidation_worker`), then RPCs `humaux-private-worker` over the ADR-0012 Unix domain socket.
-//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, serde, serde_json, sha2, tokio, uuid];
+//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, serde_json, sha2, tokio, uuid];
 //!   services=[UDS(private-worker)]; env=[]; modules=[adapters::postgres, adapters::private_inference_rpc,
-//!   application::consolidate]
+//!   application::consolidate, infra-cell::uds]
 //! Called-by: [consolidation-worker::main, tests]
 //! Invariants: [one fresh UDS connection per call to the private worker's inference socket; a dial/IO/parse failure
 //!   is TRANSPORT/INVALID_RESPONSE mapped to PrivateReasoningError, never a local fallback inference]
@@ -20,7 +20,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
 use uuid::Uuid;
 
 use humaux_adapters::postgres::ConsolidationDbPool;
@@ -29,6 +28,7 @@ use humaux_application::consolidate::{
     PrivateReasoningError, PrivateReasoningPort, PrivateReasoningResult, ProviderTraceRef,
     SealedPrivateReasoningRequest,
 };
+use humaux_infra_cell::uds::{UdsError, connect_verified};
 
 const SCHEMA_VERSION: u16 = 1;
 /// Same cap `retrieval_embedding_client`'s `MAX_RESPONSE_BYTES` documents: private-worker's
@@ -60,6 +60,8 @@ struct PrivateInferenceRpcEnvelope {
 pub struct UdsInferenceClient<'a> {
     pool: &'a ConsolidationDbPool,
     socket_path: String,
+    /// ADR-0066 D-L: `HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID` — the dial refuses any other serving uid.
+    expected_server_uid: u32,
     tenant_id: Uuid,
     call_ttl: Duration,
     dial_timeout: Duration,
@@ -70,9 +72,11 @@ pub struct UdsInferenceClient<'a> {
 }
 
 impl<'a> UdsInferenceClient<'a> {
+    /// `expected_server_uid` is the private worker's uid (ADR-0066 D-L); every dial verifies it first.
     pub fn new(
         pool: &'a ConsolidationDbPool,
         socket_path: impl Into<String>,
+        expected_server_uid: u32,
         tenant_id: Uuid,
         call_ttl: Duration,
         dial_timeout: Duration,
@@ -81,6 +85,7 @@ impl<'a> UdsInferenceClient<'a> {
         Self {
             pool,
             socket_path: socket_path.into(),
+            expected_server_uid,
             tenant_id,
             call_ttl,
             dial_timeout,
@@ -101,44 +106,60 @@ impl<'a> UdsInferenceClient<'a> {
         &self,
         wire: &PrivateInferenceRpcRequest,
     ) -> Result<PrivateInferenceRpcEnvelope, String> {
-        // dep: UDS(private-worker) — dials the private worker's inference RPC socket (ADR-0012)
-        let mut stream = UnixStream::connect(&self.socket_path)
-            .await
-            .map_err(|_| "TRANSPORT".to_owned())?;
         let body = serde_json::to_vec(wire).map_err(|_| "INVALID_RESPONSE".to_owned())?;
-        let head = format!(
-            "POST /internal/v1/private/infer HTTP/1.1\r\n\
+        parse_http_response(&post_infer(&self.socket_path, self.expected_server_uid, &body).await?)
+    }
+}
+
+/// One `POST /internal/v1/private/infer` over a fresh verified connection; returns the raw response capped at
+/// [`MAX_RESPONSE_BYTES`]. Nothing is written before the serving uid is the expected one (ADR-0066 D-L); a wrong
+/// uid is a TRANSPORT failure naming `inference rpc peer uid`.
+async fn post_infer(
+    socket_path: &str,
+    expected_server_uid: u32,
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    // dep: UDS(private-worker) — dials the private worker's inference RPC socket (ADR-0012)
+    let mut stream = connect_verified(socket_path, expected_server_uid)
+        .await
+        .map_err(|e| match e {
+            UdsError::PeerUid { got, expected } => {
+                format!("TRANSPORT: inference rpc peer uid {got}, expected {expected}")
+            }
+            _ => "TRANSPORT".to_owned(),
+        })?;
+    let head = format!(
+        "POST /internal/v1/private/infer HTTP/1.1\r\n\
              Host: localhost\r\n\
              Content-Type: application/json\r\n\
              Content-Length: {}\r\n\
              Connection: close\r\n\r\n",
-            body.len()
-        );
-        stream
-            .write_all(head.as_bytes())
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .map_err(|_| "TRANSPORT".to_owned())?;
+    stream
+        .write_all(body)
+        .await
+        .map_err(|_| "TRANSPORT".to_owned())?;
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream
+            .read(&mut chunk)
             .await
             .map_err(|_| "TRANSPORT".to_owned())?;
-        stream
-            .write_all(&body)
-            .await
-            .map_err(|_| "TRANSPORT".to_owned())?;
-        let mut raw = Vec::new();
-        let mut chunk = [0u8; 8192];
-        loop {
-            let n = stream
-                .read(&mut chunk)
-                .await
-                .map_err(|_| "TRANSPORT".to_owned())?;
-            if n == 0 {
-                break;
-            }
-            if raw.len() + n > MAX_RESPONSE_BYTES {
-                return Err("TRANSPORT_OVERSIZED_RESPONSE".to_owned());
-            }
-            raw.extend_from_slice(&chunk[..n]);
+        if n == 0 {
+            break;
         }
-        parse_http_response(&raw)
+        if raw.len() + n > MAX_RESPONSE_BYTES {
+            return Err("TRANSPORT_OVERSIZED_RESPONSE".to_owned());
+        }
+        raw.extend_from_slice(&chunk[..n]);
     }
+    Ok(raw)
 }
 
 fn parse_http_response(raw: &[u8]) -> Result<PrivateInferenceRpcEnvelope, String> {
@@ -235,5 +256,54 @@ impl PrivateReasoningPort for UdsInferenceClient<'_> {
             binding_id: req.binding_id,
             binding_version: req.binding_version,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::post_infer;
+    use humaux_infra_cell::uds::{bind_guarded, own_uid};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    /// ADR-0066 D-L: a socket served by any uid but the registered private-worker uid is refused before a byte is
+    /// written. Fault: dial without the peer-uid check ⇒ the request is written ⇒ red.
+    #[tokio::test]
+    async fn wrong_server_uid_is_refused() {
+        // Short `/tmp` path: a macOS temp dir plus a name overflows `sockaddr_un`.
+        let dir = std::path::PathBuf::from(format!("/tmp/hq-cwpeer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("create the socket dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let path = dir.join("i.sock");
+        let listener = bind_guarded(&path).expect("bind the stand-in private worker socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept the dial");
+            let mut buf = [0u8; 64];
+            match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
+                Ok(Ok(n)) => n,
+                _ => usize::MAX,
+            }
+        });
+        let wrong = own_uid().expect("own uid").wrapping_add(1);
+        let dial = tokio::time::timeout(
+            Duration::from_secs(5),
+            post_infer(path.to_str().expect("utf-8 path"), wrong, b"{}"),
+        )
+        .await;
+        let written = server.await.expect("the stand-in worker task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            written, 0,
+            "the consolidation worker wrote to an unverified peer"
+        );
+        let err = dial
+            .expect("the dial returned")
+            .expect_err("a wrong server uid must fail");
+        assert!(
+            err.starts_with("TRANSPORT") && err.contains("inference rpc peer uid"),
+            "{err}"
+        );
     }
 }

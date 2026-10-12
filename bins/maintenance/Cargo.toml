@@ -17,24 +17,42 @@ humaux-domain = { path = "../../crates/domain" }
 humaux-protocol = { path = "../../crates/protocol" }
 # why: the §41.2 health families (publish/render), the loopback ops listener and the degrade accessors of /status (ADR-0061 D-B, D-D); used-by: [maintenance::health_serve]
 humaux-telemetry = { path = "../../crates/telemetry" }
-# why: async runtime for the sqlx pool and the Qdrant transport; signal/time/macros for the resident `health serve` loop (ADR-0061 D-D); process for the DR_EVIDENCE `df` children bounded by CYCLE_SECONDS (ADR-0064 10.11 D); used-by: [maintenance::main, maintenance::health_serve, maintenance::serve]
-tokio = { version = "1", features = ["rt-multi-thread", "signal", "time", "macros", "process"] }
+# why: async runtime for the sqlx pool and the Qdrant transport; signal/time/macros for the resident `health serve` loop (ADR-0061 D-D); spawn_blocking for the DR_EVIDENCE statvfs reads bounded by CYCLE_SECONDS (ADR-0064 10.11 D); used-by: [maintenance::main, maintenance::health_serve, maintenance::serve]
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "time", "macros"] }
+# why: statvfs(3) for the DR_EVIDENCE live free bytes in process — the distroless release image has no `df` (ADR-0066 review fix 5); used-by: [maintenance::serve]
+libc = "0.2"
 # why: the one JSON receipt printed per subcommand; used-by: [maintenance::main]
 serde_json = "1"
 # why: the Serialize bound of the receipt-to-JSON helper; used-by: [maintenance::main]
 serde = "1"
-# why: tenant/user/workspace id parsing; used-by: [maintenance::main]
-uuid = { version = "1.25.0", features = ["v7"] }
+# why: tenant/user/workspace id parsing; v4 for the moved switch_visible cell id (ADR-0066 D-Q); used-by: [maintenance::main, maintenance::switch_visible]
+uuid = { version = "1.25.0", features = ["v4", "v7"] }
 # why: the API-key secret (workspace rand line, no hand-rolled RNG); used-by: [maintenance::main]
 rand = "0.9"
 # why: --period-end RFC 3339 parsing into the entitlement period; used-by: [maintenance::main]
 time = { version = "0.3", features = ["parsing"] }
 
+# ADR-0066 D-Q (E-4): the ops moved out of xtask (migrate, rls-check, projection serve, member) need these at run
+# time; postgres and toml were already in the lock through xtask, the two crates were already dev-dependencies.
+# why: the blocking client of migrate / rls-check / switch_visible; used-by: [maintenance::migrate, maintenance::rls_check, maintenance::switch_visible]
+postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
+# why: the manifest `transaction` key and the manifest parser; used-by: [maintenance::migrate, maintenance::migration_manifest]
+toml = "1"
+# why: the §16.2 serve switch evaluator and stream families; used-by: [maintenance::projection_serve, maintenance::switch_visible]
+humaux-projection = { path = "../../crates/projection" }
+# why: the Qdrant transport behind the live visible_* counts; used-by: [maintenance::switch_visible]
+humaux-infra-cell = { path = "../../crates/infra-cell" }
+# why: skip_or_fail of the throwaway-database test support, only under the test-support feature; used-by: [maintenance::throwaway]
+humaux-testkit = { path = "../../crates/testkit", optional = true }
+
+[features]
+# ADR-0066 D-Q: `maintenance::throwaway` (the disposable-database guard and its CLUSTER_DDL lock) for xtask's lane
+# and seed tests; only xtask's dev-dependency turns it on, so no production build compiles it.
+test-support = ["dep:humaux-testkit"]
+
 [dev-dependencies]
 # why: the §79.2 three-state skip contract (skip_or_fail); used-by: [tests]
 humaux-testkit = { path = "../../crates/testkit" }
-# why: owner-DSN fixtures and assertions on the throwaway database; used-by: [tests]
-postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
 # why: parse the binary's JSON receipts; used-by: [tests]
 serde_json = "1"
 # why: fixture ids; used-by: [tests]
@@ -43,12 +61,8 @@ uuid = { version = "1.25.0", features = ["v4", "v7"] }
 # the real projector and a deterministic embedder), included by #[path]; these are that fixture's crates.
 # why: async CardEmbedder impls of the included a2 fixture; used-by: [maintenance::tests::drill]
 async-trait = "0.1"
-# why: Qdrant transport and permits of the included a2 fixture; used-by: [maintenance::tests::drill]
-humaux-infra-cell = { path = "../../crates/infra-cell" }
 # why: the pinned scanner of the included a2 fixture; used-by: [maintenance::tests::drill]
 humaux-local-secret-scan = { path = "../../crates/local-secret-scan" }
-# why: stream keys and families of the included a2 fixture; used-by: [maintenance::tests::drill]
-humaux-projection = { path = "../../crates/projection" }
 # why: ledger closure and envelope types of the included a2 fixture; used-by: [maintenance::tests::drill]
 humaux-retrieval = { path = "../../crates/retrieval" }
 # why: the deterministic test embedder of the included a2 fixture; used-by: [maintenance::tests::drill]

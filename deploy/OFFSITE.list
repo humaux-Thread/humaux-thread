@@ -1,0 +1,4 @@
+# deploy/OFFSITE.list — paths of this checkout in the node's daily offsite list (§67.4 "deploy/ in the daily offsite
+# list"; ADR-0064 E11; ADR-0066 L-10). The offsite copy itself is card 37d: until it exists, host loss = total loss.
+# The secrets dir is NOT here (it lives outside git, 0700); it is backed up by the operator's own secret store.
+deploy/**

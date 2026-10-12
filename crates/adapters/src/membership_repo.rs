@@ -1,7 +1,7 @@
 //! `adapters::membership_repo` — the §6.3 membership lifecycle admin path (ADR-0033, card 12).
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) r=[control.users] w=[control.memberships] x=[control.audit_event_insert, control.bump_user_security_epoch]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::maintenance_repo, adapters::provisioning, adapters::reasoning_route_onboarding, maintenance::main,
-//!   maintenance::serve, tests, xtask::e2e_seed, xtask::member]
+//!   maintenance::serve, tests, xtask::e2e_seed, maintenance::member]
 //! Invariants: [sole writer of control.memberships, on role_maintenance from xtask member only; one transaction locks
 //!   the target and the tenant's other ACTIVE OWNERs so the last OWNER cannot be removed; a domain refusal writes
 //!   nothing]

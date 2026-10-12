@@ -1,13 +1,13 @@
 # Prometheus config for the §67.2 bundle (ADR-0061 D-G). Prometheus scrapes the app ops listeners
 # directly and owns the rules, the TSDB and alerting; nothing is remote-written into it (no write
 # receiver flag anywhere, check-compose.sh).
-# Deployer contract (rehearse.sh now, card-39 packaging later):
-#   - `__HUMAUX_GIT_SHA__` is replaced by the `value` of `humaux-admin q deploy.binary`, so every
+# Deployer contract, applied by the one renderer deploy/prometheus/render.sh (ADR-0066 D-I; rehearse.sh and the bundle):
+#   - `__HUMAUX_GIT_SHA__` is replaced by the git_sha of the deployed `humaux-admin version` line, so every
 #     alert — the §42.1 Watchdog included — carries the deployed git sha (§67.4);
 #   - targets/*.json is written from the eight `*_METRICS_ADDR` values, one entry per resident mode
 #     with labels {job: humaux-<process>, mode: <mode>}, so ports live only in the env (D-B);
 #   - retention is the flag `--storage.tsdb.retention.time=30d` (§67.2), with
-#     `--web.listen-address=127.0.0.1:<port>`; both are in deploy/compose/observability.yml.
+#     `--web.listen-address=127.0.0.1:<port>`; both are in deploy/compose/prod.yml.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s

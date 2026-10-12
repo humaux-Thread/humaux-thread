@@ -1,0 +1,53 @@
+# deploy/compose/a5-load.yml — the A5 load generator override (ADR-0066 D-S), merged with `-f` ONLY on the A5 runner by
+# deploy/release/a5_load_remeasure.sh: `compose.sh -f deploy/compose/a5-load.yml …`. Never part of prod.yml, so a
+# production deploy-check never sees it.
+# - loadgen: the `loadgen` image of the deployed tag (the xtask release binary: e2e-seed + load; no toolchain on the
+#   runner), in the shared network namespace so the gateway listener and the 127.0.0.1:19101 ops listener are local.
+#   HUMAUX_TEST_PG_DSN (the runner's superuser DSN: pg_stat_activity / pg_locks / control.* reads and e2e-seed; an A5
+#   runner is not a production node) comes from $HUMAUX_SECRETS_DIR/a5-load.secret.env, never from this file.
+# - gateway: the load window's overrides of rehearse.sh's LOAD_GW_ENV (rate buckets out of the way, the netns peer
+#   trusted so each lane's Forwarded /64 keys its own preauth bucket, the load's Host accepted). The admission bounds
+#   stay the deployed values/gateway.env ones (C 16 / Q 64 / W 5 s / K 8): the load measures exactly those. The wait W
+#   is interpolated from HUMAUX_A5_GATEWAY_MAX_WAIT_MS, which a5_load_remeasure.sh sets to values/gateway.env's own
+#   value, and to 1 only when its BURST-W listener recreates the gateway (ADR-0065 BURST-W, ADR-0066 D-S).
+# Every value: dev-host start value, A5 re-measure required (ADR-0066 R-10).
+services:
+  gateway:
+    environment:
+      HUMAUX_GATEWAY_ALLOWED_HOSTS: 127.0.0.1:${HUMAUX_NODE_GATEWAY_HOST_PORT:?},${HUMAUX_NODE_NETNS_IP:?}:8080
+      HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS: ${HUMAUX_NODE_NETNS_IP:?}/32
+      HUMAUX_GATEWAY_RATE_PREAUTH_IP_CAPACITY: "1000000"
+      HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND: "1000000"
+      HUMAUX_GATEWAY_RATE_CREDENTIAL_CAPACITY: "1000000"
+      HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND: "1000000"
+      HUMAUX_GATEWAY_RATE_USER_CAPACITY: "1000000"
+      HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND: "1000000"
+      HUMAUX_GATEWAY_RATE_TENANT_CAPACITY: "1000000"
+      HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND: "1000000"
+      HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY: "1000000"
+      HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND: "1000000"
+      HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS: ${HUMAUX_A5_GATEWAY_MAX_WAIT_MS:?}
+
+  loadgen:
+    profiles: [a5]
+    image: humaux-loadgen:${HUMAUX_IMAGE_TAG:?}
+    user: "10198:10198"
+    network_mode: "service:netns"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    env_file:
+      - ${HUMAUX_SECRETS_DIR:?}/a5-load.secret.env
+    volumes:
+      # The BURST-W req/ack hook dir (ADR-0065; `xtask load --restart BURST-W=file:<dir>` writes the request, the
+      # listener is a5_load_remeasure.sh on the runner host).
+      - type: bind
+        source: ${HUMAUX_NODE_DIR:?}/load-hook
+        target: ${HUMAUX_NODE_DIR:?}/load-hook
+    mem_limit: ${HUMAUX_SIZE_ONESHOT_MEM:?}m
+    memswap_limit: ${HUMAUX_SIZE_ONESHOT_MEM:?}m
+    cpus: ${HUMAUX_SIZE_ONESHOT_CPUS:?}
+    pids_limit: ${HUMAUX_SIZE_ONESHOT_PIDS:?}

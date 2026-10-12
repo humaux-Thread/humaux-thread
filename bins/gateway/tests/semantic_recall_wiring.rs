@@ -176,6 +176,12 @@ async fn spawn_worker(expected_gateway_uid: u32) -> String {
     });
     // dep: UDS(serve) — test serves the real retrieval-worker RPC router on a temp socket
     let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind worker rpc socket");
+    // ADR-0066 D-L: the gateway's dial refuses a socket with `other` bits; a server socket is 0660.
+    std::fs::set_permissions(
+        &socket_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o660),
+    )
+    .expect("chmod the worker rpc socket");
     let app = humaux_retrieval_worker::rpc::router(state);
     tokio::spawn(async move {
         let _ = axum::serve(
@@ -580,6 +586,7 @@ fn happy_path_placement_and_point_hit() {
                 Arc::new(GatewayRetrievalEmbeddingClient::new(
                     pool.clone(),
                     socket_path,
+                    own_uid().await,
                     registry.clone(),
                     Duration::from_secs(30),
                 ));
@@ -720,6 +727,7 @@ async fn dead_socket_path_degrades_closed_without_hanging() {
         Arc::new(GatewayRetrievalEmbeddingClient::new(
             pool,
             temp_socket_path("nowhere").to_string_lossy().into_owned(),
+            own_uid().await,
             registry,
             Duration::from_secs(5),
         ));
@@ -1068,6 +1076,12 @@ async fn spawn_flaky_worker(calls: Arc<AtomicUsize>) -> String {
     let socket_path = temp_socket_path("flaky");
     // dep: UDS(serve) — test serves a stub retrieval-worker RPC on a temp socket
     let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind stub rpc socket");
+    // ADR-0066 D-L: the gateway's dial refuses a socket with `other` bits; a server socket is 0660.
+    std::fs::set_permissions(
+        &socket_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o660),
+    )
+    .expect("chmod the stub rpc socket");
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             let calls = calls.clone();
@@ -1185,6 +1199,7 @@ fn a_transient_query_embedding_failure_fails_fast_with_one_worker_call() {
                 Arc::new(GatewayRetrievalEmbeddingClient::new(
                     pool.clone(),
                     socket_path,
+                    own_uid().await,
                     registry.clone(),
                     Duration::from_secs(30),
                 ));

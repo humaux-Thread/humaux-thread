@@ -6,7 +6,8 @@
 #   T-E2 a row matching nothing    → mutations.sh exits 1, "did not apply"
 #   T-E3 a row deleting a `)`      → mutations.sh exits 1, "breaks syntax", no `red`
 #   T-E4 a wrong rule_files path   → mutations.sh exits 1, "baseline red in copy"
-#   T-E5 bad compose fixtures      → check-compose.sh exits 1 naming each defect (and 0 on the real file),
+#   T-E5 bad compose fixtures      → check-compose.sh exits 1 naming each defect (and 0 on the real file,
+#                                    deploy/compose/prod.yml since ADR-0066 D-I), a tag-only bundle image too,
 #                                    including a collector listener off loopback or left to its default
 #                                    and an alertmanager.yml cluster listener
 #   T-E6 sha256 one digit off      → pinned-tool.sh exits 1, "sha256 mismatch"
@@ -60,13 +61,16 @@ derive "$here/tests/alerts.test.yml" "$tmp/e4src/tests/alerts.test.yml" 's#\.\./
 sh "$here/mutations.sh" "$tmp/e4src" >"$tmp/e4" 2>&1
 expect T-E4 1 $? "$tmp/e4" "baseline red in copy" 'mutation=.* red'
 
-compose="$here/../compose/observability.yml"
+compose="$here/../compose/prod.yml"
 pv="v$HUMAUX_TEST_PROMETHEUS_VERSION"
 sh "$here/check-compose.sh" "$compose" >"$tmp/e5ok" 2>&1
 expect "T-E5 real file" 0 $? "$tmp/e5ok" "check-compose: pass"
 derive "$compose" "$tmp/tag.yml" "s#prom/prometheus:$pv@sha256:[0-9a-f]*#prom/prometheus:$pv#"
 sh "$here/check-compose.sh" "$tmp/tag.yml" >"$tmp/e5a" 2>&1
 expect "T-E5 tag-only image" 1 $? "$tmp/e5a" "prometheus: image is not name:tag@sha256:<digest>"
+derive "$compose" "$tmp/qtag.yml" "s#qdrant/qdrant:v1.19.0-unprivileged@sha256:[0-9a-f]*#qdrant/qdrant:v1.19.0-unprivileged#"
+sh "$here/check-compose.sh" "$tmp/qtag.yml" >"$tmp/e5q" 2>&1
+expect "T-E5 tag-only bundle image (ADR-0066)" 1 $? "$tmp/e5q" "qdrant: image is not name:tag@sha256:<digest>"
 derive "$compose" "$tmp/any.yml" 's#--web.listen-address=127.0.0.1:9090#--web.listen-address=0.0.0.0:9090#'
 sh "$here/check-compose.sh" "$tmp/any.yml" >"$tmp/e5b" 2>&1
 expect "T-E5 0.0.0.0" 1 $? "$tmp/e5b" "0.0.0.0 in rendered config"

@@ -40,8 +40,10 @@ serde_json = "1"
 # — `reqwest::dns::Resolve::resolve` is polled on the caller's async runtime, and a blocking
 # syscall there would stall it. "rt" is the minimum feature `spawn_blocking` needs; the fuller
 # feature set already in `[dev-dependencies]` below covers the test fixtures' real listeners.
-# why: tokio dependency; used-by: [infra-cell::tests::mainline_ssrf_probe, infra-cell::transport, tests]
-tokio = { version = "1", features = ["rt"] }
+# ADR-0066 D-K/D-L/D-M: "net" for `uds` — the one bind/connect site of the worker RPC sockets (`UnixListener`,
+# `UnixStream::peer_cred`). Already in the workspace graph through every bin's tokio; no new lock entry.
+# why: tokio dependency; used-by: [infra-cell::tests::mainline_ssrf_probe, infra-cell::transport, infra-cell::uds, tests]
+tokio = { version = "1", features = ["rt", "net"] }
 # §83.4 判据3 blocker fix: `execute()` must judge the exact address `reqwest` will dial for an
 # IP-literal registry host the same way `ValidatingResolver` judges a resolved hostname —
 # `reqwest`'s connector never calls a custom `dns_resolver` for an authority that is (or

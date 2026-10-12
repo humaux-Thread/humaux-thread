@@ -1,2 +1,10 @@
-30 0 * * * $HOME/humaux/deploy/pgbackrest/humaux-dr.sh backup run
-0 3 * * 3 $HOME/humaux/deploy/pgbackrest/humaux-dr.sh restore drill --evidence $HOME/humaux/dr-evidence/drill-$(date -u +\%Y\%m\%d).json
+# deploy/pgbackrest/humaux-backup.crontab — the host crontab of a bundle node (ADR-0066 D-H): the card-37 schedule
+# (backup daily 00:30 UTC, restore drill Wednesday 03:00) run through the profile-gated `dr` one-shot of prod.yml.
+# Install as the operator (docker rights) after setting the lines below for this node: the three variables
+# deploy/release/compose.sh requires and the path of the deploy checkout. No value here is a secret.
+PATH=/usr/local/bin:/usr/bin:/bin
+HUMAUX_NODE_SIZING=a5
+HUMAUX_NODE_DIR=/srv/humaux-node
+HUMAUX_NODE_PROJECT=humaux-node
+30 0 * * * sh /srv/humaux-node/checkout/deploy/release/compose.sh run --rm -T dr backup run >> /srv/humaux-node/evidence/cron.log 2>&1
+0 3 * * 3 sh /srv/humaux-node/checkout/deploy/release/compose.sh run --rm -T dr restore drill --evidence /srv/humaux-node/evidence/drill-$(date -u +\%Y\%m\%d).json >> /srv/humaux-node/evidence/cron.log 2>&1

@@ -172,6 +172,12 @@ async fn spawn_worker_with(
     });
     // dep: UDS(serve) — test serves the real retrieval-worker RPC router on a temp socket
     let listener = UnixListener::bind(&socket_path).expect("bind worker rpc socket");
+    // ADR-0066 D-L: the gateway's dial refuses a socket with `other` bits; a server socket is 0660.
+    std::fs::set_permissions(
+        &socket_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o660),
+    )
+    .expect("chmod the worker rpc socket");
     let app = router(state);
     tokio::spawn(async move {
         let _ = axum::serve(
@@ -248,6 +254,7 @@ async fn happy_path_embeds_through_the_real_worker_app() {
     let client = GatewayRetrievalEmbeddingClient::new(
         runtime_pool().await,
         socket_path,
+        own_uid().await,
         cell_registry(),
         Duration::from_secs(30),
     );
@@ -297,6 +304,7 @@ async fn wrong_uid_is_rejected_before_the_body_is_read() {
     let client = GatewayRetrievalEmbeddingClient::new(
         runtime_pool().await,
         socket_path,
+        own_uid().await,
         cell_registry(),
         Duration::from_secs(30),
     );
@@ -513,6 +521,7 @@ async fn worker_down_returns_a_typed_error_not_a_panic() {
     let client = GatewayRetrievalEmbeddingClient::new(
         runtime_pool().await,
         socket_path,
+        own_uid().await,
         cell_registry(),
         Duration::from_secs(30),
     );
@@ -555,6 +564,7 @@ async fn gateway_retry_with_same_logical_call_id_replays_not_reregisters() {
     let client = GatewayRetrievalEmbeddingClient::new(
         runtime_pool().await,
         socket_path,
+        own_uid().await,
         cell_registry(),
         Duration::from_secs(30),
     );
@@ -635,6 +645,7 @@ async fn counting_worker(
     let client = GatewayRetrievalEmbeddingClient::new(
         runtime_pool().await,
         socket_path,
+        own_uid().await,
         cell_registry(),
         Duration::from_secs(30),
     );
