@@ -1,0 +1,90 @@
+# §46.1 migration manifest. ADR-0068 D-A/D-C/D-I (card 40d-1b-i): projection.note_legacy_capacity_holds(text, text)
+# (pure, EXECUTE role_retrieval_worker only), projection.card_profile_policies (no tenant column, no RLS, SELECT
+# role_retrieval_worker only, seeded with the serving projection at NULL = legacy only), and the registry identity v2
+# columns card_profile_hash / chunk_ordinal with their CHECKs, appended to the exact identity UNIQUE key.
+# §46 forward-fix (EXPAND_CONTRACT, first free number after 0237).
+
+migration_id = "0238_note_chunk_identity_policy"
+class = "EXPAND_CONTRACT"
+
+# Refuses a non-UTF8 database (char_length must count code points, as 0237), an existing function / table / column,
+# a registry without its 0119 identity key, and any FK that references the registry (the key is dropped and re-added).
+precheck = """
+select to_regclass('projection.private_memory_points') is not null
+ and to_regprocedure('projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[])') is not null
+ and to_regprocedure('projection.note_legacy_capacity_holds(text,text)') is null
+ and to_regclass('projection.card_profile_policies') is null
+ and (select pg_encoding_to_char(encoding) = 'UTF8' from pg_database where datname = current_database())
+ and not exists (select 1 from pg_attribute a
+                  where a.attrelid = to_regclass('projection.private_memory_points')
+                    and a.attname in ('card_profile_hash', 'chunk_ordinal') and not a.attisdropped)
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('projection.private_memory_points') and co.contype = 'u'
+                and co.conname = 'private_memory_points_exact_identity_unique')
+ and not exists (select 1 from pg_constraint co
+                  where co.contype = 'f' and co.confrelid = to_regclass('projection.private_memory_points'))
+ as precheck_ok
+"""
+
+# Fails on: the predicate's owner / security / volatility / strictness / parallel safety / return type, any EXECUTE
+# beyond role_retrieval_worker, or a moved boundary (empty body, 600 with 3 separators, and the one-chunk note
+# title 150 / body 460 that count 1 cannot tell from a legacy card); the policy table's owner, RLS turned on, any grant
+# beyond role_retrieval_worker SELECT, a ledger definer that does not own it, or a seed other than exactly the serving
+# row at NULL; the registry columns' type / NOT NULL / default, a missing CHECK, a UNIQUE key without the two columns,
+# or any existing row that is not (LegacyCardV1, 0).
+postcheck = """
+select
+ (select coalesce(bool_and(
+     pg_get_userbyid(p.proowner) = 'role_migration_owner'
+     and not p.prosecdef and p.provolatile = 'i' and p.proisstrict and p.proparallel = 's'
+     and p.prorettype = 'boolean'::regtype
+     and (select coalesce(string_agg(pg_get_userbyid(x.grantee) || ':' || x.privilege_type, ','
+                                     order by pg_get_userbyid(x.grantee) collate "C"), '')
+            from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+           where x.grantee <> p.proowner) = 'role_retrieval_worker:EXECUTE'
+     and projection.note_legacy_capacity_holds(repeat('t', 700), '')
+     and projection.note_legacy_capacity_holds(repeat('t', 20), repeat('長', 577))
+     and not projection.note_legacy_capacity_holds(repeat('t', 20), repeat('長', 578))
+     and not projection.note_legacy_capacity_holds(repeat('t', 150), repeat('a', 460))
+     and projection.note_chunk_count(repeat('t', 150), repeat('a', 460)) = 1), false)
+     and count(*) = 1
+    from pg_proc p where p.oid = to_regprocedure('projection.note_legacy_capacity_holds(text,text)'))
+ and coalesce((select pg_get_userbyid(c.relowner) = 'role_migration_owner' and not c.relrowsecurity
+                 and not c.relforcerowsecurity
+                from pg_class c where c.oid = to_regclass('projection.card_profile_policies')), false)
+ and (select coalesce(string_agg(pg_get_userbyid(x.grantee) || ':' || x.privilege_type, ','
+                                 order by pg_get_userbyid(x.grantee) || ':' || x.privilege_type collate "C"), '')
+        from pg_class c, aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) x
+       where c.oid = to_regclass('projection.card_profile_policies') and x.grantee <> c.relowner)
+     = 'role_retrieval_worker:SELECT'
+ and (select count(*) = 1 from pg_proc p, pg_class c
+       where p.oid = to_regprocedure('projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[])')
+         and p.prosecdef and c.oid = to_regclass('projection.card_profile_policies')
+         and p.proowner = c.relowner)
+ and (select count(*) = 1 and bool_and(domain = 'private_memory' and projection_kind = 'PRIVATE_MEMORY'
+                                       and projection_version = 'v1' and note_chunk_profile_hash is null)
+        from projection.card_profile_policies)
+ and (select count(*) = 2 from pg_attribute a join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+       where a.attrelid = to_regclass('projection.private_memory_points') and a.attnotnull and not a.attisdropped
+         and ((a.attname = 'card_profile_hash' and a.atttypid = 'text'::regtype
+               and pg_get_expr(d.adbin, d.adrelid) = '''LegacyCardV1''::text')
+           or (a.attname = 'chunk_ordinal' and a.atttypid = 'integer'::regtype
+               and pg_get_expr(d.adbin, d.adrelid) = '0')))
+ and (select count(*) = 3 from pg_constraint co
+       where co.conrelid = to_regclass('projection.private_memory_points') and co.contype = 'c' and co.convalidated
+         and co.conname in ('private_memory_points_card_profile_hash_length',
+                            'private_memory_points_chunk_ordinal_nonnegative',
+                            'private_memory_points_legacy_single_slot'))
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('projection.private_memory_points') and co.contype = 'u'
+                and co.conname = 'private_memory_points_exact_identity_unique'
+                and pg_get_constraintdef(co.oid) = 'UNIQUE (tenant_id, scope_kind, scope_id, domain, projection_kind, '
+                    || 'projection_version, embedding_version, memory_id, source_updated_at, body_sha256, '
+                    || 'card_profile_hash, chunk_ordinal)')
+ and not exists (select 1 from projection.private_memory_points
+                  where card_profile_hash <> 'LegacyCardV1' or chunk_ordinal <> 0)
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while no chunk point exists (no row with card_profile_hash <> 'LegacyCardV1'): ALTER TABLE projection.private_memory_points DROP CONSTRAINT private_memory_points_exact_identity_unique, then re-add it UNIQUE over the ten 0119 columns, then DROP CONSTRAINT the three CHECKs and DROP COLUMN chunk_ordinal, card_profile_hash; DROP TABLE projection.card_profile_policies; DROP FUNCTION projection.note_legacy_capacity_holds(text, text). Once a chunk point exists: forward fix only (dropping the columns would collapse distinct slots onto one identity)."
+backup_restore_requirement = "none: a new function, a new one-row config table and two constant-default columns; no existing registry row is rewritten (each reads as LegacyCardV1, ordinal 0, which its v1 point id already encodes)."

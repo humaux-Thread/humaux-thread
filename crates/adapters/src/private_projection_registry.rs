@@ -4,15 +4,17 @@
 //!   r=[private.memory_records] w=[projection.embedding_fingerprints, projection.memory_vectors,
 //!   projection.private_memory_points], PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker)]; env=[];
 //!   modules=[adapters::postgres, domain::authority, domain::identity, domain::ids, projection::card,
-//!   projection::embedding_fingerprint, projection::serving]
+//!   projection::embedding_fingerprint, projection::note_chunks, projection::serving]
 //! Called-by: [adapters::projection_worker, adapters::retrieve, retrieval-worker::main, tests]
 //! Invariants: [sole private point-id resolver: binds a Qdrant point id to a Memory in PostgreSQL and re-checks the
 //!   source fence; no Qdrant IO here; cross-tenant/workspace, collisions and lost races are typed errors, never a
 //!   guessed binding; a registration that carries a vector writes it in the SAME transaction as the registry row
 //!   (ADR-0064 D-B), so a fingerprinted registry row always has its vector row (0232 FK); every retirement purges
 //!   the vector bytes the last live binding held, by UPDATE (ADR-0064 D-D); one embedding label is bound to one
-//!   fingerprint and a different one is refused, never overwritten (ADR-0064 D-C)]
-//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D
+//!   fingerprint and a different one is refused, never overwritten (ADR-0064 D-C); the identity is the source fence
+//!   plus (card_profile_hash, chunk_ordinal), the legacy profile at ordinal 0 keeps the v1 point id byte for byte and
+//!   every other slot gets a v2 id (ADR-0068 D-C)]
+//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C
 //!
 //! Qdrant returns an opaque point id plus a score.  This module is the sole private-plane
 //! point-id resolver: it binds that id to a Memory through PostgreSQL and then rechecks the
@@ -28,6 +30,7 @@ use humaux_projection::card::CARD_TEMPLATE_HASH;
 use humaux_projection::embedding_fingerprint::{
     DISTANCE, DTYPE, EmbeddingFingerprint, EmbeddingFingerprintInputs, NORMALIZATION,
 };
+use humaux_projection::note_chunks::LEGACY_CARD_PROFILE_HASH;
 use humaux_projection::serving::StreamFamily;
 use sha2::{Digest, Sha256};
 use sqlx::types::Uuid;
@@ -63,12 +66,16 @@ pub struct PrivateMemoryPointRegistration {
     /// Mutable source fence, deliberately not called a revision.
     pub source_updated_at: OffsetDateTime,
     pub body_sha256: Vec<u8>,
+    /// ADR-0068 D-C: [`LEGACY_CARD_PROFILE_HASH`] for a legacy card, else the chunk profile's hash.
+    pub card_profile_hash: String,
+    /// ADR-0068 D-C: the slot within the profile; always 0 for the legacy profile (0238 CHECK).
+    pub chunk_ordinal: u32,
 }
 
 impl PrivateMemoryPointRegistration {
-    /// Builds the replay-stable opaque UUID used for one exact source/projection identity.
-    /// Length-prefixing every variable field prevents tuple-boundary ambiguity; UUIDv8 bits
-    /// label this as an application-defined digest, not a reversible Memory id.
+    /// Builds the replay-stable opaque UUID used for one exact source/projection identity, as the legacy card's one
+    /// slot (v1 id). Length-prefixing every variable field prevents tuple-boundary ambiguity; UUIDv8 bits label this
+    /// as an application-defined digest, not a reversible Memory id.
     pub fn deterministic(
         family: StreamFamily,
         projection_version: String,
@@ -77,40 +84,68 @@ impl PrivateMemoryPointRegistration {
         source_updated_at: OffsetDateTime,
         body_sha256: Vec<u8>,
     ) -> Self {
-        fn field(hasher: &mut Sha256, bytes: &[u8]) {
-            hasher.update((bytes.len() as u64).to_be_bytes());
-            hasher.update(bytes);
-        }
-
-        let mut hasher = Sha256::new();
-        field(&mut hasher, b"humaux.private-memory-point.v1");
-        field(&mut hasher, family.tenant_id.0.as_bytes());
-        field(&mut hasher, family.scope_kind.as_bytes());
-        field(&mut hasher, family.scope_id.as_bytes());
-        field(&mut hasher, family.domain.as_bytes());
-        field(&mut hasher, family.projection_kind.as_bytes());
-        field(&mut hasher, projection_version.as_bytes());
-        field(&mut hasher, embedding_version.as_bytes());
-        field(&mut hasher, memory_id.0.as_bytes());
-        field(
-            &mut hasher,
-            &source_updated_at.unix_timestamp_nanos().to_be_bytes(),
-        );
-        field(&mut hasher, &body_sha256);
-        let digest = hasher.finalize();
-        let mut point_bytes = [0_u8; 16];
-        point_bytes.copy_from_slice(&digest[..16]);
-        point_bytes[6] = (point_bytes[6] & 0x0f) | 0x80;
-        point_bytes[8] = (point_bytes[8] & 0x3f) | 0x80;
-        Self {
-            point_id: ProjectionPointId::new(Uuid::from_bytes(point_bytes)),
+        let mut registration = Self {
+            point_id: ProjectionPointId::new(Uuid::nil()),
             family,
             projection_version,
             embedding_version,
             memory_id,
             source_updated_at,
             body_sha256,
+            card_profile_hash: LEGACY_CARD_PROFILE_HASH.to_owned(),
+            chunk_ordinal: 0,
+        };
+        registration.point_id = registration.derive_point_id();
+        registration
+    }
+
+    /// ADR-0068 D-C: the same source identity as slot `chunk_ordinal` of `card_profile_hash`, with that slot's point
+    /// id.
+    pub fn for_chunk(mut self, card_profile_hash: impl Into<String>, chunk_ordinal: u32) -> Self {
+        self.card_profile_hash = card_profile_hash.into();
+        self.chunk_ordinal = chunk_ordinal;
+        self.point_id = self.derive_point_id();
+        self
+    }
+
+    /// ADR-0068 D-C: the legacy profile at ordinal 0 hashes exactly the v1 tuple (every legacy id stays byte-identical);
+    /// any other slot hashes the v2 tag, the same fields, then the profile hash and the big-endian `u32` ordinal.
+    fn derive_point_id(&self) -> ProjectionPointId {
+        fn field(hasher: &mut Sha256, bytes: &[u8]) {
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
         }
+
+        let legacy = self.card_profile_hash == LEGACY_CARD_PROFILE_HASH && self.chunk_ordinal == 0;
+        let mut hasher = Sha256::new();
+        if legacy {
+            field(&mut hasher, b"humaux.private-memory-point.v1");
+        } else {
+            field(&mut hasher, b"humaux.private-memory-point.v2");
+        }
+        field(&mut hasher, self.family.tenant_id.0.as_bytes());
+        field(&mut hasher, self.family.scope_kind.as_bytes());
+        field(&mut hasher, self.family.scope_id.as_bytes());
+        field(&mut hasher, self.family.domain.as_bytes());
+        field(&mut hasher, self.family.projection_kind.as_bytes());
+        field(&mut hasher, self.projection_version.as_bytes());
+        field(&mut hasher, self.embedding_version.as_bytes());
+        field(&mut hasher, self.memory_id.0.as_bytes());
+        field(
+            &mut hasher,
+            &self.source_updated_at.unix_timestamp_nanos().to_be_bytes(),
+        );
+        field(&mut hasher, &self.body_sha256);
+        if !legacy {
+            field(&mut hasher, self.card_profile_hash.as_bytes());
+            field(&mut hasher, &self.chunk_ordinal.to_be_bytes());
+        }
+        let digest = hasher.finalize();
+        let mut point_bytes = [0_u8; 16];
+        point_bytes.copy_from_slice(&digest[..16]);
+        point_bytes[6] = (point_bytes[6] & 0x0f) | 0x80;
+        point_bytes[8] = (point_bytes[8] & 0x3f) | 0x80;
+        ProjectionPointId::new(Uuid::from_bytes(point_bytes))
     }
 }
 
@@ -228,7 +263,13 @@ fn validate_input(
         &registration.projection_version,
         &registration.embedding_version,
     )?;
-    if registration.body_sha256.len() != 32 {
+    // ADR-0068 D-C (0238 CHECKs): a bounded profile, an ordinal that fits `integer`, the legacy profile only at 0.
+    if registration.body_sha256.len() != 32
+        || !valid_text(&registration.card_profile_hash, 128)
+        || i32::try_from(registration.chunk_ordinal).is_err()
+        || (registration.card_profile_hash == LEGACY_CARD_PROFILE_HASH
+            && registration.chunk_ordinal != 0)
+    {
         return Err(PrivateProjectionRegistryError::InvalidInput);
     }
     Ok(())
@@ -330,7 +371,10 @@ fn binding_matches(
             && row.try_get::<Uuid, _>("memory_id")? == registration.memory_id.0
             && row.try_get::<OffsetDateTime, _>("source_updated_at")?
                 == registration.source_updated_at
-            && row.try_get::<Vec<u8>, _>("body_sha256")? == registration.body_sha256,
+            && row.try_get::<Vec<u8>, _>("body_sha256")? == registration.body_sha256
+            && row.try_get::<String, _>("card_profile_hash")? == registration.card_profile_hash
+            && i64::from(row.try_get::<i32, _>("chunk_ordinal")?)
+                == i64::from(registration.chunk_ordinal),
     )
 }
 
@@ -340,7 +384,8 @@ async fn point_binding_in_txn(
 ) -> Result<Option<sqlx::postgres::PgRow>, PrivateProjectionRegistryError> {
     Ok(sqlx::query(
         "SELECT point_id, tenant_id, scope_kind, scope_id, domain, projection_kind, \
-                projection_version, embedding_version, memory_id, source_updated_at, body_sha256 \
+                projection_version, embedding_version, memory_id, source_updated_at, body_sha256, \
+                card_profile_hash, chunk_ordinal \
          FROM projection.private_memory_points WHERE point_id = $1",
     )
     .bind(point_id.0)
@@ -354,11 +399,13 @@ async fn identity_binding_in_txn(
 ) -> Result<Option<sqlx::postgres::PgRow>, PrivateProjectionRegistryError> {
     Ok(sqlx::query(
         "SELECT point_id, tenant_id, scope_kind, scope_id, domain, projection_kind, \
-                projection_version, embedding_version, memory_id, source_updated_at, body_sha256 \
+                projection_version, embedding_version, memory_id, source_updated_at, body_sha256, \
+                card_profile_hash, chunk_ordinal \
          FROM projection.private_memory_points \
          WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
            AND projection_kind = $5 AND projection_version = $6 AND embedding_version = $7 \
-           AND memory_id = $8 AND source_updated_at = $9 AND body_sha256 = $10",
+           AND memory_id = $8 AND source_updated_at = $9 AND body_sha256 = $10 \
+           AND card_profile_hash = $11 AND chunk_ordinal = $12",
     )
     .bind(registration.family.tenant_id.0)
     .bind(&registration.family.scope_kind)
@@ -370,6 +417,8 @@ async fn identity_binding_in_txn(
     .bind(registration.memory_id.0)
     .bind(registration.source_updated_at)
     .bind(&registration.body_sha256)
+    .bind(&registration.card_profile_hash)
+    .bind(i64::from(registration.chunk_ordinal))
     .fetch_optional(&mut **txn)
     .await?)
 }
@@ -432,8 +481,8 @@ pub async fn register_private_memory_point_with_vector(
         "INSERT INTO projection.private_memory_points \
              (point_id, tenant_id, scope_kind, scope_id, domain, projection_kind, \
               projection_version, embedding_version, memory_id, source_updated_at, body_sha256, \
-              fingerprint_sha256, input_sha256) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
+              fingerprint_sha256, input_sha256, card_profile_hash, chunk_ordinal) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
          ON CONFLICT DO NOTHING RETURNING point_id",
     )
     .bind(registration.point_id.0)
@@ -449,6 +498,8 @@ pub async fn register_private_memory_point_with_vector(
     .bind(&registration.body_sha256)
     .bind(fingerprint)
     .bind(input)
+    .bind(&registration.card_profile_hash)
+    .bind(i64::from(registration.chunk_ordinal))
     .fetch_optional(&mut *txn)
     .await?;
     if inserted.is_some() {
@@ -802,5 +853,86 @@ mod tests {
         assert_eq!(make("embed-v1").point_id, make("embed-v1").point_id);
         assert_ne!(make("embed-v1").point_id, make("embed-v2").point_id);
         assert_ne!(make("embed-v1").point_id.as_uuid(), Uuid::from_u128(2));
+    }
+
+    fn golden_registration() -> PrivateMemoryPointRegistration {
+        PrivateMemoryPointRegistration::deterministic(
+            StreamFamily::new(
+                TenantId(Uuid::from_u128(1)),
+                "tenant",
+                Uuid::from_u128(1),
+                "knowledge",
+                "dense",
+            ),
+            "projection-v1".to_owned(),
+            "embed-v1".to_owned(),
+            MemoryId(Uuid::from_u128(2)),
+            OffsetDateTime::from_unix_timestamp(1_704_067_200).unwrap(),
+            vec![7; 32],
+        )
+    }
+
+    /// ADR-0068 gate `legacy_point_id_golden_unchanged`: the v1 id of a fixed tuple, recomputed outside Rust (sha256 of
+    /// the length-prefixed v1 fields, first 16 bytes, UUIDv8 bits). Every live legacy point id was minted this way, so
+    /// any change to the v1 tag, field order, length prefix or timestamp encoding — or routing the legacy profile to v2
+    /// — turns it red.
+    #[test]
+    fn legacy_point_id_golden_unchanged() {
+        let legacy = golden_registration();
+        assert_eq!(
+            legacy.point_id.as_uuid(),
+            Uuid::from_u128(0x0308_5221_9621_8964_b6dc_9b0f_f0cb_af06)
+        );
+        assert_eq!(legacy.card_profile_hash, LEGACY_CARD_PROFILE_HASH);
+        assert_eq!(legacy.chunk_ordinal, 0);
+        assert_eq!(
+            golden_registration()
+                .for_chunk(LEGACY_CARD_PROFILE_HASH, 0)
+                .point_id,
+            legacy.point_id,
+            "the legacy slot re-keyed to itself keeps its v1 id"
+        );
+    }
+
+    /// ADR-0068 gate `chunk_point_ids_are_distinct_and_bound_to_profile`: v2 ids differ per ordinal and per profile,
+    /// never equal the v1 id (ordinal 0 included), and are pinned (computed outside Rust like the v1 golden). Faults:
+    /// drop the ordinal or the profile field from v2 ⇒ red on a distinctness assertion; reuse the v1 tag for ordinal 0
+    /// ⇒ red on `ne(v1)`.
+    #[test]
+    fn chunk_point_ids_are_distinct_and_bound_to_profile() {
+        use humaux_projection::note_chunks::NOTE_CHUNKS_V1_PROFILE_HASH;
+
+        let v1 = golden_registration().point_id;
+        let chunk = |profile: &str, ordinal| golden_registration().for_chunk(profile, ordinal);
+        let ids: Vec<_> = (0..4)
+            .map(|ordinal| chunk(NOTE_CHUNKS_V1_PROFILE_HASH, ordinal).point_id)
+            .collect();
+        let distinct: HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), ids.len(), "ordinals collide: {ids:?}");
+        assert!(!distinct.contains(&v1), "a chunk id equals the v1 id");
+        let other_profile = format!("{NOTE_CHUNKS_V1_PROFILE_HASH}-other");
+        for (ordinal, id) in (0..).zip(&ids) {
+            assert_ne!(
+                chunk(&other_profile, ordinal).point_id,
+                *id,
+                "profile {ordinal}"
+            );
+        }
+        assert_eq!(
+            ids[0].as_uuid(),
+            Uuid::from_u128(0x4539_895f_c726_8424_a869_6876_7dab_69e7)
+        );
+        assert_eq!(
+            ids[1].as_uuid(),
+            Uuid::from_u128(0x101f_c01b_cc2d_8aa9_9a88_56ec_639c_2720)
+        );
+        let registered = chunk(NOTE_CHUNKS_V1_PROFILE_HASH, 3);
+        assert_eq!(
+            (
+                registered.card_profile_hash.as_str(),
+                registered.chunk_ordinal
+            ),
+            (NOTE_CHUNKS_V1_PROFILE_HASH, 3)
+        );
     }
 }
