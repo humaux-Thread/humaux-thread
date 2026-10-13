@@ -1063,8 +1063,8 @@ impl DashscopeEmbeddingProvider {
     /// Any failed slice fails the whole call and returns no vectors. Earlier slices stay billed and
     /// their vectors are dropped: the projection worker persists nothing before it holds a vector
     /// for every card, so its ticket retries whole.
-    /// // ponytail: a retry re-embeds the slices that already succeeded; reusing them needs
-    /// // per-slot persistence, ADR-0068 slice 40d-1b.
+    // ponytail: a retry re-embeds the slices that already succeeded; reusing them needs per-slot persistence,
+    // ADR-0068 slice 40d-1b.
     async fn embed_card_batches(
         &self,
         tenant_id: TenantId,

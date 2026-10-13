@@ -415,6 +415,9 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
             return Err(Outcome::NotApplicable(format!("missing {var}")));
         }
     }
+    // ADR-0068 D-F / §78.1: the projection modes are the only ones that batch cards, so the cap is required before any
+    // connection — unset or 0 refuses boot here (exit 2), never a pass that fails on every poll.
+    parse::<std::num::NonZeroU32>("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS")?;
     // §78.1 / card 21: the ticket triple is DERIVED from the retrieval family this process
     // projects into; `None` would be a wiring bug, not a deployment shape.
     let claim = ClaimFamily::of(PROJECTION_FAMILY)
