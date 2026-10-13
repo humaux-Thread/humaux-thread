@@ -482,7 +482,9 @@ jobs:
     name: fmt + check + clippy + test + gates
     needs: [lint, test-a, test-b, serial-lane]
     if: always()
-    runs-on: ubuntu-24.04-arm
+    # Pinned x64 image: this job only compares four results, and on the arm queue it waited ~5.5 min for a runner
+    # after every part had finished (run 38351566010).
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: every part passed
