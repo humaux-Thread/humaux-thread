@@ -1481,8 +1481,9 @@ async fn finish_row(
     )
     .await
     {
-        // ADR-0068 D-F: the completion check — every slot's point, not "some point of the memory".
-        Ok(Some(confirmation)) if point_ids.iter().all(|id| confirmation.contains(id)) => {}
+        // ADR-0068 D-F: the completion check — `verify_visible` confirms only when every slot's point is observed,
+        // not "some point of the memory" (§17.4), so a confirmation here covers the whole slot set.
+        Ok(Some(_)) => {}
         // ADR-0052 D-E: not yet observed is a retry, not a verdict — the points are registered,
         // so the next attempt re-upserts the same ids and probes again.
         _ => return (RowTerminal::Retry, "visibility_not_confirmed"),

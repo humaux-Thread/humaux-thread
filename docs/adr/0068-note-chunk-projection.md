@@ -343,7 +343,9 @@ Two facts frame every decision:
   straddling a window boundary that no chunk holds whole, and the legacy control), `legacy_point_retired_only_with_last_chunk`
   and `partial_chunks_are_not_done` are in `adapters::tests::projection_worker::note_chunk_projection`; they hold one
   process-wide lock on the global policy row and restore it on drop. `boot_refuses_unknown_or_missing_policy` is in
-  `retrieval-worker::main::config_tests` (the refusal → exit-2 mapping, no database).
+  `retrieval-worker::main::config_tests` (the refusal → exit-2 mapping, no database; `boot_checks` reaching
+  `check_policy`, and a missing row reaching the refusal, are not covered without a database — left for 40d-1b-iii).
+  The policy lock is per process: the suite relies on `cargo test` running test binaries one after another.
   `secret_material_note_is_never_chunked` and `chunk_card_carries_the_chunk_text_and_the_note_identity` are in
   `projection::note_chunks`; `source_seal_scans_the_whole_note_under_its_own_cap` and
   `chunk_card_seal_is_bound_to_its_own_source` in `local-secret-scan`; `chunk_fields_ride_only_chunk_payloads` in

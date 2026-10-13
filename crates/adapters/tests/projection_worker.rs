@@ -3720,8 +3720,7 @@ mod note_chunk_projection {
     /// (precondition, with the real scanner: every chunk card seals clean and the whole source does not), and an
     /// ordinary memory with the token (the legacy path). All three end `FAILED secret_scan_rejected` with no
     /// registry row, no point and zero provider inputs. Faults: skip `seal_source` ⇒ the straddling note's chunks
-    /// seal clean and are embedded ⇒ DONE ⇒ red; treat a chunk card's finding as a dropped slot ⇒ the last-window
-    /// note's other chunks are sent ⇒ red on the spy.
+    /// seal clean and are embedded ⇒ DONE ⇒ red.
     #[test]
     fn source_seal_blocks_a_secret_anywhere() {
         run_db_fixture::<Fixture, _>("source_seal_blocks_a_secret_anywhere", |mut handle| {
@@ -3807,8 +3806,10 @@ mod note_chunk_projection {
 
     /// ADR-0068 gate `legacy_point_retired_only_with_last_chunk` (D-I): a long note projected legacy-only keeps its
     /// legacy point through a chunk re-projection whose last slot fails, and loses it in the pass that settles every
-    /// slot. Faults: retire the legacy point before the slots are written (or drop the completion check) ⇒ red on the
-    /// midway arm; skip the retirement ⇒ red on the final arm.
+    /// slot. Two midway arms: the last slot's upsert fails, then every slot is written but the last one is not yet
+    /// visible. Faults: retire the legacy point before the slots are written ⇒ red on the first midway arm; retire it
+    /// before the visibility check (or drop that check) ⇒ red on the hidden arm; skip the retirement ⇒ red on the
+    /// final arm.
     #[test]
     fn legacy_point_retired_only_with_last_chunk() {
         run_db_fixture::<Fixture, _>("legacy_point_retired_only_with_last_chunk", |mut handle| {
@@ -3872,6 +3873,25 @@ mod note_chunk_projection {
                 "every slot but the last: {midway:?}"
             );
 
+            deps.transport = Arc::new(SlotFault {
+                inner: handle.transport.clone(),
+                fail_upsert: None,
+                hide: Some(last),
+            });
+            assert_eq!(
+                run(&handle, &deps),
+                (0, 0, 1),
+                "every slot written, the last not yet visible"
+            );
+            assert!(
+                point_live(&mut handle, legacy_id),
+                "hidden: the legacy binding is live"
+            );
+            assert!(
+                point_present(&handle, legacy_id),
+                "hidden: the legacy point answers recall"
+            );
+
             deps.transport = handle.transport.clone();
             assert_eq!(
                 run(&handle, &deps),
@@ -3899,7 +3919,7 @@ mod note_chunk_projection {
 
     /// ADR-0068 gate `partial_chunks_are_not_done` (D-F): one slot's upsert failing, or one slot's point never seen
     /// by the visibility probe, leaves the ticket ISSUED (retry), never DONE; the same ticket with every slot written
-    /// and visible is DONE. Faults: verify only the first slot (or `any` for `all`) ⇒ red on the hidden arm; count a
+    /// and visible is DONE. Faults: verify only the first slot's point ⇒ red on the hidden arm; count a
     /// memory DONE after its first slot ⇒ red on the upsert arm.
     #[test]
     fn partial_chunks_are_not_done() {
