@@ -1,7 +1,7 @@
 //! `domain::note` — the verbatim note lane's pure rules: `NoteKind`, the verbatim body and its digest, the title,
 //!   and the authority decision of `memory.note_put` (ADR-0067 D-C/D-D/D-E).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::memory, domain::policy]
-//! Called-by: [adapters::distill_repo, adapters::note_repo, gateway::mcp_application, tests]
+//! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::note_repo, adapters::read_materialize, gateway::mcp_application, tests]
 //! Invariants: [NoteKind is a closed 9-value set whose memory_type mapping is the DB CHECK of migration 0235; the body is
 //!   never trimmed, normalised or re-encoded; authority is decided by the existing ceiling table and never inferred
 //!   from note_kind, title or body]

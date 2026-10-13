@@ -1,5 +1,5 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::continuity_read, adapters::exact_census, adapters::memory_governance_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes go through the same can_read re-check; a PG error is
@@ -37,6 +37,7 @@ use humaux_domain::identity::{
 };
 use humaux_domain::ids::{Scope, UserId, WorkspaceId};
 use humaux_domain::memory::{MandatoryContextFacet, MemoryType};
+use humaux_domain::note::NoteKind;
 use humaux_domain::selection::{AUTHORIZED_MEMORY_ENUMERATION_V1, Cursor, query_fingerprint};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
@@ -46,16 +47,18 @@ use humaux_retrieval::handoff::{Handoff, assemble_with_context};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::types::Uuid;
+use sqlx::types::time::OffsetDateTime;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::confirm_token_repo::{self, ConfirmationClaim};
-use crate::exact_census::{ACTIVE_FINAL, CensusInputs, census_in_txn};
+use crate::exact_census::{ACTIVE_FINAL, CensusInputs, census_in_txn, note_axes};
 use crate::postgres::RuntimeDbPool;
 use crate::quota_repo::{self, ReservationStatus, ReserveResult};
 use crate::read_materialize::{
-    MaterializedBodies, MaterializedItem, final_memory_ids_in_txn, materialize_final_bodies_in_txn,
-    materialize_one_memory_in_txn,
+    MaterializedBodies, MaterializedItem, MemoryHistory, final_memory_ids_in_txn,
+    materialize_final_bodies_in_txn, materialize_one_memory_in_txn, memory_history_in_txn,
+    memory_note_kinds_in_txn,
 };
 use crate::request_guard_repo::{self, AuditTenant};
 use crate::selection_repo::{
@@ -1184,6 +1187,12 @@ pub struct MaterializedMemory {
     /// `memory.get` ever sees `true` — recall/context/enumerate exclude archived rows at their
     /// candidate step, so those paths always set `false`.
     pub archived: bool,
+    /// ADR-0067 D-D: `memory_id → note_kind` for every body in `bodies` that is a note, read in the same RR snapshot.
+    /// A non-note Memory has no entry.
+    pub note_kinds: HashMap<Uuid, NoteKind>,
+    /// ADR-0067 D-H: lifecycle and provenance of the one Memory `memory.get` read with `include_history`; `None` on
+    /// every other read, so their output is unchanged.
+    pub history: Option<MemoryHistory>,
 }
 
 /// Trusted server-side pagination inputs for an authorized memory enumeration.
@@ -1201,6 +1210,70 @@ pub struct MemoryEnumerationParams<'a> {
     /// fingerprint, so a cursor minted with one filter cannot page another; never a
     /// post-filter, so the page's completeness claim stays what the manifest says.
     pub subject_id: Option<Uuid>,
+}
+
+/// ADR-0067 D-G (40b): the note axes of the EXACT enumeration predicate — `note_kind` ∈ `note_kinds` and
+/// `occurred_at ∈ [occurred_since, occurred_until)`. Like `subject_id`, every axis rides inside the manifest predicate
+/// and its census (never a post-filter) and enters the manifest's query fingerprint. `Default` = no note axis.
+#[derive(Debug, Clone, Default)]
+pub struct NoteEnumerationFilter {
+    /// `Some` = only notes of these kinds (non-empty); `None` = any Memory, note or not.
+    pub note_kinds: Option<Vec<NoteKind>>,
+    /// Inclusive lower bound on `memory_records.occurred_at`.
+    pub occurred_since: Option<OffsetDateTime>,
+    /// Exclusive upper bound on `memory_records.occurred_at`.
+    pub occurred_until: Option<OffsetDateTime>,
+}
+
+impl NoteEnumerationFilter {
+    /// The kinds as the bound `text[]` of DB wire strings (`private.memory_records.note_kind`, migration 0235).
+    pub(crate) fn kind_wires(&self) -> Option<Vec<String>> {
+        self.note_kinds
+            .as_ref()
+            .map(|kinds| kinds.iter().map(|kind| kind.wire().to_owned()).collect())
+    }
+
+    /// The fingerprint segment: kinds sorted and deduplicated, joined by `,`; bounds as unix nanoseconds; empty when
+    /// absent. `None` when no axis is set, so an unfiltered manifest keeps its pre-40b fingerprint.
+    fn fingerprint_segment(&self) -> Option<String> {
+        if self.note_kinds.is_none()
+            && self.occurred_since.is_none()
+            && self.occurred_until.is_none()
+        {
+            return None;
+        }
+        let mut kinds: Vec<&str> = self
+            .note_kinds
+            .iter()
+            .flatten()
+            .map(|kind| kind.wire())
+            .collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let nanos = |at: Option<OffsetDateTime>| {
+            at.map(|at| at.unix_timestamp_nanos().to_string())
+                .unwrap_or_default()
+        };
+        Some(format!(
+            "{}:{}:{}",
+            kinds.join(","),
+            nanos(self.occurred_since),
+            nanos(self.occurred_until)
+        ))
+    }
+
+    /// An empty kind set or `since >= until` describes no window a caller can mean: `InvalidInput`.
+    fn validate(&self) -> Result<(), ErrorCode> {
+        if self.note_kinds.as_ref().is_some_and(Vec::is_empty) {
+            return Err(ErrorCode::InvalidInput);
+        }
+        if let (Some(since), Some(until)) = (self.occurred_since, self.occurred_until)
+            && since >= until
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(())
+    }
 }
 
 /// One immutable manifest page whose body, grounding and ledger share one PostgreSQL snapshot.
@@ -1309,6 +1382,7 @@ fn enumeration_fingerprint(
     authorization: &AuthorizationScope,
     scope: &Scope,
     subject_id: Option<Uuid>,
+    notes: &NoteEnumerationFilter,
 ) -> String {
     let workspace = scope
         .workspace_id
@@ -1321,15 +1395,19 @@ fn enumeration_fingerprint(
     // The subject filter is part of the predicate identity (empty segment when absent), so a
     // cursor minted under one filter never pages another manifest.
     let subject = subject_id.map(|id| id.to_string()).unwrap_or_default();
-    query_fingerprint(
-        &format!(
-            "{AUTHORIZED_MEMORY_ENUMERATION_V1}:{}:{}:{}:{subject}",
-            authorization.principal().0,
-            user,
-            workspace
-        ),
-        authorization.tenant_id().0,
-    )
+    let mut identity = format!(
+        "{AUTHORIZED_MEMORY_ENUMERATION_V1}:{}:{}:{}:{subject}",
+        authorization.principal().0,
+        user,
+        workspace
+    );
+    // ADR-0067 D-G: the note axes are part of the predicate identity too. Appended only when set, so the segment
+    // count tells a filtered identity from an unfiltered one and existing cursors keep their fingerprint.
+    if let Some(segment) = notes.fingerprint_segment() {
+        identity.push(':');
+        identity.push_str(&segment);
+    }
+    query_fingerprint(&identity, authorization.tenant_id().0)
 }
 
 /// §6.1.3 (ADR-0028 D-D): linked subject ids for each of `ids`, in link order, under the
@@ -1383,7 +1461,7 @@ async fn page_grounding_in_txn(
 ) -> Result<GroundingBlock, ErrorCode> {
     let mut result = GroundingBlock::tally([]);
     for id in ids {
-        let block = direct_get_grounding_in_txn(txn, authorization, MemoryId(*id)).await?;
+        let block = direct_get_grounding_in_txn(txn, authorization, MemoryId(*id), false).await?;
         result.current += block.current;
         result.recheck_required += block.recheck_required;
         result.unresolved += block.unresolved;
@@ -1600,12 +1678,14 @@ async fn census_mint_barrier_in_txn(txn: &mut Txn<'_>) -> Result<(), ErrorCode> 
 /// [`ENUMERATION_PREDICATE`]), so their id sets must be identical. Disagreement means the two
 /// faces drifted apart — §22.4 trigger 4, reported as a failed census instead of publishing a
 /// `coverage` for a set the page never held.
-/// The two runtime axes of the enumeration predicate: the §6.1.3 subject filter and the ADR-0062 D-K segment bound
-/// (`memory_id < before_id`; `None` = the first segment). Both are bound, never interpolated.
+/// The runtime axes of the enumeration predicate: the §6.1.3 subject filter, the ADR-0062 D-K segment bound
+/// (`memory_id < before_id`; `None` = the first segment) and the ADR-0067 D-G note axes. All are bound, never
+/// interpolated.
 #[derive(Clone, Copy)]
-struct EnumerationFilter {
+struct EnumerationFilter<'a> {
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
+    notes: &'a NoteEnumerationFilter,
 }
 
 async fn mint_census_in_txn(
@@ -1613,7 +1693,7 @@ async fn mint_census_in_txn(
     authorization: &AuthorizationScope,
     workspace: WorkspaceId,
     stream: &StreamKey,
-    filter: EnumerationFilter,
+    filter: EnumerationFilter<'_>,
     universe: &[Uuid],
 ) -> Result<Option<FrozenCensus>, ErrorCode> {
     let outcome = census_in_txn(
@@ -1627,6 +1707,7 @@ async fn mint_census_in_txn(
             stream,
             subject_id: filter.subject_id,
             before_id: filter.before_id,
+            notes: filter.notes,
         },
     )
     .await?;
@@ -1685,12 +1766,13 @@ async fn mint_segment_in_txn(
     validated_key: &StreamKey,
     params: &MemoryEnumerationParams<'_>,
     fingerprint: &str,
-    filter: EnumerationFilter,
+    filter: EnumerationFilter<'_>,
 ) -> Result<(SnapshotPage, Option<FrozenCensus>), ErrorCode> {
     // §6.1.3 D-D: the subject filter is part of the EXACT manifest predicate (RLS-visible
     // memory_subjects rows), never a post-filter over an unfiltered page. The scope +
     // predicate are the SAME two fragments the census counts (see `ENUMERATION_SCOPE`);
-    // `$3` is the subject filter and `$4` the segment bound, matching `exact_census`'s own fragments.
+    // `$3` is the subject filter and `$4` the segment bound, matching `exact_census`'s own fragments;
+    // `$5..$7` the ADR-0067 D-G note axes, the very `note_axes` text every census statement runs.
     let rows = sqlx::query(&format!(
         "SELECT memory_id FROM {ENUMERATION_SCOPE} AND ({ENUMERATION_PREDICATE}) \
            AND {ACTIVE_FINAL} \
@@ -1698,12 +1780,17 @@ async fn mint_segment_in_txn(
                 WHERE ms.tenant_id = memory_records.tenant_id \
                   AND ms.memory_id = memory_records.memory_id AND ms.subject_id = $3)) \
            AND ($4::uuid IS NULL OR memory_records.memory_id < $4) \
-         ORDER BY memory_id DESC"
+           AND {} \
+         ORDER BY memory_id DESC",
+        note_axes(5)
     ))
     .bind(authorization.tenant_id().0)
     .bind(scope.workspace_id.map(|workspace| workspace.0))
     .bind(filter.subject_id)
     .bind(filter.before_id)
+    .bind(filter.notes.kind_wires())
+    .bind(filter.notes.occurred_since)
+    .bind(filter.notes.occurred_until)
     .fetch_all(&mut **txn)
     .await
     .map_err(|_| ErrorCode::DependencyUnavailable)?;
@@ -1745,8 +1832,8 @@ async fn mint_segment_in_txn(
     Ok((page, census))
 }
 
-/// Materializes an authorization-bound immutable Memory page.
-#[allow(clippy::too_many_lines)] // ADR-0028 D-D: the exact enumeration predicate now carries the subject_id filter inside the same manifest SQL + fingerprint; splitting it would separate the predicate from the completeness classification it must stay honest with.
+/// Materializes an authorization-bound immutable Memory page with no note axis
+/// ([`materialize_memory_enumeration_filtered`] with [`NoteEnumerationFilter::default`]).
 pub async fn materialize_memory_enumeration(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
@@ -1755,10 +1842,35 @@ pub async fn materialize_memory_enumeration(
     validated_key: &StreamKey,
     params: MemoryEnumerationParams<'_>,
 ) -> Result<MaterializedMemoryPage, ErrorCode> {
+    materialize_memory_enumeration_filtered(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        params,
+        &NoteEnumerationFilter::default(),
+    )
+    .await
+}
+
+/// Materializes an authorization-bound immutable Memory page whose EXACT predicate also carries the ADR-0067 D-G
+/// note axes (`notes`), in the manifest SQL, the census and the fingerprint alike.
+#[allow(clippy::too_many_lines)] // ADR-0028 D-D: the exact enumeration predicate now carries the subject_id filter inside the same manifest SQL + fingerprint; splitting it would separate the predicate from the completeness classification it must stay honest with.
+pub async fn materialize_memory_enumeration_filtered(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    params: MemoryEnumerationParams<'_>,
+    notes: &NoteEnumerationFilter,
+) -> Result<MaterializedMemoryPage, ErrorCode> {
     validate_enumeration_params(&params)?;
+    notes.validate()?;
     let (authorization, scope) = canonical_scope(authorization, scope)?;
     materialized_identity(&scope, expected_family, validated_key)?;
-    let fingerprint = enumeration_fingerprint(&authorization, &scope, params.subject_id);
+    let fingerprint = enumeration_fingerprint(&authorization, &scope, params.subject_id, notes);
     // ADR-0062 D-K: a cursor standing at the end of a capped manifest opens the next segment. The segment bound is
     // read (one statement) before the transaction mode is chosen, because a new segment mints and needs READ WRITE.
     let cursor = params
@@ -1810,6 +1922,7 @@ pub async fn materialize_memory_enumeration(
             let filter = EnumerationFilter {
                 subject_id: params.subject_id,
                 before_id,
+                notes,
             };
             mint_segment_in_txn(
                 &mut txn,
@@ -1852,6 +1965,8 @@ pub async fn materialize_memory_enumeration(
     let grounding = page_grounding_in_txn(&mut txn, &authorization, &page.items).await?;
     let subjects =
         memory_subjects_in_txn(&mut txn, authorization.tenant_id().0, &page.items).await?;
+    let note_kinds =
+        memory_note_kinds_in_txn(&mut txn, authorization.tenant_id().0, &page.items).await?;
     let ledger = close_ledger_in_txn(&mut txn, validated_key, &authorization)
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
@@ -1881,6 +1996,8 @@ pub async fn materialize_memory_enumeration(
             // Enumerate excludes archived rows at the candidate query (D-C), so a page never
             // carries one; the flag is meaningful only on memory.get.
             archived: false,
+            note_kinds,
+            history: None,
         },
         census,
     })
@@ -1987,11 +2104,13 @@ fn materialized_identity(
 ///
 /// The preceding body read has already performed the Memory-plus-all-Evidence authorization
 /// gate. A missing row in this same RR snapshot is therefore an invariant break, rather than
-/// a second observable existence oracle.
+/// a second observable existence oracle. `include_superseded` is the same lifecycle choice that
+/// body read made (ADR-0067 D-H), so the two never disagree about one row.
 async fn direct_get_grounding_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
     memory_id: MemoryId,
+    include_superseded: bool,
 ) -> Result<GroundingBlock, ErrorCode> {
     let row = sqlx::query(
         r#"
@@ -2011,12 +2130,13 @@ async fn direct_get_grounding_in_txn(
         FROM private.memory_records AS m
         WHERE m.tenant_id = $1
           AND m.memory_id = $2
-          AND m.status = 'active'
-          AND m.superseded_by IS NULL
+          AND ((m.status = 'active' AND m.superseded_by IS NULL)
+               OR ($3::boolean AND m.status = 'superseded'))
         "#,
     )
     .bind(authorization.tenant_id().0)
     .bind(memory_id.0)
+    .bind(include_superseded)
     .fetch_optional(&mut **txn)
     .await
     .map_err(|_| ErrorCode::DependencyUnavailable)?
@@ -2038,6 +2158,7 @@ async fn direct_get_grounding_in_txn(
 /// Scope canonicalization runs before object access, so a requested foreign workspace remains
 /// `FORBIDDEN`; all object-level absence and final-body policy failures map to `NOT_FOUND`.
 /// `expected_family` and `validated_key` must be supplied by trusted serving/token validation.
+/// Current versions only ([`materialize_memory_get_versioned`] without history).
 pub async fn materialize_memory_get(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
@@ -2046,7 +2167,32 @@ pub async fn materialize_memory_get(
     validated_key: &StreamKey,
     memory_id: MemoryId,
 ) -> Result<MaterializedMemory, ErrorCode> {
-    let _ = canonical_scope(authorization, scope)?;
+    materialize_memory_get_versioned(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        memory_id,
+        false,
+    )
+    .await
+}
+
+/// [`materialize_memory_get`] with the ADR-0067 D-H `include_history` choice. `true` also admits the exact version
+/// asked for when it is `superseded` (never a jump to its successor) and reads its [`MemoryHistory`]; `revoked` /
+/// `expired`, tombstoned, forgotten and `SECRET_MATERIAL`-backed rows stay `NOT_FOUND` — the shared final gate
+/// decides that, with only its lifecycle conjunct widened.
+pub async fn materialize_memory_get_versioned(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    memory_id: MemoryId,
+    include_history: bool,
+) -> Result<MaterializedMemory, ErrorCode> {
+    let (read_authorization, _) = canonical_scope(authorization, scope)?;
     materialized_identity(scope, expected_family, validated_key)?;
     let mut txn = pool
         .pool()
@@ -2064,9 +2210,11 @@ pub async fn materialize_memory_get(
         expected_family,
         validated_key,
         memory_id,
+        include_history,
     )
     .await?;
-    let grounding = direct_get_grounding_in_txn(&mut txn, authorization, memory_id).await?;
+    let grounding =
+        direct_get_grounding_in_txn(&mut txn, authorization, memory_id, include_history).await?;
     // Q3/ADR-0024 D-C: memory.get surfaces `archived:true` (unlike recall/context, which
     // exclude archived rows). The body read above already gated visibility/lifecycle, so a
     // missing row here is an invariant break in the same RR snapshot, not an existence oracle.
@@ -2082,6 +2230,14 @@ pub async fn materialize_memory_get(
     .ok_or(ErrorCode::Internal)?;
     let subjects =
         memory_subjects_in_txn(&mut txn, authorization.tenant_id().0, &[memory_id.0]).await?;
+    let note_kinds =
+        memory_note_kinds_in_txn(&mut txn, authorization.tenant_id().0, &[memory_id.0]).await?;
+    // ADR-0067 D-H: read in the same RR snapshot the body gate just admitted the row in.
+    let history = if include_history {
+        Some(memory_history_in_txn(&mut txn, &read_authorization, memory_id).await?)
+    } else {
+        None
+    };
     let ledger = close_ledger_in_txn(&mut txn, validated_key, authorization)
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
@@ -2094,6 +2250,8 @@ pub async fn materialize_memory_get(
         grounding,
         subjects,
         archived,
+        note_kinds,
+        history,
     })
 }
 

@@ -43,7 +43,7 @@ use humaux_retrieval::predicate_registry::PredicateEntry;
 use sqlx::types::Uuid;
 use sqlx::{Acquire, Row};
 
-use crate::context_repo::{readable_memory_ids, set_authorization_local};
+use crate::context_repo::{NoteEnumerationFilter, readable_memory_ids, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -198,6 +198,24 @@ fn before_bounded(placeholder: u8) -> String {
     BEFORE_BOUNDED.replace("{n}", &placeholder.to_string())
 }
 
+/// ADR-0067 D-G note axes, both faces: `note_kind` ∈ the bound `text[]` of wire strings, then `occurred_at` in the
+/// half-open window `[since, until)`. A NULL bind means "axis absent"; a row with NULL `occurred_at` fails either bound
+/// (`NULL >= x` is not true), so it is outside every bounded window. Same placeholder rule as [`SUBJECT_SCOPED`].
+const NOTE_KIND_IN: &str = "(${n}::text[] IS NULL OR memory_records.note_kind = ANY(${n}))";
+const OCCURRED_SINCE: &str = "(${n}::timestamptz IS NULL OR memory_records.occurred_at >= ${n})";
+const OCCURRED_UNTIL: &str = "(${n}::timestamptz IS NULL OR memory_records.occurred_at < ${n})";
+
+/// The three note-axis conjuncts on placeholders `first`, `first + 1`, `first + 2` (kinds, since, until) — the one
+/// text both `context_repo`'s manifest candidate query and every census statement run (§22.1 one predicate, two faces).
+pub(crate) fn note_axes(first: u8) -> String {
+    format!(
+        "{} AND {} AND {}",
+        NOTE_KIND_IN.replace("{n}", &first.to_string()),
+        OCCURRED_SINCE.replace("{n}", &(first + 1).to_string()),
+        OCCURRED_UNTIL.replace("{n}", &(first + 2).to_string()),
+    )
+}
+
 /// §18/§22.1 `SECRET_MATERIAL` linkage: a memory whose evidence chain carries secret material
 /// is excluded from `returned` and counted by `excluded_secret`.
 const SECRET_LINKED: &str = "EXISTS ( \
@@ -218,6 +236,9 @@ async fn census_count(txn: &mut Txn<'_>, sql: &str, args: &CensusArgs<'_>) -> sq
         .bind(args.authorized_ids)
         .bind(args.subject_id)
         .bind(args.before_id)
+        .bind(args.notes.kind_wires())
+        .bind(args.notes.occurred_since)
+        .bind(args.notes.occurred_until)
         .fetch_one(&mut **txn)
         .await?
         .try_get(0)
@@ -230,6 +251,7 @@ struct CensusArgs<'a> {
     authorized_ids: &'a [Uuid],
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
+    notes: &'a NoteEnumerationFilter,
 }
 
 struct CandidateQuery<'a> {
@@ -240,6 +262,7 @@ struct CandidateQuery<'a> {
     predicate: &'a str,
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
+    notes: &'a NoteEnumerationFilter,
 }
 
 async fn authorized_candidate_ids(
@@ -248,11 +271,12 @@ async fn authorized_candidate_ids(
 ) -> Result<Vec<Uuid>, ErrorCode> {
     let candidates_sql = format!(
         "SELECT memory_id FROM {} AND ({}) AND {ACTIVE_FINAL} AND {NOT_TOMBSTONED} AND {} AND {} \
-         ORDER BY memory_id",
+         AND {} ORDER BY memory_id",
         query.scope,
         query.predicate,
         subject_scoped(8),
         before_bounded(9),
+        note_axes(10),
     );
     let candidates: Vec<Uuid> = match sqlx::query(&candidates_sql)
         .bind(query.authorization.tenant_id().0)
@@ -264,6 +288,9 @@ async fn authorized_candidate_ids(
         .bind(&query.stream.projection_version)
         .bind(query.subject_id)
         .bind(query.before_id)
+        .bind(query.notes.kind_wires())
+        .bind(query.notes.occurred_since)
+        .bind(query.notes.occurred_until)
         .fetch_all(&mut **txn)
         .await
     {
@@ -288,7 +315,12 @@ async fn census_readout(
     predicate: &str,
     args: &CensusArgs<'_>,
 ) -> Result<(i64, Vec<Uuid>, i64), ErrorCode> {
-    let subject = format!("{} AND {}", subject_scoped(9), before_bounded(10));
+    let subject = format!(
+        "{} AND {} AND {}",
+        subject_scoped(9),
+        before_bounded(10),
+        note_axes(11)
+    );
     let total_sql = format!(
         "SELECT count(*) FROM {scope} AND ({predicate}) AND {ACTIVE_FINAL} AND {NOT_TOMBSTONED} \
          AND {AUTHORIZED_CANDIDATE} AND {subject}"
@@ -312,6 +344,9 @@ async fn census_readout(
         .bind(args.authorized_ids)
         .bind(args.subject_id)
         .bind(args.before_id)
+        .bind(args.notes.kind_wires())
+        .bind(args.notes.occurred_since)
+        .bind(args.notes.occurred_until)
         .fetch_all(&mut **txn)
         .await
         .map_err(|_| ErrorCode::Internal)?
@@ -353,6 +388,8 @@ pub struct CensusInputs<'a> {
     pub subject_id: Option<Uuid>,
     /// ADR-0062 D-K: restrict the universe to `memory_id < before_id` (a later manifest segment); `None` = whole.
     pub before_id: Option<Uuid>,
+    /// ADR-0067 D-G: the note axes (kinds, `occurred_at` window); the default is "no note axis".
+    pub notes: &'a NoteEnumerationFilter,
 }
 
 /// §22.1 census inside a transaction the caller owns (isolation level and the RLS GUCs are
@@ -411,6 +448,7 @@ async fn census_readout_in_savepoint(
         predicate: inputs.sql_predicate,
         subject_id: inputs.subject_id,
         before_id: inputs.before_id,
+        notes: inputs.notes,
     };
     let authorized_ids = authorized_candidate_ids(sp, &candidate_query)
         .await
@@ -422,6 +460,7 @@ async fn census_readout_in_savepoint(
         authorized_ids: &authorized_ids,
         subject_id: inputs.subject_id,
         before_id: inputs.before_id,
+        notes: inputs.notes,
     };
     let (total, ids, excluded_secret) =
         census_readout(sp, inputs.enumerable_scope, inputs.sql_predicate, &args)
@@ -490,6 +529,7 @@ pub async fn exact_enumerate(
             stream,
             subject_id: None,
             before_id: None,
+            notes: &NoteEnumerationFilter::default(),
         },
     )
     .await;

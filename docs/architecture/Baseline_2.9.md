@@ -5575,7 +5575,7 @@ MAC/signature
 在每次请求时重扫；grounding 的 `recheck_required` 是可交付的核验状态，不等同撤销。
 异常额外/重复/不匹配 ID 保留内部错误，不能伪装成合法过滤。
 
-cursor 的 query fingerprint 绑定枚举 predicate、tenant、principal、user 和已收窄 workspace。
+cursor 的 query fingerprint 绑定枚举 predicate、tenant、principal、user 和已收窄 workspace，以及 ADR-0067 D-G 的过滤参数（`subject_id`、`note_kinds`、`occurred_at ∈ [since, until)`）；过滤参数同时进入 manifest 候选与 census 两面，从不做后过滤。
 签名使用由现有启动 secret 经固定用途 HMAC 派生的专用 key，不复用原始凭据 pepper；
 服务端有效期固定 900 秒，客户端不能覆写。密钥轮换使旧游标失效。格式/MAC 错误为
 `INVALID_INPUT`，合法但过期、已回收或已不适用于当前主体的快照为不泄漏对象信息的
@@ -6025,7 +6025,7 @@ Event payload、完全未消费索引或 RetrievalCard，可以对这四项如�
 送入 §55.1 唯一 `build_request`，不伪造查询文本或 profile。授权先收窄到凭据绑定的
 workspace，再在同一个只读 RR 事务内读取 Memory 与全部 Evidence 的最终正文权限、
 grounding 和完整 StreamKey 的账本；对象缺失、不可见、已撤销、被替代、secret backing
-source 或 tombstone 均返回同一 `NOT_FOUND`，显式越权 workspace 仍在对象读取前返回
+source 或 tombstone 均返回同一 `NOT_FOUND`（ADR-0067 D-H 例外：显式 `include_history:true` 时被替代的那个版本可读，并附 `status`/`superseded_by`/`provenance`；撤销、过期、secret 与 tombstone 仍为 `NOT_FOUND`），显式越权 workspace 仍在对象读取前返回
 `FORBIDDEN`。结果复用本节 `Envelope`，`mandatory/pinned` 均为 `not_run`；MCP catalog
 通过 §20.4 的 Memory 输出 union 引用 `context.output.schema.json#/properties/content`，
 不复制第二份 Envelope schema。

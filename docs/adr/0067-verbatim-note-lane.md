@@ -129,6 +129,18 @@ version) enters `enumeration_fingerprint`; a page and its total come from one sn
 `project` is refused as an unsupported filter (declared limit L-1); `workspace` is an authorisation scope, not a
 project.
 
+40b as shipped (staged): `memory.enumerate` takes `note_kinds` (1–9 distinct `NoteKind` wire strings) and `since` /
+`until` (RFC 3339, `occurred_at ∈ [since, until)`; `since >= until` is `INVALID_INPUT`; a NULL `occurred_at` is outside
+every bounded window). The three axes are one text (`exact_census::note_axes`) run by the manifest candidate query
+(`$5..$7`), the census candidate statement (`$10..$12`) and the three readout statements (`$11..$13`), every value
+bound, never interpolated; the registry path (`exact_enumerate`) binds NULL for all three. They enter
+`enumeration_fingerprint` as `kinds sorted+deduped joined by "," : since unix-nanos : until unix-nanos`, appended only
+when an axis is set, so a cursor minted under one filter set is refused (`NOT_FOUND`) under another and an unfiltered
+manifest keeps its fingerprint. Items of both reads carry `note_kind` when the Memory is a note. The `statuses` axis
+and archive selection are deferred to 40c (L-5): both need the shared `ACTIVE_FINAL` census face parameterised
+together with the final-body gate, which every current-state read also runs. `project` stays refused by the input
+schema's `additionalProperties:false` (L-1).
+
 ### D-H — `memory.get` history and provenance (40b)
 
 `include_history` (default false — a superseded id stays NotFound for existing callers). With it, `get` returns the
@@ -136,6 +148,17 @@ exact version asked for (no jump to the successor) with `status`, `superseded_by
 `content.title`, `content.key_claim` and `provenance {primary_evidence_id, event_kind, origin, derivation_strategy,
 asserted_at, authority_class, body_sha256}`; references the caller may not see are omitted. History never bypasses
 tombstones or forget; recall keeps `ACTIVE_FINAL`.
+
+40b as shipped: `include_history` threads one lifecycle choice through the shared final gate
+(`read_materialize::final_memory_ids_about_in_txn`, `$5`: `(active ∧ superseded_by IS NULL) ∨ ($5 ∧ superseded)`)
+and the DirectGet grounding read; every recall / context / enumerate caller passes `false`, so `revoked` / `expired`,
+`SECRET_MATERIAL` backing and tombstoned Evidence stay `NOT_FOUND` with history too. With it, the item carries
+`status`, `superseded_by` (only when the successor passes `readable_memory_ids` for the caller) and `provenance`
+(read in the same RR snapshot under the caller's RLS; Evidence-side fields omitted when the PRIMARY Evidence is not
+visible). `derivation_strategy` is the contract's `strategy` for a note and the fixed label `"distill"` (the §16.1
+processor kind of the semantic path) for every other Memory — including `memory.correct` / `memory.confirm` versions,
+which the label does not distinguish yet. `body_sha256` is lowercase hex, notes only. Without `include_history` the
+response is unchanged. `note_id` is not in 40b: the column arrives with D-J (40c).
 
 ### D-I — Zero-LLM and recall evidence
 
@@ -207,3 +230,7 @@ stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
 - L-3 `body_sha256` of a low-entropy body is enumerable; it is on the forget surface with the body (40b G15).
 - L-4 Until slice 40d, recall over a note longer than one retrieval card covers its title and first card budget only
   (signal: card 40's 64 KiB recall fixture, or a note recall miss reported against text past the card budget).
+- L-5 Until slice 40c, `memory.enumerate` lists current versions only (no `statuses` axis, no archive selection) and
+  `memory.get` returns no `note_id`; superseded versions are reachable one id at a time through `get` with
+  `include_history` (signal: a compat-facade `memory_enumerate(status=…)` fixture in card 42, or a replace flow in 40c
+  that must list a note's versions).
