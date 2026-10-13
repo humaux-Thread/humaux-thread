@@ -187,10 +187,62 @@ Two facts frame every decision:
 - **Step 1: payload backfill.** Grouped recall needs `memory_id` on every point. Existing points get it by a fenced
   `set_payload` backfill: no vector is rewritten and no provider is called.
 - **Step 2: chunk the long notes.** Only notes over the legacy capacity are re-projected, by a lifecycle ticket on
-  their Evidence. Their legacy point is retired and their chunk points are added under the same `projection_version`.
+  their Evidence. Their chunk points are added under the same `projection_version`, and their legacy point is retired
+  as described under "Retirement timing" below.
 - **Ledger during backfill.** The slot ledger reports the backfill honestly: expected slots jump to C before the chunks
   exist, so the gap shows as unsettled, never as complete.
 - **Serve switch.** Criterion ① stays as it is, because no version switch happens.
+- **Where the profile policy lives (amended 2026-10-14, PR #15 review P2).** The policy is held in PG, keyed by the
+  projection, and it is the one source that both the worker (which profile to build) and the ledger SQL (how many
+  slots to expect) read. An env flag or a worker-side config would let the two disagree, and the ledger would then
+  count slots the worker never builds, or the reverse.
+  - Nothing that exists fits:
+    - `projection.family_activations` (0185) is a per-tenant receipt of a VerifiedEmpty first activation. Its CHECKs
+      pin `evidence_kind = 'VERIFIED_EMPTY'`, and a family that predates it has no row.
+    - `projection.embedding_fingerprints` (0232) is keyed by `embedding_version`.
+  - Proposed shape for 40d-1b/40d-2 (not built in 40d-1a): `projection.card_profile_policies`, with columns
+    `(domain, projection_kind, projection_version)` as PK, `note_chunk_profile_hash text NULL` and `enabled_at`.
+    - The key is the projection, across tenants, and there is one row per projection. A missing row or a NULL hash
+      means legacy only, which is today's behaviour.
+    - Owner `role_migration_owner`. It is written only by a migration, so enabling a profile is a reviewed, versioned
+      change (§78.1 forbids a moving config).
+    - SELECT goes to `role_retrieval_worker`. The ledger definer reads it as its owner.
+    - A non-NULL hash must equal a profile the code knows: `NOTE_CHUNKS_V1_PROFILE_HASH` today. The worker refuses
+      to boot on an unknown hash.
+- **Retirement timing (amended 2026-10-14, PR #15 review P2).** A long note's legacy point stays live until every one
+  of its chunk slots is settled, so it keeps answering recall throughout. It is retired in the same completion step
+  that settles the last chunk slot, in the same registry transaction and under the same ticket fence. This way the
+  note never vanishes from recall: there is no window in which it has no live point.
+  - A ticket that settles some of the slots, but not all, leaves the legacy point in place.
+  - Until that step, the ledger counts the legacy point as an extra live point of the Memory. It is neither one of
+    the C expected slots nor a missing one. A2's `visible ≤ S + U` therefore gets one point of slack per note that is
+    mid-backfill, and 40d-1b's ledger must model that slack explicitly (a `points_retiring` term), never by loosening
+    the bound.
+
+**40d-1a as shipped.**
+
+- **Rust.** `humaux_projection::note_chunks` holds the frozen `NoteChunksV1` constants (W 480, overlap 64, stride
+  416, title prefix 119, separator `"\n"`, all in Unicode scalars). It provides:
+  - `legacy_capacity_holds(title, body)`, which is title + 3 + body ≤ `CardBudget::default().max_chars`. The 3 is the
+    legacy template's three `\n`. `fit_budget` drops the evidence placeholder whole before it cuts the body, so this
+    is exactly the condition for the body to survive the legacy card.
+  - `chunk_count`, `chunk_ranges`, `scalar_slice` (it slices only at scalar boundaries) and `chunk_card_text`.
+  - `NOTE_CHUNKS_V1_PROFILE_HASH`.
+  - `build_projection_plan(PlanInput { card, is_identity_note }) -> ProjectionPlan`, which returns either
+    `LegacyCardV1(build_card's outcome)` or `NoteChunksV1(Vec<NoteChunk>)`.
+    - A SECRET_MATERIAL note, or a note with no body, takes the legacy branch, where `build_card` excludes it or marks
+      it unbuildable.
+- **Chunk text.** Chunk entries carry plain `String` text, not a `RetrievalCard`. Sealing them (D-G) is 40d-1b's.
+- **Not wired.** The worker and rebuild still call `build_card`.
+- **SQL.** Migration 0237 adds `projection.note_chunk_count(text, text)`: IMMUTABLE STRICT PARALLEL SAFE, owner
+  `role_migration_owner`, EXECUTE `role_retrieval_worker` only. The ledger definer runs as the owner and needs no
+  grant. Its precheck refuses a non-UTF8 database, because `char_length` counts code points only in UTF8.
+- **Gates.**
+  - `legacy_cards_are_byte_identical`, `note_budget_boundary_is_exact`, `chunk_ranges_cover_entire_body`,
+    `chunk_count_matches_ranges`, `profile_hash_is_pinned` and `multibyte_bodies_round_trip_without_splitting_a_scalar`
+    are in `projection::note_chunks`.
+  - `rust_sql_chunk_count_parity` is in `adapters::tests::note_chunk_count_parity`. It compares SQL, the Rust closed
+    form and the slot count of the real plan.
 
 ## Slices
 
