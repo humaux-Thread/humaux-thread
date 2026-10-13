@@ -19,6 +19,10 @@
 //! The editor is a governance principal (`governance_ops::Governor`): a real credential, because consuming a confirm
 //! token rechecks the write scope against `control.api_keys` (ADR-0054 D-B).
 
+// Both fixtures (`operation_receipt_fixture`, `governance_ops`) carry their own `#[path] mod token_keys`; this is the one
+// test that loads both, and `token_keys::install` is idempotent per process, so the second copy is inert.
+#![allow(clippy::duplicate_mod)]
+
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant, SystemTime};
 
