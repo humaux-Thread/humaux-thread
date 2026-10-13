@@ -18,7 +18,11 @@ runs:
         rustup default 1.99.0
         rustc --version | grep -F 'rustc 1.99.0'
 
+    # Only the workspace's own target dir: auto-detection also picked up `tests/` and the metrics witness probe's
+    # generated manifests and logged ENOENT errors for their (absent) target dirs on every restore.
     - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ". -> target"
 
     - name: Install pinned Gitleaks fixture (v8.30.1, linux/arm64)
       shell: bash
