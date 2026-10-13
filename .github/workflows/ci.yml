@@ -223,17 +223,21 @@ jobs:
       # wired here before, so the maps could drift silently (PR #15 review). On drift the step regenerates the maps
       # and uploads the patch, so the fix comes from CI's own output (owner rule: nothing runs locally).
       - name: cargo xtask dep-map --check
+        id: depmap
         if: ${{ !cancelled() }}
         run: |
           if ! cargo xtask dep-map --check; then
             cargo xtask dep-map --write || true
-            git diff --binary -- docs/architecture deploy/env/example > "$RUNNER_TEMP/dep-map-drift.patch" || true
-            git diff --stat -- docs/architecture deploy/env/example
+            # Every path --write renders (docs/architecture, deploy/env/example, deploy/env/secret-fixture), new files
+            # included: the patch must be enough on its own to turn the next run green.
+            git add -A -- docs/architecture deploy/env
+            git diff --cached --binary -- docs/architecture deploy/env > "$RUNNER_TEMP/dep-map-drift.patch" || true
+            git diff --cached --stat -- docs/architecture deploy/env
             exit 1
           fi
 
       - name: upload the dep-map drift patch
-        if: ${{ failure() }}
+        if: ${{ failure() && steps.depmap.outcome == 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: dep-map-drift
