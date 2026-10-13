@@ -799,7 +799,7 @@ mod tests {
                 .as_array()
                 .expect("stable output union")
                 .len(),
-            17
+            18
         );
         assert_eq!(advertised["oneOf"][0]["$ref"], "#/$defs/Envelope");
         // ADR-0018: memory.supersede's two results are the third and fourth branches.
@@ -833,6 +833,8 @@ mod tests {
             advertised["oneOf"][16]["$ref"],
             "#/$defs/AuthorityCeilingExceeded"
         );
+        // ADR-0067 D-J (40c-1): a replacement against a stale `supersedes` is a business refusal, not an ErrorCode.
+        assert_eq!(advertised["oneOf"][17]["$ref"], "#/$defs/StaleNoteVersion");
         // D-D: the Envelope item may carry its affect annotations with effective_intensity.
         assert_eq!(
             advertised["$defs"]["Envelope"]["properties"]["items"]["items"]["properties"]["affects"]
