@@ -7,10 +7,11 @@
 //!   adapters::context_repo, adapters::postgres, adapters::retrieve, application::affect, domain::affect,
 //!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
 //!   projection::serving, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::operation_receipt, adapters::retrieve, gateway::context, gateway::memory, gateway::recall, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::operation_receipt, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
-//!   partially materialized; a PG error is DependencyUnavailable]
-//! Spec: none
+//!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
+//!   [`Lifecycle`] and always run [`Lifecycle::CURRENT`] (ADR-0067 D-J2)]
+//! Spec: ADR-0067 D-J2
 
 use std::collections::{HashMap, HashSet};
 
@@ -99,23 +100,164 @@ fn effective_authorization(
     }
 }
 
+/// ADR-0067 D-J2: the lifecycle statuses a read admits. `revoked` / `expired` are not representable (L-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusSet {
+    Active,
+    Superseded,
+    Both,
+}
+
+/// ADR-0067 D-J2: how a read treats `archived_at` (ADR-0024 D-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveMode {
+    Exclude,
+    Only,
+    Include,
+}
+
+/// ADR-0067 D-J2: one typed lifecycle selection of the shared final gate — statuses ⊆ {active, superseded}
+/// (non-empty) × archive ∈ {exclude, only, include}. The fields are private: a value comes only from
+/// [`Lifecycle::CURRENT`], `for_get`, [`Lifecycle::for_enumerate`] or the census's `ACTIVE_FINAL`, and the
+/// recall/context entry points of this module accept none at all (they run `CURRENT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lifecycle {
+    statuses: StatusSet,
+    archive: ArchiveMode,
+}
+
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self::CURRENT
+    }
+}
+
+/// [`Lifecycle::sql`]'s text. `{t}` = the `memory_records` alias, `{s}` = the bound `text[]` of statuses,
+/// `{a}` = the bound archive mode. Each status keeps its §59.1 G59-4 pairing with `superseded_by`; an unknown
+/// archive mode matches nothing (fail-closed).
+const LIFECYCLE_SQL: &str = "((({t}.status = 'active' AND {t}.superseded_by IS NULL \
+        AND 'active' = ANY(${s}::text[])) \
+     OR ({t}.status = 'superseded' AND {t}.superseded_by IS NOT NULL \
+        AND 'superseded' = ANY(${s}::text[]))) \
+    AND (CASE ${a}::text WHEN 'exclude' THEN {t}.archived_at IS NULL \
+                         WHEN 'only' THEN {t}.archived_at IS NOT NULL \
+                         WHEN 'include' THEN true \
+                         ELSE false END))";
+
+impl Lifecycle {
+    /// Recall, context and the default enumerate: active, not superseded, not archived.
+    pub const CURRENT: Self = Self {
+        statuses: StatusSet::Active,
+        archive: ArchiveMode::Exclude,
+    };
+
+    /// The §22.1 registry census's `ACTIVE_FINAL`: active and not superseded, archive not consulted (a registry
+    /// predicate owns its own archive stance).
+    pub(crate) const ACTIVE_FINAL: Self = Self {
+        statuses: StatusSet::Active,
+        archive: ArchiveMode::Include,
+    };
+
+    /// ADR-0067 D-H / D-J2: `memory.get` admits archived rows (it reports `archived:true`), and with
+    /// `include_history` the exact superseded version too.
+    pub(crate) const fn for_get(include_history: bool) -> Self {
+        Self {
+            statuses: if include_history {
+                StatusSet::Both
+            } else {
+                StatusSet::Active
+            },
+            archive: ArchiveMode::Include,
+        }
+    }
+
+    /// ADR-0067 D-J2: `memory.enumerate`'s selector from its wire values. `None` = the defaults (`["active"]`,
+    /// `"exclude"`).
+    ///
+    /// # Errors
+    /// [`ErrorCode::InvalidInput`] for an empty list, more than two entries, a duplicate, `revoked` / `expired`
+    /// (L-6) or any other value, and for an archive mode outside `exclude` / `only` / `include`.
+    pub fn for_enumerate(
+        statuses: Option<&[&str]>,
+        archive: Option<&str>,
+    ) -> Result<Self, ErrorCode> {
+        let statuses = statuses.unwrap_or(&["active"][..]);
+        if statuses.is_empty() || statuses.len() > 2 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let (mut active, mut superseded) = (false, false);
+        for status in statuses {
+            match *status {
+                "active" if !active => active = true,
+                "superseded" if !superseded => superseded = true,
+                _ => return Err(ErrorCode::InvalidInput),
+            }
+        }
+        let statuses = match (active, superseded) {
+            (true, false) => StatusSet::Active,
+            (false, true) => StatusSet::Superseded,
+            (true, true) => StatusSet::Both,
+            (false, false) => return Err(ErrorCode::InvalidInput),
+        };
+        let archive = match archive.unwrap_or("exclude") {
+            "exclude" => ArchiveMode::Exclude,
+            "only" => ArchiveMode::Only,
+            "include" => ArchiveMode::Include,
+            _ => return Err(ErrorCode::InvalidInput),
+        };
+        Ok(Self { statuses, archive })
+    }
+
+    /// The bound `text[]` of statuses, in canonical order (`active` before `superseded`).
+    pub(crate) fn status_wires(self) -> Vec<String> {
+        let wires: &[&str] = match self.statuses {
+            StatusSet::Active => &["active"],
+            StatusSet::Superseded => &["superseded"],
+            StatusSet::Both => &["active", "superseded"],
+        };
+        wires.iter().map(|wire| (*wire).to_owned()).collect()
+    }
+
+    /// The bound archive mode.
+    pub(crate) const fn archive_wire(self) -> &'static str {
+        match self.archive {
+            ArchiveMode::Exclude => "exclude",
+            ArchiveMode::Only => "only",
+            ArchiveMode::Include => "include",
+        }
+    }
+
+    /// The canonical text a cursor fingerprint binds: statuses joined by `,`, then `/` and the archive mode.
+    pub(crate) fn canonical(self) -> String {
+        format!("{}/{}", self.status_wires().join(","), self.archive_wire())
+    }
+
+    /// The selection as one SQL conjunct over `alias`, with the statuses bound at `$first` and the archive mode at
+    /// `$first + 1` ([`Self::status_wires`], [`Self::archive_wire`]). `alias` is server-owned text, never input.
+    pub(crate) fn sql(alias: &str, first: u8) -> String {
+        LIFECYCLE_SQL
+            .replace("{t}", alias)
+            .replace("{s}", &first.to_string())
+            .replace("{a}", &(first + 1).to_string())
+    }
+}
+
 /// Returns only Memory ids that may enter a final materialization in this transaction.
 ///
 /// This is the shared final eligibility gate: `can_read`, lifecycle, secret backing sources,
 /// and tombstoned backing Evidence. It deliberately returns ids rather than content so callers
-/// creating a snapshot manifest do not load and discard every Memory body.
+/// creating a snapshot manifest do not load and discard every Memory body. Current versions only
+/// ([`Lifecycle::CURRENT`]): the recall/context face of the gate takes no selection (ADR-0067 D-J2).
 pub(crate) async fn final_memory_ids_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
     candidates: &[Uuid],
-    include_archived: bool,
 ) -> Result<Vec<Uuid>, ErrorCode> {
     final_memory_ids_about_in_txn(
         txn,
         authorization,
         candidates,
-        include_archived,
-        false,
+        Lifecycle::CURRENT,
         &[],
         None,
     )
@@ -126,47 +268,43 @@ pub(crate) async fn final_memory_ids_in_txn(
 /// `subject_ids` is non-empty, only memories linked (`private.memory_subjects`, read under the
 /// caller's RLS) to at least one of them survive. Qdrant's `subject_ids` payload prefilter is
 /// never trusted on its own — this is the authoritative membership test, in the same shared
-/// gate `include_archived` lives in. Empty `subject_ids` = no subject narrowing.
+/// gate the [`Lifecycle`] selection lives in. Empty `subject_ids` = no subject narrowing.
 ///
 /// §8.5.1 / ADR-0030 D-D: `affect` is the explicit affect query, re-checked here per annotation
 /// on the read-time effective intensity (Qdrant's flat-array prefilter is an over-approximation
 /// across annotations and cannot compute decay). ONE extra round trip for the whole candidate
 /// set (`affect_repo::AFFECTS_FOR_MEMORIES_SQL`), never a per-row query. `None` = unscoped.
 ///
-/// ADR-0067 D-H: `include_superseded` widens ONLY the lifecycle conjunct, to also admit a `superseded` row
-/// (`memory.get` with `include_history`); `revoked`/`expired`, secret backing and tombstoned Evidence stay excluded.
-/// Every recall/context/enumerate caller passes `false`.
+/// ADR-0067 D-J2: `lifecycle` is the read's typed selection (recall/context reach this gate only through
+/// [`final_memory_ids_in_txn`] / [`materialize_final_bodies_about_in_txn`], which pass [`Lifecycle::CURRENT`]).
+/// `revoked`/`expired` (L-6), secret backing and tombstoned Evidence stay excluded under every selection.
 pub(crate) async fn final_memory_ids_about_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
     candidates: &[Uuid],
-    include_archived: bool,
-    include_superseded: bool,
+    lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<Vec<Uuid>, ErrorCode> {
     let readable = readable_memory_ids(txn, authorization, candidates).await?;
     let subject_filter: Option<Vec<Uuid>> =
         (!subject_ids.is_empty()).then(|| subject_ids.iter().map(|s| s.0).collect());
-    let rows = sqlx::query(
+    // $1 tenant, $2 candidates, $3 subject filter, $4/$5 the ADR-0067 D-J2 lifecycle (statuses, archive mode).
+    let sql = format!(
         r#"
         SELECT m.memory_id
         FROM private.memory_records AS m
         WHERE m.tenant_id = $1
           AND m.memory_id = ANY($2)
-          -- ADR-0067 D-H: `$5` admits the superseded version itself for memory.get include_history.
-          AND ((m.status = 'active' AND m.superseded_by IS NULL)
-               OR ($5::boolean AND m.status = 'superseded'))
-          -- Q3/ADR-0024 D-C: recall/context/enumerate exclude archived rows here (the shared
-          -- final-eligibility gate); only memory.get passes include_archived=true.
-          AND (m.archived_at IS NULL OR $3::boolean)
+          -- ADR-0067 D-J2 (Q3/ADR-0024 D-C for the archive mode): one bound lifecycle selection.
+          AND {lifecycle}
           -- §6.1.3/ADR-0029 D-A: subject any-of re-check (NULL = not subject-scoped).
-          AND ($4::uuid[] IS NULL OR EXISTS (
+          AND ($3::uuid[] IS NULL OR EXISTS (
               SELECT 1
               FROM private.memory_subjects AS ms
               WHERE ms.tenant_id = m.tenant_id
                 AND ms.memory_id = m.memory_id
-                AND ms.subject_id = ANY($4::uuid[])
+                AND ms.subject_id = ANY($3::uuid[])
           ))
           AND NOT EXISTS (
               SELECT 1
@@ -190,15 +328,17 @@ pub(crate) async fn final_memory_ids_about_in_txn(
                 AND sl.state = 'TOMBSTONED'
           )
         "#,
-    )
-    .bind(authorization.tenant_id().0)
-    .bind(candidates)
-    .bind(include_archived)
-    .bind(subject_filter)
-    .bind(include_superseded)
-    .fetch_all(&mut **txn)
-    .await
-    .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        lifecycle = Lifecycle::sql("m", 4),
+    );
+    let rows = sqlx::query(&sql)
+        .bind(authorization.tenant_id().0)
+        .bind(candidates)
+        .bind(subject_filter)
+        .bind(lifecycle.status_wires())
+        .bind(lifecycle.archive_wire())
+        .fetch_all(&mut **txn)
+        .await
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
 
     let eligible = rows
         .into_iter()
@@ -227,8 +367,7 @@ async fn load_memories(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
     candidates: &[Uuid],
-    include_archived: bool,
-    include_superseded: bool,
+    lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<Vec<(Uuid, serde_json::Value)>, ErrorCode> {
@@ -236,8 +375,7 @@ async fn load_memories(
         txn,
         authorization,
         candidates,
-        include_archived,
-        include_superseded,
+        lifecycle,
         subject_ids,
         affect,
     )
@@ -480,7 +618,6 @@ pub async fn materialize_final_bodies(
         validated_key,
         memory_ids,
         overlay,
-        false,
     )
     .await?;
     txn.commit()
@@ -496,17 +633,16 @@ pub async fn materialize_final_bodies(
 /// tombstoned Evidence exclusion all stay in that single implementation. An absent final
 /// Memory row intentionally maps to the object-level `NOT_FOUND` result.
 ///
-/// ADR-0067 D-H: `include_superseded` (memory.get `include_history`) also admits the exact version asked for when it
-/// is `superseded`; every other gate conjunct is unchanged.
+/// ADR-0067 D-H / D-J2: `include_history` (memory.get) also admits the exact version asked for when it is
+/// `superseded`; archived rows are always admitted here (ADR-0024 D-C); every other gate conjunct is unchanged.
 pub(crate) async fn materialize_one_memory_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     authorization: &AuthorizationScope,
     expected_family: &StreamFamily,
     validated_key: &StreamKey,
     memory_id: MemoryId,
-    include_superseded: bool,
+    include_history: bool,
 ) -> Result<MaterializedBodies, ErrorCode> {
-    // Q3/ADR-0024 D-C: memory.get is the one read that must still return an archived row.
     let bodies = materialize_final_bodies_gated_in_txn(
         txn,
         authorization,
@@ -514,8 +650,7 @@ pub(crate) async fn materialize_one_memory_in_txn(
         validated_key,
         &[memory_id.0],
         &[],
-        true,
-        include_superseded,
+        Lifecycle::for_get(include_history),
         &[],
         None,
     )
@@ -532,7 +667,8 @@ pub(crate) async fn materialize_one_memory_in_txn(
     Ok(bodies)
 }
 
-/// Materializes final bodies through a caller-owned repeatable-read transaction.
+/// Materializes final bodies through a caller-owned repeatable-read transaction, current versions only
+/// ([`Lifecycle::CURRENT`]).
 ///
 /// The trusted StreamFamily and complete StreamKey are revalidated before any
 /// query. Callers establish repeatable-read before their first query; authorized manifest
@@ -544,7 +680,6 @@ pub(crate) async fn materialize_final_bodies_in_txn(
     validated_key: &StreamKey,
     memory_ids: &[Uuid],
     overlay: &[OverlayCandidate],
-    include_archived: bool,
 ) -> Result<MaterializedBodies, ErrorCode> {
     materialize_final_bodies_about_in_txn(
         txn,
@@ -553,7 +688,30 @@ pub(crate) async fn materialize_final_bodies_in_txn(
         validated_key,
         memory_ids,
         overlay,
-        include_archived,
+        &[],
+        None,
+    )
+    .await
+}
+
+/// ADR-0067 D-J2: the `memory.enumerate` page bodies under the request's [`Lifecycle`] (no overlay, no subject or
+/// affect re-check — the manifest predicate already carried those axes).
+pub(crate) async fn materialize_selected_bodies_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    authorization: &AuthorizationScope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    memory_ids: &[Uuid],
+    lifecycle: Lifecycle,
+) -> Result<MaterializedBodies, ErrorCode> {
+    materialize_final_bodies_gated_in_txn(
+        txn,
+        authorization,
+        expected_family,
+        validated_key,
+        memory_ids,
+        &[],
+        lifecycle,
         &[],
         None,
     )
@@ -570,7 +728,9 @@ pub(crate) async fn materialize_final_bodies_in_txn(
 /// §8.5.1 / ADR-0030 D-D: with an `affect` filter the overlay's raw Evidence items are dropped
 /// too — an Evidence has no affect rows (affects hang on memories), so it can never satisfy the
 /// filter; the memories it links still enter the candidate set and pass the same gate.
-#[allow(clippy::too_many_arguments)] // One gate, two more axes (subject, affect) next to `include_archived`.
+///
+/// Recall's face of the gate: always [`Lifecycle::CURRENT`] (Q3/ADR-0024 D-C, ADR-0067 D-J2).
+#[allow(clippy::too_many_arguments)] // One gate, two more axes (subject, affect).
 pub(crate) async fn materialize_final_bodies_about_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     authorization: &AuthorizationScope,
@@ -578,7 +738,6 @@ pub(crate) async fn materialize_final_bodies_about_in_txn(
     validated_key: &StreamKey,
     memory_ids: &[Uuid],
     overlay: &[OverlayCandidate],
-    include_archived: bool,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<MaterializedBodies, ErrorCode> {
@@ -589,16 +748,14 @@ pub(crate) async fn materialize_final_bodies_about_in_txn(
         validated_key,
         memory_ids,
         overlay,
-        include_archived,
-        false,
+        Lifecycle::CURRENT,
         subject_ids,
         affect,
     )
     .await
 }
 
-/// The one body of [`materialize_final_bodies_about_in_txn`], plus the ADR-0067 D-H `include_superseded` lifecycle
-/// choice of the shared gate (only `memory.get` with `include_history` passes `true`).
+/// The one body of every final-body read, with the ADR-0067 D-J2 [`Lifecycle`] of the shared gate.
 #[allow(clippy::too_many_arguments)] // the gate's axes, one call per read route
 async fn materialize_final_bodies_gated_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -607,8 +764,7 @@ async fn materialize_final_bodies_gated_in_txn(
     validated_key: &StreamKey,
     memory_ids: &[Uuid],
     overlay: &[OverlayCandidate],
-    include_archived: bool,
-    include_superseded: bool,
+    lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<MaterializedBodies, ErrorCode> {
@@ -627,8 +783,7 @@ async fn materialize_final_bodies_gated_in_txn(
         txn,
         &authorization,
         &candidate_ids,
-        include_archived,
-        include_superseded,
+        lifecycle,
         subject_ids,
         affect,
     )
@@ -708,6 +863,47 @@ pub(crate) async fn memory_note_kinds_in_txn(
         note_ids.insert(memory_id, note_id);
     }
     Ok((kinds, note_ids))
+}
+
+/// ADR-0067 D-J2: `memory_id → "active" | "superseded"` and the archived ids among `ids`, under the transaction's RLS —
+/// the per-item lifecycle a `memory.enumerate` page reports. A status outside the two (L-6) is a gate bypass, so
+/// `Internal`.
+pub(crate) async fn memory_versions_in_txn(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> Result<(HashMap<Uuid, &'static str>, HashSet<Uuid>), ErrorCode> {
+    let mut statuses = HashMap::new();
+    let mut archived = HashSet::new();
+    if ids.is_empty() {
+        return Ok((statuses, archived));
+    }
+    let rows = sqlx::query(
+        "SELECT memory_id, status, archived_at IS NOT NULL AS archived FROM private.memory_records \
+         WHERE tenant_id = $1 AND memory_id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(ids)
+    .fetch_all(&mut **txn)
+    .await
+    .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    for row in &rows {
+        let memory_id: Uuid = row.try_get("memory_id").map_err(|_| ErrorCode::Internal)?;
+        let status: String = row.try_get("status").map_err(|_| ErrorCode::Internal)?;
+        let status = match status.as_str() {
+            "active" => "active",
+            "superseded" => "superseded",
+            _ => return Err(ErrorCode::Internal),
+        };
+        statuses.insert(memory_id, status);
+        if row
+            .try_get::<bool, _>("archived")
+            .map_err(|_| ErrorCode::Internal)?
+        {
+            archived.insert(memory_id);
+        }
+    }
+    Ok((statuses, archived))
 }
 
 /// ADR-0067 D-H: `derivation_strategy` of a Memory with no identity contract. Every such Memory reaches the store

@@ -5,9 +5,9 @@
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
 //!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
 //!   adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
-//!   adapters::operation_receipt, adapters::postgres, adapters::subject_repo, domain::affect, domain::audit,
-//!   domain::authority, domain::confirm, domain::context, domain::continuity, domain::dataclass,
-//!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
+//!   adapters::operation_receipt, adapters::postgres, adapters::read_materialize, adapters::subject_repo,
+//!   domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity,
+//!   domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
@@ -32,12 +32,13 @@ use humaux_adapters::{
     affect_repo,
     byok::json_has_nul,
     confirm_token_repo::ConfirmationClaim,
-    context_repo::{MemoryEnumerationParams, NoteEnumerationFilter},
+    context_repo::{MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter},
     distill_repo::{ConfirmOutcome, RejectOutcome},
     memory_governance_repo::{self, ArchiveResult, RestoreResult},
     note_repo::NoteIntake,
     operation_receipt::{self, AtomicRememberRequest, NoteReplaceOutcome, NoteReplaceRequest},
     postgres::RuntimeDbPool,
+    read_materialize::Lifecycle,
     subject_repo,
 };
 use humaux_domain::{
@@ -706,8 +707,19 @@ impl GatewayMcpApplication {
         raw_arguments: &str,
         value: &Value,
     ) -> Result<ToolOutput, ErrorCode> {
-        let memory_id =
-            MemoryId::parse(value["memory_id"].as_str().ok_or(ErrorCode::InvalidInput)?)?;
+        // ADR-0067 D-J2: `memory_id` XOR `note_id` (the schema's oneOf, re-checked here); never a fallback between them.
+        let target = match (value.get("memory_id"), value.get("note_id")) {
+            (Some(memory_id), None) => MemoryGetTarget::Memory(MemoryId::parse(
+                memory_id.as_str().ok_or(ErrorCode::InvalidInput)?,
+            )?),
+            (None, Some(note_id)) => MemoryGetTarget::Note(
+                note_id
+                    .as_str()
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                    .ok_or(ErrorCode::InvalidInput)?,
+            ),
+            _ => return Err(ErrorCode::InvalidInput),
+        };
         let requested_workspace = workspace(value)?;
         // ADR-0067 D-H: absent = false, the pre-40b contract.
         let include_history = value
@@ -731,7 +743,7 @@ impl GatewayMcpApplication {
                         request.authorization().clone(),
                         request.workspace_id(),
                         bootstrap,
-                        memory_id,
+                        target,
                         include_history,
                         |result| {
                             let value =
@@ -830,9 +842,16 @@ impl GatewayMcpApplication {
         // silently drop them (and skip the window check), so the combination is refused.
         if (value.get("candidates").and_then(Value::as_bool) == Some(true)
             || value.get("subjects").and_then(Value::as_bool) == Some(true))
-            && ["note_kinds", "since", "until"]
-                .iter()
-                .any(|key| value.get(*key).is_some())
+            && [
+                "note_kinds",
+                "since",
+                "until",
+                "statuses",
+                "archive",
+                "note_id",
+            ]
+            .iter()
+            .any(|key| value.get(*key).is_some())
         {
             return Err(ErrorCode::InvalidInput);
         }
@@ -870,6 +889,8 @@ impl GatewayMcpApplication {
             .transpose()?
             .map(|id| id.0);
         let notes = note_enumeration_filter(value)?;
+        // ADR-0067 D-J2: items carry `status` whenever the request named `statuses`.
+        let with_status = value.get("statuses").is_some();
         let pool = self.runtime_pool.clone();
         let bootstrap = self.context_bootstrap.clone();
         let catalog = self.catalog.clone();
@@ -896,6 +917,7 @@ impl GatewayMcpApplication {
                             subject_id,
                         },
                         notes,
+                        with_status,
                         |result| {
                             let value =
                                 serde_json::to_value(result).map_err(|_| ErrorCode::Internal)?;
@@ -2381,8 +2403,10 @@ fn workspace(value: &Value) -> Result<Option<WorkspaceId>, ErrorCode> {
     )))
 }
 
-/// ADR-0067 D-G: `memory.enumerate`'s note axes, typed at the edge. An unknown kind or a bound that is not RFC 3339 is
-/// `INVALID_INPUT`; `since >= until` is refused by the adapter, next to the predicate it would describe.
+/// ADR-0067 D-G / D-J2: `memory.enumerate`'s note and history axes, typed at the edge. An unknown kind, a bound that is
+/// not RFC 3339, a `note_id` that is not a uuid, or a `statuses` / `archive` value [`Lifecycle::for_enumerate`] refuses
+/// (`revoked` / `expired` included, L-6) is `INVALID_INPUT`; `since >= until` is refused by the adapter, next to the
+/// predicate it would describe.
 fn note_enumeration_filter(value: &Value) -> Result<NoteEnumerationFilter, ErrorCode> {
     let note_kinds = value
         .get("note_kinds")
@@ -2409,10 +2433,35 @@ fn note_enumeration_filter(value: &Value) -> Result<NoteEnumerationFilter, Error
             })
             .transpose()
     };
+    let statuses = value
+        .get("statuses")
+        .map(|statuses| -> Result<Vec<&str>, ErrorCode> {
+            statuses
+                .as_array()
+                .ok_or(ErrorCode::InvalidInput)?
+                .iter()
+                .map(|status| status.as_str().ok_or(ErrorCode::InvalidInput))
+                .collect()
+        })
+        .transpose()?;
+    let archive = value
+        .get("archive")
+        .map(|archive| archive.as_str().ok_or(ErrorCode::InvalidInput))
+        .transpose()?;
+    let note_id = value
+        .get("note_id")
+        .map(|id| {
+            id.as_str()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .ok_or(ErrorCode::InvalidInput)
+        })
+        .transpose()?;
     Ok(NoteEnumerationFilter {
         note_kinds,
         occurred_since: bound("since")?,
         occurred_until: bound("until")?,
+        note_id,
+        lifecycle: Lifecycle::for_enumerate(statuses.as_deref(), archive)?,
     })
 }
 

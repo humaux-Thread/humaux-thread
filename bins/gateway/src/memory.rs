@@ -15,8 +15,8 @@ use humaux_adapters::{
     affect_repo::{self, AffectInput, AffectRow, AnnotateDone},
     context_repo::{
         self, BindingWriteOutcome, BindingWriteRequest, EnumerationCensus, MaterializedMemory,
-        MemoryEnumerationParams, NoteEnumerationFilter, materialize_memory_enumeration_filtered,
-        materialize_memory_get_versioned,
+        MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter,
+        materialize_memory_enumeration_filtered, materialize_memory_get_target,
     },
     distill_repo::{
         self, ConfirmOutcome, ConfirmRequest, PendingCandidate, RejectOutcome, RejectRequest,
@@ -87,6 +87,10 @@ pub(crate) struct MemoryItem {
     /// ADR-0067 D-J: the note this version belongs to; absent for a Memory that is not a note.
     #[serde(skip_serializing_if = "Option::is_none")]
     note_id: Option<Uuid>,
+    /// ADR-0067 D-J2: `"active"` / `"superseded"`, only on a `memory.enumerate` page whose request named `statuses`
+    /// (never together with `history`, which carries its own `status`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'static str>,
     /// ADR-0067 D-H: lifecycle + provenance, present only on `memory.get` with `include_history`.
     #[serde(flatten)]
     history: Option<HistoryItem>,
@@ -219,33 +223,38 @@ async fn affects_by_memory(
 }
 
 /// `include_history` (ADR-0067 D-H): `false` keeps the pre-40b contract byte for byte (a superseded id is
-/// `NOT_FOUND`); `true` returns the exact version asked for with its lifecycle and provenance.
+/// `NOT_FOUND`); `true` returns the exact version asked for with its lifecycle and provenance. `target` (ADR-0067 D-J2)
+/// is one version or one note; a note is read at its head, and the DirectGet plan names the version actually read.
 pub(crate) async fn get<T>(
     pool: Arc<RuntimeDbPool>,
     authorization: AuthorizationScope,
     requested_workspace: Option<WorkspaceId>,
     bootstrap: ContextBootstrap,
-    memory_id: MemoryId,
+    target: MemoryGetTarget,
     include_history: bool,
     accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
     let (authorization, scope, family, stream, serving_version) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    let request = build_request(
-        RetrievalIntent::trusted_memory_get(memory_id),
-        &bootstrap.profile,
-    )
-    .map_err(|_| ErrorCode::Internal)?;
-    let materialized = materialize_memory_get_versioned(
+    let materialized = materialize_memory_get_target(
         &pool,
         &authorization,
         &scope,
         &family,
         &stream,
-        memory_id,
+        target,
         include_history,
     )
     .await?;
+    let memory_id = match materialized.bodies.items.as_slice() {
+        [MaterializedItem::Memory { memory_id, .. }] => MemoryId(*memory_id),
+        _ => return Err(ErrorCode::Internal),
+    };
+    let request = build_request(
+        RetrievalIntent::trusted_memory_get(memory_id),
+        &bootstrap.profile,
+    )
+    .map_err(|_| ErrorCode::Internal)?;
     let affects = affects_by_memory(&pool, &authorization, &materialized).await?;
     let archived = materialized.archived;
     let visible = bootstrap
@@ -339,7 +348,9 @@ fn candidate_item(row: PendingCandidate) -> Result<CandidateItem, ErrorCode> {
     })
 }
 
-/// `notes` (ADR-0067 D-G) narrows the EXACT predicate itself — manifest, census and cursor fingerprint alike.
+/// `notes` (ADR-0067 D-G / D-J2) narrows the EXACT predicate itself — manifest, census, page gate and cursor
+/// fingerprint alike. `with_status` (the request named `statuses`) puts each item's `status` on the wire.
+#[allow(clippy::too_many_arguments)] // the read's fixed inputs + the D-J2 item-status switch
 pub(crate) async fn enumerate<T>(
     pool: Arc<RuntimeDbPool>,
     authorization: AuthorizationScope,
@@ -347,6 +358,7 @@ pub(crate) async fn enumerate<T>(
     bootstrap: ContextBootstrap,
     params: MemoryEnumerationParams<'_>,
     notes: NoteEnumerationFilter,
+    with_status: bool,
     accept: impl FnOnce(EnumerationResult) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
     let (authorization, scope, family, stream, serving_version) =
@@ -356,7 +368,7 @@ pub(crate) async fn enumerate<T>(
         &bootstrap.profile,
     )
     .map_err(|_| ErrorCode::Internal)?;
-    let page = materialize_memory_enumeration_filtered(
+    let mut page = materialize_memory_enumeration_filtered(
         &pool,
         &authorization,
         &scope,
@@ -366,6 +378,10 @@ pub(crate) async fn enumerate<T>(
         &notes,
     )
     .await?;
+    // ADR-0067 D-J2: an item carries `status` only when the request named `statuses`.
+    if !with_status {
+        page.memory.statuses.clear();
+    }
     let pagination = Pagination {
         snapshot_id: page.snapshot_id,
         next_cursor: page.next_cursor,
@@ -903,13 +919,13 @@ fn memory_items(
         .into_iter()
         .map(|item| -> Result<MemoryItem, ErrorCode> {
             match item {
-                // Q3/ADR-0024 D-C: memory.get carries `archived` on its single item; enumerate
-                // never returns an archived row so it passes `false`.
+                // Q3/ADR-0024 D-C: memory.get carries `archived` on its single item; an enumerate page that selected
+                // archived rows (ADR-0067 D-J2) names them in `archived_ids`.
                 MaterializedItem::Memory { memory_id, content } => Ok(MemoryItem {
                     item: ContextItem {
                         memory_id,
                         content,
-                        archived,
+                        archived: archived || materialized.archived_ids.contains(&memory_id),
                     },
                     subjects: materialized.subjects.remove(&memory_id).unwrap_or_default(),
                     affects: affects.remove(&memory_id).unwrap_or_default(),
@@ -918,6 +934,7 @@ fn memory_items(
                         .get(&memory_id)
                         .map(|kind| kind.wire()),
                     note_id: materialized.note_ids.get(&memory_id).copied(),
+                    status: materialized.statuses.get(&memory_id).copied(),
                     history: history
                         .take_if(|read| read.memory_id == memory_id)
                         .map(history_item)

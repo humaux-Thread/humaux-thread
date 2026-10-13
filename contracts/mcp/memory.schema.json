@@ -16,18 +16,34 @@
           "type": "string",
           "format": "uuid"
         },
+        "note_id": {
+          "description": "ADR-0067 D-J2: read the note's current version (its head), instead of memory_id. Exactly one of memory_id / note_id; neither ever falls back to the other. A forgotten, tombstoned or otherwise unreadable head is NOT_FOUND.",
+          "type": "string",
+          "format": "uuid"
+        },
         "workspace_id": {
           "type": "string",
           "format": "uuid"
         },
         "include_history": {
-          "description": "ADR-0067 D-H: true returns the exact version asked for even when it is superseded (never its successor), with status, superseded_by (only when readable) and provenance. Revoked, expired, forgotten and tombstoned versions stay NOT_FOUND. Default false: the response is unchanged and a superseded id is NOT_FOUND.",
+          "description": "ADR-0067 D-H: true returns the exact version asked for even when it is superseded (never its successor), with status, superseded_by (only when readable) and provenance. Revoked, expired, forgotten and tombstoned versions stay NOT_FOUND. Default false: the response is unchanged and a superseded id is NOT_FOUND. With note_id it reads the head.",
           "type": "boolean"
         }
       },
       "required": [
-        "action",
-        "memory_id"
+        "action"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "memory_id"
+          ]
+        },
+        {
+          "required": [
+            "note_id"
+          ]
+        }
       ],
       "additionalProperties": false
     },
@@ -98,6 +114,34 @@
           "description": "ADR-0067 D-G: exclusive upper bound on occurred_at (RFC 3339); since must be earlier than until.",
           "type": "string",
           "format": "date-time"
+        },
+        "statuses": {
+          "description": "ADR-0067 D-J2: the lifecycle statuses the exact predicate (and its census) admits; default [\"active\"]. revoked and expired are never readable (L-6). When given, every item carries its status; a cursor is bound to the selection.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "active",
+              "superseded"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "archive": {
+          "description": "ADR-0067 D-J2: exclude (default) leaves archived versions out, only lists just them, include lists both; a cursor is bound to the selection.",
+          "type": "string",
+          "enum": [
+            "exclude",
+            "only",
+            "include"
+          ]
+        },
+        "note_id": {
+          "description": "ADR-0067 D-J2: restrict the exact predicate to the versions of this note; with statuses [\"active\",\"superseded\"] and archive include it is the note's version list. A cursor is bound to it.",
+          "type": "string",
+          "format": "uuid"
         }
       },
       "required": [

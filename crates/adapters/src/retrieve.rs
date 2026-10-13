@@ -1034,7 +1034,7 @@ pub async fn materialize_private_read_serving(
 /// [`materialize_private_read_serving`] narrowed to memories linked to any of `subject_ids`
 /// (§6.1.3 / ADR-0029 D-A). The Qdrant `subject_ids` prefilter the caller applied is not
 /// trusted: membership is re-checked against `private.memory_subjects` at the shared PG hydrate
-/// gate (`read_materialize::final_memory_ids_about_in_txn`), the same place `include_archived`
+/// gate (`read_materialize::final_memory_ids_about_in_txn`), the same place the lifecycle selection
 /// is enforced. Empty `subject_ids` = the unscoped read. `affect` (§8.5.1 / ADR-0030 D-D) is
 /// re-checked at the same gate per annotation on the read-time effective intensity.
 #[allow(clippy::too_many_arguments)] // Same fixed argument set as the unscoped entry + two axes.
@@ -1184,9 +1184,8 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
         &envelope.validated_stream_key,
         &serving.memory_ids,
         &serving.overlay,
-        // Q3/ADR-0024 D-C: recall.search excludes archived rows at this shared hydrate gate
-        // (the Qdrant points stay; PG filters). memory.get is the only caller passing true.
-        false,
+        // Q3/ADR-0024 D-C, ADR-0067 D-J2: this face of the shared hydrate gate is always `Lifecycle::CURRENT`
+        // (archived and superseded rows excluded; the Qdrant points stay, PG filters).
         // §6.1.3/ADR-0029 D-A: subject membership re-check at the same gate.
         subject_ids,
         // §8.5.1/ADR-0030 D-D: affect re-check (per annotation, effective intensity) too.

@@ -284,6 +284,17 @@ adjudication tests, so the one-column conflict is latent, not live. The rule, ch
   - `memory.get` takes `memory_id` XOR `note_id`. A `note_id` resolves the head through `note_heads`, then runs the same
     gate. A `memory_id` never falls back to a note, and vice versa.
 
+**40c-2 as shipped.**
+
+- **`Lifecycle` type.** Its fields are private. Values come only from `CURRENT`, `ACTIVE_FINAL` (registry), `for_get` and the validated `for_enumerate`.
+  - The recall and context entry points take no lifecycle at all; they hardwire `CURRENT`.
+  - Only the enumerate mint and pages, `get`, and the note-head lock accept a selection.
+- **Shared SQL fragment.** One fragment, with statuses and archive mode as bound parameters, ANDs onto both faces of the enumerate predicate. `ENUMERATION_PREDICATE` becomes `true`: the archive axis moved into the fragment.
+- **Registry path.** It binds `ACTIVE_FINAL`, which is active × archive include, its previous semantics.
+- **`get(note_id)`.** It builds its DirectGet plan from the head's `memory_id`.
+- **Enumerate items** carry their own `archived` flag when an archive selection admits archived rows.
+- **Possible plan cost.** The archive axis is a CASE on a bound parameter, so the planner may stop choosing the `archived_at IS NULL` partial index under generic plans. The scale bar (`enumerate_scale`, ignored tier) is the signal.
+
 ## Acceptance (gates; each must be shown red once before it counts)
 
 40a: G01 a barrier before COMMIT yields no `stored` and no half object in another session; `get` right after the
@@ -336,7 +347,4 @@ stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
   (signal: card 40's 64 KiB recall fixture, or a note recall miss reported against text past the card budget).
 - L-6 No operation writes `revoked`/`expired` to a Memory; the first one must define its effect on superseded versions and
   note heads (D-J2 status decision). Until then history is `{active, superseded}` only.
-- L-5 Until slice 40c-2, `memory.enumerate` lists current versions only (no `statuses` axis, no archive selection) and
-  `memory.get` takes no `note_id` selector (40c-1 outputs `note_id`); superseded versions are reachable one id at a time through `get` with
-  `include_history` (signal: a compat-facade `memory_enumerate(status=…)` fixture in card 42, or a replace flow in 40c
-  that must list a note's versions).
+- L-5 (closed by 40c-2): `memory.enumerate` gained `statuses`/`archive`/`note_id` and `memory.get` a `note_id` selector.
