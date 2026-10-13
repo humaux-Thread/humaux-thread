@@ -1,5 +1,5 @@
 name: humaux-thread setup
-# Shared by the `ci` and `live` jobs of ci.yml: pinned toolchain, cargo cache, the gitleaks
+# Shared by every job of ci.yml (lint, test-a, test-b, serial-lane, live): pinned toolchain, cargo cache, the gitleaks
 # fixture the tests pin, and the runbook §2 provisioning of the throwaway postgres service
 # (roles rotate --create-missing → migrate → rotate role_admin). The caller sets the DB env
 # (HUMAUX_TEST_PG_DSN / HUMAUX_MIGRATOR_PG_DSN) and declares the services; this action
@@ -18,7 +18,11 @@ runs:
         rustup default 1.99.0
         rustc --version | grep -F 'rustc 1.99.0'
 
+    # Only the workspace's own target dir: auto-detection also picked up `tests/` and the metrics witness probe's
+    # generated manifests and logged ENOENT errors for their (absent) target dirs on every restore.
     - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ". -> target"
 
     - name: Install pinned Gitleaks fixture (v8.30.1, linux/arm64)
       shell: bash

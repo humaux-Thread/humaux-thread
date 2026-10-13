@@ -44,19 +44,22 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
-  ci:
-    name: fmt + check + clippy + test + gates
-    # Pinned image, not ubuntu-latest: a runner image upgrade must not change what
-    # the chain proves. linux/arm64 because §67.2 freezes the production host on ARM and
-    # the card-37 scratch images (deploy/images/postgres, qdrant by digest) are pinned
-    # --platform linux/arm64: on an x64 runner their builds fail with exit 255 (run
-    # 37615291083). 4 vCPU / 16 GB, free on public repositories.
+  # Every job: the pinned image ubuntu-24.04-arm, not ubuntu-latest — a runner image upgrade must not change what
+  # the chain proves; linux/arm64 because §67.2 freezes the production host on ARM and the card-37 scratch images
+  # (deploy/images/postgres, qdrant by digest) are pinned --platform linux/arm64: on an x64 runner their builds fail
+  # with exit 255 (run 37615291083). 4 vCPU / 16 GB, free on public repositories. The services are the 被测对象,
+  # versions aligned with the dev machine (postgres:18 / qdrant v1.19.0).
+  #
+  # Card 39b CI speed-up (owner, 2026-10-13: "思考怎么能够快速的跑ci"): the one job ran fmt/check/clippy, ~200
+  # test binaries (cargo runs them one after another, ~20 min) and the serial lane (~17 min) back to back, 44 min
+  # per round trip (run 38317757308). They are four parallel jobs now, each with its own throwaway postgres and
+  # qdrant (the same services and env, YAML anchors below), and the required check keeps its name as the
+  # summary job at the end. Nothing is skipped or loosened: the same commands run, split across runners.
+  lint:
+    name: fmt + check + clippy + xtask gates
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 150
-
-    # 被测对象。版本与本机开发环境逐一对齐（postgres:18 / qdrant v1.19.0）——
-    # 版本漂移会让 CI 证明的东西和开发机证明的东西不是同一个。
-    services:
+    timeout-minutes: 60
+    services: &services
       postgres:
         image: postgres:18
         env:
@@ -80,7 +83,7 @@ jobs:
           - 6333:6333
           - 6334:6334
 
-    env:
+    env: &ci-env
       # ADR-0059 D-A: `migrate` refuses to create a 0011 role with the repository
       # placeholder password, so a fresh cluster is provisioned the way production is
       # (runbook §2) in the step below. The migrate principal is the service superuser:
@@ -123,86 +126,6 @@ jobs:
 
       - name: cargo clippy --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # --no-fail-fast: one run shows every red binary, not just the first (§57.1 rule 2:
-      # a stop at the first failure hides the rest behind it). Three invocations, not one:
-      #  · humaux-maintenance under `umask 000`: the card-37 scratch sources bind-mount a
-      #    directory the test just created into the postgres container, where pgbackrest
-      #    (uid 999) must create `repo` in it. Docker Desktop on the dev Mac maps the owner
-      #    silently; native Linux does not (run 37620876690: "unable to create path
-      #    '/var/lib/pgbackrest/repo': Permission denied"). World-writable scratch on a
-      #    throwaway runner is the smallest equivalent of that mapping.
-      #  · humaux-gateway with --test-threads=2: its tests spawn the real gateway binary
-      #    under a 5 s listen deadline (mcp_gateway.rs GATEWAY_PROCESS_START_TIMEOUT);
-      #    four concurrent bootstraps on the 4-vCPU arm runner missed it, two do not.
-      - name: cargo test
-        shell: bash
-        run: |
-          set -uo pipefail
-          rc=0
-          cargo test --workspace --no-fail-fast --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
-          # retrieval-provider: four lib tests (adapters::tests::dashscope_query_sut_…,
-          # dispatched_transport_failure_…, mark_failure_stops_…, persistent_budget_rejection_…)
-          # hard-code the machine-local `127.0.0.1:61719` request-guard container
-          # (adapters.rs checked_query_dsn) instead of accepting the repo-wide isolated
-          # database like g80_31_handoff.rs does, so under HUMAUX_REQUIRE_DB they can only
-          # fail here. Skipped BY NAME, not by unsetting the require flag (§79.2); the
-          # portability defect is a follow-up card. Everything else in the package runs.
-          cargo test -p humaux-retrieval-provider --no-fail-fast -- \
-            --skip adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport \
-            --skip adapters::tests::dispatched_transport_failure_consumes_budget \
-            --skip adapters::tests::mark_failure_stops_before_transport_and_releases_budget \
-            --skip adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure || rc=1
-          cargo test -p humaux-gateway --no-fail-fast -- --test-threads=2 || rc=1
-          # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
-          # `stat -c %d` of the bind target vs PGDATA refuses `repo_shares_pgdata_fs`). The
-          # dev Mac gets that for free (virtiofs); on the runner a loop-mounted ext4 image
-          # under TMPDIR is the equivalent of the runbook's loop-mounted repository filesystem.
-          truncate -s 12G "$RUNNER_TEMP/scratch.img"
-          mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img"
-          mkdir -p "$RUNNER_TEMP/scratch"
-          sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch"
-          sudo chmod 1777 "$RUNNER_TEMP/scratch"
-          # drill.rs tampers with repository files the container's postgres user (uid 999)
-          # created 0640 — from the host side, as the test's own user. Docker Desktop's
-          # virtiofs lets the Mac user through; native Linux needs root for that one package.
-          # The target dir is handed back to the runner user afterwards.
-          sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c 'umask 000 && cargo test -p humaux-maintenance --no-fail-fast' || rc=1
-          sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
-          exit $rc
-
-      # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
-      # ADR-0058 §2.1 I-SLOT probe over the whole table: a test binary that leaves claimable
-      # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
-      # invariant, and the leak must be named by tenant, not guessed. Always runs so a red
-      # `cargo test` still gets its diagnosis.
-      - name: no_leaked_distill_jobs + I-SLOT probe
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          q() { docker exec "${{ job.services.postgres.id }}" psql -U postgres -d humaux_thread_ci -Atc "$1"; }
-          leaked=$(q "select t.name || ' ' || j.job_type || ' tenants=' || count(distinct j.tenant_id) || ' jobs=' || count(*) from ops.jobs j join control.tenants t using (tenant_id) where j.job_type in ('DERIVED_DISTILL','DERIVED_CONSOLIDATE') and j.status = 'PENDING' and t.name like '%throwaway tenant%' group by t.name, j.job_type order by count(*) desc")
-          ckpt=$(q "select c.domain || '/' || c.projection_kind || ' tenants=' || count(distinct c.tenant_id) || ' checkpoints=' || count(*) from projection.stream_checkpoints c where (c.domain, c.projection_kind) not in (('private_memory','PRIVATE_MEMORY')) group by c.domain, c.projection_kind order by count(*) desc")
-          islot=$(q "select coalesce(t.name, '<no tenant row>') || ' | ' || j.status || ' | ' || coalesce(j.dispatch_state, '-') || ' | gen=' || j.claim_generation || ' | slots=' || (select count(*) from ops.provider_slots s where s.job_id = j.job_id and s.claim_generation = j.claim_generation) || ' | created=' || j.created_at from ops.jobs j left join control.tenants t using (tenant_id) where j.job_type = 'DERIVED_DISTILL' and j.status = 'PROCESSING' and j.dispatch_state is not null and (select count(*) from ops.provider_slots s where s.job_id = j.job_id and s.claim_generation = j.claim_generation) <> 1 order by j.created_at")
-          slots=$(q "select slot_no || ' job=' || coalesce(job_id::text, '-') || ' gen=' || coalesce(claim_generation::text, '-') from ops.provider_slots order by 1")
-          echo "provider_slots:"; echo "$slots"
-          rc=0
-          if [ -n "$leaked" ]; then echo "no_leaked_distill_jobs: FAIL (claimable derived jobs on throwaway tenants)"; echo "$leaked"; rc=1; fi
-          if [ -n "$ckpt" ]; then echo "no_leaked_distill_jobs: FAIL (stream_checkpoints outside the registered pair)"; echo "$ckpt"; rc=1; fi
-          if [ -n "$islot" ]; then echo "i_slot: FAIL (PROCESSING DERIVED_DISTILL rows without exactly one slot)"; echo "$islot"; rc=1; fi
-          [ $rc -eq 0 ] && echo "no_leaked_distill_jobs: pass; i_slot: pass"
-          exit $rc
-
-      # The #[ignore = "lane(...)"] tier (§79.2 / ADR-0047, docs/ops/serial-lane.md): the
-      # two hand-listed `--ignored` steps that stood here since Phase 0 ran lane tests
-      # without the lane's resources (run 37646055641: public_provenance's mutation tests
-      # expect HUMAUX_PUBLIC_PROVENANCE_FAULT_DB on a dedicated database — "refusing to
-      # alter source guards outside the dedicated mutation database"). The lane runner
-      # provisions each resource (per-run databases, the gitleaks fixture, humaux-admin)
-      # and runs lane(a)/lane(b) serially after a warm-up; lane(c) is reported, not run.
-      - name: cargo xtask serial-lane (the ignored tier)
-        run: cargo xtask serial-lane
 
       - name: cargo xtask architecture-check
         run: cargo xtask architecture-check
@@ -379,6 +302,196 @@ jobs:
       - name: container scan (not_applicable — Phase 0)
         if: ${{ !cancelled() }}
         run: 'echo "not_applicable (missing object: container image to scan — delivered Phase 14, §57.1 rule 3)"'
+
+  test-a:
+    name: cargo test (workspace)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    services: *services
+    env: *ci-env
+    steps:
+      # partitions.rs::registry_survives_a_logical_dump_and_restore execs pg_dump / pg_restore
+      # inside the container named `humaux-thread-pg` (the dev container); the service
+      # container gets a generated name, so it is renamed once it is up.
+      - name: name the postgres service like the dev container
+        run: docker rename "${{ job.services.postgres.id }}" humaux-thread-pg
+
+      - uses: actions/checkout@v4
+
+      # Toolchain, cache, gitleaks fixture and the runbook §2 cluster provisioning live in one
+      # composite action so the `live` job below provisions its cluster the same way.
+      - uses: ./.github/actions/setup
+
+      - name: cargo test
+        # A hung test fails here, not at the job's 90 min (run 38343204163: one test spun 80 min).
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          cargo test --workspace --no-fail-fast --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
+          exit $rc
+      # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
+      # ADR-0058 §2.1 I-SLOT probe over the whole table: a test binary that leaves claimable
+      # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
+      # invariant, and the leak must be named by tenant, not guessed. Always runs so a red
+      # `cargo test` still gets its diagnosis.
+      - name: no_leaked_distill_jobs + I-SLOT probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          q() { docker exec "${{ job.services.postgres.id }}" psql -U postgres -d humaux_thread_ci -Atc "$1"; }
+          leaked=$(q "select t.name || ' ' || j.job_type || ' tenants=' || count(distinct j.tenant_id) || ' jobs=' || count(*) from ops.jobs j join control.tenants t using (tenant_id) where j.job_type in ('DERIVED_DISTILL','DERIVED_CONSOLIDATE') and j.status = 'PENDING' and t.name like '%throwaway tenant%' group by t.name, j.job_type order by count(*) desc")
+          ckpt=$(q "select c.domain || '/' || c.projection_kind || ' tenants=' || count(distinct c.tenant_id) || ' checkpoints=' || count(*) from projection.stream_checkpoints c where (c.domain, c.projection_kind) not in (('private_memory','PRIVATE_MEMORY')) group by c.domain, c.projection_kind order by count(*) desc")
+          islot=$(q "select coalesce(t.name, '<no tenant row>') || ' | ' || j.status || ' | ' || coalesce(j.dispatch_state, '-') || ' | gen=' || j.claim_generation || ' | slots=' || (select count(*) from ops.provider_slots s where s.job_id = j.job_id and s.claim_generation = j.claim_generation) || ' | created=' || j.created_at from ops.jobs j left join control.tenants t using (tenant_id) where j.job_type = 'DERIVED_DISTILL' and j.status = 'PROCESSING' and j.dispatch_state is not null and (select count(*) from ops.provider_slots s where s.job_id = j.job_id and s.claim_generation = j.claim_generation) <> 1 order by j.created_at")
+          slots=$(q "select slot_no || ' job=' || coalesce(job_id::text, '-') || ' gen=' || coalesce(claim_generation::text, '-') from ops.provider_slots order by 1")
+          echo "provider_slots:"; echo "$slots"
+          rc=0
+          if [ -n "$leaked" ]; then echo "no_leaked_distill_jobs: FAIL (claimable derived jobs on throwaway tenants)"; echo "$leaked"; rc=1; fi
+          if [ -n "$ckpt" ]; then echo "no_leaked_distill_jobs: FAIL (stream_checkpoints outside the registered pair)"; echo "$ckpt"; rc=1; fi
+          if [ -n "$islot" ]; then echo "i_slot: FAIL (PROCESSING DERIVED_DISTILL rows without exactly one slot)"; echo "$islot"; rc=1; fi
+          [ $rc -eq 0 ] && echo "no_leaked_distill_jobs: pass; i_slot: pass"
+          exit $rc
+
+  test-b:
+    name: cargo test (retrieval-provider, gateway, maintenance)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    services: *services
+    env: *ci-env
+    steps:
+      # partitions.rs::registry_survives_a_logical_dump_and_restore execs pg_dump / pg_restore
+      # inside the container named `humaux-thread-pg` (the dev container); the service
+      # container gets a generated name, so it is renamed once it is up.
+      - name: name the postgres service like the dev container
+        run: docker rename "${{ job.services.postgres.id }}" humaux-thread-pg
+
+      - uses: actions/checkout@v4
+
+      # Toolchain, cache, gitleaks fixture and the runbook §2 cluster provisioning live in one
+      # composite action so the `live` job below provisions its cluster the same way.
+      - uses: ./.github/actions/setup
+
+      # --no-fail-fast: one run shows every red binary, not just the first (§57.1 rule 2:
+      # a stop at the first failure hides the rest behind it). Three invocations, not one:
+      #  · humaux-maintenance under `umask 000`: the card-37 scratch sources bind-mount a
+      #    directory the test just created into the postgres container, where pgbackrest
+      #    (uid 999) must create `repo` in it. Docker Desktop on the dev Mac maps the owner
+      #    silently; native Linux does not (run 37620876690: "unable to create path
+      #    '/var/lib/pgbackrest/repo': Permission denied"). World-writable scratch on a
+      #    throwaway runner is the smallest equivalent of that mapping.
+      #  · humaux-gateway with --test-threads=2: its tests spawn the real gateway binary
+      #    under a 5 s listen deadline (mcp_gateway.rs GATEWAY_PROCESS_START_TIMEOUT);
+      #    four concurrent bootstraps on the 4-vCPU arm runner missed it, two do not.
+      - name: cargo test
+        # A hung test fails here, not at the job's 90 min (run 38343204163: one test spun 80 min).
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          # retrieval-provider: four lib tests (adapters::tests::dashscope_query_sut_…,
+          # dispatched_transport_failure_…, mark_failure_stops_…, persistent_budget_rejection_…)
+          # hard-code the machine-local `127.0.0.1:61719` request-guard container
+          # (adapters.rs checked_query_dsn) instead of accepting the repo-wide isolated
+          # database like g80_31_handoff.rs does, so under HUMAUX_REQUIRE_DB they can only
+          # fail here. Skipped BY NAME, not by unsetting the require flag (§79.2); the
+          # portability defect is a follow-up card. Everything else in the package runs.
+          cargo test -p humaux-retrieval-provider --no-fail-fast -- \
+            --skip adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport \
+            --skip adapters::tests::dispatched_transport_failure_consumes_budget \
+            --skip adapters::tests::mark_failure_stops_before_transport_and_releases_budget \
+            --skip adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure || rc=1
+          cargo test -p humaux-gateway --no-fail-fast -- --test-threads=2 || rc=1
+          # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
+          # `stat -c %d` of the bind target vs PGDATA refuses `repo_shares_pgdata_fs`). The
+          # dev Mac gets that for free (virtiofs); on the runner a loop-mounted ext4 image
+          # under TMPDIR is the equivalent of the runbook's loop-mounted repository filesystem.
+          truncate -s 12G "$RUNNER_TEMP/scratch.img"
+          mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img"
+          mkdir -p "$RUNNER_TEMP/scratch"
+          sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch"
+          sudo chmod 1777 "$RUNNER_TEMP/scratch"
+          # drill.rs tampers with repository files the container's postgres user (uid 999)
+          # created 0640 — from the host side, as the test's own user. Docker Desktop's
+          # virtiofs lets the Mac user through; native Linux needs root for that one package.
+          # The target dir is handed back to the runner user afterwards.
+          sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c 'umask 000 && cargo test -p humaux-maintenance --no-fail-fast' || rc=1
+          sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
+          exit $rc
+
+      # test-b runs on its own database, so it gets the same leak / I-SLOT probe (gateway tests write
+      # stream_checkpoints, maintenance onboarding enqueues DERIVED_DISTILL; PR #3 independent review P2).
+      # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
+      # ADR-0058 §2.1 I-SLOT probe over the whole table: a test binary that leaves claimable
+      # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
+      # invariant, and the leak must be named by tenant, not guessed. Always runs so a red
+      # `cargo test` still gets its diagnosis.
+      - name: no_leaked_distill_jobs + I-SLOT probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          q() { docker exec "${{ job.services.postgres.id }}" psql -U postgres -d humaux_thread_ci -Atc "$1"; }
+          leaked=$(q "select t.name || ' ' || j.job_type || ' tenants=' || count(distinct j.tenant_id) || ' jobs=' || count(*) from ops.jobs j join control.tenants t using (tenant_id) where j.job_type in ('DERIVED_DISTILL','DERIVED_CONSOLIDATE') and j.status = 'PENDING' and t.name like '%throwaway tenant%' group by t.name, j.job_type order by count(*) desc")
+          ckpt=$(q "select c.domain || '/' || c.projection_kind || ' tenants=' || count(distinct c.tenant_id) || ' checkpoints=' || count(*) from projection.stream_checkpoints c where (c.domain, c.projection_kind) not in (('private_memory','PRIVATE_MEMORY')) group by c.domain, c.projection_kind order by count(*) desc")
+          islot=$(q "select coalesce(t.name, '<no tenant row>') || ' | ' || j.status || ' | ' || coalesce(j.dispatch_state, '-') || ' | gen=' || j.claim_generation || ' | slots=' || (select count(*) from ops.provider_slots s where s.job_id = j.job_id and s.claim_generation = j.claim_generation) || ' | created=' || j.created_at from ops.jobs j left join control.tenants t using (tenant_id) where j.job_type = 'DERIVED_DISTILL' and j.status = 'PROCESSING' and j.dispatch_state is not null and (select count(*) from ops.provider_slots s where s.job_id = j.job_id and s.claim_generation = j.claim_generation) <> 1 order by j.created_at")
+          slots=$(q "select slot_no || ' job=' || coalesce(job_id::text, '-') || ' gen=' || coalesce(claim_generation::text, '-') from ops.provider_slots order by 1")
+          echo "provider_slots:"; echo "$slots"
+          rc=0
+          if [ -n "$leaked" ]; then echo "no_leaked_distill_jobs: FAIL (claimable derived jobs on throwaway tenants)"; echo "$leaked"; rc=1; fi
+          if [ -n "$ckpt" ]; then echo "no_leaked_distill_jobs: FAIL (stream_checkpoints outside the registered pair)"; echo "$ckpt"; rc=1; fi
+          if [ -n "$islot" ]; then echo "i_slot: FAIL (PROCESSING DERIVED_DISTILL rows without exactly one slot)"; echo "$islot"; rc=1; fi
+          [ $rc -eq 0 ] && echo "no_leaked_distill_jobs: pass; i_slot: pass"
+          exit $rc
+
+  serial-lane:
+    name: serial lane (the ignored tier)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    services: *services
+    env: *ci-env
+    steps:
+      # partitions.rs::registry_survives_a_logical_dump_and_restore execs pg_dump / pg_restore
+      # inside the container named `humaux-thread-pg` (the dev container); the service
+      # container gets a generated name, so it is renamed once it is up.
+      - name: name the postgres service like the dev container
+        run: docker rename "${{ job.services.postgres.id }}" humaux-thread-pg
+
+      - uses: actions/checkout@v4
+
+      # Toolchain, cache, gitleaks fixture and the runbook §2 cluster provisioning live in one
+      # composite action so the `live` job below provisions its cluster the same way.
+      - uses: ./.github/actions/setup
+
+      # The #[ignore = "lane(...)"] tier (§79.2 / ADR-0047, docs/ops/serial-lane.md): the
+      # two hand-listed `--ignored` steps that stood here since Phase 0 ran lane tests
+      # without the lane's resources (run 37646055641: public_provenance's mutation tests
+      # expect HUMAUX_PUBLIC_PROVENANCE_FAULT_DB on a dedicated database — "refusing to
+      # alter source guards outside the dedicated mutation database"). The lane runner
+      # provisions each resource (per-run databases, the gitleaks fixture, humaux-admin)
+      # and runs lane(a)/lane(b) serially after a warm-up; lane(c) is reported, not run.
+      - name: cargo xtask serial-lane (the ignored tier)
+        timeout-minutes: 45
+        run: cargo xtask serial-lane
+
+  # The required check (branch protection names it): green only when every part above is green; a skipped or
+  # cancelled part is red, never a quiet pass (§79.2).
+  ci:
+    name: fmt + check + clippy + test + gates
+    needs: [lint, test-a, test-b, serial-lane]
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: every part passed
+        run: |
+          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }}'
+          test '${{ needs.lint.result }}' = success
+          test '${{ needs.test-a.result }}' = success
+          test '${{ needs.test-b.result }}' = success
+          test '${{ needs.serial-lane.result }}' = success
 
   # Real-provider tests (the local chain's distill_hop_live / distill_fairness_live /
   # distill_poison_live / two_provider_live / consolidation hop / dashscope_live_smoke).
