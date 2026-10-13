@@ -4,20 +4,25 @@
 //!   humaux-projection, humaux-retrieval-provider, humaux-testkit, postgres, serde_json, sha2, sqlx, time, tokio];
 //!   services=[PostgreSQL(any) r=[ops.commit_seq_seq, private.ingest_tickets] w=[control.memberships,
 //!   control.private_reasoning_domains, control.tenants, control.users, control.workspace_memberships,
-//!   control.workspaces, ops.jobs, ops.outbox, private.events, private.evidence_objects, private.memory_affects,
-//!   private.memory_evidence, private.memory_records, private.memory_subjects, private.subjects, projection.private_memory_points,
-//!   projection.stream_checkpoints, projection.stream_log] x=[private.memory_subject_visibility_ok],
+//!   control.workspaces, ops.jobs, ops.outbox, private.events, private.evidence_objects,
+//!   private.identity_note_materializations, private.memory_affects, private.memory_evidence, private.memory_records,
+//!   private.memory_subjects, private.subjects, projection.card_profile_policies, projection.memory_vectors,
+//!   projection.private_memory_points, projection.stream_checkpoints, projection.stream_log]
+//!   x=[private.memory_subject_visibility_ok, projection.note_chunk_count],
 //!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*),
 //!   subprocess(gitleaks)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::memory_governance_repo, adapters::postgres,
-//!   adapters::projection_worker, adapters::qdrant, adapters::remember, adapters::tests::support::governance_ops, adapters::tests::support::token_keys,
-//!   domain::confirm, domain::egress, domain::error, domain::evidence, domain::identity, domain::ids,
-//!   domain::subject, humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, projection::serving, retrieval-provider::adapters, retrieval-provider::contract]
+//!   adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant, adapters::remember,
+//!   adapters::tests::support::governance_ops, adapters::tests::support::token_keys, domain::authority,
+//!   domain::confirm, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::identity, domain::ids,
+//!   domain::memory, domain::subject, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
+//!   infra-cell::resource, infra-cell::transport, projection::card, projection::note_chunks, projection::serving,
+//!   retrieval-provider::adapters, retrieval-provider::contract]
 //! Called-by: [cargo-test]
 //! Invariants: [uses a throwaway tenant and Qdrant collection cleaned up on Drop; a ticket is marked done only after
-//!   search-visible confirmation; no DSN, unreachable PG/Qdrant or no local gitleaks is a visible SKIP]
-//! Spec: Baseline §17.4; §15.7; §79.2; ADR-0052; ADR-0055; ADR-0056; ADR-0057
+//!   search-visible confirmation; no DSN, unreachable PG/Qdrant or no local gitleaks is a visible SKIP; the global
+//!   card profile policy row is read or flipped only under one process-wide lock and restored on drop (ADR-0068 D-I)]
+//! Spec: Baseline §17.4; §15.7; §79.2; ADR-0052; ADR-0055; ADR-0056; ADR-0057; ADR-0068
 //!
 //! Same convention as `outbox_batch_remember.rs`/`stream_repo.rs`: throwaway
 //! `control.tenants` row + throwaway Qdrant collection, cleaned up on `Drop`.
@@ -159,6 +164,7 @@ impl Drop for Handle {
         if let Err(error) = self.admin.batch_execute(&format!(
             "DELETE FROM ops.jobs WHERE tenant_id = '{0}'; \
              DELETE FROM projection.private_memory_points WHERE tenant_id = '{0}'; \
+             DELETE FROM projection.memory_vectors WHERE tenant_id = '{0}'; \
              DELETE FROM ops.outbox WHERE tenant_id = '{0}'; \
              DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
              DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}'; \
@@ -3085,4 +3091,864 @@ fn stale_worker_delete_is_refused_by_seq_fence() {
             assert!(!point_present(&handle, point), "the stored seq deletes it");
         },
     );
+}
+
+/// ADR-0068 card 40d-1b-ii: the worker's note chunk path, asserted on real registry rows, real Qdrant points and the
+/// inputs a provider spy actually received.
+mod note_chunk_projection {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    use humaux_adapters::private_projection_registry::{
+        PrivateMemoryPointRegistration, bind_embedding_fingerprint, worker_fingerprint_inputs,
+    };
+    use humaux_domain::authority::MemoryId;
+    use humaux_domain::dataclass::DataClass;
+    use humaux_domain::memory::MemoryType;
+    use humaux_projection::card::{CardBuildOutcome, CardInput, EgressDisposition};
+    use humaux_projection::note_chunks::{
+        LEGACY_CARD_PROFILE_HASH, NOTE_CHUNKS_V1_PROFILE_HASH, NoteChunk, NoteChunkPolicy,
+        PlanInput, ProjectionPlan, build_projection_plan, chunk_card,
+    };
+
+    use super::*;
+
+    /// Synthetic GitHub-shaped fixture (`contribution_scan.rs`), not a credential.
+    const FAKE_GITHUB_TOKEN: &str = "ghp_RkqFzVpLwNyHtBvDgXsWuCePjMoTnAiSyEkl";
+    /// Synthetic PEM block, not a key: 191 scalars, longer than the 64-scalar window overlap, so placed across a
+    /// window boundary it is whole in no chunk.
+    const FAKE_PRIVATE_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
+        MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn7ygWyF8PbnGy0AHB7MaB2EVgxMUA0nCnD\n\
+        7gH1qGx3pQ8qkIq9vZ8wVNw4tFz2dG5bYvM1Kk3nE4cRpUe8lJ0sQ2yX9aTbW6fD\n\
+        -----END RSA PRIVATE KEY-----";
+
+    /// ADR-0068 D-I: the serving projection's policy row is global (no tenant column), so every test here holds this
+    /// lock for its whole body; [`PolicyGuard`] puts back the hash it found when it drops, panics included.
+    static POLICY_ROW: Mutex<()> = Mutex::new(());
+
+    const POLICY_KEY: (&str, &str, &str) = ("private_memory", "PRIVATE_MEMORY", "v1");
+
+    struct PolicyGuard {
+        owner: Client,
+        found: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl PolicyGuard {
+        fn hold() -> Self {
+            let lock = POLICY_ROW.lock().unwrap_or_else(PoisonError::into_inner);
+            let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture is running");
+            // dep: PostgreSQL(any) — the owner client that reads and flips the global policy row
+            let mut owner = Client::connect(&dsn, NoTls).expect("owner connects");
+            let found = owner
+                .query_one(
+                    "SELECT note_chunk_profile_hash FROM projection.card_profile_policies \
+                     WHERE domain = $1 AND projection_kind = $2 AND projection_version = $3",
+                    &[&POLICY_KEY.0, &POLICY_KEY.1, &POLICY_KEY.2],
+                )
+                .expect("migration 0238 seeds the serving projection's row")
+                .get(0);
+            Self {
+                owner,
+                found,
+                _lock: lock,
+            }
+        }
+
+        fn set(&mut self, hash: Option<&str>) -> Result<u64, postgres::Error> {
+            self.owner.execute(
+                "UPDATE projection.card_profile_policies SET note_chunk_profile_hash = $4 \
+                 WHERE domain = $1 AND projection_kind = $2 AND projection_version = $3",
+                &[&POLICY_KEY.0, &POLICY_KEY.1, &POLICY_KEY.2, &hash],
+            )
+        }
+
+        fn enable(&mut self) {
+            assert_eq!(
+                self.set(Some(NOTE_CHUNKS_V1_PROFILE_HASH)).expect("enable"),
+                1
+            );
+        }
+    }
+
+    impl Drop for PolicyGuard {
+        fn drop(&mut self) {
+            let found = self.found.clone();
+            if let Err(error) = self.set(found.as_deref()) {
+                eprintln!("note_chunk_projection: the policy row was not restored: {error}");
+            }
+        }
+    }
+
+    /// The provider spy: every input the worker sends, with the Memory it serves, before the real test double.
+    struct Spy {
+        inner: TestEmbedder,
+        seen: Mutex<Vec<(Uuid, String)>>,
+    }
+
+    impl Spy {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: TestEmbedder(Arc::new(TestDoubleProvider::new(
+                    embedding_model(),
+                    unused_rerank_model(),
+                ))),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen(&self) -> Vec<(Uuid, String)> {
+            self.seen.lock().expect("spy").clone()
+        }
+    }
+
+    #[async_trait]
+    impl CardEmbedder for Spy {
+        async fn embed_cards(
+            &self,
+            tenant_id: TenantId,
+            dimension: u32,
+            cards: &[SealedRetrievalCard],
+            memory_ids: &[Uuid],
+        ) -> Result<Vec<Vec<f32>>, ErrorCode> {
+            self.seen.lock().expect("spy").extend(
+                memory_ids
+                    .iter()
+                    .copied()
+                    .zip(cards.iter().map(|card| card.as_str().to_owned())),
+            );
+            self.inner
+                .embed_cards(tenant_id, dimension, cards, memory_ids)
+                .await
+        }
+    }
+
+    /// Forwards to the real transport, except that the upsert carrying `fail_upsert` answers 503 (a transient Qdrant
+    /// failure of exactly that slot) and a visibility probe never reports `hide` (that slot is not yet visible).
+    struct SlotFault {
+        inner: Arc<HttpIntraCellTransport>,
+        fail_upsert: Option<Uuid>,
+        hide: Option<Uuid>,
+    }
+
+    #[async_trait]
+    impl IntraCellHttpTransport for SlotFault {
+        async fn execute(
+            &self,
+            permit: &CellAccessPermit,
+            request: IntraCellRequest,
+        ) -> Result<IntraCellResponse, IntraCellError> {
+            let is_upsert = matches!(request.method, IntraCellMethod::Put)
+                && request.path.contains("/points")
+                && !request.path.contains("/points/");
+            let carries = |id: Uuid| {
+                request
+                    .json_body
+                    .as_ref()
+                    .and_then(|body| body["points"].as_array())
+                    .is_some_and(|points| {
+                        points
+                            .iter()
+                            .any(|point| point["id"] == serde_json::json!(id.to_string()))
+                    })
+            };
+            if is_upsert && self.fail_upsert.is_some_and(carries) {
+                return Ok(IntraCellResponse {
+                    status: 503,
+                    json_body: None,
+                });
+            }
+            let is_scroll = request.path.ends_with("/points/scroll");
+            let mut response = self.inner.execute(permit, request).await?;
+            if let (true, Some(hide), Some(body)) =
+                (is_scroll, self.hide, response.json_body.as_mut())
+                && let Some(points) = body["result"]["points"].as_array_mut()
+            {
+                points.retain(|point| point["id"] != serde_json::json!(hide.to_string()));
+            }
+            Ok(response)
+        }
+    }
+
+    /// `len` ASCII scalars of distinct, secret-free words (`w0 w1 w2 …`), so no two windows share text.
+    fn prose(len: usize) -> String {
+        let mut text = String::new();
+        let mut word = 0_usize;
+        while text.len() < len {
+            text.push_str(&format!("w{word} "));
+            word += 1;
+        }
+        text.truncate(len);
+        text
+    }
+
+    /// One identity note in `scope_id`: the fixture's Evidence + Memory, its content made a note's (`title`,
+    /// `key_claim` = the body, ADR-0067 D-E) and the identity contract naming the Memory as the Evidence's output.
+    fn seed_note(handle: &mut Handle, scope_id: Uuid, title: &str, body: &str) -> (i64, Uuid) {
+        let (seq, memory_id) = seed_memory_with_visibility(
+            handle,
+            scope_id,
+            &format!("note evidence {}", Uuid::new_v4()),
+            "TENANT_SHARED",
+            None,
+            None,
+        );
+        let body_sha256 = Sha256::digest(body.as_bytes()).to_vec();
+        let mut txn = handle.admin.transaction().expect("owner transaction");
+        txn.execute(
+            "UPDATE private.memory_records SET content = $2 WHERE memory_id = $1",
+            &[
+                &memory_id,
+                &serde_json::json!({ "title": title, "key_claim": body }),
+            ],
+        )
+        .expect("make the Memory a note");
+        txn.execute(
+            "INSERT INTO private.identity_note_materializations \
+               (tenant_id, evidence_id, strategy, output_memory_id, body_sha256, policy_version) \
+             SELECT m.tenant_id, me.evidence_id, 'identity_note_v1', m.memory_id, $2, 'origin_ceiling_v1' \
+               FROM private.memory_records m JOIN private.memory_evidence me ON me.memory_id = m.memory_id \
+              WHERE m.memory_id = $1",
+            &[&memory_id, &body_sha256],
+        )
+        .expect("bind the identity contract");
+        txn.commit().expect("commit the note");
+        (seq, memory_id)
+    }
+
+    /// The `CardInput` fields the worker's `card_input` reads for a note (`title`, `key_claim`, no excerpt, INTERNAL
+    /// evidence); `card_text` depends on nothing else.
+    fn note_input(memory_id: Uuid, title: &str, body: &str) -> CardInput {
+        CardInput {
+            memory_id: MemoryId(memory_id),
+            memory_type: MemoryType::Note,
+            data_class: DataClass::Internal,
+            egress_disposition: EgressDisposition::Allowed,
+            workspace_id: None,
+            topic: None,
+            effective_from: std::time::SystemTime::UNIX_EPOCH,
+            title: title.to_owned(),
+            key_claim: Some(body.to_owned()),
+            entities: Vec::new(),
+            evidence_excerpt: None,
+        }
+    }
+
+    /// The legacy card text of `card` under the legacy-only policy.
+    fn legacy_text(card: CardInput, is_identity_note: bool) -> String {
+        match build_projection_plan(PlanInput {
+            card,
+            is_identity_note,
+            policy: NoteChunkPolicy::LegacyOnly,
+        }) {
+            ProjectionPlan::LegacyCardV1(CardBuildOutcome::Card(card)) => card.card_text,
+            other => panic!("a legacy-only policy builds the legacy card: {other:?}"),
+        }
+    }
+
+    /// The note's chunks under the `NoteChunksV1` policy.
+    fn chunks(card: CardInput) -> Vec<NoteChunk> {
+        match build_projection_plan(PlanInput {
+            card,
+            is_identity_note: true,
+            policy: NoteChunkPolicy::NoteChunksV1,
+        }) {
+            ProjectionPlan::NoteChunksV1(chunks) => chunks,
+            other => panic!("a long note under NoteChunksV1 is chunked: {other:?}"),
+        }
+    }
+
+    /// `projection.note_chunk_count` — the SQL count the ledger uses (migration 0237).
+    fn sql_chunk_count(handle: &mut Handle, title: &str, body: &str) -> u32 {
+        let count: i32 = handle
+            .admin
+            .query_one(
+                "SELECT projection.note_chunk_count($1, $2)",
+                &[&title, &body],
+            )
+            .expect("the 0237 count")
+            .get(0);
+        u32::try_from(count).expect("a count is positive")
+    }
+
+    /// The worker's deps under a label of this test's own, bound as the retrieval worker binds its label at boot, so
+    /// every vector is stored (ADR-0064 D-B) and the derived point ids are this test's alone. Returns the
+    /// fingerprint.
+    fn labeled_deps(
+        handle: &Handle,
+        scope_id: Uuid,
+        spy: &Arc<Spy>,
+    ) -> (ProjectionWorkerDeps, [u8; 32]) {
+        let provider = Arc::new(TestDoubleProvider::new(
+            embedding_model(),
+            unused_rerank_model(),
+        ));
+        let mut deps = handle.rt.block_on(deps_for(handle, scope_id, provider));
+        deps.embedding_version = format!("c40d-{}", Uuid::new_v4().simple());
+        let fingerprint = handle
+            .rt
+            .block_on(bind_embedding_fingerprint(
+                &deps.pool,
+                &deps.embedding_version,
+                &worker_fingerprint_inputs("c40d-test", &deps.embedding_version, "r1", 4, "v1"),
+            ))
+            .expect("label binding")
+            .0;
+        deps.embedder = spy.clone();
+        (deps, fingerprint)
+    }
+
+    /// The legacy registration of `memory_id` as the registry derives it from the live source fence.
+    fn registration_for(
+        handle: &mut Handle,
+        scope_id: Uuid,
+        label: &str,
+        memory_id: Uuid,
+    ) -> PrivateMemoryPointRegistration {
+        let row = handle
+            .admin
+            .query_one(
+                "SELECT (extract(epoch FROM updated_at) * 1000000)::bigint, \
+                        sha256(convert_to(content::text, 'UTF8')) \
+                   FROM private.memory_records WHERE memory_id = $1",
+                &[&memory_id],
+            )
+            .expect("the Memory row");
+        let micros: i64 = row.get(0);
+        let updated_at =
+            time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000)
+                .expect("a valid timestamp");
+        PrivateMemoryPointRegistration::deterministic(
+            StreamFamily::new(
+                TenantId(handle.tenant_id),
+                "workspace",
+                scope_id,
+                "private_memory",
+                "PRIVATE_MEMORY",
+            ),
+            "v1".to_owned(),
+            label.to_owned(),
+            MemoryId(memory_id),
+            updated_at,
+            row.get(1),
+        )
+    }
+
+    /// The v2 ids of a note's `count` chunk slots.
+    fn chunk_ids(legacy: &PrivateMemoryPointRegistration, count: u32) -> Vec<Uuid> {
+        (0..count)
+            .map(|ordinal| {
+                legacy
+                    .clone()
+                    .for_chunk(NOTE_CHUNKS_V1_PROFILE_HASH, ordinal)
+                    .point_id
+                    .as_uuid()
+            })
+            .collect()
+    }
+
+    /// One registry row: `(point_id, card_profile_hash, chunk_ordinal, input_sha256, fingerprint_sha256, live)`.
+    type SlotRow = (Uuid, String, i32, Option<Vec<u8>>, Option<Vec<u8>>, bool);
+
+    fn slot_rows(handle: &mut Handle, memory_id: Uuid) -> Vec<SlotRow> {
+        handle
+            .admin
+            .query(
+                "SELECT point_id, card_profile_hash, chunk_ordinal, input_sha256, fingerprint_sha256, \
+                        projection_live \
+                   FROM projection.private_memory_points WHERE memory_id = $1 \
+                  ORDER BY card_profile_hash, chunk_ordinal",
+                &[&memory_id],
+            )
+            .expect("registry rows")
+            .iter()
+            .map(|row| {
+                (
+                    row.get(0),
+                    row.get(1),
+                    row.get(2),
+                    row.get(3),
+                    row.get(4),
+                    row.get(5),
+                )
+            })
+            .collect()
+    }
+
+    /// `(chunk_ordinal, card_profile_hash)` of every point among `ids` present in the collection.
+    fn indexed(handle: &Handle, ids: &[Uuid]) -> HashMap<Uuid, (Option<i64>, Option<String>)> {
+        let scrolled = scroll_payloads(handle, &admin_permit(handle), ids);
+        scrolled["result"]["points"]
+            .as_array()
+            .expect("scroll points")
+            .iter()
+            .map(|point| {
+                let id = point["id"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok())
+                    .expect("a uuid point id");
+                let payload = &point["payload"];
+                (
+                    id,
+                    (
+                        payload["chunk_ordinal"].as_i64(),
+                        payload["card_profile_hash"].as_str().map(str::to_owned),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn key(
+        handle: &Handle,
+        scope_id: Uuid,
+    ) -> (
+        Uuid,
+        &'static str,
+        Uuid,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        (
+            handle.tenant_id,
+            "workspace",
+            scope_id,
+            "private_memory",
+            "PRIVATE_MEMORY",
+            "v1",
+        )
+    }
+
+    fn run(handle: &Handle, deps: &ProjectionWorkerDeps) -> (u64, u64, u64) {
+        let outcome = handle.rt.block_on(run_once(deps, 10)).expect("run_once");
+        (outcome.done, outcome.failed, outcome.retried)
+    }
+
+    /// ADR-0068 gate `legacy_cards_are_byte_identical_end_to_end`: with the seeded policy (NULL = legacy only), a long
+    /// note and an ordinary memory each register exactly one point — the v1 id `deterministic` derives, the legacy
+    /// card's `input_sha256`, the label's fingerprint, a payload with no chunk field — and the provider spy sees
+    /// exactly the two legacy card texts. Fault: plan under `NoteChunksV1` regardless of the row (or drop the policy
+    /// term from `build_projection_plan`) ⇒ the note gets chunk rows and chunk inputs ⇒ red.
+    #[test]
+    fn legacy_cards_are_byte_identical_end_to_end() {
+        run_db_fixture::<Fixture, _>(
+            "legacy_cards_are_byte_identical_end_to_end",
+            |mut handle| {
+                let guard = PolicyGuard::hold();
+                assert_eq!(
+                    guard.found, None,
+                    "migration 0238 seeds the row legacy only"
+                );
+                let scope_id = Uuid::new_v4();
+                let title = "a long verbatim note";
+                let body = prose(2_000);
+                let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+                let fact_text = "an ordinary memory beside the note";
+                let (_, fact) = seed_memory_with_visibility(
+                    &mut handle,
+                    scope_id,
+                    fact_text,
+                    "TENANT_SHARED",
+                    None,
+                    None,
+                );
+                let spy = Spy::new();
+                let (deps, fingerprint) = labeled_deps(&handle, scope_id, &spy);
+                assert_eq!(run(&handle, &deps), (2, 0, 0));
+
+                let fact_card = CardInput {
+                    title: format!("title: {fact_text}"),
+                    key_claim: Some(format!("key claim: {fact_text}")),
+                    evidence_excerpt: Some(fact_text.to_owned()),
+                    ..note_input(fact, "", "")
+                };
+                let mut expected_inputs = vec![
+                    (note, legacy_text(note_input(note, title, &body), true)),
+                    (fact, legacy_text(fact_card, false)),
+                ];
+                for (memory_id, text) in &expected_inputs {
+                    let legacy = registration_for(
+                        &mut handle,
+                        scope_id,
+                        &deps.embedding_version,
+                        *memory_id,
+                    );
+                    let id = legacy.point_id.as_uuid();
+                    assert_eq!(
+                        slot_rows(&mut handle, *memory_id),
+                        vec![(
+                            id,
+                            LEGACY_CARD_PROFILE_HASH.to_owned(),
+                            0,
+                            Some(Sha256::digest(text.as_bytes()).to_vec()),
+                            Some(fingerprint.to_vec()),
+                            true,
+                        )],
+                        "{memory_id}: one legacy slot, v1 id, legacy input, the label's fingerprint"
+                    );
+                    assert_eq!(
+                        indexed(&handle, &[id]).get(&id),
+                        Some(&(None, None)),
+                        "{memory_id}: a legacy payload carries no chunk field"
+                    );
+                }
+                let mut seen = spy.seen();
+                seen.sort();
+                expected_inputs.sort();
+                assert_eq!(
+                    seen, expected_inputs,
+                    "the provider saw exactly the legacy inputs"
+                );
+                assert_eq!(collection_point_count(&handle), 2);
+            },
+        );
+    }
+
+    /// ADR-0068 gate `long_note_is_projected_as_chunks`: under `NoteChunksV1` a long note registers C slots (C from
+    /// the SQL count the ledger uses), ordinals 0..C-1 with the v2 ids `for_chunk` derives, each slot's input the
+    /// plan's chunk text, one Qdrant point per slot carrying its ordinal and profile, and the ticket is DONE. Faults:
+    /// register every slot under the v1 id (no `for_chunk`) ⇒ the registry refuses the second slot ⇒ not DONE ⇒ red;
+    /// drop `with_chunk` ⇒ red on the payload.
+    #[test]
+    fn long_note_is_projected_as_chunks() {
+        run_db_fixture::<Fixture, _>("long_note_is_projected_as_chunks", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a long verbatim note";
+            let body = prose(2_000);
+            let (seq, note) = seed_note(&mut handle, scope_id, title, &body);
+            let count = sql_chunk_count(&mut handle, title, &body);
+            assert!(count > 1, "the fixture note is long");
+            let spy = Spy::new();
+            let (deps, fingerprint) = labeled_deps(&handle, scope_id, &spy);
+            assert_eq!(run(&handle, &deps), (1, 0, 0));
+            let key = key(&handle, scope_id);
+            assert_eq!(stream_log_state(&mut handle, &key, seq), "DONE");
+
+            let legacy = registration_for(&mut handle, scope_id, &deps.embedding_version, note);
+            let ids = chunk_ids(&legacy, count);
+            assert!(
+                !ids.contains(&legacy.point_id.as_uuid()),
+                "no chunk takes the v1 id"
+            );
+            let plan = chunks(note_input(note, title, &body));
+            assert_eq!(plan.len(), count as usize, "Rust and SQL agree on C");
+            let rows = slot_rows(&mut handle, note);
+            assert_eq!(rows.len(), count as usize, "{rows:?}");
+            let indexed = indexed(&handle, &ids);
+            for (ordinal, (row, chunk)) in rows.iter().zip(&plan).enumerate() {
+                assert_eq!(
+                    row,
+                    &(
+                        ids[ordinal],
+                        NOTE_CHUNKS_V1_PROFILE_HASH.to_owned(),
+                        i32::try_from(ordinal).expect("ordinal"),
+                        Some(Sha256::digest(chunk.text.as_bytes()).to_vec()),
+                        Some(fingerprint.to_vec()),
+                        true,
+                    ),
+                    "slot {ordinal}"
+                );
+                assert_eq!(
+                    indexed.get(&ids[ordinal]),
+                    Some(&(
+                        Some(i64::try_from(ordinal).expect("ordinal")),
+                        Some(NOTE_CHUNKS_V1_PROFILE_HASH.to_owned())
+                    )),
+                    "point {ordinal}"
+                );
+            }
+            assert_eq!(collection_point_count(&handle), u64::from(count));
+            let mut seen: Vec<String> = spy.seen().into_iter().map(|(_, text)| text).collect();
+            let mut expected: Vec<String> = plan.into_iter().map(|chunk| chunk.text).collect();
+            seen.sort();
+            expected.sort();
+            assert_eq!(seen, expected, "the provider saw each chunk text once");
+        });
+    }
+
+    /// ADR-0068 gate `repeated_chunk_text_embeds_once`: a body of `W + 3 × stride` identical scalars has four slots
+    /// with one card text, so the provider gets one input, the four slots share one stored vector row (vector key =
+    /// memory, fingerprint, input) and remain four points. Fault: embed per slot instead of per distinct key ⇒ four
+    /// provider inputs ⇒ red.
+    #[test]
+    fn repeated_chunk_text_embeds_once() {
+        run_db_fixture::<Fixture, _>("repeated_chunk_text_embeds_once", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a repetitive note";
+            let body = "z".repeat(480 + 3 * 416);
+            let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+            let count = sql_chunk_count(&mut handle, title, &body);
+            assert_eq!(count, 4);
+            let spy = Spy::new();
+            let (deps, _) = labeled_deps(&handle, scope_id, &spy);
+            assert_eq!(run(&handle, &deps), (1, 0, 0));
+
+            let seen = spy.seen();
+            assert_eq!(
+                seen.len(),
+                1,
+                "one provider input for four identical windows"
+            );
+            assert!(seen.len() < count as usize);
+            let rows = slot_rows(&mut handle, note);
+            assert_eq!(rows.len(), count as usize, "{rows:?}");
+            let inputs: BTreeSet<_> = rows.iter().map(|row| row.3.clone()).collect();
+            assert_eq!(inputs.len(), 1, "every slot keys the same input");
+            let points: BTreeSet<Uuid> = rows.iter().map(|row| row.0).collect();
+            assert_eq!(points.len(), count as usize, "distinct points");
+            let vectors: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM projection.memory_vectors \
+                      WHERE memory_id = $1 AND vector IS NOT NULL",
+                    &[&note],
+                )
+                .expect("vector rows")
+                .get(0);
+            assert_eq!(vectors, 1, "duplicate slots share one vector row");
+            assert_eq!(collection_point_count(&handle), u64::from(count));
+        });
+    }
+
+    /// ADR-0068 gate `source_seal_blocks_a_secret_anywhere` (D-G). Three tickets: a long note whose token sits only
+    /// in its last window, a long note whose PEM block straddles a window boundary so that no chunk holds it whole
+    /// (precondition, with the real scanner: every chunk card seals clean and the whole source does not), and an
+    /// ordinary memory with the token (the legacy path). All three end `FAILED secret_scan_rejected` with no
+    /// registry row, no point and zero provider inputs. Faults: skip `seal_source` ⇒ the straddling note's chunks
+    /// seal clean and are embedded ⇒ DONE ⇒ red; treat a chunk card's finding as a dropped slot ⇒ the last-window
+    /// note's other chunks are sent ⇒ red on the spy.
+    #[test]
+    fn source_seal_blocks_a_secret_anywhere() {
+        run_db_fixture::<Fixture, _>("source_seal_blocks_a_secret_anywhere", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a long note with a secret";
+            let tail_body = format!("{}{FAKE_GITHUB_TOKEN}", prose(480 + 3 * 416 + 200 - 40));
+            let straddle_body = format!("{}{FAKE_PRIVATE_KEY} {}", prose(415), prose(700));
+            let (tail_seq, tail) = seed_note(&mut handle, scope_id, title, &tail_body);
+            let (straddle_seq, straddle) = seed_note(&mut handle, scope_id, title, &straddle_body);
+            let (legacy_seq, legacy) = seed_memory_with_visibility(
+                &mut handle,
+                scope_id,
+                &format!("the CI bot uses {FAKE_GITHUB_TOKEN} for releases"),
+                "TENANT_SHARED",
+                None,
+                None,
+            );
+
+            let tail_chunks = chunks(note_input(tail, title, &tail_body));
+            let holding: Vec<usize> = tail_chunks
+                .iter()
+                .filter(|chunk| chunk.text.contains(FAKE_GITHUB_TOKEN))
+                .map(|chunk| chunk.chunk_ordinal)
+                .collect();
+            assert_eq!(
+                holding,
+                vec![tail_chunks.len() - 1],
+                "the token is in the last window only"
+            );
+            let straddle_input = note_input(straddle, title, &straddle_body);
+            for chunk in chunks(straddle_input.clone()) {
+                assert!(
+                    !chunk.text.contains(FAKE_PRIVATE_KEY),
+                    "chunk {} holds the block",
+                    chunk.chunk_ordinal
+                );
+                assert!(
+                    handle
+                        .scanner
+                        .seal_card(&chunk_card(&straddle_input, &chunk))
+                        .is_ok(),
+                    "precondition: chunk {} seals clean on its own",
+                    chunk.chunk_ordinal
+                );
+            }
+            assert_eq!(
+                handle
+                    .scanner
+                    .seal_source(straddle, DataClass::Internal, title, &straddle_body)
+                    .map(|_| ()),
+                Err(ErrorCode::Forbidden),
+                "precondition: the whole source holds the block"
+            );
+
+            let spy = Spy::new();
+            let (deps, _) = labeled_deps(&handle, scope_id, &spy);
+            assert_eq!(run(&handle, &deps), (0, 3, 0));
+            let key = key(&handle, scope_id);
+            for (seq, memory_id) in [
+                (tail_seq, tail),
+                (straddle_seq, straddle),
+                (legacy_seq, legacy),
+            ] {
+                assert_eq!(
+                    (
+                        stream_log_state(&mut handle, &key, seq),
+                        stream_log_error_class(&mut handle, &key, seq)
+                    ),
+                    ("FAILED".to_owned(), Some("secret_scan_rejected".to_owned())),
+                    "{memory_id}: the legacy secret disposition"
+                );
+                assert!(
+                    slot_rows(&mut handle, memory_id).is_empty(),
+                    "{memory_id}: no slot"
+                );
+            }
+            assert!(spy.seen().is_empty(), "no provider input at all");
+            assert_eq!(collection_point_count(&handle), 0);
+        });
+    }
+
+    /// ADR-0068 gate `legacy_point_retired_only_with_last_chunk` (D-I): a long note projected legacy-only keeps its
+    /// legacy point through a chunk re-projection whose last slot fails, and loses it in the pass that settles every
+    /// slot. Faults: retire the legacy point before the slots are written (or drop the completion check) ⇒ red on the
+    /// midway arm; skip the retirement ⇒ red on the final arm.
+    #[test]
+    fn legacy_point_retired_only_with_last_chunk() {
+        run_db_fixture::<Fixture, _>("legacy_point_retired_only_with_last_chunk", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
+            let scope_id = seed_workspace(&mut handle);
+            gov.join(&mut handle.admin, scope_id);
+            let title = "a note projected before chunking";
+            let body = prose(1_500);
+            let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+            let spy = Spy::new();
+            let (mut deps, _) = labeled_deps(&handle, scope_id, &spy);
+            assert_eq!(run(&handle, &deps), (1, 0, 0), "legacy-only projection");
+            let legacy_id = registration_for(&mut handle, scope_id, &deps.embedding_version, note)
+                .point_id
+                .as_uuid();
+            assert!(point_live(&mut handle, legacy_id) && point_present(&handle, legacy_id));
+
+            guard.enable();
+            let archived = governance_ops::archive(
+                &handle.rt,
+                &handle.gateway,
+                &gov.scope(scope_id),
+                &governance_ops::stream(handle.tenant_id, scope_id),
+                note,
+                DestructiveOp::MemoryArchive,
+            )
+            .expect("a lifecycle ticket through the real op");
+            assert!(matches!(archived, ArchiveResult::Done(_)), "{archived:?}");
+            let count = sql_chunk_count(&mut handle, title, &body);
+            let legacy = registration_for(&mut handle, scope_id, &deps.embedding_version, note);
+            assert_eq!(
+                legacy.point_id.as_uuid(),
+                legacy_id,
+                "archive keeps the source fence"
+            );
+            let ids = chunk_ids(&legacy, count);
+            let last = *ids.last().expect("C >= 1");
+
+            deps.transport = Arc::new(SlotFault {
+                inner: handle.transport.clone(),
+                fail_upsert: Some(last),
+                hide: None,
+            });
+            assert_eq!(run(&handle, &deps), (0, 0, 1), "the last slot failed");
+            assert!(
+                point_live(&mut handle, legacy_id),
+                "midway: the legacy binding is live"
+            );
+            assert!(
+                point_present(&handle, legacy_id),
+                "midway: the legacy point answers recall"
+            );
+            let midway = slot_rows(&mut handle, note);
+            assert_eq!(
+                midway
+                    .iter()
+                    .filter(|row| row.1 == NOTE_CHUNKS_V1_PROFILE_HASH)
+                    .count(),
+                count as usize - 1,
+                "every slot but the last: {midway:?}"
+            );
+
+            deps.transport = handle.transport.clone();
+            assert_eq!(
+                run(&handle, &deps),
+                (1, 0, 0),
+                "the retry settles every slot"
+            );
+            assert!(
+                !point_live(&mut handle, legacy_id),
+                "the legacy binding retired"
+            );
+            assert!(
+                !point_present(&handle, legacy_id),
+                "the legacy point left the index"
+            );
+            let settled = slot_rows(&mut handle, note);
+            let live_chunks: Vec<Uuid> = settled
+                .iter()
+                .filter(|row| row.1 == NOTE_CHUNKS_V1_PROFILE_HASH && row.5)
+                .map(|row| row.0)
+                .collect();
+            assert_eq!(live_chunks, ids, "every chunk slot is live");
+            assert!(ids.iter().all(|id| point_present(&handle, *id)));
+        });
+    }
+
+    /// ADR-0068 gate `partial_chunks_are_not_done` (D-F): one slot's upsert failing, or one slot's point never seen
+    /// by the visibility probe, leaves the ticket ISSUED (retry), never DONE; the same ticket with every slot written
+    /// and visible is DONE. Faults: verify only the first slot (or `any` for `all`) ⇒ red on the hidden arm; count a
+    /// memory DONE after its first slot ⇒ red on the upsert arm.
+    #[test]
+    fn partial_chunks_are_not_done() {
+        run_db_fixture::<Fixture, _>("partial_chunks_are_not_done", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a long note";
+            let body = prose(1_500);
+            let (seq, note) = seed_note(&mut handle, scope_id, title, &body);
+            let count = sql_chunk_count(&mut handle, title, &body);
+            let spy = Spy::new();
+            let (mut deps, _) = labeled_deps(&handle, scope_id, &spy);
+            let ids = chunk_ids(
+                &registration_for(&mut handle, scope_id, &deps.embedding_version, note),
+                count,
+            );
+            let key = key(&handle, scope_id);
+            for (fail_upsert, hide, class, registered) in [
+                (Some(ids[1]), None, "qdrant_upsert_failed", 1),
+                (
+                    None,
+                    Some(ids[2]),
+                    "visibility_not_confirmed",
+                    count as usize,
+                ),
+            ] {
+                deps.transport = Arc::new(SlotFault {
+                    inner: handle.transport.clone(),
+                    fail_upsert,
+                    hide,
+                });
+                assert_eq!(run(&handle, &deps), (0, 0, 1), "{class}");
+                assert_eq!(
+                    (
+                        stream_log_state(&mut handle, &key, seq),
+                        stream_log_error_class(&mut handle, &key, seq)
+                    ),
+                    ("ISSUED".to_owned(), Some(class.to_owned()))
+                );
+                assert!(slot_rows(&mut handle, note).len() >= registered, "{class}");
+            }
+            deps.transport = handle.transport.clone();
+            assert_eq!(
+                run(&handle, &deps),
+                (1, 0, 0),
+                "control: every slot written and visible"
+            );
+            assert_eq!(stream_log_state(&mut handle, &key, seq), "DONE");
+        });
+    }
 }

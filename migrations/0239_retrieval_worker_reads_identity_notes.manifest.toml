@@ -1,0 +1,35 @@
+# §46.1 migration manifest. ADR-0068 D-A (card 40d-1b-ii): role_retrieval_worker gets SELECT on
+# private.identity_note_materializations, so the projection worker can tell an identity note from any other Memory in the
+# statement that resolves a ticket's Memories. No policy, owner or other grant changes. §46 forward-fix
+# (EXPAND_CONTRACT, first free number after 0238).
+
+migration_id = "0239_retrieval_worker_reads_identity_notes"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0235 contract table or one where the retrieval worker already holds a grant on it.
+precheck = """
+select to_regclass('private.identity_note_materializations') is not null
+ and not has_table_privilege('role_retrieval_worker', 'private.identity_note_materializations', 'SELECT')
+ as precheck_ok
+"""
+
+# Fails on: the retrieval worker without SELECT or with any write privilege, the 0235 grants changed, or FORCE RLS /
+# the one 0235 policy gone.
+postcheck = """
+select has_table_privilege('role_retrieval_worker', 'private.identity_note_materializations', 'SELECT')
+ and not has_table_privilege('role_retrieval_worker', 'private.identity_note_materializations', 'INSERT')
+ and not has_table_privilege('role_retrieval_worker', 'private.identity_note_materializations', 'UPDATE')
+ and not has_table_privilege('role_retrieval_worker', 'private.identity_note_materializations', 'DELETE')
+ and has_table_privilege('role_gateway', 'private.identity_note_materializations', 'INSERT')
+ and not has_table_privilege('role_gateway', 'private.identity_note_materializations', 'UPDATE')
+ and not has_table_privilege('role_private_worker', 'private.identity_note_materializations', 'INSERT')
+ and not has_table_privilege('role_consolidation_worker', 'private.identity_note_materializations', 'SELECT')
+ and (select c.relrowsecurity and c.relforcerowsecurity from pg_class c
+       where c.oid = to_regclass('private.identity_note_materializations'))
+ and (select count(*) = 1 from pg_policies
+       where schemaname = 'private' and tablename = 'identity_note_materializations')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: REVOKE SELECT ON private.identity_note_materializations FROM role_retrieval_worker — only once no deployed retrieval worker resolves memories with the identity-note read (a worker built from 40d-1b-ii or later fails every ticket db_resolve_failed without the grant)."
+backup_restore_requirement = "none: one table-level GRANT, no row data touched."

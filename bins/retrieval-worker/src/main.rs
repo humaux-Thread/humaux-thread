@@ -30,8 +30,9 @@
 //!   exit; each resident mode reads only its own *_METRICS_ADDR key (required, loopback) and --readyz / --run-once
 //!   open no listener; --metrics-families reads no configuration; --serve / --run-once bind
 //!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION to the configured model's fingerprint before the first pass and exit 2
-//!   when the label is bound to another one (ADR-0064 D-C)]
-//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N
+//!   when the label is bound to another one (ADR-0064 D-C), and exit 2 when the projection's card profile policy row
+//!   is missing or names a profile this build does not know (ADR-0068 D-I)]
+//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0068 D-I
 //!
 //! §4.2 (line 818): the owning process of `humaux_adapters::projection_worker::run_once` —
 //! there is no separate `projection-worker` process. Env wiring mirrors
@@ -70,7 +71,8 @@ use humaux_adapters::private_projection_registry::{
     PrivateProjectionRegistryError, bind_embedding_fingerprint, worker_fingerprint_inputs,
 };
 use humaux_adapters::projection_worker::{
-    CardEmbedder, PassConfig, PassOutcome, SharedProjectionDeps, run_claimed_pass,
+    CardEmbedder, PassConfig, PassOutcome, SharedProjectionDeps, card_profile_policy_row,
+    note_chunk_policy_refusal, run_claimed_pass,
 };
 use humaux_adapters::qdrant::RetrievalFamily;
 use humaux_adapters::stream_repo::{Backoff, ClaimFamily};
@@ -281,17 +283,16 @@ impl CardEmbedder for EmbedderAdapter {
 async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(Outcome::NotApplicable(reason)) => {
-            println!("humaux-retrieval-worker: not_applicable: {reason}");
-            ExitCode::from(2)
-        }
-        Err(Outcome::Failed(error)) => {
-            eprintln!("humaux-retrieval-worker: {error}");
-            ExitCode::from(2)
-        }
-        Err(Outcome::Runtime(error)) => {
-            eprintln!("humaux-retrieval-worker: {error}");
-            ExitCode::from(1)
+        Err(outcome) => {
+            match &outcome {
+                Outcome::NotApplicable(reason) => {
+                    println!("humaux-retrieval-worker: not_applicable: {reason}")
+                }
+                Outcome::Failed(error) | Outcome::Runtime(error) => {
+                    eprintln!("humaux-retrieval-worker: {error}")
+                }
+            }
+            ExitCode::from(outcome.exit_code())
         }
     }
 }
@@ -308,6 +309,16 @@ enum Outcome {
 impl From<String> for Outcome {
     fn from(value: String) -> Self {
         Outcome::Failed(value)
+    }
+}
+
+impl Outcome {
+    /// ADR-0066 D-N: 2 for usage / configuration, 1 for a runtime failure.
+    fn exit_code(&self) -> u8 {
+        match self {
+            Outcome::NotApplicable(_) | Outcome::Failed(_) => 2,
+            Outcome::Runtime(_) => 1,
+        }
     }
 }
 
@@ -458,8 +469,9 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
             )
             .await
             {
-                // ADR-0064 D-C: no pass runs until the label is bound to this model's fingerprint.
-                Ok(deps) => match bind_label(&deps, &projection_version).await? {
+                // ADR-0064 D-C: no pass runs until the label is bound to this model's fingerprint, and ADR-0068 D-I:
+                // none until the projection's card profile policy names a profile this build knows.
+                Ok(deps) => match boot_checks(&deps, &projection_version, &pass.claim).await? {
                     None => shared = Some(deps),
                     Some(error) if resident => {
                         eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
@@ -545,6 +557,47 @@ async fn bind_label(
         ) => Err(Outcome::Failed(BOOT_REFUSED.to_owned())),
         Err(error) => Ok(Some(format!("fingerprint binding: {error}"))),
     }
+}
+
+/// The two boot refusals that need the database: the label's fingerprint binding ([`bind_label`]), then the
+/// projection's card profile policy ([`check_policy`]). Same contract as both.
+async fn boot_checks(
+    deps: &SharedProjectionDeps,
+    projection_version: &str,
+    claim: &ClaimFamily,
+) -> Result<Option<String>, Outcome> {
+    match bind_label(deps, projection_version).await? {
+        None => check_policy(deps, claim).await,
+        retry => Ok(retry),
+    }
+}
+
+/// ADR-0068 D-I: the projection's `card_profile_policies` row must exist and name a profile this build knows. `Err` =
+/// refused (exit 2 in every mode: a missing row or an unknown hash never becomes right by retrying); `Ok(Some(_))` = a
+/// database failure, retried next poll in `--serve`.
+async fn check_policy(
+    deps: &SharedProjectionDeps,
+    claim: &ClaimFamily,
+) -> Result<Option<String>, Outcome> {
+    match card_profile_policy_row(
+        &deps.pool,
+        &claim.domain,
+        &claim.projection_kind,
+        &claim.projection_version,
+    )
+    .await
+    {
+        Ok(row) => policy_outcome(note_chunk_policy_refusal(
+            row.as_ref().map(Option::as_deref),
+        ))
+        .map(|()| None),
+        Err(error) => Ok(Some(format!("card profile policy read: {error}"))),
+    }
+}
+
+/// ADR-0068 D-I: a policy refusal is configuration — [`Outcome::Failed`], exit 2.
+fn policy_outcome(refusal: Option<String>) -> Result<(), Outcome> {
+    refusal.map_or(Ok(()), |reason| Err(Outcome::Failed(reason)))
 }
 
 /// The database-bound half of [`SharedProjectionDeps`]: the worker pool and the embedder (whose
@@ -878,7 +931,10 @@ mod rpc_mode {
 
 #[cfg(test)]
 mod config_tests {
-    use super::{ClaimFamily, PROJECTION_FAMILY, ServeConfig, egress_processor_id};
+    use super::{
+        ClaimFamily, Outcome, PROJECTION_FAMILY, ServeConfig, egress_processor_id,
+        note_chunk_policy_refusal, policy_outcome,
+    };
     use humaux_domain::ticket_family::TicketFamily;
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -899,6 +955,34 @@ mod config_tests {
             .zip(["16", "1", "60", "8", "6", "30", "300"])
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// ADR-0068 gate `boot_refuses_unknown_or_missing_policy`: a missing card profile policy row, a hash this build has
+    /// no profile for and the legacy marker each refuse boot as configuration (exit 2), naming the cause; a NULL hash
+    /// (legacy only) boots. Faults: read a missing row as NULL ⇒ red on the missing arm; map the refusal to
+    /// `Outcome::Runtime` ⇒ exit 1 ⇒ red on every refusal arm.
+    #[test]
+    fn boot_refuses_unknown_or_missing_policy() {
+        for (row, cause) in [
+            (None, "card_profile_policy_missing"),
+            (
+                Some(Some("NoteChunksV1-0000")),
+                "card_profile_policy_unknown",
+            ),
+            (Some(Some("LegacyCardV1")), "card_profile_policy_unknown"),
+        ] {
+            let refused = policy_outcome(note_chunk_policy_refusal(row))
+                .expect_err("a missing or unknown policy refuses boot");
+            assert_eq!(refused.exit_code(), 2, "{row:?}");
+            let Outcome::Failed(line) = refused else {
+                panic!("{row:?}: a policy refusal is configuration");
+            };
+            assert!(line.contains(cause), "{row:?}: {line}");
+        }
+        assert!(
+            policy_outcome(note_chunk_policy_refusal(Some(None))).is_ok(),
+            "NULL = legacy only boots"
+        );
     }
 
     /// ADR-0052 D-F / §78: every pass key is required, positive, and has no default. Each key

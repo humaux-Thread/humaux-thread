@@ -2,7 +2,7 @@
 //!   over a long note's body), the projection's [`NoteChunkPolicy`], and [`build_projection_plan`], the one entry that
 //!   picks a chunk profile or the unchanged legacy card.
 //! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::dataclass, projection::card]
-//! Called-by: [adapters::private_projection_registry, tests]
+//! Called-by: [adapters::private_projection_registry, adapters::projection_worker, tests]
 //! Invariants: [pure and IO-free (§3/§78.3); chunk card text is constructed only here, SQL recomputes only the count
 //!   and the legacy predicate (ADR-0068 D-B); ranges are half-open over Unicode scalars and a slice never splits a
 //!   UTF-8 sequence; only an identity note that is not SECRET_MATERIAL, whose projection policy is NoteChunksV1 and
@@ -11,7 +11,8 @@
 //!   (ADR-0068 D-I)]
 //! Spec: Baseline §18.2; §3; §78.3; ADR-0068
 //!
-//! Not wired yet: the worker and rebuild still call `build_card` directly. The window parameters are a frozen,
+//! The projection worker builds through [`build_projection_plan`]; rebuild's verifier still calls `build_card` (40d-1b-iii).
+//! The window parameters are a frozen,
 //! versioned profile (ADR-0068 D-B), not runtime config (§78.1): changing any of them is a new profile with a new
 //! [`NOTE_CHUNKS_V1_PROFILE_HASH`]. Its SQL twins are `projection.note_chunk_count` (migration 0237) and
 //! `projection.note_legacy_capacity_holds` (migration 0238), pinned to [`chunk_count`] / [`legacy_capacity_holds`]
@@ -23,7 +24,10 @@ use std::ops::Range;
 
 use humaux_domain::dataclass::DataClass;
 
-use crate::card::{CardBudget, CardBuildOutcome, CardInput, build_card};
+use crate::card::{
+    CARD_BUILDER_VERSION, CARD_TEMPLATE_HASH, CardBudget, CardBuildOutcome, CardInput, CardStatus,
+    RetrievalCard, build_card,
+};
 
 /// ADR-0068 D-B: window W, in body scalars.
 pub const NOTE_CHUNKS_V1_WINDOW: usize = 480;
@@ -54,7 +58,9 @@ pub const NOTE_CHUNKS_V1_PROFILE_HASH: &str =
 
 /// ADR-0068 D-A: true iff the legacy card loses none of the note's body: the body is empty (nothing to lose;
 /// `build_card` marks a bodiless note unbuildable), or `title + LEGACY_NOTE_SEPARATORS + body <=
-/// CardBudget::default().max_chars`, counted in Unicode scalars. SQL twin: `projection.note_legacy_capacity_holds`.
+/// CardBudget::default().max_chars`, counted in Unicode scalars. SQL twin: `projection.note_legacy_capacity_holds`,
+/// which is STRICT — a NULL body yields NULL there, so a SQL caller coalesces it to true: a Memory with no body takes
+/// the legacy branch here too (`build_projection_plan` with `key_claim: None`).
 pub fn legacy_capacity_holds(title: &str, body: &str) -> bool {
     body.is_empty()
         || title.chars().count() + LEGACY_NOTE_SEPARATORS + body.chars().count()
@@ -219,6 +225,39 @@ pub fn build_projection_plan(input: PlanInput) -> ProjectionPlan {
         })
         .collect();
     ProjectionPlan::NoteChunksV1(chunks)
+}
+
+/// ADR-0068 D-G: chunk `chunk` of the note `input` as the [`RetrievalCard`] the seal and the vector key read.
+/// `card_text` is the chunk text (what is sealed, hashed into `input_sha256` and embedded); `memory_id`, `data_class`,
+/// `egress_disposition` and the other §18.2 fields are the note's, so `seal_chunk_card` checks the same Memory and data
+/// class; `title` is the full title (§18.3 never cuts the field; the card text carries the bounded prefix);
+/// `key_claim` is the body window. `card_builder_version` / `card_template_hash` stay the legacy pair (§18.4 allows
+/// one hash per builder version, and the fingerprint is per projection, ADR-0068 D-B): the profile is named by the
+/// registry identity (`card_profile_hash`, `chunk_ordinal`), never by these fields.
+pub fn chunk_card(input: &CardInput, chunk: &NoteChunk) -> RetrievalCard {
+    let window = input
+        .key_claim
+        .as_deref()
+        .and_then(|body| scalar_slice(body, chunk.range.clone()))
+        .unwrap_or_default();
+    RetrievalCard {
+        schema_version: RetrievalCard::SCHEMA_VERSION,
+        card_builder_version: CARD_BUILDER_VERSION,
+        card_template_hash: CARD_TEMPLATE_HASH,
+        memory_id: input.memory_id,
+        memory_type: input.memory_type,
+        data_class: input.data_class,
+        egress_disposition: input.egress_disposition,
+        workspace_id: input.workspace_id,
+        topic: input.topic.clone(),
+        effective_from: input.effective_from,
+        title: input.title.clone(),
+        key_claim: window.to_owned(),
+        entities: Vec::new(),
+        evidence_excerpt: String::new(),
+        card_status: CardStatus::Complete,
+        card_text: chunk.text.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -433,6 +472,48 @@ mod tests {
             Err(UnknownNoteChunkProfile(LEGACY_CARD_PROFILE_HASH.to_owned())),
             "the legacy marker is not a note chunk profile"
         );
+    }
+
+    /// ADR-0068 gate `secret_material_note_is_never_chunked`: a long identity note classified SECRET_MATERIAL under
+    /// the `NoteChunksV1` policy is excluded by `build_card` (§18.2), never split into chunk slots. Fault: drop the
+    /// SECRET_MATERIAL term from `build_projection_plan` ⇒ `NoteChunksV1` ⇒ red.
+    #[test]
+    fn secret_material_note_is_never_chunked() {
+        let mut secret = note("title", &"s".repeat(2_000));
+        secret.card.data_class = DataClass::SecretMaterial;
+        assert_eq!(
+            build_projection_plan(secret),
+            ProjectionPlan::LegacyCardV1(CardBuildOutcome::ExcludedSecret)
+        );
+    }
+
+    /// ADR-0068 D-G: a chunk card seals and hashes exactly the chunk text and carries the note's identity and data
+    /// class. Faults: `card_text` from the window alone, or the title prefix dropped ⇒ red on `card_text`; a fixed data
+    /// class ⇒ red on `data_class`.
+    #[test]
+    fn chunk_card_carries_the_chunk_text_and_the_note_identity() {
+        let mut input = note(&"t".repeat(200), &"長".repeat(1_000));
+        input.card.data_class = DataClass::Sensitive;
+        let card_input = input.card.clone();
+        for chunk in chunks_of(input) {
+            let card = chunk_card(&card_input, &chunk);
+            assert_eq!(card.card_text, chunk.text);
+            assert_eq!(
+                card.title, card_input.title,
+                "the field keeps the whole title"
+            );
+            assert_eq!(
+                (card.memory_id, card.data_class),
+                (card_input.memory_id, DataClass::Sensitive)
+            );
+            assert_eq!(
+                Some(card.key_claim.as_str()),
+                scalar_slice(
+                    card_input.key_claim.as_deref().unwrap_or_default(),
+                    chunk.range
+                )
+            );
+        }
     }
 
     /// ADR-0068 D-B: recomputes [`NOTE_CHUNKS_V1_PROFILE_HASH`] from the parameter tuple and the real chunk texts of

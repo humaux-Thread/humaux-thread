@@ -2,13 +2,15 @@
 //!   contribution disclosure.
 //! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, uuid];
 //!   services=[subprocess(gitleaks)]; env=[]; modules=[domain::dataclass, domain::error, domain::evidence,
-//!   projection::card, retrieval::request]
+//!   domain::note, projection::card, retrieval::request]
 //! Called-by: [crate(humaux-adapters), crate(humaux-gateway), crate(humaux-maintenance),
 //!   crate(humaux-private-worker), crate(humaux-retrieval-provider), crate(humaux-retrieval-worker), tests]
 //! Invariants: [gitleaks subprocess failure or non-zero exit surfaces as an error to the caller, no silent pass; no fallback scanner;
 //!   the retrieval seal path (seal_query/seal_card) applies no contribution-privacy rule, only size/DataClass checks and the
-//!   pinned gitleaks scan; the pinned binary is hashed at construction and re-hashed whenever its stat tuple changes]
-//! Spec: Baseline §7.5; §12.1.1; ADR-0056
+//!   pinned gitleaks scan; the pinned binary is hashed at construction and re-hashed whenever its stat tuple changes;
+//!   a note chunk card is sealed only against the SealedSource of its own Memory, which carries no text and is never
+//!   accepted by a provider call (ADR-0068 D-G)]
+//! Spec: Baseline §7.5; §12.1.1; ADR-0056; ADR-0068 D-G
 //!
 //! Configuration is supplied explicitly by trusted wiring. The scanner never reads an
 //! environment variable, never invokes a shell, and never returns scanner stdout/stderr or input
@@ -16,7 +18,9 @@
 //! callers and carries the immutable scanner configuration identities that the contribution
 //! repository persists with the candidate and release.
 
-use humaux_domain::{dataclass::DataClass, error::ErrorCode, evidence::EvidencePayloadSha256};
+use humaux_domain::{
+    dataclass::DataClass, error::ErrorCode, evidence::EvidencePayloadSha256, note,
+};
 use humaux_projection::card::RetrievalCard;
 use humaux_retrieval::request::{ProfileFingerprint, TrustedRetrievalQuery};
 use sha2::{Digest, Sha256};
@@ -260,7 +264,17 @@ impl LocalSecretScanner {
     /// contribution-privacy rule (ADR-0056 D-A). A finding is `Forbidden`; a scanner that did not
     /// run cleanly is `DependencyUnavailable`, never a pass.
     fn scan_secrets_only(&self, bytes: &[u8]) -> Result<LocalSecretScanReceipt, ErrorCode> {
-        if bytes.is_empty() || bytes.len() > self.config.max_payload_bytes {
+        self.scan_secrets_within(bytes, self.config.max_payload_bytes)
+    }
+
+    /// [`Self::scan_secrets_only`] under an explicit size cap: the disclosure cap for bytes that leave, the
+    /// [`SEALED_SOURCE_MAX_BYTES`] cap for a source that never does (ADR-0068 D-G).
+    fn scan_secrets_within(
+        &self,
+        bytes: &[u8],
+        max_bytes: usize,
+    ) -> Result<LocalSecretScanReceipt, ErrorCode> {
+        if bytes.is_empty() || bytes.len() > max_bytes {
             return Err(ErrorCode::InvalidInput);
         }
         match self.run_checked(bytes)? {
@@ -480,12 +494,79 @@ impl LocalSecretScanner {
             receipt,
         })
     }
+
+    /// ADR-0068 D-G: seals a note's whole, untruncated `title` + `"\n"` + `body` once, before any of its chunk cards.
+    /// The same pinned gitleaks invocation as every seal (`--ignore-gitleaks-allow`: note text cannot exempt itself)
+    /// over the joined text, so a secret split across a window boundary is still one finding. SECRET_MATERIAL and a
+    /// source over [`SEALED_SOURCE_MAX_BYTES`] are `InvalidInput`; a finding is `Forbidden`; a scanner that did not run
+    /// cleanly is `DependencyUnavailable` — never a pass.
+    pub fn seal_source(
+        &self,
+        memory_id: uuid::Uuid,
+        data_class: DataClass,
+        title: &str,
+        body: &str,
+    ) -> Result<SealedSource, ErrorCode> {
+        if data_class == DataClass::SecretMaterial {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let source = format!("{title}\n{body}");
+        let receipt = self.scan_secrets_within(source.as_bytes(), SEALED_SOURCE_MAX_BYTES)?;
+        Ok(SealedSource {
+            memory_id,
+            data_class,
+            payload_sha256: receipt.payload_sha256(),
+        })
+    }
+
+    /// ADR-0068 D-G: seals one chunk card of the Memory `source` sealed — [`Self::seal_card`] after checking that the
+    /// card belongs to that Memory and carries its data class, so no chunk card is sealed before (or without) its own
+    /// whole-source seal.
+    pub fn seal_chunk_card(
+        &self,
+        source: &SealedSource,
+        card: &RetrievalCard,
+    ) -> Result<SealedRetrievalCard, ErrorCode> {
+        if card.memory_id.0 != source.memory_id || card.data_class != source.data_class {
+            return Err(ErrorCode::InvalidInput);
+        }
+        self.seal_card(card)
+    }
+}
+
+/// ADR-0068 D-G: proof that one note's whole title and body passed the pinned gitleaks scan. It holds no text and has
+/// no accessor to any, and no provider call accepts it: its only use is [`LocalSecretScanner::seal_chunk_card`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct SealedSource {
+    memory_id: uuid::Uuid,
+    data_class: DataClass,
+    payload_sha256: EvidencePayloadSha256,
+}
+
+impl std::fmt::Debug for SealedSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SealedSource")
+            .field("memory_id", &self.memory_id)
+            .field("data_class", &self.data_class)
+            .field("payload_sha256", &self.payload_sha256)
+            .finish()
+    }
+}
+
+impl SealedSource {
+    /// Digest of exactly the bytes the source scan inspected.
+    pub fn payload_sha256(&self) -> EvidencePayloadSha256 {
+        self.payload_sha256
+    }
 }
 
 /// Query schema ceiling.
 pub const RETRIEVAL_QUERY_MAX_CHARS: usize = 4_096;
 /// Explicit byte ceiling for bytes inspected before external eligibility.
 pub const SEALED_RETRIEVAL_MAX_BYTES: usize = 16 * 1024;
+/// ADR-0068 D-G: byte ceiling of a whole note source — the largest title and body `memory.note_put` admits
+/// (ADR-0067 D-E) plus the one `\n` that joins them. Never sent, so the per-card cap does not apply.
+pub const SEALED_SOURCE_MAX_BYTES: usize = note::MAX_TITLE_BYTES + 1 + note::MAX_BODY_BYTES;
 
 const LOCAL_SECRET_RULES_VERSION: &str = "contribution-privacy-v2";
 /// ADR-0056 D-B: the seal path's rule identity — gitleaks only, no deterministic privacy rule.
@@ -837,6 +918,68 @@ mod tests {
                 .seal_card(&card("an otherwise clean card", DataClass::SecretMaterial))
                 .map(|_| ()),
             Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    /// ADR-0068 D-G: the source seal uses its own cap, not the disclosure cap or the 16 KiB card cap — the largest
+    /// note `memory.note_put` admits reaches the scanner (no runnable gitleaks here, so `DependencyUnavailable`, never a
+    /// pass), one byte more is `InvalidInput`, and SECRET_MATERIAL never reaches it. Faults: route the source through
+    /// `scan_secrets_only` (the configured 1 KiB here) or `SEALED_RETRIEVAL_MAX_BYTES` ⇒ red on the largest note.
+    #[test]
+    fn source_seal_scans_the_whole_note_under_its_own_cap() {
+        let scanner = scanner_without_runtime_fixture();
+        let id = uuid::Uuid::now_v7();
+        let title = "t".repeat(note::MAX_TITLE_BYTES);
+        let body = "b".repeat(note::MAX_BODY_BYTES);
+        assert_eq!(
+            scanner.seal_source(id, DataClass::Private, &title, &body),
+            Err(ErrorCode::DependencyUnavailable)
+        );
+        let over = format!("{body}b");
+        assert_eq!(
+            scanner.seal_source(id, DataClass::Private, &title, &over),
+            Err(ErrorCode::InvalidInput)
+        );
+        assert_eq!(
+            scanner.seal_source(id, DataClass::SecretMaterial, "t", "b"),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    /// ADR-0068 D-G: a chunk card is sealed only against its own Memory's source seal — another Memory's or another
+    /// data class's is refused before any scan. Fault: drop the identity check ⇒ the scan runs ⇒
+    /// `DependencyUnavailable` ⇒ red.
+    #[test]
+    fn chunk_card_seal_is_bound_to_its_own_source() {
+        let scanner = scanner_without_runtime_fixture();
+        let chunk = card("a chunk of a long note", DataClass::Private);
+        let other = SealedSource {
+            memory_id: uuid::Uuid::now_v7(),
+            data_class: DataClass::Private,
+            payload_sha256: humaux_domain::evidence::payload_sha256(b"other"),
+        };
+        assert_eq!(
+            scanner.seal_chunk_card(&other, &chunk).map(|_| ()),
+            Err(ErrorCode::InvalidInput)
+        );
+        let other_class = SealedSource {
+            memory_id: chunk.memory_id.0,
+            data_class: DataClass::Sensitive,
+            payload_sha256: humaux_domain::evidence::payload_sha256(b"same"),
+        };
+        assert_eq!(
+            scanner.seal_chunk_card(&other_class, &chunk).map(|_| ()),
+            Err(ErrorCode::InvalidInput)
+        );
+        let own = SealedSource {
+            memory_id: chunk.memory_id.0,
+            data_class: DataClass::Private,
+            payload_sha256: humaux_domain::evidence::payload_sha256(b"same"),
+        };
+        assert_eq!(
+            scanner.seal_chunk_card(&own, &chunk).map(|_| ()),
+            Err(ErrorCode::DependencyUnavailable),
+            "its own source reaches the scan"
         );
     }
 
