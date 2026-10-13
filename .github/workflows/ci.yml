@@ -218,6 +218,33 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo xtask rls-check
 
+      # §58 / ADR-0051: every module header, `// dep:` tag and Cargo `# why:` line, and the three generated maps
+      # (dependency_map.md, db_objects.md, env_vars.md), must match the tree and the migrated catalog. It was not
+      # wired here before, so the maps could drift silently (PR #15 review). On drift the step regenerates the maps
+      # and uploads the patch, so the fix comes from CI's own output (owner rule: nothing runs locally).
+      - name: cargo xtask dep-map --check
+        id: depmap
+        if: ${{ !cancelled() }}
+        run: |
+          if ! cargo xtask dep-map --check; then
+            cargo xtask dep-map --write || true
+            # Every path --write renders (docs/architecture, deploy/env/example, deploy/env/secret-fixture), new files
+            # included: the patch must be enough on its own to turn the next run green.
+            git add -A -- docs/architecture deploy/env
+            git diff --cached --binary -- docs/architecture deploy/env > "$RUNNER_TEMP/dep-map-drift.patch" || true
+            git diff --cached --stat -- docs/architecture deploy/env
+            exit 1
+          fi
+
+      - name: upload the dep-map drift patch
+        if: ${{ failure() && steps.depmap.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dep-map-drift
+          path: ${{ runner.temp }}/dep-map-drift.patch
+          if-no-files-found: ignore
+          retention-days: 7
+
       # PHASE 真源的过期闸：下一相位的交付物 marker 已非占位而 PHASE 未前进 ⇒ 红。
       # 「当前状态」型常量写进静态文件的那天就开始腐烂，除非配一道会红的过期闸——
       # PHASE 文件正是那种常量（审计结论，见 xtask/src/phase.rs 模块 doc）。

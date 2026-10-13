@@ -13,7 +13,7 @@
 //!   version is written by the real 40a create or 40c-1 replacement transaction; the owner connection only archives,
 //!   sets a lifecycle status, and reads back this fixture's tenant; every gate asserts stored rows or real responses
 //!   against an independent owner read, never two literals]
-//! Spec: Baseline §20.4; §22.1; ADR-0067 D-J2
+//! Spec: Baseline §20.4; §22.1; ADR-0067 D-J2; ADR-0054
 //!
 //! The editor is a governance principal (`governance_ops::Governor`), as in `note_replace.rs`: consuming a replacement
 //! token rechecks the write scope against `control.api_keys` (ADR-0054 D-B). Reads run as the fixture's own principal.
