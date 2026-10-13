@@ -1,7 +1,7 @@
 //! `retrieval-worker::tests::exit_codes` — the process command line of `humaux-retrieval-worker` (ADR-0066 D-D / D-N): no argument and an unknown argument
 //!   are usage (exit 2), `--version` follows the burned-in sha, and `--serve` prints the start line first.
 //! Depends-on: crates=[humaux-telemetry, humaux-testkit]; services=[subprocess(humaux-retrieval-worker)];
-//!   env=[CARGO_BIN_EXE_humaux-retrieval-worker, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_RETRIEVAL_WORKER_DIMENSION, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL, HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID, HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS, HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION, HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH, HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR]; modules=[humaux-telemetry, testkit::reaped]
+//!   env=[CARGO_BIN_EXE_humaux-retrieval-worker, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_RETRIEVAL_WORKER_DIMENSION, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL, HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID, HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS, HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION, HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH, HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR, HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR]; modules=[humaux-telemetry, testkit::reaped]
 //! Called-by: [cargo-test]
 //! Invariants: [every humaux-retrieval-worker spawn runs with a cleared environment and closed stdin and exits on its own (the one mode that connects dials a loopback listener that drops every connection, under a 60 s deadline, owned by a Reaped); nothing is written outside the process]
 //! Spec: ADR-0037; ADR-0066 D-D; ADR-0066 D-N
@@ -78,6 +78,39 @@ fn run_bounded(args: &[&str], env: &[(&str, &str)], secs: u64) -> (Option<i32>, 
         .read_to_string(&mut stderr)
         .expect("read stderr");
     (status.code(), stderr)
+}
+
+/// ADR-0068 D-F: the provider's per-request embedding input cap.
+const BATCH_CAP: &str = "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS";
+
+/// `--serve-rpc` with every key it reads before its first connection valid, the database dead, and the batch cap
+/// set to `batch_cap` (`None` = unset). `tag` keeps each caller's socket path its own.
+fn serve_rpc_against_dead_database(tag: &str, batch_cap: Option<&str>) -> (Option<i32>, String) {
+    let dsn = dead_database();
+    let ops = free_addr();
+    let sock =
+        std::env::temp_dir().join(format!("humaux_c39_exit_{tag}_{}.sock", std::process::id()));
+    let sock = sock.display().to_string();
+    let mut env = vec![
+        (
+            "HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR",
+            ops.as_str(),
+        ),
+        (
+            "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL",
+            "text-embedding-v4",
+        ),
+        ("HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION", "2026-08"),
+        ("HUMAUX_RETRIEVAL_WORKER_DIMENSION", "1024"),
+        ("HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID", "4000000000"),
+        ("HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH", sock.as_str()),
+        ("HUMAUX_RETRIEVAL_WORKER_PG_DSN", dsn.as_str()),
+        ("HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS", "8192"),
+    ];
+    if let Some(value) = batch_cap {
+        env.push((BATCH_CAP, value));
+    }
+    run_bounded(&["--serve-rpc"], &env, 60)
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -160,30 +193,75 @@ fn resident_start_line_comes_first() {
 /// Fault: map the runtime failure to 2 (the pre-fix code) ⇒ red.
 #[test]
 fn resident_runtime_failure_exits_1() {
-    let dsn = dead_database();
-    let ops = free_addr();
-    let sock = std::env::temp_dir().join(format!("humaux_c39_exit_{}.sock", std::process::id()));
-    let sock = sock.display().to_string();
-    let (code, stderr) = run_bounded(
-        &["--serve-rpc"],
-        &[
-            ("HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR", &ops),
-            (
-                "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL",
-                "text-embedding-v4",
-            ),
-            ("HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION", "2026-08"),
-            ("HUMAUX_RETRIEVAL_WORKER_DIMENSION", "1024"),
-            ("HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID", "4000000000"),
-            ("HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH", &sock),
-            ("HUMAUX_RETRIEVAL_WORKER_PG_DSN", &dsn),
-            ("HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS", "8192"),
-        ],
-        60,
-    );
+    let (code, stderr) = serve_rpc_against_dead_database("runtime", Some("10"));
     assert!(
         stderr.contains("database role connection failed"),
         "{stderr}"
     );
     assert_eq!(code, Some(1), "{stderr}");
+}
+
+/// `--run-once` / `--serve` against a dead database with the embedding descriptor set: the projection modes, the only
+/// ones that batch cards.
+fn projection_against_dead_database(mode: &str, batch_cap: Option<&str>) -> (Option<i32>, String) {
+    let dsn = dead_database();
+    let ops = free_addr();
+    let mut env = vec![
+        ("HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR", ops.as_str()),
+        (
+            "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL",
+            "text-embedding-v4",
+        ),
+        ("HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION", "2026-08"),
+        ("HUMAUX_RETRIEVAL_WORKER_DIMENSION", "1024"),
+        ("HUMAUX_RETRIEVAL_WORKER_PG_DSN", dsn.as_str()),
+        ("HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS", "8192"),
+    ];
+    if let Some(value) = batch_cap {
+        env.push((BATCH_CAP, value));
+    }
+    run_bounded(&[mode], &env, 60)
+}
+
+/// ADR-0068 D-F: the projection modes refuse an unset or 0 cap at boot (exit 2, naming the key)
+/// instead of failing every pass. Control: with the cap set, the same boot gets past it and stops on a later key —
+/// so the refusal is the cap's, and it comes before any connection.
+#[test]
+fn projection_modes_refuse_boot_without_a_batch_cap() {
+    for mode in ["--run-once", "--serve"] {
+        for (tag, value, refusal) in [
+            ("cap_unset", None, "missing required configuration"),
+            ("cap_zero", Some("0"), "invalid configuration"),
+        ] {
+            let (code, stderr) = projection_against_dead_database(mode, value);
+            assert_eq!(code, Some(2), "{mode} {tag}: {stderr}");
+            assert!(
+                stderr.contains(&format!("{refusal}: {BATCH_CAP}")),
+                "{mode} {tag}: {stderr}"
+            );
+        }
+        let (_, stderr) = projection_against_dead_database(mode, Some("10"));
+        assert!(
+            !stderr.contains(BATCH_CAP),
+            "{mode}: with the cap set, boot must get past it: {stderr}"
+        );
+    }
+}
+
+/// ADR-0068 D-F / §78.1: the embedding batch cap is required configuration with no default — unset or 0 refuses boot
+/// (exit 2, naming the key) before any connection. `resident_runtime_failure_exits_1` is the positive control: the
+/// same environment with the cap set reaches the database. Fault: default the cap, or parse it as a plain `u32` ⇒ red.
+#[test]
+fn embedding_batch_cap_is_required_and_non_zero() {
+    for (tag, value, refusal) in [
+        ("cap_unset", None, "missing required configuration"),
+        ("cap_zero", Some("0"), "invalid configuration"),
+    ] {
+        let (code, stderr) = serve_rpc_against_dead_database(tag, value);
+        assert_eq!(code, Some(2), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{refusal}: {BATCH_CAP}")),
+            "{stderr}"
+        );
+    }
 }

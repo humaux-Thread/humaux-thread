@@ -1367,6 +1367,7 @@ fn pass_deps(env: &Env, test: &str) -> Option<PassDeps> {
             model_revision: "r1".to_owned(),
             dimension_options: vec![4],
             max_input_tokens: 4_096,
+            max_batch_items: std::num::NonZeroU32::new(10).expect("non-zero cap"),
             batch_supported: true,
             dense_supported: true,
             sparse_supported: false,

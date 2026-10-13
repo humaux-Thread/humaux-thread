@@ -64,6 +64,8 @@ fn text_embedding_v4() -> EmbeddingModelDescriptor {
         // §19 production default — DashScope's real Matryoshka option set for this model.
         dimension_options: vec![64, 128, 256, 512, 768, 1024, 1536, 2048],
         max_input_tokens: 8192,
+        // DashScope `text-embedding-v4` documented batch limit (ADR-0068 D-F).
+        max_batch_items: std::num::NonZeroU32::new(10).expect("non-zero cap"),
         batch_supported: true,
         dense_supported: true,
         sparse_supported: false,

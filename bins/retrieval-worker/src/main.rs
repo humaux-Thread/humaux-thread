@@ -5,6 +5,7 @@
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID, HUMAUX_RETRIEVAL_WORKER_BACKOFF_BASE_SECS,
 //!   HUMAUX_RETRIEVAL_WORKER_BACKOFF_MAX_SECS, HUMAUX_RETRIEVAL_WORKER_BATCH, HUMAUX_RETRIEVAL_WORKER_CALLER,
 //!   HUMAUX_RETRIEVAL_WORKER_CELL_ID, HUMAUX_RETRIEVAL_WORKER_DIMENSION, HUMAUX_RETRIEVAL_WORKER_EGRESS_PROCESSOR_ID,
+//!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS,
 //!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER,
 //!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION, HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID,
 //!   HUMAUX_RETRIEVAL_WORKER_GITLEAKS_BIN, HUMAUX_RETRIEVAL_WORKER_GITLEAKS_SHA256,
@@ -414,6 +415,9 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
             return Err(Outcome::NotApplicable(format!("missing {var}")));
         }
     }
+    // ADR-0068 D-F / §78.1: the projection modes are the only ones that batch cards, so the cap is required before any
+    // connection — unset or 0 refuses boot here (exit 2), never a pass that fails on every poll.
+    parse::<std::num::NonZeroU32>("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS")?;
     // §78.1 / card 21: the ticket triple is DERIVED from the retrieval family this process
     // projects into; `None` would be a wiring bug, not a deployment shape.
     let claim = ClaimFamily::of(PROJECTION_FAMILY)
@@ -725,6 +729,10 @@ async fn build_embedding_provider(
         model_revision: required("HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION")?,
         dimension_options: vec![dimension],
         max_input_tokens: parse::<u32>("HUMAUX_RETRIEVAL_WORKER_MAX_INPUT_TOKENS")?,
+        // ADR-0068 D-F / §78.1: the provider's per-request input cap; absent or 0 refuses boot.
+        max_batch_items: parse::<std::num::NonZeroU32>(
+            "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS",
+        )?,
         batch_supported: true,
         dense_supported: true,
         sparse_supported: false,
