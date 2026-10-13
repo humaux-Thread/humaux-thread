@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, McpAuditAction},
+    dataclass::DataClass,
     error::ErrorCode,
     evidence::EvidenceOriginClass,
     identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor, can_read},
@@ -244,7 +245,10 @@ async fn atomically(
                     .await
                     .map_err(db_error)?
                     .ok_or(ErrorCode::NotFound)?;
-            (Some(memory_id), data_class == "SECRET_MATERIAL")
+            (
+                Some(memory_id),
+                data_class == DataClass::SecretMaterial.as_str(),
+            )
         } else {
             (None, false)
         };
@@ -290,7 +294,8 @@ async fn atomically(
     .await?;
 
     let token_expires_at = request.command.consistency_token_expires_at;
-    let secret_material = note.is_some() && request.command.data_class == "SECRET_MATERIAL";
+    let secret_material =
+        note.is_some() && request.command.data_class == DataClass::SecretMaterial.as_str();
     let pending = remember::remember_in_txn_with(&mut txn, request.command, note.as_ref())
         .await
         .map_err(remember_error)?;
