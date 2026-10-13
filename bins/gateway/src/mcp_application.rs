@@ -640,6 +640,16 @@ impl GatewayMcpApplication {
         value: &Value,
     ) -> Result<ToolOutput, ErrorCode> {
         let requested_workspace = workspace(value)?;
+        // ADR-0067 D-G: the note axes narrow the memory manifest only; the candidate and subject listings below would
+        // silently drop them (and skip the window check), so the combination is refused (PR #8 Codex P2).
+        if (value.get("candidates").and_then(Value::as_bool) == Some(true)
+            || value.get("subjects").and_then(Value::as_bool) == Some(true))
+            && ["note_kinds", "since", "until"]
+                .iter()
+                .any(|key| value.get(*key).is_some())
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
         // ADR-0026 D-E: `{candidates:true}` lists PENDING distill candidates instead of memories
         // (same read gate + workspace rule). The smaller schema change vs. a new op.
         if value.get("candidates").and_then(Value::as_bool) == Some(true) {

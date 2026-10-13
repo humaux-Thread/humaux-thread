@@ -14639,6 +14639,23 @@ fn native_mcp_note_reads_filter_by_kind_refuse_project_and_get_history() {
             )
             .await;
             assert_eq!(status, 400, "project is INVALID_INPUT: {refused}");
+            // PR #8 Codex P2: the note axes are refused on the candidate / subject listings, never silently dropped.
+            for (id, mode) in [(111, "candidates"), (112, "subjects")] {
+                let (status, refused) = raw_request(
+                    address,
+                    &headers,
+                    &rpc(
+                        id,
+                        "tools/call",
+                        call_params(
+                            "memory",
+                            json!({"action":"enumerate","workspace_id":workspace,mode:true,"note_kinds":["decision"]}),
+                        ),
+                    ),
+                )
+                .await;
+                assert_eq!(status, 400, "{mode} + note_kinds is INVALID_INPUT: {refused}");
+            }
 
             // D-H: include_history returns status and provenance; the digest is recomputed here.
             let (status, history) = raw_request(
