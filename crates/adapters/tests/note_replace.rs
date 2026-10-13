@@ -15,7 +15,7 @@
 //!   confirm token minted by `confirm_token_repo::mint_with_audit` as the gateway's first leg does; the owner connection
 //!   only seeds, holds a barrier lock, forces the EXCLUDE witness and reads back this fixture's tenant; every gate
 //!   asserts stored rows or real outcomes, never two literals]
-//! Spec: ADR-0067; ADR-0018
+//! Spec: ADR-0067; ADR-0018; ADR-0054
 //!
 //! The editor is a governance principal (`governance_ops::Governor`): a real credential, because consuming a confirm
 //! token rechecks the write scope against `control.api_keys` (ADR-0054 D-B).

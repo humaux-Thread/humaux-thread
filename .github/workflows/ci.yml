@@ -227,8 +227,8 @@ jobs:
         run: |
           if ! cargo xtask dep-map --check; then
             cargo xtask dep-map --write || true
-            git diff --binary -- docs/architecture > "$RUNNER_TEMP/dep-map-drift.patch" || true
-            git diff --stat -- docs/architecture
+            git diff --binary -- docs/architecture deploy/env/example > "$RUNNER_TEMP/dep-map-drift.patch" || true
+            git diff --stat -- docs/architecture deploy/env/example
             exit 1
           fi
 
