@@ -31,13 +31,15 @@ keys() { grep -E '^[A-Z0-9_]+=' "$1" | cut -d= -f1 | sort; }
 fails=0
 SIZE=$(grep -E '^HUMAUX_SIZE_[A-Z0-9_]+_MEM=' "$MAIN" | cut -d= -f2 | awk '{ s += $1 } END { print s + 0 }')
 # PR #2 round 8: the scheduled restore drill (deploy/compose/drill.yml) runs its PostgreSQL and Qdrant beside
-# production, so their ceilings count too. Their unit is compose's (`<n>g` / `<n>m`); anything else is a fail.
+# production, so their ceilings count too. Their unit is compose's (`<n>g` / `<n>m`, n > 0: a zero cap would be
+# no cap at all); anything else is a fail.
 DRILL=$(grep -E '^HUMAUX_DRILL_[A-Z0-9_]+_MEM_LIMIT=' "$MAIN" | cut -d= -f2 | awk '
+  /^0+[gGmM]$/ { bad = 1; next }
   /^[0-9]+[gG]$/ { s += $1 * 1024; next }
   /^[0-9]+[mM]$/ { s += $1; next }
   { bad = 1 }
   END { if (bad || NR == 0) print "bad"; else print s + 0 }')
-[ "$DRILL" != bad ] || { echo "budget: fail — HUMAUX_DRILL_*_MEM_LIMIT missing or not <n>g / <n>m in $MAIN"; exit 1; }
+[ "$DRILL" != bad ] || { echo "budget: fail — HUMAUX_DRILL_*_MEM_LIMIT missing, zero, or not <n>g / <n>m in $MAIN"; exit 1; }
 SUM=$((SIZE + DRILL))
 RES=$((N - SUM))
 echo "budget: $MAIN sum(HUMAUX_SIZE_*_MEM)=${SIZE} MiB + drill=${DRILL} MiB mem_total=${N} MiB reserve=${RES} MiB (need >= $RESERVE_MIN)"

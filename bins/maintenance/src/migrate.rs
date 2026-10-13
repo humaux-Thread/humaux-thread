@@ -111,15 +111,19 @@ fn dsn_from_args(args: &[String]) -> Option<String> {
     flag_value(args, "--dsn")
 }
 
-/// The first of `names` present without a value (last, empty, or followed by another `--flag`). PR #2 review: a bare
+/// The first of `names` present without a separate value (last, empty, followed by another `--flag`, or written
+/// `--flag=value`). PR #2 review: a bare
 /// value flag read as absent let a default stand in for it (`--migrations-dir` → the embedded set, `--dsn` → the
 /// environment DSN, `--spec` → no table-set check); callers refuse it as a usage error (exit 2) before any default.
 pub(crate) fn flag_without_value(args: &[String], names: &[&'static str]) -> Option<&'static str> {
     names.iter().copied().find(|name| {
-        args.iter().position(|a| a == name).is_some_and(|i| {
-            args.get(i + 1)
-                .is_none_or(|v| v.is_empty() || v.starts_with("--"))
-        })
+        // Card 39b: `--dsn=URL` is not a form these parsers read — it would also fall to the default.
+        let joined = format!("{name}=");
+        args.iter().any(|a| a.starts_with(&joined))
+            || args.iter().position(|a| a == name).is_some_and(|i| {
+                args.get(i + 1)
+                    .is_none_or(|v| v.is_empty() || v.starts_with("--"))
+            })
     })
 }
 

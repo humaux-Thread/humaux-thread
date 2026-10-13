@@ -5286,6 +5286,15 @@ mod tests {
                 None,
             ),
             (own(&[]), None),
+            // Card 39b: the `=` form is not read by these parsers, so it is refused, not defaulted.
+            (
+                own(&["--spec=/tmp/spec.md", "--dsn", "postgres://x"]),
+                Some("--spec"),
+            ),
+            (
+                own(&["--spec", "/tmp/spec.md", "--dsn=postgres://x"]),
+                Some("--dsn"),
+            ),
         ] {
             assert_eq!(
                 crate::migrate::flag_without_value(&args, &["--spec", "--dsn"]),

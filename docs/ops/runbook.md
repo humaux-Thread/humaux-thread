@@ -1191,7 +1191,7 @@ services; PR #2 round 7). U7's `up` passes `--remove-orphans` for the same reaso
 C="sh deploy/release/compose.sh"
 $C stop gateway consolidation private-distill private-rpc retrieval-serve retrieval-rpc maintenance-serve maintenance-health
 SV=$($C --profile ops --profile rehearsal config --services)  # a failure stops the step (no pipeline hides it)
-case "$SV" in *gateway*) ;; *) echo "upgrade: config --services listed no gateway; refusing to remove anything"; exit 1 ;; esac
+printf '%s\n' "$SV" | grep -qx gateway || { echo "upgrade: config --services listed no gateway; refusing to remove anything"; exit 1; }
 S=" $(printf '%s\n' "$SV" | tr '\n' ' ') "
 for c in $(docker ps -aq --filter "label=com.docker.compose.project=$HUMAUX_NODE_PROJECT"); do
   s=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")

@@ -133,7 +133,8 @@ const SHARED_IDENTITIES: [&[&str]; 3] = [
 ];
 
 /// ADR-0066 D-C / §5: the profile of the rehearsal-only probes (`scratch-as-*` carry their twins' uid and pair group
-/// on purpose; `alert-sink`). Only a [`REHEARSAL_PROBES`] row in this profile is exempt from the identity rules.
+/// on purpose). Only a [`REHEARSAL_PROBES`] row in this profile is exempt from the identity rules; `alert-sink`
+/// is in the profile too and gets every rule.
 const REHEARSAL_PROFILE: &str = "rehearsal";
 
 /// ADR-0066 D-J: the role passwords `migrate roles rotate` sets live in `migrate.secret.env` (loaded only by the
@@ -1351,11 +1352,19 @@ fn judge_image(
 
 /// PR #2 round 4: the `--version` run of an image whose id and revision already match the manifest, by that
 /// immutable id (a retargeted tag cannot swap the image in between), with no network, a read-only root, no
-/// capabilities, the image's own non-root `USER` and fixed memory / pid / cpu ceilings. A run that has not returned after
+/// capabilities, the image's own `USER` (non-root for every process target; root for `dr`, still without
+/// capabilities) and fixed memory / pid / cpu ceilings. A run that has not returned after
 /// [`VERSION_TIMEOUT`] is removed by its name and yields `None`; a failed run yields `Some("")` (the comparisons
 /// then name it).
 fn version_of(id: &str, target: &str) -> Option<String> {
-    let name = format!("humaux-release-check-{target}-{}", std::process::id());
+    // Card 39b: pid alone is near-constant inside the `dr` container, so two checks could collide on the name.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let name = format!(
+        "humaux-release-check-{target}-{}-{nanos}",
+        std::process::id()
+    );
     let args: Vec<String> = [
         "run",
         "--rm",
@@ -1392,7 +1401,11 @@ fn version_of(id: &str, target: &str) -> Option<String> {
     if let Ok(version) = rx.recv_timeout(VERSION_TIMEOUT) {
         Some(version)
     } else {
-        let _ = docker(&["rm", "--force", &name]);
+        if docker(&["rm", "--force", &name]).is_err() {
+            eprintln!(
+                "deploy-check: container {name} outlived the version timeout and could not be removed"
+            );
+        }
         None
     }
 }
