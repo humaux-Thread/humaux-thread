@@ -299,6 +299,6 @@ stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
 - L-4 Until slice 40d, recall over a note longer than one retrieval card covers its title and first card budget only
   (signal: card 40's 64 KiB recall fixture, or a note recall miss reported against text past the card budget).
 - L-5 Until slice 40c-2, `memory.enumerate` lists current versions only (no `statuses` axis, no archive selection) and
-  `memory.get` returns no `note_id`; superseded versions are reachable one id at a time through `get` with
+  `memory.get` takes no `note_id` selector (40c-1 outputs `note_id`); superseded versions are reachable one id at a time through `get` with
   `include_history` (signal: a compat-facade `memory_enumerate(status=…)` fixture in card 42, or a replace flow in 40c
   that must list a note's versions).
