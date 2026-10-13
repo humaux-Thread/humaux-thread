@@ -121,7 +121,9 @@ else
       HUMAUX_A5_GATEWAY_MAX_WAIT_MS=1 $C up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1 && touch "$HOOK/load_burst_w.ack"
     ) &
     LISTENER=$!
-    trap 'kill "$LISTENER" 2>/dev/null' EXIT
+    # Card 39b (PR #2 Codex round 10): an interrupted run also puts the gateway back on prod.yml alone, never
+    # leaving the load window's 1 ms BURST-W admission wait deployed.
+    trap 'kill "$LISTENER" 2>/dev/null; sh "$DEPLOY/release/compose.sh" up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1' EXIT
     trap 'exit 143' TERM INT
     # (3) Seed and load: the card-38 phase set (ADR-0065) through the loadgen image. e2e-seed hashes the keys with
     # the node's pepper; it reaches the container by NAME (`-e`, `--pepper-hex-env`), never in argv, `ps` or
@@ -161,6 +163,7 @@ else
     # Out of the load window: the gateway from prod.yml alone (the deployed admission and rate values).
     sh "$DEPLOY/release/compose.sh" up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1 \
       || echo "ASSERTION FAIL gateway_restored_after_load" >> "$LOADLOG"
+    trap - EXIT
   fi
 fi
 

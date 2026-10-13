@@ -312,6 +312,15 @@ fn rehearsal_probe(name: &str, svc: &Value) -> bool {
                 && svc.get("user").and_then(Value::as_str) == Some(*user)
                 && gids_of(svc) == *gids
         })
+        // Card 39b: `gids_of` reads numeric groups only, so a named one (`docker`) would slip past the row.
+        && svc
+            .get("group_add")
+            .and_then(Value::as_array)
+            .is_none_or(|groups| {
+                groups.iter().all(|g| {
+                    g.as_u64().is_some() || g.as_str().is_some_and(|s| s.parse::<u32>().is_ok())
+                })
+            })
 }
 
 /// The gids a service runs with: the `user` gid and every `group_add` entry (numeric ones only).
@@ -617,6 +626,49 @@ pub fn compose_reasons(doc: &Value) -> Vec<String> {
         reasons.extend(pair_reasons(pair, doc, &all));
     }
     reasons.extend(pg_service_image_reasons(&all));
+    reasons.extend(service_target_reasons(&all));
+    reasons
+}
+
+/// Card 39b (PR #2 Codex round 10): the release target each Humaux service must run. Two targets can carry one
+/// binary (`ops` / `dr` are both the maintenance binary) but not the same image: `dr` alone has the docker CLI, so
+/// `dr` on `humaux-ops` passed every other check and broke backups and drills after an upgrade.
+/// `pg` has its own rule ([`pg_service_image_reasons`]).
+const SERVICE_TARGETS: [(&str, &str); 12] = [
+    ("gateway", "gateway"),
+    ("retrieval-rpc", "retrieval-worker"),
+    ("retrieval-serve", "retrieval-worker"),
+    ("private-rpc", "private-worker"),
+    ("private-distill", "private-worker"),
+    ("consolidation", "consolidation-worker"),
+    ("maintenance-health", "maintenance"),
+    ("maintenance-serve", "maintenance"),
+    ("ops", "ops"),
+    ("migrate", "ops"),
+    ("dr", "dr"),
+    ("admin", "admin"),
+];
+
+/// Every [`SERVICE_TARGETS`] service exists and runs its target (`image_target_mismatch:<svc>:<target>`,
+/// `service_missing:<svc>`), and no other service runs a `humaux-*` process image (`image_target_unexpected:<svc>`).
+fn service_target_reasons(all: &BTreeMap<&String, &Value>) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for (service, want) in SERVICE_TARGETS {
+        match all.get(&service.to_owned()) {
+            None => reasons.push(format!("service_missing:{service}")),
+            Some(svc) => {
+                let got = humaux_target(svc).unwrap_or("-");
+                if got != want {
+                    reasons.push(format!("image_target_mismatch:{service}:{got}"));
+                }
+            }
+        }
+    }
+    for (name, svc) in all {
+        if is_humaux(svc) && !SERVICE_TARGETS.iter().any(|(s, _)| s == name) {
+            reasons.push(format!("image_target_unexpected:{name}"));
+        }
+    }
     reasons
 }
 
@@ -902,6 +954,9 @@ pub fn presence_reasons(
                 reasons.push(format!("key_in_both:{p}:{key}"));
                 continue;
             }
+            // ponytail: presence is per binary — a key one mode needs but only another mode's `environment:`
+            // carries passes here; the pair-uid keys are judged per service in `uid_key_reasons`. Per-mode
+            // consumption lists when a non-uid key ever splits that way (card 39b, PR #2 Codex round 10).
             let all: Vec<String> = [in_values, in_secret, of(compose, p, key)].concat();
             if all.is_empty() {
                 reasons.push(format!("key_missing:{p}:{key}"));
@@ -1004,6 +1059,15 @@ pub fn compose_env_sources(doc: &Value) -> (Vec<EnvFile>, Vec<String>) {
     (files, reasons)
 }
 
+/// The service a compose source belongs to (`compose/<svc>:environment`, `compose/<svc>:<path>`); `None` for a
+/// values, secret or example file, which every service of the process loads.
+fn compose_service(file: &EnvFile) -> Option<&str> {
+    file.name
+        .strip_prefix("compose/")
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(service, _)| service)
+}
+
 /// The host of a `scheme://[user[:password]@]host[:port][/db]` DSN; `None` when it has no `://`.
 fn dsn_host(dsn: &str) -> Option<&str> {
     let rest = dsn.split_once("://")?.1;
@@ -1046,22 +1110,33 @@ pub fn uid_key_reasons(doc: &Value, files: &[EnvFile]) -> Vec<String> {
             .find(|(name, _)| name.as_str() == service)
             .and_then(|(_, svc)| uid_of(svc))
     };
-    let value = |(process, key): (&str, &str)| {
+    // Card 39b (PR #2 Codex round 10): the value EACH service of the process receives — the process-wide files
+    // plus that service's own compose sources, the last one winning — not a value another mode happens to carry.
+    let value = |process: &str, service: &str, key: &str| {
         files
             .iter()
             .filter(|f| f.process == process)
+            .filter(|f| compose_service(f).is_none_or(|s| s == service))
             .filter_map(|f| f.value(key))
             .next_back()
             .and_then(|v| v.parse::<u32>().ok())
     };
     let mut reasons = Vec::new();
     for pair in &PAIRS {
-        for (key, peer) in [
+        for ((process, key), peer) in [
             (pair.client_uid_key, pair.client),
             (pair.server_uid_key, pair.server),
         ] {
-            if value(key).is_none() || value(key) != uid(peer) {
-                reasons.push(format!("expected_uid_mismatch:{}", key.1));
+            let modes: Vec<&String> = services(doc)
+                .filter(|(_, svc)| process_of(svc) == Some(process))
+                .map(|(name, _)| name)
+                .collect();
+            if modes.is_empty()
+                || modes.iter().any(|m| {
+                    value(process, m, key).is_none() || value(process, m, key) != uid(peer)
+                })
+            {
+                reasons.push(format!("expected_uid_mismatch:{key}"));
             }
         }
     }
@@ -1255,6 +1330,25 @@ fn docker(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// PR #2 round 4: one image's verdict — the identity comparisons first; `run_version` (the image's entrypoint) is
+/// called only when they hold, with the inspected immutable id; `None` from it is `image_version_timeout`.
+fn judge_image(
+    image: &ManifestImage,
+    expect_sha: &str,
+    id: &str,
+    label: &str,
+    run_version: impl FnOnce(&str) -> Option<String>,
+) -> Vec<String> {
+    let identity = release_reasons(image, expect_sha, id, label, None);
+    if !identity.is_empty() {
+        return identity;
+    }
+    match run_version(id) {
+        Some(version) => release_reasons(image, expect_sha, id, label, Some(&version)),
+        None => vec![format!("image_version_timeout:{}", image.target)],
+    }
+}
+
 /// PR #2 round 4: the `--version` run of an image whose id and revision already match the manifest, by that
 /// immutable id (a retargeted tag cannot swap the image in between), with no network, a read-only root, no
 /// capabilities, the image's own non-root `USER` and fixed memory / pid / cpu ceilings. A run that has not returned after
@@ -1336,23 +1430,9 @@ fn release_check(
             continue;
         };
         let (id, label) = inspected.split_once(' ').unwrap_or((&inspected, ""));
-        let identity = release_reasons(image, expect_sha, id, label, None);
-        if !identity.is_empty() {
-            reasons.extend(identity);
-            continue;
-        }
-        match version_of(id, &image.target) {
-            Some(version) => {
-                reasons.extend(release_reasons(
-                    image,
-                    expect_sha,
-                    id,
-                    label,
-                    Some(&version),
-                ));
-            }
-            None => reasons.push(format!("image_version_timeout:{}", image.target)),
-        }
+        reasons.extend(judge_image(image, expect_sha, id, label, |id| {
+            version_of(id, &image.target)
+        }));
     }
     let pg_reference = format!("humaux-pg:{tag}");
     let pg_inspected = docker(&[
@@ -1864,6 +1944,18 @@ mod tests {
             uid_key_reasons(&doc, &overridden),
             vec!["expected_uid_mismatch:HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID".to_owned()]
         );
+        // Card 39b (PR #2 Codex round 10): the key on retrieval-serve alone never reaches retrieval-rpc.
+        let mut one_mode = uid_values();
+        one_mode[1] = EnvFile::parse("values/retrieval-worker.env", "retrieval-worker", "");
+        one_mode.push(EnvFile::parse(
+            "compose/retrieval-serve:environment",
+            "retrieval-worker",
+            "HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID=10101",
+        ));
+        assert_eq!(
+            uid_key_reasons(&doc, &one_mode),
+            vec!["expected_uid_mismatch:HUMAUX_RETRIEVAL_WORKER_GATEWAY_UID".to_owned()]
+        );
         let mut wrong = uid_values();
         wrong[1] = EnvFile::parse(
             "values/retrieval-worker.env",
@@ -2218,6 +2310,32 @@ mod tests {
         ];
         for (case, mutate, want) in cases {
             assert_case(case, mutate, want);
+        }
+    }
+
+    /// Card 39b (gate-reviewer round 4 P2-2/P2-3): each clause of a probe's exemption is load-bearing on its own —
+    /// the profile, the `user`, the gids, and numeric-only `group_add`. Fault: drop any one clause ⇒ its case is red.
+    #[test]
+    fn rehearsal_probe_clauses_each_hold() {
+        let doc = fixture();
+        let probe = doc["services"]["scratch-as-gateway"].clone();
+        assert!(
+            rehearsal_probe("scratch-as-gateway", &probe),
+            "the fixture probe is exempt"
+        );
+        type Mutation = fn(&mut Value);
+        let cases: [(&str, Mutation); 4] = [
+            ("profile", |p| p["profiles"] = json!(["rehearsal", "ops"])),
+            ("user only", |p| p["user"] = json!("10102:10101")),
+            ("gids only", |p| p["group_add"] = json!(["10201", "10202"])),
+            ("named group", |p| {
+                p["group_add"] = json!(["10201", "docker"])
+            }),
+        ];
+        for (case, mutate) in cases {
+            let mut p = probe.clone();
+            mutate(&mut p);
+            assert!(!rehearsal_probe("scratch-as-gateway", &p), "case {case}");
         }
     }
 
@@ -2621,6 +2739,33 @@ mod tests {
         );
     }
 
+    /// Card 39b (gate-reviewer round 4 P2-1): a stale or retargeted image never reaches its entrypoint — the
+    /// version runner is not called — and a verified one is run by its inspected id; a runner that times out is
+    /// named. Fault: run the version before (or regardless of) the identity ⇒ red.
+    #[test]
+    fn judge_image_runs_the_entrypoint_only_on_a_verified_image() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let line = format!(
+            "IMAGE humaux-ops:0.1.0-0123456789ab id=sha256:aaa size=1 binary=humaux-maintenance git_sha={sha}"
+        );
+        let image = parse_manifest_line(&line).expect("manifest line");
+        let version = format!("humaux-maintenance 0.1.0 git_sha={sha} build_time=t");
+        let refused = judge_image(&image, sha, "sha256:bbb", sha, |_| -> Option<String> {
+            panic!("the entrypoint of an unverified image ran")
+        });
+        assert_eq!(refused, vec!["image_id_mismatch:ops".to_owned()]);
+        let mut ran_with = String::new();
+        let ok = judge_image(&image, sha, "sha256:aaa", sha, |id| {
+            ran_with = id.to_owned();
+            Some(version.clone())
+        });
+        assert_eq!((ok, ran_with.as_str()), (Vec::new(), "sha256:aaa"));
+        assert_eq!(
+            judge_image(&image, sha, "sha256:aaa", sha, |_| None),
+            vec!["image_version_timeout:ops".to_owned()]
+        );
+    }
+
     /// PR #2 round 4: before the entrypoint runs (`version_line = None`) only the identity comparisons are made, so
     /// a stale or retargeted image is named without its `--version` and a verified one owes no version reason yet.
     /// Fault: judge the version comparisons on `None` as an empty line ⇒ red.
@@ -2797,7 +2942,7 @@ mod tests {
     #[allow(clippy::too_many_lines)] // one table: a case per arm
     fn compose_fix9_arms_each_red() {
         type Mutation = fn(&mut Value);
-        let cases: [(&str, Mutation, &[&str]); 16] = [
+        let cases: [(&str, Mutation, &[&str]); 17] = [
             (
                 "security_opt extra on a Humaux service",
                 |d| {
@@ -2867,6 +3012,13 @@ mod tests {
                         .push(json!({ "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env" }));
                 },
                 &["secret_file_foreign:gateway:maintenance.secret.env"],
+            ),
+            (
+                "dr on the ops image",
+                |d| {
+                    service(d, "dr").insert("image".into(), json!("humaux-ops:0.1.0-000000000000"));
+                },
+                &["image_target_mismatch:dr:ops"],
             ),
             (
                 "pg on an upstream image",
