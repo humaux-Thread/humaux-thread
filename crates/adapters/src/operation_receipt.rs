@@ -333,9 +333,17 @@ async fn lock_note_head(
     .await
     .map_err(db_error)?
     .ok_or(ErrorCode::NotFound)?;
-    let gated =
-        read_materialize::final_memory_ids_about_in_txn(txn, auth, &[head], true, true, &[], None)
-            .await?;
+    // ADR-0067 D-J2: the head is judged under `memory.get`'s widest selection (history, archived) so that only the
+    // hard gates (visibility, forget, secret, revoked/expired) answer NOT_FOUND; status and archive are refused below.
+    let gated = read_materialize::final_memory_ids_about_in_txn(
+        txn,
+        auth,
+        &[head],
+        read_materialize::Lifecycle::for_get(true),
+        &[],
+        None,
+    )
+    .await?;
     if !gated.contains(&head) {
         return Err(ErrorCode::NotFound);
     }

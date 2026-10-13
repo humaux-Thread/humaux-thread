@@ -1,9 +1,9 @@
 //! `adapters::exact_census` — §22.1 EXACT enumeration census: the physical IO behind `completeness::CensusResult`.
-//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool]]; env=[]; modules=[adapters::context_repo, adapters::postgres, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
+//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
 //! Called-by: [adapters::context_repo, tests]
 //! Invariants: [total, returned items and the probe snapshot come from ONE REPEATABLE READ transaction (§22.1); total
 //!   is its own count(*), never the recall length; a census failure is trigger 4 (Internal), never a guessed total]
-//! Spec: Baseline §22.4; §22.1; §23.4; §23.1; §60; ADR-0062 D-K
+//! Spec: Baseline §22.4; §22.1; §23.4; §23.1; §60; ADR-0062 D-K; ADR-0067 D-G, D-J2
 //!
 //! Split of responsibilities (frozen by the pure crates' own docs):
 //! - `retrieval::predicate_registry` validates rows but "does not import sqlx or issue any
@@ -45,6 +45,7 @@ use sqlx::{Acquire, Row};
 
 use crate::context_repo::{NoteEnumerationFilter, readable_memory_ids, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
+use crate::read_materialize::Lifecycle;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -160,13 +161,11 @@ const NOT_TOMBSTONED: &str = "NOT EXISTS ( \
     AND sl.commit_seq = ob.commit_seq \
    WHERE me.memory_id = memory_records.memory_id AND sl.state = 'TOMBSTONED')";
 
-/// Final materialization only exposes active, unsuperseded memory rows. EXACT must not report
-/// identifiers that the read path will reject after this snapshot.
-///
-/// `pub(crate)`: `context_repo`'s manifest candidate query runs the same conjunct, so the two
-/// faces of one predicate (§23.1②) share this text instead of restating it.
-pub(crate) const ACTIVE_FINAL: &str =
-    "memory_records.status = 'active' AND memory_records.superseded_by IS NULL";
+/// The registry path's lifecycle: final materialization only exposes active, unsuperseded memory rows, and EXACT must
+/// not report identifiers that the read path will reject after this snapshot. Bound through the same
+/// [`Lifecycle::sql`] fragment as `memory.enumerate`'s selection (ADR-0067 D-J2), with the archive axis not
+/// consulted, exactly as the pre-40c-2 `status = 'active' AND superseded_by IS NULL` text.
+const ACTIVE_FINAL: Lifecycle = Lifecycle::ACTIVE_FINAL;
 
 /// The candidate universe has already passed context_repo's sole source-visibility authority.
 const AUTHORIZED_CANDIDATE: &str = "memory_records.memory_id = ANY($8)";
@@ -204,16 +203,35 @@ fn before_bounded(placeholder: u8) -> String {
 const NOTE_KIND_IN: &str = "(${n}::text[] IS NULL OR memory_records.note_kind = ANY(${n}))";
 const OCCURRED_SINCE: &str = "(${n}::timestamptz IS NULL OR memory_records.occurred_at >= ${n})";
 const OCCURRED_UNTIL: &str = "(${n}::timestamptz IS NULL OR memory_records.occurred_at < ${n})";
+/// ADR-0067 D-J2: an exact match on the version's note (NULL = any note or none).
+const NOTE_ID_IS: &str = "(${n}::uuid IS NULL OR memory_records.note_id = ${n})";
 
-/// The three note-axis conjuncts on placeholders `first`, `first + 1`, `first + 2` (kinds, since, until) — the one
-/// text both `context_repo`'s manifest candidate query and every census statement run (§22.1 one predicate, two faces).
+/// The note-axis conjuncts on placeholders `first ..= first + 5` — kinds, since, until, note_id, then the D-J2
+/// lifecycle's statuses and archive mode ([`Lifecycle::sql`]) — the one text both `context_repo`'s manifest candidate
+/// query and every census statement run (§22.1 one predicate, two faces). [`bind_note_axes`] binds them in this order.
 pub(crate) fn note_axes(first: u8) -> String {
     format!(
-        "{} AND {} AND {}",
+        "{} AND {} AND {} AND {} AND {}",
         NOTE_KIND_IN.replace("{n}", &first.to_string()),
         OCCURRED_SINCE.replace("{n}", &(first + 1).to_string()),
         OCCURRED_UNTIL.replace("{n}", &(first + 2).to_string()),
+        NOTE_ID_IS.replace("{n}", &(first + 3).to_string()),
+        Lifecycle::sql("memory_records", first + 4),
     )
+}
+
+/// Binds [`note_axes`]' six values, in its placeholder order, after whatever `query` already bound.
+pub(crate) fn bind_note_axes<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    notes: &NoteEnumerationFilter,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    query
+        .bind(notes.kind_wires())
+        .bind(notes.occurred_since)
+        .bind(notes.occurred_until)
+        .bind(notes.note_id)
+        .bind(notes.lifecycle.status_wires())
+        .bind(notes.lifecycle.archive_wire())
 }
 
 /// §18/§22.1 `SECRET_MATERIAL` linkage: a memory whose evidence chain carries secret material
@@ -224,21 +242,30 @@ const SECRET_LINKED: &str = "EXISTS ( \
    WHERE me2.memory_id = memory_records.memory_id \
      AND eo.data_class = 'SECRET_MATERIAL')";
 
+/// The readout statements' binds: `$1..$7` tenant, workspace, stream key; `$8` authorized ids; `$9` subject; `$10`
+/// segment bound; `$11..$16` [`note_axes`].
+fn bind_readout<'q>(
+    sql: &'q str,
+    args: &CensusArgs<'q>,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    bind_note_axes(
+        sqlx::query(sql)
+            .bind(args.tenant_id)
+            .bind(args.workspace_id)
+            .bind(&args.stream.scope_kind)
+            .bind(args.stream.scope_id)
+            .bind(&args.stream.domain)
+            .bind(&args.stream.projection_kind)
+            .bind(&args.stream.projection_version)
+            .bind(args.authorized_ids)
+            .bind(args.subject_id)
+            .bind(args.before_id),
+        args.notes,
+    )
+}
+
 async fn census_count(txn: &mut Txn<'_>, sql: &str, args: &CensusArgs<'_>) -> sqlx::Result<i64> {
-    sqlx::query(sql)
-        .bind(args.tenant_id)
-        .bind(args.workspace_id)
-        .bind(&args.stream.scope_kind)
-        .bind(args.stream.scope_id)
-        .bind(&args.stream.domain)
-        .bind(&args.stream.projection_kind)
-        .bind(&args.stream.projection_version)
-        .bind(args.authorized_ids)
-        .bind(args.subject_id)
-        .bind(args.before_id)
-        .bind(args.notes.kind_wires())
-        .bind(args.notes.occurred_since)
-        .bind(args.notes.occurred_until)
+    bind_readout(sql, args)
         .fetch_one(&mut **txn)
         .await?
         .try_get(0)
@@ -269,8 +296,10 @@ async fn authorized_candidate_ids(
     txn: &mut Txn<'_>,
     query: &CandidateQuery<'_>,
 ) -> Result<Vec<Uuid>, ErrorCode> {
+    // $1 tenant, $2 workspace, $3..$7 stream key, $8 subject, $9 segment bound, $10..$15 `note_axes` (kinds, since,
+    // until, note_id, then the ADR-0067 D-J2 lifecycle's statuses and archive mode).
     let candidates_sql = format!(
-        "SELECT memory_id FROM {} AND ({}) AND {ACTIVE_FINAL} AND {NOT_TOMBSTONED} AND {} AND {} \
+        "SELECT memory_id FROM {} AND ({}) AND {NOT_TOMBSTONED} AND {} AND {} \
          AND {} ORDER BY memory_id",
         query.scope,
         query.predicate,
@@ -278,21 +307,21 @@ async fn authorized_candidate_ids(
         before_bounded(9),
         note_axes(10),
     );
-    let candidates: Vec<Uuid> = match sqlx::query(&candidates_sql)
-        .bind(query.authorization.tenant_id().0)
-        .bind(query.workspace_id.0)
-        .bind(&query.stream.scope_kind)
-        .bind(query.stream.scope_id)
-        .bind(&query.stream.domain)
-        .bind(&query.stream.projection_kind)
-        .bind(&query.stream.projection_version)
-        .bind(query.subject_id)
-        .bind(query.before_id)
-        .bind(query.notes.kind_wires())
-        .bind(query.notes.occurred_since)
-        .bind(query.notes.occurred_until)
-        .fetch_all(&mut **txn)
-        .await
+    let candidates: Vec<Uuid> = match bind_note_axes(
+        sqlx::query(&candidates_sql)
+            .bind(query.authorization.tenant_id().0)
+            .bind(query.workspace_id.0)
+            .bind(&query.stream.scope_kind)
+            .bind(query.stream.scope_id)
+            .bind(&query.stream.domain)
+            .bind(&query.stream.projection_kind)
+            .bind(&query.stream.projection_version)
+            .bind(query.subject_id)
+            .bind(query.before_id),
+        query.notes,
+    )
+    .fetch_all(&mut **txn)
+    .await
     {
         Ok(rows) => rows
             .iter()
@@ -315,6 +344,7 @@ async fn census_readout(
     predicate: &str,
     args: &CensusArgs<'_>,
 ) -> Result<(i64, Vec<Uuid>, i64), ErrorCode> {
+    // `bind_readout`'s map: `$9` subject, `$10` segment bound, `$11..$16` `note_axes` (incl. the D-J2 lifecycle).
     let subject = format!(
         "{} AND {} AND {}",
         subject_scoped(9),
@@ -322,7 +352,7 @@ async fn census_readout(
         note_axes(11)
     );
     let total_sql = format!(
-        "SELECT count(*) FROM {scope} AND ({predicate}) AND {ACTIVE_FINAL} AND {NOT_TOMBSTONED} \
+        "SELECT count(*) FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
          AND {AUTHORIZED_CANDIDATE} AND {subject}"
     );
     let total = census_count(txn, &total_sql, args)
@@ -330,23 +360,10 @@ async fn census_readout(
         .map_err(|_| ErrorCode::Internal)?;
 
     let ids_sql = format!(
-        "SELECT memory_id FROM {scope} AND ({predicate}) AND {ACTIVE_FINAL} AND {NOT_TOMBSTONED} \
+        "SELECT memory_id FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
          AND {AUTHORIZED_CANDIDATE} AND {subject} AND NOT {SECRET_LINKED} ORDER BY memory_id"
     );
-    let ids: Vec<Uuid> = sqlx::query(&ids_sql)
-        .bind(args.tenant_id)
-        .bind(args.workspace_id)
-        .bind(&args.stream.scope_kind)
-        .bind(args.stream.scope_id)
-        .bind(&args.stream.domain)
-        .bind(&args.stream.projection_kind)
-        .bind(&args.stream.projection_version)
-        .bind(args.authorized_ids)
-        .bind(args.subject_id)
-        .bind(args.before_id)
-        .bind(args.notes.kind_wires())
-        .bind(args.notes.occurred_since)
-        .bind(args.notes.occurred_until)
+    let ids: Vec<Uuid> = bind_readout(&ids_sql, args)
         .fetch_all(&mut **txn)
         .await
         .map_err(|_| ErrorCode::Internal)?
@@ -356,7 +373,7 @@ async fn census_readout(
         .map_err(|_| ErrorCode::Internal)?;
 
     let secret_sql = format!(
-        "SELECT count(*) FROM {scope} AND ({predicate}) AND {ACTIVE_FINAL} AND {NOT_TOMBSTONED} \
+        "SELECT count(*) FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
          AND {AUTHORIZED_CANDIDATE} AND {subject} AND {SECRET_LINKED}"
     );
     let excluded_secret = census_count(txn, &secret_sql, args)
@@ -388,7 +405,8 @@ pub struct CensusInputs<'a> {
     pub subject_id: Option<Uuid>,
     /// ADR-0062 D-K: restrict the universe to `memory_id < before_id` (a later manifest segment); `None` = whole.
     pub before_id: Option<Uuid>,
-    /// ADR-0067 D-G: the note axes (kinds, `occurred_at` window); the default is "no note axis".
+    /// ADR-0067 D-G / D-J2: the note axes (kinds, `occurred_at` window, note) and the lifecycle selection, bound on
+    /// every statement; the default is "no note axis" under [`Lifecycle::CURRENT`].
     pub notes: &'a NoteEnumerationFilter,
 }
 
@@ -518,6 +536,11 @@ pub async fn exact_enumerate(
         .map_err(|_| ErrorCode::Internal)?;
     set_authorization_local(&mut txn, &authorization).await?;
 
+    // ADR-0067 D-J2: the registry path keeps `ACTIVE_FINAL` and no note axis.
+    let registry_axes = NoteEnumerationFilter {
+        lifecycle: ACTIVE_FINAL,
+        ..NoteEnumerationFilter::default()
+    };
     let outcome = census_in_txn(
         &mut txn,
         &CensusInputs {
@@ -529,7 +552,7 @@ pub async fn exact_enumerate(
             stream,
             subject_id: None,
             before_id: None,
-            notes: &NoteEnumerationFilter::default(),
+            notes: &registry_axes,
         },
     )
     .await;

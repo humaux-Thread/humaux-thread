@@ -6,7 +6,7 @@
 //!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::tests::support::token_keys, domain::audit, domain::authority,
 //!   domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   projection::stream]
-//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::note_replace, adapters::tests::projection_lag,
+//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
 //!   adapters::tests::projection_worker, adapters::tests::rebuild, adapters::tests::support::a2_fixture,
 //!   adapters::tests::switch_user_private, maintenance::tests::drill, maintenance::tests::measure]
 //! Invariants: [test-only, included by #[path]; the owner connection only seeds the principal the ops run as;

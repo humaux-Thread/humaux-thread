@@ -168,9 +168,9 @@ impl ContextBootstrap {
 pub struct ContextItem {
     pub memory_id: Uuid,
     pub content: Value,
-    /// Q3/ADR-0024 D-C: `true` only on `memory.get` of an archived Memory. recall/context/
-    /// enumerate never emit an archived item, so the field is skipped when `false` and those
-    /// wire shapes stay byte-identical.
+    /// Q3/ADR-0024 D-C: `true` on `memory.get` of an archived Memory and on a `memory.enumerate` item selected with
+    /// `archive` `only` / `include` (ADR-0067 D-J2). recall/context never emit an archived item, so the field is
+    /// skipped when `false` and those wire shapes stay byte-identical.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
 }

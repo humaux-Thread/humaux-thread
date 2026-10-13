@@ -257,6 +257,44 @@ context bindings. `memory.correct`, `supersede`, `archive` and forget keep the n
 - The version list is `enumerate(note_id, statuses both, archive include)`.
 - **Blocking decision before `statuses:["superseded"]` ships:** a superseded version that is later revoked or expired cannot be expressed with one status column. Its own ADR decision is required (GPT batch 10, missed conflict 3).
 
+**D-J2 status decision (2026-10-14, main line; resolves GPT batch 10 missed conflict 3).** On main 8b6e5c3 no code path writes
+`revoked` or `expired` to `private.memory_records.status`. The variants exist only in `AuthorityStatus`, its wire maps and
+adjudication tests, so the one-column conflict is latent, not live. The rule, chosen fail-closed:
+
+- `revoked` and `expired` are terminal hide-states. No read returns them: not the default gates, not `include_history`,
+  not the 40c-2 selector.
+- The history selector ranges over `{active, superseded}` only. A request for `revoked` or `expired` is `INVALID_INPUT`.
+- A superseded version that some future operation revokes or expires simply leaves history. Nothing re-surfaces it.
+- The first operation that writes `revoked` or `expired` must state, in its own ADR, how it treats superseded versions
+  and note heads (declared limit L-6).
+
+**40c-2 shape.**
+
+- One typed lifecycle selection replaces the shared final gate's `include_archived` / `include_superseded` booleans:
+  statuses ⊆ {active, superseded} (non-empty) × archive ∈ {exclude, only, include}.
+  - Recall and context pass the `CURRENT` constant (active, exclude).
+  - `get` passes active (+ superseded with `include_history`) and archive `include`.
+  - `enumerate` passes the request's selection.
+- The selection is one SQL fragment, bound on both §22.1 faces: the manifest candidate query and every census statement.
+  The registry path (`exact_enumerate`) keeps `ACTIVE_FINAL`.
+- Inputs:
+  - `memory.enumerate` gains `statuses` (default `["active"]`), `archive` (default `"exclude"`) and `note_id`.
+    All three enter the cursor fingerprint in canonical form. Unfiltered fingerprints stay byte-identical.
+  - Enumerate items carry `status` whenever `statuses` was given.
+  - `memory.get` takes `memory_id` XOR `note_id`. A `note_id` resolves the head through `note_heads`, then runs the same
+    gate. A `memory_id` never falls back to a note, and vice versa.
+
+**40c-2 as shipped.**
+
+- **`Lifecycle` type.** Its fields are private. Values come only from `CURRENT`, `ACTIVE_FINAL` (registry), `for_get` and the validated `for_enumerate`.
+  - The recall and context entry points take no lifecycle at all; they hardwire `CURRENT`.
+  - Only the enumerate mint and pages, `get`, and the note-head lock accept a selection.
+- **Shared SQL fragment.** One fragment, with statuses and archive mode as bound parameters, ANDs onto both faces of the enumerate predicate. `ENUMERATION_PREDICATE` becomes `true`: the archive axis moved into the fragment.
+- **Registry path.** It binds `ACTIVE_FINAL`, which is active × archive include, its previous semantics.
+- **`get(note_id)`.** It builds its DirectGet plan from the head's `memory_id`.
+- **Enumerate items** carry their own `archived` flag when an archive selection admits archived rows.
+- **Possible plan cost.** The archive axis is a CASE on a bound parameter, so the planner may stop choosing the `archived_at IS NULL` partial index under generic plans. The scale bar (`enumerate_scale`, ignored tier) is the signal.
+
 ## Acceptance (gates; each must be shown red once before it counts)
 
 40a: G01 a barrier before COMMIT yields no `stored` and no half object in another session; `get` right after the
@@ -307,7 +345,6 @@ stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
 - L-3 `body_sha256` of a low-entropy body is enumerable; it is on the forget surface with the body (40b G15).
 - L-4 Until slice 40d, recall over a note longer than one retrieval card covers its title and first card budget only
   (signal: card 40's 64 KiB recall fixture, or a note recall miss reported against text past the card budget).
-- L-5 Until slice 40c-2, `memory.enumerate` lists current versions only (no `statuses` axis, no archive selection) and
-  `memory.get` takes no `note_id` selector (40c-1 outputs `note_id`); superseded versions are reachable one id at a time through `get` with
-  `include_history` (signal: a compat-facade `memory_enumerate(status=…)` fixture in card 42, or a replace flow in 40c
-  that must list a note's versions).
+- L-6 No operation writes `revoked`/`expired` to a Memory; the first one must define its effect on superseded versions and
+  note heads (D-J2 status decision). Until then history is `{active, superseded}` only.
+- L-5 (closed by 40c-2): `memory.enumerate` gained `statuses`/`archive`/`note_id` and `memory.get` a `note_id` selector.

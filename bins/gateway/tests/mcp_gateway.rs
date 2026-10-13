@@ -14769,6 +14769,209 @@ fn native_mcp_memory_note_put_replaces_through_the_confirm_gate_and_correct_refu
                 Some(second_id)
             );
 
+            // 7. ADR-0067 D-J (G26, 40c-1 review P2-3): memory.supersede with a note operand and memory.restore of a
+            // note are refused CONFLICT by the pre-mint hook — the first leg mints no token. Restore needs no prior
+            // supersede to reach it: the note refusal runs before any lifecycle check.
+            for (id, call) in [
+                (
+                    8,
+                    json!({"action":"supersede","memory_id":second,"replacement_memory_id":first}),
+                ),
+                (9, json!({"action":"restore","memory_id":second})),
+                (10, json!({"action":"restore","memory_id":first})),
+            ] {
+                let (status, refused) = raw_request(
+                    address,
+                    &headers,
+                    &rpc(id, "tools/call", call_params("memory", call.clone())),
+                )
+                .await;
+                assert_eq!(status, 200, "{call}: {refused}");
+                assert_tool_error(&refused, "CONFLICT");
+                assert_eq!(
+                    tokio::task::block_in_place(|| confirm_token_rows(&mut handle, tenant)),
+                    tokens,
+                    "{call}: no token was minted for a note"
+                );
+            }
+            assert_eq!(
+                tokio::task::block_in_place(|| note_version(&mut handle, &second)),
+                ("active".to_owned(), None, Uuid::parse_str(&note_id).ok()),
+                "the refused governance calls left the head as it was"
+            );
+
+            stop_server(server).await.expect("server shutdown");
+        });
+    });
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one server: create, replace, list the versions, get by note_id, refuse three shapes
+fn native_mcp_note_history_lists_versions_and_gets_by_note_id() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>("native_mcp_note_history", |mut handle| {
+        handle.assert_gateway_login();
+        let prefix = format!("nhis{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "h".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWriteAndContextRead,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            64,
+        );
+        let runtime_handle = handle.rt.handle().clone();
+        let runtime = runtime_handle
+            .block_on(handle.fresh_runtime())
+            .expect("note history runtime");
+        let app = application(&handle, runtime);
+        runtime_handle.block_on(async {
+            let (address, server) = start(app).await;
+            let bearer = credential.bearer.as_str();
+            let workspace = handle.workspace_id;
+            let headers = tool_call_headers("memory", bearer);
+            let call =
+                |id: u64, arguments: Value| rpc(id, "tools/call", call_params("memory", arguments));
+
+            // A note and one confirmed replacement: `first` superseded, `second` its head.
+            let (status, created) = raw_request(
+                address,
+                &headers,
+                &call(
+                    1,
+                    json!({"action":"note_put","content":"History: v1","note_kind":"decision",
+                           "idempotency_key":format!("create-{}", Uuid::now_v7()),
+                           "workspace_id":workspace}),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "create: {created}");
+            let first = assert_tool_response(&created, ToolName::Memory)["memory_id"]
+                .as_str()
+                .expect("memory_id")
+                .to_owned();
+            let note_id = first.clone();
+            let replace = json!({
+                "action":"note_put","content":"History: v2","note_kind":"decision",
+                "idempotency_key":format!("replace-{}", Uuid::now_v7()),"workspace_id":workspace,
+                "note_id":note_id,"supersedes":first,
+            });
+            let (status, challenge) =
+                raw_request(address, &headers, &call(2, replace.clone())).await;
+            assert_eq!(status, 200, "challenge: {challenge}");
+            let token = assert_tool_response(&challenge, ToolName::Memory)["confirm_token"]
+                .as_str()
+                .expect("token")
+                .to_owned();
+            let mut confirmed = replace;
+            confirmed["confirm_token"] = Value::String(token);
+            let (status, stored) = raw_request(address, &headers, &call(3, confirmed)).await;
+            assert_eq!(status, 200, "confirmed replace: {stored}");
+            let second = assert_tool_response(&stored, ToolName::Memory)["memory_id"]
+                .as_str()
+                .expect("memory_id")
+                .to_owned();
+
+            // ADR-0067 D-J2: the version list — both statuses, one note — with each item's stored status.
+            let (status, page) = raw_request(
+                address,
+                &headers,
+                &call(
+                    4,
+                    json!({"action":"enumerate","workspace_id":workspace,"limit":100,
+                           "statuses":["active","superseded"],"note_id":note_id}),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "version list: {page}");
+            let value = assert_tool_response(&page, ToolName::Memory);
+            let mut listed: Vec<(String, String)> = memory_items(value)
+                .iter()
+                .map(|item| {
+                    assert_eq!(item["note_id"], note_id.as_str(), "{page}");
+                    (
+                        item["memory_id"].as_str().expect("memory_id").to_owned(),
+                        item["status"]
+                            .as_str()
+                            .expect("status when statuses was named")
+                            .to_owned(),
+                    )
+                })
+                .collect();
+            listed.sort();
+            let mut stored_versions: Vec<(String, String)> = [&first, &second]
+                .into_iter()
+                .map(|id| {
+                    let (status, _, _) =
+                        tokio::task::block_in_place(|| note_version(&mut handle, id));
+                    (id.clone(), status)
+                })
+                .collect();
+            stored_versions.sort();
+            assert_eq!(
+                listed, stored_versions,
+                "the page is the note's stored versions: {page}"
+            );
+            // Without `statuses` an item carries no status.
+            let (status, page) = raw_request(
+                address,
+                &headers,
+                &call(
+                    5,
+                    json!({"action":"enumerate","workspace_id":workspace,"note_id":note_id}),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "current version: {page}");
+            let items = memory_items(assert_tool_response(&page, ToolName::Memory));
+            assert_eq!(items.len(), 1, "{page}");
+            assert_eq!(items[0]["memory_id"], second.as_str());
+            assert!(items[0].get("status").is_none(), "{page}");
+
+            // get by note_id reads the head.
+            let (status, got) = raw_request(
+                address,
+                &headers,
+                &call(
+                    6,
+                    json!({"action":"get","note_id":note_id,"workspace_id":workspace}),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "get by note_id: {got}");
+            let got = assert_tool_response(&got, ToolName::Memory);
+            assert_eq!(memory_items(got)[0]["memory_id"], second.as_str(), "{got}");
+            assert_eq!(memory_items(got)[0]["note_id"], note_id.as_str(), "{got}");
+
+            // Refused before any read: both ids, neither id, and a terminal status (L-6).
+            for (id, arguments) in [
+                (
+                    7,
+                    json!({"action":"get","memory_id":second,"note_id":note_id,
+                           "workspace_id":workspace}),
+                ),
+                (8, json!({"action":"get","workspace_id":workspace})),
+                (
+                    9,
+                    json!({"action":"enumerate","workspace_id":workspace,"statuses":["revoked"]}),
+                ),
+                (
+                    10,
+                    json!({"action":"enumerate","workspace_id":workspace,
+                           "statuses":["active","active"]}),
+                ),
+                (
+                    11,
+                    json!({"action":"enumerate","workspace_id":workspace,"archive":"all"}),
+                ),
+            ] {
+                let (status, refused) =
+                    raw_request(address, &headers, &call(id, arguments.clone())).await;
+                assert_eq!(status, 400, "{arguments} is INVALID_INPUT: {refused}");
+            }
+
             stop_server(server).await.expect("server shutdown");
         });
     });

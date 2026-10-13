@@ -314,7 +314,7 @@ fn get(
     ))
 }
 
-/// The recall/context final-body gate (`include_archived=false`, current versions only) over `ids`.
+/// The recall/context final-body gate (`Lifecycle::CURRENT`, current versions only) over `ids`.
 fn final_bodies(handle: &Handle, ids: &[Uuid]) -> Vec<Uuid> {
     let bodies = handle
         .rt
@@ -547,6 +547,7 @@ fn g12_a_cursor_never_pages_another_filter_and_a_flipped_cursor_is_refused() {
             note_kinds: Some(vec![NoteKind::Decision]),
             occurred_since: Some(at(DAY0)),
             occurred_until: Some(at(DAY0 + DAY)),
+            ..NoteEnumerationFilter::default()
         };
         let first = enumerate(&handle, None, 1, &window).expect("first page");
         let cursor = first
@@ -622,6 +623,7 @@ fn g13_the_window_is_half_open_over_occurred_at_not_created_at() {
             note_kinds: None,
             occurred_since: Some(at(since)),
             occurred_until: Some(at(until)),
+            ..NoteEnumerationFilter::default()
         };
 
         let page = enumerate(&handle, None, 100, &window(DAY0, DAY0 + DAY)).expect("window");

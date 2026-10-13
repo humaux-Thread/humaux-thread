@@ -239,7 +239,7 @@ async fn validate_memories(
         return Ok(true);
     }
     let ids: Vec<Uuid> = expected.iter().map(|item| item.0).collect();
-    let final_ids = final_memory_ids_in_txn(tx, authorization, &ids, false)
+    let final_ids = final_memory_ids_in_txn(tx, authorization, &ids)
         .await
         .map_err(|error| match error {
             ErrorCode::Internal => ErrorCode::DependencyUnavailable,
