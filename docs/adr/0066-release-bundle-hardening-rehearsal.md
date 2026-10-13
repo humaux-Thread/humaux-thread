@@ -455,11 +455,13 @@ route keys filled), R1–R10 (images by manifest → the release gate `deploy-ch
 (gateway probes, every `--readyz`, every ops listener; remember → recall per smoke tenant, the canary of `smoke-a` =
 marker M1; cross-tenant 0), A1–A4 (acceptance drills on the `rehearsal` profile: the four exact peer-cred statuses
 and the refusal log line; the Watchdog receipt with the sha; `HealthGaugesAbsent` firing and resolved), B1 (first
-VERIFIED backup), U1–U9 (upgrade: next images + captured `PREV_TAG`, the release gate for the next tag, the
-pre-upgrade backup with captured `PRE_UPGRADE_LABEL` and the schema head, stop the writers, migrate and `rls-check`
+VERIFIED backup), U1–U9 (upgrade: next images + captured `PREV_TAG`, the pre-upgrade backup under the running
+release with captured `PRE_UPGRADE_LABEL` and the schema head (PR #2 round 4: before the next checkout is used), the
+release gate for the next tag, stop the writers and remove the previous release's orphans, migrate and `rls-check`
 with the next image, switch `node.env` + render + start, verify, smoke = marker M2), RB1–RB6 (rollback: the release
-gate on PREV — a swapped tag is a STOP —, `down` without `-v`, `restore pitr --target-backup` into
-`<project>-rb1` with `node.env` switched first, re-LOGIN the four locked roles + start, Qdrant rebuild and the proof
+gate on PREV — a swapped tag is a STOP —, `down --remove-orphans` without `-v`, `restore pitr --target-backup` into
+`<project>-rb1` with `node.env` switched first (a stable target across retries), re-LOGIN the four locked roles + start
+pg / qdrant / the projector only, Qdrant rebuild, then every other service, and the proof
 — running image ids == PREV manifest, disjoint from the upgrade's, PREV sha, schema head equal, M1 recalled, M2
 absent —, a backup on the new timeline). Values a step needs are literal, read from a named file of the node
 directory (`node.env`, `providers.env`, `release.next`, the smoke files) or captured by the executor; nothing needs
@@ -1028,6 +1030,16 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #38 (`serve.rs` `df_free_bytes`, PR #2 Codex P2 round 8): the in-flight guard dropped | the guard made always-true | `statvfs_keeps_one_read_in_flight_per_path` red, EXIT 101 |
 | `c39_red_fix9` #39 (`deploy_check.rs` `pg_service_image_reasons`, PR #2 Codex P1 round 9): the pg image not compared | the call dropped | `compose_fix9_arms_each_red` red (case `pg on an upstream image`), EXIT 101 |
 | `c39_red_fix9` #40 (`deploy_check.rs` `secret_key_foreign_reasons`, PR #2 Codex P1 round 9): only the key's expected home examined | the reason never pushed | `secret_key_in_a_foreign_file_is_red` red, EXIT 101 |
+| `c39_red_fix9` #41 (`deploy_check.rs` `service_target_reasons`, card 39b / PR #2 Codex round 10): a service on another valid target accepted | the mismatch arm disabled | `compose_fix9_arms_each_red` red (case `dr on the ops image`), EXIT 101 |
+| `c39_red_fix9` #42 (`deploy_check.rs` `uid_key_reasons`, card 39b / Codex round 10): any mode's compose source taken for every mode | the per-service filter widened | `compose_peer_uid_keys_mismatch_is_red` red, EXIT 101 |
+| `c39_red_fix9` #43 (`deploy_check.rs` `judge_image`, card 39b / gate-reviewer round 4 P2-1): the entrypoint run before the identity verdict | the runner called first | `judge_image_runs_the_entrypoint_only_on_a_verified_image` red, EXIT 101 (a first attempt that did not compile was removed from the log and re-run) |
+| `c39_red_fix9` #44 (`deploy_check.rs` `rehearsal_probe`, card 39b / round 4 P2-3): named `group_add` entries ignored | the numeric clause widened | `rehearsal_probe_clauses_each_hold` red, EXIT 101 |
+| `c39_red_fix9` #45 (`migrate.rs` `flag_without_value`, card 39b): the `--flag=value` form read as absent | the `=` arm disabled | `value_flags_without_a_value_are_usage_errors` red, EXIT 101 |
+| `c39_red_fix9` #46 (`budget_sums.sh`, card 39b / round 8 P2-3): a drill cap of `0g` (no cap) | the input | `budget: fail — … missing, zero, or not <n>g / <n>m`, EXIT 1; the real file passes |
+| `c39_red_fix9` #47 (runbook U4, card 39b / round 8b P2): a service list naming only `gateway-old` | the input (stubbed compose / docker, `/bin/sh -eu`) | `refusing to remove anything`, EXIT 1; a list naming `gateway` passes |
+| `c39_red_fix9` #48 (`deploy_check.rs` `service_target_reasons`, PR #4 independent review W1): a listed service missing accepted | the arm emptied | `compose_fix9_arms_each_red` red (case `a listed service removed`), EXIT 101 |
+| `c39_red_fix9` #49 (same, W1): an unlisted service on a process image accepted | the arm disabled | same test red (case `an unlisted service on a process image`), EXIT 101 |
+| `c39_red_fix9` #50 (`deploy_check.rs` `flag_without_value`, W3): `--compose-json=F` beside another check dropped silently | the `=` arm disabled | `checks_refuse_a_flag_without_value_and_an_empty_selection` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1105,6 +1117,25 @@ completed RB3 STOPs ("continue at RB4") instead of deriving `<project>-rb1-rb1` 
 starts only pg, qdrant and the projector `retrieval-serve`; RB5 brings up the gateway and every other service only
 after `projection rebuild --all`. Not changed: the checkout-content finding (the executor trusts the shipped
 `CHECKOUT_TREE` marker) is the declared limit L-20. Runbook blocks changed: U1, RB3, RB4, RB5.
+
+**Card 39b (2026-10-13, after PR #2 merged): the card-39 follow-up backlog.** Codex round 10 on 9e420bd: (1)
+`--compose-json` binds every Humaux service to its release target (`SERVICE_TARGETS`; `image_target_mismatch:<svc>:<t>`,
+`service_missing:<svc>`, `image_target_unexpected:<svc>`) — `dr` on `humaux-ops` (no docker CLI) passed before; (2)
+`expected_uid_keys` judges the value EACH mode of a binary receives (process-wide files plus that service's own compose
+sources), so a pair-uid key set on `retrieval-serve` alone no longer satisfies `retrieval-rpc`. Presence of other keys
+stays per binary (a ponytail names it): `dr`'s backup / drill keys sit on `dr` only and no other maintenance mode reads
+them, so a per-mode rule needs per-mode consumption lists first. (3) `a5_load_remeasure.sh`'s EXIT trap also puts the
+gateway back on prod.yml (an interrupted run left the 1 ms BURST-W admission wait deployed); the BURST-W listener is
+stopped through a stop file and waited for, never killed, so a recreate it has already started finishes before the
+restore (PR #4 Codex P2: a killed subshell orphaned its compose child, which could recreate the 1 ms gateway after it);
+the traps are installed before the first `a5-load.yml` recreate (PR #4 Codex P2: an interrupt during it, or before
+the listener started, left the load overlay deployed); HUP joins TERM / INT in the `exit 143` trap (dash runs no EXIT trap on SIGHUP: a dropped ssh session skipped the
+restore — PR #4 independent review W2, measured by the reviewer). `deploy-check` itself refuses `--flag=value` as
+`migrate` / `rls-check` do (W3); `service_missing` / `image_target_unexpected` have their own cases (W1). Deferred P2s closed:
+`judge_image` makes "the entrypoint runs only on a verified image" testable; each `REHEARSAL_PROBES` clause has its own
+case and named `group_add` entries are refused; `version_of` names its container with pid + nanos and reports a failed
+removal; the `--flag=value` form is a usage error in `migrate` / `rls-check`; a `0g` drill cap fails the budget; U4
+matches `gateway` exactly; stale text (the dr USER wording, the alert-sink exemption doc, the U/RB step order above).
 
 ## Tests (S7; one fault each, reds in `c39_red_s7.log`)
 
