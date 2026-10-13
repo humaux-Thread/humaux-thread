@@ -379,6 +379,12 @@ mod tests {
         for (n, digest) in changed.iter().enumerate() {
             assert_ne!(*digest, base, "field change {n} must move H");
         }
+        // Known answer (computed independently from the documented encoding: each field as a big-endian u64 length + its
+        // bytes, in this order). Dropping a length prefix, reordering fields or changing the separator turns this red.
+        assert_eq!(
+            base.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "ce91372c9216faaf95b6575e5e13fd72a2065fc667c73c7ded163fa44d211006"
+        );
         assert_ne!(&base, body.sha256(), "H is not the plain body digest");
         let mut plain = Sha256::new();
         plain.update(REPLACE_INTENT_DOMAIN);

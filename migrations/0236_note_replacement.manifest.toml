@@ -1,6 +1,6 @@
 # §46.1 migration manifest. ADR-0067 D-J as adjudicated (card 40c-1, memory.note_put replacement): private.memory_records.note_id
 # (nullable uuid, CHECK note_id IS NOT NULL iff note_kind IS NOT NULL, a deferred EXCLUDE of one active version per
-# (tenant_id, note_id)), the lock-anchor table private.note_heads (FORCE RLS, tenant + head-Memory visibility policy, owner
+# (tenant_id, note_id)), the lock-anchor table private.note_heads (FORCE RLS, tenant-only policy — see 0236.sql on EvalPlanQual —, owner
 # role_migration_owner, gateway SELECT+INSERT+UPDATE(head_memory_id), maintenance SELECT, composite cascading FK to
 # memory_records (tenant_id, memory_id)), and control.confirm_tokens.request_sha256 (nullable 32-byte digest). Backfill DML:
 # every 40a note becomes a singleton (note_id = memory_id, one head row = itself) — allowed as a forward-fix of a lane never

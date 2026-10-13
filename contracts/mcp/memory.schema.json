@@ -1128,6 +1128,20 @@
           "note_id"
         ]
       },
+      "dependentSchemas": {
+        "note_id": {
+          "description": "ADR-0067 D-J (40c-1): a replacement inherits the head's scope and carries no subject or affect axis; the confirm token binds only the intent fields, so these are refused rather than carried unconfirmed.",
+          "not": {
+            "anyOf": [
+              {"required": ["visibility_class"]},
+              {"required": ["data_class"]},
+              {"required": ["subject_ids"]},
+              {"required": ["affects"]},
+              {"required": ["subject_keys"]}
+            ]
+          }
+        }
+      },
       "additionalProperties": false
     }
   ]
