@@ -1,0 +1,138 @@
+name: targeted
+# One cargo test selector on any ref, with the same throwaway postgres + qdrant, env and setup as ci.yml's test jobs.
+# Owner ruling 2026-10-13: nothing runs locally — fault-injection red records are produced here: push the mutation to a
+# throwaway branch named outside `ci/**` (no full CI), dispatch this workflow with `ref` and `cargo_args`, and cite the
+# run id; then dispatch it again on the unmutated ref for the green. Also usable to re-run one flaky test on a branch.
+# Exit 3 = no test matched (also what `--no-run` / `-- --list` give, by design); exit 2 = bad input or a ref older than
+# the setup action.
+#   gh workflow run targeted.yml -f ref=red/40a-g07 -f cargo_args="-p humaux-adapters --test note_put g07"
+# cargo_args reaches the shell only through an env var, split on spaces, never evaluated (no `${{ }}` in `run:`).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: branch, tag or sha to test
+        required: true
+      cargo_args:
+        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact")
+        required: true
+      as_root:
+        description: run under sudo with umask 000 and the loop-mounted scratch (humaux-maintenance's needs)
+        type: boolean
+        default: false
+
+# The job runs code from an arbitrary ref: the token stays read-only and is not persisted in the checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: targeted-${{ github.event.inputs.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  targeted:
+    name: targeted cargo test
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: ci
+          # testkit::fixture_purge refuses any database whose name does not start with
+          # `humaux_thread_` (the local-disposable predicate the e2e-seed binding rule uses).
+          # On `postgres` every fixture tenant stayed behind and the I-SLOT probe of
+          # distill_dispatch_v2 grew red with each test (run 37613916837).
+          POSTGRES_DB: humaux_thread_ci
+        ports:
+          - 5432:5432
+        # 没有 health check 的话，migrate 会在库还没起来时抢跑，红得莫名其妙。
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      qdrant:
+        image: qdrant/qdrant:v1.19.0
+        ports:
+          - 6333:6333
+          - 6334:6334
+
+    env:
+      # ADR-0059 D-A: `migrate` refuses to create a 0011 role with the repository
+      # placeholder password, so a fresh cluster is provisioned the way production is
+      # (runbook §2) in the step below. The migrate principal is the service superuser:
+      # outside the §6.2.0 role set, which is what MigratorDbPool::connect requires.
+      HUMAUX_TEST_PG_DSN: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
+      DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
+      HUMAUX_MIGRATOR_PG_DSN: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
+      # 声明「本次运行有这两个依赖」⇒ 此后任何跳过都是环境故障（见头部注释）。
+      HUMAUX_REQUIRE_DB: "1"
+      HUMAUX_REQUIRE_QDRANT: "1"
+      # The runner has Docker, so the card-37 scratch-source tests must run, never skip (§79.2).
+      HUMAUX_REQUIRE_DOCKER: "1"
+      # REST port of the qdrant service above (tests default to 6333; stated here so
+      # the service block and the tests cannot drift apart silently).
+      HUMAUX_TEST_QDRANT_PORT: "6333"
+
+    steps:
+      - name: name the postgres service like the dev container
+        run: docker rename "${{ job.services.postgres.id }}" humaux-thread-pg
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The setup action comes from the checked-out ref (5f77fa7 introduced it). Older refs are not supported: say so
+      # plainly instead of failing inside a missing action (PR #6 Codex P2). Red-record refs are always recent branches.
+      - name: the ref carries the setup action
+        shell: bash
+        run: |
+          test -f .github/actions/setup/action.yml || {
+            echo "ref $(git rev-parse HEAD) predates .github/actions/setup (5f77fa7): not supported by this workflow"
+            exit 2
+          }
+
+      - uses: ./.github/actions/setup
+
+      - name: cargo test <cargo_args>
+        timeout-minutes: 40
+        shell: bash
+        env:
+          CARGO_ARGS: ${{ inputs.cargo_args }}
+          AS_ROOT: ${{ inputs.as_root }}
+        run: |
+          # GitHub starts this shell as `bash -eo pipefail`: errexit is turned off so a red test reaches the result
+          # line instead of ending the step at `cargo test` (PR #6 Codex P2).
+          set -uo pipefail
+          set +e
+          case "$CARGO_ARGS" in *[!A-Za-z0-9_:./=\ -]*) echo "cargo_args holds characters outside [A-Za-z0-9_:./= -]"; exit 2 ;; esac
+          echo "ref=$(git rev-parse HEAD) cargo test $CARGO_ARGS"
+          OUT="$RUNNER_TEMP/targeted.out"
+          # shellcheck disable=SC2086 # word splitting on purpose; no eval
+          if [ "$AS_ROOT" = true ]; then
+            # Fail fast: a missing loop mount would make the test red for the wrong reason (repo_shares_pgdata_fs).
+            truncate -s 12G "$RUNNER_TEMP/scratch.img" && mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img" \
+              && mkdir -p "$RUNNER_TEMP/scratch" && sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch" \
+              && sudo chmod 1777 "$RUNNER_TEMP/scratch" || { echo "scratch loop mount failed"; exit 2; }
+            sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" CARGO_ARGS="$CARGO_ARGS" bash -c 'umask 000 && cargo test $CARGO_ARGS' 2>&1 | tee "$OUT"
+            rc=$?
+            # Hand the target dir back to the runner user (test-b does the same) so the cache post step can read it.
+            sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
+          else
+            cargo test $CARGO_ARGS 2>&1 | tee "$OUT"
+            rc=$?
+          fi
+          # A selector that matches nothing passes with "0 passed": that is no evidence, never a green (PR #6 Codex P2).
+          if [ "$rc" -eq 0 ] && ! grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$OUT"; then
+            echo "no test matched the selector: refusing a green with 0 tests run"
+            rc=3
+          fi
+          echo "TARGETED RESULT exit=$rc ref=$(git rev-parse HEAD)"
+          exit $rc
