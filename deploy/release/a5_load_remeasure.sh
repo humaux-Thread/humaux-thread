@@ -107,11 +107,20 @@ else
     # it through the listener below).
     HUMAUX_A5_GATEWAY_MAX_WAIT_MS=$(sed -n 's/^HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS=//p' "$DEPLOY/env/values/gateway.env")
     export HUMAUX_A5_GATEWAY_MAX_WAIT_MS
+    # Card 39b (PR #2 Codex round 10, PR #4 Codex P2 ×2): from the first overlay recreate on, any exit — normal,
+    # TERM / INT, or HUP (dash runs no EXIT trap on SIGHUP: a dropped ssh session) — puts the gateway back on
+    # prod.yml alone, never leaving a5-load.yml's overrides or the 1 ms BURST-W wait deployed. The trap is installed
+    # BEFORE that recreate. The BURST-W listener (started below) is asked to stop and waited for, never killed: a
+    # kill mid-`up` would orphan its compose child, which could recreate the 1 ms gateway AFTER the restore.
+    HOOK=$HUMAUX_NODE_DIR/load-hook
+    LISTENER=
+    stop_listener() { [ -n "$LISTENER" ] || return 0; touch "$HOOK/stop"; wait "$LISTENER" 2>/dev/null; }
+    trap 'stop_listener; sh "$DEPLOY/release/compose.sh" up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1' EXIT
+    trap 'exit 143' TERM INT HUP
     $C up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1 || echo "ASSERTION FAIL load_window_gateway_recreated" >> "$LOADLOG"
     # BURST-W listener (ADR-0065 hook protocol, ADR-0066 D-S): xtask load writes load_burst_w.req into the hook dir
     # (bind-mounted at the same path); this recreates the gateway with a 1 ms admission wait and acks; load's own
     # readiness wait follows. Stopped by the EXIT trap; bounded like rehearse.sh's listener.
-    HOOK=$HUMAUX_NODE_DIR/load-hook
     mkdir -p "$HOOK" && rm -f "$HOOK/load_burst_w.req" "$HOOK/load_burst_w.ack" "$HOOK/stop"
     # ponytail: world-writable so the loadgen uid 10198 can write the request; the dir carries no data. Chown it to
     # 10198 when the runner's operator is root.
@@ -124,14 +133,6 @@ else
       HUMAUX_A5_GATEWAY_MAX_WAIT_MS=1 $C up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1 && touch "$HOOK/load_burst_w.ack"
     ) &
     LISTENER=$!
-    # Card 39b (PR #2 Codex round 10): an interrupted run also puts the gateway back on prod.yml alone, never
-    # leaving the load window's 1 ms BURST-W admission wait deployed. The listener is asked to stop and waited for,
-    # never killed: a kill mid-`up` would orphan its compose child, which could recreate the 1 ms gateway AFTER the
-    # restore (PR #4 Codex P2). A recreate already running finishes first; the restore always comes last.
-    stop_listener() { touch "$HOOK/stop"; wait "$LISTENER" 2>/dev/null; }
-    trap 'stop_listener; sh "$DEPLOY/release/compose.sh" up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1' EXIT
-    # HUP too: under dash a dropped ssh session (SIGHUP) skipped the EXIT trap (PR #4 independent review W2).
-    trap 'exit 143' TERM INT HUP
     # (3) Seed and load: the card-38 phase set (ADR-0065) through the loadgen image. e2e-seed hashes the keys with
     # the node's pepper; it reaches the container by NAME (`-e`, `--pepper-hex-env`), never in argv, `ps` or
     # `docker inspect` Args (review P1, 2026-10-08). An empty pepper stops the run.

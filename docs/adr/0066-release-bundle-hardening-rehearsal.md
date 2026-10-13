@@ -1128,7 +1128,8 @@ them, so a per-mode rule needs per-mode consumption lists first. (3) `a5_load_re
 gateway back on prod.yml (an interrupted run left the 1 ms BURST-W admission wait deployed); the BURST-W listener is
 stopped through a stop file and waited for, never killed, so a recreate it has already started finishes before the
 restore (PR #4 Codex P2: a killed subshell orphaned its compose child, which could recreate the 1 ms gateway after it);
-HUP joins TERM / INT in the `exit 143` trap (dash runs no EXIT trap on SIGHUP: a dropped ssh session skipped the
+the traps are installed before the first `a5-load.yml` recreate (PR #4 Codex P2: an interrupt during it, or before
+the listener started, left the load overlay deployed); HUP joins TERM / INT in the `exit 143` trap (dash runs no EXIT trap on SIGHUP: a dropped ssh session skipped the
 restore — PR #4 independent review W2, measured by the reviewer). `deploy-check` itself refuses `--flag=value` as
 `migrate` / `rls-check` do (W3); `service_missing` / `image_target_unexpected` have their own cases (W1). Deferred P2s closed:
 `judge_image` makes "the entrypoint runs only on a verified image" testable; each `REHEARSAL_PROBES` clause has its own
