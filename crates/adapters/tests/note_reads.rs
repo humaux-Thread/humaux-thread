@@ -820,10 +820,16 @@ fn g15_a_tombstoned_note_is_gone_from_history_provenance_and_enumerate() {
         let forgotten = put(&handle, &body, NoteKind::Problem);
         let gone = memory_of(&forgotten);
         let kept = memory_of(&put(&handle, "g15 keep me", NoteKind::Problem));
-        let digest = hex::encode(Sha256::digest(body.as_bytes()).as_slice());
-        assert!(
-            get(&handle, gone, true).is_ok(),
-            "control: readable before the tombstone"
+        let before = get(&handle, gone, true).expect("control: readable before the tombstone");
+        assert_eq!(
+            before
+                .history
+                .expect("history is read")
+                .provenance
+                .body_sha256
+                .as_deref(),
+            Some(Sha256::digest(body.as_bytes()).as_slice()),
+            "control: the history read carries the body digest before the tombstone"
         );
 
         let stream_seq: i64 = handle
@@ -856,10 +862,11 @@ fn g15_a_tombstoned_note_is_gone_from_history_provenance_and_enumerate() {
         let page = enumerate(&handle, None, 100, &kinds(&[NoteKind::Problem])).expect("enumerate");
         assert_eq!(page_ids(&page), vec![kept]);
         assert_eq!(census_total(&page), Some(1), "the census excludes it too");
+        // L-3: the digest's only read path is the history read, NOT_FOUND above; page bodies never carry a digest.
         let rendered = format!("{:?}", page.memory.bodies);
         assert!(
-            !rendered.contains(&body) && !rendered.contains(&digest),
-            "no response carries the forgotten body or its digest"
+            !rendered.contains(&body),
+            "no page carries the forgotten body"
         );
     });
 }

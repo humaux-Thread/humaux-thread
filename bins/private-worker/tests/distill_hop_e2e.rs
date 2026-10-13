@@ -1592,7 +1592,8 @@ fn d13_a_job_for_a_contracted_evidence_is_refused_before_any_provider_call() {
     );
 
     let rt = tokio::runtime::Runtime::new().expect("rt");
-    let provider = FakeProvider::new(vec![r#"{"memories":[]}"#]);
+    // Enough replies that a regression reaches the `calls() == 0` assertion below rather than the fake's own panic.
+    let provider = FakeProvider::new(vec![r#"{"memories":[]}"#; 8]);
     let report = run_pass(&rt, &f, &provider, "d13-worker");
     assert_eq!(
         provider.calls(),
