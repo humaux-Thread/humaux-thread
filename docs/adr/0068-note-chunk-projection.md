@@ -124,6 +124,29 @@ Two facts frame every decision:
 - **Admission cap.** `max_chunks_per_note_admission` is a config resource guard. It may block admission, but it never
   truncates C.
 
+**40d-0 as shipped.**
+
+- **Cap.** `EmbeddingModelDescriptor.max_batch_items` (`NonZeroU32`). The retrieval worker reads it from
+  `HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS`; the key is required, so an unset key or `0` refuses boot (exit 2).
+  The bundle value is 10.
+- **Where the split lives.** It lives in the DashScope adapter (`embed_cards` / `embed_cards_for_memories`): it splits
+  the cards into consecutive slices and sends each slice through the existing single-call `embed`. The adapter is the
+  one path every card embedding takes, so it already does the per-call accounting and knows the cap. As a result, the
+  worker's `CardEmbedder` seam, its deps and the rebuild path are unchanged. Every slice is validated before the first
+  request is sent. `embed` itself refuses any request over the cap, which covers the query path; query batching is not
+  needed today.
+- **Response mapping.** Responses were already mapped by index. The compatible-mode endpoint returns OpenAI-shaped
+  `index` (not the native API's `text_index`), and `parse_embedding_response` refuses a short, long, duplicated or
+  out-of-range index set and any wrong-width vector.
+- **Retries.** A failed slice fails the whole call and returns no vectors. Earlier slices stay billed. The worker
+  persists vectors only per memory in `finish_row`, after every vector is in hand, so the ticket retries whole and
+  re-embeds every slice. Reusing a committed batch's vectors on retry (gate `retry_reuses_committed_batch_vectors`) is
+  deferred to 40d-1b with the slot ledger.
+- **Gates.** `embedding_batches_respect_provider_limit` (7 cards with a cap of 3: requests 3/3/1, one ledger row,
+  reservation and disclosure per request, and each card gets its own vector under reversed responses) and
+  `a_duplicate_index_in_a_later_batch_returns_no_vectors`, both in `retrieval-provider::adapters`.
+  `embedding_batch_cap_is_required_and_non_zero` is in `retrieval-worker::tests::exit_codes`.
+
 ### D-G — Whole-source seal before any outbound call
 
 - **Order.** A note's full, untruncated title and body are sealed once (`SealedSource`, which can never be sent). Only

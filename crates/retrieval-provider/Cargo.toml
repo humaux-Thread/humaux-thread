@@ -65,7 +65,7 @@ uuid = "1.25.0"
 tracing = "0.1.44"
 
 [dev-dependencies]
-# why: fixture card type shared by contract_tests's test double; used-by: [tests]
+# why: fixture card type shared by contract_tests's test double and the adapter's batch tests; used-by: [retrieval-provider::adapters, tests]
 humaux-projection = { path = "../projection" }
 # why: SealedRetrievalQuery request construction reused by adapters/contract_tests/dashscope_live_smoke; used-by: [retrieval-provider::adapters, tests]
 humaux-retrieval = { path = "../retrieval" }

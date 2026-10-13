@@ -1000,8 +1000,11 @@ async fn stored_vectors(
     Ok((Some(fingerprint), stored))
 }
 
-/// (c')-(d): seal every card and embed them in ONE batch; reject a short batch or a dimension
-/// mismatch. Reached only when some card of the Evidence has no stored vector (ADR-0064 D-B).
+/// (c')-(d): seal every card and embed them in one embedder call; reject a short batch or a
+/// dimension mismatch. Reached only when some card of the Evidence has no stored vector (ADR-0064
+/// D-B). The provider splits the call into requests of at most its `max_batch_items` (ADR-0068
+/// D-F); any failed request fails the whole call, and nothing is persisted before every card has
+/// its vector, so the ticket retries whole.
 async fn seal_and_embed(
     ctx: &RowCtx<'_>,
     commit_seq: i64,
@@ -1023,8 +1026,8 @@ async fn seal_and_embed(
     }
     let memory_ids: Vec<Uuid> = kept.iter().map(|m| m.memory_id.0).collect();
 
-    // One embed call for the whole Evidence — `embed_cards` is already batch-shaped, so N
-    // memories cost one provider round trip, not N (§19.2 per-purpose budget).
+    // One embedder call for the whole Evidence — `embed_cards` is batch-shaped, so N memories
+    // cost ceil(N / max_batch_items) provider round trips, not N (§19.2, ADR-0068 D-F).
     let vectors = ctx
         .embedder
         .embed_cards(

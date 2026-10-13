@@ -1,12 +1,13 @@
 //! `retrieval-provider::adapters` — T7.1: §19 "dashscope" and "custom" adapter slots (spec's own
 //!   `retrieval-provider/` tree, line ~3483) plus the Contract Tests' test double.
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-infra-egress, humaux-local-secret-scan,
-//!   humaux-retrieval, humaux-testkit, postgres, serde, serde_json, tokio, uuid]; services=[PostgreSQL(any)
-//!   r=[ops.data_disclosure_sources, ops.data_disclosures, ops.model_call_ledger,
+//!   humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde, serde_json, tokio, uuid];
+//!   services=[PostgreSQL(any) r=[ops.data_disclosure_sources, ops.data_disclosures, ops.model_call_ledger,
 //!   ops.retrieval_provider_budget_allocations, ops.retrieval_provider_budget_reservations,
 //!   private.retrieval_query_sources] w=[control.memberships, control.private_reasoning_domains,
 //!   control.retrieval_provider_admission_limits, control.tenants, control.users, control.workspaces, private.events,
-//!   private.evidence_objects], PostgreSQL(owner), PostgreSQL(role_retrieval_worker), DashScope];
+//!   private.evidence_objects, private.memory_evidence, private.memory_records], PostgreSQL(owner),
+//!   PostgreSQL(role_retrieval_worker), DashScope];
 //!   env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::model_call_ledger,
 //!   adapters::postgres, adapters::provider_budget, adapters::retrieval_query_source, domain::dataclass,
@@ -733,6 +734,11 @@ impl DashscopeEmbeddingProvider {
         card_sources: &[DisclosureSource],
     ) -> Result<EmbeddingBatch, ErrorCode> {
         validate_embedding_batch(&self.model, dimension, texts)?;
+        // ADR-0068 D-F: one request never carries more inputs than the provider accepts; card
+        // calls are split by `embed_card_batches`, so only an oversized query batch reaches this.
+        if texts.len() > self.model.max_batch_items.get() as usize {
+            return Err(ErrorCode::InvalidInput);
+        }
         if texts.is_empty() {
             return Ok(EmbeddingBatch {
                 dimension,
@@ -1047,6 +1053,72 @@ impl DashscopeEmbeddingProvider {
         .await?;
         Ok(())
     }
+
+    /// ADR-0068 D-F: one real request per consecutive slice of at most `max_batch_items` cards,
+    /// each through [`Self::embed`] — so each slice is its own budget reservation, ledger row and
+    /// disclosure, whose sources are that slice's memories (`memory_ids`, aligned with `cards`) or,
+    /// without them, this instance's one batch-level source. Every slice is validated before the
+    /// first request, so an invalid tail is refused before anything is billed.
+    ///
+    /// Any failed slice fails the whole call and returns no vectors. Earlier slices stay billed and
+    /// their vectors are dropped: the projection worker persists nothing before it holds a vector
+    /// for every card, so its ticket retries whole.
+    /// // ponytail: a retry re-embeds the slices that already succeeded; reusing them needs
+    /// // per-slot persistence, ADR-0068 slice 40d-1b.
+    async fn embed_card_batches(
+        &self,
+        tenant_id: TenantId,
+        dimension: u32,
+        cards: &[SealedRetrievalCard],
+        memory_ids: Option<&[uuid::Uuid]>,
+    ) -> Result<EmbeddingBatch, ErrorCode> {
+        let texts: Vec<&str> = cards.iter().map(SealedRetrievalCard::as_str).collect();
+        let cap = self.model.max_batch_items.get() as usize;
+        // Dimension first, even for no cards (§19 "Incompatible Model Change"); then every slice.
+        validate_embedding_batch(&self.model, dimension, &[])?;
+        for chunk in texts.chunks(cap) {
+            validate_embedding_batch(&self.model, dimension, chunk)?;
+        }
+        let mut vectors = Vec::with_capacity(cards.len());
+        let mut input_tokens = 0_u64;
+        for (slice, chunk) in cards.chunks(cap).enumerate() {
+            let range = slice * cap..slice * cap + chunk.len();
+            let per_card: Vec<DisclosureSource>;
+            let sources: &[DisclosureSource] = match memory_ids {
+                Some(ids) => {
+                    per_card = ids[range.clone()]
+                        .iter()
+                        .copied()
+                        .map(DisclosureSource::Memory)
+                        .collect();
+                    &per_card
+                }
+                None => std::slice::from_ref(&self.source),
+            };
+            let data_class = chunk
+                .iter()
+                .map(SealedRetrievalCard::data_class)
+                .max()
+                .unwrap_or(DataClass::SecretMaterial);
+            let batch = self
+                .embed(
+                    tenant_id,
+                    dimension,
+                    data_class,
+                    None,
+                    &texts[range],
+                    sources,
+                )
+                .await?;
+            input_tokens = input_tokens.saturating_add(batch.input_tokens);
+            vectors.extend(batch.vectors);
+        }
+        Ok(EmbeddingBatch {
+            dimension,
+            vectors,
+            input_tokens,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -1084,21 +1156,8 @@ impl EmbeddingProvider for DashscopeEmbeddingProvider {
         dimension: u32,
         cards: &[SealedRetrievalCard],
     ) -> Result<EmbeddingBatch, ErrorCode> {
-        let texts: Vec<&str> = cards.iter().map(SealedRetrievalCard::as_str).collect();
-        let data_class = cards
-            .iter()
-            .map(SealedRetrievalCard::data_class)
-            .max()
-            .unwrap_or(DataClass::SecretMaterial);
-        self.embed(
-            tenant_id,
-            dimension,
-            data_class,
-            None,
-            &texts,
-            std::slice::from_ref(&self.source),
-        )
-        .await
+        self.embed_card_batches(tenant_id, dimension, cards, None)
+            .await
     }
 
     async fn embed_cards_for_memories(
@@ -1111,18 +1170,7 @@ impl EmbeddingProvider for DashscopeEmbeddingProvider {
         if memory_ids.len() != cards.len() || memory_ids.is_empty() {
             return Err(ErrorCode::InvalidInput);
         }
-        let texts: Vec<&str> = cards.iter().map(SealedRetrievalCard::as_str).collect();
-        let data_class = cards
-            .iter()
-            .map(SealedRetrievalCard::data_class)
-            .max()
-            .unwrap_or(DataClass::SecretMaterial);
-        let sources: Vec<DisclosureSource> = memory_ids
-            .iter()
-            .copied()
-            .map(DisclosureSource::Memory)
-            .collect();
-        self.embed(tenant_id, dimension, data_class, None, &texts, &sources)
+        self.embed_card_batches(tenant_id, dimension, cards, Some(memory_ids))
             .await
     }
 }
@@ -1132,13 +1180,17 @@ mod tests {
     use super::*;
 
     use std::collections::{BTreeMap, BTreeSet};
+    use std::num::NonZeroU32;
     use std::path::PathBuf;
     use std::str::FromStr;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
     use humaux_domain::ids::{UserId, WorkspaceId};
     use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig};
+    use humaux_projection::card::{
+        CardBudget, CardBuildOutcome, CardInput, EgressDisposition, build_card,
+    };
     use humaux_retrieval::request::{RetrievalIntent, build_request};
     use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
     use postgres::config::Host;
@@ -1152,6 +1204,16 @@ mod tests {
         forced_error: Mutex<Option<ErrorCode>>,
         pre_send_probe: Mutex<Option<(String, uuid::Uuid, uuid::Uuid)>>,
         observed_sources_before_send: AtomicUsize,
+        /// Answer every call with `data` in reverse input order (indices stay true).
+        reverse_data: AtomicBool,
+        /// 1-based call number whose second item claims index 0 (a duplicate); 0 = never.
+        duplicate_index_on_call: AtomicUsize,
+    }
+
+    /// The vector this transport returns for `text`: a pure function of the input bytes, so a
+    /// vector delivered to the wrong card is detectable.
+    fn text_vector(text: &str, dimension: usize) -> Vec<f32> {
+        vec![text.bytes().map(f32::from).sum(); dimension]
     }
 
     impl DeterministicEmbeddingTransport {
@@ -1162,6 +1224,8 @@ mod tests {
                 forced_error: Mutex::new(None),
                 pre_send_probe: Mutex::new(None),
                 observed_sources_before_send: AtomicUsize::new(0),
+                reverse_data: AtomicBool::new(false),
+                duplicate_index_on_call: AtomicUsize::new(0),
             }
         }
 
@@ -1194,7 +1258,13 @@ mod tests {
             }
             let value: serde_json::Value =
                 serde_json::from_slice(payload.bytes()).map_err(|_| ErrorCode::Internal)?;
-            let input_len = value["input"].as_array().ok_or(ErrorCode::Internal)?.len();
+            let inputs: Vec<String> = value["input"]
+                .as_array()
+                .ok_or(ErrorCode::Internal)?
+                .iter()
+                .map(|input| input.as_str().unwrap_or_default().to_owned())
+                .collect();
+            let input_len = inputs.len();
             let dimension = value["dimensions"].as_u64().ok_or(ErrorCode::Internal)? as usize;
             let pre_send_probe = { self.pre_send_probe.lock().expect("probe mutex").take() };
             if let Some((dsn, tenant_id, logical_call_id)) = pre_send_probe {
@@ -1219,7 +1289,7 @@ mod tests {
                 self.observed_sources_before_send
                     .store(count as usize, Ordering::SeqCst);
             }
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            let call_no = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             self.payloads
                 .lock()
                 .expect("payload mutex")
@@ -1227,14 +1297,22 @@ mod tests {
             if let Some(error) = self.forced_error.lock().expect("forced error mutex").take() {
                 return Err(error);
             }
-            let data: Vec<serde_json::Value> = (0..input_len)
-                .map(|index| {
+            let mut data: Vec<serde_json::Value> = inputs
+                .iter()
+                .enumerate()
+                .map(|(index, input)| {
                     serde_json::json!({
-                        "embedding": vec![index as f32; dimension],
+                        "embedding": text_vector(input, dimension),
                         "index": index
                     })
                 })
                 .collect();
+            if self.duplicate_index_on_call.load(Ordering::SeqCst) == call_no && input_len > 1 {
+                data[1]["index"] = serde_json::json!(0);
+            }
+            if self.reverse_data.load(Ordering::SeqCst) {
+                data.reverse();
+            }
             serde_json::to_vec(&serde_json::json!({
                 "data": data,
                 "usage": {"total_tokens": input_len}
@@ -1330,106 +1408,148 @@ mod tests {
                 "HUMAUX_RETRIEVAL_WORKER_PG_DSN",
                 Some("role_retrieval_worker"),
             )?;
-            // dep: PostgreSQL(owner) — admin connection used to seed the query-provider integration fixture.
-            let mut admin = Client::connect(&owner_dsn, NoTls)
-                .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
-            let ready: bool = admin
-                .query_one(
-                    "SELECT to_regclass('private.retrieval_query_sources') IS NOT NULL \
-                       AND EXISTS (SELECT 1 FROM information_schema.columns \
-                         WHERE table_schema='private' AND table_name='retrieval_query_sources' \
-                           AND column_name='query_ordinal')",
-                    &[],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
-                .get(0);
-            if !ready {
-                return Err(DbFixtureSkipReason::IsolationSetupFailed(
-                    "migration 0118 is not applied".into(),
-                ));
-            }
-            // dep: PostgreSQL(role_retrieval_worker) — connects to verify the worker role identity guard before the fixture proceeds.
-            let role_ok: bool = Client::connect(&retrieval_dsn, NoTls)
-                .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?
-                .query_one(
-                    "SELECT session_user='role_retrieval_worker' AND current_user='role_retrieval_worker' \
-                       AND NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user)",
-                    &[],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
-                .get(0);
-            if !role_ok {
-                return Err(DbFixtureSkipReason::IsolationSetupFailed(
-                    "retrieval worker role identity mismatch".into(),
-                ));
-            }
-            let tenant_id = seed_query_provider_tenant(&mut admin)?;
-            let user_id = uuid::Uuid::now_v7();
-            admin
-                // dep: PostgreSQL(owner) — seeds control.users for the query-provider fixture.
-                .execute(
-                    "INSERT INTO control.users(user_id,state) VALUES($1,'ACTIVE')",
-                    &[&user_id],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-            let workspace_id: uuid::Uuid = admin
-                .query_one(
-                    "INSERT INTO control.workspaces(tenant_id,name) VALUES($1,'query provider workspace') RETURNING workspace_id",
-                    &[&tenant_id],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
-                .get(0);
-            admin
-                // dep: PostgreSQL(owner) — seeds control.memberships for the query-provider fixture.
-                .execute(
-                    "INSERT INTO control.memberships(tenant_id,user_id,role,state) VALUES($1,$2,'member','ACTIVE')",
-                    &[&tenant_id, &user_id],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-            let domain_id: uuid::Uuid = admin
-                .query_one(
-                    "INSERT INTO control.private_reasoning_domains(tenant_id,name) VALUES($1,'query provider domain') RETURNING reasoning_domain_id",
-                    &[&tenant_id],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
-                .get(0);
-            let evidence_id: uuid::Uuid = admin
-                .query_one(
-                    "INSERT INTO private.evidence_objects \
-                       (tenant_id,evidence_kind,payload_sha256,data_class,origin_class,visibility_class,reasoning_domain_id) \
-                     VALUES($1,'EVENT',$2,'PRIVATE','AuthenticatedAgent','TENANT_SHARED',$3) RETURNING evidence_id",
-                    &[&tenant_id, &vec![11_u8; 32], &domain_id],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
-                .get(0);
-            admin
-                // dep: PostgreSQL(owner) — seeds private.events for the query-provider fixture.
-                .execute(
-                    "INSERT INTO private.events(event_id,event_kind,payload) VALUES($1,'TOOL_CALL','{}'::jsonb)",
-                    &[&evidence_id],
-                )
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-            // dep: PostgreSQL(role_retrieval_worker) — opens the role-scoped connection for `isolate`
-            let pool = rt
-                .block_on(RetrievalWorkerDbPool::connect(&retrieval_dsn))
-                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-            Ok(QueryProviderHandle {
-                rt,
-                pool: Some(pool),
-                admin,
-                tenant_id,
-                user_id,
-                workspace_id,
-                evidence_id,
-                owner_dsn,
-            })
+            seeded_provider_handle(owner_dsn, retrieval_dsn)
         }
     }
 
-    fn sealed_query_fixture(text: &str) -> SealedRetrievalQuery {
-        let scanner = LocalSecretScanner::new(LocalSecretScannerConfig {
+    /// ADR-0068 D-F batch gates: the same seeded handle on the repo-wide database CI provides
+    /// (`HUMAUX_TEST_PG_DSN`, `HUMAUX_RETRIEVAL_WORKER_PG_DSN`), without
+    /// [`QueryProviderFixture`]'s request-guard container pin.
+    struct CardBatchFixture;
+
+    impl DbIntegrationFixture for CardBatchFixture {
+        type Handle = QueryProviderHandle;
+
+        fn isolate() -> Result<Self::Handle, DbFixtureSkipReason> {
+            let owner_dsn = std::env::var("HUMAUX_TEST_PG_DSN")
+                .map_err(|_| DbFixtureSkipReason::NoDatabaseUrl)?;
+            let retrieval_dsn = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_DSN").map_err(|_| {
+                DbFixtureSkipReason::IsolationSetupFailed(
+                    "HUMAUX_RETRIEVAL_WORKER_PG_DSN (role_retrieval_worker LOGIN DSN) is not set"
+                        .into(),
+                )
+            })?;
+            let mut handle = seeded_provider_handle(owner_dsn, retrieval_dsn)?;
+            // These tests write `ops.data_disclosures`; a shared hold lets
+            // `disclosure_ledger::guard_trigger_rejects_truncate` take its exclusive TRUNCATE
+            // lock only while none of them runs (`DISCLOSURE_LEDGER_ADVISORY_LOCK` doc).
+            handle
+                .admin
+                // dep: PostgreSQL(owner) — session-level shared advisory lock, released when the handle's connection closes.
+                .execute(
+                    "SELECT pg_advisory_lock_shared($1)",
+                    &[&humaux_testkit::DISCLOSURE_LEDGER_ADVISORY_LOCK],
+                )
+                .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+            Ok(handle)
+        }
+    }
+
+    /// Seeds one throwaway tenant (with its user, workspace, membership, reasoning domain,
+    /// Evidence and admission limits) and opens the role-scoped pool.
+    fn seeded_provider_handle(
+        owner_dsn: String,
+        retrieval_dsn: String,
+    ) -> Result<QueryProviderHandle, DbFixtureSkipReason> {
+        // dep: PostgreSQL(owner) — admin connection used to seed the query-provider integration fixture.
+        let mut admin = Client::connect(&owner_dsn, NoTls)
+            .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
+        let ready: bool = admin
+            .query_one(
+                "SELECT to_regclass('private.retrieval_query_sources') IS NOT NULL \
+                   AND EXISTS (SELECT 1 FROM information_schema.columns \
+                     WHERE table_schema='private' AND table_name='retrieval_query_sources' \
+                       AND column_name='query_ordinal')",
+                &[],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
+            .get(0);
+        if !ready {
+            return Err(DbFixtureSkipReason::IsolationSetupFailed(
+                "migration 0118 is not applied".into(),
+            ));
+        }
+        // dep: PostgreSQL(role_retrieval_worker) — connects to verify the worker role identity guard before the fixture proceeds.
+        let role_ok: bool = Client::connect(&retrieval_dsn, NoTls)
+            .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?
+            .query_one(
+                "SELECT session_user='role_retrieval_worker' AND current_user='role_retrieval_worker' \
+                   AND NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user)",
+                &[],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
+            .get(0);
+        if !role_ok {
+            return Err(DbFixtureSkipReason::IsolationSetupFailed(
+                "retrieval worker role identity mismatch".into(),
+            ));
+        }
+        let tenant_id = seed_query_provider_tenant(&mut admin)?;
+        let user_id = uuid::Uuid::now_v7();
+        admin
+            // dep: PostgreSQL(owner) — seeds control.users for the query-provider fixture.
+            .execute(
+                "INSERT INTO control.users(user_id,state) VALUES($1,'ACTIVE')",
+                &[&user_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+        let workspace_id: uuid::Uuid = admin
+            .query_one(
+                "INSERT INTO control.workspaces(tenant_id,name) VALUES($1,'query provider workspace') RETURNING workspace_id",
+                &[&tenant_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
+            .get(0);
+        admin
+            // dep: PostgreSQL(owner) — seeds control.memberships for the query-provider fixture.
+            .execute(
+                "INSERT INTO control.memberships(tenant_id,user_id,role,state) VALUES($1,$2,'member','ACTIVE')",
+                &[&tenant_id, &user_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+        let domain_id: uuid::Uuid = admin
+            .query_one(
+                "INSERT INTO control.private_reasoning_domains(tenant_id,name) VALUES($1,'query provider domain') RETURNING reasoning_domain_id",
+                &[&tenant_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
+            .get(0);
+        let evidence_id: uuid::Uuid = admin
+            .query_one(
+                "INSERT INTO private.evidence_objects \
+                   (tenant_id,evidence_kind,payload_sha256,data_class,origin_class,visibility_class,reasoning_domain_id) \
+                 VALUES($1,'EVENT',$2,'PRIVATE','AuthenticatedAgent','TENANT_SHARED',$3) RETURNING evidence_id",
+                &[&tenant_id, &vec![11_u8; 32], &domain_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
+            .get(0);
+        admin
+            // dep: PostgreSQL(owner) — seeds private.events for the query-provider fixture.
+            .execute(
+                "INSERT INTO private.events(event_id,event_kind,payload) VALUES($1,'TOOL_CALL','{}'::jsonb)",
+                &[&evidence_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+        // dep: PostgreSQL(role_retrieval_worker) — opens the role-scoped connection for `isolate`
+        let pool = rt
+            .block_on(RetrievalWorkerDbPool::connect(&retrieval_dsn))
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+        Ok(QueryProviderHandle {
+            rt,
+            pool: Some(pool),
+            admin,
+            tenant_id,
+            user_id,
+            workspace_id,
+            evidence_id,
+            owner_dsn,
+        })
+    }
+
+    fn fixture_scanner() -> LocalSecretScanner {
+        LocalSecretScanner::new(LocalSecretScannerConfig {
             executable: PathBuf::from(
                 std::env::var("HUMAUX_TEST_GITLEAKS_BIN")
                     .expect("provider SUT fixture requires HUMAUX_TEST_GITLEAKS_BIN"),
@@ -1442,7 +1562,11 @@ mod tests {
             max_payload_bytes: 64 * 1024,
             finding_exit_code: 1,
         })
-        .expect("pinned scanner fixture");
+        .expect("pinned scanner fixture")
+    }
+
+    fn sealed_query_fixture(text: &str) -> SealedRetrievalQuery {
+        let scanner = fixture_scanner();
         let profile =
             humaux_retrieval::request::resolve_registered_retrieval_profile(&BTreeMap::new())
                 .expect("registered profile");
@@ -1470,6 +1594,7 @@ mod tests {
                 model_revision: "fixture".into(),
                 dimension_options: vec![2],
                 max_input_tokens: 128,
+                max_batch_items: NonZeroU32::new(3).expect("non-zero cap"),
                 batch_supported: true,
                 dense_supported: true,
                 sparse_supported: false,
@@ -1711,6 +1836,236 @@ mod tests {
         );
     }
 
+    /// `n` live memories on the fixture's Evidence (a §7.4 `DisclosureSource::Memory` must name a
+    /// real row) and one sealed card each; card `i` is titled `batch card {i}`, so every card
+    /// text, and with it its [`text_vector`], is distinct while all have the same length.
+    fn seeded_memory_cards(
+        handle: &mut QueryProviderHandle,
+        n: usize,
+    ) -> (Vec<uuid::Uuid>, Vec<SealedRetrievalCard>) {
+        let scanner = fixture_scanner();
+        let mut memory_ids = Vec::with_capacity(n);
+        let mut cards = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut txn = handle.admin.transaction().expect("owner txn");
+            let memory_id: uuid::Uuid = txn
+                .query_one(
+                    "INSERT INTO private.memory_records (tenant_id, memory_type, content, \
+                       visibility_class, authority_class, confidence, status, asserted_at) \
+                     VALUES ($1, 'NOTE', '{\"title\":\"batch card\"}', 'TENANT_SHARED', \
+                       'PrivateKnowledge', 0.9, 'active', now()) RETURNING memory_id",
+                    &[&handle.tenant_id],
+                )
+                .expect("seed memory")
+                .get(0);
+            // dep: PostgreSQL(owner) — links the fixture memory to the fixture Evidence (§8.6 deferred orphan check).
+            txn.execute(
+                "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, ordinal) \
+                 VALUES ($1, $2, 'PRIMARY', 0)",
+                &[&memory_id, &handle.evidence_id],
+            )
+            .expect("seed memory_evidence");
+            txn.commit().expect("commit fixture memory");
+            let title = format!("batch card {i}");
+            let title_chars = title.chars().count();
+            let CardBuildOutcome::Card(card) = build_card(
+                CardInput {
+                    memory_id: humaux_domain::authority::MemoryId::new(),
+                    memory_type: humaux_domain::memory::MemoryType::Fact,
+                    data_class: DataClass::Private,
+                    egress_disposition: EgressDisposition::PolicyGated,
+                    workspace_id: None,
+                    topic: None,
+                    effective_from: std::time::SystemTime::UNIX_EPOCH,
+                    title,
+                    key_claim: Some("fixture claim".to_owned()),
+                    entities: vec![],
+                    evidence_excerpt: Some("fixture evidence".to_owned()),
+                },
+                CardBudget {
+                    max_chars: title_chars,
+                },
+            ) else {
+                panic!("private fixture builds a card")
+            };
+            memory_ids.push(memory_id);
+            cards.push(scanner.seal_card(&card).expect("clean pinned scan"));
+        }
+        (memory_ids, cards)
+    }
+
+    /// The `input` texts of one recorded request body.
+    fn payload_inputs(bytes: &[u8]) -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_slice(bytes).expect("request JSON");
+        value["input"]
+            .as_array()
+            .expect("input array")
+            .iter()
+            .map(|input| input.as_str().expect("text input").to_owned())
+            .collect()
+    }
+
+    /// The three requests of 7 cards under a cap of 3: one SUCCEEDED ledger row each, one
+    /// CONSUMED budget reservation each sized to that slice's chars, and one SUCCESS disclosure
+    /// each whose sources are that slice's memories in order.
+    fn assert_per_request_accounting(
+        handle: &mut QueryProviderHandle,
+        texts: &[String],
+        memory_ids: &[uuid::Uuid],
+    ) {
+        let slice_chars = |r: std::ops::Range<usize>| -> i64 {
+            texts[r].iter().map(|t| t.chars().count() as i64).sum()
+        };
+        let mut expected_tokens = [slice_chars(0..3), slice_chars(3..6), slice_chars(6..7)];
+        expected_tokens.sort_unstable();
+        let ledger: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM ops.model_call_ledger WHERE tenant_id=$1",
+                &[&handle.tenant_id],
+            )
+            .expect("ledger count")
+            .get(0);
+        assert_eq!(ledger, 3, "one ledger row per request");
+        let reservations = handle
+            .admin
+            .query(
+                "SELECT l.status, b.status, b.requested_tokens \
+                 FROM ops.model_call_ledger l \
+                 JOIN ops.retrieval_provider_budget_reservations b \
+                   ON b.tenant_id=l.tenant_id AND b.model_call_id=l.model_call_id \
+                 WHERE l.tenant_id=$1 ORDER BY b.requested_tokens",
+                &[&handle.tenant_id],
+            )
+            .expect("ledger reservations");
+        let reservations: Vec<(String, String, i64)> = reservations
+            .iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
+            .collect();
+        assert_eq!(
+            reservations,
+            expected_tokens
+                .iter()
+                .map(|tokens| ("SUCCEEDED".to_owned(), "CONSUMED".to_owned(), *tokens))
+                .collect::<Vec<_>>(),
+            "one reservation per request, sized to that request's chars"
+        );
+
+        let disclosures = handle
+            .admin
+            .query(
+                "SELECT d.outcome, array_agg(s.memory_id ORDER BY s.ordinal) \
+                 FROM ops.data_disclosures d \
+                 JOIN ops.data_disclosure_sources s ON s.disclosure_id=d.disclosure_id \
+                 WHERE d.tenant_id=$1 GROUP BY d.disclosure_id, d.outcome",
+                &[&handle.tenant_id],
+            )
+            .expect("disclosures");
+        let mut disclosures: Vec<(Option<String>, Vec<uuid::Uuid>)> = disclosures
+            .iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect();
+        disclosures.sort();
+        let mut expected_sources = [
+            (Some("SUCCESS".to_owned()), memory_ids[0..3].to_vec()),
+            (Some("SUCCESS".to_owned()), memory_ids[3..6].to_vec()),
+            (Some("SUCCESS".to_owned()), memory_ids[6..7].to_vec()),
+        ];
+        expected_sources.sort();
+        assert_eq!(
+            disclosures, expected_sources,
+            "one disclosure per request, naming that request's memories"
+        );
+    }
+
+    /// ADR-0068 D-F gate `embedding_batches_respect_provider_limit`: 7 cards under a cap of 3 are
+    /// exactly three requests (3/3/1) in input order; each is its own SUCCEEDED ledger row, its
+    /// own CONSUMED budget reservation sized to that slice's chars, and its own SUCCESS disclosure
+    /// naming exactly that slice's memories in order. The transport answers every request in
+    /// reverse order, so each card receiving the vector of its own text proves index mapping
+    /// across the split. Faults: send one request of 7 (drop the split), or take every slice's
+    /// sources from `memory_ids[0..]` ⇒ red.
+    #[test]
+    fn embedding_batches_respect_provider_limit() {
+        run_db_fixture::<CardBatchFixture, _>("dashscope_card_batches", |mut handle| {
+            let transport = Arc::new(DeterministicEmbeddingTransport::new());
+            transport.reverse_data.store(true, Ordering::SeqCst);
+            let (provider, _, _) = query_provider_and_authorization(&mut handle, transport.clone());
+            let (memory_ids, cards) = seeded_memory_cards(&mut handle, 7);
+            let texts: Vec<String> = cards.iter().map(|c| c.as_str().to_owned()).collect();
+
+            let batch = handle
+                .rt
+                .block_on(provider.embed_cards_for_memories(
+                    TenantId(handle.tenant_id),
+                    2,
+                    &cards,
+                    &memory_ids,
+                ))
+                .expect("three bounded requests succeed");
+
+            let sent: Vec<Vec<String>> = transport
+                .payloads
+                .lock()
+                .expect("payload mutex")
+                .iter()
+                .map(Vec::as_slice)
+                .map(payload_inputs)
+                .collect();
+            assert_eq!(
+                sent,
+                [
+                    texts[0..3].to_vec(),
+                    texts[3..6].to_vec(),
+                    texts[6..7].to_vec()
+                ]
+            );
+            let expected: Vec<Vec<f32>> = texts.iter().map(|t| text_vector(t, 2)).collect();
+            assert_eq!(batch.vectors, expected, "every card gets its own vector");
+
+            assert_per_request_accounting(&mut handle, &texts, &memory_ids);
+        });
+    }
+
+    /// ADR-0068 D-F response mapping: a later request whose response repeats an index fails the
+    /// whole call with no vectors, and the remaining request is never sent; the request that
+    /// already succeeded stays on the ledger. Faults: map a response by position instead of
+    /// `index`, or continue past a failed slice ⇒ red.
+    #[test]
+    fn a_duplicate_index_in_a_later_batch_returns_no_vectors() {
+        run_db_fixture::<CardBatchFixture, _>("dashscope_card_batch_dup", |mut handle| {
+            let transport = Arc::new(DeterministicEmbeddingTransport::new());
+            transport.duplicate_index_on_call.store(2, Ordering::SeqCst);
+            let (provider, _, _) = query_provider_and_authorization(&mut handle, transport.clone());
+            let (memory_ids, cards) = seeded_memory_cards(&mut handle, 7);
+
+            let result = handle.rt.block_on(provider.embed_cards_for_memories(
+                TenantId(handle.tenant_id),
+                2,
+                &cards,
+                &memory_ids,
+            ));
+
+            assert_eq!(result.err(), Some(ErrorCode::ProviderPermanent));
+            assert_eq!(
+                transport.calls.load(Ordering::SeqCst),
+                2,
+                "the third request is never sent"
+            );
+            let statuses: Vec<String> = handle
+                .admin
+                .query(
+                    "SELECT status FROM ops.model_call_ledger WHERE tenant_id=$1 ORDER BY status",
+                    &[&handle.tenant_id],
+                )
+                .expect("ledger statuses")
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            assert_eq!(statuses, ["FAILED", "SUCCEEDED"]);
+        });
+    }
+
     #[test]
     fn persistent_budget_rejection_stops_before_transport_and_disclosure() {
         run_db_fixture::<QueryProviderFixture, _>("dashscope_budget_rejection", |mut handle| {
@@ -1852,6 +2207,7 @@ mod tests {
                 model_revision: "r".to_string(),
                 dimension_options: vec![256],
                 max_input_tokens: 32,
+                max_batch_items: NonZeroU32::new(10).expect("non-zero cap"),
                 batch_supported: true,
                 dense_supported: true,
                 sparse_supported: false,

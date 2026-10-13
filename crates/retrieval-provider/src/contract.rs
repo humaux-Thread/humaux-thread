@@ -32,6 +32,8 @@
 //! its type as `ProcessorId`, and that type already exists (T4.1), so this module does not
 //! mint a second one.
 
+use std::num::NonZeroU32;
+
 use humaux_domain::egress::ProcessorId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::TenantId;
@@ -96,6 +98,11 @@ pub struct EmbeddingModelDescriptor {
     /// changes" is a Projection Migration, never a request-level choice).
     pub dimension_options: Vec<u32>,
     pub max_input_tokens: u32,
+    /// ADR-0068 D-F: the most inputs one provider request may carry. A provider capability, so
+    /// configuration (§78.1), never a code default (DashScope `text-embedding-v4` documents 10).
+    /// A larger card embedding call is split into consecutive requests of at most this many
+    /// inputs, each with its own budget reservation, ledger row and disclosure.
+    pub max_batch_items: NonZeroU32,
     pub batch_supported: bool,
     pub dense_supported: bool,
     pub sparse_supported: bool,
@@ -295,8 +302,11 @@ pub trait EmbeddingProvider: Send + Sync {
     ) -> Result<EmbeddingBatch, ErrorCode>;
 
     /// Embeds `cards` whose §7.4 disclosure sources are the memories being projected — one
-    /// `memory_id` per card, same order. Providers that keep no disclosure ledger fall back to
-    /// [`EmbeddingProvider::embed_cards`]; the DashScope adapter records the real sources
+    /// `memory_id` per card, same order. A provider that bills per request splits `cards` into
+    /// requests of at most `model().max_batch_items` (ADR-0068 D-F) and still returns one vector
+    /// per card in input order, or an error and no vectors. Providers that keep no disclosure
+    /// ledger fall back to [`EmbeddingProvider::embed_cards`]; the DashScope adapter records the
+    /// real sources
     /// (rehearsal 2026-09-03: a constructor-time placeholder source failed the
     /// `data_disclosure_sources` FK and every projection ticket ended `embedding_failed`).
     async fn embed_cards_for_memories(
