@@ -886,27 +886,16 @@ async fn confirmed_write_scope(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // One envelope assembly over the read's fixed inputs + the affect axis.
-fn accept_memory_envelope<T>(
-    mut materialized: MaterializedMemory,
-    mut affects: BTreeMap<Uuid, Vec<AffectItem>>,
-    request: &RetrievalRequest,
-    binary_build: &str,
-    lane: &str,
-    truncated: bool,
+/// The page's Memory bodies as items, each with its subject links, affects, note kind and (memory.get with
+/// `include_history` only) its history block. Any non-Memory body is an invariant break.
+fn memory_items(
+    materialized: &mut MaterializedMemory,
+    affects: &mut BTreeMap<Uuid, Vec<AffectItem>>,
     archived: bool,
-    visible: Option<u64>,
-    lag_threshold: Duration,
-    // `Some` only for `memory.enumerate` (ADR-0041): the §22.1 census this page's manifest was
-    // minted under plus the §23.3④ `stream_ledger` pipeline counts read in that same snapshot.
-    enumeration: Option<EnumerationCensus>,
-    accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
-) -> Result<PendingEnvelope<T>, ErrorCode> {
+) -> Result<Vec<MemoryItem>, ErrorCode> {
     // ADR-0067 D-H: only `memory.get` with `include_history` carries one, for its single item.
     let mut history = materialized.history.take();
-    let items = materialized
-        .bodies
-        .items
+    std::mem::take(&mut materialized.bodies.items)
         .into_iter()
         .map(|item| -> Result<MemoryItem, ErrorCode> {
             match item {
@@ -932,7 +921,26 @@ fn accept_memory_envelope<T>(
                 _ => Err(ErrorCode::Internal),
             }
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)] // One envelope assembly over the read's fixed inputs + the affect axis.
+fn accept_memory_envelope<T>(
+    mut materialized: MaterializedMemory,
+    mut affects: BTreeMap<Uuid, Vec<AffectItem>>,
+    request: &RetrievalRequest,
+    binary_build: &str,
+    lane: &str,
+    truncated: bool,
+    archived: bool,
+    visible: Option<u64>,
+    lag_threshold: Duration,
+    // `Some` only for `memory.enumerate` (ADR-0041): the §22.1 census this page's manifest was
+    // minted under plus the §23.3④ `stream_ledger` pipeline counts read in that same snapshot.
+    enumeration: Option<EnumerationCensus>,
+    accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
+) -> Result<PendingEnvelope<T>, ErrorCode> {
+    let items = memory_items(&mut materialized, &mut affects, archived)?;
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let projection = build_projection_block(&materialized.ledger, visible, lag_threshold);
     let (census, pipeline) = match enumeration {
