@@ -4,16 +4,19 @@
 //!   postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq] w=[control.memberships,
 //!   control.private_reasoning_domains, control.reasoning_domain_grants, control.tenants, control.users, ops.jobs,
 //!   ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
-//!   projection.private_memory_points, projection.stream_checkpoints, projection.stream_log],
+//!   projection.embedding_fingerprints, projection.memory_vectors, projection.private_memory_points,
+//!   projection.stream_checkpoints, projection.stream_log],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::retrieve, adapters::tests::support::token_keys, domain::authority, domain::dataclass, domain::identity,
 //!   domain::ids, domain::memory, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
-//!   projection::card, projection::serving]
+//!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
 //! Called-by: [cargo-test]
 //! Invariants: [point ids bind to exactly one memory; cross-workspace, collision and unsupported point ids are typed
-//!   errors; needs the isolated migrated PG + Qdrant fixture, so the tests are #[ignore] lane tests]
-//! Spec: Baseline §17.4; §79.2
+//!   errors; the Qdrant round trip needs the isolated migrated PG + Qdrant fixture, so it is an #[ignore] lane test;
+//!   the PG-only chunk-identity test runs in the default tier and skips visibly without a DSN; every fixture row,
+//!   vector and fingerprint is removed by the handle's Drop]
+//! Spec: Baseline §17.4; §79.2; ADR-0068 D-C
 //!
 //! Run explicitly against the isolated migrated fixture:
 //! `cargo test -p humaux-adapters --test private_projection_registry -- --ignored`.
@@ -26,7 +29,8 @@ use std::time::Duration;
 use humaux_adapters::postgres::{RetrievalWorkerDbPool, RuntimeDbPool};
 use humaux_adapters::private_projection_registry::{
     PrivateMemoryPointRegistration, PrivateProjectionRegistryError, ProjectionPointId,
-    RegistrationOutcome, register_private_memory_point, resolve_private_memory_points,
+    RegistrationOutcome, StoredVector, register_private_memory_point,
+    register_private_memory_point_with_vector, resolve_private_memory_points,
     retire_private_memory_point,
 };
 use humaux_adapters::qdrant::{
@@ -51,6 +55,8 @@ use humaux_infra_cell::{
     authorize_cell_access,
 };
 use humaux_projection::card::EgressDisposition;
+use humaux_projection::embedding_fingerprint::{DISTANCE, DTYPE, NORMALIZATION};
+use humaux_projection::note_chunks::{LEGACY_CARD_PROFILE_HASH, NOTE_CHUNKS_V1_PROFILE_HASH};
 use humaux_projection::serving::StreamFamily;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
@@ -162,6 +168,8 @@ impl Drop for Handle {
             .batch_execute(&format!(
                 "DELETE FROM ops.jobs WHERE tenant_id = '{0}'; \
                  DELETE FROM projection.private_memory_points WHERE tenant_id = '{0}'; \
+                 DELETE FROM projection.memory_vectors WHERE tenant_id = '{0}'; \
+                 DELETE FROM projection.embedding_fingerprints WHERE embedding_version = 'chunk-{0}'; \
                  DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
                  DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}'; \
                  DELETE FROM ops.outbox WHERE tenant_id = '{0}'; \
@@ -325,6 +333,8 @@ fn registration(handle: &Handle, point_id: ProjectionPointId) -> PrivateMemoryPo
         memory_id: MemoryId(handle.memory_id),
         source_updated_at: fixed_time(0),
         body_sha256: handle.body_sha256.clone(),
+        card_profile_hash: LEGACY_CARD_PROFILE_HASH.to_owned(),
+        chunk_ordinal: 0,
     }
 }
 
@@ -965,6 +975,8 @@ fn private_point_registry_fails_closed_for_identity_and_permissions() {
             memory_id: MemoryId(other_memory),
             source_updated_at: fixed_time(0),
             body_sha256: other_body_sha256,
+            card_profile_hash: LEGACY_CARD_PROFILE_HASH.to_owned(),
+            chunk_ordinal: 0,
         };
         handle
             .rt
@@ -977,5 +989,109 @@ fn private_point_registry_fails_closed_for_identity_and_permissions() {
             ));
         assert_hash_invalidation(&mut handle);
         assert_gateway_write_rejected(&handle);
+    });
+}
+
+/// ADR-0068 gate `repeated_chunks_share_vector_not_point`: two `NoteChunksV1` slots of one Memory whose chunk texts
+/// are identical (same `input_sha256`, so the same `memory_vectors` key) register as two live registry rows with two
+/// point ids over ONE vector row, and replaying a slot is `AlreadyRegistered`. Faults: drop `chunk_ordinal` from the
+/// 0238 UNIQUE key ⇒ the second insert loses to the first and is `RegistryRaceLost`; drop the ordinal from the v2
+/// derivation ⇒ one point id for both, `PointIdCollision`; key the vector by ordinal ⇒ two vector rows.
+/// (point_id, card_profile_hash, chunk_ordinal, fingerprint_sha256, input_sha256) of one registry slot.
+type SlotRow = (Uuid, String, i32, Vec<u8>, Vec<u8>);
+
+#[test]
+fn repeated_chunks_share_vector_not_point() {
+    run_db_fixture::<RegistryFixture, _>("repeated_chunks_share_vector_not_point", |mut handle| {
+        // A per-run fingerprint under a per-tenant label, so parallel runs never share a 0232 row; Drop removes it.
+        let fingerprint_sha256: [u8; 32] = [*handle.tenant_id.as_bytes(); 2]
+            .concat()
+            .try_into()
+            .expect("two UUIDs are 32 bytes");
+        handle
+            .admin
+            .execute(
+                "INSERT INTO projection.embedding_fingerprints (fingerprint_sha256, embedding_version, provider, \
+                   model_id, model_revision, dimension, task_type, preprocessing_version, \
+                   projection_contract_version, dtype, normalization, distance) \
+                 VALUES ($1, $2, 'chunk-test', 'chunk-model', 'r1', 4, 'document', 'v1-test', 'private-v1', $3, $4, $5)",
+                &[
+                    &fingerprint_sha256.to_vec(),
+                    &format!("chunk-{}", handle.tenant_id),
+                    &DTYPE,
+                    &NORMALIZATION,
+                    &DISTANCE,
+                ],
+            )
+            .expect("seed the test fingerprint");
+        let stored = StoredVector {
+            fingerprint_sha256,
+            input_sha256: [9; 32],
+            vector: vec![0.5, 0.25, 0.125, 1.0],
+        };
+        let slot = |ordinal| {
+            registration(&handle, ProjectionPointId::new(Uuid::nil()))
+                .for_chunk(NOTE_CHUNKS_V1_PROFILE_HASH, ordinal)
+        };
+        let slots = [slot(0), slot(1)];
+        assert_ne!(slots[0].point_id, slots[1].point_id);
+        handle.rt.block_on(async {
+            for (slot, outcome) in slots.iter().chain(&slots[1..]).zip([
+                RegistrationOutcome::Inserted,
+                RegistrationOutcome::Inserted,
+                RegistrationOutcome::AlreadyRegistered,
+            ]) {
+                assert_eq!(
+                    register_private_memory_point_with_vector(
+                        &handle.worker,
+                        &handle.authorization,
+                        slot,
+                        Some(&stored),
+                    )
+                    .await
+                    .expect("chunk registration"),
+                    outcome,
+                    "slot {}",
+                    slot.chunk_ordinal
+                );
+            }
+        });
+        let rows = handle
+            .admin
+            .query(
+                "SELECT point_id, card_profile_hash, chunk_ordinal, fingerprint_sha256, input_sha256 \
+                   FROM projection.private_memory_points \
+                  WHERE tenant_id = $1 AND memory_id = $2 AND projection_live ORDER BY chunk_ordinal",
+                &[&handle.tenant_id, &handle.memory_id],
+            )
+            .expect("read the chunk rows");
+        let read: Vec<SlotRow> = rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
+            .collect();
+        let expected: Vec<SlotRow> = slots
+            .iter()
+            .zip([0, 1])
+            .map(|(slot, ordinal)| {
+                (
+                    slot.point_id.as_uuid(),
+                    NOTE_CHUNKS_V1_PROFILE_HASH.to_owned(),
+                    ordinal,
+                    fingerprint_sha256.to_vec(),
+                    stored.input_sha256.to_vec(),
+                )
+            })
+            .collect();
+        assert_eq!(read, expected, "two points, one vector key");
+        let vectors: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM projection.memory_vectors \
+                  WHERE tenant_id = $1 AND memory_id = $2 AND vector IS NOT NULL",
+                &[&handle.tenant_id, &handle.memory_id],
+            )
+            .expect("count the vector rows")
+            .get(0);
+        assert_eq!(vectors, 1, "duplicate chunk text shares one vector row");
     });
 }

@@ -1,17 +1,23 @@
-//! `projection::note_chunks` — ADR-0068 D-A/D-B: the frozen `NoteChunksV1` profile (fixed Unicode-scalar windows over a
-//!   long note's body) and [`build_projection_plan`], the one entry that picks it or the unchanged legacy card.
+//! `projection::note_chunks` — ADR-0068 D-A/D-B/D-I: the frozen `NoteChunksV1` profile (fixed Unicode-scalar windows
+//!   over a long note's body), the projection's [`NoteChunkPolicy`], and [`build_projection_plan`], the one entry that
+//!   picks a chunk profile or the unchanged legacy card.
 //! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::dataclass, projection::card]
-//! Called-by: [tests]
+//! Called-by: [adapters::private_projection_registry, tests]
 //! Invariants: [pure and IO-free (§3/§78.3); chunk card text is constructed only here, SQL recomputes only the count
-//!   (ADR-0068 D-B); ranges are half-open over Unicode scalars and a slice never splits a UTF-8 sequence; only an
-//!   identity note that is not SECRET_MATERIAL and whose body the legacy card cannot hold losslessly is chunked, every
-//!   other input yields exactly build_card's outcome (ADR-0068 D-A)]
+//!   and the legacy predicate (ADR-0068 D-B); ranges are half-open over Unicode scalars and a slice never splits a
+//!   UTF-8 sequence; only an identity note that is not SECRET_MATERIAL, whose projection policy is NoteChunksV1 and
+//!   whose non-empty body the legacy card cannot hold losslessly is chunked, every other input yields exactly
+//!   build_card's outcome (ADR-0068 D-A); a policy hash this build does not know is refused, never read as legacy
+//!   (ADR-0068 D-I)]
 //! Spec: Baseline §18.2; §3; §78.3; ADR-0068
 //!
-//! Not wired in slice 40d-1a: the worker and rebuild still call `build_card` directly. The window parameters are a
-//! frozen, versioned profile (ADR-0068 D-B), not runtime config (§78.1): changing any of them is a new profile with a
-//! new [`NOTE_CHUNKS_V1_PROFILE_HASH`]. Its SQL twin is `projection.note_chunk_count` (migration 0237), pinned to
-//! [`legacy_capacity_holds`] / [`chunk_count`] by `adapters::tests::note_chunk_count_parity`.
+//! Not wired yet: the worker and rebuild still call `build_card` directly. The window parameters are a frozen,
+//! versioned profile (ADR-0068 D-B), not runtime config (§78.1): changing any of them is a new profile with a new
+//! [`NOTE_CHUNKS_V1_PROFILE_HASH`]. Its SQL twins are `projection.note_chunk_count` (migration 0237) and
+//! `projection.note_legacy_capacity_holds` (migration 0238), pinned to [`chunk_count`] / [`legacy_capacity_holds`]
+//! by `adapters::tests::note_chunk_count_parity`. A slot is legacy iff [`legacy_capacity_holds`] holds (or the Memory
+//! is not a note, or the policy is legacy only), never because its count is 1: a note whose body fits one window but
+//! not the legacy card is one `NoteChunksV1` slot.
 
 use std::ops::Range;
 
@@ -35,6 +41,10 @@ pub const NOTE_CHUNKS_V1_SEPARATOR: &str = "\n";
 /// the legacy card exactly when title + 3 + body fits the budget.
 pub const LEGACY_NOTE_SEPARATORS: usize = 3;
 
+/// ADR-0068 D-C: `card_profile_hash` of a legacy card — the registry column's default and its v1 point-id marker
+/// (migration 0238). Not a SHA-256: no profile hash can equal it.
+pub const LEGACY_CARD_PROFILE_HASH: &str = "LegacyCardV1";
+
 /// `card_profile_hash` of `NoteChunksV1`: `NoteChunksV1-` + SHA-256 hex over the parameter tuple and the
 /// length-prefixed chunk texts of a fixed golden note. Recomputed by `tests::profile_hash_is_pinned`; a changed
 /// parameter, separator or prefix rule turns that test red until a new profile is minted. Not named like the legacy
@@ -42,11 +52,13 @@ pub const LEGACY_NOTE_SEPARATORS: usize = 3;
 pub const NOTE_CHUNKS_V1_PROFILE_HASH: &str =
     "NoteChunksV1-6cef9eb0e1cc9219c9739a76a12880fd8e4efe004639e51688922c5f596a334c";
 
-/// ADR-0068 D-A: true iff the legacy card holds the note's whole body, i.e.
-/// `title + LEGACY_NOTE_SEPARATORS + body <= CardBudget::default().max_chars`, counted in Unicode scalars.
+/// ADR-0068 D-A: true iff the legacy card loses none of the note's body: the body is empty (nothing to lose;
+/// `build_card` marks a bodiless note unbuildable), or `title + LEGACY_NOTE_SEPARATORS + body <=
+/// CardBudget::default().max_chars`, counted in Unicode scalars. SQL twin: `projection.note_legacy_capacity_holds`.
 pub fn legacy_capacity_holds(title: &str, body: &str) -> bool {
-    title.chars().count() + LEGACY_NOTE_SEPARATORS + body.chars().count()
-        <= CardBudget::default().max_chars
+    body.is_empty()
+        || title.chars().count() + LEGACY_NOTE_SEPARATORS + body.chars().count()
+            <= CardBudget::default().max_chars
 }
 
 /// ADR-0068 D-B: `C(L) = 1 + ceil(max(0, L − W) / stride)` for a body of `body_chars` scalars.
@@ -107,14 +119,44 @@ pub fn chunk_card_text(title: &str, body: &str, ordinal: usize) -> Option<String
     Some(card_text(title, scalar_slice(body, range)?))
 }
 
-/// What [`build_projection_plan`] reads: the worker's `card_input` plus whether the Memory has an identity contract
-/// (`private.identity_note_materializations`). A note's body is `card.key_claim` (ADR-0067 D-E).
+/// ADR-0068 D-I: which note chunk profile a projection builds, parsed once from
+/// `projection.card_profile_policies.note_chunk_profile_hash` for the ticket family (a missing row reads as NULL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteChunkPolicy {
+    /// NULL: every Memory takes `LegacyCardV1` (today's behaviour).
+    LegacyOnly,
+    /// [`NOTE_CHUNKS_V1_PROFILE_HASH`]: identity notes over the legacy capacity are chunked.
+    NoteChunksV1,
+}
+
+/// ADR-0068 D-I: a policy hash this build has no profile for. The worker refuses to boot on it: a silent legacy
+/// fallback would build slots the ledger, which reads the same row, does not expect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownNoteChunkProfile(pub String);
+
+impl NoteChunkPolicy {
+    /// ADR-0068 D-I: `None` is legacy only; [`NOTE_CHUNKS_V1_PROFILE_HASH`] is `NoteChunksV1`; anything else is
+    /// refused.
+    pub fn from_profile_hash(hash: Option<&str>) -> Result<Self, UnknownNoteChunkProfile> {
+        match hash {
+            None => Ok(Self::LegacyOnly),
+            Some(NOTE_CHUNKS_V1_PROFILE_HASH) => Ok(Self::NoteChunksV1),
+            Some(other) => Err(UnknownNoteChunkProfile(other.to_owned())),
+        }
+    }
+}
+
+/// What [`build_projection_plan`] reads: the worker's `card_input`, whether the Memory has an identity contract
+/// (`private.identity_note_materializations`) and the projection's policy. A note's body is `card.key_claim`
+/// (ADR-0067 D-E).
 #[derive(Debug, Clone)]
 pub struct PlanInput {
     /// The legacy card input, unchanged.
     pub card: CardInput,
     /// ADR-0068 D-A: chunking is keyed on the identity contract, never on `memory_type`.
     pub is_identity_note: bool,
+    /// ADR-0068 D-I: the projection's policy; [`NoteChunkPolicy::LegacyOnly`] keeps every Memory on the legacy card.
+    pub policy: NoteChunkPolicy,
 }
 
 /// One `NoteChunksV1` point slot (ADR-0068 D-C identity: `card_profile_hash`, `chunk_ordinal`).
@@ -139,15 +181,18 @@ pub enum ProjectionPlan {
     NoteChunksV1(Vec<NoteChunk>),
 }
 
-/// ADR-0068 D-A: the single construction entry. `NoteChunksV1` only for an identity note that is not
-/// SECRET_MATERIAL (§18.2 excludes it before any chunking) and whose body the legacy card cannot hold; everything
-/// else is the unchanged `build_card` at the default budget.
+/// ADR-0068 D-A: the single construction entry. `NoteChunksV1` only under a `NoteChunksV1` policy, for an identity
+/// note that is not SECRET_MATERIAL (§18.2 excludes it before any chunking) and whose body the legacy card cannot hold
+/// ([`legacy_capacity_holds`], so never an empty body); everything else is the unchanged `build_card` at the default
+/// budget.
 pub fn build_projection_plan(input: PlanInput) -> ProjectionPlan {
     let PlanInput {
         card,
         is_identity_note,
+        policy,
     } = input;
-    let chunked = is_identity_note
+    let chunked = policy == NoteChunkPolicy::NoteChunksV1
+        && is_identity_note
         && card.data_class != DataClass::SecretMaterial
         && card
             .key_claim
@@ -161,14 +206,16 @@ pub fn build_projection_plan(input: PlanInput) -> ProjectionPlan {
     let chunks = ranges(boundaries.len() - 1)
         .into_iter()
         .enumerate()
-        .filter_map(|(chunk_ordinal, range)| {
-            let window = slice_at(body, &boundaries, range.clone())?;
-            Some(NoteChunk {
+        .map(|(chunk_ordinal, range)| {
+            let window = slice_at(body, &boundaries, range.clone()).expect(
+                "ADR-0068 D-B: ranges() of the body's own scalar count stay inside its boundaries",
+            );
+            NoteChunk {
                 card_profile_hash: NOTE_CHUNKS_V1_PROFILE_HASH,
                 chunk_ordinal,
                 text: card_text(&card.title, window),
                 range,
-            })
+            }
         })
         .collect();
     ProjectionPlan::NoteChunksV1(chunks)
@@ -200,6 +247,7 @@ mod tests {
                 evidence_excerpt: None,
             },
             is_identity_note: true,
+            policy: NoteChunkPolicy::NoteChunksV1,
         }
     }
 
@@ -340,6 +388,51 @@ mod tests {
             "v1-ea55e89d6b9673b7113957816c36d347c4c071766189854609e8731f24dac52b"
         );
         assert_eq!(card::CARD_TEMPLATE_HASH, template_fingerprint());
+    }
+
+    /// ADR-0068 D-I: the policy, not the note alone, decides the profile. A long note stays on the legacy card under
+    /// `LegacyOnly` and is chunked under `NoteChunksV1`; an empty body with a long title is never a title-only chunk;
+    /// a hash this build does not know is refused. Faults: drop the policy term ⇒ red on the `LegacyOnly` arm; drop
+    /// `body.is_empty()` from `legacy_capacity_holds` ⇒ red on the empty-body arm; map an unknown hash to `LegacyOnly`
+    /// ⇒ red on the refusal arm.
+    #[test]
+    fn plan_follows_the_projection_policy() {
+        let long_title = "t".repeat(700);
+        let long_body = "b".repeat(2_000);
+        let mut legacy_only = note("title", &long_body);
+        legacy_only.policy = NoteChunkPolicy::LegacyOnly;
+        let expected = build_card(legacy_only.card.clone(), CardBudget::default());
+        assert_eq!(
+            build_projection_plan(legacy_only),
+            ProjectionPlan::LegacyCardV1(expected)
+        );
+        assert_eq!(
+            chunks_of(note("title", &long_body)).len(),
+            chunk_count(2_000)
+        );
+        let empty_body = note(&long_title, "");
+        let expected = build_card(empty_body.card.clone(), CardBudget::default());
+        assert_eq!(expected, CardBuildOutcome::Unbuildable);
+        assert_eq!(
+            build_projection_plan(empty_body),
+            ProjectionPlan::LegacyCardV1(expected)
+        );
+        assert_eq!(
+            NoteChunkPolicy::from_profile_hash(None),
+            Ok(NoteChunkPolicy::LegacyOnly)
+        );
+        assert_eq!(
+            NoteChunkPolicy::from_profile_hash(Some(NOTE_CHUNKS_V1_PROFILE_HASH)),
+            Ok(NoteChunkPolicy::NoteChunksV1)
+        );
+        let unknown = format!("{NOTE_CHUNKS_V1_PROFILE_HASH}0");
+        let refused = NoteChunkPolicy::from_profile_hash(Some(&unknown));
+        assert_eq!(refused, Err(UnknownNoteChunkProfile(unknown)));
+        assert_eq!(
+            NoteChunkPolicy::from_profile_hash(Some(LEGACY_CARD_PROFILE_HASH)),
+            Err(UnknownNoteChunkProfile(LEGACY_CARD_PROFILE_HASH.to_owned())),
+            "the legacy marker is not a note chunk profile"
+        );
     }
 
     /// ADR-0068 D-B: recomputes [`NOTE_CHUNKS_V1_PROFILE_HASH`] from the parameter tuple and the real chunk texts of

@@ -200,8 +200,9 @@ Two facts frame every decision:
     - `projection.family_activations` (0185) is a per-tenant receipt of a VerifiedEmpty first activation. Its CHECKs
       pin `evidence_kind = 'VERIFIED_EMPTY'`, and a family that predates it has no row.
     - `projection.embedding_fingerprints` (0232) is keyed by `embedding_version`.
-  - Proposed shape for 40d-1b/40d-2 (not built in 40d-1a): `projection.card_profile_policies`, with columns
-    `(domain, projection_kind, projection_version)` as PK, `note_chunk_profile_hash text NULL` and `enabled_at`.
+  - Shape (built in 40d-1b-i, below; `enabled_at` was dropped, because the enabling migration's
+    `ops.schema_migrations` row already records when): `projection.card_profile_policies`, with columns
+    `(domain, projection_kind, projection_version)` as PK and `note_chunk_profile_hash text NULL`.
     - The key is the projection, across tenants, and there is one row per projection. A missing row or a NULL hash
       means legacy only, which is today's behaviour.
     - Owner `role_migration_owner`. It is written only by a migration, so enabling a profile is a reviewed, versioned
@@ -243,6 +244,54 @@ Two facts frame every decision:
     are in `projection::note_chunks`.
   - `rust_sql_chunk_count_parity` is in `adapters::tests::note_chunk_count_parity`. It compares SQL, the Rust closed
     form and the slot count of the real plan.
+
+**40d-1b-i as shipped (schema and identity; the worker is not wired).**
+
+- **Legacy predicate in SQL.** Migration 0238 adds `projection.note_legacy_capacity_holds(title, body) -> boolean`,
+  the twin of `legacy_capacity_holds`, with 0237's function shape and grants. A note's slot is legacy iff it holds
+  (or the Memory is not a note, or the policy is legacy only), never because `note_chunk_count` is 1: a note with
+  title 150 and body 460 is one `NoteChunksV1` slot, because its legacy card would cut the body.
+  `rust_sql_chunk_count_parity` compares SQL, Rust and the real plan's branch and count over the whole matrix, and
+  it requires the matrix to contain one-slot `NoteChunksV1` cases.
+- **Empty body.** `legacy_capacity_holds` is true for an empty body (the legacy card loses nothing; `build_card`
+  marks it unbuildable), so a long title with no body is never a title-only chunk. The SQL predicate has the same
+  `char_length(body) = 0` arm, and 0237's count already returned 1 for that case.
+- **Policy.** `projection.card_profile_policies` exists as D-I describes.
+  - The 0011 projection defaults are REVOKEd, and `role_retrieval_worker` gets SELECT. No role but the owner can
+    write it.
+  - No RLS: there is no tenant column, and this is global config (the 0232 `embedding_fingerprints` precedent).
+    The ledger definer's owner, `role_migration_owner`, owns the table, so it reads every row without a grant or a
+    policy.
+  - Seed: `private_memory` / `PRIVATE_MEMORY` / `v1` with a NULL hash. 40d-2 flips it with a migration.
+  - A CHECK keeps `LegacyCardV1` out of the hash column. The rls-check matrix and Baseline §6.2.2 have the new
+    column.
+- **Plan input.** `PlanInput.policy: NoteChunkPolicy` (`LegacyOnly` | `NoteChunksV1`). It is parsed once by
+  `NoteChunkPolicy::from_profile_hash(Option<&str>)`. A hash the build does not know (the legacy marker included)
+  is `Err(UnknownNoteChunkProfile)`, never legacy. The refusal sits at the parse, not in the plan, so it fires once
+  at worker boot (D-I) instead of per Memory in the middle of a ticket. An unknown hash cannot reach
+  `build_projection_plan`, which stays infallible. A slice that falls outside the body's boundaries is a panic with
+  an invariant message, not a dropped slot.
+- **Registry identity v2.**
+  - `private_memory_points` gains `card_profile_hash text NOT NULL DEFAULT 'LegacyCardV1'`
+    (`LEGACY_CARD_PROFILE_HASH`) and `chunk_ordinal integer NOT NULL DEFAULT 0`.
+  - CHECKs: length 1–128, ordinal ≥ 0, and legacy ⇒ ordinal 0.
+  - Both columns are appended to `private_memory_points_exact_identity_unique`, which is dropped and re-added under
+    its 0119 name. No FK references it, and the precheck asserts that.
+  - `PrivateMemoryPointRegistration` carries the two fields. `deterministic` still mints the legacy slot with the v1
+    id, byte for byte. `for_chunk(profile, ordinal)` re-keys to v2: the v2 tag, the v1 fields, then the profile hash
+    and the big-endian `u32` ordinal, each length-prefixed.
+  - Every existing caller and row is `(LegacyCardV1, 0)`.
+- **Gates.**
+  - `legacy_point_id_golden_unchanged` and `chunk_point_ids_are_distinct_and_bound_to_profile` are in
+    `adapters::private_projection_registry`. Both pin ids recomputed outside Rust.
+  - `repeated_chunks_share_vector_not_point` is in `adapters::tests::private_projection_registry` (PG only).
+  - `plan_follows_the_projection_policy` is in `projection::note_chunks`.
+  - `serving_projection_policy_is_seeded_legacy_and_read_only` and the extended `rust_sql_chunk_count_parity` are in
+    `adapters::tests::note_chunk_count_parity`.
+- **Left for 40d-1b-ii.** The worker reads the policy at boot (refusing an unknown hash), builds through
+  `build_projection_plan`, seals the source, registers one point per slot with vector-key dedupe, and uses the slot
+  ledger and the DONE completion check. Rebuild works per vector key, and the legacy point retires in the
+  last-slot step.
 
 ## Slices
 
