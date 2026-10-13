@@ -130,7 +130,8 @@ else
     # restore (PR #4 Codex P2). A recreate already running finishes first; the restore always comes last.
     stop_listener() { touch "$HOOK/stop"; wait "$LISTENER" 2>/dev/null; }
     trap 'stop_listener; sh "$DEPLOY/release/compose.sh" up -d --no-deps gateway >> "$OUT/deploy.log" 2>&1' EXIT
-    trap 'exit 143' TERM INT
+    # HUP too: under dash a dropped ssh session (SIGHUP) skipped the EXIT trap (PR #4 independent review W2).
+    trap 'exit 143' TERM INT HUP
     # (3) Seed and load: the card-38 phase set (ADR-0065) through the loadgen image. e2e-seed hashes the keys with
     # the node's pepper; it reaches the container by NAME (`-e`, `--pepper-hex-env`), never in argv, `ps` or
     # `docker inspect` Args (review P1, 2026-10-08). An empty pepper stops the run.

@@ -1037,6 +1037,9 @@ chain nor DEPLOYABLE — both wait for the chain rerun over the final tree.
 | `c39_red_fix9` #45 (`migrate.rs` `flag_without_value`, card 39b): the `--flag=value` form read as absent | the `=` arm disabled | `value_flags_without_a_value_are_usage_errors` red, EXIT 101 |
 | `c39_red_fix9` #46 (`budget_sums.sh`, card 39b / round 8 P2-3): a drill cap of `0g` (no cap) | the input | `budget: fail — … missing, zero, or not <n>g / <n>m`, EXIT 1; the real file passes |
 | `c39_red_fix9` #47 (runbook U4, card 39b / round 8b P2): a service list naming only `gateway-old` | the input (stubbed compose / docker, `/bin/sh -eu`) | `refusing to remove anything`, EXIT 1; a list naming `gateway` passes |
+| `c39_red_fix9` #48 (`deploy_check.rs` `service_target_reasons`, PR #4 independent review W1): a listed service missing accepted | the arm emptied | `compose_fix9_arms_each_red` red (case `a listed service removed`), EXIT 101 |
+| `c39_red_fix9` #49 (same, W1): an unlisted service on a process image accepted | the arm disabled | same test red (case `an unlisted service on a process image`), EXIT 101 |
+| `c39_red_fix9` #50 (`deploy_check.rs` `flag_without_value`, W3): `--compose-json=F` beside another check dropped silently | the `=` arm disabled | `checks_refuse_a_flag_without_value_and_an_empty_selection` red, EXIT 101 |
 | `c39_red_fix9_gates` (26 fixture-tree faults, one per changed gate: exact red-record pins, `c39_one_uds_site.sh` allow-list and alias forms, the builder-toolchain gate stub) | each gate's own fault on a $TMPDIR copy | 26 red EXIT lines, green restore after each |
 | `c39_red_s8` #1 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | one IMAGE line dropped from manifest 1 (image_lines check) | `CHECK image_lines 7+8 != 8+8` → RESULT fail, EXIT 1 |
 | `c39_red_s8` #2 (`c39_build_images.sh`, build and docker stubbed to chain #2's manifests) | manifest 2 carries manifest 1's gateway image id (ids_disjoint check) | `CHECK image_lines 16` → RESULT fail, EXIT 1 |
@@ -1124,7 +1127,10 @@ stays per binary (a ponytail names it): `dr`'s backup / drill keys sit on `dr` o
 them, so a per-mode rule needs per-mode consumption lists first. (3) `a5_load_remeasure.sh`'s EXIT trap also puts the
 gateway back on prod.yml (an interrupted run left the 1 ms BURST-W admission wait deployed); the BURST-W listener is
 stopped through a stop file and waited for, never killed, so a recreate it has already started finishes before the
-restore (PR #4 Codex P2: a killed subshell orphaned its compose child, which could recreate the 1 ms gateway after it). Deferred P2s closed:
+restore (PR #4 Codex P2: a killed subshell orphaned its compose child, which could recreate the 1 ms gateway after it);
+HUP joins TERM / INT in the `exit 143` trap (dash runs no EXIT trap on SIGHUP: a dropped ssh session skipped the
+restore — PR #4 independent review W2, measured by the reviewer). `deploy-check` itself refuses `--flag=value` as
+`migrate` / `rls-check` do (W3); `service_missing` / `image_target_unexpected` have their own cases (W1). Deferred P2s closed:
 `judge_image` makes "the entrypoint runs only on a verified image" testable; each `REHEARSAL_PROBES` clause has its own
 case and named `group_add` entries are refused; `version_of` names its container with pid + nanos and reports a failed
 removal; the `--flag=value` form is a usage error in `migrate` / `rls-check`; a `0g` drill cap fails the budget; U4

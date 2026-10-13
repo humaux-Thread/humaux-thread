@@ -1708,9 +1708,12 @@ const VALUE_FLAGS: [&str; 10] = [
 ];
 
 fn flag_without_value(args: &[String]) -> Option<&'static str> {
-    VALUE_FLAGS
-        .into_iter()
-        .find(|name| has(args, name) && flag(args, name).is_none())
+    VALUE_FLAGS.into_iter().find(|name| {
+        // Card 39b: `--compose-json=F` is not a form `flag` reads — beside another check it was silently dropped.
+        let joined = format!("{name}=");
+        args.iter().any(|a| a.starts_with(&joined))
+            || (has(args, name) && flag(args, name).is_none())
+    })
 }
 
 fn has(args: &[String], name: &str) -> bool {
@@ -2955,7 +2958,7 @@ mod tests {
     #[allow(clippy::too_many_lines)] // one table: a case per arm
     fn compose_fix9_arms_each_red() {
         type Mutation = fn(&mut Value);
-        let cases: [(&str, Mutation, &[&str]); 17] = [
+        let cases: [(&str, Mutation, &[&str]); 19] = [
             (
                 "security_opt extra on a Humaux service",
                 |d| {
@@ -3025,6 +3028,34 @@ mod tests {
                         .push(json!({ "path": "/srv/humaux-node/repo/deploy/env/secret-fixture/maintenance.secret.env" }));
                 },
                 &["secret_file_foreign:gateway:maintenance.secret.env"],
+            ),
+            (
+                "a listed service removed",
+                |d| {
+                    d["services"]
+                        .as_object_mut()
+                        .expect("services")
+                        .remove("admin");
+                },
+                &["service_missing:admin"],
+            ),
+            (
+                "an unlisted service on a process image",
+                |d| {
+                    let admin = d["services"]["admin"].clone();
+                    d["services"]
+                        .as_object_mut()
+                        .expect("services")
+                        .insert("admin-2".into(), admin);
+                },
+                &[
+                    "uid_shared:admin,admin-2",
+                    "pair_group_unexpected:admin-2:10201",
+                    "socket_volume_unexpected:admin-2:sock-retrieval",
+                    "pair_group_unexpected:admin-2:10202",
+                    "socket_volume_unexpected:admin-2:sock-inference",
+                    "image_target_unexpected:admin-2",
+                ],
             ),
             (
                 "dr on the ops image",
@@ -3543,6 +3574,11 @@ mod tests {
         assert_eq!(
             flag(&args(&["--release", "--manifest", "m"]), "--release"),
             None
+        );
+        // Card 39b: the `=` form beside another check is a usage error, never a silently dropped check.
+        assert!(
+            checks(&args(&["--compose-json=x.json", "--env"]))
+                .is_err_and(|(code, m)| code == 2 && m.contains("--compose-json"))
         );
     }
 }
