@@ -1605,6 +1605,7 @@ async fn write_txn(
                         class: authorized.0,
                         confidence: candidate.confidence,
                         note_kind: None,
+                        note_id: None,
                     },
                 )
                 .await?;

@@ -1556,21 +1556,21 @@ fn d13_a_job_for_a_contracted_evidence_is_refused_before_any_provider_call() {
     let (evidence_id, _, _) = seed_evidence(&mut f, "already a Memory");
     // The enqueue trigger made the job while the Evidence was still ordinary; now it gains a contract.
     let mut txn = f.admin.transaction().expect("begin contract txn");
-    let memory_id: Uuid = txn
-        .query_one(
-            "INSERT INTO private.memory_records \
-               (tenant_id, memory_type, content, visibility_class, visibility_workspace_id, \
-                authority_class, confidence, status, asserted_at, note_kind) \
-             VALUES ($1, 'NOTE', $2, 'WORKSPACE_SHARED', $3, 'PrivateKnowledge', 1.0, 'active', now(), 'note') \
-             RETURNING memory_id",
-            &[
-                &f.tenant_id,
-                &serde_json::json!({"title": "t", "key_claim": "already a Memory", "representation": "verbatim_assertion"}),
-                &f.workspace_id,
-            ],
-        )
-        .expect("gateway-side memory")
-        .get(0);
+    // ADR-0067 D-J (0236): a note row carries its note_id — a fresh note's is its own memory_id.
+    let memory_id = Uuid::now_v7();
+    txn.execute(
+        "INSERT INTO private.memory_records \
+           (memory_id, tenant_id, memory_type, content, visibility_class, visibility_workspace_id, \
+            authority_class, confidence, status, asserted_at, note_kind, note_id) \
+         VALUES ($1, $2, 'NOTE', $3, 'WORKSPACE_SHARED', $4, 'PrivateKnowledge', 1.0, 'active', now(), 'note', $1)",
+        &[
+            &memory_id,
+            &f.tenant_id,
+            &serde_json::json!({"title": "t", "key_claim": "already a Memory", "representation": "verbatim_assertion"}),
+            &f.workspace_id,
+        ],
+    )
+    .expect("gateway-side memory");
     txn.execute(
             "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, ordinal, grounding_mode, recorded_version) \
              VALUES ($1, $2, 'PRIMARY', 0, 'IMMUTABLE', 'x')",

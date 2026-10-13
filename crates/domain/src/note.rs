@@ -1,7 +1,7 @@
 //! `domain::note` — the verbatim note lane's pure rules: `NoteKind`, the verbatim body and its digest, the title,
 //!   and the authority decision of `memory.note_put` (ADR-0067 D-C/D-D/D-E).
-//! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::memory, domain::policy]
-//! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::note_repo, adapters::read_materialize, gateway::mcp_application, tests]
+//! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::memory, domain::policy]
+//! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_materialize, gateway::mcp_application, tests]
 //! Invariants: [NoteKind is a closed 9-value set whose memory_type mapping is the DB CHECK of migration 0235; the body is
 //!   never trimmed, normalised or re-encoded; authority is decided by the existing ceiling table and never inferred
 //!   from note_kind, title or body]
@@ -12,6 +12,7 @@
 //! live `memory_records_note_kind_*` CHECKs and the generated `facet` (§78.2, ADR-0067 G09).
 
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::authority::{AuthorityClass, CandidateRejection, NonEmptyVec};
 use crate::error::ErrorCode;
@@ -192,6 +193,46 @@ impl NoteBody {
     }
 }
 
+/// ADR-0067 D-J: the domain separator of the replacement intent digest [`replace_intent_sha256`].
+pub const REPLACE_INTENT_DOMAIN: &[u8] = b"memory.note_put.replace/v1";
+
+/// ADR-0067 D-J: `H`, the digest one replacement's confirm token (`control.confirm_tokens.request_sha256`) and its
+/// commit receipt (`request_fingerprint` = hex `H`) both bind. SHA-256 over the domain separator and then note_id,
+/// supersedes, note_kind, title, the body digest, requested_authority and idempotency_key, in that fixed order, each
+/// as a big-endian `u64` byte length followed by the bytes — so no two field splits share an encoding, and a 40a create
+/// fingerprint (SHA-256 of raw argument bytes) never equals it.
+#[must_use]
+pub fn replace_intent_sha256(
+    note_id: Uuid,
+    supersedes: Uuid,
+    kind: NoteKind,
+    title: &str,
+    body: &NoteBody,
+    requested: AuthorityClass,
+    idempotency_key: &str,
+) -> [u8; 32] {
+    let authority = AUTHORITY_WIRE
+        .iter()
+        .find(|(_, class)| *class == requested)
+        .map_or("", |(wire, _)| *wire);
+    let fields: [&[u8]; 8] = [
+        REPLACE_INTENT_DOMAIN,
+        note_id.as_bytes(),
+        supersedes.as_bytes(),
+        kind.wire().as_bytes(),
+        title.as_bytes(),
+        body.sha256(),
+        authority.as_bytes(),
+        idempotency_key.as_bytes(),
+    ];
+    let mut hasher = Sha256::new();
+    for field in fields {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
+    hasher.finalize().into()
+}
+
 /// ADR-0067 D-E: the stored title. An explicit title is kept verbatim (at most [`MAX_TITLE_BYTES`], no NUL); otherwise
 /// the first non-blank line, trimmed and cut to [`DERIVED_TITLE_SCALARS`] scalars; an all-blank body gets
 /// [`DEFAULT_TITLE`]. The title never edits the body.
@@ -301,6 +342,51 @@ mod tests {
         let decomposed = NoteBody::new("e\u{301}").unwrap();
         assert_ne!(composed.sha256(), decomposed.sha256());
         assert_eq!(composed.sha256(), NoteBody::new("\u{e9}").unwrap().sha256());
+    }
+
+    /// ADR-0067 D-J: `H` is a pure function of the seven intent fields, each of which moves it, and it is not the
+    /// body digest. Mutation: drop any field from `fields` and the matching `assert_ne!` goes red.
+    #[test]
+    fn replace_intent_is_deterministic_and_binds_every_field() {
+        let body = NoteBody::new("the body").unwrap();
+        let edited = NoteBody::new("the body!").unwrap();
+        let (note, head) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let other = Uuid::from_u128(3);
+        let pk = AuthorityClass::PrivateKnowledge;
+        let base = replace_intent_sha256(note, head, NoteKind::Decision, "t", &body, pk, "k");
+        assert_eq!(
+            base,
+            replace_intent_sha256(note, head, NoteKind::Decision, "t", &body, pk, "k")
+        );
+        let changed = [
+            replace_intent_sha256(other, head, NoteKind::Decision, "t", &body, pk, "k"),
+            replace_intent_sha256(note, other, NoteKind::Decision, "t", &body, pk, "k"),
+            replace_intent_sha256(head, note, NoteKind::Decision, "t", &body, pk, "k"),
+            replace_intent_sha256(note, head, NoteKind::Lesson, "t", &body, pk, "k"),
+            replace_intent_sha256(note, head, NoteKind::Decision, "u", &body, pk, "k"),
+            replace_intent_sha256(note, head, NoteKind::Decision, "t", &edited, pk, "k"),
+            replace_intent_sha256(
+                note,
+                head,
+                NoteKind::Decision,
+                "t",
+                &body,
+                AuthorityClass::PublicKnowledge,
+                "k",
+            ),
+            replace_intent_sha256(note, head, NoteKind::Decision, "t", &body, pk, "k2"),
+        ];
+        for (n, digest) in changed.iter().enumerate() {
+            assert_ne!(*digest, base, "field change {n} must move H");
+        }
+        assert_ne!(&base, body.sha256(), "H is not the plain body digest");
+        let mut plain = Sha256::new();
+        plain.update(REPLACE_INTENT_DOMAIN);
+        assert_ne!(
+            base.as_slice(),
+            plain.finalize().as_slice(),
+            "H is length-prefixed, not the bare separator"
+        );
     }
 
     #[test]

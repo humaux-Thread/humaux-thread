@@ -247,6 +247,8 @@ pub(crate) struct ConfirmGate {
     pub presented: Option<ConfirmToken>,
     /// Server policy TTL (`HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS`), never a literal.
     pub ttl: Duration,
+    /// ADR-0067 D-J: the replacement intent digest a `memory.note_put` token binds; `None` for every other op.
+    pub request_sha256: Option<[u8; 32]>,
 }
 
 /// Everything a confirmed write handler needs to run its one transaction. The claim is
@@ -257,6 +259,17 @@ pub(crate) struct ConfirmedWrite {
     pub claim: ConfirmationClaim,
     pub request_fingerprint: String,
     pub reservation_ttl: Duration,
+    /// §34.0.1 receipt replay window, for a confirmed write that keeps an idempotency receipt (ADR-0067 D-J).
+    pub replay_ttl: Duration,
+    pub finished_audit: AuditEvent,
+}
+
+/// ADR-0067 D-J: what a pre-mint check sees on a gate's first call — the admitted request and the facts a receipt read
+/// needs. It runs after admission and before the token is minted.
+pub(crate) struct PreMint {
+    pub request: AuthorizedRequest,
+    pub reservation_ttl: Duration,
+    pub replay_ttl: Duration,
     pub finished_audit: AuditEvent,
 }
 
@@ -879,6 +892,39 @@ impl GatewayGuard {
         F: FnOnce(ConfirmedWrite) -> Fut,
         Fut: Future<Output = Result<T, ErrorCode>>,
     {
+        self.run_confirmed_write_checked(
+            context,
+            operation,
+            requested_workspace,
+            raw_arguments,
+            gate,
+            |_| std::future::ready(Ok(None)),
+            handler,
+        )
+        .await
+    }
+
+    /// [`Self::run_confirmed_write`] with a pre-mint check (ADR-0067 D-J). On the first call `pre_mint` runs after
+    /// admission and before any token exists: `Err(code)` is a denial with nothing minted (G26's note refusal, the
+    /// replacement's CAS), `Ok(Some(done))` is a stored result answered without a token (a committed replacement's
+    /// replay, audited as finished), `Ok(None)` mints as usual. The second call never runs it.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // the shared gate's six inputs plus the one hook; one linear admission
+    pub(crate) async fn run_confirmed_write_checked<T, P, PFut, F, Fut>(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        requested_workspace: Option<WorkspaceId>,
+        raw_arguments: &str,
+        gate: ConfirmGate,
+        pre_mint: P,
+        handler: F,
+    ) -> Result<ConfirmedOutcome<T>, ErrorCode>
+    where
+        P: FnOnce(PreMint) -> PFut,
+        PFut: Future<Output = Result<Option<T>, ErrorCode>>,
+        F: FnOnce(ConfirmedWrite) -> Fut,
+        Fut: Future<Output = Result<T, ErrorCode>>,
+    {
         let result = async {
             let admitted = self.admit(context, operation, requested_workspace).await?;
             if DestructiveOp::parse_operation_key(operation.operation_key()) != Some(gate.op)
@@ -908,6 +954,34 @@ impl GatewayGuard {
                 None,
             );
             let Some(token) = gate.presented else {
+                let checked = tokio::time::timeout(
+                    self.settings.handler_timeout,
+                    pre_mint(PreMint {
+                        request: admitted.request.clone(),
+                        reservation_ttl: self.settings.reservation_ttl,
+                        replay_ttl: self.settings.replay_ttl,
+                        finished_audit: finished_audit.clone(),
+                    }),
+                )
+                .await
+                .unwrap_or(Err(ErrorCode::DependencyUnavailable));
+                match checked {
+                    Ok(None) => {}
+                    // A replay is a newly authenticated request, never another business write or BMO.
+                    Ok(Some(done)) => {
+                        self.audit(
+                            context,
+                            &admitted.network,
+                            Some(admitted.request.authorization()),
+                            McpAuditAction::McpRequestFinished,
+                            operation.operation_key(),
+                            None,
+                        )
+                        .await?;
+                        return Ok(ConfirmedOutcome::Executed(done));
+                    }
+                    Err(code) => return self.denied(context, operation, &admitted, code).await,
+                }
                 // §77: the mint's finished audit must not read as an executed write.
                 let mut mint_audit = finished_audit;
                 mint_audit
@@ -927,9 +1001,11 @@ impl GatewayGuard {
                     target_id: gate.target_id,
                     successor_id: gate.successor_id,
                     nonce_sha256: token.sha256(),
+                    request_sha256: gate.request_sha256,
                 },
                 request_fingerprint: hex::encode(Sha256::digest(raw_arguments.as_bytes())),
                 reservation_ttl: self.settings.reservation_ttl,
+                replay_ttl: self.settings.replay_ttl,
                 finished_audit,
             };
             let result = tokio::time::timeout(self.settings.handler_timeout, handler(write))
@@ -990,6 +1066,7 @@ impl GatewayGuard {
                 gate.successor_id,
                 gate.ttl,
                 token.sha256(),
+                gate.request_sha256,
                 finished_audit,
             ),
         )

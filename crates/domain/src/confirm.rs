@@ -2,7 +2,7 @@
 //!   fallback is `first call -> confirmation_required + confirm_token`, `second call(confirm_token) -> execute`
 //!   (ADR-0018).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, tests, xtask::architecture_check]
+//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, tests, xtask::architecture_check]
 //! Invariants: []
 //! Spec: Baseline §78.2; §52.1
 //!
@@ -66,11 +66,15 @@ pub enum DestructiveOp {
     /// Evidence/Memory untouched, same gate. The A->B authorized replacement is `memory.bind`
     /// with `replaces_binding_id` (one transaction), not an unbind followed by a bind.
     MemoryUnbind,
+    /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: a confirmed replacement of a note's head version.
+    /// Target = `supersedes`, no successor; the token also binds the replacement intent digest
+    /// (`note::replace_intent_sha256`). A `note_put` create (no `note_id`) never enters the gate.
+    MemoryNoteReplace,
 }
 
 impl DestructiveOp {
     /// Every variant, for table-driven lookups.
-    pub const ALL: [DestructiveOp; 11] = [
+    pub const ALL: [DestructiveOp; 12] = [
         DestructiveOp::MemorySupersede,
         DestructiveOp::MemoryPin,
         DestructiveOp::MemoryUnpin,
@@ -82,6 +86,7 @@ impl DestructiveOp {
         DestructiveOp::MemoryReject,
         DestructiveOp::MemoryBind,
         DestructiveOp::MemoryUnbind,
+        DestructiveOp::MemoryNoteReplace,
     ];
 
     /// Canonical operation key (contracts/mcp/*.schema.json `x-humaux-operation.operation_key`).
@@ -98,6 +103,7 @@ impl DestructiveOp {
             DestructiveOp::MemoryReject => "memory.reject",
             DestructiveOp::MemoryBind => "memory.bind",
             DestructiveOp::MemoryUnbind => "memory.unbind",
+            DestructiveOp::MemoryNoteReplace => "memory.note_put",
         }
     }
 

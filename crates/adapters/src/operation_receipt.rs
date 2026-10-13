@@ -1,10 +1,12 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::error, domain::evidence, domain::identity, domain::ids]
-//! Called-by: [gateway::guard, tests]
+//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
+//! Called-by: [gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
-//!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound]
-//! Spec: none
+//!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
+//!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
+//!   (ADR-0067 D-J)]
+//! Spec: ADR-0067
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
 
@@ -12,20 +14,26 @@ use std::time::Duration;
 
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, McpAuditAction},
+    authority::MemoryId,
+    confirm::DestructiveOp,
     dataclass::DataClass,
     error::ErrorCode,
     evidence::EvidenceOriginClass,
     identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor, can_read},
     ids::{UserId, WorkspaceId},
+    note::replace_intent_sha256,
 };
 use sqlx::{Row, postgres::PgRow};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    note_repo::{self, NoteIntake},
+    confirm_token_repo::{self, ConfirmationClaim},
+    memory_governance_repo,
+    note_repo::{self, NoteIntake, NoteLineage},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
+    read_materialize,
     remember::{self, RememberAccepted, RememberCommand, RememberError},
     request_guard_repo::{self, AuditTenant},
     retrieve::{TokenClaims, issue_consistency_token},
@@ -60,6 +68,7 @@ pub struct AtomicRememberRequest {
     pub finished_audit: AuditEvent,
 }
 
+#[derive(Debug)]
 pub struct AtomicRememberResult {
     pub accepted: RememberAccepted,
     pub replayed: bool,
@@ -70,6 +79,30 @@ pub struct AtomicRememberResult {
     /// row, so a changed gateway default cannot change the answer for the same idempotency key (PR #7 Codex P2).
     /// Resolved for `memory.note_put` only; always `false` for `remember.put`.
     pub secret_material: bool,
+}
+
+/// ADR-0067 D-J: a `memory.note_put` replacement's own inputs, on top of a create's request and [`NoteIntake`].
+#[derive(Debug, Clone)]
+pub struct NoteReplaceRequest {
+    /// The note being versioned.
+    pub note_id: Uuid,
+    /// The head version the caller expects (the CAS).
+    pub supersedes: Uuid,
+    /// `None` = the confirm challenge (checks only: nothing written, 0 BMO); `Some` = the confirmed commit, whose token
+    /// is consumed in the same transaction.
+    pub claim: Option<ConfirmationClaim>,
+}
+
+/// ADR-0067 D-J: how one replacement call ended. Business refusals with no `ErrorCode` of their own are variants
+/// (§52.1 stays at 18 codes).
+#[derive(Debug)]
+pub enum NoteReplaceOutcome {
+    /// Committed by this call, or (`replayed`) earlier under the same key and intent.
+    Stored(AtomicRememberResult),
+    /// Challenge leg: every check holds, the caller may mint a token. Nothing was written.
+    Confirmable,
+    /// `supersedes` is not the note's head: `STALE_NOTE_VERSION`. Nothing was written.
+    StaleVersion,
 }
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
@@ -204,7 +237,7 @@ pub async fn remember_atomically(
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    atomically(pool, auth, request, None).await
+    stored(atomically(pool, auth, request, None, None).await?)
 }
 
 /// ADR-0067 D-A: `memory.note_put` — [`remember_atomically`]'s receipt / replay / BMO / audit machinery, plus the identity
@@ -216,22 +249,150 @@ pub async fn note_put_atomically(
     request: AtomicRememberRequest,
     note: NoteIntake,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    atomically(pool, auth, request, Some(note)).await
+    stored(atomically(pool, auth, request, Some(note), None).await?)
+}
+
+/// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: [`note_put_atomically`]'s transaction, with the
+/// replacement steps. Order: receipt lock + replay (a committed key answers its stored result whatever the token's state
+/// now) -> head row `FOR UPDATE` + CAS + final gate -> (challenge: stop, nothing written) -> BMO -> consume the token ->
+/// Evidence, version, contract, old row superseded, head moved (`note_repo::materialize_in_txn`) -> outbox + the old
+/// version's retire ticket -> receipt -> COMMIT. `request.request_fingerprint` must be hex of the intent digest `H`.
+pub async fn note_replace_atomically(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    note: NoteIntake,
+    replace: NoteReplaceRequest,
+) -> Result<NoteReplaceOutcome, ErrorCode> {
+    atomically(pool, auth, request, Some(note), Some(replace)).await
+}
+
+/// A create / `remember.put` can only end in `Stored`.
+fn stored(outcome: NoteReplaceOutcome) -> Result<AtomicRememberResult, ErrorCode> {
+    match outcome {
+        NoteReplaceOutcome::Stored(result) => Ok(result),
+        NoteReplaceOutcome::Confirmable | NoteReplaceOutcome::StaleVersion => {
+            Err(ErrorCode::Internal)
+        }
+    }
+}
+
+/// ADR-0067 D-J: the replacement's request binds its intent on its own — the fingerprint is hex `H`, recomputed here
+/// from the note and the key, and a presented claim is this op on `supersedes` with exactly `H`. The exact-grant
+/// authority check runs before anything is read.
+fn validate_replace(
+    request: &AtomicRememberRequest,
+    note: &NoteIntake,
+    replace: &NoteReplaceRequest,
+) -> Result<(), ErrorCode> {
+    let intent = replace_intent_sha256(
+        replace.note_id,
+        replace.supersedes,
+        note.kind,
+        &note.title,
+        &note.body,
+        note.requested,
+        &request.idempotency_key,
+    );
+    if replace.note_id.is_nil()
+        || replace.supersedes.is_nil()
+        || request.request_fingerprint != hex::encode(intent)
+    {
+        return Err(ErrorCode::InvalidInput);
+    }
+    note_repo::authorize(note).map_err(remember_error)?;
+    match &replace.claim {
+        Some(claim)
+            if claim.op != DestructiveOp::MemoryNoteReplace
+                || claim.target_id != replace.supersedes
+                || claim.successor_id.is_some()
+                || claim.request_sha256 != Some(intent) =>
+        {
+            Err(ErrorCode::Conflict)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// ADR-0067 D-J step 1, under `SELECT … FOR UPDATE` of the note's head row. The head must pass the final read gate (an
+/// unknown, invisible, forgotten, revoked or secret head is `NOT_FOUND`), equal `supersedes` (else `Ok(false)`:
+/// stale) and be active and not archived (else `CONFLICT`). The command then inherits the head's visibility and data
+/// class (no scope input), which must still bind to the request route.
+async fn lock_note_head(
+    txn: &mut Txn<'_>,
+    auth: &AuthorizationScope,
+    request: &mut AtomicRememberRequest,
+    replace: &NoteReplaceRequest,
+) -> Result<bool, ErrorCode> {
+    let head: Uuid = sqlx::query_scalar(
+        "SELECT head_memory_id FROM private.note_heads WHERE tenant_id = $1 AND note_id = $2 FOR UPDATE",
+    )
+    .bind(auth.tenant_id().0)
+    .bind(replace.note_id)
+    .fetch_optional(&mut **txn)
+    .await
+    .map_err(db_error)?
+    .ok_or(ErrorCode::NotFound)?;
+    let gated =
+        read_materialize::final_memory_ids_about_in_txn(txn, auth, &[head], true, true, &[], None)
+            .await?;
+    if !gated.contains(&head) {
+        return Err(ErrorCode::NotFound);
+    }
+    if head != replace.supersedes {
+        return Ok(false);
+    }
+    let row = sqlx::query(
+        "SELECT m.status, m.archived_at IS NOT NULL AS archived, m.visibility_class, m.visibility_user_id, \
+                m.visibility_workspace_id, e.data_class \
+           FROM private.memory_records m \
+           JOIN private.memory_evidence me ON me.memory_id = m.memory_id AND me.role = 'PRIMARY' \
+           JOIN private.evidence_objects e ON e.tenant_id = m.tenant_id AND e.evidence_id = me.evidence_id \
+          WHERE m.tenant_id = $1 AND m.memory_id = $2",
+    )
+    .bind(auth.tenant_id().0)
+    .bind(head)
+    .fetch_optional(&mut **txn)
+    .await
+    .map_err(db_error)?
+    .ok_or(ErrorCode::NotFound)?;
+    if field::<String>(&row, "status")? != "active" || field::<bool>(&row, "archived")? {
+        return Err(ErrorCode::Conflict);
+    }
+    let cmd = &mut request.command;
+    cmd.visibility_class = field(&row, "visibility_class")?;
+    cmd.visibility_user_id = field(&row, "visibility_user_id")?;
+    cmd.visibility_workspace_id = field(&row, "visibility_workspace_id")?;
+    cmd.data_class = field(&row, "data_class")?;
+    if !visibility_is_bound_to_route(
+        auth.user_id().map(|user| user.0),
+        request.workspace_id,
+        &cmd.visibility_class,
+        cmd.visibility_user_id,
+        cmd.visibility_workspace_id,
+    ) {
+        return Err(ErrorCode::NotFound);
+    }
+    Ok(true)
 }
 
 #[allow(clippy::too_many_lines)] // one receipt transaction, in §34.0.1 order
 async fn atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
-    request: AtomicRememberRequest,
+    mut request: AtomicRememberRequest,
     note: Option<NoteIntake>,
-) -> Result<AtomicRememberResult, ErrorCode> {
+    replace: Option<NoteReplaceRequest>,
+) -> Result<NoteReplaceOutcome, ErrorCode> {
     let operation = if note.is_some() {
         NOTE_OPERATION
     } else {
         OPERATION
     };
     let auth = validate(auth, &request, operation)?;
+    if let Some(replace) = &replace {
+        validate_replace(&request, note.as_ref().ok_or(ErrorCode::Internal)?, replace)?;
+    }
     let replay_duration =
         time::Duration::try_from(request.replay_ttl).map_err(|_| ErrorCode::InvalidInput)?;
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
@@ -255,12 +416,17 @@ async fn atomically(
         txn.commit()
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
-        return Ok(AtomicRememberResult {
+        return Ok(NoteReplaceOutcome::Stored(AtomicRememberResult {
             accepted,
             replayed: true,
             memory_id,
             secret_material,
-        });
+        }));
+    }
+    if let Some(replace) = &replace
+        && !lock_note_head(&mut txn, &auth, &mut request, replace).await?
+    {
+        return Ok(NoteReplaceOutcome::StaleVersion);
     }
     // ADR-0032 D-B: TENANT_SHARED is reachable only for an OWNER/ADMIN member; judged in this
     // same transaction (one indexed membership read, only on that path) before any reservation
@@ -269,6 +435,13 @@ async fn atomically(
         && !tenant_shared_write_allowed(&mut txn, &auth).await?
     {
         return Err(ErrorCode::InvalidInput);
+    }
+    // ADR-0067 D-J: the challenge writes nothing and costs no BMO; dropping `txn` releases the head lock.
+    if replace
+        .as_ref()
+        .is_some_and(|replace| replace.claim.is_none())
+    {
+        return Ok(NoteReplaceOutcome::Confirmable);
     }
     let reservation = match quota_repo::reserve_bmo_in_txn(
         &mut txn,
@@ -293,12 +466,37 @@ async fn atomically(
     )
     .await?;
 
+    // ADR-0067 D-J: the token is spent under the head lock, after the receipt check (a committed retry never gets here).
+    if let Some(claim) = replace.as_ref().and_then(|replace| replace.claim.as_ref()) {
+        confirm_token_repo::consume_in_txn(&mut txn, &auth, claim).await?;
+    }
     let token_expires_at = request.command.consistency_token_expires_at;
     let secret_material =
         note.is_some() && request.command.data_class == DataClass::SecretMaterial.as_str();
-    let pending = remember::remember_in_txn_with(&mut txn, request.command, note.as_ref())
-        .await
-        .map_err(remember_error)?;
+    let lineage = replace
+        .as_ref()
+        .map_or(NoteLineage::Create, |replace| NoteLineage::Replace {
+            note_id: replace.note_id,
+            supersedes: replace.supersedes,
+        });
+    let pending = remember::remember_in_txn_with(
+        &mut txn,
+        request.command,
+        note.as_ref().map(|note| (note, lineage)),
+    )
+    .await
+    .map_err(remember_error)?;
+    // ADR-0057 D-B: the superseded version's point is retired by a MEMORY_LIFECYCLE ticket on its home stream, as
+    // `memory.correct` retires M1's.
+    if let Some(replace) = &replace {
+        memory_governance_repo::issue_lifecycle_ticket(
+            &mut txn,
+            &auth,
+            pending.stream_key(),
+            MemoryId(replace.supersedes),
+        )
+        .await?;
+    }
     if quota_repo::finish_reservation_in_txn(&mut txn, &auth, &reservation, true).await?
         != ReservationStatus::Consumed
     {
@@ -348,12 +546,12 @@ async fn atomically(
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
     let memory_id = pending.memory_id();
-    Ok(AtomicRememberResult {
+    Ok(NoteReplaceOutcome::Stored(AtomicRememberResult {
         accepted: pending.into_accepted(),
         replayed: false,
         memory_id,
         secret_material,
-    })
+    }))
 }
 
 /// The transaction's `clock_timestamp()` — every §34.0.1 deadline is judged on the database

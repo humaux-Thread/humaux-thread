@@ -561,6 +561,9 @@ pub struct NewMemory<'a> {
     /// ADR-0067 D-D: `Some` only for a verbatim note written by `memory.note_put`; every distilled,
     /// confirmed or corrected Memory is `None`.
     pub note_kind: Option<NoteKind>,
+    /// ADR-0067 D-J, with `note_kind` only: `None` = a fresh note, whose `note_id` is its own new `memory_id`;
+    /// `Some(note_id)` = a new version of that note. A non-note Memory stores NULL whatever this says (0236 CHECK).
+    pub note_id: Option<Uuid>,
 }
 
 /// `memory_records` + its PRIMARY `memory_evidence` link (ordinal 0) in the caller's
@@ -581,12 +584,16 @@ pub async fn insert_memory(
     evidence: &LoadedEvidence,
     memory: &NewMemory<'_>,
 ) -> Result<Uuid, sqlx::Error> {
+    // ADR-0067 D-J: the id is drawn once (the column's own uuidv7()) so a fresh note's note_id can equal it in the same
+    // statement; `$11` names the note a new version joins.
     let memory_id: Uuid = sqlx::query_scalar(
         "INSERT INTO private.memory_records \
-           (tenant_id, memory_type, content, visibility_class, visibility_user_id, \
+           (memory_id, tenant_id, memory_type, content, visibility_class, visibility_user_id, \
             visibility_workspace_id, authority_class, confidence, status, asserted_at, occurred_at, \
-            note_kind) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9, $10) \
+            note_kind, note_id) \
+         SELECT g.id, $1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9, $10, \
+                CASE WHEN $10::text IS NULL THEN NULL ELSE COALESCE($11::uuid, g.id) END \
+           FROM (SELECT uuidv7() AS id) AS g \
          RETURNING memory_id",
     )
     .bind(tenant_id)
@@ -599,6 +606,7 @@ pub async fn insert_memory(
     .bind(memory.confidence)
     .bind(evidence.occurred_at)
     .bind(memory.note_kind.map(NoteKind::wire))
+    .bind(memory.note_id)
     .fetch_one(&mut **txn)
     .await?;
     sqlx::query(
@@ -1245,6 +1253,7 @@ pub async fn confirm_candidate_atomically(
             class,
             confidence: candidate.confidence,
             note_kind: None,
+            note_id: None,
         },
     )
     .await

@@ -1,6 +1,6 @@
 //! `adapters::confirm_token_repo` — `control.confirm_tokens` (migration 0148, ADR-0018).
 //! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) w=[control.confirm_tokens] x=[control.sweep_confirm_tokens, control.assert_write_scope]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids]
-//! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::subject_repo, gateway::guard, maintenance::serve, tests]
+//! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::subject_repo, gateway::guard, gateway::mcp_application, maintenance::serve, tests]
 //! Invariants: [tokens store only sha256(nonce) and are consumed by one UPDATE inside the caller's transaction;
 //!   replayed, expired or mis-bound tokens — including one minted for another workspace — are one indistinguishable
 //!   Conflict, never a silent success; every write transaction rechecks its principal and its one workspace
@@ -15,7 +15,7 @@
 //! - [`consume_in_txn`]: second call. One `UPDATE ... WHERE <full binding> AND consumed_at
 //!   IS NULL AND expires_at > now RETURNING` inside the *caller's* transaction, so the
 //!   token is consumed atomically with the mutation it gates. Zero rows — replayed, expired,
-//!   or bound to another (tenant, workspace, user, operation, target, successor) — is one
+//!   or bound to another (tenant, workspace, user, operation, target, successor, intent) — is one
 //!   indistinguishable `Conflict` (D-B: never a silent success, never an existence oracle).
 //! - [`set_write_authorization_local`] (ADR-0054 D-B): the one write-scope door every
 //!   governance / subject / affect write transaction opens with — the RLS GUCs plus the
@@ -51,17 +51,20 @@ pub struct ConfirmationClaim {
     /// the binding: a token confirms one (target, successor) pair, not a target alone.
     pub successor_id: Option<Uuid>,
     pub nonce_sha256: [u8; 32],
+    /// ADR-0067 D-J: the intent digest a `memory.note_put` replacement token was minted with
+    /// (`note::replace_intent_sha256`); `None` for every other operation, so no other consumer can spend a note token.
+    pub request_sha256: Option<[u8; 32]>,
 }
 
-/// The only consume predicate: the full binding, unconsumed, unexpired. `successor_id` uses
-/// `IS NOT DISTINCT FROM` so a NULL-bound token matches only a NULL claim; `workspace_id` uses
+/// The only consume predicate: the full binding, unconsumed, unexpired. `successor_id` and `request_sha256` (ADR-0067
+/// D-J) use `IS NOT DISTINCT FROM` so a NULL-bound token matches only a NULL claim; `workspace_id` uses
 /// plain `=` so a pre-0187 (NULL) row never matches (ADR-0054 D-C). Pinned by
 /// `consume_predicate_is_the_full_binding` — the owner trigger in 0148 masks a dropped
 /// expiry/consumed clause at the DB layer, so the adapter predicate needs its own witness.
 const CONSUME_SQL: &str = "UPDATE control.confirm_tokens SET consumed_at = clock_timestamp() \
      WHERE nonce_sha256 = $1 AND tenant_id = $2 AND user_id = $3 \
        AND operation = $4 AND target_id = $5 AND successor_id IS NOT DISTINCT FROM $6 \
-       AND workspace_id = $7 \
+       AND workspace_id = $7 AND request_sha256 IS NOT DISTINCT FROM $8 \
        AND consumed_at IS NULL AND expires_at > clock_timestamp() \
      RETURNING confirm_token_id";
 
@@ -169,8 +172,9 @@ fn validate_mint(
     Ok((user_id, ttl.as_secs_f64()))
 }
 
-/// D-B first call: token row + finished audit in one commit; nothing else durable.
-#[allow(clippy::too_many_arguments)] // ADR-0018 D-A binding is 8 explicit facts (pool, scope, op, target, successor, nonce, ttl, audit); bundling them into a struct would hide the binding the reviewer must read.
+/// D-B first call: token row + finished audit in one commit; nothing else durable. `request_sha256` is the ADR-0067 D-J
+/// replacement intent digest, `None` for every other operation.
+#[allow(clippy::too_many_arguments)] // ADR-0018 D-A binding is 9 explicit facts (pool, scope, op, target, successor, nonce, ttl, intent, audit); bundling them into a struct would hide the binding the reviewer must read.
 pub async fn mint_with_audit(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
@@ -179,6 +183,7 @@ pub async fn mint_with_audit(
     successor_id: Option<Uuid>,
     ttl: Duration,
     nonce_sha256: [u8; 32],
+    request_sha256: Option<[u8; 32]>,
     finished_audit: &AuditEvent,
 ) -> Result<MintedConfirmation, ErrorCode> {
     let (user_id, ttl_seconds) =
@@ -189,8 +194,8 @@ pub async fn mint_with_audit(
     let expires_at: OffsetDateTime = sqlx::query_scalar(
         "INSERT INTO control.confirm_tokens \
            (tenant_id, user_id, operation, target_id, successor_id, nonce_sha256, expires_at, \
-            workspace_id) \
-         VALUES ($1, $2, $3, $4, $7, $5, clock_timestamp() + make_interval(secs => $6), $8) \
+            workspace_id, request_sha256) \
+         VALUES ($1, $2, $3, $4, $7, $5, clock_timestamp() + make_interval(secs => $6), $8, $9) \
          RETURNING expires_at",
     )
     .bind(auth.tenant_id().0)
@@ -201,6 +206,7 @@ pub async fn mint_with_audit(
     .bind(ttl_seconds)
     .bind(successor_id)
     .bind(workspace.0)
+    .bind(request_sha256.as_ref().map(<[u8; 32]>::as_slice))
     .fetch_one(&mut *txn)
     .await
     .map_err(db_error)?;
@@ -275,6 +281,7 @@ pub async fn consume_in_txn(
         .bind(claim.target_id)
         .bind(claim.successor_id)
         .bind(workspace.0)
+        .bind(claim.request_sha256.as_ref().map(<[u8; 32]>::as_slice))
         .fetch_optional(&mut **txn)
         .await
         .map_err(db_error)?;
@@ -390,6 +397,7 @@ mod tests {
             "target_id = $5",
             "successor_id IS NOT DISTINCT FROM $6",
             "workspace_id = $7",
+            "request_sha256 IS NOT DISTINCT FROM $8",
             "consumed_at IS NULL",
             "expires_at > clock_timestamp()",
             "RETURNING confirm_token_id",

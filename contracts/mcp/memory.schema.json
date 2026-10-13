@@ -921,6 +921,22 @@
           "type": "string",
           "format": "uuid"
         },
+        "note_id": {
+          "description": "ADR-0067 D-J: replace this note (its first version's memory_id, as note_put returned it). Present together with supersedes, or neither (a create). A replacement takes no visibility_class / data_class / subjects / affects: the new version inherits the head's visibility and data class.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "supersedes": {
+          "description": "ADR-0067 D-J: the memory_id of the version being replaced, which must be the note's current head (compare-and-swap); otherwise the business refusal STALE_NOTE_VERSION and nothing is written.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "confirm_token": {
+          "description": "ADR-0067 D-J / ADR-0018: the token the first replacement call returned (confirmation_required). It is bound to this note, supersedes, note_kind, title, body, requested_authority and idempotency_key; any change is refused. Only allowed with note_id.",
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 512
+        },
         "visibility_class": {
           "description": "§6.1.1 / ADR-0032 D-B: this put's visibility class; absent = the deployment default. May only narrow the caller's AuthorizationScope: USER_PRIVATE binds the on-behalf-of user, WORKSPACE_SHARED binds the (membership-narrowed) workspace, TENANT_SHARED is reachable only for an ACTIVE OWNER/ADMIN member (otherwise INVALID_INPUT, nothing written or metered).",
           "type": "string",
@@ -1101,6 +1117,17 @@
         "note_kind",
         "idempotency_key"
       ],
+      "dependentRequired": {
+        "note_id": [
+          "supersedes"
+        ],
+        "supersedes": [
+          "note_id"
+        ],
+        "confirm_token": [
+          "note_id"
+        ]
+      },
       "additionalProperties": false
     }
   ]

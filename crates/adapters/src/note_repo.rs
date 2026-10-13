@@ -1,10 +1,11 @@
 //! `adapters::note_repo` — the verbatim note lane's write half: the identity contract and the one authorised Memory of
 //!   `memory.note_put`, written inside the caller's Evidence transaction (ADR-0067 D-A/D-B/D-C/D-E).
-//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.identity_note_materializations] w=[private.identity_note_materializations]]; env=[]; modules=[adapters::distill_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.identity_note_materializations] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::distill_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
 //! Called-by: [adapters::operation_receipt, adapters::remember, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [no SQL here commits; the Memory is written only through distill_repo::insert_memory (the workspace's single
 //!   memory INSERT); the contract row is written after the Memory and before the EVIDENCE_ACCEPTED outbox row so the 0235
-//!   enqueue trigger skips distill; the authority decision precedes every write]
+//!   enqueue trigger skips distill; the authority decision precedes every write; a replacement supersedes exactly the
+//!   CAS-checked head in one guarded UPDATE and moves the head row in the same transaction (ADR-0067 D-J)]
 //! Spec: Baseline §8.5; §10.1; §34; ADR-0067
 //!
 //! [`NoteIntake`] is everything the gateway edge decided about one note (kind, title, validated body, requested authority);
@@ -36,6 +37,20 @@ pub struct NoteIntake {
     pub requested: AuthorityClass,
 }
 
+/// ADR-0067 D-J: which note a `memory.note_put` writes a version of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteLineage {
+    /// A fresh note: its `note_id` is its own first `memory_id`, and its `note_heads` row is born pointing at it.
+    Create,
+    /// A new version of `note_id` superseding `supersedes`, the head the caller CAS-checked under the head-row lock.
+    Replace {
+        /// The note's identity (its first version's `memory_id`).
+        note_id: Uuid,
+        /// The current head version this one replaces.
+        supersedes: Uuid,
+    },
+}
+
 /// ADR-0067 D-C: `Ok(class)` when the server-fixed origin's ceiling grants exactly `requested`, else
 /// [`RememberError::Note`]`(FORBIDDEN)` — raised before the first write, so nothing is stored.
 pub(crate) fn authorize(note: &NoteIntake) -> Result<AuthorityClass, RememberError> {
@@ -53,11 +68,14 @@ fn memory_content(note: &NoteIntake) -> serde_json::Value {
 
 /// Writes the note's Memory (through the workspace's single `insert_memory`, PRIMARY `memory_evidence` link included) and
 /// its identity-contract row, in the caller's transaction. `class` is [`authorize`]'s grant. Returns the new `memory_id`.
+/// ADR-0067 D-J steps 3-6: a [`NoteLineage::Create`] also writes the note's head row; a [`NoteLineage::Replace`] then
+/// supersedes the old head and moves the head row to the new version (0 rows on either = `CONFLICT`, rolled back).
 pub(crate) async fn materialize_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     cmd: &RememberCommand,
     evidence_id: Uuid,
     note: &NoteIntake,
+    lineage: NoteLineage,
     class: AuthorityClass,
 ) -> Result<Uuid, RememberError> {
     let loaded = LoadedEvidence {
@@ -88,6 +106,10 @@ pub(crate) async fn materialize_in_txn(
             // A verbatim assertion is recorded exactly; the author's classification certifies no truth (D-D).
             confidence: 1.0,
             note_kind: Some(note.kind),
+            note_id: match lineage {
+                NoteLineage::Create => None,
+                NoteLineage::Replace { note_id, .. } => Some(note_id),
+            },
         },
     )
     .await?;
@@ -104,6 +126,50 @@ pub(crate) async fn materialize_in_txn(
     .bind(POLICY_VERSION)
     .execute(&mut **txn)
     .await?;
+    let moved = match lineage {
+        NoteLineage::Create => sqlx::query(
+            "INSERT INTO private.note_heads (tenant_id, note_id, head_memory_id) VALUES ($1, $2, $2)",
+        )
+        .bind(cmd.tenant_id)
+        .bind(memory_id)
+        .execute(&mut **txn)
+        .await?
+        .rows_affected(),
+        NoteLineage::Replace {
+            note_id,
+            supersedes,
+        } => {
+            // ADR-0067 D-J step 5: one statement, guarded on `active`; superseded_by names a row that already exists.
+            let superseded = sqlx::query(
+                "UPDATE private.memory_records \
+                    SET status = 'superseded', superseded_by = $3, superseded_at = clock_timestamp() \
+                  WHERE tenant_id = $1 AND memory_id = $2 AND note_id = $4 AND status = 'active'",
+            )
+            .bind(cmd.tenant_id)
+            .bind(supersedes)
+            .bind(memory_id)
+            .bind(note_id)
+            .execute(&mut **txn)
+            .await?
+            .rows_affected();
+            // Step 6: the head moves only from the version just superseded.
+            let head = sqlx::query(
+                "UPDATE private.note_heads SET head_memory_id = $3 \
+                  WHERE tenant_id = $1 AND note_id = $2 AND head_memory_id = $4",
+            )
+            .bind(cmd.tenant_id)
+            .bind(note_id)
+            .bind(memory_id)
+            .bind(supersedes)
+            .execute(&mut **txn)
+            .await?
+            .rows_affected();
+            superseded.min(head)
+        }
+    };
+    if moved != 1 {
+        return Err(RememberError::Note(ErrorCode::Conflict));
+    }
     Ok(memory_id)
 }
 

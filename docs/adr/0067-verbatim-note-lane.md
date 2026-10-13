@@ -235,6 +235,15 @@ context bindings. `memory.correct`, `supersede`, `archive` and forget keep the n
   - Auto-forwarding `correct` to a replacement.
   - Fallback to an older version after forgetting the head.
 
+**40c-1 as shipped** (deviations and additions to the list above):
+
+- **Order:** the CAS runs before the BMO reservation. Both happen in one transaction, so a stale refusal writes and bills nothing.
+- **Same-key race:** of two simultaneous calls with the same key, the loser gets 40a's receipt try-lock `CONFLICT` and replays on retry. G19 accepts either.
+- **Fields a replacement refuses:** `visibility_class`, `data_class`, `subject_ids`, `subject_keys` and `affects`. The token binds only the intent fields, and anything else would ride along unconfirmed.
+- **Revoked or expired head:** answers `NOT_FOUND`, because the final gate runs before the active check. An archived head answers `CONFLICT`.
+- **MEMORY_LIFECYCLE ticket:** the replacement also issues one retiring the old version, as `memory.correct` does (ADR-0057 D-B). That adds one outbox row and one stream_log row beyond the G28 counts.
+- **Confirm gate:** gained a pre-mint hook (`run_confirmed_write_checked`). Both the CAS precheck and the generic-governance note refusal run there, before any token is minted.
+
 ### D-J2 — History axes (40c-2)
 
 - `memory.enumerate` gets a validated selector, used only by enumerate:

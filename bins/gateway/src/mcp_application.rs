@@ -3,9 +3,10 @@
 //!   services=[PostgreSQL(role_gateway) r=[control.rate_buckets, private.memory_records]
 //!   w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
-//!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::context_repo,
-//!   adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::subject_repo,
-//!   domain::affect, domain::authority, domain::confirm, domain::context, domain::continuity, domain::dataclass,
+//!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
+//!   adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
+//!   adapters::operation_receipt, adapters::postgres, adapters::subject_repo, domain::affect, domain::audit,
+//!   domain::authority, domain::confirm, domain::context, domain::continuity, domain::dataclass,
 //!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
@@ -18,21 +19,30 @@
 //! every other valid contract is admitted and denied by [`GatewayGuard`] rather
 //! than becoming a successful no-op.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use humaux_adapters::{
     affect_repo,
     byok::json_has_nul,
+    confirm_token_repo::ConfirmationClaim,
     context_repo::{MemoryEnumerationParams, NoteEnumerationFilter},
     distill_repo::{ConfirmOutcome, RejectOutcome},
-    memory_governance_repo::{ArchiveResult, RestoreResult},
+    memory_governance_repo::{self, ArchiveResult, RestoreResult},
     note_repo::NoteIntake,
+    operation_receipt::{self, AtomicRememberRequest, NoteReplaceOutcome, NoteReplaceRequest},
     postgres::RuntimeDbPool,
     subject_repo,
 };
 use humaux_domain::{
     affect::{AffectWriteOp, MoodHalfLife},
+    audit::AuditEvent,
     authority::MemoryId,
     confirm::{ConfirmToken, DestructiveOp},
     context::BindingPurpose,
@@ -42,8 +52,14 @@ use humaux_domain::{
     evidence::payload_sha256,
     identity::VisibilityClass,
     ids::{TaskId, WorkspaceId},
-    note::{NoteBody, NoteKind, authorize_note, note_title, parse_requested_authority},
-    subject::{SubjectId, SubjectKey, SubjectKeyKind, SubjectKind, SubjectRole, SubjectWriteOp},
+    note::{
+        NoteBody, NoteKind, authorize_note, note_title, parse_requested_authority,
+        replace_intent_sha256,
+    },
+    subject::{
+        SubjectDeclaration, SubjectId, SubjectKey, SubjectKeyKind, SubjectKind, SubjectRole,
+        SubjectWriteOp,
+    },
 };
 use humaux_protocol::{
     mcp::{McpApplication, McpHttpContext, McpOperation, McpToolArguments, ToolName, ToolOutput},
@@ -68,7 +84,9 @@ struct BindingWriteArguments {
 use crate::{
     context::{self, ContextBootstrap},
     continuity,
-    guard::{ConfirmGate, ConfirmedOutcome, GatewayGuard},
+    guard::{
+        AuthorizedRequest, ConfirmGate, ConfirmedOutcome, ConfirmedWrite, GatewayGuard, PreMint,
+    },
     memory,
     recall::{self, RecallSearchRequest, SemanticRecallRuntime},
     remember::{
@@ -362,6 +380,11 @@ impl GatewayMcpApplication {
         value: &Value,
     ) -> Result<ToolOutput, ErrorCode> {
         let wire = NotePutWire::from_raw(raw_arguments, value)?;
+        if let Some((note_id, supersedes)) = wire.replace {
+            return self
+                .memory_note_replace(context, operation, raw_arguments, wire, note_id, supersedes)
+                .await;
+        }
         let subjects = subject_repo::parse_declaration(value)?;
         let affects = affect_repo::parse_affects(value)?;
         let mood_half_life = match (affects.is_empty(), self.mood_half_life) {
@@ -420,16 +443,7 @@ impl GatewayMcpApplication {
             )
             .await;
         if refused && matches!(result, Err(ErrorCode::Forbidden)) {
-            let value = json!({
-                "code": "AUTHORITY_CEILING_EXCEEDED",
-                "requested_authority": wire.requested_authority_wire,
-                "origin": "AuthenticatedAgent",
-                "reason": "the requested authority exceeds the ceiling of the server-fixed origin; nothing was stored",
-            });
-            self.catalog.validate_output(ToolName::Memory, &value)?;
-            let mut refusal = output(value)?;
-            refusal.is_error = true;
-            return Ok(refusal);
+            return self.ceiling_refusal(&wire.requested_authority_wire);
         }
         let stored = result?;
         // §18.2: a SECRET_MATERIAL Memory never gets a card or a vector — the response must not promise indexing. Read
@@ -439,13 +453,185 @@ impl GatewayMcpApplication {
         } else {
             "scheduled"
         };
+        let memory_id = stored.memory_id.ok_or(ErrorCode::Internal)?;
         let value = json!({
-            "memory_id": stored.memory_id.ok_or(ErrorCode::Internal)?,
+            "memory_id": memory_id,
+            // ADR-0067 D-J: a fresh note's note_id is its first version's memory_id.
+            "note_id": memory_id,
             "evidence_id": stored.accepted.evidence_id,
             "consistency_token": stored.accepted.consistency_token,
             "status": "stored",
             "indexing": indexing,
         });
+        self.catalog.validate_output(ToolName::Memory, &value)?;
+        output(value)
+    }
+
+    /// ADR-0067 D-C: the business refusal `AUTHORITY_CEILING_EXCEEDED` (`isError`), nothing stored.
+    fn ceiling_refusal(&self, requested_authority_wire: &str) -> Result<ToolOutput, ErrorCode> {
+        self.business_refusal(json!({
+            "code": "AUTHORITY_CEILING_EXCEEDED",
+            "requested_authority": requested_authority_wire,
+            "origin": "AuthenticatedAgent",
+            "reason": "the requested authority exceeds the ceiling of the server-fixed origin; nothing was stored",
+        }))
+    }
+
+    /// A `memory.note_put` business refusal: a validated result shape carried with `isError` (§52.1 keeps 18 codes).
+    fn business_refusal(&self, value: Value) -> Result<ToolOutput, ErrorCode> {
+        self.catalog.validate_output(ToolName::Memory, &value)?;
+        let mut refusal = output(value)?;
+        refusal.is_error = true;
+        Ok(refusal)
+    }
+
+    /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: a replacement through the shared ADR-0018 gate, the
+    /// token bound to the intent digest `H` (`note::replace_intent_sha256`). First call: the pre-mint leg runs the
+    /// transaction's checks without writing — a committed key answers its stored result, a stale `supersedes` is the
+    /// business refusal `STALE_NOTE_VERSION`, an invisible note `NOT_FOUND` — and only then a token is minted (0 BMO).
+    /// Second call: `operation_receipt::note_replace_atomically` commits the new version.
+    #[allow(clippy::too_many_lines)] // one gate call with its two legs and the three result shapes it can render
+    async fn memory_note_replace(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        raw_arguments: &str,
+        wire: NotePutWire,
+        note_id: Uuid,
+        supersedes: Uuid,
+    ) -> Result<ToolOutput, ErrorCode> {
+        let Some(ttl) = self.confirm_token_ttl else {
+            return self.reject_unsupported(context, operation, None).await;
+        };
+        let intent = replace_intent_sha256(
+            note_id,
+            supersedes,
+            wire.note.kind,
+            &wire.note.title,
+            &wire.note.body,
+            wire.note.requested,
+            &wire.idempotency_key,
+        );
+        // D-C: decided after admission (inside the legs), so an unauthenticated caller learns nothing about the ceiling.
+        let ceiling_exceeded = authorize_note(wire.note.kind, wire.note.requested).is_err();
+        let (refused, stale) = (AtomicBool::new(false), AtomicBool::new(false));
+        let (refused_flag, stale_flag) = (&refused, &stale);
+        let requested_authority_wire = wire.requested_authority_wire;
+        let leg = NoteReplaceLeg {
+            pool: self.runtime_pool.clone(),
+            bootstrap: self.context_bootstrap.clone(),
+            policy: self.remember_policy.clone(),
+            content: wire.content,
+            note: wire.note,
+            idempotency_key: wire.idempotency_key,
+            note_id,
+            supersedes,
+            intent,
+        };
+        let commit_leg = leg.clone();
+        let outcome = self
+            .guard
+            .run_confirmed_write_checked(
+                context,
+                operation,
+                wire.workspace_id,
+                raw_arguments,
+                ConfirmGate {
+                    op: DestructiveOp::MemoryNoteReplace,
+                    target_id: supersedes,
+                    successor_id: None,
+                    presented: wire.confirm_token,
+                    ttl,
+                    request_sha256: Some(intent),
+                },
+                move |pre: PreMint| async move {
+                    let checked = if ceiling_exceeded {
+                        refused_flag.store(true, Ordering::Relaxed);
+                        Err(ErrorCode::Forbidden)
+                    } else {
+                        leg.run(
+                            pre.request,
+                            pre.finished_audit,
+                            pre.reservation_ttl,
+                            pre.replay_ttl,
+                            None,
+                        )
+                        .await
+                    };
+                    match checked {
+                        Ok(NoteReplaceOutcome::Stored(done)) => Ok(Some(done)),
+                        Ok(NoteReplaceOutcome::Confirmable) => Ok(None),
+                        Ok(NoteReplaceOutcome::StaleVersion) => {
+                            stale_flag.store(true, Ordering::Relaxed);
+                            Err(ErrorCode::Conflict)
+                        }
+                        Err(code) => Err(code),
+                    }
+                },
+                move |write: ConfirmedWrite| async move {
+                    let committed = if ceiling_exceeded {
+                        refused_flag.store(true, Ordering::Relaxed);
+                        Err(ErrorCode::Forbidden)
+                    } else {
+                        commit_leg
+                            .run(
+                                write.request,
+                                write.finished_audit,
+                                write.reservation_ttl,
+                                write.replay_ttl,
+                                Some(write.claim),
+                            )
+                            .await
+                    };
+                    match committed {
+                        Ok(NoteReplaceOutcome::Stored(done)) => Ok(done),
+                        Ok(NoteReplaceOutcome::StaleVersion) => {
+                            stale_flag.store(true, Ordering::Relaxed);
+                            Err(ErrorCode::Conflict)
+                        }
+                        Ok(NoteReplaceOutcome::Confirmable) => Err(ErrorCode::Internal),
+                        Err(code) => Err(code),
+                    }
+                },
+            )
+            .await;
+        if refused.load(Ordering::Relaxed) && matches!(outcome, Err(ErrorCode::Forbidden)) {
+            return self.ceiling_refusal(&requested_authority_wire);
+        }
+        if stale.load(Ordering::Relaxed) && matches!(outcome, Err(ErrorCode::Conflict)) {
+            return self.business_refusal(json!({
+                "code": "STALE_NOTE_VERSION",
+                "note_id": note_id,
+                "supersedes": supersedes,
+                "reason": "supersedes is not the note's current version; nothing was written",
+            }));
+        }
+        let value = match outcome? {
+            ConfirmedOutcome::ConfirmationRequired { token, expires_at } => json!({
+                "confirmation_required": true,
+                "confirm_token": token.encode(),
+                "operation": operation.operation_key(),
+                "target": { "memory_id": supersedes, "note_id": note_id },
+                "expires_at": rfc3339(expires_at)?,
+            }),
+            ConfirmedOutcome::Executed(stored) => {
+                // §18.2, read from the stored Evidence as on create.
+                let indexing = if stored.secret_material {
+                    "excluded"
+                } else {
+                    "scheduled"
+                };
+                json!({
+                    "memory_id": stored.memory_id.ok_or(ErrorCode::Internal)?,
+                    "note_id": note_id,
+                    "supersedes": supersedes,
+                    "evidence_id": stored.accepted.evidence_id,
+                    "consistency_token": stored.accepted.consistency_token,
+                    "status": "stored",
+                    "indexing": indexing,
+                })
+            }
+        };
         self.catalog.validate_output(ToolName::Memory, &value)?;
         output(value)
     }
@@ -998,10 +1184,11 @@ impl GatewayMcpApplication {
             return self.reject_unsupported(context, operation, None).await;
         };
         let pool = self.runtime_pool.clone();
+        let pre_pool = self.runtime_pool.clone();
         let bootstrap = self.context_bootstrap.clone();
         let outcome = self
             .guard
-            .run_confirmed_write(
+            .run_confirmed_write_checked(
                 context,
                 operation,
                 None,
@@ -1012,6 +1199,17 @@ impl GatewayMcpApplication {
                     successor_id: Some(successor.0),
                     presented,
                     ttl,
+                    request_sha256: None,
+                },
+                // ADR-0067 D-J (G26): neither operand may be a note; refused before any token exists.
+                move |pre: PreMint| async move {
+                    memory_governance_repo::refuse_note_targets(
+                        &pre_pool,
+                        pre.request.authorization(),
+                        &[target.0, successor.0],
+                    )
+                    .await
+                    .map(|()| None)
                 },
                 move |write| async move {
                     memory::supersede(pool, write, bootstrap, target, successor, undo_window).await
@@ -1094,11 +1292,12 @@ impl GatewayMcpApplication {
             (false, None) => return self.reject_unsupported(context, operation, None).await,
         };
         let pool = self.runtime_pool.clone();
+        let pre_pool = self.runtime_pool.clone();
         let bootstrap = self.context_bootstrap.clone();
         let consistency_token_ttl = self.remember_policy.consistency_token_ttl();
         let outcome = self
             .guard
-            .run_confirmed_write(
+            .run_confirmed_write_checked(
                 context,
                 operation,
                 None,
@@ -1109,6 +1308,17 @@ impl GatewayMcpApplication {
                     successor_id: None,
                     presented,
                     ttl,
+                    request_sha256: None,
+                },
+                // ADR-0067 D-J (G26): a note is versioned through memory.note_put, never corrected; refused pre-mint.
+                move |pre: PreMint| async move {
+                    memory_governance_repo::refuse_note_targets(
+                        &pre_pool,
+                        pre.request.authorization(),
+                        &[target.0],
+                    )
+                    .await
+                    .map(|()| None)
                 },
                 move |write| async move {
                     memory::correct(
@@ -1179,11 +1389,12 @@ impl GatewayMcpApplication {
             return self.reject_unsupported(context, operation, None).await;
         };
         let pool = self.runtime_pool.clone();
+        let pre_pool = self.runtime_pool.clone();
         let bootstrap = self.context_bootstrap.clone();
         let consistency_token_ttl = self.remember_policy.consistency_token_ttl();
         let outcome = self
             .guard
-            .run_confirmed_write(
+            .run_confirmed_write_checked(
                 context,
                 operation,
                 None,
@@ -1194,6 +1405,17 @@ impl GatewayMcpApplication {
                     successor_id: None,
                     presented,
                     ttl,
+                    request_sha256: None,
+                },
+                // ADR-0067 D-J (G26): a note target is refused pre-mint; the confirmed leg also checks the successor.
+                move |pre: PreMint| async move {
+                    memory_governance_repo::refuse_note_targets(
+                        &pre_pool,
+                        pre.request.authorization(),
+                        &[target.0],
+                    )
+                    .await
+                    .map(|()| None)
                 },
                 move |write| async move {
                     memory::restore(pool, write, bootstrap, target, consistency_token_ttl).await
@@ -1283,6 +1505,7 @@ impl GatewayMcpApplication {
                     successor_id: None,
                     presented,
                     ttl,
+                    request_sha256: None,
                 },
                 move |write| async move {
                     memory::confirm(
@@ -1367,6 +1590,7 @@ impl GatewayMcpApplication {
                         successor_id: None,
                         presented,
                         ttl,
+                        request_sha256: None,
                     },
                     move |write| async move {
                         memory::reject(pool, write, bootstrap, candidate_id).await
@@ -1507,6 +1731,7 @@ impl GatewayMcpApplication {
                     }),
                     presented,
                     ttl,
+                    request_sha256: None,
                 },
                 move |write| async move {
                     // D-E (card 13, ADR-0035): the binding lands at the request's authorized
@@ -1640,6 +1865,7 @@ impl GatewayMcpApplication {
                         successor_id: None,
                         presented,
                         ttl,
+                        request_sha256: None,
                     },
                     move |write| async move {
                         memory::archive(pool, write, bootstrap, op, memory).await
@@ -1934,6 +2160,10 @@ struct NotePutWire {
     workspace_id: Option<WorkspaceId>,
     visibility_class: Option<VisibilityClass>,
     data_class: Option<DataClass>,
+    /// ADR-0067 D-J: `(note_id, supersedes)` of a replacement; `None` for a create.
+    replace: Option<(Uuid, Uuid)>,
+    /// ADR-0067 D-J: the second replacement call's token (only with `replace`).
+    confirm_token: Option<ConfirmToken>,
 }
 
 #[derive(Deserialize)]
@@ -1946,6 +2176,9 @@ struct RawNotePutWire {
     workspace_id: Option<Uuid>,
     visibility_class: Option<String>,
     data_class: Option<String>,
+    note_id: Option<Uuid>,
+    supersedes: Option<Uuid>,
+    confirm_token: Option<String>,
 }
 
 impl NotePutWire {
@@ -1965,6 +2198,26 @@ impl NotePutWire {
             .unwrap_or_else(|| "PrivateKnowledge".to_owned());
         let requested =
             parse_requested_authority(&requested_authority_wire).ok_or(ErrorCode::InvalidInput)?;
+        let replace = match (raw.note_id, raw.supersedes) {
+            (Some(note_id), Some(supersedes)) => Some((note_id, supersedes)),
+            (None, None) => None,
+            _ => return Err(ErrorCode::InvalidInput),
+        };
+        let confirm_token = raw
+            .confirm_token
+            .as_deref()
+            .map(ConfirmToken::decode)
+            .transpose()?;
+        // ADR-0067 D-J: a replacement has no scope input (the version inherits the head's visibility and data class) and
+        // declares nothing its token does not bind; a token without a replacement is meaningless.
+        let declares = raw.visibility_class.is_some()
+            || raw.data_class.is_some()
+            || ["subject_ids", "subject_keys", "affects"]
+                .iter()
+                .any(|field| decoded.get(*field).is_some());
+        if (replace.is_some() && declares) || (replace.is_none() && confirm_token.is_some()) {
+            return Err(ErrorCode::InvalidInput);
+        }
         Ok(Self {
             content: PreparedEvidencePayload::new(raw.content.get().as_bytes().to_vec(), content)?,
             note: NoteIntake {
@@ -1986,7 +2239,82 @@ impl NotePutWire {
                 .as_deref()
                 .map(remember::parse_data_class)
                 .transpose()?,
+            replace,
+            confirm_token,
         })
+    }
+}
+
+/// ADR-0067 D-J: everything one replacement leg needs to build its receipt request, owned so each leg's future is `Send`.
+#[derive(Clone)]
+struct NoteReplaceLeg {
+    pool: Arc<RuntimeDbPool>,
+    bootstrap: ContextBootstrap,
+    policy: RememberPolicy,
+    content: PreparedEvidencePayload,
+    note: NoteIntake,
+    idempotency_key: String,
+    note_id: Uuid,
+    supersedes: Uuid,
+    intent: [u8; 32],
+}
+
+impl NoteReplaceLeg {
+    /// One leg: the challenge when `claim` is `None`, the confirmed commit otherwise. The fingerprint is hex `H`; the
+    /// classification is the deployment default, which the adapter replaces with the head's (D-J: no scope input).
+    async fn run(
+        self,
+        request: AuthorizedRequest,
+        finished_audit: AuditEvent,
+        reservation_ttl: Duration,
+        replay_ttl: Duration,
+        claim: Option<ConfirmationClaim>,
+    ) -> Result<NoteReplaceOutcome, ErrorCode> {
+        let workspace = request
+            .workspace_id()
+            .ok_or(ErrorCode::DependencyUnavailable)?;
+        let (_, stream) = self
+            .bootstrap
+            .request_stream(request.authorization().tenant_id(), workspace);
+        let now = OffsetDateTime::now_utc();
+        let command = remember::command(
+            request.authorization(),
+            &self.policy,
+            &stream,
+            self.content,
+            PutClassification {
+                visibility_class: self.policy.visibility_class(),
+                data_class: self.policy.data_class(),
+                event_kind: RememberEventKind::ManualNote,
+            },
+            // D-G: a version's occurred_at is the server receipt time.
+            Some(now),
+            now,
+            SubjectDeclaration::default(),
+            Vec::new(),
+            None,
+        )?;
+        operation_receipt::note_replace_atomically(
+            &self.pool,
+            request.authorization(),
+            AtomicRememberRequest {
+                request_id: request.request_id(),
+                idempotency_key: self.idempotency_key,
+                request_fingerprint: hex::encode(self.intent),
+                workspace_id: Some(workspace),
+                reservation_ttl,
+                replay_ttl,
+                command,
+                finished_audit,
+            },
+            self.note,
+            NoteReplaceRequest {
+                note_id: self.note_id,
+                supersedes: self.supersedes,
+                claim,
+            },
+        )
+        .await
     }
 }
 
