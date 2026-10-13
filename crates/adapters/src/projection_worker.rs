@@ -1055,6 +1055,9 @@ async fn resolve_and_embed(
     })
 }
 
+/// The planned memories of one row and the slots they expand to (ADR-0068 D-A).
+type SlotPlan = (Vec<Planned>, Vec<SlotCard>);
+
 /// ADR-0068 D-A: every live memory through [`build_projection_plan`] under the pass's policy, as one entry per
 /// expected slot. §18.2 `ExcludedSecret` is a property of ONE memory, not of the ticket: on an Evidence that carries a
 /// secret memory and an ordinary one, the ordinary one must still be indexed, so an excluded memory is dropped and the
@@ -1064,7 +1067,7 @@ fn plan_slots(
     memories: Vec<ResolvedMemory>,
     workspace_id: WorkspaceId,
     policy: NoteChunkPolicy,
-) -> Result<(Vec<Planned>, Vec<SlotCard>), (RowTerminal, &'static str)> {
+) -> Result<SlotPlan, (RowTerminal, &'static str)> {
     let mut planned = Vec::with_capacity(memories.len());
     let mut slots = Vec::with_capacity(memories.len());
     for memory in memories {
