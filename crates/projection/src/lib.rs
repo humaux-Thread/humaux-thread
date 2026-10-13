@@ -15,6 +15,7 @@ pub mod dense;
 pub mod embedding_fingerprint;
 pub mod fingerprint;
 pub mod graph;
+pub mod note_chunks;
 pub mod serving;
 pub mod sparse;
 pub mod stream;

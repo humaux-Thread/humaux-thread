@@ -1,0 +1,49 @@
+# §46.1 migration manifest. ADR-0068 D-B/D-D (card 40d-1a): projection.note_chunk_count(text, text), the SQL twin of
+# the NoteChunksV1 slot count (Rust builds the text, SQL only counts). LANGUAGE sql, IMMUTABLE, STRICT, PARALLEL SAFE,
+# SECURITY INVOKER; owner role_migration_owner; EXECUTE role_retrieval_worker only, PUBLIC has none. No table grant, no
+# DML. §46 forward-fix (EXPAND_CONTRACT, first free number after 0236).
+
+migration_id = "0237_note_chunk_count"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database whose encoding is not UTF8 (char_length would not count code points, so the count would drift
+# from Rust's chars()) and a function that already exists.
+precheck = """
+select to_regnamespace('projection') is not null
+ and to_regprocedure('projection.note_chunk_count(text,text)') is null
+ and (select pg_encoding_to_char(encoding) = 'UTF8' from pg_database where datname = current_database())
+ as precheck_ok
+"""
+
+# Fails on a changed owner / security / volatility / strictness / parallel safety / return type, any EXECUTE beyond
+# role_retrieval_worker (PUBLIC included), or a body whose boundaries moved (legacy 600 with 3 separators, W = 480,
+# stride 416, 64 KiB of ASCII = 158 slots; the full matrix is rust_sql_chunk_count_parity).
+postcheck = """
+select coalesce(bool_and(
+   pg_get_userbyid(p.proowner) = 'role_migration_owner'
+   and not p.prosecdef and p.provolatile = 'i' and p.proisstrict and p.proparallel = 's'
+   and p.prorettype = 'integer'::regtype
+   and has_function_privilege('role_retrieval_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_gateway', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_maintenance', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_private_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_consolidation_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_public_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_batch_issuer', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_admin', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_health_reader', p.oid, 'EXECUTE')
+   and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                    where x.grantee = 0 and x.privilege_type = 'EXECUTE')
+   and projection.note_chunk_count('', '') = 1
+   and projection.note_chunk_count(repeat('t', 20), repeat('長', 577)) = 1
+   and projection.note_chunk_count(repeat('t', 20), repeat('長', 578)) = 2
+   and projection.note_chunk_count('', repeat('a', 896)) = 2
+   and projection.note_chunk_count('', repeat('a', 897)) = 3
+   and projection.note_chunk_count('', repeat('a', 65536)) = 158), false)
+ and count(*) = 1 as postcheck_ok
+from pg_proc p
+where p.oid = to_regprocedure('projection.note_chunk_count(text,text)')
+"""
+
+rollback_or_forward_fix = "forward-fix only: a later migration may DROP FUNCTION projection.note_chunk_count(text, text) while nothing calls it (40d-1a has no caller; from 40d-1b the point ledger and the retrieval worker do). A changed count is a new profile and a new function, never a CREATE OR REPLACE of this body."
+backup_restore_requirement = "none: one pure function, no row data touched."
