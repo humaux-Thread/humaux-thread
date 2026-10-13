@@ -799,7 +799,7 @@ mod tests {
                 .as_array()
                 .expect("stable output union")
                 .len(),
-            15
+            17
         );
         assert_eq!(advertised["oneOf"][0]["$ref"], "#/$defs/Envelope");
         // ADR-0018: memory.supersede's two results are the third and fourth branches.
@@ -827,6 +827,12 @@ mod tests {
         assert_eq!(advertised["oneOf"][13]["$ref"], "#/$defs/Subject");
         // ADR-0030: memory.annotate_affect's result (affect rows + re-projection ticket).
         assert_eq!(advertised["oneOf"][14]["$ref"], "#/$defs/AffectAnnotated");
+        // ADR-0067: memory.note_put's stored result and its AUTHORITY_CEILING_EXCEEDED business refusal.
+        assert_eq!(advertised["oneOf"][15]["$ref"], "#/$defs/NoteStored");
+        assert_eq!(
+            advertised["oneOf"][16]["$ref"],
+            "#/$defs/AuthorityCeilingExceeded"
+        );
         // D-D: the Envelope item may carry its affect annotations with effective_intensity.
         assert_eq!(
             advertised["$defs"]["Envelope"]["properties"]["items"]["items"]["properties"]["affects"]
@@ -859,7 +865,7 @@ mod tests {
         // binding's scope { kind, id }. `scope` is required and `kind` is a CLOSED two-value
         // enum — WORKSPACE for pin/unpin, TASK for bind/unbind — never an open string.
         // Dropping the field, or replacing the enum with `{"type":"string"}`, turns this red.
-        // The four ops share this one branch, which is why the union below is still 15 long.
+        // The four ops share this one branch, which is why this ADR adds no branch to the union below.
         assert!(
             advertised["$defs"]["BindingWritten"]["required"]
                 .as_array()
@@ -886,7 +892,7 @@ mod tests {
         );
         // card 22c (ADR-0046): memory.bind reports what it was FOR and whether an authorization
         // now exists. Both are CLOSED enums and both are OPTIONAL — pin/unpin/unbind carry
-        // neither — so the union is still 15 branches, not 16. Replacing either enum with an
+        // neither — so the union gains no branch from them. Replacing either enum with an
         // open string, or promoting them to `required`, turns this red.
         assert_eq!(
             advertised["$defs"]["BindingWritten"]["properties"]["purpose"]["enum"],

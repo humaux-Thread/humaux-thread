@@ -824,6 +824,249 @@
         "affects"
       ],
       "additionalProperties": false
+    },
+    {
+      "x-humaux-operation": {
+        "operation_key": "memory.note_put",
+        "required_scope": "memory:write",
+        "feature_key": "mcp.billable_operations.per_period",
+        "meter_kind": "ordinary1"
+      },
+      "properties": {
+        "action": {
+          "const": "note_put"
+        },
+        "content": {
+          "description": "ADR-0067 D-E: the note body, stored verbatim (no trim, no newline or Unicode normalisation) as the Memory's content.key_claim. At most 65536 UTF-8 bytes once decoded (the schema limit counts code points; the server enforces the byte limit); U+0000 is refused, never repaired.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "title": {
+          "description": "ADR-0067 D-E: optional explicit title, at most 1024 UTF-8 bytes. Absent = the first non-blank line cut to 80 Unicode scalars (a fixed default for an all-blank body). The title never edits the body.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "note_kind": {
+          "description": "ADR-0067 D-D: the author's classification (closed set of nine, mapped onto memory_type by the server). It certifies no truth and decides no authority.",
+          "type": "string",
+          "enum": [
+            "rejected",
+            "decision",
+            "fix",
+            "problem",
+            "lesson",
+            "research",
+            "preference",
+            "state",
+            "note"
+          ]
+        },
+        "requested_authority": {
+          "description": "ADR-0067 D-C: the exact AuthorityClass asked for; default PrivateKnowledge. The server-fixed origin (AuthenticatedAgent) grants exactly that class or the call fails with the business error AUTHORITY_CEILING_EXCEEDED and nothing is stored — never clamped, never inferred from the kind, title or body.",
+          "type": "string",
+          "enum": [
+            "PublicKnowledge",
+            "PrivateKnowledge",
+            "UserPreference",
+            "ProjectDecision",
+            "UserCorrection",
+            "ProjectConstraint",
+            "ExplicitTaskContext"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "workspace_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "visibility_class": {
+          "description": "§6.1.1 / ADR-0032 D-B: this put's visibility class; absent = the deployment default. May only narrow the caller's AuthorizationScope: USER_PRIVATE binds the on-behalf-of user, WORKSPACE_SHARED binds the (membership-narrowed) workspace, TENANT_SHARED is reachable only for an ACTIVE OWNER/ADMIN member (otherwise INVALID_INPUT, nothing written or metered).",
+          "type": "string",
+          "enum": [
+            "USER_PRIVATE",
+            "WORKSPACE_SHARED",
+            "TENANT_SHARED"
+          ]
+        },
+        "data_class": {
+          "description": "§8 data class of this Evidence (closed set); absent = the deployment default.",
+          "type": "string",
+          "enum": [
+            "PUBLIC",
+            "INTERNAL",
+            "PRIVATE",
+            "SENSITIVE",
+            "SECRET_MATERIAL"
+          ]
+        },
+        "subject_ids": {
+          "description": "§6.1.3 rule 1: registered subjects this evidence is about (explicit SubjectId). Unknown or another tenant's id is INVALID_INPUT; never auto-registered.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "affects": {
+          "description": "§8.5.1 (ADR-0030 D-C): affect annotations declared with this evidence. Target subjects resolve under the tenant's registry BEFORE the evidence is accepted (unknown is INVALID_INPUT, nothing written or metered); the rows land on private.evidence_affects in the same transaction and every memory born from this evidence inherits them.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "§8.5.1 (ADR-0030): one affect annotation. kind EMOTION (never decays) | MOOD (decays by the frozen half-life at read time); label is the closed 12-value EmotionLabel; valence/arousal/dominance are basis points -10000..10000; intensity/confidence 0..10000. Out-of-range or unknown values are INVALID_INPUT, never clamped. target_subject_id (rule 1) or target_subject_key (rule 2) must resolve under the tenant's registry, else INVALID_INPUT — never auto-registered.",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "EMOTION",
+                  "MOOD"
+                ]
+              },
+              "label": {
+                "type": "string",
+                "enum": [
+                  "JOY",
+                  "SADNESS",
+                  "ANGER",
+                  "FEAR",
+                  "DISGUST",
+                  "SURPRISE",
+                  "AFFECTION",
+                  "ANXIETY",
+                  "FRUSTRATION",
+                  "CALM",
+                  "EXCITEMENT",
+                  "RELIEF"
+                ]
+              },
+              "valence": {
+                "type": "integer",
+                "minimum": -10000,
+                "maximum": 10000
+              },
+              "arousal": {
+                "type": "integer",
+                "minimum": -10000,
+                "maximum": 10000
+              },
+              "dominance": {
+                "type": "integer",
+                "minimum": -10000,
+                "maximum": 10000
+              },
+              "intensity": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "confidence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "target_subject_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "target_subject_key": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "value": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "kind",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              "target_scope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "WORKSPACE",
+                      "REPOSITORY",
+                      "TASK",
+                      "RUN",
+                      "AGENT"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id"
+                ],
+                "additionalProperties": false
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "kind",
+              "intensity",
+              "confidence"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 16
+        },
+        "subject_keys": {
+          "description": "§6.1.3 rule 2: exact trusted external keys resolved through the tenant's subject_keys registry (kind is the closed SubjectKeyKind set). Unknown key is INVALID_INPUT.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "action",
+        "content",
+        "note_kind",
+        "idempotency_key"
+      ],
+      "additionalProperties": false
     }
   ]
 }

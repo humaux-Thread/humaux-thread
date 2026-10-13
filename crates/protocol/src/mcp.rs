@@ -234,6 +234,10 @@ impl<'a> McpToolArguments<'a> {
 pub struct ToolOutput {
     pub text: String,
     pub structured_content: Value,
+    /// `true` renders `CallToolResult { isError: true }` carrying `structured_content` — a business refusal that needs
+    /// fields the bare `ErrorCode` result cannot carry (ADR-0067 D-C `AUTHORITY_CEILING_EXCEEDED`). It is not an
+    /// `ErrorCode`: §52.1's closed 18 are unchanged.
+    pub is_error: bool,
 }
 
 /// SDK-neutral application port.
@@ -651,7 +655,12 @@ impl ServerHandler for NativeMcpHandler {
             .await
         {
             Ok(output) => {
-                let mut result = CallToolResult::success(vec![ContentBlock::text(output.text)]);
+                let blocks = vec![ContentBlock::text(output.text)];
+                let mut result = if output.is_error {
+                    CallToolResult::error(blocks)
+                } else {
+                    CallToolResult::success(blocks)
+                };
                 result.structured_content = Some(output.structured_content);
                 Ok(result.into())
             }

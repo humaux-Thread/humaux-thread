@@ -412,6 +412,7 @@ pub async fn search(
                     Ok(ToolOutput {
                         text,
                         structured_content: value,
+                        is_error: false,
                     })
                 },
             );
@@ -816,6 +817,7 @@ fn accepted_output(
             Ok(ToolOutput {
                 text,
                 structured_content: value,
+                is_error: false,
             })
         },
     )

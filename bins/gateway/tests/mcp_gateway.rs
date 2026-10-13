@@ -4,7 +4,7 @@
 //!   humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio,
 //!   uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events,
 //!   control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events,
-//!   private.evidence_affects, private.evidence_subjects, private.subject_keys, private.task_binding_grants,
+//!   private.evidence_affects, private.evidence_subjects, private.identity_note_materializations, private.subject_keys, private.task_binding_grants,
 //!   public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys,
 //!   control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains,
 //!   control.tenants, control.workspace_memberships, control.workspaces, coord.tasks, ops.memory_lifecycle_events,
@@ -14251,6 +14251,276 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
                     "{operation}: every outcome {outcomes:?}"
                 );
             }
+        });
+    });
+}
+
+// ===========================================================================================
+// ADR-0067 card 40a: memory.note_put over the real MCP transport (G03, G07, G17, G18, G24, G25).
+// ===========================================================================================
+
+/// `contracts/mcp/remember.schema.json` as it was before card 40a (SHA-256 of the file at main 17c5895). G25: `remember.put`
+/// gains no field, branch or response key from the note lane.
+const REMEMBER_SCHEMA_SHA256_BEFORE_CARD_40: &str =
+    "a991fd180480d12a917a48e4ff67d9f5f1379b7a5f49ed7bc07b702f115ab27d";
+
+/// A `tools/call` for tool `memory` built from a hand-written arguments object, so a test controls the exact bytes of the
+/// JSON text (escapes survive; `json!` would normalise `a` to `a`).
+fn raw_memory_call(id: u64, arguments_json: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"memory","arguments":{arguments_json},"_meta":{meta}}}}}"#,
+        meta = metadata()
+    )
+}
+
+fn note_row(handle: &mut Handle, memory_id: &str) -> (String, String, String, Vec<u8>) {
+    let memory_id = Uuid::parse_str(memory_id).expect("memory id");
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT m.content->>'key_claim', m.note_kind, m.authority_class, c.body_sha256 \
+             FROM private.memory_records m \
+             JOIN private.identity_note_materializations c ON c.output_memory_id = m.memory_id \
+             WHERE m.memory_id = $1",
+            &[&memory_id],
+        )
+        .expect("note + contract row");
+    (row.get(0), row.get(1), row.get(2), row.get(3))
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one causal chain over one server: list, store, replay, refuse, edge cases, remember.put control
+fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_unchanged() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>("native_mcp_memory_note_put", |mut handle| {
+        handle.assert_gateway_login();
+        let prefix = format!("note{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "n".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWriteAndContextRead,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            64,
+        );
+        let runtime_handle = handle.rt.handle().clone();
+        let runtime = runtime_handle
+            .block_on(handle.fresh_runtime())
+            .expect("note runtime");
+        let app = application(&handle, runtime);
+        runtime_handle.block_on(async {
+            let (address, server) = start(app).await;
+            let bearer = credential.bearer.as_str();
+            let workspace = handle.workspace_id;
+            let headers = tool_call_headers("memory", bearer);
+
+            // G24: the real tools/list advertises memory.note_put on the memory tool ...
+            let (status, listed) = raw_request(
+                address,
+                &operation_headers("tools/list", bearer),
+                &rpc(1, "tools/list", json!({"_meta": metadata()})),
+            )
+            .await;
+            assert_eq!(status, 200, "{listed}");
+            let memory_tool = listed["result"]["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .find(|tool| tool["name"] == "memory")
+                .expect("memory tool is listed");
+            let advertised = memory_tool["inputSchema"].to_string();
+            assert!(
+                advertised.contains("note_put") && advertised.contains("requested_authority"),
+                "memory.note_put is advertised: {advertised}"
+            );
+            assert!(
+                memory_tool["outputSchema"].to_string().contains("NoteStored"),
+                "its result shape is advertised"
+            );
+
+            // ... and it runs through tools/call: stored, with a real memory_id.
+            let key = format!("note-wire-{}", Uuid::now_v7());
+            let body = "  Decision: keep Postgres.\r\nSecond line \u{1F680} \"quoted\" \\ done  ";
+            let args = json!({
+                "action": "note_put", "content": body, "note_kind": "decision",
+                "idempotency_key": key, "workspace_id": workspace,
+            });
+            let before = blocking_counts(&mut handle);
+            let (status, first) = raw_request(
+                address,
+                &headers,
+                &rpc(2, "tools/call", call_params("memory", args.clone())),
+            )
+            .await;
+            assert_eq!(status, 200, "note_put: {first}");
+            let stored = assert_tool_response(&first, ToolName::Memory).clone();
+            assert_eq!(stored["status"], "stored", "{first}");
+            assert_eq!(stored["indexing"], "scheduled", "{first}");
+            let memory_id = stored["memory_id"].as_str().expect("memory_id").to_owned();
+            let (key_claim, note_kind, authority, digest) =
+                tokio::task::block_in_place(|| note_row(&mut handle, &memory_id));
+            assert_eq!(key_claim, body, "byte-exact through the wire");
+            assert_eq!((note_kind.as_str(), authority.as_str()), ("decision", "PrivateKnowledge"));
+            assert_eq!(digest, Sha256::digest(body.as_bytes()).to_vec());
+            let after_first = blocking_counts(&mut handle);
+            assert_eq!(
+                (after_first.0 - before.0, after_first.1 - before.1, after_first.2 - before.2, after_first.3 - before.3),
+                (1, 1, 1, 1),
+                "one note = one Evidence / outbox / receipt / BMO row"
+            );
+
+            // G03: the same key returns the original ids and writes nothing.
+            let (status, replay) = raw_request(
+                address,
+                &headers,
+                &rpc(3, "tools/call", call_params("memory", args)),
+            )
+            .await;
+            assert_eq!(status, 200, "{replay}");
+            let replayed = assert_tool_response(&replay, ToolName::Memory);
+            assert_eq!(replayed["memory_id"], stored["memory_id"]);
+            assert_eq!(replayed["evidence_id"], stored["evidence_id"]);
+            assert_eq!(durable_counts(blocking_counts(&mut handle)), durable_counts(after_first));
+
+            // G17: "a" and "a" decode to the same body and share a body digest; the Evidence digests (raw bytes) differ.
+            let mut digests = Vec::new();
+            for (n, spelling) in [r"a", "a"].into_iter().enumerate() {
+                let arguments = format!(
+                    r#"{{"action":"note_put","content":"{spelling}","note_kind":"note","idempotency_key":"escape-{n}-{}","workspace_id":"{workspace}"}}"#,
+                    Uuid::now_v7()
+                );
+                let (status, response) =
+                    raw_request(address, &headers, &raw_memory_call(10 + n as u64, &arguments)).await;
+                assert_eq!(status, 200, "{response}");
+                let memory = response["result"]["structuredContent"]["memory_id"]
+                    .as_str()
+                    .expect("memory id")
+                    .to_owned();
+                let (claim, _, _, body_digest) =
+                    tokio::task::block_in_place(|| note_row(&mut handle, &memory));
+                assert_eq!(claim, "a");
+                digests.push(body_digest);
+            }
+            assert_eq!(digests[0], digests[1], "same decoded body, same body digest");
+
+            // G18: NUL is refused at the edge before any Evidence, and nothing changes.
+            let before_nul = blocking_counts(&mut handle);
+            let nul = format!(
+                r#"{{"action":"note_put","content":"a\u0000b","note_kind":"note","idempotency_key":"nul-{}","workspace_id":"{workspace}"}}"#,
+                Uuid::now_v7()
+            );
+            let (status, refused) = raw_request(address, &headers, &raw_memory_call(20, &nul)).await;
+            assert_eq!(status, 400, "NUL is INVALID_INPUT: {refused}");
+            assert_eq!(blocking_counts(&mut handle), before_nul, "no Evidence, audit or BMO for a NUL body");
+
+            // G07 (wire): above the ceiling is a business error with isError and nothing stored.
+            let before_refusal = blocking_counts(&mut handle);
+            let arguments = json!({
+                "action": "note_put", "content": "I claim a lot", "note_kind": "decision",
+                "requested_authority": "ProjectDecision",
+                "idempotency_key": format!("ceiling-{}", Uuid::now_v7()), "workspace_id": workspace,
+            });
+            let (status, ceiling) = raw_request(
+                address,
+                &headers,
+                &rpc(21, "tools/call", call_params("memory", arguments)),
+            )
+            .await;
+            assert_eq!(status, 200, "{ceiling}");
+            assert_eq!(ceiling["result"]["isError"], true, "{ceiling}");
+            let business = &ceiling["result"]["structuredContent"];
+            assert_eq!(business["code"], "AUTHORITY_CEILING_EXCEEDED", "{ceiling}");
+            assert_eq!(business["requested_authority"], "ProjectDecision", "{ceiling}");
+            assert_eq!(business["origin"], "AuthenticatedAgent", "{ceiling}");
+            assert_eq!(
+                durable_counts(blocking_counts(&mut handle)),
+                durable_counts(before_refusal),
+                "a refused request stores nothing and bills nothing"
+            );
+            let memories: i64 = tokio::task::block_in_place(|| {
+                handle
+                    .admin
+                    .query_one(
+                        "SELECT count(*) FROM private.memory_records WHERE tenant_id=$1",
+                        &[&handle.tenant_id],
+                    )
+                    .expect("memory count")
+                    .get(0)
+            });
+            assert_eq!(memories, 3, "only the three accepted notes exist");
+
+            // The closed enums refuse unknown spellings; the new fields are not accepted on remember.put (G25).
+            let (status, bad_kind) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    22,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"note_put","content":"x","note_kind":"claim",
+                               "idempotency_key":"bad-kind","workspace_id": workspace}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 400, "unknown note_kind: {bad_kind}");
+            let remember_headers = tool_call_headers("remember", bearer);
+            for (n, extra) in ["note_kind", "title", "requested_authority"].into_iter().enumerate() {
+                let mut arguments = json!({
+                    "operation": "put", "content": "plain evidence",
+                    "idempotency_key": format!("g25-{n}-{}", Uuid::now_v7()), "workspace_id": workspace,
+                });
+                arguments[extra] = json!("decision");
+                let (status, refused) = raw_request(
+                    address,
+                    &remember_headers,
+                    &rpc(30 + n as u64, "tools/call", call_params("remember", arguments)),
+                )
+                .await;
+                assert_eq!(status, 400, "remember.put refuses `{extra}`: {refused}");
+            }
+            let (status, accepted) = raw_request(
+                address,
+                &remember_headers,
+                &rpc(
+                    40,
+                    "tools/call",
+                    call_params(
+                        "remember",
+                        json!({"operation":"put","content":"plain evidence",
+                               "idempotency_key": format!("g25-ok-{}", Uuid::now_v7()),
+                               "workspace_id": workspace}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "{accepted}");
+            let mut keys: Vec<_> = accepted["result"]["structuredContent"]
+                .as_object()
+                .expect("remember result")
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                ["consistency_token", "evidence_id", "processing_handle", "replayed", "status"],
+                "remember.put's response shape is unchanged: no memory_id, no indexing"
+            );
+            assert_eq!(accepted["result"]["structuredContent"]["status"], "accepted");
+            assert_eq!(
+                format!(
+                    "{:x}",
+                    Sha256::digest(include_bytes!("../../../contracts/mcp/remember.schema.json"))
+                ),
+                REMEMBER_SCHEMA_SHA256_BEFORE_CARD_40,
+                "G25: the remember.put input schema is byte-identical to main"
+            );
+
+            stop_server(server).await.expect("server shutdown");
         });
     });
 }

@@ -39,6 +39,7 @@ pub mod mechanism_observation;
 pub mod membership_repo;
 pub mod memory_governance_repo;
 pub mod model_call_ledger;
+pub mod note_repo;
 pub mod openbao;
 pub mod operation_receipt;
 pub mod placement_repo;

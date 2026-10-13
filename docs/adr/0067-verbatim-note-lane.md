@@ -62,6 +62,12 @@ contract (audit, stream and projection events still flow — only semantic deriv
 worker re-checks before any provider reservation. The split is by the persisted contract, never by
 `event_kind = 'MANUAL_NOTE'` (that would reinterpret every historic MANUAL_NOTE and `remember.put` itself).
 No UNIQUE on `memory_evidence.evidence_id`: ordinary Evidence may still distill into several Memories (§8.5).
+The note's `EVIDENCE_ACCEPTED` outbox row is born `DONE` (a BEFORE INSERT trigger: `role_gateway` holds no INSERT on
+`ops.outbox.status`), so projection claims the ticket at once and resolves it through `memory_evidence` to the note's
+Memory — the existing path recall uses (40a implementation). The note's PRIMARY link enqueues no
+`DERIVED_CONSOLIDATE` job either (that job calls the LLM): 0164's consolidate trigger skips a Memory whose
+`note_kind` is set. A later ordinary memory in the same domain still triggers a consolidation pass, which may read
+notes as inputs.
 
 ### D-C — Requested authority is exact; above the ceiling is refused
 

@@ -70,6 +70,7 @@ impl McpApplication for MockApplication {
         Ok(ToolOutput {
             text: "\u{feff}line\r\n".to_owned(),
             structured_content: json!({"kind":"mock","ok":true}),
+            is_error: false,
         })
     }
 }

@@ -4,9 +4,9 @@
 //!   w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
 //!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::context_repo,
-//!   adapters::distill_repo, adapters::memory_governance_repo, adapters::postgres, adapters::subject_repo,
+//!   adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::subject_repo,
 //!   domain::affect, domain::authority, domain::confirm, domain::context, domain::continuity, domain::dataclass,
-//!   domain::error, domain::evidence, domain::identity, domain::ids, domain::subject, gateway::context,
+//!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
@@ -27,6 +27,7 @@ use humaux_adapters::{
     context_repo::MemoryEnumerationParams,
     distill_repo::{ConfirmOutcome, RejectOutcome},
     memory_governance_repo::{ArchiveResult, RestoreResult},
+    note_repo::NoteIntake,
     postgres::RuntimeDbPool,
     subject_repo,
 };
@@ -41,6 +42,7 @@ use humaux_domain::{
     evidence::payload_sha256,
     identity::VisibilityClass,
     ids::{TaskId, WorkspaceId},
+    note::{NoteBody, NoteKind, authorize_note, note_title, parse_requested_authority},
     subject::{SubjectId, SubjectKey, SubjectKeyKind, SubjectKind, SubjectRole, SubjectWriteOp},
 };
 use humaux_protocol::{
@@ -88,8 +90,9 @@ use crate::{
 /// have had working dispatch arms since ADR-0025/ADR-0026, while this array still said 15 —
 /// nothing read it, so nothing noticed. The new gate also compares it against the `invoke`
 /// dispatch below, which is what makes that class of drift impossible to repeat.
-pub const SUPPORTED_OPERATION_KEYS: [&str; 20] = [
+pub const SUPPORTED_OPERATION_KEYS: [&str; 21] = [
     "remember.put",
+    "memory.note_put",
     "recall.search",
     "context.assemble",
     "memory.get",
@@ -310,6 +313,7 @@ impl GatewayMcpApplication {
                 requested_workspace,
                 raw_arguments,
                 wire.idempotency_key,
+                None,
                 move |request| {
                     // An unbound PAT naming no workspace has no route: nothing to write to.
                     let workspace = request
@@ -345,6 +349,98 @@ impl GatewayMcpApplication {
             "status": accepted.status,
             "replayed": result.replayed,
         }))
+    }
+
+    /// ADR-0067 D-A `memory.note_put`: the verbatim note lane. The same receipt transaction as `remember.put` writes the
+    /// Evidence, the identity contract and the authorised Memory; the response names the real `memory_id`. An above-ceiling
+    /// `requested_authority` is the business refusal `AUTHORITY_CEILING_EXCEEDED` (`isError`), nothing stored.
+    async fn memory_note_put(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        raw_arguments: &str,
+        value: &Value,
+    ) -> Result<ToolOutput, ErrorCode> {
+        let wire = NotePutWire::from_raw(raw_arguments, value)?;
+        let subjects = subject_repo::parse_declaration(value)?;
+        let affects = affect_repo::parse_affects(value)?;
+        let mood_half_life = match (affects.is_empty(), self.mood_half_life) {
+            (true, _) => None,
+            (false, Some(half_life)) => Some(half_life),
+            (false, None) => return self.reject_unsupported(context, operation, None).await,
+        };
+        let classification = PutClassification {
+            visibility_class: wire
+                .visibility_class
+                .unwrap_or(self.remember_policy.visibility_class()),
+            data_class: wire.data_class.unwrap_or(self.remember_policy.data_class()),
+            event_kind: RememberEventKind::ManualNote,
+        };
+        let policy = self.remember_policy.clone();
+        let bootstrap = self.context_bootstrap.clone();
+        let (kind, requested) = (wire.note.kind, wire.note.requested);
+        // The refusal is decided after admission (inside `prepare`), so an unauthenticated caller learns nothing about the
+        // ceiling; the closure can only return an `ErrorCode`, so it leaves the business refusal here.
+        let mut refused = false;
+        let refused_slot = &mut refused;
+        let result = self
+            .guard
+            .run_atomic_remember(
+                context,
+                operation,
+                wire.workspace_id,
+                raw_arguments,
+                wire.idempotency_key,
+                Some(wire.note),
+                move |request| {
+                    if authorize_note(kind, requested).is_err() {
+                        *refused_slot = true;
+                        return Err(ErrorCode::Forbidden);
+                    }
+                    let workspace = request
+                        .workspace_id()
+                        .ok_or(ErrorCode::DependencyUnavailable)?;
+                    let (_, stream) =
+                        bootstrap.request_stream(request.authorization().tenant_id(), workspace);
+                    let now = OffsetDateTime::now_utc();
+                    remember::command(
+                        request.authorization(),
+                        &policy,
+                        &stream,
+                        wire.content,
+                        classification,
+                        // D-G: an identity note's occurred_at is the server receipt time.
+                        Some(now),
+                        now,
+                        subjects,
+                        affects,
+                        mood_half_life,
+                    )
+                },
+            )
+            .await;
+        if refused && matches!(result, Err(ErrorCode::Forbidden)) {
+            let value = json!({
+                "code": "AUTHORITY_CEILING_EXCEEDED",
+                "requested_authority": wire.requested_authority_wire,
+                "origin": "AuthenticatedAgent",
+                "reason": "the requested authority exceeds the ceiling of the server-fixed origin; nothing was stored",
+            });
+            self.catalog.validate_output(ToolName::Memory, &value)?;
+            let mut refusal = output(value)?;
+            refusal.is_error = true;
+            return Ok(refusal);
+        }
+        let stored = result?;
+        let value = json!({
+            "memory_id": stored.memory_id.ok_or(ErrorCode::Internal)?,
+            "evidence_id": stored.accepted.evidence_id,
+            "consistency_token": stored.accepted.consistency_token,
+            "status": "stored",
+            "indexing": "scheduled",
+        });
+        self.catalog.validate_output(ToolName::Memory, &value)?;
+        output(value)
     }
 
     async fn context_assemble(
@@ -1680,6 +1776,10 @@ impl McpApplication for GatewayMcpApplication {
                 self.remember_put(context, &operation, &raw_arguments, &value)
                     .await
             }
+            "memory.note_put" => {
+                self.memory_note_put(context, &operation, &raw_arguments, &value)
+                    .await
+            }
             "context.assemble" => {
                 self.context_assemble(context, &operation, &raw_arguments, &value)
                     .await
@@ -1797,6 +1897,73 @@ impl McpApplication for GatewayMcpApplication {
     }
 }
 
+/// `memory.note_put`'s validated arguments (ADR-0067): the same raw-content binding as [`RememberPutWire`], plus the note's
+/// own decisions taken at the input edge (kind, verbatim body + digest, title, requested authority).
+struct NotePutWire {
+    content: PreparedEvidencePayload,
+    note: NoteIntake,
+    /// The caller's `requested_authority` spelling, echoed in the refusal (`None` = the default).
+    requested_authority_wire: String,
+    idempotency_key: String,
+    workspace_id: Option<WorkspaceId>,
+    visibility_class: Option<VisibilityClass>,
+    data_class: Option<DataClass>,
+}
+
+#[derive(Deserialize)]
+struct RawNotePutWire {
+    content: Box<RawValue>,
+    title: Option<String>,
+    note_kind: String,
+    requested_authority: Option<String>,
+    idempotency_key: String,
+    workspace_id: Option<Uuid>,
+    visibility_class: Option<String>,
+    data_class: Option<String>,
+}
+
+impl NotePutWire {
+    fn from_raw(raw_arguments: &str, decoded: &Value) -> Result<Self, ErrorCode> {
+        let raw: RawNotePutWire =
+            serde_json::from_str(raw_arguments).map_err(|_| ErrorCode::InvalidInput)?;
+        let content: Value =
+            serde_json::from_str(raw.content.get()).map_err(|_| ErrorCode::InvalidInput)?;
+        if decoded.get("content") != Some(&content) {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let body = NoteBody::new(content.as_str().ok_or(ErrorCode::InvalidInput)?)?;
+        let title = note_title(raw.title.as_deref(), &body)?;
+        let kind = NoteKind::parse_wire(&raw.note_kind).ok_or(ErrorCode::InvalidInput)?;
+        let requested_authority_wire = raw
+            .requested_authority
+            .unwrap_or_else(|| "PrivateKnowledge".to_owned());
+        let requested =
+            parse_requested_authority(&requested_authority_wire).ok_or(ErrorCode::InvalidInput)?;
+        Ok(Self {
+            content: PreparedEvidencePayload::new(raw.content.get().as_bytes().to_vec(), content)?,
+            note: NoteIntake {
+                kind,
+                title,
+                body,
+                requested,
+            },
+            requested_authority_wire,
+            idempotency_key: raw.idempotency_key,
+            workspace_id: raw.workspace_id.map(WorkspaceId),
+            visibility_class: raw
+                .visibility_class
+                .as_deref()
+                .map(remember::parse_visibility_class)
+                .transpose()?,
+            data_class: raw
+                .data_class
+                .as_deref()
+                .map(remember::parse_data_class)
+                .transpose()?,
+        })
+    }
+}
+
 struct RememberPutWire {
     content: PreparedEvidencePayload,
     idempotency_key: String,
@@ -1872,6 +2039,7 @@ fn output(structured_content: Value) -> Result<ToolOutput, ErrorCode> {
     Ok(ToolOutput {
         text,
         structured_content,
+        is_error: false,
     })
 }
 

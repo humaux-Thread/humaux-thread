@@ -1,6 +1,6 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::error, domain::evidence, domain::identity, domain::ids]
+//! Depends-on: crates=[humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::error, domain::evidence, domain::identity, domain::ids]
 //! Called-by: [gateway::guard, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound]
@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
+    note_repo::{self, NoteIntake},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberAccepted, RememberCommand, RememberError},
@@ -30,6 +31,9 @@ use crate::{
 };
 
 const OPERATION: &str = "remember.put";
+/// ADR-0067 D-A: the receipt / BMO operation of an identity note. A separate key from [`OPERATION`], so the same idempotency
+/// key under the two operations is two operations.
+pub const NOTE_OPERATION: &str = "memory.note_put";
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
 /// §6.1.1 / ADR-0032 D-B: the `control.memberships.role` values whose ACTIVE holder may write
@@ -58,6 +62,9 @@ pub struct AtomicRememberRequest {
 pub struct AtomicRememberResult {
     pub accepted: RememberAccepted,
     pub replayed: bool,
+    /// ADR-0067: the Memory the same transaction wrote (or, on a replay, wrote originally) for a `memory.note_put`;
+    /// `None` for `remember.put`.
+    pub memory_id: Option<Uuid>,
 }
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
@@ -80,7 +87,9 @@ fn remember_error(error: RememberError) -> ErrorCode {
         RememberError::ConsistencyTokenExpiryNotFuture => ErrorCode::Conflict,
         RememberError::BatchExhausted => ErrorCode::Conflict,
         // §6.1.3: an unresolvable subject declaration is INVALID_INPUT with nothing written.
-        RememberError::Subject(code) | RememberError::Affect(code) => code,
+        RememberError::Subject(code) | RememberError::Affect(code) | RememberError::Note(code) => {
+            code
+        }
         // §11.2.1 / ADR-0032 D-A: the caller tenant has no reasoning domain to process this
         // Evidence under — not provisioned for writes, nothing written, retryable once it is.
         RememberError::ReasoningDomainUnresolved | RememberError::TokenKeysUnset => {
@@ -128,6 +137,7 @@ fn visibility_is_bound_to_route(
 fn validate(
     auth: &AuthorizationScope,
     request: &AtomicRememberRequest,
+    operation: &str,
 ) -> Result<AuthorizationScope, ErrorCode> {
     let cmd = &request.command;
     if auth.tenant_id().0.is_nil() || auth.principal().0.is_nil() || auth.user_id().is_none() {
@@ -174,7 +184,7 @@ fn validate(
         || event.actor_id != effective_auth.principal().0.to_string()
         || event.request_id != request.request_id.to_string()
         || event.action != "MCP_REQUEST_FINISHED"
-        || event.resource_id != OPERATION
+        || event.resource_id != operation
         || event.result != "OK"
     {
         return Err(ErrorCode::InvalidInput);
@@ -189,20 +199,58 @@ pub async fn remember_atomically(
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    let auth = validate(auth, &request)?;
+    atomically(pool, auth, request, None).await
+}
+
+/// ADR-0067 D-A: `memory.note_put` — [`remember_atomically`]'s receipt / replay / BMO / audit machinery, plus the identity
+/// contract and the authorised Memory in the same transaction. The `request.command` must be a `MANUAL_NOTE` event
+/// (the gateway builds it); the receipt operation is [`NOTE_OPERATION`] and the audit's `resource_id` must equal it.
+pub async fn note_put_atomically(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    note: NoteIntake,
+) -> Result<AtomicRememberResult, ErrorCode> {
+    atomically(pool, auth, request, Some(note)).await
+}
+
+#[allow(clippy::too_many_lines)] // one receipt transaction, in §34.0.1 order
+async fn atomically(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    note: Option<NoteIntake>,
+) -> Result<AtomicRememberResult, ErrorCode> {
+    let operation = if note.is_some() {
+        NOTE_OPERATION
+    } else {
+        OPERATION
+    };
+    let auth = validate(auth, &request, operation)?;
     let replay_duration =
         time::Duration::try_from(request.replay_ttl).map_err(|_| ErrorCode::InvalidInput)?;
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
-    let prior = lock_and_find_receipt(&mut txn, &auth, &request).await?;
+    let prior = lock_and_find_receipt(&mut txn, &auth, &request, operation).await?;
     if let Some(prior) = prior {
         let accepted = replay(&mut txn, &auth, &request, &prior).await?;
+        let memory_id = if note.is_some() {
+            Some(
+                note_repo::output_memory(&mut txn, auth.tenant_id().0, accepted.evidence_id)
+                    .await
+                    .map_err(db_error)?
+                    .ok_or(ErrorCode::NotFound)?,
+            )
+        } else {
+            None
+        };
         txn.commit()
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
         return Ok(AtomicRememberResult {
             accepted,
             replayed: true,
+            memory_id,
         });
     }
     // ADR-0032 D-B: TENANT_SHARED is reachable only for an OWNER/ADMIN member; judged in this
@@ -217,7 +265,7 @@ pub async fn remember_atomically(
         &mut txn,
         &auth,
         request.request_id,
-        OPERATION,
+        operation,
         &request.request_fingerprint,
         request.reservation_ttl,
     )
@@ -237,7 +285,7 @@ pub async fn remember_atomically(
     .await?;
 
     let token_expires_at = request.command.consistency_token_expires_at;
-    let pending = remember::remember_in_txn(&mut txn, request.command)
+    let pending = remember::remember_in_txn_with(&mut txn, request.command, note.as_ref())
         .await
         .map_err(remember_error)?;
     if quota_repo::finish_reservation_in_txn(&mut txn, &auth, &reservation, true).await?
@@ -271,7 +319,7 @@ pub async fn remember_atomically(
           projection_version,stream_seq,commit_seq,audit_event_id,replay_expires_at) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
     )
-    .bind(auth.tenant_id().0).bind(auth.principal().0).bind(OPERATION)
+    .bind(auth.tenant_id().0).bind(auth.principal().0).bind(operation)
     .bind(&request.idempotency_key).bind(&request.request_fingerprint)
     .bind(auth.user_id().map(|id| id.0)).bind(request.workspace_id.map(|id| id.0))
     .bind(request.request_id).bind(reservation.id()).bind(pending.accepted().evidence_id)
@@ -288,9 +336,11 @@ pub async fn remember_atomically(
     txn.commit()
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    let memory_id = pending.memory_id();
     Ok(AtomicRememberResult {
         accepted: pending.into_accepted(),
         replayed: false,
+        memory_id,
     })
 }
 
@@ -338,6 +388,7 @@ async fn lock_and_find_receipt(
     txn: &mut Txn<'_>,
     auth: &AuthorizationScope,
     request: &AtomicRememberRequest,
+    operation: &str,
 ) -> Result<Option<PgRow>, ErrorCode> {
     sqlx::query(
         "SELECT set_config('humaux.tenant_id',$1,true), set_config('humaux.user_id',$2,true)",
@@ -355,7 +406,7 @@ async fn lock_and_find_receipt(
     let locked: bool =
         sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!(
-                "operation-receipt:{}:{}:{}:{}:{OPERATION}:{}",
+                "operation-receipt:{}:{}:{}:{}:{operation}:{}",
                 auth.tenant_id().0,
                 auth.principal().0,
                 request.command.scope_kind,
@@ -377,7 +428,7 @@ async fn lock_and_find_receipt(
     .bind(auth.principal().0)
     .bind(&request.command.scope_kind)
     .bind(request.command.scope_id)
-    .bind(OPERATION)
+    .bind(operation)
     .bind(&request.idempotency_key)
     .fetch_optional(&mut **txn)
     .await
