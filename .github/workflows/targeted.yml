@@ -3,6 +3,8 @@ name: targeted
 # Owner ruling 2026-10-13: nothing runs locally — fault-injection red records are produced here: push the mutation to a
 # throwaway branch named outside `ci/**` (no full CI), dispatch this workflow with `ref` and `cargo_args`, and cite the
 # run id; then dispatch it again on the unmutated ref for the green. Also usable to re-run one flaky test on a branch.
+# Exit 3 = no test matched (also what `--no-run` / `-- --list` give, by design); exit 2 = bad input or a ref older than
+# the setup action.
 #   gh workflow run targeted.yml -f ref=red/40a-g07 -f cargo_args="-p humaux-adapters --test note_put g07"
 # cargo_args reaches the shell only through an env var, split on spaces, never evaluated (no `${{ }}` in `run:`).
 on:
@@ -86,6 +88,16 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+
+      # The setup action comes from the checked-out ref (5f77fa7 introduced it). Older refs are not supported: say so
+      # plainly instead of failing inside a missing action (PR #6 Codex P2). Red-record refs are always recent branches.
+      - name: the ref carries the setup action
+        shell: bash
+        run: |
+          test -f .github/actions/setup/action.yml || {
+            echo "ref $(git rev-parse HEAD) predates .github/actions/setup (5f77fa7): not supported by this workflow"
+            exit 2
+          }
 
       - uses: ./.github/actions/setup
 
