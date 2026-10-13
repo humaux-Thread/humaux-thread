@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use humaux_adapters::{
     affect_repo,
     byok::json_has_nul,
-    context_repo::MemoryEnumerationParams,
+    context_repo::{MemoryEnumerationParams, NoteEnumerationFilter},
     distill_repo::{ConfirmOutcome, RejectOutcome},
     memory_governance_repo::{ArchiveResult, RestoreResult},
     note_repo::NoteIntake,
@@ -523,6 +523,12 @@ impl GatewayMcpApplication {
         let memory_id =
             MemoryId::parse(value["memory_id"].as_str().ok_or(ErrorCode::InvalidInput)?)?;
         let requested_workspace = workspace(value)?;
+        // ADR-0067 D-H: absent = false, the pre-40b contract.
+        let include_history = value
+            .get("include_history")
+            .map(|v| v.as_bool().ok_or(ErrorCode::InvalidInput))
+            .transpose()?
+            .unwrap_or(false);
         let pool = self.runtime_pool.clone();
         let bootstrap = self.context_bootstrap.clone();
         let catalog = self.catalog.clone();
@@ -540,6 +546,7 @@ impl GatewayMcpApplication {
                         request.workspace_id(),
                         bootstrap,
                         memory_id,
+                        include_history,
                         |result| {
                             let value =
                                 serde_json::to_value(result).map_err(|_| ErrorCode::Internal)?;
@@ -633,6 +640,16 @@ impl GatewayMcpApplication {
         value: &Value,
     ) -> Result<ToolOutput, ErrorCode> {
         let requested_workspace = workspace(value)?;
+        // ADR-0067 D-G: the note axes narrow the memory manifest only; the candidate and subject listings below would
+        // silently drop them (and skip the window check), so the combination is refused.
+        if (value.get("candidates").and_then(Value::as_bool) == Some(true)
+            || value.get("subjects").and_then(Value::as_bool) == Some(true))
+            && ["note_kinds", "since", "until"]
+                .iter()
+                .any(|key| value.get(*key).is_some())
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
         // ADR-0026 D-E: `{candidates:true}` lists PENDING distill candidates instead of memories
         // (same read gate + workspace rule). The smaller schema change vs. a new op.
         if value.get("candidates").and_then(Value::as_bool) == Some(true) {
@@ -666,6 +683,7 @@ impl GatewayMcpApplication {
             .map(|v| SubjectId::parse(v.as_str().ok_or(ErrorCode::InvalidInput)?))
             .transpose()?
             .map(|id| id.0);
+        let notes = note_enumeration_filter(value)?;
         let pool = self.runtime_pool.clone();
         let bootstrap = self.context_bootstrap.clone();
         let catalog = self.catalog.clone();
@@ -691,6 +709,7 @@ impl GatewayMcpApplication {
                             mac_key: &mac_key,
                             subject_id,
                         },
+                        notes,
                         |result| {
                             let value =
                                 serde_json::to_value(result).map_err(|_| ErrorCode::Internal)?;
@@ -2032,6 +2051,41 @@ fn workspace(value: &Value) -> Result<Option<WorkspaceId>, ErrorCode> {
     Ok(Some(WorkspaceId(
         Uuid::parse_str(value).map_err(|_| ErrorCode::InvalidInput)?,
     )))
+}
+
+/// ADR-0067 D-G: `memory.enumerate`'s note axes, typed at the edge. An unknown kind or a bound that is not RFC 3339 is
+/// `INVALID_INPUT`; `since >= until` is refused by the adapter, next to the predicate it would describe.
+fn note_enumeration_filter(value: &Value) -> Result<NoteEnumerationFilter, ErrorCode> {
+    let note_kinds = value
+        .get("note_kinds")
+        .map(|kinds| -> Result<Vec<NoteKind>, ErrorCode> {
+            kinds
+                .as_array()
+                .ok_or(ErrorCode::InvalidInput)?
+                .iter()
+                .map(|kind| {
+                    kind.as_str()
+                        .and_then(NoteKind::parse_wire)
+                        .ok_or(ErrorCode::InvalidInput)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let bound = |name: &str| {
+        value
+            .get(name)
+            .map(|at| {
+                at.as_str()
+                    .and_then(|at| OffsetDateTime::parse(at, &Rfc3339).ok())
+                    .ok_or(ErrorCode::InvalidInput)
+            })
+            .transpose()
+    };
+    Ok(NoteEnumerationFilter {
+        note_kinds,
+        occurred_since: bound("since")?,
+        occurred_until: bound("until")?,
+    })
 }
 
 fn rfc3339(at: OffsetDateTime) -> Result<String, ErrorCode> {

@@ -7,7 +7,7 @@
 //!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory]
-//! Spec: Baseline §22.0; §23.1; §36; ADR-0025; ADR-0026; ADR-0054
+//! Spec: Baseline §22.0; §23.1; §36; ADR-0025; ADR-0026; ADR-0054; ADR-0067
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -15,7 +15,8 @@ use humaux_adapters::{
     affect_repo::{self, AffectInput, AffectRow, AnnotateDone},
     context_repo::{
         self, BindingWriteOutcome, BindingWriteRequest, EnumerationCensus, MaterializedMemory,
-        MemoryEnumerationParams, materialize_memory_enumeration, materialize_memory_get,
+        MemoryEnumerationParams, NoteEnumerationFilter, materialize_memory_enumeration_filtered,
+        materialize_memory_get_versioned,
     },
     distill_repo::{
         self, ConfirmOutcome, ConfirmRequest, PendingCandidate, RejectOutcome, RejectRequest,
@@ -25,7 +26,7 @@ use humaux_adapters::{
         RestoreResult, SupersedeOutcome, SupersedeRequest,
     },
     postgres::RuntimeDbPool,
-    read_materialize::MaterializedItem,
+    read_materialize::{MaterializedItem, MemoryHistory},
     subject_repo,
 };
 use humaux_domain::{
@@ -80,6 +81,59 @@ pub(crate) struct MemoryItem {
     /// §8.5.1 (ADR-0030 D-D): the memory's affect annotations, raw row + read-time
     /// `effective_intensity` (never persisted). Empty = un-annotated.
     affects: Vec<AffectItem>,
+    /// ADR-0067 D-D: the note's kind (wire string); absent for a Memory that is not a note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note_kind: Option<&'static str>,
+    /// ADR-0067 D-H: lifecycle + provenance, present only on `memory.get` with `include_history`.
+    #[serde(flatten)]
+    history: Option<HistoryItem>,
+}
+
+/// ADR-0067 D-H: the `include_history` fields of one `memory.get` item. A reference the caller may not read is
+/// omitted, never named.
+#[derive(Serialize)]
+pub(crate) struct HistoryItem {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    superseded_by: Option<Uuid>,
+    provenance: ProvenanceItem,
+}
+
+/// ADR-0067 D-H `provenance`.
+#[derive(Serialize)]
+pub(crate) struct ProvenanceItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    primary_evidence_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    derivation_strategy: String,
+    asserted_at: String,
+    authority_class: String,
+    /// Lowercase hex of the identity contract's digest of the verbatim body (notes only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body_sha256: Option<String>,
+}
+
+fn history_item(history: MemoryHistory) -> Result<HistoryItem, ErrorCode> {
+    let provenance = history.provenance;
+    Ok(HistoryItem {
+        status: history.status,
+        superseded_by: history.superseded_by,
+        provenance: ProvenanceItem {
+            primary_evidence_id: provenance.primary_evidence_id,
+            event_kind: provenance.event_kind,
+            origin: provenance.origin,
+            derivation_strategy: provenance.derivation_strategy,
+            asserted_at: provenance
+                .asserted_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| ErrorCode::Internal)?,
+            authority_class: provenance.authority_class,
+            body_sha256: provenance.body_sha256.map(hex::encode),
+        },
+    })
 }
 
 /// One affect annotation as `memory.get` / `memory.enumerate` render it (ADR-0030 D-D).
@@ -161,12 +215,15 @@ async fn affects_by_memory(
     Ok(out)
 }
 
+/// `include_history` (ADR-0067 D-H): `false` keeps the pre-40b contract byte for byte (a superseded id is
+/// `NOT_FOUND`); `true` returns the exact version asked for with its lifecycle and provenance.
 pub(crate) async fn get<T>(
     pool: Arc<RuntimeDbPool>,
     authorization: AuthorizationScope,
     requested_workspace: Option<WorkspaceId>,
     bootstrap: ContextBootstrap,
     memory_id: MemoryId,
+    include_history: bool,
     accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
     let (authorization, scope, family, stream, serving_version) =
@@ -176,8 +233,16 @@ pub(crate) async fn get<T>(
         &bootstrap.profile,
     )
     .map_err(|_| ErrorCode::Internal)?;
-    let materialized =
-        materialize_memory_get(&pool, &authorization, &scope, &family, &stream, memory_id).await?;
+    let materialized = materialize_memory_get_versioned(
+        &pool,
+        &authorization,
+        &scope,
+        &family,
+        &stream,
+        memory_id,
+        include_history,
+    )
+    .await?;
     let affects = affects_by_memory(&pool, &authorization, &materialized).await?;
     let archived = materialized.archived;
     let visible = bootstrap
@@ -271,12 +336,14 @@ fn candidate_item(row: PendingCandidate) -> Result<CandidateItem, ErrorCode> {
     })
 }
 
+/// `notes` (ADR-0067 D-G) narrows the EXACT predicate itself — manifest, census and cursor fingerprint alike.
 pub(crate) async fn enumerate<T>(
     pool: Arc<RuntimeDbPool>,
     authorization: AuthorizationScope,
     requested_workspace: Option<WorkspaceId>,
     bootstrap: ContextBootstrap,
     params: MemoryEnumerationParams<'_>,
+    notes: NoteEnumerationFilter,
     accept: impl FnOnce(EnumerationResult) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
     let (authorization, scope, family, stream, serving_version) =
@@ -286,9 +353,16 @@ pub(crate) async fn enumerate<T>(
         &bootstrap.profile,
     )
     .map_err(|_| ErrorCode::Internal)?;
-    let page =
-        materialize_memory_enumeration(&pool, &authorization, &scope, &family, &stream, params)
-            .await?;
+    let page = materialize_memory_enumeration_filtered(
+        &pool,
+        &authorization,
+        &scope,
+        &family,
+        &stream,
+        params,
+        &notes,
+    )
+    .await?;
     let pagination = Pagination {
         snapshot_id: page.snapshot_id,
         next_cursor: page.next_cursor,
@@ -812,6 +886,44 @@ async fn confirmed_write_scope(
     .await
 }
 
+/// The page's Memory bodies as items, each with its subject links, affects, note kind and (memory.get with
+/// `include_history` only) its history block. Any non-Memory body is an invariant break.
+fn memory_items(
+    materialized: &mut MaterializedMemory,
+    affects: &mut BTreeMap<Uuid, Vec<AffectItem>>,
+    archived: bool,
+) -> Result<Vec<MemoryItem>, ErrorCode> {
+    // ADR-0067 D-H: only `memory.get` with `include_history` carries one, for its single item.
+    let mut history = materialized.history.take();
+    std::mem::take(&mut materialized.bodies.items)
+        .into_iter()
+        .map(|item| -> Result<MemoryItem, ErrorCode> {
+            match item {
+                // Q3/ADR-0024 D-C: memory.get carries `archived` on its single item; enumerate
+                // never returns an archived row so it passes `false`.
+                MaterializedItem::Memory { memory_id, content } => Ok(MemoryItem {
+                    item: ContextItem {
+                        memory_id,
+                        content,
+                        archived,
+                    },
+                    subjects: materialized.subjects.remove(&memory_id).unwrap_or_default(),
+                    affects: affects.remove(&memory_id).unwrap_or_default(),
+                    note_kind: materialized
+                        .note_kinds
+                        .get(&memory_id)
+                        .map(|kind| kind.wire()),
+                    history: history
+                        .take_if(|read| read.memory_id == memory_id)
+                        .map(history_item)
+                        .transpose()?,
+                }),
+                _ => Err(ErrorCode::Internal),
+            }
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)] // One envelope assembly over the read's fixed inputs + the affect axis.
 fn accept_memory_envelope<T>(
     mut materialized: MaterializedMemory,
@@ -828,25 +940,7 @@ fn accept_memory_envelope<T>(
     enumeration: Option<EnumerationCensus>,
     accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
-    let items = materialized
-        .bodies
-        .items
-        .into_iter()
-        .map(|item| match item {
-            // Q3/ADR-0024 D-C: memory.get carries `archived` on its single item; enumerate
-            // never returns an archived row so it passes `false`.
-            MaterializedItem::Memory { memory_id, content } => Ok(MemoryItem {
-                item: ContextItem {
-                    memory_id,
-                    content,
-                    archived,
-                },
-                subjects: materialized.subjects.remove(&memory_id).unwrap_or_default(),
-                affects: affects.remove(&memory_id).unwrap_or_default(),
-            }),
-            _ => Err(ErrorCode::Internal),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let items = memory_items(&mut materialized, &mut affects, archived)?;
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let projection = build_projection_block(&materialized.ledger, visible, lag_threshold);
     let (census, pipeline) = match enumeration {

@@ -2,10 +2,11 @@
 //!   validation.
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects,
-//!   private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_subjects,
-//!   projection.stream_log]]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::postgres,
-//!   adapters::retrieve, application::affect, domain::affect, domain::authority, domain::error, domain::identity,
-//!   domain::ids, domain::subject, projection::serving, projection::stream]
+//!   private.evidence_subjects, private.identity_note_materializations, private.memory_evidence,
+//!   private.memory_records, private.memory_subjects, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
+//!   adapters::context_repo, adapters::postgres, adapters::retrieve, application::affect, domain::affect,
+//!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
+//!   projection::serving, projection::stream]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::retrieve, gateway::context, gateway::memory, gateway::recall, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable]
@@ -19,6 +20,7 @@ use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, can_read};
 use humaux_domain::ids::WorkspaceId;
+use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectId;
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
@@ -108,7 +110,16 @@ pub(crate) async fn final_memory_ids_in_txn(
     candidates: &[Uuid],
     include_archived: bool,
 ) -> Result<Vec<Uuid>, ErrorCode> {
-    final_memory_ids_about_in_txn(txn, authorization, candidates, include_archived, &[], None).await
+    final_memory_ids_about_in_txn(
+        txn,
+        authorization,
+        candidates,
+        include_archived,
+        false,
+        &[],
+        None,
+    )
+    .await
 }
 
 /// [`final_memory_ids_in_txn`] plus the §6.1.3 / ADR-0029 D-A subject re-check: when
@@ -121,11 +132,16 @@ pub(crate) async fn final_memory_ids_in_txn(
 /// on the read-time effective intensity (Qdrant's flat-array prefilter is an over-approximation
 /// across annotations and cannot compute decay). ONE extra round trip for the whole candidate
 /// set (`affect_repo::AFFECTS_FOR_MEMORIES_SQL`), never a per-row query. `None` = unscoped.
+///
+/// ADR-0067 D-H: `include_superseded` widens ONLY the lifecycle conjunct, to also admit a `superseded` row
+/// (`memory.get` with `include_history`); `revoked`/`expired`, secret backing and tombstoned Evidence stay excluded.
+/// Every recall/context/enumerate caller passes `false`.
 pub(crate) async fn final_memory_ids_about_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
     candidates: &[Uuid],
     include_archived: bool,
+    include_superseded: bool,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<Vec<Uuid>, ErrorCode> {
@@ -138,8 +154,9 @@ pub(crate) async fn final_memory_ids_about_in_txn(
         FROM private.memory_records AS m
         WHERE m.tenant_id = $1
           AND m.memory_id = ANY($2)
-          AND m.status = 'active'
-          AND m.superseded_by IS NULL
+          -- ADR-0067 D-H: `$5` admits the superseded version itself for memory.get include_history.
+          AND ((m.status = 'active' AND m.superseded_by IS NULL)
+               OR ($5::boolean AND m.status = 'superseded'))
           -- Q3/ADR-0024 D-C: recall/context/enumerate exclude archived rows here (the shared
           -- final-eligibility gate); only memory.get passes include_archived=true.
           AND (m.archived_at IS NULL OR $3::boolean)
@@ -178,6 +195,7 @@ pub(crate) async fn final_memory_ids_about_in_txn(
     .bind(candidates)
     .bind(include_archived)
     .bind(subject_filter)
+    .bind(include_superseded)
     .fetch_all(&mut **txn)
     .await
     .map_err(|_| ErrorCode::DependencyUnavailable)?;
@@ -210,6 +228,7 @@ async fn load_memories(
     authorization: &AuthorizationScope,
     candidates: &[Uuid],
     include_archived: bool,
+    include_superseded: bool,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<Vec<(Uuid, serde_json::Value)>, ErrorCode> {
@@ -218,6 +237,7 @@ async fn load_memories(
         authorization,
         candidates,
         include_archived,
+        include_superseded,
         subject_ids,
         affect,
     )
@@ -475,15 +495,19 @@ pub async fn materialize_final_bodies(
 /// visibility gates, active/supersession lifecycle, secret backing-source exclusion, and
 /// tombstoned Evidence exclusion all stay in that single implementation. An absent final
 /// Memory row intentionally maps to the object-level `NOT_FOUND` result.
+///
+/// ADR-0067 D-H: `include_superseded` (memory.get `include_history`) also admits the exact version asked for when it
+/// is `superseded`; every other gate conjunct is unchanged.
 pub(crate) async fn materialize_one_memory_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     authorization: &AuthorizationScope,
     expected_family: &StreamFamily,
     validated_key: &StreamKey,
     memory_id: MemoryId,
+    include_superseded: bool,
 ) -> Result<MaterializedBodies, ErrorCode> {
     // Q3/ADR-0024 D-C: memory.get is the one read that must still return an archived row.
-    let bodies = materialize_final_bodies_in_txn(
+    let bodies = materialize_final_bodies_gated_in_txn(
         txn,
         authorization,
         expected_family,
@@ -491,6 +515,9 @@ pub(crate) async fn materialize_one_memory_in_txn(
         &[memory_id.0],
         &[],
         true,
+        include_superseded,
+        &[],
+        None,
     )
     .await?;
     match bodies.items.as_slice() {
@@ -555,6 +582,36 @@ pub(crate) async fn materialize_final_bodies_about_in_txn(
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<MaterializedBodies, ErrorCode> {
+    materialize_final_bodies_gated_in_txn(
+        txn,
+        authorization,
+        expected_family,
+        validated_key,
+        memory_ids,
+        overlay,
+        include_archived,
+        false,
+        subject_ids,
+        affect,
+    )
+    .await
+}
+
+/// The one body of [`materialize_final_bodies_about_in_txn`], plus the ADR-0067 D-H `include_superseded` lifecycle
+/// choice of the shared gate (only `memory.get` with `include_history` passes `true`).
+#[allow(clippy::too_many_arguments)] // the gate's axes, one call per read route
+async fn materialize_final_bodies_gated_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    authorization: &AuthorizationScope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    memory_ids: &[Uuid],
+    overlay: &[OverlayCandidate],
+    include_archived: bool,
+    include_superseded: bool,
+    subject_ids: &[SubjectId],
+    affect: Option<&AffectFilter>,
+) -> Result<MaterializedBodies, ErrorCode> {
     let authorization = effective_authorization(authorization, expected_family, validated_key)?;
     set_authorization_local(txn, &authorization).await?;
     let mut overlay =
@@ -571,6 +628,7 @@ pub(crate) async fn materialize_final_bodies_about_in_txn(
         &authorization,
         &candidate_ids,
         include_archived,
+        include_superseded,
         subject_ids,
         affect,
     )
@@ -615,4 +673,157 @@ pub(crate) async fn materialize_final_bodies_about_in_txn(
     }
     let snapshot = snapshot(txn).await?;
     Ok(MaterializedBodies { snapshot, items })
+}
+
+/// ADR-0067 D-D: `memory_id → note_kind` for the notes among `ids`, under the transaction's RLS. A non-note Memory
+/// (`note_kind IS NULL`) has no entry; a value outside [`NoteKind`] is the 0235 CHECK drifting, so `Internal`.
+pub(crate) async fn memory_note_kinds_in_txn(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, NoteKind>, ErrorCode> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query(
+        "SELECT memory_id, note_kind FROM private.memory_records \
+         WHERE tenant_id = $1 AND memory_id = ANY($2) AND note_kind IS NOT NULL",
+    )
+    .bind(tenant_id)
+    .bind(ids)
+    .fetch_all(&mut **txn)
+    .await
+    .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    rows.iter()
+        .map(|row| -> Result<(Uuid, NoteKind), ErrorCode> {
+            let memory_id: Uuid = row.try_get("memory_id").map_err(|_| ErrorCode::Internal)?;
+            let wire: String = row.try_get("note_kind").map_err(|_| ErrorCode::Internal)?;
+            let kind = NoteKind::parse_wire(&wire).ok_or(ErrorCode::Internal)?;
+            Ok((memory_id, kind))
+        })
+        .collect()
+}
+
+/// ADR-0067 D-H: `derivation_strategy` of a Memory with no identity contract. Every such Memory reaches the store
+/// through the semantic path whose §16.1 processor kind is `distill_reasoner::DISTILL_PROCESSOR_KIND`.
+const NON_NOTE_DERIVATION: &str = "distill";
+
+/// ADR-0067 D-H: one Memory version's lifecycle and provenance, as `memory.get` with `include_history` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryHistory {
+    /// The version described — always the id asked for, never its successor.
+    pub memory_id: Uuid,
+    /// `"active"` or `"superseded"`: the only two states the final gate admits with history.
+    pub status: &'static str,
+    /// The successor, present only when the caller may read it (`context_repo::readable_memory_ids`).
+    pub superseded_by: Option<Uuid>,
+    /// Where the version came from.
+    pub provenance: MemoryProvenance,
+}
+
+/// ADR-0067 D-H `provenance`. Evidence-side fields are `None` when the PRIMARY Evidence is not visible to the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryProvenance {
+    /// The PRIMARY `memory_evidence` link's Evidence.
+    pub primary_evidence_id: Option<Uuid>,
+    /// `private.events.event_kind` of that Evidence (`None` for an artifact).
+    pub event_kind: Option<String>,
+    /// `private.evidence_objects.origin_class` of that Evidence.
+    pub origin: Option<String>,
+    /// The identity contract's `strategy` for a note, else `"distill"`.
+    pub derivation_strategy: String,
+    /// `private.memory_records.asserted_at`.
+    pub asserted_at: OffsetDateTime,
+    /// `private.memory_records.authority_class`.
+    pub authority_class: String,
+    /// The identity contract's SHA-256 of the verbatim body (notes only; ADR-0067 D-E).
+    pub body_sha256: Option<Vec<u8>>,
+}
+
+/// Reads [`MemoryHistory`] for a Memory the final gate already admitted in this RR snapshot, under the caller's RLS
+/// (installed by that gate), so a missing row is an invariant break (`Internal`), never an existence oracle.
+pub(crate) async fn memory_history_in_txn(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    memory_id: MemoryId,
+) -> Result<MemoryHistory, ErrorCode> {
+    let row = sqlx::query(
+        r#"
+        SELECT m.status,
+               m.superseded_by,
+               m.asserted_at,
+               m.authority_class,
+               eo.evidence_id AS primary_evidence_id,
+               eo.origin_class,
+               event.event_kind,
+               contract.strategy,
+               contract.body_sha256
+        FROM private.memory_records AS m
+        LEFT JOIN LATERAL (
+            SELECT me.evidence_id
+            FROM private.memory_evidence AS me
+            WHERE me.memory_id = m.memory_id
+              AND me.role = 'PRIMARY'
+            ORDER BY me.ordinal, me.evidence_id
+            LIMIT 1
+        ) AS primary_link ON true
+        LEFT JOIN private.evidence_objects AS eo
+          ON eo.evidence_id = primary_link.evidence_id
+         AND eo.tenant_id = m.tenant_id
+        LEFT JOIN private.events AS event ON event.event_id = eo.evidence_id
+        LEFT JOIN private.identity_note_materializations AS contract
+          ON contract.tenant_id = m.tenant_id
+         AND contract.output_memory_id = m.memory_id
+        WHERE m.tenant_id = $1
+          AND m.memory_id = $2
+        "#,
+    )
+    .bind(authorization.tenant_id().0)
+    .bind(memory_id.0)
+    .fetch_optional(&mut **txn)
+    .await
+    .map_err(|_| ErrorCode::DependencyUnavailable)?
+    .ok_or(ErrorCode::Internal)?;
+    let status: String = row.try_get("status").map_err(|_| ErrorCode::Internal)?;
+    let status = match status.as_str() {
+        "active" => "active",
+        "superseded" => "superseded",
+        _ => return Err(ErrorCode::Internal),
+    };
+    let successor: Option<Uuid> = row
+        .try_get("superseded_by")
+        .map_err(|_| ErrorCode::Internal)?;
+    // ADR-0067 D-H: a reference the caller may not read is omitted, never named.
+    let superseded_by = match successor {
+        Some(next) => readable_memory_ids(txn, authorization, &[next])
+            .await?
+            .contains(&next)
+            .then_some(next),
+        None => None,
+    };
+    let strategy: Option<String> = row.try_get("strategy").map_err(|_| ErrorCode::Internal)?;
+    Ok(MemoryHistory {
+        memory_id: memory_id.0,
+        status,
+        superseded_by,
+        provenance: MemoryProvenance {
+            primary_evidence_id: row
+                .try_get("primary_evidence_id")
+                .map_err(|_| ErrorCode::Internal)?,
+            event_kind: row.try_get("event_kind").map_err(|_| ErrorCode::Internal)?,
+            origin: row
+                .try_get("origin_class")
+                .map_err(|_| ErrorCode::Internal)?,
+            derivation_strategy: strategy.unwrap_or_else(|| NON_NOTE_DERIVATION.to_owned()),
+            asserted_at: row
+                .try_get("asserted_at")
+                .map_err(|_| ErrorCode::Internal)?,
+            authority_class: row
+                .try_get("authority_class")
+                .map_err(|_| ErrorCode::Internal)?,
+            body_sha256: row
+                .try_get("body_sha256")
+                .map_err(|_| ErrorCode::Internal)?,
+        },
+    })
 }

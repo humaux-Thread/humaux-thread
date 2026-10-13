@@ -14524,3 +14524,202 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
         });
     });
 }
+
+/// The `content.items` of a `memory.enumerate` result, or the top-level `items` of a `memory.get` result.
+fn memory_items(value: &Value) -> &Vec<Value> {
+    let envelope = if value["items"].is_null() {
+        &value["content"]
+    } else {
+        value
+    };
+    envelope["items"].as_array().expect("memory items")
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one server: store two notes, filter, refuse project, read with and without history
+fn native_mcp_note_reads_filter_by_kind_refuse_project_and_get_history() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>("native_mcp_note_reads", |mut handle| {
+        handle.assert_gateway_login();
+        let prefix = format!("nread{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "r".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWriteAndContextRead,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            64,
+        );
+        let runtime_handle = handle.rt.handle().clone();
+        let runtime = runtime_handle
+            .block_on(handle.fresh_runtime())
+            .expect("note reads runtime");
+        let app = application(&handle, runtime);
+        runtime_handle.block_on(async {
+            let (address, server) = start(app).await;
+            let bearer = credential.bearer.as_str();
+            let workspace = handle.workspace_id;
+            let headers = tool_call_headers("memory", bearer);
+
+            let body = "Decision: notes are verbatim.\r\n\"quoted\" \\ kept \u{1F680}";
+            let mut stored = Vec::new();
+            for (n, (content, kind)) in [(body, "decision"), ("a lesson, not a decision", "lesson")]
+                .into_iter()
+                .enumerate()
+            {
+                let (status, response) = raw_request(
+                    address,
+                    &headers,
+                    &rpc(
+                        1 + n as u64,
+                        "tools/call",
+                        call_params(
+                            "memory",
+                            json!({"action":"note_put","content":content,"note_kind":kind,
+                                   "idempotency_key":format!("reads-{n}-{}", Uuid::now_v7()),
+                                   "workspace_id":workspace}),
+                        ),
+                    ),
+                )
+                .await;
+                assert_eq!(status, 200, "note_put: {response}");
+                stored.push(assert_tool_response(&response, ToolName::Memory).clone());
+            }
+            let decision_id = stored[0]["memory_id"]
+                .as_str()
+                .expect("memory_id")
+                .to_owned();
+            let decision_evidence = stored[0]["evidence_id"]
+                .as_str()
+                .expect("evidence_id")
+                .to_owned();
+
+            // D-G: note_kinds rides on the exact predicate; the page holds the decision only.
+            let (status, page) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    10,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"enumerate","workspace_id":workspace,"limit":100,
+                               "note_kinds":["decision"]}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "enumerate note_kinds: {page}");
+            let value = assert_tool_response(&page, ToolName::Memory);
+            let items = memory_items(value);
+            assert_eq!(items.len(), 1, "{page}");
+            assert_eq!(items[0]["memory_id"], decision_id.as_str());
+            assert_eq!(items[0]["note_kind"], "decision");
+            for key in ["status", "superseded_by", "provenance"] {
+                assert!(
+                    items[0].get(key).is_none(),
+                    "enumerate carries no `{key}`: {page}"
+                );
+            }
+
+            // L-1: `project` is not a filter; the schema refuses it before any read.
+            let (status, refused) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    11,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"enumerate","workspace_id":workspace,"project":"humaux"}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 400, "project is INVALID_INPUT: {refused}");
+            // ADR-0067 D-G: the note axes are refused on the candidate / subject listings, never silently dropped.
+            for (id, mode) in [(111, "candidates"), (112, "subjects")] {
+                let (status, refused) = raw_request(
+                    address,
+                    &headers,
+                    &rpc(
+                        id,
+                        "tools/call",
+                        call_params(
+                            "memory",
+                            json!({"action":"enumerate","workspace_id":workspace,mode:true,"note_kinds":["decision"]}),
+                        ),
+                    ),
+                )
+                .await;
+                assert_eq!(status, 400, "{mode} + note_kinds is INVALID_INPUT: {refused}");
+            }
+
+            // D-H: include_history returns status and provenance; the digest is recomputed here.
+            let (status, history) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    12,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"get","memory_id":decision_id,"workspace_id":workspace,
+                               "include_history":true}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "get include_history: {history}");
+            let value = assert_tool_response(&history, ToolName::Memory);
+            let item = &memory_items(value)[0];
+            assert_eq!(item["status"], "active", "{history}");
+            assert_eq!(item["note_kind"], "decision");
+            let provenance = &item["provenance"];
+            assert_eq!(provenance["derivation_strategy"], "identity_note_v1");
+            assert_eq!(provenance["origin"], "AuthenticatedAgent");
+            assert_eq!(provenance["event_kind"], "MANUAL_NOTE");
+            assert_eq!(
+                provenance["primary_evidence_id"],
+                decision_evidence.as_str()
+            );
+            assert_eq!(
+                provenance["body_sha256"],
+                hex::encode(Sha256::digest(body.as_bytes()).as_slice()).as_str()
+            );
+            assert!(
+                item.get("superseded_by").is_none(),
+                "an active version names no successor"
+            );
+
+            // Default: no history keys at all.
+            let (status, plain) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    13,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"get","memory_id":decision_id,"workspace_id":workspace}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "default get: {plain}");
+            let value = assert_tool_response(&plain, ToolName::Memory);
+            let item = &memory_items(value)[0];
+            for key in ["status", "superseded_by", "provenance"] {
+                assert!(
+                    item.get(key).is_none(),
+                    "default get carries no `{key}`: {plain}"
+                );
+            }
+            assert_eq!(item["content"]["key_claim"], body);
+
+            stop_server(server).await.expect("server shutdown");
+        });
+    });
+}
