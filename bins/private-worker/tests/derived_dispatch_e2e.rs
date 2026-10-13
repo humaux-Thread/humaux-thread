@@ -2325,7 +2325,17 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 .expect("lock evidence");
                 // dep: PostgreSQL(owner) — probe connection
                 let mut probe = Client::connect(&dsn, NoTls).expect("probe connection");
+                // Every wait below is bounded: a timing miss (the call never admitted, so `called` never
+                // flips) is a fast, named failure — unbounded, it hung CI run 38343204163 for 90 min.
+                let give_up = std::time::Instant::now() + Duration::from_secs(60);
+                let within = |what: &str| {
+                    assert!(
+                        std::time::Instant::now() < give_up,
+                        "E11 gate: {what} not seen within 60 s — the call missed its window"
+                    );
+                };
                 let wait: f64 = loop {
+                    within("the job PROCESSING");
                     let row = probe
                         .query_one(
                             "SELECT status = 'PROCESSING', \
@@ -2342,6 +2352,7 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 std::thread::sleep(Duration::from_secs_f64(wait.max(0.0)));
                 tx.commit().expect("release the read leg");
                 while !called2.load(Ordering::SeqCst) {
+                    within("the provider call");
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 let mut tx = admin.transaction().expect("begin");
@@ -2351,6 +2362,7 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 )
                 .expect("lock evidence again");
                 while !replied2.load(Ordering::SeqCst) {
+                    within("the provider reply");
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 std::thread::sleep(Duration::from_secs_f64(LEASE / 2.0));

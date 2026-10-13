@@ -323,6 +323,8 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: cargo test
+        # A hung test fails here, not at the job's 90 min (run 38343204163: one test spun 80 min).
+        timeout-minutes: 40
         shell: bash
         run: |
           set -uo pipefail
@@ -383,6 +385,8 @@ jobs:
       #    under a 5 s listen deadline (mcp_gateway.rs GATEWAY_PROCESS_START_TIMEOUT);
       #    four concurrent bootstraps on the 4-vCPU arm runner missed it, two do not.
       - name: cargo test
+        # A hung test fails here, not at the job's 90 min (run 38343204163: one test spun 80 min).
+        timeout-minutes: 40
         shell: bash
         run: |
           set -uo pipefail
@@ -469,6 +473,7 @@ jobs:
       # provisions each resource (per-run databases, the gitleaks fixture, humaux-admin)
       # and runs lane(a)/lane(b) serially after a warm-up; lane(c) is reported, not run.
       - name: cargo xtask serial-lane (the ignored tier)
+        timeout-minutes: 45
         run: cargo xtask serial-lane
 
   # The required check (branch protection names it): green only when every part above is green; a skipped or
