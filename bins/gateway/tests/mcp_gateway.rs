@@ -14384,9 +14384,9 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
             assert_eq!(replayed["evidence_id"], stored["evidence_id"]);
             assert_eq!(durable_counts(blocking_counts(&mut handle)), durable_counts(after_first));
 
-            // G17: "a" and "a" decode to the same body and share a body digest; the Evidence digests (raw bytes) differ.
+            // G17: "\u0061" (a JSON escape on the wire) and "a" decode to the same body and share a body digest; the Evidence digests (raw bytes) differ.
             let mut digests = Vec::new();
-            for (n, spelling) in [r"a", "a"].into_iter().enumerate() {
+            for (n, spelling) in [r"\u0061", "a"].into_iter().enumerate() {
                 let arguments = format!(
                     r#"{{"action":"note_put","content":"{spelling}","note_kind":"note","idempotency_key":"escape-{n}-{}","workspace_id":"{workspace}"}}"#,
                     Uuid::now_v7()

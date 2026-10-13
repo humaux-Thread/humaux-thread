@@ -87,8 +87,11 @@ GRANT SELECT         ON private.identity_note_materializations TO role_private_w
 COMMENT ON TABLE private.identity_note_materializations IS
   'ADR-0067 D-B identity contract: this Evidence is materialised by the gateway as exactly one Memory (output_memory_id) in the same transaction, with no LLM derivation. Written once, never updated.';
 
--- G06: a contracted Evidence has exactly one PRIMARY output. SECURITY INVOKER: a session able to insert the link can see the
--- Evidence, and the contract's policy delegates to the Evidence's own visibility, so the contract is visible to it.
+-- G06: a contracted Evidence has exactly one PRIMARY output. SECURITY INVOKER: the check sees the contract only when the
+-- inserting session can see the Evidence (the contract's policy delegates to the Evidence's visibility). Every writer of a
+-- PRIMARY link today (distill for its own Evidence, note_put for the Evidence it just wrote) can; a session linking a
+-- Memory to an Evidence it cannot see is not a path that exists — ponytail: owner-run (SECURITY DEFINER) check if one
+-- ever does (PR #7 independent review P2-4).
 CREATE FUNCTION private.identity_note_single_output() RETURNS trigger
 LANGUAGE plpgsql
 AS $$

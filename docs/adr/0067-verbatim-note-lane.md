@@ -1,7 +1,7 @@
 # ADR-0067 — Verbatim note lane: `memory.note_put`, note lineage, note_kind, history reads
 
 - Status: Accepted (2026-10-13). Card 40 of `docs/ops/delivery_plan_v2.md`, implemented in three slices, one PR each:
-  40a write path (D-A–D-F, D-I), 40b reads (D-G, D-H), 40c replacement (D-J). Research: web-GPT batch 2 (R-40,
+  40a write path (D-A–D-F, D-I), 40b reads (D-G, D-H), 40c replacement (D-J), 40d long-note chunking (D-I, L-4). Research: web-GPT batch 2 (R-40,
   2026-09-26) re-checked against the code at main 17c5895 in batch 9 (2026-10-13, ChatGPT Pro, 10 conflicts; TW
   `research_gpt_batch9_20261013.md`); this ADR is the main line's adjudication and wins over both.
 - Supersedes for card 40: R-40's "extend `remember.put` to return a synchronous Memory", "lesson/note → FACT", the
@@ -142,8 +142,13 @@ tombstones or forget; recall keeps `ACTIVE_FINAL`.
 The card's "0 MiniMax ledger rows" is not proof alone. The gate checks, for the notes written: MiniMax ledger delta
 0, generative-provider invocations 0, `DERIVED_DISTILL` jobs 0, provider slot / reservation delta 0. "Recall finds
 the notes" waits for this write's projection watermark (not an empty queue) with no failed or quarantined related
-job; a body longer than the embedding input is chunked deterministically into several points of one Memory, recall
-dedupes by `memory_id`, and the PG body is never truncated. Storage quota counts every retained version.
+job. Long bodies, staged: in 40a a note is projected through the existing single retrieval card (§18.2 budget, 600
+chars), so recall covers the title and the first card budget of the body; `build_card` caps over-long fields before
+fitting so a 64 KiB body costs no more than a card-sized one (PR #7 Codex P1). Slice 40d chunks a body longer than the
+card deterministically into several points of one Memory with recall deduping by `memory_id` (declared limit L-4 until
+then); the PG body is never truncated, and literal full-text search over it is card 41. A `SECRET_MATERIAL` note is
+never carded (§18.2): `note_put` answers `indexing:"excluded"` instead of `"scheduled"`. Storage quota counts every
+retained version.
 
 ### D-J — Note identity and replacement (40c)
 
@@ -167,11 +172,13 @@ two-memory distill stays green. G07 PrivateKnowledge stored exactly; above-ceili
 zero Memory / candidate / outbox delta. G08 high-authority prose without a request stays PrivateKnowledge. G09 enum ↔
 CHECK ↔ mapping ↔ facet drift fails. G10 research and note both NOTE, counted apart. G16 whitespace, CRLF, CJK, emoji,
 combining marks, escaped quotes, backslashes and the 64 KiB edge are byte-equal with an independently computed
-digest. G17 `"a"` and `"a"` share a digest; different normal forms do not. G18 NUL refused before any Evidence.
+digest. G17 `"\u0061"` and `"a"` share a digest; different normal forms do not. G18 NUL refused before any Evidence.
 G22 a three-statement note → exactly one Memory, no candidates. G23 ordinary distill splitting unchanged. G24 the op
 is listed by real MCP `tools/list` and runs through `tools/call`. G25 the `remember.put` schema and response are
-unchanged; the new fields are refused there. Fault pair: a rewriting fake provider turns the verbatim gate red; an
-echo provider turns the no-provider gate red.
+unchanged; the new fields are refused there. Fault pair (the two ways an LLM could sneak in): a body rewritten on the way
+in turns G16's byte-equality red (CI mutation: trim in `NoteBody`); a provider reached for a note turns the worker gate
+`d13` red (it runs the real worker with a call-counting provider; CI mutation: drop the identity-contract re-check) and
+G04/G05's job count red (CI mutation: drop 0235's distill skip). Gate tests assert stored rows, never two literals.
 40b: G11 page and total from one snapshot under concurrent writes; joins do not inflate the count. G12 a tampered
 cursor is refused. G13 filters use `occurred_at`, not `created_at`. G14 superseded: NotFound by default, readable
 with `include_history`, absent from recall. G15 after forget nothing (history, provenance, enumerate, cache, recall)
@@ -198,3 +205,5 @@ stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
   `memory_store(project=…)` fixtures or a continuity-project card).
 - L-2 No arbitrary client-chosen `external_id`; a legacy facade `id` resolves only to a returned `note_id`.
 - L-3 `body_sha256` of a low-entropy body is enumerable; it is on the forget surface with the body (40b G15).
+- L-4 Until slice 40d, recall over a note longer than one retrieval card covers its title and first card budget only
+  (signal: card 40's 64 KiB recall fixture, or a note recall miss reported against text past the card budget).

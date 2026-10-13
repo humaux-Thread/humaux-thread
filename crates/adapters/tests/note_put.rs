@@ -1,5 +1,5 @@
 //! `adapters::tests::note_put` — ADR-0067 card 40a acceptance for `memory.note_put`'s storage path (G01-G10, G16, G17, G22,
-//!   plus the fault pair), against a real PostgreSQL and an actual `role_gateway` login.
+//!   the fault pair lives in G16 and the worker test d13), against a real PostgreSQL and an actual `role_gateway` login.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
 //!   services=[PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
 //!   ops.distill_calls, ops.model_call_ledger, private.distill_candidates, private.events, private.evidence_objects,
@@ -955,56 +955,4 @@ fn g01_nothing_is_visible_or_stored_before_commit_and_the_memory_is_readable_aft
             )
         );
     });
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Fault pair (ADR-0067 acceptance): the verbatim gate and the no-provider gate must be able to go red.
-// ---------------------------------------------------------------------------------------------------------------------
-
-/// Gate: the stored body is the sent body byte for byte.
-fn assert_verbatim(sent: &str, stored: &str) {
-    assert_eq!(stored.as_bytes(), sent.as_bytes(), "the body was rewritten");
-}
-
-/// A distill-style provider that "tidies" the text, the failure D-A exists to rule out.
-fn rewriting_provider(text: &str) -> String {
-    text.trim().replace("\r\n", "\n")
-}
-
-/// A provider that merely echoes its input — harmless to the text, but it is still a provider call.
-struct EchoProvider {
-    calls: std::cell::Cell<i64>,
-}
-
-impl EchoProvider {
-    fn complete(&self, text: &str) -> String {
-        self.calls.set(self.calls.get() + 1);
-        text.to_owned()
-    }
-}
-
-#[test]
-#[should_panic(expected = "the body was rewritten")]
-fn fault_pair_a_rewriting_provider_turns_the_verbatim_gate_red() {
-    let sent = "  keep my \r\n whitespace  ";
-    assert_verbatim(sent, &rewriting_provider(sent));
-}
-
-#[test]
-#[should_panic(expected = "DERIVED_DISTILL jobs")]
-fn fault_pair_an_echo_provider_turns_the_no_provider_gate_red() {
-    let provider = EchoProvider {
-        calls: std::cell::Cell::new(0),
-    };
-    let sent = "echo me";
-    assert_verbatim(sent, &provider.complete(sent));
-    // The gate counts provider invocations as jobs/traces; one call is one too many.
-    assert_no_provider_traces("echo provider", provider.calls.get(), (0, 0, 0));
-}
-
-#[test]
-fn fault_pair_controls_stay_green() {
-    let sent = "  keep my \r\n whitespace  ";
-    assert_verbatim(sent, sent);
-    assert_no_provider_traces("no provider", 0, (0, 0, 0));
 }

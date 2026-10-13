@@ -746,7 +746,11 @@
      "const": "stored"
     },
     "indexing": {
-     "const": "scheduled"
+     "enum": [
+      "scheduled",
+      "excluded"
+     ],
+     "description": "scheduled: the outbox indexes the note after the commit (never awaited); excluded: data_class SECRET_MATERIAL, which §18.2 never cards or embeds — no recall leg will ever exist for this note."
     }
    },
    "additionalProperties": false

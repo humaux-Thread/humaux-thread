@@ -376,6 +376,13 @@ impl GatewayMcpApplication {
             data_class: wire.data_class.unwrap_or(self.remember_policy.data_class()),
             event_kind: RememberEventKind::ManualNote,
         };
+        // §18.2: a SECRET_MATERIAL Memory never gets a card or a vector — the response must not promise indexing
+        // (PR #7 Codex P2).
+        let indexing = if classification.data_class == DataClass::SecretMaterial {
+            "excluded"
+        } else {
+            "scheduled"
+        };
         let policy = self.remember_policy.clone();
         let bootstrap = self.context_bootstrap.clone();
         let (kind, requested) = (wire.note.kind, wire.note.requested);
@@ -437,7 +444,7 @@ impl GatewayMcpApplication {
             "evidence_id": stored.accepted.evidence_id,
             "consistency_token": stored.accepted.consistency_token,
             "status": "stored",
-            "indexing": "scheduled",
+            "indexing": indexing,
         });
         self.catalog.validate_output(ToolName::Memory, &value)?;
         output(value)
