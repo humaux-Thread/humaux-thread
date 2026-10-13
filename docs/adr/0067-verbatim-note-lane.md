@@ -242,6 +242,7 @@ context bindings. `memory.correct`, `supersede`, `archive` and forget keep the n
 - **Fields a replacement refuses:** `visibility_class`, `data_class`, `subject_ids`, `subject_keys` and `affects`. The token binds only the intent fields, and anything else would ride along unconfirmed.
 - **Revoked or expired head:** answers `NOT_FOUND`, because the final gate runs before the active check. An archived head answers `CONFLICT`.
 - **MEMORY_LIFECYCLE ticket:** the replacement also issues one retiring the old version, as `memory.correct` does (ADR-0057 D-B). That adds one outbox row and one stream_log row beyond the G28 counts.
+- **Lifecycle event (card 40 follow-ups 2, 40c-1 P2-1):** with that ticket the old version gets the `SUPERSEDE` row `memory.supersede` writes to `ops.memory_lifecycle_events` (reason `EXPLICIT_SUPERSEDE`, `replacement_memory_id` = the new version, keyed by the consumed token, naming the retire ticket) and its `lifecycle_head_event_id` stamp, through the same writer. `undo_deadline` stays NULL: `memory.restore` refuses a note (G26).
 - **Confirm gate:** gained a pre-mint hook (`run_confirmed_write_checked`). Both the CAS precheck and the generic-governance note refusal run there, before any token is minted.
 
 ### D-J2 — History axes (40c-2)
@@ -293,6 +294,8 @@ adjudication tests, so the one-column conflict is latent, not live. The rule, ch
 - **Registry path.** It binds `ACTIVE_FINAL`, which is active × archive include, its previous semantics.
 - **`get(note_id)`.** It builds its DirectGet plan from the head's `memory_id`.
 - **Enumerate items** carry their own `archived` flag when an archive selection admits archived rows.
+- **`memory.get` second lifecycle layer (card 40 follow-ups 2).** After the final gate admits the version, `get` re-reads its status in the same RR snapshot, as enumerate's page does: anything but `active` (or `superseded` with `include_history`) is `Internal`, never a body. `Internal`, not `NOT_FOUND`, is the existing answer for a post-gate invariant break here, and it keeps a gate regression visible to the L-6 `NOT_FOUND` gate instead of masking it.
+- **`memory_id` XOR `note_id`** is enforced once, by the input schema's `oneOf` (`CanonicalCatalog::validate`, before any handler); the handler only parses the id present.
 - **Possible plan cost.** The archive axis is a CASE on a bound parameter, so the planner may stop choosing the `archived_at IS NULL` partial index under generic plans. The scale bar (`enumerate_scale`, ignored tier) is the signal.
 
 ## Acceptance (gates; each must be shown red once before it counts)
@@ -323,7 +326,14 @@ returns the body or its digest.
 - **G21:** no new replacement executes without a valid confirmation. A token presented with a changed body, title, kind or authority, for another note, or under another key → refused, with nothing written. A retry of a committed key returns the stored result without consuming, writing or billing; that is not token reuse.
 - **G26:** `memory.correct`, `supersede` and `restore` on a note → `CONFLICT` before any challenge.
 - **G27:** a tombstoned head cannot be replaced (NOT_FOUND).
-- **G28:** every success adds exactly one Evidence, one Memory, one PRIMARY link, one contract and one BMO, with zero LLM jobs; refusals and replays add none.
+- **G28:** every success adds exactly one Evidence, one Memory, one PRIMARY link, one contract and one BMO, with zero LLM jobs; refusals and replays add none. Follow-ups 2: also exactly one `SUPERSEDE` lifecycle event, which the old version's `lifecycle_head_event_id` names; none on a refusal or a replay.
+40c-2:
+- **G29:** every `statuses` × `archive` selection returns exactly the owner-computed set on both §22.1 faces (page and census total).
+- **G30:** recall and context stay current-only (active, not archived) whatever history exists.
+- **G31:** a cursor is bound to its selection (statuses, archive, `note_id`); the default selection keeps its pre-40c-2 fingerprint byte for byte.
+- **G32:** `get(note_id)` reads the head; a `memory_id` never falls back to a note nor a `note_id` to a version; a closed head is `NOT_FOUND`, never an older version. Another user's private note answers exactly like an unknown `note_id`.
+- **G33:** a tombstone overrides every selection, `include_history` included.
+- **L-6:** a `revoked` or `expired` version is in no selection and is not gettable (`NOT_FOUND` by `memory_id` and by `note_id`, with and without history).
 Card baseline (real stack): 50 notes (rejected, decision, fix, problem, lesson 6 each; research, preference, state,
 note 5 each) → exact per-kind counts; replay (50 active / 0 superseded / 50 kept); one confirmed revision (50/1/51); a
 stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).

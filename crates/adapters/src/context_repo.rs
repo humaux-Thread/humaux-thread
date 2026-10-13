@@ -2336,16 +2336,20 @@ pub async fn materialize_memory_get_target(
     // Q3/ADR-0024 D-C: memory.get surfaces `archived:true` (unlike recall/context, which
     // exclude archived rows). The body read above already gated visibility/lifecycle, so a
     // missing row here is an invariant break in the same RR snapshot, not an existence oracle.
-    let archived: bool = sqlx::query_scalar(
-        "SELECT archived_at IS NOT NULL FROM private.memory_records \
-         WHERE tenant_id = $1 AND memory_id = $2",
-    )
-    .bind(authorization.tenant_id().0)
-    .bind(memory_id.0)
-    .fetch_optional(&mut *txn)
-    .await
-    .map_err(|_| ErrorCode::DependencyUnavailable)?
-    .ok_or(ErrorCode::Internal)?;
+    // ADR-0067 L-6: the enumerate path's second, fail-closed lifecycle layer, here too — the
+    // admitted version must be `active`, or `superseded` with `include_history`; a `revoked` /
+    // `expired` row (or a superseded one without history) got past the final gate: `Internal`.
+    let (statuses, archived_ids) =
+        memory_versions_in_txn(&mut txn, authorization.tenant_id().0, &[memory_id.0]).await?;
+    let admitted = match statuses.get(&memory_id.0).copied() {
+        Some("active") => true,
+        Some("superseded") => include_history,
+        _ => false,
+    };
+    if !admitted {
+        return Err(ErrorCode::Internal);
+    }
+    let archived = archived_ids.contains(&memory_id.0);
     let subjects =
         memory_subjects_in_txn(&mut txn, authorization.tenant_id().0, &[memory_id.0]).await?;
     let (note_kinds, note_ids) =
