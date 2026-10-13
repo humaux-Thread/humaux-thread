@@ -1,8 +1,8 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects] w=[ops.outbox, private.distill_candidates, private.memory_evidence, private.memory_records, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::jobs, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::memory_governance_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.memory_evidence, private.memory_records, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::jobs, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::note, domain::subject, humaux-adapters, projection::stream]
+//! Called-by: [adapters::context_repo, adapters::memory_governance_repo, adapters::note_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
 //!   only ever takes the outbox row of its own Evidence; every read runs under role_private_worker grants + RLS with the acting
@@ -36,6 +36,7 @@ use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_domain::memory::MemoryType;
+use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 use serde_json::Value;
@@ -409,6 +410,25 @@ pub async fn evidence_has_declared_affects(
     .await
 }
 
+/// ADR-0067 D-B: whether `evidence_id` has an identity contract (`private.identity_note_materializations`) — its Memory
+/// was written by the gateway, so the worker must not derive anything from it. The 0235 enqueue trigger already creates
+/// no job for such an Evidence; this is the worker's own re-check, made before any provider reservation. Runs in the
+/// [`load_evidence`] transaction (its RLS context: the contract's policy follows the Evidence's visibility).
+pub async fn evidence_has_identity_contract(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    evidence_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM private.identity_note_materializations \
+                        WHERE tenant_id = $1 AND evidence_id = $2)",
+    )
+    .bind(tenant_id)
+    .bind(evidence_id)
+    .fetch_one(&mut **txn)
+    .await
+}
+
 /// §16.1.1 processing-run fingerprint columns, written at start (before the provider call).
 #[derive(Debug, Clone)]
 pub struct ProcessingRunStart<'a> {
@@ -538,6 +558,9 @@ pub struct NewMemory<'a> {
     pub memory_type: MemoryType,
     pub class: AuthorityClass,
     pub confidence: f32,
+    /// ADR-0067 D-D: `Some` only for a verbatim note written by `memory.note_put`; every distilled,
+    /// confirmed or corrected Memory is `None`.
+    pub note_kind: Option<NoteKind>,
 }
 
 /// `memory_records` + its PRIMARY `memory_evidence` link (ordinal 0) in the caller's
@@ -561,8 +584,9 @@ pub async fn insert_memory(
     let memory_id: Uuid = sqlx::query_scalar(
         "INSERT INTO private.memory_records \
            (tenant_id, memory_type, content, visibility_class, visibility_user_id, \
-            visibility_workspace_id, authority_class, confidence, status, asserted_at, occurred_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9) \
+            visibility_workspace_id, authority_class, confidence, status, asserted_at, occurred_at, \
+            note_kind) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9, $10) \
          RETURNING memory_id",
     )
     .bind(tenant_id)
@@ -574,6 +598,7 @@ pub async fn insert_memory(
     .bind(authority_class_db_str(memory.class))
     .bind(memory.confidence)
     .bind(evidence.occurred_at)
+    .bind(memory.note_kind.map(NoteKind::wire))
     .fetch_one(&mut **txn)
     .await?;
     sqlx::query(
@@ -721,7 +746,9 @@ fn remember_err(error: remember::RememberError) -> ErrorCode {
         remember::RememberError::Db(error) => candidate_db_error(error),
         remember::RememberError::ConsistencyTokenExpiryNotFuture
         | remember::RememberError::BatchExhausted => ErrorCode::Conflict,
-        remember::RememberError::Subject(code) | remember::RememberError::Affect(code) => code,
+        remember::RememberError::Subject(code)
+        | remember::RememberError::Affect(code)
+        | remember::RememberError::Note(code) => code,
         remember::RememberError::ReasoningDomainUnresolved
         | remember::RememberError::TokenKeysUnset => ErrorCode::DependencyUnavailable,
     }
@@ -1217,6 +1244,7 @@ pub async fn confirm_candidate_atomically(
             memory_type: candidate.memory_type,
             class,
             confidence: candidate.confidence,
+            note_kind: None,
         },
     )
     .await

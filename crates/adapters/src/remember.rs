@@ -2,10 +2,10 @@
 //! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.private_reasoning_domains, ops.commit_seq_seq] w=[ops.outbox, private.events,
 //!   private.evidence_objects, private.ingest_tickets, projection.stream_checkpoints, projection.stream_log]];
-//!   env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::postgres, adapters::retrieve,
+//!   env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
 //!   adapters::subject_repo, domain::affect, domain::error, domain::evidence, domain::ids, domain::subject,
 //!   projection::stream]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
 //!   UPDATEd (no INSERT grant); an exhausted batch or non-future token expiry is a RememberError and nothing commits]
 //! Spec: Baseline §34.2; §60.1; §60; §34.1
@@ -35,6 +35,7 @@ use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 
 use crate::affect_repo::{self, AffectInput, AffectParent};
+use crate::note_repo::{self, NoteIntake};
 use crate::postgres::RuntimeDbPool;
 use crate::retrieve::{self, TokenClaims};
 
@@ -71,6 +72,9 @@ pub enum RememberError {
     /// ADR-0059 D-G: no consistency-token key set is installed in this process; the transaction
     /// is rolled back, nothing is committed (`DEPENDENCY_UNAVAILABLE`).
     TokenKeysUnset,
+    /// ADR-0067 D-C: a `memory.note_put` intake was refused before the first write — the requested authority exceeds the
+    /// server-fixed origin's ceiling (`FORBIDDEN`; the gateway renders the business error). Nothing is committed.
+    Note(ErrorCode),
 }
 
 impl From<sqlx::Error> for RememberError {
@@ -90,6 +94,7 @@ impl std::fmt::Display for RememberError {
             Self::TokenKeysUnset => write!(f, "consistency_token key set is not installed"),
             Self::Subject(code) => write!(f, "subject declaration rejected: {code}"),
             Self::Affect(code) => write!(f, "affect declaration rejected: {code}"),
+            Self::Note(code) => write!(f, "note intake rejected: {code}"),
             Self::ReasoningDomainUnresolved => {
                 write!(f, "no reasoning domain for this tenant (§11.2.1)")
             }
@@ -492,9 +497,16 @@ pub struct RememberPending {
     stream_key: StreamKey,
     commit_seq: i64,
     stream_seq: i64,
+    memory_id: Option<Uuid>,
 }
 
 impl RememberPending {
+    /// ADR-0067: the Memory the same transaction wrote for an identity note; `None` for `remember.put`.
+    #[must_use]
+    pub const fn memory_id(&self) -> Option<Uuid> {
+        self.memory_id
+    }
+
     #[must_use]
     pub fn accepted(&self) -> &RememberAccepted {
         &self.accepted
@@ -526,7 +538,19 @@ impl RememberPending {
 /// Errors leave rollback to the owning transaction; no SQL here commits independently.
 pub async fn remember_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    cmd: RememberCommand,
+) -> Result<RememberPending, RememberError> {
+    remember_in_txn_with(txn, cmd, None).await
+}
+
+/// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some(note)` the same transaction also writes the
+/// identity contract and the one authorised Memory (`note_repo::materialize_in_txn`) between the Evidence rows and the
+/// stream ticket; the 0235 triggers then see the contract when the `EVIDENCE_ACCEPTED` outbox row is inserted (no distill
+/// job; the row is born `DONE`, so the projection claim does not wait on it, 0176). `None` is `remember.put`, byte for byte.
+pub async fn remember_in_txn_with(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mut cmd: RememberCommand,
+    note: Option<&NoteIntake>,
 ) -> Result<RememberPending, RememberError> {
     // This check is deliberately inside the reusable path, before its first write. The public
     // wrapper's fast check only avoids opening a transaction for an already-expired command.
@@ -542,6 +566,9 @@ pub async fn remember_in_txn(
         cmd.projection_kind.clone(),
         cmd.projection_version.clone(),
     );
+
+    // ADR-0067 D-C: the authority decision is pure and precedes every write.
+    let note_class = note.map(note_repo::authorize).transpose()?;
 
     set_authorization_local(txn, cmd.tenant_id, cmd.authorization_user_id).await?;
 
@@ -591,6 +618,14 @@ pub async fn remember_in_txn(
         None => None,
     };
 
+    // ADR-0067 D-A/D-B: the contract row precedes the outbox row, so the 0235 enqueue trigger sees it.
+    let memory_id = match (note, note_class) {
+        (Some(note), Some(class)) => {
+            Some(note_repo::materialize_in_txn(txn, &cmd, evidence_id, note, class).await?)
+        }
+        _ => None,
+    };
+
     let stream_seq = issue_stream_log_row(txn, &key, commit_seq).await?;
     insert_outbox(
         txn,
@@ -637,6 +672,7 @@ pub async fn remember_in_txn(
         stream_key: key,
         commit_seq,
         stream_seq,
+        memory_id,
     })
 }
 

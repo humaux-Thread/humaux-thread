@@ -718,6 +718,78 @@
     }
    },
    "additionalProperties": false
+  },
+  "NoteStored": {
+   "type": "object",
+   "description": "memory.note_put executed (ADR-0067 D-A): ONE PostgreSQL transaction committed the idempotency receipt, a MANUAL_NOTE Evidence (origin AuthenticatedAgent), the identity contract and the authorised Memory with its PRIMARY evidence link, the stream/outbox events and this locally signed consistency_token. memory_id is a real, readable Memory (status stored). Indexing (embedding, Qdrant) follows the commit through the outbox and is never awaited (indexing scheduled). A replay of the same idempotency_key returns the original ids.",
+   "required": [
+    "memory_id",
+    "evidence_id",
+    "consistency_token",
+    "status",
+    "indexing"
+   ],
+   "properties": {
+    "memory_id": {
+     "type": "string",
+     "format": "uuid"
+    },
+    "evidence_id": {
+     "type": "string",
+     "format": "uuid"
+    },
+    "consistency_token": {
+     "type": "string",
+     "minLength": 1
+    },
+    "status": {
+     "const": "stored"
+    },
+    "indexing": {
+     "enum": [
+      "scheduled",
+      "excluded"
+     ],
+     "description": "scheduled: the outbox indexes the note after the commit (never awaited); excluded: data_class SECRET_MATERIAL, which §18.2 never cards or embeds — no recall leg will ever exist for this note."
+    }
+   },
+   "additionalProperties": false
+  },
+  "AuthorityCeilingExceeded": {
+   "type": "object",
+   "description": "memory.note_put business refusal (ADR-0067 D-C), returned with isError=true: the requested AuthorityClass exceeds the server-fixed origin's ceiling. Nothing was stored (no Evidence, Memory, candidate or accepted outbox row). This is a result shape, not a 19th ErrorCode (\u00a752.1 stays closed at 18).",
+   "required": [
+    "code",
+    "requested_authority",
+    "origin",
+    "reason"
+   ],
+   "properties": {
+    "code": {
+     "const": "AUTHORITY_CEILING_EXCEEDED"
+    },
+    "requested_authority": {
+     "type": "string",
+     "enum": [
+      "PublicKnowledge",
+      "PrivateKnowledge",
+      "UserPreference",
+      "ProjectDecision",
+      "UserCorrection",
+      "ProjectConstraint",
+      "ExplicitTaskContext"
+     ]
+    },
+    "origin": {
+     "const": "AuthenticatedAgent"
+    },
+    "reason": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    }
+   },
+   "additionalProperties": false
   }
  },
  "oneOf": [
@@ -797,6 +869,12 @@
   },
   {
    "$ref": "#/$defs/AffectAnnotated"
+  },
+  {
+   "$ref": "#/$defs/NoteStored"
+  },
+  {
+   "$ref": "#/$defs/AuthorityCeilingExceeded"
   }
  ]
 }

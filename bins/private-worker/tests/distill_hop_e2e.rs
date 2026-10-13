@@ -13,7 +13,7 @@
 //!   control.reasoning_route_policies, control.tenants, control.users, control.workspace_memberships,
 //!   control.workspaces, ops.outbox, ops.reasoning_account_health_observations,
 //!   ops.reasoning_provider_health_observations, private.events, private.evidence_affects, private.evidence_objects, private.evidence_subjects,
-//!   private.subject_keys, private.subjects, projection.stream_checkpoints,
+//!   private.identity_note_materializations, private.memory_evidence, private.memory_records, private.subject_keys, private.subjects, projection.stream_checkpoints,
 //!   projection.stream_log, ops.jobs, ops.provider_slots] x=[control.current_reasoning_route_binding,
 //!   ops.claim_derived_work_v2], PostgreSQL(role_private_worker), PostgreSQL(owner), PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker), MiniMax, subprocess(gitleaks)]; env=[HUMAUX_MINIMAX_DNS_PINS,
@@ -1542,6 +1542,95 @@ fn d3_zero_memories_settles_outbox_and_ticket() {
         "D3 ASSERTION LOG: report={report:?} outbox={} ticket=({state},{error_class:?}) highwater={}",
         o.outbox_status, outcome.projection_highwater
     );
+}
+
+/// ADR-0067 D-B / G05 (worker side): a `DERIVED_DISTILL` job that exists for an Evidence with an identity contract (here
+/// forged: the job predates the contract) is refused before any provider reservation — no call, no processing run, no
+/// model-ledger row — and settles terminally instead of looping.
+#[test]
+fn d13_a_job_for_a_contracted_evidence_is_refused_before_any_provider_call() {
+    let test_name = "d13_a_job_for_a_contracted_evidence_is_refused_before_any_provider_call";
+    let Some(mut f) = setup_db(test_name) else {
+        return;
+    };
+    let (evidence_id, _, _) = seed_evidence(&mut f, "already a Memory");
+    // The enqueue trigger made the job while the Evidence was still ordinary; now it gains a contract.
+    let mut txn = f.admin.transaction().expect("begin contract txn");
+    let memory_id: Uuid = txn
+        .query_one(
+            "INSERT INTO private.memory_records \
+               (tenant_id, memory_type, content, visibility_class, visibility_workspace_id, \
+                authority_class, confidence, status, asserted_at, note_kind) \
+             VALUES ($1, 'NOTE', $2, 'WORKSPACE_SHARED', $3, 'PrivateKnowledge', 1.0, 'active', now(), 'note') \
+             RETURNING memory_id",
+            &[
+                &f.tenant_id,
+                &serde_json::json!({"title": "t", "key_claim": "already a Memory", "representation": "verbatim_assertion"}),
+                &f.workspace_id,
+            ],
+        )
+        .expect("gateway-side memory")
+        .get(0);
+    txn.execute(
+            "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, ordinal, grounding_mode, recorded_version) \
+             VALUES ($1, $2, 'PRIMARY', 0, 'IMMUTABLE', 'x')",
+            &[&memory_id, &evidence_id],
+        )
+        .expect("primary link");
+    txn.execute(
+        "INSERT INTO private.identity_note_materializations \
+               (tenant_id, evidence_id, strategy, output_memory_id, body_sha256, policy_version) \
+             VALUES ($1, $2, 'identity_note_v1', $3, sha256('x'::bytea), 'origin_ceiling_v1')",
+        &[&f.tenant_id, &evidence_id, &memory_id],
+    )
+    .expect("identity contract");
+    txn.commit().expect("commit contract txn");
+    assert_eq!(
+        job_state(&mut f, evidence_id).0,
+        "PENDING",
+        "the job exists and is claimable"
+    );
+
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let provider = FakeProvider::new(vec![r#"{"memories":[]}"#]);
+    let report = run_pass(&rt, &f, &provider, "d13-worker");
+    assert_eq!(
+        provider.calls(),
+        0,
+        "no provider call for a contracted Evidence: {report:?}"
+    );
+    assert_eq!(
+        processing_runs(&mut f, evidence_id),
+        (0, 0),
+        "no processing run was even started"
+    );
+    let ledger: i64 = f
+        .admin
+        .query_one(
+            "SELECT count(*) FROM ops.model_call_ledger WHERE tenant_id = $1",
+            &[&f.tenant_id],
+        )
+        .expect("ledger count")
+        .get(0);
+    assert_eq!(ledger, 0, "no provider reservation reached the ledger");
+    assert_eq!(
+        job_state(&mut f, evidence_id).0,
+        "DONE",
+        "refused terminally, not retried"
+    );
+    let (outbox_status, memories): (String, i64) = {
+        let row = f
+            .admin
+            .query_one(
+                "SELECT (SELECT status FROM ops.outbox WHERE evidence_id = $1 AND event_type = 'EVIDENCE_ACCEPTED'), \
+                        (SELECT count(*) FROM private.memory_evidence WHERE evidence_id = $1)",
+                &[&evidence_id],
+            )
+            .expect("outbox + links");
+        (row.get(0), row.get(1))
+    };
+    assert_eq!(outbox_status, "DONE");
+    assert_eq!(memories, 1, "the gateway's Memory is the only one");
 }
 
 /// D3 companion: a ticket whose Evidence is still PENDING stays ISSUED (not FAILED) until the

@@ -1,7 +1,7 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry,
 //!   serde_json, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo,
-//!   adapters::operation_receipt, adapters::postgres, adapters::quota_repo, adapters::remember,
+//!   adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::quota_repo, adapters::remember,
 //!   adapters::request_guard_repo, application::supersede, domain::affect, domain::audit, domain::confirm,
 //!   domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::metrics]
@@ -20,6 +20,7 @@ use std::{
 
 use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
+    note_repo::NoteIntake,
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult},
     postgres::RuntimeDbPool,
     quota_repo::{
@@ -739,8 +740,29 @@ impl GatewayGuard {
         result
     }
 
+    /// The one receipt transaction of `run_atomic_remember`: `remember.put`, or `memory.note_put` when `note` is `Some`.
+    async fn write_atomically(
+        &self,
+        authorization: &AuthorizationScope,
+        request: AtomicRememberRequest,
+        note: Option<NoteIntake>,
+    ) -> Result<AtomicRememberResult, ErrorCode> {
+        match note {
+            Some(note) => {
+                operation_receipt::note_put_atomically(&self.pool, authorization, request, note)
+                    .await
+            }
+            None => {
+                operation_receipt::remember_atomically(&self.pool, authorization, request).await
+            }
+        }
+    }
+
     /// A local write, its BMO settlement and its success audit share one commit.
     /// An unknown commit outcome is resolved by replaying the same logical key.
+    /// `note` is `Some` exactly for `memory.note_put` (ADR-0067 D-A): the same receipt transaction then also writes the
+    /// identity contract and the authorised Memory.
+    #[allow(clippy::too_many_arguments)] // admission context + the write's own five inputs; one call site per operation
     pub(crate) async fn run_atomic_remember<F>(
         &self,
         context: &McpHttpContext,
@@ -748,6 +770,7 @@ impl GatewayGuard {
         requested_workspace: Option<WorkspaceId>,
         raw_arguments: &str,
         idempotency_key: String,
+        note: Option<NoteIntake>,
         prepare: F,
     ) -> Result<AtomicRememberResult, ErrorCode>
     where
@@ -755,9 +778,11 @@ impl GatewayGuard {
     {
         let result = async {
             let admitted = self.admit(context, operation, requested_workspace).await?;
-            if operation.operation_key() != "remember.put"
-                || operation.meter_kind() != MeterKind::Ordinary
-            {
+            let routed = matches!(
+                (operation.operation_key(), note.is_some()),
+                ("remember.put", false) | ("memory.note_put", true)
+            );
+            if !routed || operation.meter_kind() != MeterKind::Ordinary {
                 return self
                     .denied(
                         context,
@@ -791,11 +816,7 @@ impl GatewayGuard {
             };
             let result = tokio::time::timeout(
                 self.settings.handler_timeout,
-                operation_receipt::remember_atomically(
-                    &self.pool,
-                    admitted.request.authorization(),
-                    request,
-                ),
+                self.write_atomically(admitted.request.authorization(), request, note),
             )
             .await
             .unwrap_or(Err(ErrorCode::DependencyUnavailable));

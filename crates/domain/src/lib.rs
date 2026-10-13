@@ -28,6 +28,7 @@ pub mod knowledge;
 pub mod ledger;
 pub mod lifecycle;
 pub mod memory;
+pub mod note;
 pub mod policy;
 pub mod public;
 pub mod selection;

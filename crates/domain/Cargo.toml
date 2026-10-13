@@ -18,7 +18,7 @@ test-support = []
 # why: UUID ids (v7) and parsing; used-by: [domain::affect, domain::audit, domain::authority, domain::context, domain::continuity, domain::egress, domain::identity, domain::ids, domain::lifecycle, domain::selection, domain::subject, tests]
 uuid = { version = "1.25.0", features = ["v7"] }
 # §8.1 / §48.0①: evidence::payload_sha256 raw-byte SHA-256.
-# why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [domain::audit, domain::confirm, domain::context, domain::egress, domain::evidence, domain::selection]
+# why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [domain::audit, domain::confirm, domain::context, domain::egress, domain::evidence, domain::note, domain::selection]
 sha2 = "0.11"
 # §7.3 T4.1: `ExternalCall` is a production (non-test) trait that must be `dyn`-compatible
 # (`Arc<dyn ExternalCall>` at the call site) — real dependency, not dev-only. Same macro

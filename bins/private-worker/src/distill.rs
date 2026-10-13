@@ -907,6 +907,8 @@ enum ReadLeg {
     Ready(Box<Ready>),
     /// The Evidence is gone (or not an EVENT): input-bound.
     Unavailable,
+    /// ADR-0067 D-B: the Evidence has an identity contract — its Memory is the gateway's, nothing is to be derived.
+    IdentityContract,
     /// Nothing can be dispatched now; the static class says why.
     NotReady(&'static str),
 }
@@ -975,6 +977,11 @@ async fn read_leg(
         txn.rollback().await?;
         return Ok(ReadLeg::Unavailable);
     };
+    // ADR-0067 D-B: before the processing run, the prompt, the budget and any provider reservation.
+    if distill_repo::evidence_has_identity_contract(&mut txn, tenant_id, evidence_id).await? {
+        txn.rollback().await?;
+        return Ok(ReadLeg::IdentityContract);
+    }
     let context_snapshot_seq = distill_repo::context_snapshot_seq(&mut txn, tenant_id).await?;
 
     // ADR-0048: ONE ceiling, resolved once here, feeds both the rendered contract (the class
@@ -1201,6 +1208,22 @@ async fn call_loop(
                     None,
                     0.0,
                     JobOutcome::Failed,
+                )
+                .await;
+            }
+            // ADR-0067 D-B: a job for a contracted Evidence is refused terminally — job DONE, outbox DONE, no call.
+            Ok(ReadLeg::IdentityContract) => {
+                eprintln!(
+                    "humaux-private-worker: distill evidence={evidence_id} refused: identity_contract"
+                );
+                return settle_as(
+                    dispatcher,
+                    lease,
+                    Some((row, OutboxSettle::Done)),
+                    DistillFinish::Done,
+                    None,
+                    0.0,
+                    JobOutcome::Done,
                 )
                 .await;
             }
@@ -1581,6 +1604,7 @@ async fn write_txn(
                         memory_type: candidate.memory_type,
                         class: authorized.0,
                         confidence: candidate.confidence,
+                        note_kind: None,
                     },
                 )
                 .await?;

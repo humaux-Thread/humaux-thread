@@ -478,7 +478,7 @@ fn assemble(title: &str, key_claim: &str, entities: &[String], evidence_excerpt:
 /// a meaningless fragment like `"(no evidence excerpt reco"` — §18.4's placeholders are meant
 /// to be fixed literals, either fully present or fully absent from `card_text`.
 // ponytail: pops one `char` at a time and recomputes the full assembled length on every
-// iteration — O(budget × field length) on card-sized text (hundreds of chars), not a binary
+// iteration — O(budget²) after the cap below (fields start at most `max_chars` long), not a binary
 // search. Upgrade to a byte-offset search only if `CardBudget::max_chars` ever grows into a
 // regime where that becomes measurable.
 fn fit_budget(
@@ -493,6 +493,20 @@ fn fit_budget(
     let over_budget = |kc: &str, es: &[String], ee: &str| -> bool {
         assemble(title, kc, es, ee).chars().count() > max_chars
     };
+    // ADR-0067 (card 40a, PR #7 Codex P1): a field longer than the whole budget can never survive the pops below, so it
+    // is cut to `max_chars` first — a 64 KiB note body is no longer popped one char at a time with a full reassembly
+    // per pop (quadratic). The fitted result is unchanged: every char past `max_chars` would have been popped anyway.
+    let cap = |field: &mut String| {
+        if let Some((cut, _)) = field.char_indices().nth(max_chars) {
+            field.truncate(cut);
+        }
+    };
+    if !key_claim_is_placeholder {
+        cap(&mut key_claim);
+    }
+    if !evidence_excerpt_is_placeholder {
+        cap(&mut evidence_excerpt);
+    }
 
     if evidence_excerpt_is_placeholder {
         if over_budget(&key_claim, &entities, &evidence_excerpt) {
@@ -543,6 +557,31 @@ mod tests {
             entities: vec!["email_verification".to_string(), "login_flow".to_string()],
             evidence_excerpt: Some("2026-08-01: added a hard gate in AuthService".to_string()),
         }
+    }
+
+    // -- ADR-0067 long note bodies ---------------------------------------------------------
+
+    /// Card 40a (PR #7 Codex P1): a 64 KiB-class `key_claim` / `evidence_excerpt` is capped before fitting, and the
+    /// card is exactly the card of the same input cut to twice the budget — the cap changes the work, never the
+    /// result. Fault: cap below `max_chars` (e.g. `nth(max_chars / 2)`) ⇒ the two cards differ.
+    #[test]
+    fn a_long_body_is_capped_without_changing_the_card() {
+        let budget = CardBudget::default();
+        let long = "长".repeat(70_000);
+        let short: String = long.chars().take(2 * budget.max_chars).collect();
+        let mut huge = base_input();
+        huge.key_claim = Some(long.clone());
+        huge.evidence_excerpt = Some(long);
+        let mut cut = base_input();
+        cut.key_claim = Some(short.clone());
+        cut.evidence_excerpt = Some(short);
+        let (CardBuildOutcome::Card(a), CardBuildOutcome::Card(b)) =
+            (build_card(huge, budget), build_card(cut, budget))
+        else {
+            panic!("both inputs build a card");
+        };
+        assert_eq!(a, b);
+        assert!(a.card_text.chars().count() <= budget.max_chars);
     }
 
     // -- §18.2 SECRET_MATERIAL exclusion ---------------------------------------------------

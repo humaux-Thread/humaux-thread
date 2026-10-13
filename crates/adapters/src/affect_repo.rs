@@ -103,7 +103,9 @@ fn remember_error(error: RememberError) -> ErrorCode {
         RememberError::ConsistencyTokenExpiryNotFuture | RememberError::BatchExhausted => {
             ErrorCode::Conflict
         }
-        RememberError::Subject(code) | RememberError::Affect(code) => code,
+        RememberError::Subject(code) | RememberError::Affect(code) | RememberError::Note(code) => {
+            code
+        }
         RememberError::ReasoningDomainUnresolved | RememberError::TokenKeysUnset => {
             ErrorCode::DependencyUnavailable
         }
