@@ -389,27 +389,31 @@ mod tests {
     /// from "trigger refused". Every clause of the binding is pinned here instead.
     #[test]
     fn consume_predicate_is_the_full_binding() {
-        for clause in [
-            "nonce_sha256 = $1",
-            "tenant_id = $2",
-            "user_id = $3",
-            "operation = $4",
-            "target_id = $5",
-            "successor_id IS NOT DISTINCT FROM $6",
-            "workspace_id = $7",
-            "request_sha256 IS NOT DISTINCT FROM $8",
-            "consumed_at IS NULL",
-            "expires_at > clock_timestamp()",
-            "RETURNING confirm_token_id",
-        ] {
-            assert!(
-                CONSUME_SQL.contains(clause),
-                "consume predicate lost `{clause}`"
-            );
-        }
-        assert!(
-            CONSUME_SQL
-                .starts_with("UPDATE control.confirm_tokens SET consumed_at = clock_timestamp()")
+        // Exact conjuncts, in order: a clause that is weakened rather than dropped (an expiry slack, an `OR`) must turn
+        // this red too — `contains` alone would still find the substring (PR #13 review P1).
+        let sql = CONSUME_SQL.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (head, rest) = sql.split_once(" WHERE ").expect("a WHERE clause");
+        let (predicate, tail) = rest.split_once(" RETURNING ").expect("a RETURNING clause");
+        assert_eq!(
+            head,
+            "UPDATE control.confirm_tokens SET consumed_at = clock_timestamp()"
+        );
+        assert_eq!(tail, "confirm_token_id");
+        assert_eq!(
+            predicate.split(" AND ").collect::<Vec<_>>(),
+            [
+                "nonce_sha256 = $1",
+                "tenant_id = $2",
+                "user_id = $3",
+                "operation = $4",
+                "target_id = $5",
+                "successor_id IS NOT DISTINCT FROM $6",
+                "workspace_id = $7",
+                "request_sha256 IS NOT DISTINCT FROM $8",
+                "consumed_at IS NULL",
+                "expires_at > clock_timestamp()",
+            ],
+            "consume predicate drifted from the full binding"
         );
     }
 
