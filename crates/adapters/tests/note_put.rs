@@ -617,6 +617,44 @@ fn g03_the_same_key_after_a_lost_response_returns_the_original_ids() {
     });
 }
 
+/// PR #7 Codex P2: a replay reports the stored note's data class, not the request's resolution. The replay below
+/// carries the same key and fingerprint but a different resolved `data_class` — what an omitted `data_class` becomes
+/// after the gateway default changes — and must still answer for the SECRET_MATERIAL note it stored.
+#[test]
+fn g03_a_replay_reports_the_stored_data_class_not_the_current_default() {
+    run_db_fixture::<Fixture, _>("g03_replay_data_class", |mut handle| {
+        handle.seed_current_entitlement_and_window(8);
+        let key = format!("class-{}", Uuid::new_v4());
+        let fingerprint = "e".repeat(64);
+        let attempt = |data_class: &str| {
+            let (mut request, note) = note_request(
+                &handle,
+                &key,
+                &fingerprint,
+                "stored under the old default",
+                NoteKind::Note,
+                DEFAULT_AUTHORITY,
+            );
+            request.command.data_class = data_class.into();
+            handle.rt.block_on(operation_receipt::note_put_atomically(
+                &handle.runtime,
+                &handle.auth,
+                request,
+                note,
+            ))
+        };
+        let first = attempt("SECRET_MATERIAL").expect("first commit");
+        assert!(!first.replayed && first.secret_material);
+        let replay = attempt("INTERNAL").expect("replay of a committed key");
+        assert!(replay.replayed);
+        assert_eq!(replay.memory_id, first.memory_id);
+        assert!(
+            replay.secret_material,
+            "the replay must report the stored SECRET_MATERIAL class, not the replaying request's"
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // G04 / G05: no derivation, no provider, outbox replay enqueues nothing.
 // ---------------------------------------------------------------------------------------------------------------------

@@ -65,6 +65,10 @@ pub struct AtomicRememberResult {
     /// ADR-0067: the Memory the same transaction wrote (or, on a replay, wrote originally) for a `memory.note_put`;
     /// `None` for `remember.put`.
     pub memory_id: Option<Uuid>,
+    /// §18.2: the stored Evidence is `SECRET_MATERIAL` (no card, no vector). On a replay it is read from the stored
+    /// row, so a changed gateway default cannot change the answer for the same idempotency key (PR #7 Codex P2).
+    /// Resolved for `memory.note_put` only; always `false` for `remember.put`.
+    pub secret_material: bool,
 }
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
@@ -234,15 +238,15 @@ async fn atomically(
     let prior = lock_and_find_receipt(&mut txn, &auth, &request, operation).await?;
     if let Some(prior) = prior {
         let accepted = replay(&mut txn, &auth, &request, &prior).await?;
-        let memory_id = if note.is_some() {
-            Some(
+        let (memory_id, secret_material) = if note.is_some() {
+            let (memory_id, data_class) =
                 note_repo::output_memory(&mut txn, auth.tenant_id().0, accepted.evidence_id)
                     .await
                     .map_err(db_error)?
-                    .ok_or(ErrorCode::NotFound)?,
-            )
+                    .ok_or(ErrorCode::NotFound)?;
+            (Some(memory_id), data_class == "SECRET_MATERIAL")
         } else {
-            None
+            (None, false)
         };
         txn.commit()
             .await
@@ -251,6 +255,7 @@ async fn atomically(
             accepted,
             replayed: true,
             memory_id,
+            secret_material,
         });
     }
     // ADR-0032 D-B: TENANT_SHARED is reachable only for an OWNER/ADMIN member; judged in this
@@ -285,6 +290,7 @@ async fn atomically(
     .await?;
 
     let token_expires_at = request.command.consistency_token_expires_at;
+    let secret_material = note.is_some() && request.command.data_class == "SECRET_MATERIAL";
     let pending = remember::remember_in_txn_with(&mut txn, request.command, note.as_ref())
         .await
         .map_err(remember_error)?;
@@ -341,6 +347,7 @@ async fn atomically(
         accepted: pending.into_accepted(),
         replayed: false,
         memory_id,
+        secret_material,
     })
 }
 

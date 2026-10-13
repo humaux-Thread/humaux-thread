@@ -107,16 +107,18 @@ pub(crate) async fn materialize_in_txn(
     Ok(memory_id)
 }
 
-/// The Memory an identity-contracted Evidence materialised, if any — used to replay a committed `memory.note_put`.
-/// Runs under the caller's RLS context.
+/// The Memory an identity-contracted Evidence materialised and the Evidence's stored `data_class`, if any — used to
+/// replay a committed `memory.note_put`: the replay answers from the stored row, never from the gateway's current
+/// default (PR #7 Codex P2). Runs under the caller's RLS context.
 pub(crate) async fn output_memory(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: Uuid,
     evidence_id: Uuid,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT output_memory_id FROM private.identity_note_materializations \
-         WHERE tenant_id = $1 AND evidence_id = $2",
+) -> Result<Option<(Uuid, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT c.output_memory_id, e.data_class FROM private.identity_note_materializations c \
+         JOIN private.evidence_objects e ON e.tenant_id = c.tenant_id AND e.evidence_id = c.evidence_id \
+         WHERE c.tenant_id = $1 AND c.evidence_id = $2",
     )
     .bind(tenant_id)
     .bind(evidence_id)
