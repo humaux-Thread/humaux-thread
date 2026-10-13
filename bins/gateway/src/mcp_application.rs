@@ -641,7 +641,7 @@ impl GatewayMcpApplication {
     ) -> Result<ToolOutput, ErrorCode> {
         let requested_workspace = workspace(value)?;
         // ADR-0067 D-G: the note axes narrow the memory manifest only; the candidate and subject listings below would
-        // silently drop them (and skip the window check), so the combination is refused (PR #8 Codex P2).
+        // silently drop them (and skip the window check), so the combination is refused.
         if (value.get("candidates").and_then(Value::as_bool) == Some(true)
             || value.get("subjects").and_then(Value::as_bool) == Some(true))
             && ["note_kinds", "since", "until"]

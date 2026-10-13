@@ -719,6 +719,95 @@ fn g14_a_superseded_note_is_readable_only_with_history_and_never_by_recall() {
     });
 }
 
+/// ADR-0067 D-H: history reads superseded versions only — a revoked, expired or SECRET_MATERIAL-backed version stays
+/// NOT_FOUND with `include_history`, and `superseded_by` is omitted when the caller cannot read the successor
+/// ("references the caller may not see are omitted").
+#[test]
+fn g14_history_never_reaches_revoked_expired_or_secret_and_hides_an_unreadable_successor() {
+    run_db_fixture::<Fixture, _>("g14_history_bounds", |mut handle| {
+        handle.seed_current_entitlement_and_window(16);
+        for status in ["revoked", "expired"] {
+            let gone = memory_of(&put(&handle, &format!("g14 {status}"), NoteKind::Note));
+            let updated = handle
+                .admin
+                .execute(
+                    "UPDATE private.memory_records SET status = $2 \
+                      WHERE memory_id = $1 AND tenant_id = $3 AND status = 'active'",
+                    &[&gone, &status, &handle.tenant_id],
+                )
+                .expect("owner sets the lifecycle status");
+            assert_eq!(updated, 1);
+            assert!(
+                matches!(get(&handle, gone, true), Err(ErrorCode::NotFound)),
+                "a {status} version stays NOT_FOUND with include_history"
+            );
+        }
+
+        let (mut request, note) = note_request(&handle, "g14 secret material", NoteKind::Note);
+        request.command.data_class = "SECRET_MATERIAL".into();
+        let secret = memory_of(
+            &handle
+                .rt
+                .block_on(operation_receipt::note_put_atomically(
+                    &handle.runtime,
+                    &handle.auth,
+                    request,
+                    note,
+                ))
+                .expect("secret note commits"),
+        );
+        assert!(
+            matches!(get(&handle, secret, true), Err(ErrorCode::NotFound)),
+            "a SECRET_MATERIAL-backed version stays NOT_FOUND with include_history"
+        );
+
+        let old = memory_of(&put(
+            &handle,
+            "g14 hidden successor, old",
+            NoteKind::Decision,
+        ));
+        let hidden = memory_of(&put(
+            &handle,
+            "g14 hidden successor, new",
+            NoteKind::Decision,
+        ));
+        let peer = handle.seed_peer_user();
+        let updated = handle
+            .admin
+            .execute(
+                "UPDATE private.memory_records \
+                    SET visibility_class = 'USER_PRIVATE', visibility_user_id = $2, visibility_workspace_id = NULL \
+                  WHERE memory_id = $1 AND tenant_id = $3",
+                &[&hidden, &peer, &handle.tenant_id],
+            )
+            .expect("owner makes the successor the peer's private memory");
+        assert_eq!(updated, 1);
+        assert!(
+            matches!(get(&handle, hidden, false), Err(ErrorCode::NotFound)),
+            "precondition: the caller cannot read the successor"
+        );
+        let updated = handle
+            .admin
+            .execute(
+                "UPDATE private.memory_records \
+                    SET status = 'superseded', superseded_by = $2, superseded_at = clock_timestamp() \
+                  WHERE memory_id = $1 AND tenant_id = $3 AND status = 'active'",
+                &[&old, &hidden, &handle.tenant_id],
+            )
+            .expect("owner supersedes by the hidden successor");
+        assert_eq!(updated, 1);
+        let history = get(&handle, old, true)
+            .expect("the superseded version itself is readable")
+            .history
+            .expect("history is read");
+        assert_eq!(history.status, "superseded");
+        assert_eq!(
+            history.superseded_by, None,
+            "an unreadable successor is omitted, never named"
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // G15: after the note's evidence stream entry is TOMBSTONED, nothing returns its body or digest.
 // ---------------------------------------------------------------------------------------------------------------------

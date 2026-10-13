@@ -5575,7 +5575,7 @@ MAC/signature
 在每次请求时重扫；grounding 的 `recheck_required` 是可交付的核验状态，不等同撤销。
 异常额外/重复/不匹配 ID 保留内部错误，不能伪装成合法过滤。
 
-cursor 的 query fingerprint 绑定枚举 predicate、tenant、principal、user 和已收窄 workspace，以及 ADR-0067 D-G 的过滤参数（`subject_id`、`note_kinds`、`occurred_at ∈ [since, until)`）；过滤参数同时进入 manifest 候选与 census 两面，从不做后过滤。
+cursor 的 query fingerprint 绑定枚举 predicate、tenant、principal、user 和已收窄 workspace，以及过滤参数（ADR-0028 D-D 的 `subject_id`；ADR-0067 D-G 的 `note_kinds`、`occurred_at ∈ [since, until)`）；过滤参数同时进入 manifest 候选与 census 两面，从不做后过滤。
 签名使用由现有启动 secret 经固定用途 HMAC 派生的专用 key，不复用原始凭据 pepper；
 服务端有效期固定 900 秒，客户端不能覆写。密钥轮换使旧游标失效。格式/MAC 错误为
 `INVALID_INPUT`，合法但过期、已回收或已不适用于当前主体的快照为不泄漏对象信息的
