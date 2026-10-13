@@ -19,6 +19,10 @@ on:
         type: boolean
         default: false
 
+# The job runs code from an arbitrary ref: the token stays read-only and is not persisted in the checkout.
+permissions:
+  contents: read
+
 concurrency:
   group: targeted-${{ github.event.inputs.ref }}-${{ github.run_id }}
   cancel-in-progress: false
@@ -81,6 +85,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - uses: ./.github/actions/setup
 
@@ -96,10 +101,16 @@ jobs:
           echo "ref=$(git rev-parse HEAD) cargo test $CARGO_ARGS"
           # shellcheck disable=SC2086 # word splitting on purpose; no eval
           if [ "$AS_ROOT" = true ]; then
-            truncate -s 12G "$RUNNER_TEMP/scratch.img"; mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img"
-            mkdir -p "$RUNNER_TEMP/scratch"; sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch"
-            sudo chmod 1777 "$RUNNER_TEMP/scratch"
+            # Fail fast: a missing loop mount would make the test red for the wrong reason (repo_shares_pgdata_fs).
+            truncate -s 12G "$RUNNER_TEMP/scratch.img" && mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img" \
+              && mkdir -p "$RUNNER_TEMP/scratch" && sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch" \
+              && sudo chmod 1777 "$RUNNER_TEMP/scratch" || { echo "scratch loop mount failed"; exit 2; }
             sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" CARGO_ARGS="$CARGO_ARGS" bash -c 'umask 000 && cargo test $CARGO_ARGS'
+            rc=$?
+            # Hand the target dir back to the runner user (test-b does the same) so the cache post step can read it.
+            sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
+            echo "TARGETED RESULT exit=$rc ref=$(git rev-parse HEAD)"
+            exit $rc
           else
             cargo test $CARGO_ARGS
           fi
