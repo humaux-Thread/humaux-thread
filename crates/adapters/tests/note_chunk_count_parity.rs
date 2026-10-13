@@ -126,7 +126,7 @@ fn rust_sql_chunk_count_parity() {
                 "SELECT projection.note_chunk_count($1, $2)",
                 &[&title.as_str(), &body.as_str()],
             )
-            .expect("projection.note_chunk_count (migration 0237)")
+            .expect("the 0237 chunk-count function")
             .get(0);
         let rust = if legacy_capacity_holds(title, body) {
             1
