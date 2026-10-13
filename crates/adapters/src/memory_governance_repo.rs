@@ -434,6 +434,7 @@ pub async fn refuse_note_targets(
 }
 
 /// D-C, atomically. See the module doc for the step order.
+#[allow(clippy::too_many_lines)] // one confirmed supersede transaction read top to bottom; ADR-0067 D-J's note refusal is its first step
 pub async fn supersede_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
