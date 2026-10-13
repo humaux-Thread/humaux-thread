@@ -96,24 +96,31 @@ jobs:
           CARGO_ARGS: ${{ inputs.cargo_args }}
           AS_ROOT: ${{ inputs.as_root }}
         run: |
+          # GitHub starts this shell as `bash -eo pipefail`: errexit is turned off so a red test reaches the result
+          # line instead of ending the step at `cargo test` (PR #6 Codex P2).
           set -uo pipefail
+          set +e
           case "$CARGO_ARGS" in *[!A-Za-z0-9_:./=\ -]*) echo "cargo_args holds characters outside [A-Za-z0-9_:./= -]"; exit 2 ;; esac
           echo "ref=$(git rev-parse HEAD) cargo test $CARGO_ARGS"
+          OUT="$RUNNER_TEMP/targeted.out"
           # shellcheck disable=SC2086 # word splitting on purpose; no eval
           if [ "$AS_ROOT" = true ]; then
             # Fail fast: a missing loop mount would make the test red for the wrong reason (repo_shares_pgdata_fs).
             truncate -s 12G "$RUNNER_TEMP/scratch.img" && mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img" \
               && mkdir -p "$RUNNER_TEMP/scratch" && sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch" \
               && sudo chmod 1777 "$RUNNER_TEMP/scratch" || { echo "scratch loop mount failed"; exit 2; }
-            sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" CARGO_ARGS="$CARGO_ARGS" bash -c 'umask 000 && cargo test $CARGO_ARGS'
+            sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" CARGO_ARGS="$CARGO_ARGS" bash -c 'umask 000 && cargo test $CARGO_ARGS' 2>&1 | tee "$OUT"
             rc=$?
             # Hand the target dir back to the runner user (test-b does the same) so the cache post step can read it.
             sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
-            echo "TARGETED RESULT exit=$rc ref=$(git rev-parse HEAD)"
-            exit $rc
           else
-            cargo test $CARGO_ARGS
+            cargo test $CARGO_ARGS 2>&1 | tee "$OUT"
+            rc=$?
           fi
-          rc=$?
+          # A selector that matches nothing passes with "0 passed": that is no evidence, never a green (PR #6 Codex P2).
+          if [ "$rc" -eq 0 ] && ! grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$OUT"; then
+            echo "no test matched the selector: refusing a green with 0 tests run"
+            rc=3
+          fi
           echo "TARGETED RESULT exit=$rc ref=$(git rev-parse HEAD)"
           exit $rc
