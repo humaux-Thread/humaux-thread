@@ -7,7 +7,7 @@
 //!   adapters::context_repo, adapters::postgres, adapters::retrieve, application::affect, domain::affect,
 //!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
 //!   projection::serving, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::retrieve, gateway::context, gateway::memory, gateway::recall, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::operation_receipt, adapters::retrieve, gateway::context, gateway::memory, gateway::recall, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable]
 //! Spec: none
@@ -675,18 +675,21 @@ async fn materialize_final_bodies_gated_in_txn(
     Ok(MaterializedBodies { snapshot, items })
 }
 
-/// ADR-0067 D-D: `memory_id → note_kind` for the notes among `ids`, under the transaction's RLS. A non-note Memory
-/// (`note_kind IS NULL`) has no entry; a value outside [`NoteKind`] is the 0235 CHECK drifting, so `Internal`.
+/// ADR-0067 D-D / D-J: `memory_id → note_kind` and `memory_id → note_id` for the notes among `ids`, under the
+/// transaction's RLS. A non-note Memory (`note_kind IS NULL`) has no entry; a value outside [`NoteKind`] is the 0235
+/// CHECK drifting, so `Internal`.
 pub(crate) async fn memory_note_kinds_in_txn(
     txn: &mut Txn<'_>,
     tenant_id: Uuid,
     ids: &[Uuid],
-) -> Result<HashMap<Uuid, NoteKind>, ErrorCode> {
+) -> Result<(HashMap<Uuid, NoteKind>, HashMap<Uuid, Uuid>), ErrorCode> {
+    let mut kinds = HashMap::new();
+    let mut note_ids = HashMap::new();
     if ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok((kinds, note_ids));
     }
     let rows = sqlx::query(
-        "SELECT memory_id, note_kind FROM private.memory_records \
+        "SELECT memory_id, note_kind, note_id FROM private.memory_records \
          WHERE tenant_id = $1 AND memory_id = ANY($2) AND note_kind IS NOT NULL",
     )
     .bind(tenant_id)
@@ -694,14 +697,17 @@ pub(crate) async fn memory_note_kinds_in_txn(
     .fetch_all(&mut **txn)
     .await
     .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    rows.iter()
-        .map(|row| -> Result<(Uuid, NoteKind), ErrorCode> {
-            let memory_id: Uuid = row.try_get("memory_id").map_err(|_| ErrorCode::Internal)?;
-            let wire: String = row.try_get("note_kind").map_err(|_| ErrorCode::Internal)?;
-            let kind = NoteKind::parse_wire(&wire).ok_or(ErrorCode::Internal)?;
-            Ok((memory_id, kind))
-        })
-        .collect()
+    for row in &rows {
+        let memory_id: Uuid = row.try_get("memory_id").map_err(|_| ErrorCode::Internal)?;
+        let wire: String = row.try_get("note_kind").map_err(|_| ErrorCode::Internal)?;
+        let note_id: Uuid = row.try_get("note_id").map_err(|_| ErrorCode::Internal)?;
+        kinds.insert(
+            memory_id,
+            NoteKind::parse_wire(&wire).ok_or(ErrorCode::Internal)?,
+        );
+        note_ids.insert(memory_id, note_id);
+    }
+    Ok((kinds, note_ids))
 }
 
 /// ADR-0067 D-H: `derivation_strategy` of a Memory with no identity contract. Every such Memory reaches the store

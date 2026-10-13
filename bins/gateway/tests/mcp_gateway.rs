@@ -4,7 +4,7 @@
 //!   humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio,
 //!   uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events,
 //!   control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events,
-//!   private.evidence_affects, private.evidence_subjects, private.identity_note_materializations, private.subject_keys, private.task_binding_grants,
+//!   private.evidence_affects, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants,
 //!   public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys,
 //!   control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains,
 //!   control.tenants, control.workspace_memberships, control.workspaces, coord.tasks, ops.memory_lifecycle_events,
@@ -9027,6 +9027,7 @@ fn native_mcp_memory_pin_unpin_confirm_gate_acceptance() {
                     nonce_sha256: humaux_domain::confirm::ConfirmToken::decode(&rollback_token)
                         .expect("wire token decodes")
                         .sha256(),
+                    request_sha256: None,
                 },
                 finished_audit,
             };
@@ -12630,6 +12631,7 @@ fn native_mcp_one_process_serves_three_stream_pairs_per_request() {
                                 None,
                                 Duration::from_secs(60),
                                 Sha256::digest(Uuid::now_v7().as_bytes()).into(),
+                                None,
                                 &direct_mint_audit(&scope_b, DestructiveOp::MemoryPin),
                             )
                             .await
@@ -14518,6 +14520,253 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
                 ),
                 REMEMBER_SCHEMA_SHA256_BEFORE_CARD_40,
                 "G25: the remember.put input schema is byte-identical to main"
+            );
+
+            stop_server(server).await.expect("server shutdown");
+        });
+    });
+}
+
+/// (status, superseded_by, note_id) of one version, and the note's head — read back through the owner connection.
+fn note_version(handle: &mut Handle, memory_id: &str) -> (String, Option<Uuid>, Option<Uuid>) {
+    let memory_id = Uuid::parse_str(memory_id).expect("memory id");
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT status, superseded_by, note_id FROM private.memory_records WHERE memory_id = $1",
+            &[&memory_id],
+        )
+        .expect("version row");
+    (row.get(0), row.get(1), row.get(2))
+}
+
+fn note_head(handle: &mut Handle, note_id: &str) -> Option<Uuid> {
+    let note_id = Uuid::parse_str(note_id).expect("note id");
+    handle
+        .admin
+        .query_opt(
+            "SELECT head_memory_id FROM private.note_heads WHERE tenant_id = $1 AND note_id = $2",
+            &[&handle.tenant_id, &note_id],
+        )
+        .expect("head row")
+        .map(|row| row.get(0))
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one causal chain over one server: create, challenge, confirm, replay, stale, correct refused
+fn native_mcp_memory_note_put_replaces_through_the_confirm_gate_and_correct_refuses_a_note() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>("native_mcp_note_replace", |mut handle| {
+        handle.assert_gateway_login();
+        let prefix = format!("nrep{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "q".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWriteAndContextRead,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            64,
+        );
+        let runtime_handle = handle.rt.handle().clone();
+        let runtime = runtime_handle
+            .block_on(handle.fresh_runtime())
+            .expect("note replace runtime");
+        let app = application(&handle, runtime);
+        runtime_handle.block_on(async {
+            let (address, server) = start(app).await;
+            let bearer = credential.bearer.as_str();
+            let workspace = handle.workspace_id;
+            let headers = tool_call_headers("memory", bearer);
+
+            // 1. Create: the response names the note, whose id is its first version's.
+            let (status, created) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    1,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"note_put","content":"Decision: v1","note_kind":"decision",
+                               "idempotency_key":format!("create-{}", Uuid::now_v7()),
+                               "workspace_id":workspace}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "create: {created}");
+            let created = assert_tool_response(&created, ToolName::Memory).clone();
+            let first = created["memory_id"].as_str().expect("memory_id").to_owned();
+            assert_eq!(
+                created["note_id"],
+                first.as_str(),
+                "a fresh note is its own note_id"
+            );
+            let note_id = first.clone();
+
+            // 2. Replace without a token: a challenge, nothing written, 0 BMO.
+            let replace = json!({
+                "action":"note_put","content":"Lesson: v2","note_kind":"lesson",
+                "idempotency_key":format!("replace-{}", Uuid::now_v7()),"workspace_id":workspace,
+                "note_id":note_id,"supersedes":first,
+            });
+            let before = blocking_counts(&mut handle);
+            let (status, challenge) = raw_request(
+                address,
+                &headers,
+                &rpc(2, "tools/call", call_params("memory", replace.clone())),
+            )
+            .await;
+            assert_eq!(status, 200, "challenge: {challenge}");
+            let challenge = assert_tool_response(&challenge, ToolName::Memory).clone();
+            assert_eq!(challenge["confirmation_required"], true, "{challenge}");
+            assert_eq!(challenge["operation"], "memory.note_put", "{challenge}");
+            assert_eq!(
+                challenge["target"]["memory_id"],
+                first.as_str(),
+                "{challenge}"
+            );
+            assert_eq!(
+                challenge["target"]["note_id"],
+                note_id.as_str(),
+                "{challenge}"
+            );
+            assert_eq!(
+                durable_counts(blocking_counts(&mut handle)),
+                durable_counts(before),
+                "a challenge writes no Evidence / outbox / receipt / BMO"
+            );
+            let token = challenge["confirm_token"]
+                .as_str()
+                .expect("token")
+                .to_owned();
+
+            // 3. Replace with the token: a new version of the same note.
+            let mut confirmed = replace.clone();
+            confirmed["confirm_token"] = Value::String(token.clone());
+            let (status, stored) = raw_request(
+                address,
+                &headers,
+                &rpc(3, "tools/call", call_params("memory", confirmed.clone())),
+            )
+            .await;
+            assert_eq!(status, 200, "confirmed replace: {stored}");
+            let stored = assert_tool_response(&stored, ToolName::Memory).clone();
+            assert_eq!(stored["status"], "stored", "{stored}");
+            assert_eq!(stored["note_id"], note_id.as_str(), "{stored}");
+            assert_eq!(stored["supersedes"], first.as_str(), "{stored}");
+            let second = stored["memory_id"].as_str().expect("memory_id").to_owned();
+            assert_ne!(second, first, "a replacement is a new version");
+            let second_id = Uuid::parse_str(&second).expect("uuid");
+            assert_eq!(
+                tokio::task::block_in_place(|| note_version(&mut handle, &first)),
+                (
+                    "superseded".to_owned(),
+                    Some(second_id),
+                    Uuid::parse_str(&note_id).ok()
+                )
+            );
+            assert_eq!(
+                tokio::task::block_in_place(|| note_version(&mut handle, &second)),
+                ("active".to_owned(), None, Uuid::parse_str(&note_id).ok())
+            );
+            assert_eq!(
+                tokio::task::block_in_place(|| note_head(&mut handle, &note_id)),
+                Some(second_id)
+            );
+            let after = blocking_counts(&mut handle);
+
+            // 4. A retry of the committed key replays: same ids, nothing written.
+            let (status, replay) = raw_request(
+                address,
+                &headers,
+                &rpc(4, "tools/call", call_params("memory", confirmed)),
+            )
+            .await;
+            assert_eq!(status, 200, "replay: {replay}");
+            let replay = assert_tool_response(&replay, ToolName::Memory);
+            assert_eq!(replay["memory_id"], second.as_str());
+            assert_eq!(replay["evidence_id"], stored["evidence_id"]);
+            assert_eq!(
+                durable_counts(blocking_counts(&mut handle)),
+                durable_counts(after)
+            );
+
+            // get carries the note id on the new version.
+            let (status, got) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    5,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"get","memory_id":second,"workspace_id":workspace}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "get: {got}");
+            let got = assert_tool_response(&got, ToolName::Memory);
+            assert_eq!(memory_items(got)[0]["note_id"], note_id.as_str(), "{got}");
+
+            // 5. A stale `supersedes` is the business refusal STALE_NOTE_VERSION; no token is minted.
+            let tenant = handle.tenant_id;
+            let tokens = tokio::task::block_in_place(|| confirm_token_rows(&mut handle, tenant));
+            let stale = json!({
+                "action":"note_put","content":"too late","note_kind":"lesson",
+                "idempotency_key":format!("stale-{}", Uuid::now_v7()),"workspace_id":workspace,
+                "note_id":note_id,"supersedes":first,
+            });
+            let (status, refused) = raw_request(
+                address,
+                &headers,
+                &rpc(6, "tools/call", call_params("memory", stale)),
+            )
+            .await;
+            assert_eq!(status, 200, "{refused}");
+            assert_eq!(refused["result"]["isError"], true, "{refused}");
+            let business = &refused["result"]["structuredContent"];
+            assert_eq!(business["code"], "STALE_NOTE_VERSION", "{refused}");
+            assert!(
+                CanonicalCatalog::load()
+                    .expect("catalog")
+                    .validate_output(ToolName::Memory, business)
+                    .is_ok(),
+                "the refusal is an advertised shape: {refused}"
+            );
+            assert_eq!(
+                tokio::task::block_in_place(|| confirm_token_rows(&mut handle, tenant)),
+                tokens,
+                "a stale challenge mints nothing"
+            );
+
+            // 6. memory.correct on the note is refused before any challenge.
+            let (status, correct) = raw_request(
+                address,
+                &headers,
+                &rpc(
+                    7,
+                    "tools/call",
+                    call_params(
+                        "memory",
+                        json!({"action":"correct","memory_id":second,"text":"rewritten in place"}),
+                    ),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "{correct}");
+            assert_tool_error(&correct, "CONFLICT");
+            assert_eq!(
+                tokio::task::block_in_place(|| confirm_token_rows(&mut handle, tenant)),
+                tokens,
+                "no correct token was minted for a note"
+            );
+            assert_eq!(
+                tokio::task::block_in_place(|| note_head(&mut handle, &note_id)),
+                Some(second_id)
             );
 
             stop_server(server).await.expect("server shutdown");

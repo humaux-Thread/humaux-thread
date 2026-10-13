@@ -84,6 +84,9 @@ pub(crate) struct MemoryItem {
     /// ADR-0067 D-D: the note's kind (wire string); absent for a Memory that is not a note.
     #[serde(skip_serializing_if = "Option::is_none")]
     note_kind: Option<&'static str>,
+    /// ADR-0067 D-J: the note this version belongs to; absent for a Memory that is not a note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note_id: Option<Uuid>,
     /// ADR-0067 D-H: lifecycle + provenance, present only on `memory.get` with `include_history`.
     #[serde(flatten)]
     history: Option<HistoryItem>,
@@ -798,7 +801,8 @@ pub(crate) async fn write_binding(
         | DestructiveOp::MemoryUnarchive
         | DestructiveOp::MemoryCorrect
         | DestructiveOp::MemoryConfirm
-        | DestructiveOp::MemoryReject => Err(ErrorCode::InvalidInput),
+        | DestructiveOp::MemoryReject
+        | DestructiveOp::MemoryNoteReplace => Err(ErrorCode::InvalidInput),
     }
 }
 
@@ -913,6 +917,7 @@ fn memory_items(
                         .note_kinds
                         .get(&memory_id)
                         .map(|kind| kind.wire()),
+                    note_id: materialized.note_ids.get(&memory_id).copied(),
                     history: history
                         .take_if(|read| read.memory_id == memory_id)
                         .map(history_item)

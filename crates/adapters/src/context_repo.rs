@@ -1190,6 +1190,8 @@ pub struct MaterializedMemory {
     /// ADR-0067 D-D: `memory_id → note_kind` for every body in `bodies` that is a note, read in the same RR snapshot.
     /// A non-note Memory has no entry.
     pub note_kinds: HashMap<Uuid, NoteKind>,
+    /// ADR-0067 D-J: `memory_id → note_id` for the same notes, from the same read. A non-note Memory has no entry.
+    pub note_ids: HashMap<Uuid, Uuid>,
     /// ADR-0067 D-H: lifecycle and provenance of the one Memory `memory.get` read with `include_history`; `None` on
     /// every other read, so their output is unchanged.
     pub history: Option<MemoryHistory>,
@@ -1965,7 +1967,7 @@ pub async fn materialize_memory_enumeration_filtered(
     let grounding = page_grounding_in_txn(&mut txn, &authorization, &page.items).await?;
     let subjects =
         memory_subjects_in_txn(&mut txn, authorization.tenant_id().0, &page.items).await?;
-    let note_kinds =
+    let (note_kinds, note_ids) =
         memory_note_kinds_in_txn(&mut txn, authorization.tenant_id().0, &page.items).await?;
     let ledger = close_ledger_in_txn(&mut txn, validated_key, &authorization)
         .await
@@ -1997,6 +1999,7 @@ pub async fn materialize_memory_enumeration_filtered(
             // carries one; the flag is meaningful only on memory.get.
             archived: false,
             note_kinds,
+            note_ids,
             history: None,
         },
         census,
@@ -2230,7 +2233,7 @@ pub async fn materialize_memory_get_versioned(
     .ok_or(ErrorCode::Internal)?;
     let subjects =
         memory_subjects_in_txn(&mut txn, authorization.tenant_id().0, &[memory_id.0]).await?;
-    let note_kinds =
+    let (note_kinds, note_ids) =
         memory_note_kinds_in_txn(&mut txn, authorization.tenant_id().0, &[memory_id.0]).await?;
     // ADR-0067 D-H: read in the same RR snapshot the body gate just admitted the row in.
     let history = if include_history {
@@ -2251,6 +2254,7 @@ pub async fn materialize_memory_get_versioned(
         subjects,
         archived,
         note_kinds,
+        note_ids,
         history,
     })
 }
@@ -3227,7 +3231,8 @@ async fn apply_binding_write(
         | DestructiveOp::MemoryUnarchive
         | DestructiveOp::MemoryCorrect
         | DestructiveOp::MemoryConfirm
-        | DestructiveOp::MemoryReject => Err(ErrorCode::InvalidInput),
+        | DestructiveOp::MemoryReject
+        | DestructiveOp::MemoryNoteReplace => Err(ErrorCode::InvalidInput),
     }
 }
 

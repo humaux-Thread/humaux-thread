@@ -184,6 +184,79 @@ status). Same key with a different request → `IDEMPOTENCY_CONFLICT`; a stale `
 The confirm challenge and the final commit are separate receipt phases. A new version does not inherit task-level
 context bindings. `memory.correct`, `supersede`, `archive` and forget keep the note head consistent or refuse.
 
+### D-J as adjudicated (40c, web-GPT batch 10, 2026-10-13; TW `research_gpt_batch10_20261013.md`) — wins over D-J above
+
+40c ships in two slices: **40c-1** is the replacement loop (below), **40c-2** the history axes (D-J2).
+
+- **Identity.** `memory_records.note_id uuid` = the first version's `memory_id`, with no FK to that root.
+  - CHECK `(note_id IS NOT NULL) = (note_kind IS NOT NULL)`.
+  - `private.note_heads(tenant_id, note_id, head_memory_id)` is the note's lock anchor.
+  - A new version may carry another `note_kind`; no version is ever re-classified in place.
+  - Migration 0236 backfills every 40a note as a singleton (`note_id = memory_id`, head = itself). Its precheck aborts if any note row already has a supersession edge in or out (merge ≠ go-live: nothing is deployed).
+- **One active version per note** is a DB constraint: `EXCLUDE USING btree (tenant_id WITH =, note_id WITH =) WHERE (status = 'active' AND note_id IS NOT NULL) DEFERRABLE INITIALLY DEFERRED`.
+- **Write order** under `SELECT … FOR UPDATE` of the head row:
+  1. The CAS: head = `supersedes`, that version active and not archived, and it passes the final read gate, so a tombstoned or secret head is NOT_FOUND.
+  2. A new MANUAL_NOTE Evidence.
+  3. The new version through the unchanged single `insert_memory`, carrying `note_id`.
+  4. The identity contract.
+  5. `UPDATE` the old row: `status='superseded'`, `superseded_by` = new, `superseded_at` in one statement (the FK is satisfied immediately).
+  6. Head = new.
+  7. Outbox and the receipt.
+
+  There is no fake status and no deferred FK; the EXCLUDE is checked at COMMIT.
+- **Replacement request.** The same op `memory.note_put` with `note_id` + `supersedes` (+ `confirm_token` on the second call). No scope input: the new version inherits the head's visibility and data class. A create (no `note_id`) is unchanged and needs no token.
+- **Confirmation (ADR-0018 extended).**
+  - A new `DestructiveOp::MemoryNoteReplace` (target = `supersedes`, no successor).
+  - `control.confirm_tokens.request_sha256` binds the replacement intent: H = SHA-256 of a domain-separated (`memory.note_put.replace/v1`), length-prefixed encoding of note_id, supersedes, note_kind, title, body digest, requested_authority and idempotency_key.
+  - The consume predicate matches H. Every older consumer requires `request_sha256 IS NULL`, so no other tool can spend a note token.
+  - The challenge writes no receipt and costs 0 BMO. It CAS-prechecks: a stale `supersedes` answers STALE_NOTE_VERSION and mints no token.
+  - The commit re-checks everything, consumes the token and costs 1 BMO.
+- **Idempotency.**
+  - One `idempotency_key` names one logical edit across challenge, commit and retries.
+  - The commit receipt's fingerprint is H, which is domain-separated from 40a's raw-bytes fingerprint, so the same key on a create and a replace never matches. The same key with another intent → the existing `CONFLICT` (there is no `IDEMPOTENCY_CONFLICT` code).
+  - A retry after COMMIT, with or without the token, returns the receipt's result: no consume, no write, no BMO.
+  - An expired token is re-challenged with the same key and intent.
+- **Errors.** No new `ErrorCode` (§52.1 stays at 18).
+  - `STALE_NOTE_VERSION` is a business refusal (`isError`, structured `code`) like `AUTHORITY_CEILING_EXCEEDED`. It carries no head id in 40c-1.
+  - An archived or non-active head → `CONFLICT`.
+  - Confirmation never raises authority: the commit re-runs the exact-grant check.
+  - A new version inherits no task binding, pin or confirmation result.
+- **Generic governance on notes.** `memory.correct`, `memory.supersede` (either operand a note) and `memory.restore` are refused with `CONFLICT` before any challenge is minted. `memory.archive`/`unarchive` stay per version and never move the head.
+  - Forgetting the head closes the note by derivation: the head no longer passes the final gate, so no replacement can CAS against it and nothing can reopen it.
+  - Forgetting an older version leaves the head alone.
+  - Ponytail: the closure is derived, not stored; store `head_memory_id = NULL` if a reader ever needs "closed" as a fact.
+- **Outputs.** `note_put`, `get` and `enumerate` items carry `note_id` for notes.
+- **Rejected:**
+  - Receipt-only binding (a token must bind its content on its own).
+  - A second idempotency code.
+  - Extending the 18 ErrorCodes.
+  - Update-then-insert with a deferred self-FK (needs the existing FK altered and immediate triggers that tolerate a future row).
+  - An explicit closed state or tombstone trigger (derivation suffices).
+  - Auto-forwarding `correct` to a replacement.
+  - Fallback to an older version after forgetting the head.
+
+**40c-1 as shipped** (deviations and additions to the list above):
+
+- **Order:** the CAS runs before the BMO reservation. Both happen in one transaction, so a stale refusal writes and bills nothing.
+- **Same-key race:** of two simultaneous calls with the same key, the loser gets 40a's receipt try-lock `CONFLICT` and replays on retry. G19 accepts either.
+- **Fields a replacement refuses:** `visibility_class`, `data_class`, `subject_ids`, `subject_keys` and `affects`. The token binds only the intent fields, and anything else would ride along unconfirmed.
+- **Revoked or expired head:** answers `NOT_FOUND`, because the final gate runs before the active check. An archived head answers `CONFLICT`.
+- **MEMORY_LIFECYCLE ticket:** the replacement also issues one retiring the old version, as `memory.correct` does (ADR-0057 D-B). That adds one outbox row and one stream_log row beyond the G28 counts.
+- **Confirm gate:** gained a pre-mint hook (`run_confirmed_write_checked`). Both the CAS precheck and the generic-governance note refusal run there, before any token is minted.
+
+### D-J2 — History axes (40c-2)
+
+- `memory.enumerate` gets a validated selector, used only by enumerate:
+  - `statuses` ∈ {["active"], ["superseded"], ["active","superseded"]} (revoked/expired refused);
+  - `archive` ∈ {exclude (default), only, include};
+  - `note_id`.
+
+  It runs on the manifest, every census statement and a dedicated enumerate final gate, under one RR snapshot, and all axes go into the cursor fingerprint.
+- recall/context keep the non-parameterizable active gate.
+- `memory.get` takes `memory_id` XOR `note_id`. `note_id` resolves the head, and there is never a fallback between the two namespaces.
+- The version list is `enumerate(note_id, statuses both, archive include)`.
+- **Blocking decision before `statuses:["superseded"]` ships:** a superseded version that is later revoked or expired cannot be expressed with one status column. Its own ADR decision is required (GPT batch 10, missed conflict 3).
+
 ## Acceptance (gates; each must be shown red once before it counts)
 
 40a: G01 a barrier before COMMIT yields no `stored` and no half object in another session; `get` right after the
@@ -206,9 +279,13 @@ G04/G05's job count red (CI mutation: drop 0235's distill skip). Gate tests asse
 cursor is refused. G13 filters use `occurred_at`, not `created_at`. G14 superseded: NotFound by default, readable
 with `include_history`, absent from recall. G15 after forget nothing (history, provenance, enumerate, cache, recall)
 returns the body or its digest.
-40c: G19 concurrent same key → one version; same key, different body → refused. G20 two editors on one old version →
-at most one wins, the other `STALE_NOTE_VERSION`. G21 no token / changed body / cross-note token / reused token → all
-refused.
+40c-1 (as adjudicated):
+- **G19:** a concurrent same key → one version; the same key with a different intent → `CONFLICT`.
+- **G20:** two editors on one old version → exactly one wins, the other `STALE_NOTE_VERSION`. The EXCLUDE keeps one active version per note even if the CAS is bypassed.
+- **G21:** no new replacement executes without a valid confirmation. A token presented with a changed body, title, kind or authority, for another note, or under another key → refused, with nothing written. A retry of a committed key returns the stored result without consuming, writing or billing; that is not token reuse.
+- **G26:** `memory.correct`, `supersede` and `restore` on a note → `CONFLICT` before any challenge.
+- **G27:** a tombstoned head cannot be replaced (NOT_FOUND).
+- **G28:** every success adds exactly one Evidence, one Memory, one PRIMARY link, one contract and one BMO, with zero LLM jobs; refusals and replays add none.
 Card baseline (real stack): 50 notes (rejected, decision, fix, problem, lesson 6 each; research, preference, state,
 note 5 each) → exact per-kind counts; replay (50 active / 0 superseded / 50 kept); one confirmed revision (50/1/51); a
 stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
@@ -230,7 +307,7 @@ stale revision refused (50/1/51); an above-ceiling note refused (50/1/51).
 - L-3 `body_sha256` of a low-entropy body is enumerable; it is on the forget surface with the body (40b G15).
 - L-4 Until slice 40d, recall over a note longer than one retrieval card covers its title and first card budget only
   (signal: card 40's 64 KiB recall fixture, or a note recall miss reported against text past the card budget).
-- L-5 Until slice 40c, `memory.enumerate` lists current versions only (no `statuses` axis, no archive selection) and
-  `memory.get` returns no `note_id`; superseded versions are reachable one id at a time through `get` with
+- L-5 Until slice 40c-2, `memory.enumerate` lists current versions only (no `statuses` axis, no archive selection) and
+  `memory.get` takes no `note_id` selector (40c-1 outputs `note_id`); superseded versions are reachable one id at a time through `get` with
   `include_history` (signal: a compat-facade `memory_enumerate(status=…)` fixture in card 42, or a replace flow in 40c
   that must list a note's versions).

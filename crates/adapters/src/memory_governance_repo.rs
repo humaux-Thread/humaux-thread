@@ -1,13 +1,14 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
 //! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, gateway::mcp_application, gateway::memory, tests]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
 //!   failure rolls back everything; every status change carries a lifecycle ticket on the target's home stream
 //!   (ADR-0057 D-M, W3); correct issues two lifecycle tickets (E2 projects M2, E1 retires M1) and undoing a
-//!   correction tickets M2 (ADR-0057 D-B)]
-//! Spec: Baseline §7; §15; ADR-0018; ADR-0020; ADR-0057
+//!   correction tickets M2 (ADR-0057 D-B); supersede / correct / restore refuse a note operand with Conflict before
+//!   any BMO or token work (ADR-0067 D-J)]
+//! Spec: Baseline §7; §15; ADR-0018; ADR-0020; ADR-0057; ADR-0067
 //!
 //! One `role_gateway` transaction, in this order, every step rolling the whole thing back:
 //! reserve BMO -> consume the confirm token ([`crate::confirm_token_repo::consume_in_txn`],
@@ -370,7 +371,7 @@ pub(crate) async fn home_stream(
 /// outbox row bound to the target's PRIMARY Evidence) on the target's home stream
 /// ([`home_stream`]), via the same §60 writers `remember` uses. Returns `(stream_seq,
 /// commit_seq, stream)` — the stream the ticket landed on, which a consistency token must name.
-async fn issue_lifecycle_ticket(
+pub(crate) async fn issue_lifecycle_ticket(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     auth: &AuthorizationScope,
     stream: &StreamKey,
@@ -397,7 +398,43 @@ async fn issue_lifecycle_ticket(
     Ok((stream_seq, commit_seq, stream))
 }
 
+/// ADR-0067 D-J: generic governance never versions a note — a note's head moves only through `memory.note_put`. `true`
+/// when any of `ids` is a note the caller can see; an invisible id is left to the `NOT_FOUND` path, never named here.
+async fn any_note_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> Result<bool, ErrorCode> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM private.memory_records \
+          WHERE tenant_id = $1 AND memory_id = ANY($2) AND note_id IS NOT NULL)",
+    )
+    .bind(tenant_id)
+    .bind(ids)
+    .fetch_one(&mut **txn)
+    .await
+    .map_err(db_error)
+}
+
+/// ADR-0067 D-J (G26): the gateway's pre-challenge refusal for `memory.correct`, `memory.supersede` and
+/// `memory.restore` — `CONFLICT` when any of `ids` is a note, before a token is minted. Read-only under the caller's
+/// RLS; each confirmed transaction re-checks.
+pub async fn refuse_note_targets(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    ids: &[Uuid],
+) -> Result<(), ErrorCode> {
+    // dep: PostgreSQL(any) — opens a PostgreSQL transaction
+    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    confirm_token_repo::set_authorization_local(&mut txn, auth).await?;
+    if any_note_in_txn(&mut txn, auth.tenant_id().0, ids).await? {
+        return Err(ErrorCode::Conflict);
+    }
+    Ok(())
+}
+
 /// D-C, atomically. See the module doc for the step order.
+#[allow(clippy::too_many_lines)] // one confirmed supersede transaction read top to bottom; ADR-0067 D-J's note refusal is its first step
 pub async fn supersede_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
@@ -407,6 +444,16 @@ pub async fn supersede_atomically(
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
     confirm_token_repo::set_authorization_local(&mut txn, auth).await?;
+    // ADR-0067 D-J (G26): neither operand may be a note.
+    if any_note_in_txn(
+        &mut txn,
+        auth.tenant_id().0,
+        &[request.target.0, request.successor.0],
+    )
+    .await?
+    {
+        return Err(ErrorCode::Conflict);
+    }
 
     let reservation = match quota_repo::reserve_bmo_in_txn(
         &mut txn,
@@ -753,6 +800,13 @@ pub async fn restore_atomically(
     confirm_token_repo::consume_in_txn(&mut txn, auth, &request.claim).await?;
 
     let head = head_state(&mut txn, auth, request.target).await?;
+    // ADR-0067 D-J (G26): a restore touching a note (the target or the SUPERSEDE's successor) is refused.
+    let touched: Vec<Uuid> = std::iter::once(request.target.0)
+        .chain(head.successor_id)
+        .collect();
+    if any_note_in_txn(&mut txn, auth.tenant_id().0, &touched).await? {
+        return Err(ErrorCode::Conflict);
+    }
     if let Err(reason) = restore_allowed(RestoreTargetState {
         head_op: head.head_op,
         memory_status: head.memory_status,
@@ -1517,6 +1571,11 @@ pub async fn correct_atomically(
         });
     }
 
+    // ADR-0067 D-J (G26): a note is versioned only through memory.note_put, never corrected in place.
+    if any_note_in_txn(&mut txn, auth.tenant_id().0, &[request.target.0]).await? {
+        return Err(ErrorCode::Conflict);
+    }
+
     let reservation = match quota_repo::reserve_bmo_in_txn(
         &mut txn,
         auth,
@@ -1666,6 +1725,7 @@ pub async fn correct_atomically(
             // A direct user correction is asserted at full confidence.
             confidence: 1.0,
             note_kind: None,
+            note_id: None,
         },
     )
     .await
@@ -1832,6 +1892,7 @@ mod tests {
                 target_id: target.0,
                 successor_id: Some(successor.0),
                 nonce_sha256: [9u8; 32],
+                request_sha256: None,
             },
             undo_window: Duration::from_secs(86_400),
             finished_audit: AuditEvent {
@@ -1955,6 +2016,7 @@ mod tests {
                 target_id: target.0,
                 successor_id: None,
                 nonce_sha256: [4u8; 32],
+                request_sha256: None,
             },
             consistency_token_ttl: Duration::from_secs(60),
             finished_audit: AuditEvent {
@@ -2042,6 +2104,7 @@ mod tests {
             target_id: Uuid::now_v7(),
             successor_id: None,
             nonce_sha256: [0xabu8; 32],
+            request_sha256: None,
         };
         assert_eq!(lifecycle_idempotency_key(&claim), "ab".repeat(32));
     }

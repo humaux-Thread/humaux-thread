@@ -35,7 +35,7 @@ use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 
 use crate::affect_repo::{self, AffectInput, AffectParent};
-use crate::note_repo::{self, NoteIntake};
+use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
 use crate::retrieve::{self, TokenClaims};
 
@@ -543,14 +543,14 @@ pub async fn remember_in_txn(
     remember_in_txn_with(txn, cmd, None).await
 }
 
-/// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some(note)` the same transaction also writes the
-/// identity contract and the one authorised Memory (`note_repo::materialize_in_txn`) between the Evidence rows and the
-/// stream ticket; the 0235 triggers then see the contract when the `EVIDENCE_ACCEPTED` outbox row is inserted (no distill
+/// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some((note, lineage))` the same transaction also writes
+/// the identity contract, the one authorised Memory and (D-J) the note-head move (`note_repo::materialize_in_txn`) between
+/// the Evidence rows and the stream ticket; the 0235 triggers then see the contract when the `EVIDENCE_ACCEPTED` outbox row is inserted (no distill
 /// job; the row is born `DONE`, so the projection claim does not wait on it, 0176). `None` is `remember.put`, byte for byte.
 pub async fn remember_in_txn_with(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mut cmd: RememberCommand,
-    note: Option<&NoteIntake>,
+    note: Option<(&NoteIntake, NoteLineage)>,
 ) -> Result<RememberPending, RememberError> {
     // This check is deliberately inside the reusable path, before its first write. The public
     // wrapper's fast check only avoids opening a transaction for an already-expired command.
@@ -568,7 +568,9 @@ pub async fn remember_in_txn_with(
     );
 
     // ADR-0067 D-C: the authority decision is pure and precedes every write.
-    let note_class = note.map(note_repo::authorize).transpose()?;
+    let note_class = note
+        .map(|(note, _)| note_repo::authorize(note))
+        .transpose()?;
 
     set_authorization_local(txn, cmd.tenant_id, cmd.authorization_user_id).await?;
 
@@ -620,8 +622,8 @@ pub async fn remember_in_txn_with(
 
     // ADR-0067 D-A/D-B: the contract row precedes the outbox row, so the 0235 enqueue trigger sees it.
     let memory_id = match (note, note_class) {
-        (Some(note), Some(class)) => {
-            Some(note_repo::materialize_in_txn(txn, &cmd, evidence_id, note, class).await?)
+        (Some((note, lineage)), Some(class)) => {
+            Some(note_repo::materialize_in_txn(txn, &cmd, evidence_id, note, lineage, class).await?)
         }
         _ => None,
     };
