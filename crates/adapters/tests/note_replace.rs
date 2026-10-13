@@ -2,8 +2,9 @@
 //!   G21, G26, G27, G28 and the note identity of the create path), against a real PostgreSQL and real `role_gateway` logins.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
 //!   tokio]; services=[PostgreSQL(role_gateway) r=[control.confirm_tokens, control.operation_receipts,
-//!   control.usage_reservations, ops.jobs, ops.outbox, private.identity_note_materializations, private.note_heads,
-//!   projection.stream_log] w=[private.evidence_objects, private.memory_evidence, private.memory_records]]; env=[];
+//!   control.usage_reservations, ops.jobs, ops.memory_lifecycle_events, ops.outbox,
+//!   private.identity_note_materializations, private.note_heads, projection.stream_log] w=[private.evidence_objects,
+//!   private.memory_evidence, private.memory_records]]; env=[];
 //!   modules=[adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::remember, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
@@ -354,6 +355,7 @@ struct Residue {
     consumed_bmo: i64,
     consumed_tokens: i64,
     llm_jobs: i64,
+    lifecycle_events: i64,
 }
 
 fn residue(handle: &mut Handle) -> Residue {
@@ -370,7 +372,8 @@ fn residue(handle: &mut Handle) -> Residue {
                (SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND status='CONSUMED'), \
                (SELECT count(*) FROM control.confirm_tokens WHERE tenant_id=$1 AND consumed_at IS NOT NULL), \
                (SELECT count(*) FROM ops.jobs WHERE tenant_id=$1 \
-                  AND job_type IN ('DERIVED_DISTILL','DERIVED_CONSOLIDATE'))",
+                  AND job_type IN ('DERIVED_DISTILL','DERIVED_CONSOLIDATE')), \
+               (SELECT count(*) FROM ops.memory_lifecycle_events WHERE tenant_id=$1)",
             &[&handle.tenant_id],
         )
         .expect("owner reads this tenant's rows");
@@ -383,6 +386,7 @@ fn residue(handle: &mut Handle) -> Residue {
         consumed_bmo: row.get(5),
         consumed_tokens: row.get(6),
         llm_jobs: row.get(7),
+        lifecycle_events: row.get(8),
     }
 }
 
@@ -400,6 +404,26 @@ fn version(
         )
         .expect("version row");
     (row.get(0), row.get(1), row.get(2), row.get(3))
+}
+
+/// (op, reason_code, replacement_memory_id, idempotency_key, carries a stream seq) of one lifecycle event row.
+type LifecycleRecord = (String, Option<String>, Option<Uuid>, String, bool);
+
+/// ADR-0020: the [`LifecycleRecord`] of the event a version's `lifecycle_head_event_id` names, if any.
+fn supersede_record(handle: &mut Handle, memory_id: Uuid) -> Option<LifecycleRecord> {
+    handle
+        .admin
+        .query_opt(
+            "SELECT e.op, e.reason_code, e.replacement_memory_id, e.idempotency_key, \
+                    e.stream_seq IS NOT NULL AND e.commit_seq IS NOT NULL \
+               FROM private.memory_records m \
+               JOIN ops.memory_lifecycle_events e \
+                 ON e.event_id = m.lifecycle_head_event_id AND e.memory_id = m.memory_id \
+              WHERE m.tenant_id=$1 AND m.memory_id=$2",
+            &[&handle.tenant_id, &memory_id],
+        )
+        .expect("lifecycle head read")
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
 }
 
 fn head(handle: &mut Handle, note_id: Uuid) -> Option<Uuid> {
@@ -518,6 +542,7 @@ fn a_created_note_is_its_own_note_id_and_head() {
 // ---------------------------------------------------------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::too_many_lines)] // one causal chain: replace, its side-effect deltas, then the refused and replayed legs
 fn g28_one_replacement_adds_exactly_one_version_and_moves_the_head() {
     run_db_fixture::<Fixture, _>("g28_replace_counts", |mut handle| {
         let editor = editor(&mut handle);
@@ -552,6 +577,7 @@ fn g28_one_replacement_adds_exactly_one_version_and_moves_the_head() {
                 consumed_bmo: after.consumed_bmo - before.consumed_bmo,
                 consumed_tokens: after.consumed_tokens - before.consumed_tokens,
                 llm_jobs: after.llm_jobs,
+                lifecycle_events: after.lifecycle_events - before.lifecycle_events,
             },
             Residue {
                 evidence: 1,
@@ -562,8 +588,21 @@ fn g28_one_replacement_adds_exactly_one_version_and_moves_the_head() {
                 consumed_bmo: 1,
                 consumed_tokens: 1,
                 llm_jobs: 0,
+                lifecycle_events: 1,
             },
-            "one replacement = one Evidence / Memory / PRIMARY link / contract / receipt / BMO / token, no LLM job"
+            "one replacement = one Evidence / Memory / PRIMARY link / contract / receipt / BMO / token / lifecycle \
+             event, no LLM job"
+        );
+        assert_eq!(
+            supersede_record(&mut handle, first),
+            Some((
+                "SUPERSEDE".to_owned(),
+                Some("EXPLICIT_SUPERSEDE".to_owned()),
+                Some(second),
+                hex::encode(token.nonce_sha256),
+                true,
+            )),
+            "the old version's lifecycle head is the SUPERSEDE event memory.supersede writes, naming the new version"
         );
         assert_eq!(
             version(&mut handle, first),

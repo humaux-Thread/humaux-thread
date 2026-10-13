@@ -256,7 +256,9 @@ pub async fn note_put_atomically(
 /// replacement steps. Order: receipt lock + replay (a committed key answers its stored result whatever the token's state
 /// now) -> head row `FOR UPDATE` + CAS + final gate -> (challenge: stop, nothing written) -> BMO -> consume the token ->
 /// Evidence, version, contract, old row superseded, head moved (`note_repo::materialize_in_txn`) -> outbox + the old
-/// version's retire ticket -> receipt -> COMMIT. `request.request_fingerprint` must be hex of the intent digest `H`.
+/// version's retire ticket, `SUPERSEDE` lifecycle event and head stamp
+/// (`memory_governance_repo::retire_superseded_note_in_txn`) -> receipt -> COMMIT. `request.request_fingerprint` must
+/// be hex of the intent digest `H`.
 pub async fn note_replace_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
@@ -495,13 +497,16 @@ async fn atomically(
     .await
     .map_err(remember_error)?;
     // ADR-0057 D-B: the superseded version's point is retired by a MEMORY_LIFECYCLE ticket on its home stream, as
-    // `memory.correct` retires M1's.
+    // `memory.correct` retires M1's; ADR-0020: with the SUPERSEDE event and head stamp `memory.supersede` writes.
     if let Some(replace) = &replace {
-        memory_governance_repo::issue_lifecycle_ticket(
+        memory_governance_repo::retire_superseded_note_in_txn(
             &mut txn,
             &auth,
             pending.stream_key(),
+            replace.claim.as_ref().ok_or(ErrorCode::Internal)?,
             MemoryId(replace.supersedes),
+            pending.memory_id().ok_or(ErrorCode::Internal)?,
+            &request.request_fingerprint,
         )
         .await?;
     }

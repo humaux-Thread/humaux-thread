@@ -398,6 +398,55 @@ pub(crate) async fn issue_lifecycle_ticket(
     Ok((stream_seq, commit_seq, stream))
 }
 
+/// ADR-0067 D-J / ADR-0057 D-B / ADR-0020: the lifecycle side of a `memory.note_put` replacement, for the version
+/// `note_repo::materialize_in_txn` just superseded — the retire ticket ([`issue_lifecycle_ticket`]), the same
+/// `SUPERSEDE` row [`supersede_atomically`] appends (keyed by the consumed token, naming that ticket), and the
+/// `lifecycle_head_event_id` stamp. No `undo_deadline`: `memory.restore` refuses a note (ADR-0067 D-J, G26). A stamp
+/// that misses the row superseded earlier in this transaction is an invariant break (`Internal`).
+pub(crate) async fn retire_superseded_note_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    auth: &AuthorizationScope,
+    stream: &StreamKey,
+    claim: &ConfirmationClaim,
+    superseded: MemoryId,
+    replacement: Uuid,
+    request_fingerprint: &str,
+) -> Result<(), ErrorCode> {
+    let (stream_seq, commit_seq, _) = issue_lifecycle_ticket(txn, auth, stream, superseded).await?;
+    let event_id = append_lifecycle_event(
+        txn,
+        auth,
+        LifecycleOp::Supersede,
+        Some(LifecycleReason::ExplicitSupersede),
+        superseded.0,
+        Some(replacement),
+        None, // correction_evidence: a note version is not a correction
+        None, // undoes_event
+        None, // undo_window_secs: not undoable
+        &lifecycle_idempotency_key(claim),
+        request_fingerprint,
+        stream_seq,
+        commit_seq,
+    )
+    .await?;
+    let stamped = sqlx::query(
+        "UPDATE private.memory_records SET lifecycle_head_event_id = $3 \
+          WHERE tenant_id = $1 AND memory_id = $2 AND status = 'superseded' AND superseded_by = $4",
+    )
+    .bind(auth.tenant_id().0)
+    .bind(superseded.0)
+    .bind(event_id)
+    .bind(replacement)
+    .execute(&mut **txn)
+    .await
+    .map_err(db_error)?
+    .rows_affected();
+    if stamped != 1 {
+        return Err(ErrorCode::Internal);
+    }
+    Ok(())
+}
+
 /// ADR-0067 D-J: generic governance never versions a note — a note's head moves only through `memory.note_put`. `true`
 /// when any of `ids` is a note the caller can see; an invisible id is left to the `NOT_FOUND` path, never named here.
 async fn any_note_in_txn(
