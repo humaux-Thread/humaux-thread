@@ -1,5 +1,5 @@
 name: humaux-thread setup
-# Shared by the `ci` and `live` jobs of ci.yml: pinned toolchain, cargo cache, the gitleaks
+# Shared by every job of ci.yml (lint, test-a, test-b, serial-lane, live): pinned toolchain, cargo cache, the gitleaks
 # fixture the tests pin, and the runbook §2 provisioning of the throwaway postgres service
 # (roles rotate --create-missing → migrate → rotate role_admin). The caller sets the DB env
 # (HUMAUX_TEST_PG_DSN / HUMAUX_MIGRATOR_PG_DSN) and declares the services; this action
