@@ -1,28 +1,24 @@
 //! `protocol::tests::note_kind_contract` — ADR-0067 D-D contract test: every `note_kind` / `note_kinds` enum the MCP
 //!   contracts publish is exactly the domain's closed `NoteKind` set, in its order.
-//! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::note]
+//! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[domain::note]
 //! Called-by: [cargo-test]
-//! Invariants: [every schema site that names a note kind is found (the expected count is pinned, so a renamed key
-//!   cannot silently drop out of the check); each site's enum equals `NoteKind::ALL` wire strings in order]
+//! Invariants: [every `contracts/mcp/*.json` is scanned at test time; the files holding a note-kind site and their site
+//!   counts are pinned as one map, so a new file with a note-kind enum, or a renamed key dropping out of one, fails
+//!   until the map names it; each site's enum equals `NoteKind::ALL` wire strings in order]
 //! Spec: §78.2; ADR-0067 D-D, D-G
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use humaux_domain::note::NoteKind;
 use serde_json::Value;
 
-/// The published contracts that carry a note-kind enum, with how many sites each holds.
-const CONTRACTS: [(&str, &str, usize); 2] = [
-    // memory.note_put's `note_kind` input and memory.enumerate's `note_kinds` filter.
-    (
-        "memory.schema.json",
-        include_str!("../../../contracts/mcp/memory.schema.json"),
-        2,
-    ),
+/// Exactly the published contracts that carry a note-kind enum, with how many sites each holds.
+const SITES: [(&str, usize); 2] = [
     // The memory.get / memory.enumerate item's `note_kind`.
-    (
-        "context.output.schema.json",
-        include_str!("../../../contracts/mcp/context.output.schema.json"),
-        1,
-    ),
+    ("context.output.schema.json", 1),
+    // memory.note_put's `note_kind` input and memory.enumerate's `note_kinds` filter.
+    ("memory.schema.json", 2),
 ];
 
 /// Every `enum` reachable under a `note_kind` or `note_kinds` key (an array filter's enum sits under `items`).
@@ -56,20 +52,44 @@ fn every_published_note_kind_enum_is_the_domain_set() {
         .iter()
         .map(|kind| kind.wire().to_owned())
         .collect();
-    for (name, text, expected_sites) in CONTRACTS {
-        let schema: Value = serde_json::from_str(text).expect("contract parses");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contracts/mcp");
+    let mut scanned = 0;
+    let mut found = BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).expect("contracts/mcp") {
+        let path = entry.expect("contracts/mcp entry").path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        scanned += 1;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("utf-8 file name")
+            .to_owned();
+        let text = std::fs::read_to_string(&path).expect("contract reads");
+        let schema: Value = serde_json::from_str(&text).expect("contract parses");
         let mut sites = Vec::new();
         note_kind_enums(&schema, &mut sites);
-        assert_eq!(
-            sites.len(),
-            expected_sites,
-            "{name}: note-kind sites found {sites:?}"
-        );
-        for site in sites {
+        for site in &sites {
             assert_eq!(
-                site, domain,
+                site, &domain,
                 "{name}: a note-kind enum drifted from NoteKind::ALL"
             );
         }
+        if !sites.is_empty() {
+            found.insert(name, sites.len());
+        }
     }
+    assert!(
+        scanned > SITES.len(),
+        "the scan saw the contract directory ({scanned} files)"
+    );
+    let pinned: BTreeMap<String, usize> = SITES
+        .iter()
+        .map(|(name, count)| ((*name).to_owned(), *count))
+        .collect();
+    assert_eq!(
+        found, pinned,
+        "the contracts holding note-kind sites, and their counts"
+    );
 }

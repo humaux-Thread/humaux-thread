@@ -1036,6 +1036,19 @@ fn l6_the_selector_refuses_revoked_and_expired() {
     );
 }
 
+/// The owner moves one active version to a terminal hide state (`revoked` / `expired`), which no writer under test sets.
+fn set_terminal(handle: &mut Handle, memory_id: Uuid, status: &str) {
+    let updated = handle
+        .admin
+        .execute(
+            "UPDATE private.memory_records SET status = $2 \
+             WHERE memory_id = $1 AND tenant_id = $3 AND status = 'active'",
+            &[&memory_id, &status, &handle.tenant_id],
+        )
+        .expect("owner sets the terminal status");
+    assert_eq!(updated, 1);
+}
+
 #[test]
 fn l6_revoked_and_expired_versions_leave_every_selection() {
     run_db_fixture::<Fixture, _>("l6_terminal_hide_states", |mut handle| {
@@ -1044,15 +1057,7 @@ fn l6_revoked_and_expired_versions_leave_every_selection() {
         let mut hidden = Vec::new();
         for status in ["revoked", "expired"] {
             let id = memory_of(&create(&handle, &editor, &format!("l6 {status}")));
-            let updated = handle
-                .admin
-                .execute(
-                    "UPDATE private.memory_records SET status = $2 \
-                     WHERE memory_id = $1 AND tenant_id = $3 AND status = 'active'",
-                    &[&id, &status, &handle.tenant_id],
-                )
-                .expect("owner sets the terminal status");
-            assert_eq!(updated, 1);
+            set_terminal(&mut handle, id, status);
             hidden.push(id);
         }
         let rows = versions(&mut handle);
@@ -1063,11 +1068,41 @@ fn l6_revoked_and_expired_versions_leave_every_selection() {
                 assert!(hidden.iter().all(|id| !page_ids(&page).contains(id)));
             }
         }
-        for id in hidden {
-            assert!(matches!(
-                get(&handle, MemoryGetTarget::Note(id), true),
-                Err(ErrorCode::NotFound)
-            ));
+    });
+}
+
+/// L-6 on `memory.get`, on its own: a revoked / expired version is `NOT_FOUND` by `memory_id` and by `note_id`, with and
+/// without history — the final gate's answer. The get path's second lifecycle layer answers `Internal`, never a body,
+/// so a gate that admits the row turns this red on the `NOT_FOUND` assertion.
+#[test]
+fn l6_revoked_and_expired_versions_are_not_gettable() {
+    run_db_fixture::<Fixture, _>("l6_terminal_get", |mut handle| {
+        let editor = editor(&mut handle);
+        let targets = |id: Uuid| {
+            [
+                (MemoryGetTarget::Memory(MemoryId(id)), false),
+                (MemoryGetTarget::Memory(MemoryId(id)), true),
+                (MemoryGetTarget::Note(id), false),
+                (MemoryGetTarget::Note(id), true),
+            ]
+        };
+        for status in ["revoked", "expired"] {
+            let id = memory_of(&create(&handle, &editor, &format!("l6 get {status}")));
+            // Control: every leg reads the version while it is active, so NOT_FOUND below is the status alone.
+            for (target, include_history) in targets(id) {
+                let read = get(&handle, target, include_history)
+                    .unwrap_or_else(|e| panic!("{status} {target:?} {include_history}: {e:?}"));
+                assert_eq!(body_ids(&read.bodies.items), vec![id]);
+            }
+            set_terminal(&mut handle, id, status);
+            for (target, include_history) in targets(id) {
+                let read = get(&handle, target, include_history);
+                assert!(
+                    matches!(read, Err(ErrorCode::NotFound)),
+                    "{status} {target:?} history={include_history}: {:?}",
+                    read.map(|read| body_ids(&read.bodies.items))
+                );
+            }
         }
     });
 }

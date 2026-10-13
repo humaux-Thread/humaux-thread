@@ -707,18 +707,21 @@ impl GatewayMcpApplication {
         raw_arguments: &str,
         value: &Value,
     ) -> Result<ToolOutput, ErrorCode> {
-        // ADR-0067 D-J2: `memory_id` XOR `note_id` (the schema's oneOf, re-checked here); never a fallback between them.
-        let target = match (value.get("memory_id"), value.get("note_id")) {
-            (Some(memory_id), None) => MemoryGetTarget::Memory(MemoryId::parse(
-                memory_id.as_str().ok_or(ErrorCode::InvalidInput)?,
-            )?),
-            (None, Some(note_id)) => MemoryGetTarget::Note(
+        // ADR-0067 D-J2: `memory_id` XOR `note_id` is the input schema's `oneOf`, enforced for every handler by
+        // `CanonicalCatalog::validate` in `validated()`; only the id present is parsed, never a fallback between them.
+        let target = match value.get("note_id") {
+            Some(note_id) => MemoryGetTarget::Note(
                 note_id
                     .as_str()
                     .and_then(|id| Uuid::parse_str(id).ok())
                     .ok_or(ErrorCode::InvalidInput)?,
             ),
-            _ => return Err(ErrorCode::InvalidInput),
+            None => MemoryGetTarget::Memory(MemoryId::parse(
+                value
+                    .get("memory_id")
+                    .and_then(Value::as_str)
+                    .ok_or(ErrorCode::InvalidInput)?,
+            )?),
         };
         let requested_workspace = workspace(value)?;
         // ADR-0067 D-H: absent = false, the pre-40b contract.

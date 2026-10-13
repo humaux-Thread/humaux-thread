@@ -135,6 +135,9 @@ impl Default for Lifecycle {
 /// [`Lifecycle::sql`]'s text. `{t}` = the `memory_records` alias, `{s}` = the bound `text[]` of statuses,
 /// `{a}` = the bound archive mode. Each status keeps its §59.1 G59-4 pairing with `superseded_by`; an unknown
 /// archive mode matches nothing (fail-closed).
+// ponytail: the archive CASE on a bound parameter may defeat the `archived_at IS NULL` partial index under generic
+// plans (ADR-0067 D-J2 "Possible plan cost"), split per-mode statements or force a custom plan when the
+// `enumerate_scale` bar regresses.
 const LIFECYCLE_SQL: &str = "((({t}.status = 'active' AND {t}.superseded_by IS NULL \
         AND 'active' = ANY(${s}::text[])) \
      OR ({t}.status = 'superseded' AND {t}.superseded_by IS NOT NULL \

@@ -14540,6 +14540,30 @@ fn note_version(handle: &mut Handle, memory_id: &str) -> (String, Option<Uuid>, 
     (row.get(0), row.get(1), row.get(2))
 }
 
+/// Hands one note version and its PRIMARY Evidence to `user_id` as USER_PRIVATE, as `set_record_user_visibility` does for
+/// a seeded record.
+fn make_note_user_private(handle: &mut Handle, memory_id: &str, user_id: Uuid) {
+    let memory_id = Uuid::parse_str(memory_id).expect("memory id");
+    let mut txn = handle
+        .admin
+        .transaction()
+        .expect("begin user-private note mutation");
+    for sql in [
+        "UPDATE private.memory_records SET visibility_class='USER_PRIVATE', \
+         visibility_user_id=$2, visibility_workspace_id=NULL WHERE memory_id=$1",
+        "UPDATE private.evidence_objects e SET visibility_class='USER_PRIVATE', \
+         visibility_user_id=$2, visibility_workspace_id=NULL \
+         FROM private.memory_evidence me \
+         WHERE me.memory_id=$1 AND me.role='PRIMARY' AND e.evidence_id=me.evidence_id",
+    ] {
+        let updated = txn
+            .execute(sql, &[&memory_id, &user_id])
+            .expect("make the note user-private");
+        assert_eq!(updated, 1, "{sql}");
+    }
+    txn.commit().expect("commit user-private note mutation");
+}
+
 fn note_head(handle: &mut Handle, note_id: &str) -> Option<Uuid> {
     let note_id = Uuid::parse_str(note_id).expect("note id");
     handle
@@ -14806,7 +14830,7 @@ fn native_mcp_memory_note_put_replaces_through_the_confirm_gate_and_correct_refu
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // one server: create, replace, list the versions, get by note_id, refuse three shapes
+#[allow(clippy::too_many_lines)] // one server: create, replace, list the versions, get by note_id, refuse five shapes, a peer's private note
 fn native_mcp_note_history_lists_versions_and_gets_by_note_id() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
         .lock()
@@ -14822,6 +14846,7 @@ fn native_mcp_note_history_lists_versions_and_gets_by_note_id() {
             &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
             64,
         );
+        let peer_user = handle.seed_peer_user();
         let runtime_handle = handle.rt.handle().clone();
         let runtime = runtime_handle
             .block_on(handle.fresh_runtime())
@@ -14971,6 +14996,65 @@ fn native_mcp_note_history_lists_versions_and_gets_by_note_id() {
                     raw_request(address, &headers, &call(id, arguments.clone())).await;
                 assert_eq!(status, 400, "{arguments} is INVALID_INPUT: {refused}");
             }
+
+            // ADR-0067 D-J2: another user's USER_PRIVATE note is answered exactly like an unknown note_id (no
+            // existence oracle through the note namespace).
+            let (status, created) = raw_request(
+                address,
+                &headers,
+                &call(
+                    12,
+                    json!({"action":"note_put","content":"History: a peer's private note",
+                           "note_kind":"decision","idempotency_key":format!("create-{}", Uuid::now_v7()),
+                           "workspace_id":workspace}),
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "create: {created}");
+            let private_note = assert_tool_response(&created, ToolName::Memory)["memory_id"]
+                .as_str()
+                .expect("memory_id")
+                .to_owned();
+            let get_note = |id: u64, note: Value| {
+                call(
+                    id,
+                    json!({"action":"get","note_id":note,"workspace_id":workspace}),
+                )
+            };
+            // Control: the caller reads it before the owner hands it to the peer.
+            let (status, got) = raw_request(
+                address,
+                &headers,
+                &get_note(13, Value::String(private_note.clone())),
+            )
+            .await;
+            assert_eq!(status, 200, "control get by note_id: {got}");
+            assert_eq!(
+                memory_items(assert_tool_response(&got, ToolName::Memory))[0]["memory_id"],
+                private_note.as_str(),
+                "{got}"
+            );
+            tokio::task::block_in_place(|| {
+                make_note_user_private(&mut handle, &private_note, peer_user);
+            });
+            let private = raw_request(
+                address,
+                &headers,
+                &get_note(14, Value::String(private_note.clone())),
+            )
+            .await;
+            let unknown = raw_request(
+                address,
+                &headers,
+                &get_note(14, Value::String(Uuid::now_v7().to_string())),
+            )
+            .await;
+            assert_eq!(unknown.0, 200, "unknown note_id: {}", unknown.1);
+            assert_memory_not_found(&unknown.1);
+            assert_eq!(
+                private, unknown,
+                "a peer's private note and an unknown note_id get the same status and body"
+            );
 
             stop_server(server).await.expect("server shutdown");
         });
