@@ -997,6 +997,9 @@ fn private_point_registry_fails_closed_for_identity_and_permissions() {
 /// point ids over ONE vector row, and replaying a slot is `AlreadyRegistered`. Faults: drop `chunk_ordinal` from the
 /// 0238 UNIQUE key ⇒ the second insert loses to the first and is `RegistryRaceLost`; drop the ordinal from the v2
 /// derivation ⇒ one point id for both, `PointIdCollision`; key the vector by ordinal ⇒ two vector rows.
+/// (point_id, card_profile_hash, chunk_ordinal, input_sha256, fingerprint_sha256) of one registry slot.
+type SlotRow = (Uuid, String, i32, Vec<u8>, Vec<u8>);
+
 #[test]
 fn repeated_chunks_share_vector_not_point() {
     run_db_fixture::<RegistryFixture, _>("repeated_chunks_share_vector_not_point", |mut handle| {
@@ -1062,11 +1065,11 @@ fn repeated_chunks_share_vector_not_point() {
                 &[&handle.tenant_id, &handle.memory_id],
             )
             .expect("read the chunk rows");
-        let read: Vec<(Uuid, String, i32, Vec<u8>, Vec<u8>)> = rows
+        let read: Vec<SlotRow> = rows
             .iter()
             .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
             .collect();
-        let expected: Vec<(Uuid, String, i32, Vec<u8>, Vec<u8>)> = slots
+        let expected: Vec<SlotRow> = slots
             .iter()
             .zip([0, 1])
             .map(|(slot, ordinal)| {
