@@ -7,8 +7,8 @@
 --   2. private.note_heads (tenant_id, note_id) -> head_memory_id: the note's lock anchor. A replacement takes its row
 --      FOR UPDATE, CAS-checks head = supersedes, supersedes the old version in one guarded UPDATE and moves the head, all
 --      in the memory.note_put receipt transaction. Composite FK to memory_records (tenant_id, memory_id) — 0104's UNIQUE —
---      cascading, as 0235's contract FK does. FORCE RLS = tenant GUC AND the head Memory is visible (the 0235 shape,
---      with the head Memory in the Evidence's place): a note is exactly as visible as its current version.
+--      cascading, as 0235's contract FK does. FORCE RLS = the tenant GUC only (see the policy's comment: the head's visibility
+--      is the writer's final read gate, never an RLS EXISTS re-evaluated under a stale snapshot).
 --   3. memory_records_one_active_note_version: at most one active version per (tenant, note) — an EXCLUDE checked at
 --      COMMIT (DEFERRABLE INITIALLY DEFERRED: the new version is inserted active before the old one is superseded in the
 --      same transaction), so a bypassed CAS still cannot leave two heads.
@@ -57,15 +57,13 @@ SELECT tenant_id, note_id, memory_id FROM private.memory_records WHERE note_id I
 
 ALTER TABLE private.note_heads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.note_heads FORCE ROW LEVEL SECURITY;
-CREATE POLICY note_heads_tenant_and_head ON private.note_heads
-  USING (tenant_id = current_setting('humaux.tenant_id', true)::uuid
-         AND EXISTS (SELECT 1 FROM private.memory_records m
-                     WHERE m.memory_id = note_heads.head_memory_id
-                       AND m.tenant_id = note_heads.tenant_id))
-  WITH CHECK (tenant_id = current_setting('humaux.tenant_id', true)::uuid
-         AND EXISTS (SELECT 1 FROM private.memory_records m
-                     WHERE m.memory_id = note_heads.head_memory_id
-                       AND m.tenant_id = note_heads.tenant_id));
+-- Tenant clause only. The head's visibility is the final read gate's, run by the writer in its own statement AFTER
+-- the head row lock: an EXISTS on memory_records here would be re-evaluated (EvalPlanQual) under the locking
+-- statement's original snapshot when a concurrent replacement moves the head, which cannot see the winner's new
+-- version, so the loser would read "no such note" instead of STALE_NOTE_VERSION (G20). A head row carries no content.
+CREATE POLICY note_heads_tenant ON private.note_heads
+  USING (tenant_id = current_setting('humaux.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('humaux.tenant_id', true)::uuid);
 
 ALTER TABLE private.note_heads OWNER TO role_migration_owner;
 
