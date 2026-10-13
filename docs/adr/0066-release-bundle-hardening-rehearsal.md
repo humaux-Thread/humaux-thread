@@ -1122,7 +1122,9 @@ after `projection rebuild --all`. Not changed: the checkout-content finding (the
 sources), so a pair-uid key set on `retrieval-serve` alone no longer satisfies `retrieval-rpc`. Presence of other keys
 stays per binary (a ponytail names it): `dr`'s backup / drill keys sit on `dr` only and no other maintenance mode reads
 them, so a per-mode rule needs per-mode consumption lists first. (3) `a5_load_remeasure.sh`'s EXIT trap also puts the
-gateway back on prod.yml (an interrupted run left the 1 ms BURST-W admission wait deployed). Deferred P2s closed:
+gateway back on prod.yml (an interrupted run left the 1 ms BURST-W admission wait deployed); the BURST-W listener is
+stopped through a stop file and waited for, never killed, so a recreate it has already started finishes before the
+restore (PR #4 Codex P2: a killed subshell orphaned its compose child, which could recreate the 1 ms gateway after it). Deferred P2s closed:
 `judge_image` makes "the entrypoint runs only on a verified image" testable; each `REHEARSAL_PROBES` clause has its own
 case and named `group_add` entries are refused; `version_of` names its container with pid + nanos and reports a failed
 removal; the `--flag=value` form is a usage error in `migrate` / `rls-check`; a `0g` drill cap fails the budget; U4
