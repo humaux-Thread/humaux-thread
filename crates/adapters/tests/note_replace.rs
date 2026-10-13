@@ -406,12 +406,11 @@ fn version(
     (row.get(0), row.get(1), row.get(2), row.get(3))
 }
 
-/// ADR-0020: (op, reason_code, replacement_memory_id, idempotency_key, carries a stream seq) of the event a version's
-/// `lifecycle_head_event_id` names, if any.
-fn supersede_record(
-    handle: &mut Handle,
-    memory_id: Uuid,
-) -> Option<(String, Option<String>, Option<Uuid>, String, bool)> {
+/// (op, reason_code, replacement_memory_id, idempotency_key, carries a stream seq) of one lifecycle event row.
+type LifecycleRecord = (String, Option<String>, Option<Uuid>, String, bool);
+
+/// ADR-0020: the [`LifecycleRecord`] of the event a version's `lifecycle_head_event_id` names, if any.
+fn supersede_record(handle: &mut Handle, memory_id: Uuid) -> Option<LifecycleRecord> {
     handle
         .admin
         .query_opt(
@@ -543,6 +542,7 @@ fn a_created_note_is_its_own_note_id_and_head() {
 // ---------------------------------------------------------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::too_many_lines)] // one causal chain: replace, its side-effect deltas, then the refused and replayed legs
 fn g28_one_replacement_adds_exactly_one_version_and_moves_the_head() {
     run_db_fixture::<Fixture, _>("g28_replace_counts", |mut handle| {
         let editor = editor(&mut handle);
