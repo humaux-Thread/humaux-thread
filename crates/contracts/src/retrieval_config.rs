@@ -1,6 +1,6 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
-//! Called-by: [gateway::bootstrap, retrieval::request, tests]
+//! Called-by: [gateway::bootstrap, gateway::recall, retrieval::request, tests]
 //! Invariants: []
 //! Spec: Baseline §50; §55.1; §55.6
 //!
