@@ -85,14 +85,22 @@ literal lane: recall is semantic only (ADR-0044) and enumerate filters by struct
 ## Declared limits
 
 - **Sequential scan.** Without a usable index a grep reads every candidate row of the workspace; the role's
-  statement timeout bounds it and an over-budget grep is refused, not approximated. The CI record is at 10 043
-  memories (the card's 100k figure is not measured in CI; the go-live soak of card 53 records it on the release
-  stack). Upgrade signal: a measured p95 over budget at the target corpus size — then the definer-mediated trigram
-  card.
+  statement timeout bounds it and an over-budget grep is refused, not approximated. CI record (targeted run
+  38528237538, 10 043 memories in one workspace, 20 calls each): a rare word p50 229 ms / p95 230 ms; a common word
+  (every row) p50 1 539 ms / p95 2 418 ms; a two-character pattern p50 1 537 ms / p95 1 546 ms. The card's bar
+  (p95 < 200 ms at 50k) is NOT met. The deployed role timeout is 10 s (`HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS` in
+  `deploy/env/values/gateway.env`), so a common-word grep extrapolates past it near 50k memories and is then refused
+  (`CANNOT_ESTABLISH_COMPLETENESS`), never approximated. The floor even for a rare word is the per-row RLS cost on
+  `private.memory_records` (the SECURITY DEFINER subject-visibility function and the membership `EXISTS` run for every
+  row before any non-leakproof filter) — card 35b's set-based subject visibility, scheduled next — and the common-word
+  cost adds the final gate over every candidate. Upgrade path: card 35b, then the definer-mediated trigram card if a
+  re-measurement still misses the bar. The 100k figure is recorded by card 53's soak on the release stack.
 - **Budget knob.** Production runs under the role pool's §78 statement timeout; `GrepQuery`'s explicit budget is
   set only by tests (the same refusal path).
 - **No per-operation concurrency slot.** Greps share the gateway's admission controller (§67.2); a dedicated slot
   waits for a measured need.
 - **Per-call snapshot.** Totals and pages are consistent within a call, not across pages.
-- **Case profile.** Folding is the database collation's (`İ`/`i`, `ß`/`SS` follow it); the legacy system's exact
-  behaviour for those pairs is not reproduced deliberately.
+- **Case profile.** Folding is the database collation's; the gate pins it as the CI database (the PostgreSQL 18.6
+  image's default locale) decides it — `İ` folds to `i`, `ß` does not fold to `SS`, Greek capitals fold — so a
+  deployment with another collation must re-run that gate. The legacy system's exact behaviour for those pairs is not
+  reproduced deliberately.
