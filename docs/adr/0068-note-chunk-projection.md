@@ -393,6 +393,8 @@ Two facts frame every decision:
   - The policy is one-way: a hash set back to NULL after chunks are built counts each note as one slot while its C
     chunk points stay visible, so its streams read `cannot_establish` until every such note is re-projected legacy.
     Turning chunking off is a re-projection, not a policy edit.
+  - A retired legacy row is kept, so a fully chunked note counts 1 retiring again whenever a later ticket on it
+    (an archive, say) is in flight or failed: one point of extra top slack, never a lower bound.
   - `points_retiring` widens only the band's top. A legacy point lost from Qdrant while 0 of C chunks exist leaves
     the note unrecallable and the ledger closed: the same shape as Q's slack (ADR-0057 known limit 12), now per
     note mid-backfill.
