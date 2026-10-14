@@ -360,14 +360,18 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
+          # g80_31_handoff asserts a QUIET cluster between two snapshot reads, so it runs alone after the parallel pass.
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not binary_id(humaux-adapters::g80_31_handoff)' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-parallel.xml" 2>/dev/null || true
+          cargo nextest run --profile ci -p humaux-adapters --test g80_31_handoff || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-quiet.xml" 2>/dev/null || true
           cargo test --doc --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: nextest-junit-test-a
-          path: target/nextest/ci/junit.xml
+          path: ${{ runner.temp }}/junit-a-*.xml
       # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
       # ADR-0058 §2.1 I-SLOT probe over the whole table: a test binary that leaves claimable
       # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
