@@ -1,8 +1,8 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::note, domain::subject, humaux-adapters, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
 //!   only ever takes the outbox row of its own Evidence; every read runs under role_private_worker grants + RLS with the acting
@@ -36,7 +36,6 @@ use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_domain::memory::MemoryType;
-use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 use serde_json::Value;
@@ -48,12 +47,16 @@ use crate::postgres::{PrivateWorkerDbPool, RuntimeDbPool};
 use crate::{
     Counter,
     confirm_token_repo::{self, ConfirmationClaim},
-    memory_repo,
+    memory_repo::{self, memory_type_db_str},
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberCommand},
     request_guard_repo::{self, AuditTenant},
     retrieve::{self, TokenClaims},
 };
+
+// `bins/private-worker` names these at `distill_repo::`; their definitions and the Memory INSERT live in `memory_repo`
+// (M07 D9, gate G-M07-1).
+pub use crate::memory_repo::{LoadedEvidence, NewMemory, insert_memory_in_txn as insert_memory};
 
 /// The database error/transaction types the private-worker binary names without depending on
 /// `sqlx` itself (same "fewer capability-shaped names in a bin" reasoning as
@@ -109,26 +112,7 @@ pub(crate) fn origin_class_from_db_str(s: &str) -> Option<EvidenceOriginClass> {
     })
 }
 
-/// `private.memory_records.memory_type` CHECK literal for the six types the Distill contract
-/// may emit (write-side inverse of `projection_worker::parse_memory_type`, scoped to them).
-pub(crate) const fn memory_type_db_str(memory_type: MemoryType) -> &'static str {
-    match memory_type {
-        MemoryType::Fact => "FACT",
-        MemoryType::Preference => "PREFERENCE",
-        MemoryType::Decision => "DECISION",
-        MemoryType::Rejection => "REJECTION",
-        MemoryType::State => "STATE",
-        MemoryType::Issue => "ISSUE",
-        MemoryType::Lesson => "LESSON",
-        MemoryType::Constraint => "CONSTRAINT",
-        MemoryType::Procedure => "PROCEDURE",
-        MemoryType::Outcome => "OUTCOME",
-        MemoryType::Reference => "REFERENCE",
-        MemoryType::Note => "NOTE",
-    }
-}
-
-pub(crate) const fn authority_class_db_str(class: AuthorityClass) -> &'static str {
+const fn authority_class_db_str(class: AuthorityClass) -> &'static str {
     // One mapping for the whole crate (§78.2): consolidate_repo owns it.
     crate::consolidate_repo::authority_class_to_db_str(class)
 }
@@ -305,30 +289,6 @@ pub async fn resolve_distill_binding(
         ))
     })
     .transpose()
-}
-
-/// One Evidence as the hop reads it: the `evidence_objects` row plus its `events` subtype.
-#[derive(Debug, Clone)]
-pub struct LoadedEvidence {
-    pub evidence_id: Uuid,
-    pub reasoning_domain_id: Uuid,
-    pub origin_class: EvidenceOriginClass,
-    /// The DB CHECK literal of `origin_class` (what the envelope shows the model).
-    pub origin_class_wire: String,
-    pub origin_principal_id: Option<Uuid>,
-    pub data_class: String,
-    pub visibility_class: String,
-    pub visibility_user_id: Option<Uuid>,
-    pub visibility_workspace_id: Option<Uuid>,
-    pub occurred_at: Option<OffsetDateTime>,
-    /// `private.evidence_objects.payload_sha256` verbatim (what `processing_runs.
-    /// evidence_payload_sha256[]` records).
-    pub payload_sha256: Vec<u8>,
-    pub event_kind: String,
-    pub payload: Value,
-    /// The acting user installed for RLS while reading `payload` — the Evidence's own user
-    /// for USER_PRIVATE, else `owner_user_id`; the write leg reuses it.
-    pub rls_user_id: Uuid,
 }
 
 /// Loads `evidence_id` (must belong to `tenant_id` and `reasoning_domain_id`) and its event
@@ -549,36 +509,6 @@ pub fn private_distill_runs_total() -> u64 {
 /// This process's `private_distill_outputs_total` (ADR-0061 D-C: the private worker renders it).
 pub fn private_distill_outputs_total() -> u64 {
     PRIVATE_DISTILL_OUTPUTS_TOTAL.get()
-}
-
-/// One authorized memory to insert — `class` is the `AuthorizedAuthority` §10.1 returned, never
-/// the raw candidate class.
-#[derive(Debug, Clone)]
-pub struct NewMemory<'a> {
-    pub content: &'a Value,
-    pub memory_type: MemoryType,
-    pub class: AuthorityClass,
-    pub confidence: f32,
-    /// ADR-0067 D-D: `Some` only for a verbatim note written by `memory.note_put`; every distilled,
-    /// confirmed or corrected Memory is `None`.
-    pub note_kind: Option<NoteKind>,
-    /// ADR-0067 D-J, with `note_kind` only: `None` = a fresh note, whose `note_id` is its own new `memory_id`;
-    /// `Some(note_id)` = a new version of that note. A non-note Memory stores NULL whatever this says (0236 CHECK).
-    pub note_id: Option<Uuid>,
-}
-
-/// The Distill write leg's name for [`memory_repo::insert_memory_in_txn`], the workspace's single
-/// `INSERT INTO private.memory_records` (M07 D9, gate G-M07-1): `memory_records` + its PRIMARY
-/// `memory_evidence` link + the §6.1.3 subject hook, in the caller's transaction.
-// ponytail: delegating shim so `bins/private-worker` (outside M07-1's file set) keeps compiling unchanged, the card that
-// moves `NewMemory` / `LoadedEvidence` out of this file also switches the bin to the door and deletes this fn.
-pub async fn insert_memory(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: Uuid,
-    evidence: &LoadedEvidence,
-    memory: &NewMemory<'_>,
-) -> Result<Uuid, sqlx::Error> {
-    memory_repo::insert_memory_in_txn(txn, tenant_id, evidence, memory).await
 }
 
 /// How a settle leaves the job's one outbox row (ADR-0058 D-C/D-F).

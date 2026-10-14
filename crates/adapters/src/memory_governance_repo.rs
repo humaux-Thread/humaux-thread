@@ -1,6 +1,6 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
@@ -60,8 +60,7 @@ use crate::{
     affect_repo::{self, AffectInput, AffectParent},
     confirm_token_repo::{self, ConfirmationClaim},
     context_repo,
-    distill_repo::{self, LoadedEvidence, NewMemory},
-    memory_repo,
+    memory_repo::{self, LoadedEvidence, NewMemory},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberCommand, RememberError},
@@ -1403,7 +1402,7 @@ struct CorrectionSource {
     visibility_workspace_id: Option<Uuid>,
 }
 
-/// §78.2 read-side inverse of `distill_repo::memory_type_db_str`, reusing that sole write-side
+/// §78.2 read-side inverse of `memory_repo::memory_type_db_str`, reusing that sole write-side
 /// mapping (no third copy of the CHECK strings).
 fn memory_type_from_wire(wire: &str) -> Option<MemoryType> {
     [
@@ -1421,7 +1420,7 @@ fn memory_type_from_wire(wire: &str) -> Option<MemoryType> {
         MemoryType::Note,
     ]
     .into_iter()
-    .find(|t| distill_repo::memory_type_db_str(*t) == wire)
+    .find(|t| memory_repo::memory_type_db_str(*t) == wire)
 }
 
 /// Pure input contract for `memory.correct`: the claim must be this operation on exactly this

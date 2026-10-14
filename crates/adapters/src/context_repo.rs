@@ -1,5 +1,5 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::memory_governance_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes go through the same can_read re-check; a PG error is
@@ -30,6 +30,7 @@ use humaux_domain::context::{
     TaskGrantIssuer, TaskTargetFacts, authorize_mandatory, authorize_pinned, authorize_task_item,
     spec,
 };
+use humaux_domain::dataclass::DataClass;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::grounding::{GroundingMode, RowGrounding, SnapshotEdge, classify_in_snapshot};
 use humaux_domain::identity::{
@@ -2709,19 +2710,18 @@ async fn insert_task_authorization_evidence_in_txn(
     .map_err(|_| ErrorCode::Internal)?;
     let domain = domain.ok_or(ErrorCode::Forbidden)?;
 
-    // The digest is the SHA-256 of the intent's UTF-8 bytes through the one hasher (§48.0①): the bytes
-    // the INSERT used to compute in SQL with `sha256(convert_to(intent, 'UTF8'))`.
+    // §48.0①: the digest of the intent's UTF-8 bytes, through the one hasher.
     let payload_sha256 = humaux_domain::evidence::payload_sha256(intent.as_bytes());
     evidence_repo::insert_evidence_in_txn(
         txn,
         &NewEvidence {
             tenant_id,
             payload_sha256: &payload_sha256,
-            data_class: "INTERNAL",
+            data_class: DataClass::Internal,
             origin_class: humaux_domain::evidence::EvidenceOriginClass::UserConfirmed,
             origin_principal_id: Some(user_id),
             origin_connector_id: None,
-            visibility_class: "USER_PRIVATE",
+            visibility_class: VisibilityClass::UserPrivate,
             visibility_user_id: Some(user_id),
             visibility_workspace_id: None,
             reasoning_domain_id: domain,

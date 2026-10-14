@@ -1,6 +1,6 @@
 //! `adapters::note_repo` — the verbatim note lane's write half: the identity contract and the one authorised Memory of
 //!   `memory.note_put`, written inside the caller's Evidence transaction (ADR-0067 D-A/D-B/D-C/D-E).
-//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects, private.identity_note_materializations] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::distill_repo, adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects, private.identity_note_materializations] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
 //! Called-by: [adapters::operation_receipt, adapters::remember, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [no SQL here commits; the Memory is written only through memory_repo::insert_memory_in_txn (the workspace's single
 //!   memory INSERT); the contract row is written after the Memory and before the EVIDENCE_ACCEPTED outbox row so the 0235
@@ -21,8 +21,7 @@ use humaux_domain::note::{
 };
 use sqlx::types::Uuid;
 
-use crate::distill_repo::{LoadedEvidence, NewMemory};
-use crate::memory_repo;
+use crate::memory_repo::{self, LoadedEvidence, NewMemory};
 use crate::remember::{RememberCommand, RememberError};
 
 /// One note as the gateway edge validated it (ADR-0067 D-C/D-D/D-E).

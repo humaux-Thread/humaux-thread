@@ -1,25 +1,87 @@
 //! `adapters::memory_repo` — the sole `INSERT INTO private.memory_records` door (M07 D9, gate G-M07-1): one authorized Memory plus its PRIMARY
 //!   `memory_evidence` link, written in the caller's transaction.
-//! Depends-on: crates=[hex, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::distill_repo, adapters::subject_repo]
-//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo]
+//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::consolidate_repo, adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
+//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, private-worker::distill]
 //! Invariants: [every non-test Memory INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
 //!   Memory row and its PRIMARY `memory_evidence` link are written together, because 0004's deferred `memory_records_requires_evidence` trigger
 //!   needs both by COMMIT; visibility is the Evidence's own three columns verbatim and a Memory's authority class is the caller's
 //!   `AuthorizedAuthority`, never the raw candidate class; the deterministic subject resolve hook runs here exactly once per Memory;
-//!   the statement runs inside the caller's transaction and never commits]
+//!   the statement runs inside the caller's transaction and never commits; this module imports no Distill-hop code, the hop imports it]
 //! Spec: Baseline §8.6; §6.1.3; §10.1; ADR-0016; ADR-0028; ADR-0067
 //!
-//! [`insert_memory_in_txn`] is the body that `distill_repo::insert_memory` used to hold (ADR-0016 D4 visibility copy, ADR-0067 D-J note
-//! lineage, ADR-0028 subject hook), moved here unchanged so a change to the Memory model edits an M07 file, not the Distill hop's.
-//! Callers are the Distill confirm path, `memory.correct` and `memory.note_put`; the private worker's write leg reaches it through
-//! `distill_repo::insert_memory`.
-//!
-//! ponytail: [`NewMemory`] and [`LoadedEvidence`] are still defined in `distill_repo` (this module imports them from there), because
-//! `bins/private-worker` names them at that path; the card that moves them here also edits the bin, and then this import goes away.
+//! [`insert_memory_in_txn`] writes one Memory (ADR-0016 D4 visibility copy, ADR-0067 D-J note lineage, ADR-0028 subject hook) from the two
+//! types it takes: [`NewMemory`] (what to write) and [`LoadedEvidence`] (the Evidence row it is grounded on and inherits visibility from).
+//! Callers are the Distill confirm path, the private worker's write leg (through `distill_repo`'s re-exports), `memory.correct` and
+//! `memory.note_put`.
 
+use humaux_domain::authority::AuthorityClass;
+use humaux_domain::evidence::EvidenceOriginClass;
+use humaux_domain::memory::MemoryType;
+use humaux_domain::note::NoteKind;
+use serde_json::Value;
 use sqlx::types::Uuid;
+use sqlx::types::time::OffsetDateTime;
 
-use crate::distill_repo::{LoadedEvidence, NewMemory, authority_class_db_str, memory_type_db_str};
+use crate::consolidate_repo::authority_class_to_db_str;
+
+/// One Evidence as the Distill hop reads it: the `evidence_objects` row plus its `events` subtype.
+#[derive(Debug, Clone)]
+pub struct LoadedEvidence {
+    pub evidence_id: Uuid,
+    pub reasoning_domain_id: Uuid,
+    pub origin_class: EvidenceOriginClass,
+    /// The DB CHECK literal of `origin_class` (what the envelope shows the model).
+    pub origin_class_wire: String,
+    pub origin_principal_id: Option<Uuid>,
+    pub data_class: String,
+    pub visibility_class: String,
+    pub visibility_user_id: Option<Uuid>,
+    pub visibility_workspace_id: Option<Uuid>,
+    pub occurred_at: Option<OffsetDateTime>,
+    /// `private.evidence_objects.payload_sha256` verbatim (what `processing_runs.
+    /// evidence_payload_sha256[]` records).
+    pub payload_sha256: Vec<u8>,
+    pub event_kind: String,
+    pub payload: Value,
+    /// The acting user installed for RLS while reading `payload` — the Evidence's own user
+    /// for USER_PRIVATE, else `owner_user_id`; the write leg reuses it.
+    pub rls_user_id: Uuid,
+}
+
+/// One authorized memory to insert — `class` is the `AuthorizedAuthority` §10.1 returned, never
+/// the raw candidate class.
+#[derive(Debug, Clone)]
+pub struct NewMemory<'a> {
+    pub content: &'a Value,
+    pub memory_type: MemoryType,
+    pub class: AuthorityClass,
+    pub confidence: f32,
+    /// ADR-0067 D-D: `Some` only for a verbatim note written by `memory.note_put`; every distilled,
+    /// confirmed or corrected Memory is `None`.
+    pub note_kind: Option<NoteKind>,
+    /// ADR-0067 D-J, with `note_kind` only: `None` = a fresh note, whose `note_id` is its own new `memory_id`;
+    /// `Some(note_id)` = a new version of that note. A non-note Memory stores NULL whatever this says (0236 CHECK).
+    pub note_id: Option<Uuid>,
+}
+
+/// `private.memory_records.memory_type` CHECK literal of every [`MemoryType`] (write-side inverse of
+/// `projection_worker::parse_memory_type`).
+pub(crate) const fn memory_type_db_str(memory_type: MemoryType) -> &'static str {
+    match memory_type {
+        MemoryType::Fact => "FACT",
+        MemoryType::Preference => "PREFERENCE",
+        MemoryType::Decision => "DECISION",
+        MemoryType::Rejection => "REJECTION",
+        MemoryType::State => "STATE",
+        MemoryType::Issue => "ISSUE",
+        MemoryType::Lesson => "LESSON",
+        MemoryType::Constraint => "CONSTRAINT",
+        MemoryType::Procedure => "PROCEDURE",
+        MemoryType::Outcome => "OUTCOME",
+        MemoryType::Reference => "REFERENCE",
+        MemoryType::Note => "NOTE",
+    }
+}
 
 /// `memory_records` + its PRIMARY `memory_evidence` link (ordinal 0) in the caller's
 /// transaction (0004's deferred `memory_records_requires_evidence` trigger needs both by
@@ -61,10 +123,12 @@ pub async fn insert_memory_in_txn(
     .bind(&evidence.visibility_class)
     .bind(evidence.visibility_user_id)
     .bind(evidence.visibility_workspace_id)
-    .bind(authority_class_db_str(memory.class))
+    // ponytail: the AuthorityClass DB mapping is owned by consolidate_repo (§78.2, one mapping), an M15 import from M07, move it next
+    // to the authority contract when that file is next edited.
+    .bind(authority_class_to_db_str(memory.class))
     .bind(memory.confidence)
     .bind(evidence.occurred_at)
-    .bind(memory.note_kind.map(|kind| kind.wire()))
+    .bind(memory.note_kind.map(NoteKind::wire))
     .bind(memory.note_id)
     .fetch_one(&mut **txn)
     .await?;

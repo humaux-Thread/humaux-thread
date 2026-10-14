@@ -1618,8 +1618,19 @@ const M07_INSERT_DOORS: [(&str, &str); 2] = [
     ),
 ];
 
-/// Every workspace `.rs` file as production code: this file excluded (it quotes the needles), any path with a `tests`
-/// component excluded (integration-test trees seed rows with raw INSERTs), and each file cut at its trailing
+/// Whether `disp` (repo-relative, `/`-separated) sits in a test tree, judged by path **structure** like the sibling
+/// [`count_outside_allowed`]: only `crates/<pkg>/tests`, `bins/<pkg>/tests` and `xtask/tests`. A bare `tests` path
+/// component is not enough — `crates/adapters/src/tests/writer.rs` and `crates/tests/src/lib.rs` are production code.
+fn m07_is_test_tree(disp: &str) -> bool {
+    let segments: Vec<&str> = disp.split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["crates" | "bins", _, "tests", ..] | ["xtask", "tests", ..]
+    )
+}
+
+/// Every workspace `.rs` file as production code: this file excluded (it quotes the needles), test trees excluded
+/// ([`m07_is_test_tree`]; integration tests seed rows with raw INSERTs), and each file cut at its trailing
 /// `#[cfg(test)] mod` ([`cfg_test_mod_offset`], the same prefix heuristic [`count_outside_allowed`] uses).
 ///
 /// Not [`walk_workspace_rs`]: that blanks the test module by naive brace counting, which a `{` inside a string
@@ -1629,9 +1640,12 @@ fn m07_production_sources(root: &Path) -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|(path, source)| {
             let disp = display(root, &path);
-            if disp == SELF_FILE || disp.split('/').any(|segment| segment == "tests") {
+            if disp == SELF_FILE || m07_is_test_tree(&disp) {
                 return None;
             }
+            // ponytail: prefix cut at the first `#[cfg(test)] mod`, so production items declared after it are not
+            // scanned (rustfmt keeps test modules last and `count_outside_allowed` has the same ceiling), upgrade to
+            // span-parsing the test module if a production item ever follows one.
             let production = match cfg_test_mod_offset(&source) {
                 Some(off) => source[..off].to_string(),
                 None => source,
@@ -1641,20 +1655,45 @@ fn m07_production_sources(root: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
-/// `needle` occurrences on non-comment lines, per file (files with none are omitted).
+/// The text a SQL string literal spells, for matching: comment lines dropped, `\`-newline continuations joined the way
+/// rustc joins them (the next line's leading whitespace is skipped), whitespace runs collapsed to one space, lowercased —
+/// so `insert  into private.memory_records` and a `\`-split `INSERT INTO \` + `private.memory_records` both match.
+fn m07_normalised(source: &str) -> String {
+    let mut text = String::with_capacity(source.len());
+    let mut continued = false;
+    for line in source.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let line = if continued { line.trim_start() } else { line };
+        match line.strip_suffix('\\') {
+            Some(head) => {
+                text.push_str(head);
+                continued = true;
+            }
+            None => {
+                text.push_str(line);
+                text.push(' ');
+                continued = false;
+            }
+        }
+    }
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// `needle` occurrences in each file's [`m07_normalised`] text (files with none are omitted).
 ///
-/// ponytail: one-line literal match — a statement split across `\`-continued lines inside the table name, or assembled
-/// with `format!`, would not be seen; every INSERT in this repo is spelled on one line, upgrade to statement parsing
-/// if that ever stops holding.
+/// ponytail: matches the spelled-out statement text, so a statement assembled with `format!` or from separate string
+/// pieces evades it, upgrade to statement parsing if that ever shows up.
 fn m07_statement_sites(files: &[(String, String)], needle: &str) -> Vec<(String, usize)> {
+    let needle = m07_normalised(needle);
     files
         .iter()
         .filter_map(|(disp, source)| {
-            let n: usize = source
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .map(|line| line.matches(needle).count())
-                .sum();
+            let n = m07_normalised(source).matches(needle.as_str()).count();
             (n > 0).then(|| (disp.clone(), n))
         })
         .collect()
@@ -1662,23 +1701,30 @@ fn m07_statement_sites(files: &[(String, String)], needle: &str) -> Vec<(String,
 
 /// M07 D9 / G-M07-1: each door statement in [`M07_INSERT_DOORS`] appears `== 1` times in non-test code, in its home
 /// file; 0 is red (a typo'd needle or a deleted door must not read as "no duplicates"), so is a single copy anywhere
-/// else. `not_applicable` only for a door whose home file does not exist yet, and it names that file (§57.1 第2条) — a
-/// failing door is never masked by the other door's `not_applicable`.
+/// else, and so is a statement that exists while its home file does not. `not_applicable` only when the statement
+/// appears nowhere and the home file does not exist yet, and it names that file (§57.1 第2条) — a failing door is
+/// never masked by the other door's `not_applicable`.
 fn m07_1_insert_doors(root: &Path) -> Verdict {
     let files = m07_production_sources(root);
     let mut problems = Vec::new();
     let mut missing = Vec::new();
     for (needle, home) in &M07_INSERT_DOORS {
-        if !files.iter().any(|(disp, _)| disp == home) {
+        let sites = m07_statement_sites(&files, needle);
+        let total: usize = sites.iter().map(|(_, n)| n).sum();
+        let home_exists = files.iter().any(|(disp, _)| disp == home);
+        if !home_exists && total == 0 {
             missing.push(*home);
             continue;
         }
-        let sites = m07_statement_sites(&files, needle);
-        let total: usize = sites.iter().map(|(_, n)| n).sum();
-        let sole = total == 1 && sites.iter().all(|(disp, _)| disp == home);
+        let sole = home_exists && total == 1 && sites.iter().all(|(disp, _)| disp == home);
         if !sole {
+            let gone = if home_exists {
+                ""
+            } else {
+                " (the home file does not exist)"
+            };
             problems.push(format!(
-                "M07 D9 / G-M07-1: expected exactly 1 `{needle}` in non-test code, in {home}; found {total}: {sites:?}"
+                "M07 D9 / G-M07-1: expected exactly 1 `{needle}` in non-test code, in {home}{gone}; found {total}: {sites:?}"
             ));
         }
     }
@@ -8185,7 +8231,7 @@ async fn serving_version_in_txn() {}
     }
 
     /// Green fixture, plus everything that must NOT count: a comment naming the statement, an integration-test
-    /// tree, a `bins/*/tests` tree, and a statement after a file's trailing `#[cfg(test)] mod`.
+    /// tree, `bins/*/tests` and `xtask/tests` trees, and a statement after a file's trailing `#[cfg(test)] mod`.
     #[test]
     fn m07_1_passes_with_one_statement_per_door_and_ignores_test_and_comment_text() {
         let tmp = fresh_tmp("m07-1-green");
@@ -8208,6 +8254,11 @@ async fn serving_version_in_txn() {}
             &tmp,
             "bins/worker/tests/seed.rs",
             "fn seed() { let _ = \"INSERT INTO private.memory_records (x) VALUES (1)\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "xtask/tests/seed.rs",
+            "fn seed() { let _ = \"INSERT INTO private.evidence_objects (x) VALUES (1)\"; }\n",
         );
         assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
         fs::remove_dir_all(&tmp).ok();
@@ -8288,6 +8339,112 @@ async fn serving_version_in_txn() {}
             lines[0].contains("crates/adapters/src/remember.rs"),
             "{lines:?}"
         );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W1): the home file is renamed away and the statement lives on in two stray files. A missing
+    /// home must not turn the scan into `not_applicable`: the statement exists, so it is 红 and names the missing home.
+    #[test]
+    fn m07_1_fails_naming_the_missing_home_when_the_statement_exists_elsewhere() {
+        let tmp = fresh_tmp("m07-1-red-renamed-home");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/evidence_store.rs",
+            M07_EVIDENCE_DOOR,
+        );
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(M07_EVIDENCE_HOME), "{lines:?}");
+        assert!(lines[0].contains("does not exist"), "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W1): even ONE statement elsewhere with the home file gone is 红, not `not_applicable`.
+    #[test]
+    fn m07_1_fails_when_the_only_statement_exists_and_the_home_file_is_missing() {
+        let tmp = fresh_tmp("m07-1-red-home-missing");
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("does not exist"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W2): a `tests` directory INSIDE a crate's `src/` is production code, not a test tree.
+    #[test]
+    fn m07_1_counts_a_statement_in_a_src_tests_directory() {
+        let tmp = fresh_tmp("m07-1-red-src-tests-dir");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(&tmp, "crates/adapters/src/tests/writer.rs", M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(
+            lines[0].contains("crates/adapters/src/tests/writer.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W2): a crate that is itself called `tests` (`crates/tests/src/lib.rs`) is production code.
+    #[test]
+    fn m07_1_counts_a_statement_in_a_crate_named_tests() {
+        let tmp = fresh_tmp("m07-1-red-tests-crate");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(&tmp, "crates/tests/src/lib.rs", M07_EVIDENCE_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("crates/tests/src/lib.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W3): a stray copy spelled in lowercase is still the statement.
+    #[test]
+    fn m07_1_counts_a_lowercase_statement() {
+        let tmp = fresh_tmp("m07-1-red-lowercase");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "fn f() { let _ = \"insert into private.memory_records (a) values ($1)\"; }\n",
+        );
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W3): doubled spaces between the keywords do not hide the statement.
+    #[test]
+    fn m07_1_counts_a_statement_with_extra_whitespace() {
+        let tmp = fresh_tmp("m07-1-red-whitespace");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "fn f() { let _ = \"INSERT   INTO  private.memory_records (a) VALUES ($1)\"; }\n",
+        );
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W3): a `\`-newline continuation inside the string (rustc joins the lines) is the statement.
+    #[test]
+    fn m07_1_counts_a_backslash_continued_statement() {
+        let tmp = fresh_tmp("m07-1-red-continuation");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "fn f() { let _ = \"INSERT INTO \\\n        private.memory_records (a) VALUES ($1)\"; }\n",
+        );
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 

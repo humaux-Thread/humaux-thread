@@ -250,6 +250,14 @@ pub(crate) async fn next_commit_seq(
         .await?)
 }
 
+/// A `data_class` / `visibility_class` string outside the CHECK sets: the typed door cannot express it, so it is refused
+/// before the INSERT as the same `Db` failure class the CHECK constraint produced, and nothing is written.
+fn unknown_evidence_literal(column: &str, value: &str) -> RememberError {
+    RememberError::Db(sqlx::Error::Protocol(format!(
+        "evidence {column} has no value {value:?}"
+    )))
+}
+
 /// `create_evidence_object` — maps `cmd` onto M07's Evidence door
 /// ([`evidence_repo::insert_evidence_in_txn`], the workspace's single `INSERT INTO
 /// private.evidence_objects`); `evidence_kind = 'EVENT'` is fixed there (see
@@ -258,16 +266,20 @@ pub(crate) async fn create_evidence_object(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     cmd: &RememberCommand,
 ) -> Result<Uuid, RememberError> {
+    let data_class = evidence_repo::data_class_from_db_str(&cmd.data_class)
+        .ok_or_else(|| unknown_evidence_literal("data_class", &cmd.data_class))?;
+    let visibility_class = evidence_repo::visibility_class_from_db_str(&cmd.visibility_class)
+        .ok_or_else(|| unknown_evidence_literal("visibility_class", &cmd.visibility_class))?;
     Ok(evidence_repo::insert_evidence_in_txn(
         txn,
         &NewEvidence {
             tenant_id: cmd.tenant_id,
             payload_sha256: &cmd.payload_sha256,
-            data_class: &cmd.data_class,
+            data_class,
             origin_class: cmd.origin_class,
             origin_principal_id: cmd.origin_principal_id,
             origin_connector_id: cmd.origin_connector_id,
-            visibility_class: &cmd.visibility_class,
+            visibility_class,
             visibility_user_id: cmd.visibility_user_id,
             visibility_workspace_id: cmd.visibility_workspace_id,
             reasoning_domain_id: cmd.reasoning_domain_id,
