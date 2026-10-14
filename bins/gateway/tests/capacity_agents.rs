@@ -188,6 +188,57 @@ fn op_ceiling() {
     });
 }
 
+/// Every SQL statement one request runs: `log_min_duration_statement = 0` for the window, `TRACE_BEGIN/END <op>`
+/// markers from an owner connection, three sequential requests per op; the PostgreSQL log (uploaded as an artifact)
+/// carries each statement with its duration and backend pid.
+#[test]
+#[ignore = "experiment"]
+fn op_trace() {
+    lab("op_trace", 1, |lab| {
+        let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("HUMAUX_TEST_PG_DSN");
+        // dep: PostgreSQL(owner) — toggles statement logging around the traced requests
+        let mut admin = postgres::Client::connect(&dsn, postgres::NoTls).expect("owner connection");
+        for stmt in [
+            "ALTER SYSTEM SET log_min_duration_statement = 0",
+            "SELECT pg_reload_conf()",
+        ] {
+            admin.batch_execute(stmt).expect("trace on");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let tenant = Arc::clone(&lab.tenants[0]);
+        for op in [Op::ToolsList, Op::Get, Op::Grep, Op::Enumerate] {
+            admin
+                .batch_execute(&format!("SELECT 'TRACE_BEGIN {}'", op.name()))
+                .expect("marker");
+            lab.rt.block_on(async {
+                let mut client = Client::new(lab.gateway.address, tenant.source);
+                for id in 0..3 {
+                    let started = Instant::now();
+                    let reply = client
+                        .send(&http_request(&tenant, op, 10_000 + id, id))
+                        .await
+                        .expect("traced request");
+                    println!(
+                        "TRACE op={} id={id} status={} ms={:.2}",
+                        op.name(),
+                        reply.status,
+                        started.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+            });
+            admin
+                .batch_execute(&format!("SELECT 'TRACE_END {}'", op.name()))
+                .expect("marker");
+        }
+        for stmt in [
+            "ALTER SYSTEM RESET log_min_duration_statement",
+            "SELECT pg_reload_conf()",
+        ] {
+            admin.batch_execute(stmt).expect("trace off");
+        }
+    });
+}
+
 // ================================ lab: tenants + gateway ================================
 
 /// One simulated user: its own fixture tenant, credential, workspace and client source IP.
