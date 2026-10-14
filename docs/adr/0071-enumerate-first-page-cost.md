@@ -60,16 +60,20 @@ hits each), and the census re-running the evidence-visibility read the mint's fi
 - **Reusing the mint's final id list as the census total** — card 19 rejected deriving `total` from the manifest
   (§22.1); D-C reuses only the authorization set, the census still runs its own counts.
 
-## Gates
+## Gates (each shown red on CI against the mutation named; green = PR #28's full CI)
 
-- `every_pool_session_starts_with_jit_off` and `pool_settings_reach_the_session_as_client_settings` (now also pins
-  `jit = off`, `source = client`), `adapters::postgres`.
-- The exclusions keep their existing behavioural gates, each shown red against the rewritten clause:
-  `final_materialize_excludes_secret_memory_source_and_marks_artifact_unavailable` and
-  `revoked_memory_and_tombstoned_evidence_are_finally_filtered` (final gate), `all_cases_match_expected_readouts`
-  (`exact_completeness_eval`, census secret and tombstone cases); D-C by
-  `native_mcp_memory_enumeration_counts_in_the_page_snapshot` (an empty reused set fails the census).
-- 0243 / 0244 manifests: postcheck requires the valid index with its predicate.
+| gate | mutation (branch `red/35b-ii-*`) | red run |
+|---|---|---|
+| `every_pool_session_starts_with_jit_off` (`adapters::postgres`; `pool_settings_reach_the_session_as_client_settings` also pins `jit = off`, `source = client`) | `jit`: the startup option removed | 38565305585 (`("on","default")`) |
+| `final_materialize_excludes_secret_memory_source_and_marks_artifact_unavailable` | `gatesecret`: the gate's secret set empty | 38565358824 |
+| `native_mcp_memory_grep_counts_pages_and_excludes` (a memory tombstoned on another workspace's stream) | `gatetomb`: the gate's tombstoned set empty | 38565414512 (5 lines ≠ 3) |
+| `all_cases_match_expected_readouts` (`exact_completeness_eval`) | `censussecret`: the census secret set empty | 38565468150 |
+| `all_cases_match_expected_readouts` | `censustomb`: the census tombstone overlay empty | 38565520258 |
+| `native_mcp_memory_enumeration_counts_in_the_page_snapshot` | `reuse`: the gate hands back an empty `GateReadable` | 38565574575 (census `null`) |
+| 0243 manifest postcheck (+ `p1_15_hot_path_indexes_exist_valid_and_shaped` pins 0243/0244) | `idx`: the secret index on the wrong predicate | 38565630055 (migrate refused) |
+
+`revoked_memory_and_tombstoned_evidence_are_finally_filtered` does not gate the tombstone clause (its memory is
+revoked first, so the lifecycle exclusion already hides it — run 38564060970 stayed green on that mutation).
 
 ## Declared limits
 
