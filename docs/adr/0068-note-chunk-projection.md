@@ -354,8 +354,7 @@ Two facts frame every decision:
 - **Left for 40d-1b-iii.**
   - The slot ledger (shipped in 40d-1b-iii-a, below).
   - Rebuild per slot (shipped in 40d-1b-iii-b, below).
-  - Retry reuse of committed batch vectors (`retry_reuses_committed_batch_vectors`): stored-first is still
-    all-or-nothing per ticket, so a retry after a partial failure re-embeds every distinct input.
+  - Retry reuse of committed batch vectors (shipped in 40d-1b-iii-c, below).
   - Disclosure granularity: the embedder receives one Memory id per distinct input, not one source row per
     (memory, ordinal) the input serves (D-F).
   - The ADR gates `chunk_backfill_embeds_only_note_chunk_inputs`, `ledger_counts_unbuilt_chunk_slots`,
@@ -416,6 +415,23 @@ Two facts frame every decision:
   already per point.
 - **Gate.** `equal_counts_do_not_prove_manifest_equality` in `adapters::tests::rebuild` (S3): a chunked stream verifies
   `equivalent`, and moving one chunk point to a foreign id at an unchanged count names both ids.
+
+**40d-1b-iii-c as shipped (retry reuse; the remaining 40d-1b gates).**
+
+- **Retry reuse.** `slot_vectors` is stored-first per slot: a slot whose vector is stored under the label's
+  fingerprint and its exact input reuses it, and only the distinct keys without one are sealed and embedded. A retry
+  after a partial failure therefore embeds only the slots that never committed. The all-stored case is unchanged (no
+  seal, no call); when some key is missing, every chunked source of the ticket is still sealed before the call.
+- **Gates.** `retry_reuses_committed_batch_vectors` and `chunk_backfill_embeds_only_note_chunk_inputs` in
+  `adapters::tests::projection_worker::note_chunk_projection`.
+- **Declared, not built.**
+  - Disclosure granularity stays one Memory id per distinct embedded input (D-F's per-call disclosure names the
+    Memories it sends); the ordinal is derivable from the input digest, so a per-(memory, ordinal) source row adds
+    no disclosure the row does not already make.
+  - The boot wiring (`boot_checks` reaching `check_policy`, and a missing row reaching the refusal) stays covered by
+    the refusal mapping only: exercising it end to end means booting `--run-once` with the full Qdrant, gitleaks and
+    cell configuration against a migrated throwaway database. Upgrade signal: a boot-path refactor in
+    `bins/retrieval-worker`.
 
 ## Slices
 

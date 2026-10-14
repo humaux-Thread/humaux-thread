@@ -4118,4 +4118,123 @@ mod note_chunk_projection {
             );
         });
     }
+
+    /// ADR-0068 gate `retry_reuses_committed_batch_vectors` (D-F): a chunked note whose last slot's upsert fails has
+    /// C - 1 slots registered with their vectors; the retry embeds only the last chunk's input and settles DONE.
+    /// Fault: stored-first all-or-nothing per ticket ⇒ the retry re-embeds all C inputs ⇒ red.
+    #[test]
+    fn retry_reuses_committed_batch_vectors() {
+        run_db_fixture::<Fixture, _>("retry_reuses_committed_batch_vectors", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a long note";
+            let body = prose(1_500);
+            let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+            let count = sql_chunk_count(&mut handle, title, &body) as usize;
+            let spy = Spy::new();
+            let (mut deps, _) = labeled_deps(&handle, scope_id, &spy);
+            let ids = chunk_ids(
+                &registration_for(&mut handle, scope_id, &deps.embedding_version, note),
+                count as u32,
+            );
+            deps.transport = Arc::new(SlotFault {
+                inner: handle.transport.clone(),
+                fail_upsert: ids.last().copied(),
+                hide: None,
+            });
+            assert_eq!(run(&handle, &deps), (0, 0, 1), "the last upsert failed");
+            assert_eq!(
+                spy.seen().len(),
+                count,
+                "the first attempt embeds every chunk"
+            );
+
+            deps.transport = handle.transport.clone();
+            assert_eq!(run(&handle, &deps), (1, 0, 0), "the retry settles");
+            let last = chunks(note_input(note, title, &body))
+                .pop()
+                .expect("C >= 1")
+                .text;
+            let retried: Vec<(Uuid, String)> = spy.seen().split_off(count);
+            assert_eq!(
+                retried.len(),
+                1,
+                "only the slot that never committed: {retried:?}"
+            );
+            assert_eq!(retried[0].0, note);
+            assert!(
+                retried[0].1.contains(&last),
+                "the retried input is the last chunk's card"
+            );
+        });
+    }
+
+    /// ADR-0068 gate `chunk_backfill_embeds_only_note_chunk_inputs` (zero re-embed): a long note, a short note and a
+    /// long ordinary memory are projected legacy-only; the policy is enabled and all three are re-projected by
+    /// lifecycle tickets. The provider sees exactly the long note's C chunk inputs and no input of the other two
+    /// (their legacy cards are unchanged and their stored vectors are reused). Faults: drop the legacy-capacity term
+    /// or the identity-note term from `build_projection_plan` ⇒ the short note or the ordinary memory is chunked and
+    /// embedded ⇒ red.
+    #[test]
+    fn chunk_backfill_embeds_only_note_chunk_inputs() {
+        run_db_fixture::<Fixture, _>(
+            "chunk_backfill_embeds_only_note_chunk_inputs",
+            |mut handle| {
+                let mut guard = PolicyGuard::hold();
+                let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
+                let scope_id = seed_workspace(&mut handle);
+                gov.join(&mut handle.admin, scope_id);
+                let title = "a long note";
+                let body = prose(1_500);
+                let (_, long_note) = seed_note(&mut handle, scope_id, title, &body);
+                let (_, short_note) = seed_note(&mut handle, scope_id, "a short note", &prose(200));
+                let (_, ordinary) = seed_memory_with_visibility(
+                    &mut handle,
+                    scope_id,
+                    &prose(1_500),
+                    "TENANT_SHARED",
+                    None,
+                    None,
+                );
+                let spy = Spy::new();
+                let (deps, _) = labeled_deps(&handle, scope_id, &spy);
+                assert_eq!(run(&handle, &deps), (3, 0, 0), "legacy-only projection");
+                let before = spy.seen().len();
+
+                guard.enable();
+                for memory in [long_note, short_note, ordinary] {
+                    let archived = governance_ops::archive(
+                        &handle.rt,
+                        &handle.gateway,
+                        &gov.scope(scope_id),
+                        &governance_ops::stream(handle.tenant_id, scope_id),
+                        memory,
+                        DestructiveOp::MemoryArchive,
+                    )
+                    .expect("a lifecycle ticket through the real op");
+                    assert!(matches!(archived, ArchiveResult::Done(_)), "{archived:?}");
+                }
+                assert_eq!(run(&handle, &deps), (3, 0, 0), "the backfill pass");
+                let backfill: Vec<(Uuid, String)> = spy.seen().split_off(before);
+                let count = sql_chunk_count(&mut handle, title, &body) as usize;
+                assert!(
+                    backfill.iter().all(|(memory, _)| *memory == long_note),
+                    "an input that is not the long note's: {backfill:?}"
+                );
+                let mut expected: Vec<String> = chunks(note_input(long_note, title, &body))
+                    .into_iter()
+                    .map(|chunk| chunk.text)
+                    .collect();
+                assert_eq!(backfill.len(), count, "{backfill:?}");
+                for (_, input) in &backfill {
+                    let at = expected
+                        .iter()
+                        .position(|text| input.contains(text.as_str()))
+                        .unwrap_or_else(|| panic!("not a chunk of the long note: {input}"));
+                    expected.remove(at);
+                }
+            },
+        );
+    }
 }
