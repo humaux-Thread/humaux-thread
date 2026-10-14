@@ -1,0 +1,61 @@
+name: exp tool-surface
+# Experiment X2/X4 (MCP tool count / grouping) — runs only on the exp/tool-surface branch, never on main.
+# Synthetic scenarios only; logs are public (public repository), so nothing private is ever printed.
+# Model credentials come from the `minimax m3` environment and are passed as env, never echoed.
+on:
+  push:
+    branches: ['exp/tool-surface']
+    paths: ['experiments/tool_surface/**', '.github/workflows/exp-tool-surface.yml']
+
+concurrency:
+  group: exp-tool-surface
+  cancel-in-progress: true
+
+env:
+  EXP_ARMS: A8,B11,C14,D18,E30,P
+  EXP_REPS: '1'
+  EXP_LIMIT: '6'     # 0 = whole suite; small = plumbing smoke
+  EXP_WORKERS: '4'
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [minimax, claude]
+    runs-on: ubuntu-24.04
+    environment: minimax m3
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: install claude code
+        run: npm install -g @anthropic-ai/claude-code && claude --version
+      - name: run episodes (MiniMax via Anthropic-compatible endpoint)
+        if: matrix.model == 'minimax'
+        working-directory: experiments/tool_surface
+        env:
+          ANTHROPIC_BASE_URL: https://api.minimaxi.com/anthropic
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAXAPIKEY }}
+          ANTHROPIC_MODEL: MiniMax-M3
+          ANTHROPIC_SMALL_FAST_MODEL: MiniMax-M3
+          API_TIMEOUT_MS: '120000'
+          DISABLE_AUTOUPDATER: '1'
+          DISABLE_TELEMETRY: '1'
+        run: timeout 230m python3 run.py --model-label minimax-m3 --arms "$EXP_ARMS" --reps "$EXP_REPS" --limit "$EXP_LIMIT" --workers "$EXP_WORKERS"
+      - name: run episodes (Claude control)
+        if: matrix.model == 'claude'
+        working-directory: experiments/tool_surface
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_SUBSCRIPTION_API }}
+          ANTHROPIC_MODEL: claude-sonnet-5-5
+          DISABLE_AUTOUPDATER: '1'
+          DISABLE_TELEMETRY: '1'
+        run: timeout 230m python3 run.py --model-label claude-sonnet-5-5 --arms "$EXP_ARMS" --reps "$EXP_REPS" --limit "$EXP_LIMIT" --workers "$EXP_WORKERS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.model }}
+          path: experiments/tool_surface/results/
