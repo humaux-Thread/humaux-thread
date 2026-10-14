@@ -42,6 +42,13 @@ env:
   # time instead of hashing the binary at runtime — is a card-39 finding, not CI's call.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  # M24 build speed (exp/build-speed runs 38623139052 + 38624334420, ubuntu-24.04-arm, `cargo test --workspace
+  # --no-run`, median of 3): default linker cold 149 s / core-crate rebuild 114 s; lld 119 s / 82 s; mold 129 / 86;
+  # nightly -Zthreads=8 139 / 92; nightly Cranelift 104 / 77. lld is the stable-toolchain winner; Cranelift's
+  # extra 15 s / 5 s needs nightly and is not production-ready, so it is not used. lld is the default linker only
+  # on x86_64 Linux, not on our aarch64 runners, hence the explicit flag (aarch64 only — the x64 `live` job is
+  # untouched). The `linker is lld` step in test-a proves it is in effect.
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
 jobs:
   # Every job: the pinned image ubuntu-24.04-arm, not ubuntu-latest — a runner image upgrade must not change what
@@ -363,6 +370,16 @@ jobs:
       # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
       # invariant, and the leak must be named by tenant, not guessed. Always runs so a red
       # `cargo test` still gets its diagnosis.
+      - name: linker is lld (M24)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=$(find target/debug/deps -maxdepth 1 -type f -perm -u+x -name 'humaux_domain-*' | head -1)
+          test -n "$f" || { echo "linker is lld: FAIL (no humaux_domain test binary under target/debug/deps)"; exit 1; }
+          if readelf -p .comment "$f" | grep -q 'Linker: LLD'; then echo "linker is lld: pass ($f)"
+          else echo "linker is lld: FAIL ($f was not linked by lld)"; readelf -p .comment "$f"; exit 1; fi
+
       - name: no_leaked_distill_jobs + I-SLOT probe
         if: always()
         shell: bash

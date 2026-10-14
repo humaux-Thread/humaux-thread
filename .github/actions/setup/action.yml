@@ -17,6 +17,10 @@ runs:
         rustup toolchain install 1.99.0 --profile minimal -c clippy -c rustfmt
         rustup default 1.99.0
         rustc --version | grep -F 'rustc 1.99.0'
+        # M24: the aarch64 jobs link with lld (CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS in ci.yml).
+        if [ "$(uname -m)" = aarch64 ] && ! command -v ld.lld >/dev/null; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq lld
+        fi
 
     # Only the workspace's own target dir: auto-detection also picked up `tests/` and the metrics witness probe's
     # generated manifests and logged ENOENT errors for their (absent) target dirs on every restore.
