@@ -45,6 +45,7 @@ use sqlx::{Acquire, Row};
 
 use crate::context_repo::{NoteEnumerationFilter, readable_memory_ids, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
+use crate::read_materialize::GateReadable;
 use crate::read_materialize::Lifecycle;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -148,18 +149,20 @@ pub struct ExactCensusOutcome {
     pub returned_ids: Vec<Uuid>,
 }
 
-/// §23.1② overlay, EXACT-channel face (see module doc): correlated on the outer
-/// `memory_records` row, scoped to one [`StreamKey`] via `$3..$7` (the registry's
+/// §23.1② overlay, EXACT-channel face (see module doc): scoped to one [`StreamKey`] via `$3..$7` (the registry's
 /// post-0079 `enumerable_scope` already claims `$1` = tenant and `$2` = workspace).
-const NOT_TOMBSTONED: &str = "NOT EXISTS ( \
-   SELECT 1 FROM private.memory_evidence me \
-   JOIN ops.outbox ob ON ob.evidence_id = me.evidence_id \
-                        AND ob.tenant_id = memory_records.tenant_id \
+///
+/// ADR-0071 D-A: uncorrelated — the stream's tombstoned memories are one set the planner hashes once (`NOT IN` over a
+/// `NOT NULL` key is the exact anti-join); `ob.tenant_id = $1` holds because the scope fixes
+/// `memory_records.tenant_id = $1`. Bounded by the stream, which the census scans whole anyway.
+const NOT_TOMBSTONED: &str = "memory_records.memory_id NOT IN ( \
+   SELECT me.memory_id FROM private.memory_evidence me \
+   JOIN ops.outbox ob ON ob.evidence_id = me.evidence_id AND ob.tenant_id = $1 \
    JOIN projection.stream_log sl \
      ON sl.tenant_id = ob.tenant_id AND sl.scope_kind = $3 AND sl.scope_id = $4 \
     AND sl.domain = $5 AND sl.projection_kind = $6 AND sl.projection_version = $7 \
     AND sl.commit_seq = ob.commit_seq \
-   WHERE me.memory_id = memory_records.memory_id AND sl.state = 'TOMBSTONED')";
+   WHERE sl.state = 'TOMBSTONED')";
 
 /// The registry path's lifecycle: final materialization only exposes active, unsuperseded memory rows, and EXACT must
 /// not report identifiers that the read path will reject after this snapshot. Bound through the same
@@ -235,12 +238,13 @@ pub(crate) fn bind_note_axes<'q>(
 }
 
 /// §18/§22.1 `SECRET_MATERIAL` linkage: a memory whose evidence chain carries secret material
-/// is excluded from `returned` and counted by `excluded_secret`.
-const SECRET_LINKED: &str = "EXISTS ( \
-   SELECT 1 FROM private.memory_evidence me2 \
+/// is excluded from `returned` and counted by `excluded_secret`. ADR-0071 D-A: an uncorrelated set (hashed once),
+/// bounded by the authorized ids `$8` every readout statement binds; `memory_evidence.memory_id` is `NOT NULL`, so
+/// `NOT ( … IN … )` is the exact negation.
+const SECRET_LINKED: &str = "memory_records.memory_id IN ( \
+   SELECT me2.memory_id FROM private.memory_evidence me2 \
    JOIN private.evidence_objects eo ON eo.evidence_id = me2.evidence_id \
-   WHERE me2.memory_id = memory_records.memory_id \
-     AND eo.data_class = 'SECRET_MATERIAL')";
+   WHERE me2.memory_id = ANY($8) AND eo.data_class = 'SECRET_MATERIAL')";
 
 /// The readout statements' binds: `$1..$7` tenant, workspace, stream key; `$8` authorized ids; `$9` subject; `$10`
 /// segment bound; `$11..$16` [`note_axes`].
@@ -290,6 +294,7 @@ struct CandidateQuery<'a> {
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
     notes: &'a NoteEnumerationFilter,
+    readable: Option<&'a GateReadable>,
 }
 
 async fn authorized_candidate_ids(
@@ -330,10 +335,16 @@ async fn authorized_candidate_ids(
             .map_err(|_| ErrorCode::Internal)?,
         Err(_) => return Err(ErrorCode::Internal),
     };
-    let mut authorized_ids: Vec<_> = readable_memory_ids(txn, query.authorization, &candidates)
-        .await?
-        .into_iter()
-        .collect();
+    let mut authorized_ids: Vec<_> = match query.readable {
+        Some(readable) => candidates
+            .into_iter()
+            .filter(|id| readable.contains(id))
+            .collect(),
+        None => readable_memory_ids(txn, query.authorization, &candidates)
+            .await?
+            .into_iter()
+            .collect(),
+    };
     authorized_ids.sort_unstable();
     Ok(authorized_ids)
 }
@@ -361,7 +372,7 @@ async fn census_readout(
 
     let ids_sql = format!(
         "SELECT memory_id FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
-         AND {AUTHORIZED_CANDIDATE} AND {subject} AND NOT {SECRET_LINKED} ORDER BY memory_id"
+         AND {AUTHORIZED_CANDIDATE} AND {subject} AND NOT ({SECRET_LINKED}) ORDER BY memory_id"
     );
     let ids: Vec<Uuid> = bind_readout(&ids_sql, args)
         .fetch_all(&mut **txn)
@@ -408,6 +419,11 @@ pub struct CensusInputs<'a> {
     /// ADR-0067 D-G / D-J2: the note axes (kinds, `occurred_at` window, note) and the lifecycle selection, bound on
     /// every statement; the default is "no note axis" under [`Lifecycle::CURRENT`].
     pub notes: &'a NoteEnumerationFilter,
+    /// ADR-0071 D-C: the shared final gate's `can_read` set, computed in this snapshot over a superset of this census's
+    /// candidates (`memory.enumerate`'s mint: same scope and predicate without the stream overlay). The census narrows
+    /// its own candidates by membership; `None` = run [`readable_memory_ids`] here. A candidate outside the set is
+    /// dropped, so a mismatch shrinks the census and fails the mint's set-equality cross-check, never widens it.
+    pub readable: Option<&'a GateReadable>,
 }
 
 /// §22.1 census inside a transaction the caller owns (isolation level and the RLS GUCs are
@@ -467,6 +483,7 @@ async fn census_readout_in_savepoint(
         subject_id: inputs.subject_id,
         before_id: inputs.before_id,
         notes: inputs.notes,
+        readable: inputs.readable,
     };
     let authorized_ids = authorized_candidate_ids(sp, &candidate_query)
         .await
@@ -553,6 +570,7 @@ pub async fn exact_enumerate(
             subject_id: None,
             before_id: None,
             notes: &registry_axes,
+            readable: None,
         },
     )
     .await;

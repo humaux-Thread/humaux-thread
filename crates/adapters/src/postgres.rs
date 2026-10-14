@@ -13,7 +13,7 @@
 //!   RetentionExecutor wraps it and also refuses a non-SUPERUSER session_user (ADR-0063 D-H); `open` holds the
 //!   workspace's one pool-builder site: PoolSettings (only RuntimeDbPool::connect_with today) sizes the pool and sets
 //!   statement_timeout / idle_in_transaction_session_timeout as startup options (pg_settings source = client), never a
-//!   role GUC (ADR-0065 D-A / D-B); every other pool keeps the sqlx defaults until card 38b]
+//!   role GUC (ADR-0065 D-A / D-B); every pool's sessions start with jit = off (ADR-0071 D-B); every other pool keeps the sqlx defaults until card 38b]
 //! Spec: Baseline §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A / D-B
 //!
 //! Spec canonical path is `crates/adapters/postgres/src/pools.rs`; this repo's crate layout
@@ -131,25 +131,31 @@ pub struct PoolSettings {
 async fn open(dsn: &str, settings: Option<&PoolSettings>) -> Result<PgPool, PoolInitError> {
     // dep: PostgreSQL(any) — ADR-0065 D-A: the workspace's one pool builder; `settings` sizes it, `None` keeps sqlx defaults
     let builder = PgPoolOptions::new();
+    // ADR-0071 D-B: every pool's sessions run with JIT off — a read over an id array of tens of thousands plans far
+    // above `jit_above_cost` and would compile code for statements that execute in milliseconds. A startup option
+    // like the timeouts below (ADR-0065 D-B), so it holds for every role and deployment without server config.
+    let options = PgConnectOptions::from_str(dsn)
+        .map_err(PoolInitError::Connect)?
+        .options([("jit", "off")]);
     let Some(s) = settings else {
         // dep: PostgreSQL(any) — connects to PostgreSQL
-        return builder.connect(dsn).await.map_err(PoolInitError::Connect);
+        return builder
+            .connect_with(options)
+            .await
+            .map_err(PoolInitError::Connect);
     };
     // ADR-0065 D-B: libpq startup options, applied once per session and kept across pooled reuse (sqlx issues no
     // DISCARD ALL); never ALTER ROLE (pg_db_role_setting stays empty) and never an after_connect SET.
-    let options = PgConnectOptions::from_str(dsn)
-        .map_err(PoolInitError::Connect)?
-        .application_name(&s.application_name)
-        .options([
-            (
-                "statement_timeout",
-                s.statement_timeout.as_millis().to_string(),
-            ),
-            (
-                "idle_in_transaction_session_timeout",
-                s.idle_in_transaction_timeout.as_millis().to_string(),
-            ),
-        ]);
+    let options = options.application_name(&s.application_name).options([
+        (
+            "statement_timeout",
+            s.statement_timeout.as_millis().to_string(),
+        ),
+        (
+            "idle_in_transaction_session_timeout",
+            s.idle_in_transaction_timeout.as_millis().to_string(),
+        ),
+    ]);
     builder
         .max_connections(s.max_connections)
         .min_connections(s.min_connections)
@@ -1175,7 +1181,8 @@ mod tests {
             let pool = gateway_pool(&db, &c38_settings("humaux-gateway", 2, 1000, 1234, 2345)).await;
             let rows: Vec<(String, String, String)> = sqlx::query_as(
                 "SELECT name, setting, source FROM pg_settings WHERE name IN \
-                 ('application_name', 'idle_in_transaction_session_timeout', 'statement_timeout') ORDER BY name",
+                 ('application_name', 'idle_in_transaction_session_timeout', 'jit', 'statement_timeout') \
+                 ORDER BY name",
             )
             // dep: PostgreSQL(role_gateway) — reads the session's own settings through the pool
             .fetch_all(&pool.0)
@@ -1187,10 +1194,35 @@ mod tests {
                 vec![
                     row("application_name", "humaux-gateway"),
                     row("idle_in_transaction_session_timeout", "2345"),
+                    row("jit", "off"),
                     row("statement_timeout", "1234"),
                 ],
                 "ADR-0065 D-B: the pool's session settings must arrive as startup options (source = client)"
             );
+            pool.0.close().await;
+        });
+    }
+
+    /// ADR-0071 D-B: an unsized pool (`settings = None`, every pool but the gateway's sized one) also starts its
+    /// sessions with `jit = off` as a startup option. Fault: the option dropped from the `None` branch ⇒ `on` ⇒ red.
+    #[test]
+    fn every_pool_session_starts_with_jit_off() {
+        let Some(db) = C38Db::create("jit") else {
+            return;
+        };
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            // dep: PostgreSQL(role_gateway) — the unsized pool under test, on the throwaway database
+            let pool = RuntimeDbPool::connect(&dsn_as_role(&db.dsn(), ROLE_GATEWAY))
+                .await
+                .unwrap_or_else(|e| panic!("role_gateway connect on {}: {e}", db.name));
+            let row: (String, String) =
+                sqlx::query_as("SELECT setting, source FROM pg_settings WHERE name = 'jit'")
+                    // dep: PostgreSQL(role_gateway) — reads the session's own jit setting through the pool
+                    .fetch_one(&pool.0)
+                    .await
+                    .expect("jit through the pool");
+            assert_eq!(row, ("off".to_owned(), "client".to_owned()));
             pool.0.close().await;
         });
     }

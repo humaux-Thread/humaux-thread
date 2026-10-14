@@ -46,8 +46,8 @@ const MAC_KEY: &[u8] = b"c35 enumerate scale test mac key";
 /// The manifest cap this measurement runs under (the dev launchers' `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP`).
 const CAP: usize = 1000;
 /// The card's first-page target, ms (ruling E12: reported as `target_300ms=`, not asserted until card 35b).
-// ponytail: first page measured ≈ 9.4 s p95 on 50k memories because RLS policy memory_records_subject_visibility
-// calls private.memory_subject_visibility_ok per row; card 35b (set-based visibility) restores `first_p95 < 300`.
+// ponytail: the first page does not meet 300 ms at 50k; the ceiling is the per-row evidence-visibility read under
+// memory_evidence's RLS (ADR-0071 declared limit) — card 35b-iii restores `first_p95 < 300`.
 const FIRST_P95_TARGET_MS: f64 = 300.0;
 /// Bar (c): the pages-2..n promise, ms (ruling E12).
 const LATER_P95_BAR_MS: f64 = 300.0;
