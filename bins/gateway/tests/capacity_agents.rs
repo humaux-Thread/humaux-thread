@@ -164,6 +164,30 @@ fn tenant_ceiling() {
     });
 }
 
+/// Forces every agent onto one op (`usize::MAX` = the mix): the op-ceiling scenario.
+static ONLY_OP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Each read op alone, closed loop, 4 tenants × 8 agents (= K per key, so `key_limit` never binds; 32 ≤ C + Q):
+/// the op's own throughput ceiling on this host.
+#[test]
+#[ignore = "experiment"]
+fn op_ceiling() {
+    lab("op_ceiling", 4, |lab| {
+        for (index, op) in [Op::Get, Op::Grep, Op::Enumerate, Op::ToolsList]
+            .into_iter()
+            .enumerate()
+        {
+            ONLY_OP.store(index, std::sync::atomic::Ordering::Relaxed);
+            report(
+                &format!("op_ceiling_{}", op.name()),
+                lab.run(&[(0, 8, 0), (1, 8, 0), (2, 8, 0), (3, 8, 0)], 20),
+                20,
+            );
+        }
+        ONLY_OP.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
 // ================================ lab: tenants + gateway ================================
 
 /// One simulated user: its own fixture tenant, credential, workspace and client source IP.
@@ -626,7 +650,13 @@ async fn agent(
     let mut id = 0_u64;
     while Instant::now() < deadline {
         id += 1;
-        let mut op = pick(&mut rng);
+        let mut op = match ONLY_OP.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => Op::Get,
+            1 => Op::Grep,
+            2 => Op::Enumerate,
+            3 => Op::ToolsList,
+            _ => pick(&mut rng),
+        };
         if matches!(op, Op::Remember) && !tenant.writes.load(std::sync::atomic::Ordering::Relaxed) {
             op = Op::Get;
         }
