@@ -356,6 +356,14 @@ jobs:
       # composite action so the `live` job below provisions its cluster the same way.
       - uses: ./.github/actions/setup
 
+      # M24-6: cargo-nextest (pinned) — every test in its own process, binaries in parallel. Trial ci/nextest-trial:
+      # test-a 16.0 → 11.4 min, test-b 13.6 → 9.7 min (run 38640382765). Hidden couplings that cargo test's
+      # one-binary-at-a-time order used to mask are declared in .config/nextest.toml test groups (run 38626567082:
+      # 54 failures without them) and the throwaway-migration advisory lock.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+
       - name: cargo test
         # A hung test fails here, not at the job's 90 min (run 38343204163: one test spun 80 min).
         timeout-minutes: 40
@@ -363,8 +371,22 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo test --workspace --no-fail-fast --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
+          # Quiet pass (alone, -j 1, after the parallel pass): g80_31_handoff asserts a quiet cluster between two
+          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows that parallel load
+          # squeezed (ci/m24-6-rep2 run 38644754111: a_success_at_the_end_of_the_http_window_is_kept_not_resent).
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not (binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e))' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-parallel.xml" 2>/dev/null || true
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -j 1 -E 'binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e)' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-quiet.xml" 2>/dev/null || true
+          cargo test --doc --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
           exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nextest-junit-test-a
+          overwrite: true
+          path: ${{ runner.temp }}/junit-a-*.xml
+
       # M24: every humaux_domain test binary must carry lld's `.comment` mark. Ubuntu's lld writes
       # "Linker: Ubuntu LLD 18.x", hence the vendor-tolerant pattern; GNU ld writes no "Linker:" line.
       - name: linker is lld (M24)
@@ -423,6 +445,14 @@ jobs:
       # composite action so the `live` job below provisions its cluster the same way.
       - uses: ./.github/actions/setup
 
+      # M24-6: cargo-nextest (pinned) — every test in its own process, binaries in parallel. Trial ci/nextest-trial:
+      # test-a 16.0 → 11.4 min, test-b 13.6 → 9.7 min (run 38640382765). Hidden couplings that cargo test's
+      # one-binary-at-a-time order used to mask are declared in .config/nextest.toml test groups (run 38626567082:
+      # 54 failures without them) and the throwaway-migration advisory lock.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+
       # --no-fail-fast: one run shows every red binary, not just the first (§57.1 rule 2:
       # a stop at the first failure hides the rest behind it). Three invocations, not one:
       #  · humaux-maintenance under `umask 000`: the card-37 scratch sources bind-mount a
@@ -448,12 +478,13 @@ jobs:
           # database like g80_31_handoff.rs does, so under HUMAUX_REQUIRE_DB they can only
           # fail here. Skipped BY NAME, not by unsetting the require flag (§79.2); the
           # portability defect is a follow-up card. Everything else in the package runs.
-          cargo test -p humaux-retrieval-provider --no-fail-fast -- \
-            --skip adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport \
-            --skip adapters::tests::dispatched_transport_failure_consumes_budget \
-            --skip adapters::tests::mark_failure_stops_before_transport_and_releases_budget \
-            --skip adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure || rc=1
-          cargo test -p humaux-gateway --no-fail-fast -- --test-threads=2 || rc=1
+          cargo nextest run --profile ci -p humaux-retrieval-provider -E 'not (test(=adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport) | test(=adapters::tests::dispatched_transport_failure_consumes_budget) | test(=adapters::tests::mark_failure_stops_before_transport_and_releases_budget) | test(=adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure))' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-provider.xml" 2>/dev/null || true
+          # -j 1: gateway tests spawn the real binary and assert 2 s / 5 s barriers; under -j 2 one missed its PG barrier
+          # (run 38644754111, native_mcp_context_records_final_metric_only_after_quota_settlement).
+          cargo nextest run --profile ci -p humaux-gateway -j 1 || rc=1
+          cargo test --doc -p humaux-gateway -p humaux-retrieval-provider || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-gateway.xml" 2>/dev/null || true
           # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
           # `stat -c %d` of the bind target vs PGDATA refuses `repo_shares_pgdata_fs`). The
           # dev Mac gets that for free (virtiofs); on the runner a loop-mounted ext4 image
@@ -470,6 +501,12 @@ jobs:
           sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c 'umask 000 && cargo test -p humaux-maintenance --no-fail-fast' || rc=1
           sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
           exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nextest-junit-test-b
+          overwrite: true
+          path: ${{ runner.temp }}/junit-*.xml
 
       # test-b runs on its own database, so it gets the same leak / I-SLOT probe (gateway tests write
       # stream_checkpoints, maintenance onboarding enqueues DERIVED_DISTILL; PR #3 independent review P2).
