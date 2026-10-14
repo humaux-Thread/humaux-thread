@@ -1,0 +1,69 @@
+name: exp build-speed
+# Experiment: which Rust compiler/linker setup gives the fastest development loop on our CI runner
+# (ubuntu-24.04-arm, 4 vCPU / 16 GB — the same image as ci.yml). Runs only on the exp/build-speed branch.
+# Production/release builds stay on the pinned stable toolchain + LLVM regardless of the result.
+# Measured per arm: cold `cargo test --workspace --no-run`, then two warm rebuilds (leaf binary edit, core crate edit).
+on:
+  push:
+    branches: ['exp/build-speed']
+    paths: ['.github/workflows/exp-build-speed.yml']
+
+concurrency:
+  group: exp-build-speed
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arm:
+          - s0-stable-default-linker
+          - s1-stable-lld
+          - s2-stable-mold
+          - s3-nightly-llvm-mold-threads8
+          - s4-nightly-cranelift-mold
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain and linker
+        run: |
+          set -e
+          case "${{ matrix.arm }}" in
+            *lld*)  sudo apt-get update -qq && sudo apt-get install -y -qq lld ;;
+            *mold*) sudo apt-get update -qq && sudo apt-get install -y -qq mold ;;
+          esac
+          rustup show active-toolchain
+          case "${{ matrix.arm }}" in
+            *nightly*cranelift*) rustup toolchain install nightly --profile minimal -c rustc-codegen-cranelift-preview ;;
+            *nightly*)           rustup toolchain install nightly --profile minimal ;;
+          esac
+      - name: measure
+        run: |
+          set -u
+          ARM="${{ matrix.arm }}"
+          TC=""; EXTRA=""; RF=""
+          case "$ARM" in
+            s1-*) RF="-C link-arg=-fuse-ld=lld" ;;
+            s2-*) RF="-C link-arg=-fuse-ld=mold" ;;
+            s3-*) TC="+nightly"; RF="-C link-arg=-fuse-ld=mold -Zthreads=8" ;;
+            s4-*) TC="+nightly"; RF="-C link-arg=-fuse-ld=mold"; EXTRA="-Zcodegen-backend"
+                  export CARGO_PROFILE_DEV_CODEGEN_BACKEND=cranelift CARGO_PROFILE_TEST_CODEGEN_BACKEND=cranelift ;;
+          esac
+          export RUSTFLAGS="$RF"
+          t() { local s=$(date +%s); cargo $TC $EXTRA test --workspace --no-run --locked -q >"/tmp/$1.log" 2>&1; local rc=$?; echo "$1 $(( $(date +%s) - s ))s rc=$rc"; [ $rc -eq 0 ] || tail -25 "/tmp/$1.log"; return 0; }
+          {
+            echo "### $ARM"; echo '```'
+            cargo $TC --version; rustc $TC --version
+            t cold
+            echo "// exp touch $(date +%s)" >> bins/gateway/src/main.rs;  t warm_leaf_gateway
+            echo "// exp touch $(date +%s)" >> crates/domain/src/lib.rs;  t warm_core_domain
+            du -sh target 2>/dev/null
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
