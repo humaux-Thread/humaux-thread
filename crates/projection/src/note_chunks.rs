@@ -2,7 +2,7 @@
 //!   over a long note's body), the projection's [`NoteChunkPolicy`], and [`build_projection_plan`], the one entry that
 //!   picks a chunk profile or the unchanged legacy card.
 //! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::dataclass, projection::card]
-//! Called-by: [adapters::private_projection_registry, adapters::projection_worker, tests]
+//! Called-by: [adapters::private_projection_registry, adapters::projection_worker, adapters::rebuild, tests]
 //! Invariants: [pure and IO-free (§3/§78.3); chunk card text is constructed only here, SQL recomputes only the count
 //!   and the legacy predicate (ADR-0068 D-B); ranges are half-open over Unicode scalars and a slice never splits a
 //!   UTF-8 sequence; only an identity note that is not SECRET_MATERIAL, whose projection policy is NoteChunksV1 and

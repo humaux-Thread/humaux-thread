@@ -11,7 +11,8 @@
 //!   projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], Qdrant(*)]; env=[];
 //!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning,
 //!   adapters::qdrant, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan,
-//!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream]
+//!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks,
+//!   projection::serving, projection::stream]
 //! Called-by: [maintenance::drill, maintenance::rebuild_cli, tests]
 //! Invariants: [every write is an owner definer call as role_maintenance under the tenant GUC (rebuild_open,
 //!   issue_rebuild_tickets, rebuild_close), none is a table write; the verifier reads PostgreSQL in READ ONLY
@@ -56,6 +57,7 @@ use humaux_infra_cell::{
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalCard};
 use humaux_projection::dense::build_stream_count_filter;
+use humaux_projection::note_chunks::{NoteChunkPolicy, UnknownNoteChunkProfile};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
 use serde_json::{Map, Value, json};
@@ -737,6 +739,20 @@ async fn read_pg_side(
     require_stored_vector: bool,
 ) -> Result<PgSide> {
     let key = &stream.key;
+    // ADR-0068 D-D: Project(PG) plans under the projection's own policy row, as the worker's pass does (a missing
+    // row is legacy only); a hash this build has no profile for refuses the verify.
+    let row = projection_worker::card_profile_policy_row(
+        deps.reader,
+        &key.domain,
+        &key.projection_kind,
+        &key.projection_version,
+    )
+    .await?;
+    let policy = NoteChunkPolicy::from_profile_hash(row.flatten().as_deref()).map_err(
+        |UnknownNoteChunkProfile(hash)| {
+            ProvisioningError::InvalidInput(format!("card_profile_policy_unknown: {hash:?}"))
+        },
+    )?;
     let mut txn = begin_projector_read(deps.reader, key.tenant_id.0).await?;
     let h2: i64 = key_query(
         "SELECT issued_highwater FROM projection.stream_checkpoints \
@@ -797,6 +813,7 @@ async fn read_pg_side(
             &deps.worker.label,
             &key.projection_version,
             input.home_commit,
+            policy,
         )
         .await?
         {
