@@ -1,0 +1,19 @@
+# §46.1 migration manifest. Card 35b-ii / ADR-0071 D-A: one CONCURRENTLY partial index for the tombstoned exclusion
+# set, run outside a transaction (`transaction = "none"`, the 0212 shape). Index-only, safely droppable.
+
+migration_id = "0244_idx_stream_log_tombstoned"
+class = "REVERSIBLE"
+transaction = "none"
+
+precheck = """
+select to_regclass('projection.stream_log_tombstoned_idx') is null as precheck_ok
+"""
+
+postcheck = """
+select coalesce((select indisvalid and indisready and pg_get_expr(indpred, indrelid) like '%TOMBSTONED%'
+                   from pg_index where indexrelid = to_regclass('projection.stream_log_tombstoned_idx')), false)
+       as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: DROP INDEX CONCURRENTLY IF EXISTS projection.stream_log_tombstoned_idx; (also the fix for an INVALID leftover of a failed build, which the precheck refuses by name)"
+backup_restore_requirement = "none: index-only DDL built CONCURRENTLY, no row data touched, safely droppable"
