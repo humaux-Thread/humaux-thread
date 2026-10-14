@@ -371,10 +371,12 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          # g80_31_handoff asserts a QUIET cluster between two snapshot reads, so it runs alone after the parallel pass.
-          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not binary_id(humaux-adapters::g80_31_handoff)' || rc=1
+          # Quiet pass (alone, -j 1, after the parallel pass): g80_31_handoff asserts a quiet cluster between two
+          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows that parallel load
+          # squeezed (ci/m24-6-rep2 run 38644754111: a_success_at_the_end_of_the_http_window_is_kept_not_resent).
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not (binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e))' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-parallel.xml" 2>/dev/null || true
-          cargo nextest run --profile ci -p humaux-adapters --test g80_31_handoff || rc=1
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -j 1 -E 'binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e)' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-quiet.xml" 2>/dev/null || true
           cargo test --doc --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
           exit $rc
@@ -478,8 +480,9 @@ jobs:
           # portability defect is a follow-up card. Everything else in the package runs.
           cargo nextest run --profile ci -p humaux-retrieval-provider -E 'not (test(=adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport) | test(=adapters::tests::dispatched_transport_failure_consumes_budget) | test(=adapters::tests::mark_failure_stops_before_transport_and_releases_budget) | test(=adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure))' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-provider.xml" 2>/dev/null || true
-          # -j 2 keeps the old --test-threads=2: more concurrent gateway bootstraps miss the 5 s listen deadline.
-          cargo nextest run --profile ci -p humaux-gateway -j 2 || rc=1
+          # -j 1: gateway tests spawn the real binary and assert 2 s / 5 s barriers; under -j 2 one missed its PG barrier
+          # (run 38644754111, native_mcp_context_records_final_metric_only_after_quota_settlement).
+          cargo nextest run --profile ci -p humaux-gateway -j 1 || rc=1
           cargo test --doc -p humaux-gateway -p humaux-retrieval-provider || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-gateway.xml" 2>/dev/null || true
           # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
