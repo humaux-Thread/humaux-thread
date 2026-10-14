@@ -14,7 +14,7 @@ concurrency:
 env:
   EXP_ARMS: A8,B11,C14,D18,E30,P
   EXP_CLAUDE_ARMS: A8,D18,P   # control on 3 arms only: Claude API usage is paid
-  EXP_REPS: '1'
+  EXP_REPS: '2'
   EXP_LIMIT: '0'     # 0 = whole suite; small = plumbing smoke
   EXP_WORKERS: '3'   # gentle on the shared MiniMax plan
 

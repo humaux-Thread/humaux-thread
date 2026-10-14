@@ -62,7 +62,7 @@ case("cf2", "confusion", "en", "Share this debugging lesson with everyone who us
 case("pj1", "project", "en", "The project goal changed: we now target self-hosted users first. Update the goal.",
      ["project.publish"], {"facet": "goal"})
 case("pj2", "project", "zh", "我要改共享的 config.toml，别的 agent 也可能在改，先锁住。", ["project.lock_acquire"])
-case("pj3", "project", "en", "Show me the team's task board.", ["project.canvas_get"])
+case("pj3", "project", "en", "Show me the shared plan canvas the agents keep their todo/doing/done on.", ["project.canvas_get"])
 # checkpoint / task
 case("ck1", "checkpoint", "en", "Step 2 of 5 is done (schema migrated). Save progress before you run the long "
      "backfill.", ["checkpoint.save"], {"disposition": "continue"})
@@ -110,6 +110,13 @@ case("st2", "status", "zh", "我昨天上传的东西都处理完了吗？", ["s
 # public
 case("pb1", "public", "en", "Has anyone in the community documented a fix for Qdrant snapshot restore failures?",
      ["public_read.search", "recall.search"])
+# mistakes (R10: recorded as episodes with a failed outcome)
+case("mk1", "mistake", "zh", "昨天我给客户王总报错了价格，报成了 9.5 折，其实只能给 9.8 折，他今天发现了很不高兴。记下这次错误和以后怎么避免。",
+     ["remember.put"], {"memory_type": "lesson|problem|outcome|note"})
+case("mk2", "mistake", "en", "You ran the migration against the wrong database earlier because you assumed the default DSN. "
+     "Record that mistake and the rule to check the DSN first.", ["remember.put"], {"memory_type": "lesson|problem|fix"})
+case("mk3", "mistake", "en", "Before I reply to Maria at Acme, did we ever make a mistake with her before?",
+     ["people.profile", "recall.search", "people.resolve"])
 # no-call
 case("nc1", "nocall", "en", "What's 17 times 23?", [])
 case("nc2", "nocall", "zh", "帮我把这句话翻译成英文：今天天气很好。", [])

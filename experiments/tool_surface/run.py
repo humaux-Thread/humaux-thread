@@ -40,7 +40,7 @@ def episode(case, arm, rep, model_label, timeout):
     json.dump(cfg, open(cfg_path, "w"))
     cmd = ["claude", "-p", case["prompt"], "--mcp-config", cfg_path, "--strict-mcp-config",
            "--allowedTools", "mcp__humaux", "--disallowedTools", BUILTINS, "--append-system-prompt", SYSTEM,
-           "--max-turns", "3", "--output-format", "json"]
+           "--max-turns", "5", "--output-format", "json"]
     t0, out, err = time.time(), {}, None
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=d)
@@ -57,22 +57,39 @@ def episode(case, arm, rep, model_label, timeout):
 def grade(case, arm, rep, model_label, calls, out, err, secs):
     first = calls[0] if calls else None
     exp = case["expect"]
+
+    def valid(c):
+        a, args = BY_ID[c["action_id"]], c["args"]
+        ok = all(args.get(k) not in (None, "", []) for k in a["required"])
+        for k, rx in case["args"].items():
+            if k in a["params"] and not re.search(rx, json.dumps(args.get(k, ""), ensure_ascii=False), re.I):
+                ok = False
+        return ok
+
     if not exp:
-        action_ok = args_ok = first is None
+        action_ok = args_ok = reached = first is None
+        wrong_write = bool(calls)
     else:
+        # first-call metric (strict) ...
         action_ok = bool(first) and first["action_id"] in exp
-        args_ok = False
-        if action_ok:
-            a, args = BY_ID[first["action_id"]], first["args"]
-            args_ok = all(args.get(k) not in (None, "", []) for k in a["required"])
-            for k, rx in case["args"].items():
-                if k in a["params"] and not re.search(rx, json.dumps(args.get(k, ""), ensure_ascii=False), re.I):
-                    args_ok = False
+        args_ok = action_ok and valid(first)
+        # ... and episode metric: the expected action is reached with valid args, and no OTHER state-changing action
+        # happened before it (reading first — recall.get before a correction, brief before a checkpoint — is allowed).
+        reached, wrong_write = False, False
+        for c in calls:
+            if c["action_id"] in exp:
+                reached = valid(c)
+                break
+            if c["action_id"] is None or BY_ID[c["action_id"]]["effect"] != "read":
+                wrong_write = True
+                break
     usage = out.get("usage") or {}
     return {"case": case["id"], "family": case["family"], "lang": case["lang"], "arm": arm, "rep": rep,
             "model": model_label, "first": first["action_id"] if first else None,
             "first_tool": first["tool"] if first else None, "n_calls": len(calls),
             "action_ok": action_ok, "args_ok": args_ok, "joint_ok": action_ok and args_ok,
+            "episode_ok": reached and not wrong_write, "wrong_write": wrong_write,
+            "calls": [c["action_id"] for c in calls],
             "unsafe_first": bool(first) and first["action_id"] in UNSAFE_FIRST,
             "input_tokens": (usage.get("input_tokens") or 0) + (usage.get("cache_read_input_tokens") or 0)
             + (usage.get("cache_creation_input_tokens") or 0),
@@ -84,8 +101,8 @@ def grade(case, arm, rep, model_label, calls, out, err, secs):
 
 
 def summarize(rows, model_label):
-    lines = [f"### {model_label}", "", "| arm | tools | list chars | n | action acc | joint acc | no-call acc | "
-             "unsafe first | errors | mean input tok |", "|---|---|---|---|---|---|---|---|---|---|"]
+    lines = [f"### {model_label}", "", "| arm | tools | list chars | n | episode ok | first-call joint | no-call acc | "
+             "wrong write | unsafe first | errors | mean input tok |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for arm in ARMS:
         r = [x for x in rows if x["arm"] == arm]
         if not r:
@@ -95,8 +112,9 @@ def summarize(rows, model_label):
         nc = [x for x in r if x["family"] == "nocall"]
         pct = lambda xs, k: f"{100 * sum(x[k] for x in xs) / len(xs):.1f}%" if xs else "-"
         tok = sum(x["input_tokens"] for x in r) / len(r)
-        lines.append(f"| {arm} | {len(tools)} | {len(json.dumps(tools))} | {len(r)} | {pct(job, 'action_ok')} | "
-                     f"{pct(job, 'joint_ok')} | {pct(nc, 'action_ok')} | {sum(x['unsafe_first'] for x in r)} | "
+        lines.append(f"| {arm} | {len(tools)} | {len(json.dumps(tools))} | {len(r)} | {pct(job, 'episode_ok')} | "
+                     f"{pct(job, 'joint_ok')} | {pct(nc, 'action_ok')} | {sum(x['wrong_write'] for x in job)} | "
+                     f"{sum(x['unsafe_first'] for x in r)} | "
                      f"{sum(1 for x in r if x['error'])} | {tok:.0f} |")
     return "\n".join(lines) + "\n"
 
