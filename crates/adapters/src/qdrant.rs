@@ -11,8 +11,10 @@
 //!   counted as visible; the count takes a VisibleCountFilter (one stream) only, search/scroll take a
 //!   DenseQueryFilter only — a StreamCountFilter reaches the count and the rebuild verifier's scroll
 //!   (scroll_stream_points, ADR-0064 D-F), never search (ADR-0057 D-C); the projection
-//!   worker's point writes and deletes are fenced on source_stream_seq (ADR-0057 D-I)]
-//! Spec: Baseline §17; §17.5; §17.4; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064
+//!   worker's point writes and deletes are fenced on source_stream_seq (ADR-0057 D-I); the memory_id backfill
+//!   writes only the memory_id key, by has_id filter, and accepts only one completed result per operation
+//!   (ADR-0068 40d-2a)]
+//! Spec: Baseline §17; §17.5; §17.4; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064; ADR-0068
 //!
 //! Implements every part of §17: collection/index request-body shaping, payload encoding, the
 //! [`Condition`](humaux_projection::dense::Condition) → Qdrant filter JSON translation, the
@@ -1767,6 +1769,76 @@ pub async fn delete_points(
     Ok(())
 }
 
+/// ADR-0068 40d-2a: the `points/batch` body of the `memory_id` backfill — one `set_payload` per Memory, writing only
+/// the scalar [`MEMORY_ID_FIELD`] and addressing its points by a `has_id` FILTER, not a `points` list: an id that
+/// vanished since the scroll is then a no-op, where a list would fail the operation after a partial apply.
+pub fn set_memory_id_batch_body(groups: &[(Uuid, Vec<PointId>)]) -> Value {
+    let operations: Vec<Value> = groups
+        .iter()
+        .map(|(memory, points)| {
+            let mut payload = serde_json::Map::new();
+            payload.insert(MEMORY_ID_FIELD.to_owned(), json!(memory.to_string()));
+            let ids: Vec<Value> = points.iter().map(|id| id.to_json()).collect();
+            json!({ "set_payload": {
+                "payload": payload,
+                "filter": { "must": [{ "has_id": ids }] },
+            } })
+        })
+        .collect();
+    json!({ "operations": operations })
+}
+
+/// ADR-0068 40d-2a: `points/batch` is not atomic and stops at the first failing operation, so the response must carry
+/// exactly one `completed` result per operation sent; anything else is refused.
+fn batch_completed(result: &Value, operations: usize) -> Result<(), QdrantTransportError> {
+    let results = result
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            QdrantTransportError::UnexpectedResponseShape("missing batch result".to_owned())
+        })?;
+    let all_completed = results
+        .iter()
+        .all(|r| r.get("status").and_then(Value::as_str) == Some("completed"));
+    if results.len() != operations || !all_completed {
+        return Err(QdrantTransportError::UnexpectedResponseShape(format!(
+            "batch of {operations} set_payload operations answered {result}"
+        )));
+    }
+    Ok(())
+}
+
+/// ADR-0068 40d-2a: writes `memory_id` on every point of each `(memory, points)` group in ONE
+/// `POST /collections/{name}/points/batch` with `wait=true` and the caller's §17.5 ordering (the backfill passes the
+/// correction profile, strong). Unfenced by design: a point id derives from an identity that includes its Memory, so
+/// the value written is a pure function of the id and no concurrent upsert or delete can make it wrong. No vector is
+/// touched. Like [`delete_points`] and [`upsert_fenced`] it names no `shard_key`: `collection_setup_puts` creates
+/// every collection with automatic sharding.
+pub async fn set_memory_id_payload(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    collection: &str,
+    groups: &[(Uuid, Vec<PointId>)],
+    ha_profile: HaConsistencyProfile,
+) -> Result<(), QdrantTransportError> {
+    validate_collection(collection)?;
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let result = call(
+        transport,
+        permit,
+        IntraCellMethod::Post,
+        qdrant_path(
+            format!("/collections/{collection}/points/batch"),
+            &[QdrantRequestControl::Wait, ha_profile.write_control()],
+        ),
+        Some(set_memory_id_batch_body(groups)),
+    )
+    .await?;
+    batch_completed(&result, groups.len())
+}
+
 /// §17.4's real search-path visibility probe: `POST /collections/{name}/points/scroll` with a
 /// `has_id` filter — scroll reads from the same searchable index a real query does (unlike a
 /// bare "does this id exist" point-get), so an id it returns is genuinely search-visible, not
@@ -1994,6 +2066,42 @@ mod http_wiring_tests {
             Some(PointId::Uuid(u))
         );
         assert_eq!(point_id_from_json(&json!("not-a-uuid")), None);
+    }
+
+    /// ADR-0068 40d-2a: one `set_payload` per Memory, payload exactly `{memory_id: <uuid string>}`, points by a
+    /// `has_id` filter and never a `points` list; the reply is accepted only with one `completed` per operation.
+    /// Faults: address by `points` (or write any other key) ⇒ red on the body; accept a short or `acknowledged`
+    /// reply ⇒ red on the status arms.
+    #[test]
+    fn memory_id_backfill_body_is_identity_only_by_filter() {
+        let (m1, m2) = (Uuid::now_v7(), Uuid::now_v7());
+        let (p1, p2) = (Uuid::now_v7(), Uuid::now_v7());
+        let body = set_memory_id_batch_body(&[
+            (m1, vec![PointId::Uuid(p1), PointId::Num(7)]),
+            (m2, vec![PointId::Uuid(p2)]),
+        ]);
+        assert_eq!(
+            body,
+            json!({ "operations": [
+                { "set_payload": {
+                    "payload": { "memory_id": m1.to_string() },
+                    "filter": { "must": [{ "has_id": [p1.to_string(), 7] }] },
+                } },
+                { "set_payload": {
+                    "payload": { "memory_id": m2.to_string() },
+                    "filter": { "must": [{ "has_id": [p2.to_string()] }] },
+                } },
+            ] })
+        );
+        let reply = |statuses: &[&str]| {
+            json!({ "result": statuses.iter().enumerate()
+                .map(|(i, s)| json!({ "operation_id": i, "status": s }))
+                .collect::<Vec<_>>() })
+        };
+        assert!(batch_completed(&reply(&["completed", "completed"]), 2).is_ok());
+        assert!(batch_completed(&reply(&["completed"]), 2).is_err());
+        assert!(batch_completed(&reply(&["completed", "acknowledged"]), 2).is_err());
+        assert!(batch_completed(&json!({ "result": null }), 2).is_err());
     }
 
     /// §17.3 promotion-path regression, decisive proof: a data-derived collection name

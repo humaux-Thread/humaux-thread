@@ -30,7 +30,7 @@
 //!   role_retrieval_worker for the fingerprint binding, the settles and the worker); every refusal is asserted by
 //!   SQLSTATE or typed error, never by message text alone]
 //! Spec: Baseline §15.2; §37.2; §44; §6.2.2; ADR-0064 D-A; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0064 D-E;
-//!   ADR-0064 D-J; ADR-0064 D-O
+//!   ADR-0064 D-J; ADR-0064 D-O; ADR-0068
 
 #[path = "support/throwaway_db.rs"]
 #[allow(dead_code)]
@@ -1164,7 +1164,7 @@ use humaux_adapters::projection_worker::{
     PassConfig, SharedProjectionDeps, run_claimed_pass, run_claimed_pass_for_run,
 };
 use humaux_adapters::provisioning::{self as provisioning_api, QdrantFace};
-use humaux_adapters::qdrant::RetrievalFamily;
+use humaux_adapters::qdrant::{PointId, RetrievalFamily};
 use humaux_adapters::rebuild::{
     self, ClosedDeps, NoProviderEmbedder, OrphanStep, RebuildDeps, RebuildOptions, Stream,
     StreamOutcome, Verdict, WorkerLabel,
@@ -1941,6 +1941,176 @@ fn verify_is_read_only() {
         let after = (scrolled(h, port, &stream).count_exact, digest(h));
         assert_eq!(before, after, "verify wrote nothing");
     });
+}
+
+/// The registry's Memory of `point` (any state).
+fn registered_memory(h: &mut Handle, point: Uuid) -> Uuid {
+    h.admin
+        .query_one(
+            "SELECT memory_id FROM projection.private_memory_points WHERE point_id = $1",
+            &[&point],
+        )
+        .expect("registry row")
+        .get(0)
+}
+
+/// Sets the raw `memory_id` payload of one point to `value`, or deletes the key with `None`.
+fn tamper_memory_id(h: &Handle, point: Uuid, value: Option<Value>) {
+    let (path, body) = match value {
+        Some(v) => (
+            "payload",
+            json!({ "payload": { "memory_id": v }, "points": [point.to_string()] }),
+        ),
+        None => (
+            "payload/delete",
+            json!({ "keys": ["memory_id"], "points": [point.to_string()] }),
+        ),
+    };
+    qdrant_call(
+        h,
+        IntraCellMethod::Post,
+        format!("/collections/{}/points/{path}?wait=true", h.collection),
+        Some(body),
+    );
+}
+
+fn backfill(h: &Handle, port: u16, stream: &Stream) -> rebuild::BackfillReport {
+    let rb = Rb::new(h, port);
+    let deps = rb.deps();
+    h.rt.block_on(rebuild::backfill_memory_ids(&deps, stream))
+        .expect("backfill")
+}
+
+/// ADR-0068 40d-2a: of five projected points, one lost `memory_id`, one names another Memory, one carries it as an
+/// array, one as `""`; a sixth point has no registry row. The backfill writes the registry's Memory on the four, leaves
+/// the stray untouched and names it, moves no vector, and a second run patches nothing. With the stray deleted `verify`
+/// reads `equivalent`. A point whose registry row is retired is repaired too. Faults: test presence instead of the
+/// exact scalar string ⇒ the wrong, array and `""` points stay ⇒ red; patch a point without a registry row ⇒ red on
+/// the stray arm; read only live registry rows ⇒ red on the retired arm.
+#[test]
+#[allow(clippy::too_many_lines)] // one scratch Qdrant: tamper, backfill, re-run, verify, retired arm in order
+fn memory_id_backfill_patches_only_registered_points() {
+    run_db_fixture::<S3Fixture, _>(
+        "memory_id_backfill_patches_only_registered_points",
+        |mut s| {
+            let port = s.port;
+            let h = &mut s.h;
+            prepare(h);
+            let ws = h.workspace();
+            h.fan_out(ws, "c40d2a", 5);
+            drain(h, ws, &Arc::new(CountingEmbedder::default()));
+            serve(h, ws);
+            let stream = stream_of(h, ws);
+            assert_eq!(verify(h, port, &stream, None).verdict, Verdict::Equivalent);
+            let ids: Vec<Uuid> = scrolled(h, port, &stream).label.keys().copied().collect();
+            assert_eq!(ids.len(), 5, "one legacy point per memory");
+            let own = registered_memory(h, ids[2]);
+            tamper_memory_id(h, ids[0], None);
+            tamper_memory_id(h, ids[1], Some(json!(Uuid::new_v4().to_string())));
+            tamper_memory_id(h, ids[2], Some(json!([own.to_string()])));
+            tamper_memory_id(h, ids[3], Some(json!("")));
+            // E4 compares payloads, so verify sees each tampered identity.
+            let report = verify(h, port, &stream, None);
+            assert_eq!(report.verdict, Verdict::NotEquivalent, "{}", report.json);
+            assert_eq!(
+                report.json["differing_ids"]["payload"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(4),
+                "{}",
+                report.json
+            );
+            let template = scrolled(h, port, &stream).label[&ids[4]].clone();
+            let mut stray_payload = template.payload.clone();
+            stray_payload.remove("memory_id");
+            let stray = Uuid::new_v4();
+            put_point(
+                h,
+                stray,
+                template.vector.as_ref().expect("vector"),
+                &stray_payload,
+            );
+            let tampered = scrolled(h, port, &stream);
+
+            let first = backfill(h, port, &stream);
+            assert_eq!(
+                (first.scrolled, first.correct, first.patched, first.strays),
+                (6, 1, 4, 1),
+                "{}",
+                first.json
+            );
+            assert_eq!(first.stray_ids, vec![PointId::Uuid(stray)]);
+            let after = scrolled(h, port, &stream);
+            for id in &ids {
+                let memory = registered_memory(h, *id);
+                assert_eq!(
+                    after.label[id].payload["memory_id"],
+                    json!(memory.to_string()),
+                    "{id}"
+                );
+            }
+            assert_eq!(
+                after.label[&stray].payload, tampered.label[&stray].payload,
+                "the stray is untouched"
+            );
+            let vectors = |points: &rebuild::Scrolled| {
+                points
+                    .label
+                    .iter()
+                    .map(|(id, p)| (*id, p.vector.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(vectors(&after), vectors(&tampered), "no vector moved");
+
+            let second = backfill(h, port, &stream);
+            assert_eq!(
+                (second.correct, second.patched, second.strays),
+                (5, 0, 1),
+                "{}",
+                second.json
+            );
+
+            // verify's E3 names every label point absent from the live registry (`qdrant_not_registered`), and the
+            // backfill reports a stray without removing it; with the stray deleted, E3–E5 must hold over the patched
+            // payloads.
+            qdrant_call(
+                h,
+                IntraCellMethod::Post,
+                format!("/collections/{}/points/delete?wait=true", h.collection),
+                Some(json!({ "points": [stray.to_string()] })),
+            );
+            let report = verify(h, port, &stream, None);
+            assert_eq!(report.verdict, Verdict::Equivalent, "{}", report.json);
+
+            // A retired registry row still names its point's Memory.
+            let memory = registered_memory(h, ids[4]);
+            let family = StreamFamily::new(
+                TenantId(h.tenant_id),
+                "workspace",
+                ws,
+                "private_memory",
+                "PRIVATE_MEMORY",
+            );
+            let retired =
+                h.rt.block_on(retire_points_for_memory(
+                    &h.retrieval,
+                    &h.scope(ws),
+                    &family,
+                    "v1",
+                    A2_LABEL,
+                    MemoryId(memory),
+                ))
+                .expect("retire_points_for_memory");
+            assert_eq!(retired.len(), 1);
+            tamper_memory_id(h, ids[4], None);
+            let third = backfill(h, port, &stream);
+            assert_eq!((third.patched, third.strays), (1, 0), "{}", third.json);
+            assert_eq!(
+                scrolled(h, port, &stream).label[&ids[4]].payload["memory_id"],
+                json!(memory.to_string())
+            );
+        },
+    );
 }
 
 /// T-E2 (ADR-0064 D-F E2): an Evidence whose card is unbuildable fails its generation ticket `card_unbuildable`;

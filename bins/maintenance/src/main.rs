@@ -4,7 +4,8 @@
 //!   profile-state / status, ADR-0060 D-H), `sweep once` (one page of every maintenance task, ADR-0062 D-Q), the
 //!   one-shot §48.1 retention executor `retention approve | create-partitions | execute` (ADR-0063 D-I), the
 //!   two resident modes `health serve` (ADR-0061 D-D) and `--serve`, the maintenance daemon (ADR-0062), the
-//!   Qdrant rebuild / verify `projection rebuild | verify` (ADR-0064 D-E, D-F), and the local_only backup arms
+//!   Qdrant rebuild / verify `projection rebuild | verify` (ADR-0064 D-E, D-F), the `memory_id` payload backfill
+//!   `projection backfill-memory-id` (ADR-0068 40d-2a), and the local_only backup arms
 //!   `backup check | run | verify | status` (ADR-0064 D-J), and `restore drill [--destroy-stale] | restore pitr`
 //!   (ADR-0064 D-L, D-U), plus the library subcommands moved out of xtask — `migrate`, `rls-check`, `projection serve`,
 //!   `member` — and the `deploy-check` release-gate modes (ADR-0066 D-Q, D-R).
@@ -29,7 +30,7 @@
 //!   `readyz serve|health-serve` (the compose healthchecks: GET /metrics, 200 ⇒ 0, else 2) read no other configuration;
 //!   each resident mode's first stderr line is the ADR-0066 D-D start line]
 //! Spec: Baseline §4.2; §6.2.2; §11.2.3; §41.2; §48.1; §73.5; §77; §78.1; ADR-0053; ADR-0058; ADR-0059; ADR-0060;
-//!   ADR-0061; ADR-0062; ADR-0063; ADR-0064; ADR-0066 D-D
+//!   ADR-0061; ADR-0062; ADR-0063; ADR-0064; ADR-0066 D-D; ADR-0068
 //!
 //! Subcommand mode (card 28). Two modes are resident: `health serve` (ADR-0061 D-D) samples the §41.2 health
 //! gauges, and `--serve` (ADR-0062) runs the scheduled maintenance tasks; each runs until SIGTERM, answers
@@ -104,7 +105,7 @@ roles rotate --roles-sql PATH [--role ROLE]... [--create-missing] | deploy-check
 retention approve|create-partitions|execute | \
 health serve | --serve | --serve --metrics-families | sweep once | --metrics-families | --version | \
 readyz serve|health-serve | \
-projection rebuild|verify (--tenant ID [--workspace ID] | --all) | \
+projection rebuild|verify|backfill-memory-id (--tenant ID [--workspace ID] | --all) | \
 backup check|run|verify [--label SET]|status | \
 restore drill --evidence FILE [--drill-id ID] | restore drill --destroy-stale | \
 restore pitr --compose-file FILE --project P (--target end | --target-time TS | --target-backup LABEL) --evidence FILE | \
@@ -810,6 +811,7 @@ async fn run(args: Args) -> Result<Output> {
         ["sweep", "once"] => serve::sweep_once(&args).await,
         ["projection", "rebuild"] => rebuild_cli::rebuild(&args).await,
         ["projection", "verify"] => rebuild_cli::verify(&args).await,
+        ["projection", "backfill-memory-id"] => rebuild_cli::backfill_memory_id(&args).await,
         ["backup", "check"] => backup::check(&args).await,
         ["backup", "run"] => backup::run(&args).await,
         ["backup", "verify"] => backup::verify(&args).await,

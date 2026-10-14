@@ -186,8 +186,9 @@ Two facts frame every decision:
 - **No second projection.** Chunking is enabled on the serving projection. Because a new target projection version
   would move every ordinary Memory's fingerprint and point id (D-B), it would either re-embed everything or block. So
   the 40d-2 switch is a profile-policy flag, not a rebuild-and-switch.
-- **Step 1: payload backfill.** Grouped recall needs `memory_id` on every point. Existing points get it by a fenced
-  `set_payload` backfill: no vector is rewritten and no provider is called.
+- **Step 1: payload backfill.** Grouped recall needs `memory_id` on every point. Existing points get it by a
+  `set_payload` backfill driven by the PG registry (unfenced; see "40d-2a as shipped"): no vector is rewritten and no
+  provider is called.
 - **Step 2: chunk the long notes.** Only notes over the legacy capacity are re-projected, by a lifecycle ticket on
   their Evidence. Their chunk points are added under the same `projection_version`, and their legacy point is retired
   as described under "Retirement timing" below.
@@ -507,6 +508,39 @@ Two facts frame every decision:
   `returned_count`, a `truncated` reason) — a wire change of their own, with the 40d-2 enabling eval; until then
   `candidate_count` is the number of groups returned across the calls.
 
+**40d-2a as shipped (the `memory_id` backfill, research batch 14).**
+
+- **Patch (decision).** `qdrant::set_memory_id_payload` posts one `points/batch?wait=true&ordering=strong` with one
+  `set_payload` per Memory: payload `{memory_id}` only, points addressed by a `has_id` filter. A filter makes an id
+  deleted since the scroll a no-op, while a `points` list would fail the operation after a partial apply. The batch
+  is not atomic, so the reply must carry one `completed` result per operation, or the call fails. No `shard_key`:
+  every collection is created with automatic sharding (`collection_setup_puts`), and the upsert and delete paths
+  name none either.
+- **No seq fence (decision).** A point id derives from an identity that includes its Memory, so the value written is
+  a pure function of the id. A concurrent upsert or delete cannot make it wrong, and `set_payload` never creates a
+  point. This replaces the "fenced" wording D-I first had.
+- **Driven by the registry.** `rebuild::backfill_memory_ids` reads every `projection.private_memory_points` row of
+  the stream (live or retired, any label) as the projector, then scrolls every point of the stream. A point whose
+  payload `memory_id` is not exactly the registry's Memory as a scalar string is patched; this covers an absent key,
+  an array, another type, `""` and another value. Each scroll page (at most 256 points) is one batch. A point with
+  no registry row is a stray: it is counted, named (first ten) and never written. Nothing is written to PostgreSQL;
+  a second run patches 0.
+- **CLI.** `projection backfill-memory-id (--tenant <uuid> [--workspace <uuid>] | --all)` writes one receipt object
+  per stream (`scrolled`, `correct`, `patched`, `strays`, `stray_ids`). It exits 0 when no stream has a stray, 3
+  when any has, and 1 on an error.
+- **Switch gate (for 40d-2b).** The policy row may be flipped only after three things hold. First, the backfill
+  reports `strays = 0` on every stream. Second, `projection verify` reads `equivalent` on every stream: E4 compares
+  whole payloads with Project(PG), so it covers the `memory_id` value, and E3 covers the registry's expected points.
+  Third, the deployment is single-node.
+- **Declared limit.** Under replication, Qdrant's `count` and `scroll` are not a proof across all replicas. Qdrant
+  1.19's `Resolve for CountResult` takes the MIN across replicas under consistency `all`
+  (`lib/collection/src/shards/resolve.rs:35-44`, verified), so a zero proves nothing about every replica. A
+  multi-replica deployment needs a per-replica inventory before the switch. Upgrade signal: a `replication_factor`
+  above 1 in `collection_setup_puts`.
+- **Gates.** `memory_id_backfill_patches_only_registered_points` (`adapters::tests::rebuild`, real PG and Qdrant)
+  and `memory_id_backfill_body_is_identity_only_by_filter` (`adapters::qdrant`).
+- **Left for 40d-2b.** The receipt the switch consumes, and the migration that flips the policy row.
+
 ## Slices
 
 | slice | scope | L-4 |
@@ -515,7 +549,8 @@ Two facts frame every decision:
 | 40d-1a | Pure `ProjectionPlan` + `NoteChunksV1` + profile hash + SQL count function + Rust↔SQL parity test. Not wired. Zero-re-embed gates for legacy cards. | declared |
 | 40d-1b | Registry identity v2 + UNIQUE key migration; worker per expected point with vector-key dedupe; source seal; slot ledger; DONE completion check; rebuild per vector key. Target projections admit only the legacy profile, so behaviour is unchanged. | declared |
 | 40d-1c | Qdrant `memory_id` payload + keyword index; grouped recall behind a flag; envelope count fields. | declared |
-| 40d-2 | In place on the serving projection (D-I): a `set_payload` backfill of `memory_id` on every live point (no vector, no embed); enable `NoteChunksV1` through the frozen profile policy; re-project only notes over the legacy capacity (lifecycle tickets on their Evidence); enable grouped recall; length-stratified recall eval. | lifted when every long note's slots are settled |
+| 40d-2a | The `memory_id` `set_payload` backfill driven by the PG registry (no vector, no embed), and its CLI (`projection backfill-memory-id`). Shipped (above). | declared |
+| 40d-2 | In place on the serving projection (D-I), after 40d-2a's backfill: enable `NoteChunksV1` through the frozen profile policy; re-project only notes over the legacy capacity (lifecycle tickets on their Evidence); enable grouped recall; length-stratified recall eval. | lifted when every long note's slots are settled |
 
 ## Gates (each shown red once on CI before it counts)
 
@@ -529,6 +564,8 @@ Two facts frame every decision:
 - **Verification.** `equal_counts_do_not_prove_manifest_equality`.
 - **Fingerprint.** `legacy_fingerprint_golden_unchanged`.
 - **Recall.** `one_long_note_cannot_monopolize_candidates` and `group_identity_is_verified_against_registry`.
+- **Backfill.** `memory_id_backfill_patches_only_registered_points` and
+  `memory_id_backfill_body_is_identity_only_by_filter`.
 - **Embedding calls.** `embedding_batches_respect_provider_limit` and `retry_reuses_committed_batch_vectors`.
 - **Source seal.** `source_seal_detects_cross_chunk_secret`, `source_seal_cannot_be_disabled_by_note_text` and
   `secret_in_last_chunk_blocks_first_batch`.
