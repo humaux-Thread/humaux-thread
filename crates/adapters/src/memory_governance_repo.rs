@@ -1,6 +1,6 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
@@ -61,6 +61,7 @@ use crate::{
     confirm_token_repo::{self, ConfirmationClaim},
     context_repo,
     distill_repo::{self, LoadedEvidence, NewMemory},
+    memory_repo,
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberCommand, RememberError},
@@ -1763,7 +1764,7 @@ pub async fn correct_atomically(
         payload: request.content.clone(),
         rls_user_id: auth.user_id().map_or_else(Uuid::nil, |u| u.0),
     };
-    let new_memory_id = distill_repo::insert_memory(
+    let new_memory_id = memory_repo::insert_memory_in_txn(
         &mut txn,
         auth.tenant_id().0,
         &loaded,

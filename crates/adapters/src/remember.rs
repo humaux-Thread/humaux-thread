@@ -1,8 +1,8 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.private_reasoning_domains, ops.commit_seq_seq] w=[ops.outbox, private.events,
-//!   private.evidence_objects, private.ingest_tickets, projection.stream_checkpoints, projection.stream_log]];
-//!   env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
+//!   private.ingest_tickets, projection.stream_checkpoints, projection.stream_log]];
+//!   env=[]; modules=[adapters::affect_repo, adapters::evidence_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
 //!   adapters::subject_repo, domain::affect, domain::error, domain::evidence, domain::ids, domain::subject,
 //!   projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
@@ -35,6 +35,7 @@ use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 
 use crate::affect_repo::{self, AffectInput, AffectParent};
+use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
 use crate::retrieve::{self, TokenClaims};
@@ -103,27 +104,6 @@ impl std::fmt::Display for RememberError {
 }
 
 impl std::error::Error for RememberError {}
-
-/// `origin_class` DB wire form — literally the domain enum's variant name (§8.7's 9-variant
-/// closed set doubles as `private.evidence_objects.origin_class`'s `CHECK (... IN (...))`
-/// list). Kept local to this module rather than added as an `EvidenceOriginClass::as_db_str`
-/// method on the domain type: that type's own doc says verbatim-string pinning "is deferred to
-/// the §78.2 DB↔Rust contract-test card, not covered here" (T1.6) — this module is that card's
-/// first real consumer, and the contract test below pins this mapping against the live CHECK
-/// list, satisfying §78.2 without editing a file this task does not own.
-fn origin_class_db_str(c: EvidenceOriginClass) -> &'static str {
-    match c {
-        EvidenceOriginClass::DirectUserInput => "DirectUserInput",
-        EvidenceOriginClass::UserConfirmed => "UserConfirmed",
-        EvidenceOriginClass::TenantAdmin => "TenantAdmin",
-        EvidenceOriginClass::AuthenticatedAgent => "AuthenticatedAgent",
-        EvidenceOriginClass::TrustedConnector => "TrustedConnector",
-        EvidenceOriginClass::ToolResult => "ToolResult",
-        EvidenceOriginClass::UploadedArtifact => "UploadedArtifact",
-        EvidenceOriginClass::ExternalContent => "ExternalContent",
-        EvidenceOriginClass::SystemMigration => "SystemMigration",
-    }
-}
 
 /// `remember()` input — already-resolved/validated fields for `private.evidence_objects` +
 /// `private.events`, one call = one `evidence_kind = 'EVENT'` row pair (the only subtype this
@@ -270,39 +250,31 @@ pub(crate) async fn next_commit_seq(
         .await?)
 }
 
-/// `create_evidence_object` — one `private.evidence_objects` row, `evidence_kind = 'EVENT'`
-/// fixed (see [`RememberCommand`]'s doc). `evidence_id` / `created_at` are the table's own
-/// `DEFAULT uuidv7()` / `DEFAULT now()`, never bound here — same reasoning `begin_batch` gives
-/// for asking Postgres for `uuidv7()` rather than minting client-side.
+/// `create_evidence_object` — maps `cmd` onto M07's Evidence door
+/// ([`evidence_repo::insert_evidence_in_txn`], the workspace's single `INSERT INTO
+/// private.evidence_objects`); `evidence_kind = 'EVENT'` is fixed there (see
+/// [`RememberCommand`]'s doc). `evidence_id` / `created_at` stay the table's own defaults.
 pub(crate) async fn create_evidence_object(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     cmd: &RememberCommand,
 ) -> Result<Uuid, RememberError> {
-    let row = sqlx::query(
-        "INSERT INTO private.evidence_objects \
-           (tenant_id, evidence_kind, payload_sha256, data_class, origin_class, \
-            origin_principal_id, origin_connector_id, visibility_class, visibility_user_id, \
-            visibility_workspace_id, reasoning_domain_id, occurred_at) \
-         VALUES ($1, 'EVENT', decode($2, 'hex'), $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-         RETURNING evidence_id",
+    Ok(evidence_repo::insert_evidence_in_txn(
+        txn,
+        &NewEvidence {
+            tenant_id: cmd.tenant_id,
+            payload_sha256: &cmd.payload_sha256,
+            data_class: &cmd.data_class,
+            origin_class: cmd.origin_class,
+            origin_principal_id: cmd.origin_principal_id,
+            origin_connector_id: cmd.origin_connector_id,
+            visibility_class: &cmd.visibility_class,
+            visibility_user_id: cmd.visibility_user_id,
+            visibility_workspace_id: cmd.visibility_workspace_id,
+            reasoning_domain_id: cmd.reasoning_domain_id,
+            occurred_at: OccurredAt::At(cmd.occurred_at),
+        },
     )
-    .bind(cmd.tenant_id)
-    // `decode(hex, 'hex')` round-trips `EvidencePayloadSha256::to_hex()` back into `bytea` —
-    // the type has no raw-byte accessor by design (§48.0①'s doc only exposes `to_hex()`), so
-    // binding through its one public projection is the only option, not a workaround.
-    .bind(cmd.payload_sha256.to_hex())
-    .bind(&cmd.data_class)
-    .bind(origin_class_db_str(cmd.origin_class))
-    .bind(cmd.origin_principal_id)
-    .bind(cmd.origin_connector_id)
-    .bind(&cmd.visibility_class)
-    .bind(cmd.visibility_user_id)
-    .bind(cmd.visibility_workspace_id)
-    .bind(cmd.reasoning_domain_id)
-    .bind(cmd.occurred_at)
-    .fetch_one(&mut **txn)
-    .await?;
-    Ok(row.try_get("evidence_id")?)
+    .await?)
 }
 
 /// The token's optional workspace is a stream-routing binding, not Evidence visibility. A
@@ -692,56 +664,4 @@ pub async fn remember(
     let pending = remember_in_txn(&mut txn, cmd).await?;
     txn.commit().await?;
     Ok(pending.into_accepted())
-}
-
-/// §78.2 "DB enum 与 Rust enum 走 contract test 对账", scoped to [`origin_class_db_str`] (see
-/// its doc for why the mapping lives here rather than on the domain type). Runs against the
-/// real migration file text, no live DB needed.
-#[cfg(test)]
-mod contract_tests {
-    use super::*;
-
-    const MIGRATION_SQL: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations/0004_private_evidence_memory.sql"
-    ));
-
-    fn origin_class_check_values() -> Vec<String> {
-        let needle = "origin_class IN (";
-        let start = MIGRATION_SQL
-            .find(needle)
-            .expect("migration must define an origin_class CHECK (origin_class IN (...))")
-            + needle.len();
-        let close = MIGRATION_SQL[start..]
-            .find(')')
-            .expect("unterminated origin_class CHECK list")
-            + start;
-        MIGRATION_SQL[start..close]
-            .split(',')
-            .map(|s| s.trim().trim_matches('\'').to_string())
-            .collect()
-    }
-
-    #[test]
-    fn origin_class_db_str_matches_check_constraint_for_every_variant() {
-        let db = origin_class_check_values();
-        let rust: Vec<String> = [
-            EvidenceOriginClass::DirectUserInput,
-            EvidenceOriginClass::UserConfirmed,
-            EvidenceOriginClass::TenantAdmin,
-            EvidenceOriginClass::AuthenticatedAgent,
-            EvidenceOriginClass::TrustedConnector,
-            EvidenceOriginClass::ToolResult,
-            EvidenceOriginClass::UploadedArtifact,
-            EvidenceOriginClass::ExternalContent,
-            EvidenceOriginClass::SystemMigration,
-        ]
-        .into_iter()
-        .map(|c| origin_class_db_str(c).to_string())
-        .collect();
-        assert_eq!(
-            db, rust,
-            "origin_class_db_str must list every CHECK value, in DB order"
-        );
-    }
 }

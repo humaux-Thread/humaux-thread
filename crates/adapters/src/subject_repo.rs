@@ -5,14 +5,14 @@
 //!   r=[private.memory_subjects] w=[private.evidence_subjects, private.subject_keys, private.subject_roles,
 //!   private.subjects] x=[private.link_memory_subjects, private.link_rollup_subjects]]; env=[];
 //!   modules=[adapters::confirm_token_repo, adapters::postgres, domain::error, domain::identity, domain::subject]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::remember, gateway::mcp_application, gateway::memory, tests]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::remember, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [the only Rust caller of the SQL subject-link hook; declarations commit with the write they belong to
 //!   or not at all; resolution never calls a model and an unknown id/key is InvalidInput]
 //! Spec: Baseline §6.1.3; ADR-0028
 //!
 //! The hook has exactly one implementation (SQL) and this module is its only Rust caller. The
-//! production memory writers all reach it through [`crate::distill_repo::insert_memory`] (the
-//! single `INSERT INTO private.memory_records` — Distill hop, `memory.confirm`, `memory.correct`)
+//! production memory writers all reach it through [`crate::memory_repo::insert_memory_in_txn`] (the
+//! single `INSERT INTO private.memory_records` — Distill hop, `memory.confirm`, `memory.correct`, `memory.note_put`)
 //! and [`crate::consolidate_repo::publish_rollup`] (rollups). A `remember.put` declaration is
 //! resolved and recorded on the Evidence inside [`crate::remember::remember_in_txn`]
 //! ([`resolve_declaration_in_txn`] + [`declare_evidence_in_txn`]); `memory.confirm` /
@@ -138,7 +138,7 @@ fn split(resolved: &[ResolvedSubject]) -> (Vec<Uuid>, Vec<&'static str>) {
 
 /// The hook: `private.link_memory_subjects` for one memory in the caller's transaction, with the
 /// caller's already-resolved explicit links (empty ⇒ rules 1/2 skipped, rule 3 still runs).
-/// Returns the number of new link rows. Called by `distill_repo::insert_memory` for every memory.
+/// Returns the number of new link rows. Called by `memory_repo::insert_memory_in_txn` for every memory.
 pub async fn link_memory_in_txn(
     txn: &mut Txn<'_>,
     tenant_id: Uuid,

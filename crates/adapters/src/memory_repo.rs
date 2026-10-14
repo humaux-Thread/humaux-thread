@@ -1,0 +1,83 @@
+//! `adapters::memory_repo` — the sole `INSERT INTO private.memory_records` door (M07 D9, gate G-M07-1): one authorized Memory plus its PRIMARY
+//!   `memory_evidence` link, written in the caller's transaction.
+//! Depends-on: crates=[hex, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::distill_repo, adapters::subject_repo]
+//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo]
+//! Invariants: [every non-test Memory INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
+//!   Memory row and its PRIMARY `memory_evidence` link are written together, because 0004's deferred `memory_records_requires_evidence` trigger
+//!   needs both by COMMIT; visibility is the Evidence's own three columns verbatim and a Memory's authority class is the caller's
+//!   `AuthorizedAuthority`, never the raw candidate class; the deterministic subject resolve hook runs here exactly once per Memory;
+//!   the statement runs inside the caller's transaction and never commits]
+//! Spec: Baseline §8.6; §6.1.3; §10.1; ADR-0016; ADR-0028; ADR-0067
+//!
+//! [`insert_memory_in_txn`] is the body that `distill_repo::insert_memory` used to hold (ADR-0016 D4 visibility copy, ADR-0067 D-J note
+//! lineage, ADR-0028 subject hook), moved here unchanged so a change to the Memory model edits an M07 file, not the Distill hop's.
+//! Callers are the Distill confirm path, `memory.correct` and `memory.note_put`; the private worker's write leg reaches it through
+//! `distill_repo::insert_memory`.
+//!
+//! ponytail: [`NewMemory`] and [`LoadedEvidence`] are still defined in `distill_repo` (this module imports them from there), because
+//! `bins/private-worker` names them at that path; the card that moves them here also edits the bin, and then this import goes away.
+
+use sqlx::types::Uuid;
+
+use crate::distill_repo::{LoadedEvidence, NewMemory, authority_class_db_str, memory_type_db_str};
+
+/// `memory_records` + its PRIMARY `memory_evidence` link (ordinal 0) in the caller's
+/// transaction (0004's deferred `memory_records_requires_evidence` trigger needs both by
+/// COMMIT). Visibility is the Evidence's own three columns verbatim (ADR-0016 D4).
+/// Grounding: the link is `IMMUTABLE` against the Evidence's `payload_sha256` — an EVENT
+/// payload is content-addressed and never rewritten (§8.1), so the recorded version is that
+/// digest's hex (§8.8: IMMUTABLE edges are excluded from the recheck derivation).
+///
+/// §6.1.3 / ADR-0028: this is the workspace's single `INSERT INTO private.memory_records`
+/// (Distill hop, `memory.confirm`, `memory.correct`, `memory.note_put` all route here), so the
+/// deterministic subject resolve hook runs here once — after the PRIMARY link exists, because
+/// the hook reads it — and no sibling writer can forget it. Explicit links (rules 1/2) are the
+/// caller's; the hook adds rule 3 (Evidence declaration / correction predecessor) and
+/// byte-span mentions.
+///
+/// # Errors
+/// Any `sqlx::Error` from the three statements; the caller owns the transaction and its mapping.
+pub async fn insert_memory_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    evidence: &LoadedEvidence,
+    memory: &NewMemory<'_>,
+) -> Result<Uuid, sqlx::Error> {
+    // ADR-0067 D-J: the id is drawn once (the column's own uuidv7()) so a fresh note's note_id can equal it in the same
+    // statement; `$11` names the note a new version joins.
+    let memory_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO private.memory_records \
+           (memory_id, tenant_id, memory_type, content, visibility_class, visibility_user_id, \
+            visibility_workspace_id, authority_class, confidence, status, asserted_at, occurred_at, \
+            note_kind, note_id) \
+         SELECT g.id, $1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9, $10, \
+                CASE WHEN $10::text IS NULL THEN NULL ELSE COALESCE($11::uuid, g.id) END \
+           FROM (SELECT uuidv7() AS id) AS g \
+         RETURNING memory_id",
+    )
+    .bind(tenant_id)
+    .bind(memory_type_db_str(memory.memory_type))
+    .bind(memory.content)
+    .bind(&evidence.visibility_class)
+    .bind(evidence.visibility_user_id)
+    .bind(evidence.visibility_workspace_id)
+    .bind(authority_class_db_str(memory.class))
+    .bind(memory.confidence)
+    .bind(evidence.occurred_at)
+    .bind(memory.note_kind.map(|kind| kind.wire()))
+    .bind(memory.note_id)
+    .fetch_one(&mut **txn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO private.memory_evidence \
+           (memory_id, evidence_id, role, ordinal, grounding_mode, recorded_version) \
+         VALUES ($1, $2, 'PRIMARY', 0, 'IMMUTABLE', $3)",
+    )
+    .bind(memory_id)
+    .bind(evidence.evidence_id)
+    .bind(hex::encode(&evidence.payload_sha256))
+    .execute(&mut **txn)
+    .await?;
+    crate::subject_repo::link_memory_in_txn(txn, tenant_id, memory_id, &[]).await?;
+    Ok(memory_id)
+}
