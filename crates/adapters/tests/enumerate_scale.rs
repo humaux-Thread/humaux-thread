@@ -410,3 +410,139 @@ fn exp_35b_iii_evidence_visibility_variants() {
     drop(admin);
     drop(db);
 }
+
+/// One concurrent scenario: `bulk` workers loop the statement over all ids, the rest over a rotating 50-id slice, for
+/// `secs` seconds, each on its own `role_gateway` connection with JIT off. Returns (point latencies, bulk latencies).
+fn exp_load(
+    dsn: &str,
+    tenant: Uuid,
+    all: &[Uuid],
+    stmt: &'static str,
+    workers: usize,
+    bulk: usize,
+    secs: u64,
+) -> (Vec<f64>, Vec<f64>) {
+    let all = std::sync::Arc::new(all.to_vec());
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let handles: Vec<_> = (0..workers)
+        .map(|w| {
+            let dsn = dsn_as_role(dsn, "role_gateway");
+            let all = std::sync::Arc::clone(&all);
+            std::thread::spawn(move || {
+                // dep: PostgreSQL(role_gateway) — one concurrent experiment worker
+                let mut c = Client::connect(&dsn, NoTls).expect("worker connection");
+                c.batch_execute(&format!(
+                    "SET jit = off; SET humaux.tenant_id = '{tenant}'; SET humaux.user_id = '{}'",
+                    Uuid::nil()
+                ))
+                .expect("worker GUCs");
+                let prepared = c.prepare(stmt).expect("prepare");
+                let (mut point, mut big) = (Vec::new(), Vec::new());
+                let mut i = w * 997;
+                while Instant::now() < deadline {
+                    let start = Instant::now();
+                    if w < bulk {
+                        c.query(&prepared, &[&tenant, &*all]).expect("bulk");
+                        big.push(ms(start));
+                    } else {
+                        let at = (i * 50) % (all.len() - 50);
+                        let slice: Vec<Uuid> = all[at..at + 50].to_vec();
+                        c.query(&prepared, &[&tenant, &slice]).expect("point");
+                        point.push(ms(start));
+                        i += 1;
+                    }
+                }
+                (point, big)
+            })
+        })
+        .collect();
+    let mut point = Vec::new();
+    let mut big = Vec::new();
+    for h in handles {
+        let (p, b) = h.join().expect("worker");
+        point.extend(p);
+        big.extend(b);
+    }
+    (point, big)
+}
+
+fn exp_report(name: &str, scenario: &str, secs: u64, samples: &mut Vec<f64>) {
+    if samples.is_empty() {
+        println!("EXPC variant={name} scenario={scenario} n=0");
+        return;
+    }
+    let n = samples.len();
+    println!(
+        "EXPC variant={name} scenario={scenario} n={n} per_s={:.0} p50_ms={:.2} p95_ms={:.2} p99_ms={:.2}",
+        n as f64 / secs as f64,
+        pct(samples, 0.50),
+        pct(samples, 0.95),
+        pct(samples, 0.99)
+    );
+}
+
+/// EXPERIMENT (card 35b-iii, throwaway branch), concurrency stage: each policy variant is committed on the throwaway
+/// database, then 16 `role_gateway` sessions (the §67.2 admission C) run (S1) 50-id reads only and (S2) 2 bulk 50k
+/// reads beside 14 50-id readers, 8 s each; the policy is restored between variants.
+#[test]
+#[ignore = "experiment"]
+fn exp_35b_iii_evidence_visibility_concurrency() {
+    const STMT: &str = "SELECT me.memory_id, eo.evidence_id AS visible_evidence_id, eo.visibility_class, \
+                eo.visibility_user_id, eo.visibility_workspace_id \
+         FROM private.memory_evidence me \
+         LEFT JOIN private.evidence_objects eo \
+           ON eo.evidence_id = me.evidence_id AND eo.tenant_id = $1 \
+         WHERE me.memory_id = ANY($2)";
+    const SECS: u64 = 8;
+    let db = throwaway_db::create("c35_expc").expect("throwaway db");
+    let dsn = db.dsn();
+    // dep: PostgreSQL(owner) — the experiment's owner connection
+    let mut admin = Client::connect(&dsn, NoTls).expect("owner connection");
+    let (tenant, _workspace) = seed(&mut admin);
+    let all: Vec<Uuid> = admin
+        .query(
+            "SELECT memory_id FROM private.memory_records WHERE tenant_id = $1",
+            &[&tenant],
+        )
+        .expect("ids")
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    let original: String = admin
+        .query_one(
+            "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy \
+              WHERE polname = 'memory_evidence_tenant' AND polrelid = 'private.memory_evidence'::regclass",
+            &[],
+        )
+        .expect("original policy")
+        .get(0);
+    let variants: [(&str, String); 3] = [
+        ("V0_current", original.clone()),
+        (
+            "V1_uncorrelated_in",
+            "memory_id IN (SELECT mr.memory_id FROM private.memory_records mr \
+               WHERE mr.tenant_id = current_setting('humaux.tenant_id', true)::uuid)"
+                .to_owned(),
+        ),
+        ("V2_no_sublink_bound", "true".to_owned()),
+    ];
+    for (name, using) in &variants {
+        admin
+            .batch_execute(&format!(
+                "ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING ({using})"
+            ))
+            .expect("install variant");
+        let (mut point, _) = exp_load(&dsn, tenant, &all, STMT, 16, 0, SECS);
+        exp_report(name, "S1_16x50ids", SECS, &mut point);
+        let (mut point, mut big) = exp_load(&dsn, tenant, &all, STMT, 16, 2, SECS);
+        exp_report(name, "S2_point_beside_bulk", SECS, &mut point);
+        exp_report(name, "S2_bulk_50k", SECS, &mut big);
+    }
+    admin
+        .batch_execute(&format!(
+            "ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING ({original})"
+        ))
+        .expect("restore");
+    drop(admin);
+    drop(db);
+}
