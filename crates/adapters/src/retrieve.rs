@@ -3,7 +3,8 @@
 //!   (T3.8).
 //! Depends-on: crates=[hex, hmac, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
-//!   private.memory_records, projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log]];
+//!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
+//!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
 //!   modules=[adapters::context_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::serving_repo, adapters::stream_repo, domain::affect, domain::error,
@@ -36,7 +37,7 @@
 //! Evidence/stream write and returns the result only after commit, so every returned token is
 //! accepted by [`recall_with_overlay`] without a compatibility parser.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use sqlx::Row;
 use sqlx::types::Uuid;
@@ -1171,9 +1172,33 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
         &point_ids,
     )
     .await?;
+    // ADR-0068 D-E: a grouped query's group id is an unverified payload copy; the registry's resolution of the point
+    // is the identity. A mismatch drops that point only (its group may still have a legitimate chunk elsewhere) and is
+    // logged as a projection inconsistency, never accepted under either Memory.
+    let groups: HashMap<Uuid, Uuid> = semantic
+        .iter()
+        .filter_map(
+            |candidate| match (candidate.point_id, candidate.memory_id) {
+                (PointId::Uuid(point), Some(group)) => Some((point, group)),
+                _ => None,
+            },
+        )
+        .collect();
     let mut seen = HashSet::new();
     serving.memory_ids = resolved
         .into_iter()
+        .filter(
+            |candidate| match groups.get(&candidate.point_id.as_uuid()) {
+                Some(group) if *group != candidate.memory_id.0 => {
+                    eprintln!(
+                        "humaux-retrieve: projection_inconsistency group_memory_mismatch point={}",
+                        candidate.point_id.as_uuid()
+                    );
+                    false
+                }
+                _ => true,
+            },
+        )
         .map(|candidate| candidate.memory_id.0)
         .filter(|memory_id| seen.insert(*memory_id))
         .collect();
@@ -1428,6 +1453,25 @@ async fn count_of(
     )
     .await
     .ok()
+}
+
+/// ADR-0068 D-E / D-I: whether recall over `key`'s projection groups its dense candidates by Memory. It is the same
+/// migration-written row that makes the worker chunk long notes (`projection.card_profile_policies`): a projection
+/// whose policy names a chunk profile has several points per note, so its recall must group; with no row or a NULL
+/// hash every Memory is one point and the point query is unchanged. One switch, so chunking and grouping can never
+/// be enabled apart (40d-2 flips it only after the `memory_id` backfill gate).
+pub async fn grouped_recall(pool: &RuntimeDbPool, key: &StreamKey) -> Result<bool, RetrieveError> {
+    // dep: PostgreSQL(role_gateway) — the projection's note chunk policy row (0241 grants SELECT)
+    let grouped: Option<bool> = sqlx::query_scalar(
+        "SELECT note_chunk_profile_hash IS NOT NULL FROM projection.card_profile_policies \
+          WHERE domain = $1 AND projection_kind = $2 AND projection_version = $3",
+    )
+    .bind(&key.domain)
+    .bind(&key.projection_kind)
+    .bind(&key.projection_version)
+    .fetch_optional(pool.pool())
+    .await?;
+    Ok(grouped.unwrap_or(false))
 }
 
 /// Every `TOMBSTONED` `stream_seq` of one stream — §37's overlay input, read under the caller's
@@ -1905,6 +1949,7 @@ mod contract_tests {
             &[crate::qdrant::DenseCandidate {
                 point_id: crate::qdrant::PointId::Uuid(Uuid::from_u128(1)),
                 score: 0.9,
+                memory_id: None,
             }],
             &envelope,
         );

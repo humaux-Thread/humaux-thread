@@ -448,6 +448,34 @@ Two facts frame every decision:
   re-projection) writes it, so a rebuild verify of such a stream reports a payload difference on every such point.
   Recall does not read the field yet: grouped recall (40d-1c-ii) is gated on the backfill.
 
+**40d-1c-ii as shipped (grouped recall, switched by the policy).**
+
+- **Switch (decision).** Recall groups by Memory exactly when the serving projection's `card_profile_policies` row
+  names a chunk profile (`retrieve::grouped_recall`; migration 0241 grants `role_gateway` SELECT). No second flag:
+  chunking without grouping lets one note fill the candidate budget, and grouping without chunking only adds a
+  failure mode (a point without `memory_id` is silently left out of every group). One row flips both, in 40d-2,
+  after the backfill gate. A missing row or a NULL hash keeps today's point query byte for byte.
+- **Query.** `qdrant::query_dense_groups` posts the point query body plus `group_by: memory_id`, `group_size: 1` to
+  `points/query/groups`; `limit` (still `cand_k`) now counts Memories. Qdrant's group search is bounded and best
+  effort (research batch 12: at most five discover and five fill rounds of `limit × group_size` points; the
+  representative is the best chunk it retrieved, not necessarily the Memory's best), so fewer groups than `limit`
+  never proves the universe is exhausted.
+- **Parser.** `parse_group_candidates` keeps Qdrant's order and tags each candidate with its group. More groups than
+  `limit`, a group without exactly one hit, a non-uuid group id, or a repeated group or point is an unexpected
+  shape that fails the call; nothing is truncated or partially accepted.
+- **Verification.** `materialize_private_read_serving_in_txn` drops a grouped hit whose group id is not the Memory
+  the registry resolves its point to, logging `projection_inconsistency group_memory_mismatch`; the point is never
+  re-labelled and the group is not excluded (its legitimate chunk may come back on a later query).
+- **Gates.** `one_long_note_cannot_monopolize_candidates` (`adapters::tests::qdrant_live`, real Qdrant: six points
+  of one Memory and three single-point Memories; the point query returns one Memory, the grouped query four),
+  `group_identity_is_verified_against_registry` (`adapters::tests::private_projection_registry`),
+  `grouped_query_body_groups_by_memory_one_hit_each` and `group_response_is_parsed_strictly` (`adapters::qdrant`).
+- **Left for 40d-1c-iii.** The bounded refill (two exclusion sets: Memories done, by `must_not match memory_id any`,
+  and points rejected, by `must_not has_id`; total budget `cand_k`, at most three calls, a deadline; an oversized
+  `match any` fails loudly), the D-E count fields with a `truncated` reason, and a pinned "fewer groups than exist"
+  test (research batch 12's L=6 counterexample) so Qdrant's bounded group search is documented by CI, not assumed.
+  Until then `candidate_count` is the number of groups returned in grouped mode.
+
 ## Slices
 
 | slice | scope | L-4 |

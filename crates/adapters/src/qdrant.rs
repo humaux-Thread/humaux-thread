@@ -1252,6 +1252,10 @@ fn validate_collection(collection: &str) -> Result<(), QdrantTransportError> {
 pub struct DenseCandidate {
     pub point_id: PointId,
     pub score: f64,
+    /// ADR-0068 D-E: the group a grouped query returned this point for (its `memory_id` payload), `None` from a
+    /// point query. Never an identity: the PG registry's resolution of `point_id` must equal it, or the point is
+    /// dropped as a projection inconsistency (`retrieve::materialize_private_read_serving_in_txn`).
+    pub memory_id: Option<Uuid>,
 }
 
 /// Exact vector-space identity required by every dense query. Keeping the two versions in one
@@ -1389,6 +1393,18 @@ impl DenseQuery {
     }
 }
 
+/// ADR-0068 D-E: [`dense_query_body`] grouped by [`MEMORY_ID_FIELD`], one hit per group, so `limit` counts Memories
+/// and one long note cannot fill the candidate budget with its chunks. Qdrant's group search is bounded and
+/// best-effort: fewer groups than `limit` never proves the universe is exhausted, and a point without the field is
+/// silently left out (40d-2 enables grouping only after every point carries it).
+pub fn dense_group_query_body(query: &DenseQuery) -> Value {
+    let mut body = dense_query_body(query);
+    let object = body.as_object_mut().expect("dense query body is an object");
+    object.insert("group_by".to_owned(), json!(MEMORY_ID_FIELD));
+    object.insert("group_size".to_owned(), json!(1));
+    body
+}
+
 /// Qdrant's documented points/query dense-vector shape.
 /// Payloads and vectors are never returned: this is candidate discovery only.
 pub fn dense_query_body(query: &DenseQuery) -> Value {
@@ -1455,9 +1471,93 @@ fn parse_dense_candidates(
                     "dense query response contains duplicate point id".to_owned(),
                 ));
             }
-            Ok(DenseCandidate { point_id, score })
+            Ok(DenseCandidate {
+                point_id,
+                score,
+                memory_id: None,
+            })
         })
         .collect()
+}
+
+/// ADR-0068 D-E: a `points/query/groups` response, one hit per group, in Qdrant's order (best group first). Each
+/// group id must be a uuid string (the `memory_id` payload contract); more groups than `limit`, a group without
+/// exactly one hit, a repeated group or point, or a non-finite score is an unexpected shape, never a partial result.
+fn parse_group_candidates(
+    result: &Value,
+    limit: u32,
+) -> Result<Vec<DenseCandidate>, QdrantTransportError> {
+    let shape = |what: &str| QdrantTransportError::UnexpectedResponseShape(what.to_owned());
+    let groups = result
+        .get("result")
+        .and_then(|value| value.get("groups"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| shape("missing result.groups for grouped dense query"))?;
+    if groups.len() > limit as usize {
+        return Err(shape(
+            "grouped dense query response exceeds requested limit",
+        ));
+    }
+    let mut memories = std::collections::HashSet::new();
+    let mut points = std::collections::HashSet::new();
+    groups
+        .iter()
+        .map(|group| {
+            let memory_id = group
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .ok_or_else(|| shape("dense group id is not a memory uuid"))?;
+            let [hit] = group
+                .get("hits")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            else {
+                return Err(shape("dense group does not hold exactly one hit"));
+            };
+            let point_id = hit
+                .get("id")
+                .and_then(point_id_from_json)
+                .ok_or_else(|| shape("dense group hit has invalid id"))?;
+            let score = hit
+                .get("score")
+                .and_then(Value::as_f64)
+                .filter(|score| score.is_finite())
+                .ok_or_else(|| shape("dense group hit has invalid score"))?;
+            if !memories.insert(memory_id) || !points.insert(point_id) {
+                return Err(shape("grouped dense query repeats a group or a point"));
+            }
+            Ok(DenseCandidate {
+                point_id,
+                score,
+                memory_id: Some(memory_id),
+            })
+        })
+        .collect()
+}
+
+/// ADR-0068 D-E: [`query_dense`] grouped by Memory ([`dense_group_query_body`]); `query.limit` is the number of
+/// groups. Same permit, HA read control and candidate-only contract as [`query_dense`].
+pub async fn query_dense_groups(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    query: &DenseQuery,
+) -> Result<Vec<DenseCandidate>, QdrantTransportError> {
+    let path = format!("/collections/{}/points/query/groups", query.collection);
+    let path = match query.ha_profile.read_control() {
+        Some(control) => qdrant_path(path, &[control]),
+        None => path,
+    };
+    let result = call(
+        transport,
+        permit,
+        IntraCellMethod::Post,
+        path,
+        Some(dense_group_query_body(query)),
+    )
+    .await?;
+    parse_group_candidates(&result, query.limit)
 }
 
 /// Executes one permit-bound dense query. This never substitutes scroll for nearest-neighbour
@@ -1913,6 +2013,64 @@ mod lifecycle_prefilter_tests {
         let body = upsert_point_body(PointId::Num(1), &payload().into_indexable().expect("idx"));
         assert_eq!(body["payload"][ARCHIVED_FIELD], json!(false));
         assert_eq!(body["payload"]["status"], "active");
+    }
+
+    /// ADR-0068 D-E: the grouped body is the point body plus `group_by: memory_id` and `group_size: 1`; `limit` (now a
+    /// group count) and the filter are unchanged. Fault: drop either key ⇒ red.
+    #[test]
+    fn grouped_query_body_groups_by_memory_one_hit_each() {
+        let query = query();
+        let points = dense_query_body(&query);
+        let groups = dense_group_query_body(&query);
+        assert_eq!(groups["group_by"], json!(MEMORY_ID_FIELD));
+        assert_eq!(groups["group_size"], json!(1));
+        assert_eq!(groups["limit"], points["limit"]);
+        assert_eq!(groups["filter"], points["filter"]);
+    }
+
+    /// ADR-0068 D-E: the group parser keeps Qdrant's order and tags each hit with its group, and refuses — never
+    /// truncates — more groups than asked, a group without exactly one hit, a non-uuid group id, a repeated group or a
+    /// repeated point.
+    /// Fault: accept any of them ⇒ red.
+    #[test]
+    fn group_response_is_parsed_strictly() {
+        let (m1, m2) = (Uuid::now_v7(), Uuid::now_v7());
+        let (p1, p2) = (Uuid::now_v7(), Uuid::now_v7());
+        let group = |id: Value, hits: Value| json!({ "id": id, "hits": hits });
+        let hit = |id: Uuid, score: f64| json!({ "id": id.to_string(), "score": score });
+        let ok = json!({ "result": { "groups": [
+            group(json!(m1.to_string()), json!([hit(p1, 0.9)])),
+            group(json!(m2.to_string()), json!([hit(p2, 0.5)])),
+        ] } });
+        let parsed = parse_group_candidates(&ok, 2).expect("well-formed groups");
+        assert_eq!(
+            parsed
+                .iter()
+                .map(|c| (c.point_id, c.memory_id))
+                .collect::<Vec<_>>(),
+            vec![(PointId::Uuid(p1), Some(m1)), (PointId::Uuid(p2), Some(m2))]
+        );
+        assert!(
+            parse_group_candidates(&ok, 1).is_err(),
+            "more groups than limit"
+        );
+        for bad in [
+            json!({ "result": { "groups": [group(json!(m1.to_string()), json!([]))] } }),
+            json!({ "result": { "groups": [group(json!(m1.to_string()), json!([hit(p1, 0.9), hit(p2, 0.8)]))] } }),
+            json!({ "result": { "groups": [group(json!(7), json!([hit(p1, 0.9)]))] } }),
+            json!({ "result": { "groups": [group(json!("not-a-uuid"), json!([hit(p1, 0.9)]))] } }),
+            json!({ "result": { "groups": [
+                group(json!(m1.to_string()), json!([hit(p1, 0.9)])),
+                group(json!(m1.to_string()), json!([hit(p2, 0.5)])),
+            ] } }),
+            json!({ "result": { "groups": [
+                group(json!(m1.to_string()), json!([hit(p1, 0.9)])),
+                group(json!(m2.to_string()), json!([hit(p1, 0.5)])),
+            ] } }),
+            json!({ "result": { "points": [] } }),
+        ] {
+            assert!(parse_group_candidates(&bad, 5).is_err(), "{bad}");
+        }
     }
 
     /// ADR-0068 gate `every_point_names_its_memory` (D-E): a legacy and a chunk point both carry their Memory as the

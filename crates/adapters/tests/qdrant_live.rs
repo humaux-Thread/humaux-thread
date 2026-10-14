@@ -26,10 +26,10 @@ use std::time::Duration;
 use humaux_adapters::qdrant::{
     DenseQuery, DenseQueryVersions, Distance, IndexablePayload, PointId, QdrantOperation,
     QdrantPointPayload, ShardingMethod, TenantPlacementRow, VisibleCountFilter, count,
-    create_collection_body, ha_profile_for, query_dense, scroll_by_ids, subject_index_body,
-    tenant_index_body, upsert, verify_visible_via_transport,
+    create_collection_body, ha_profile_for, memory_id_index_body, query_dense, query_dense_groups,
+    scroll_by_ids, subject_index_body, tenant_index_body, upsert, verify_visible_via_transport,
 };
-use humaux_domain::authority::{AuthorityClass, AuthorityStatus};
+use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId, VisibilityClass};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
@@ -625,6 +625,185 @@ async fn dense_query_never_returns_an_archived_or_non_active_point() {
             got, want,
             "only the flagless legacy points may be candidates (no archived, no superseded)"
         );
+    });
+    let primary = primary.await;
+    let cleanup = delete_test_collection(&transport, &permit, &collection).await;
+    match primary {
+        Ok(()) => cleanup.expect("test collection cleanup must succeed"),
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => panic!("qdrant live test task was cancelled: {error}"),
+    }
+}
+
+/// ADR-0068 gate `one_long_note_cannot_monopolize_candidates` (D-E), against a real Qdrant: one Memory with six points
+/// nearer the query than three single-point Memories. A point query with `limit` 4 returns four points of that one
+/// Memory; the grouped query with `limit` 4 returns four distinct Memories, best first, each tagged with its group.
+/// Faults: drop `group_by` (or `group_size: 1`) from the grouped body, or parse groups as points ⇒ red.
+// One spawned body (collection, points, both queries) so a panic still reaches the collection cleanup below, as in
+// `dense_query_never_returns_an_archived_or_non_active_point`.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn one_long_note_cannot_monopolize_candidates() {
+    if !qdrant_reachable() {
+        skip_or_fail(
+            "one_long_note_cannot_monopolize_candidates",
+            &format!("missing object: live Qdrant server at {}", qdrant_addr()),
+            ExternalDep::Qdrant,
+        );
+        return;
+    }
+    let registry = registry(
+        CellId(Uuid::now_v7()),
+        CallerId("qdrant-live-test".to_string()),
+    );
+    let transport = Arc::new(
+        HttpIntraCellTransport::new(
+            registry.clone(),
+            Duration::from_secs(10),
+            humaux_infra_cell::DEFAULT_MAX_RESPONSE_BYTES,
+        )
+        .expect("client builds"),
+    );
+    let permit = authorize_cell_access(
+        &registry,
+        IntraCellResource::QDRANT_REST,
+        Duration::from_secs(60),
+    )
+    .expect("same-cell, allowlisted caller must mint");
+    let collection = format!("c40d_groups_{}", Uuid::now_v7().simple());
+    let (body_transport, body_registry, body_collection) =
+        (Arc::clone(&transport), registry.clone(), collection.clone());
+    let primary = tokio::spawn(async move {
+        let (transport, collection) = (body_transport, body_collection);
+        let permit = authorize_cell_access(
+            &body_registry,
+            IntraCellResource::QDRANT_REST,
+            Duration::from_secs(60),
+        )
+        .expect("body permit");
+        put_json(
+            &transport,
+            &permit,
+            format!("/collections/{collection}"),
+            create_collection_body(4, Distance::Cosine, 1, 1, 1, ShardingMethod::Auto),
+        )
+        .await;
+        for index in [tenant_index_body(), memory_id_index_body()] {
+            put_json(
+                &transport,
+                &permit,
+                format!("/collections/{collection}/index"),
+                index,
+            )
+            .await;
+        }
+        let tenant_id = TenantId::new();
+        let payload = |memory_id: MemoryId| {
+            QdrantPointPayload {
+                memory_id,
+                tenant_id,
+                workspace_id: WorkspaceId::new(),
+                visibility_class: VisibilityClass::TenantShared,
+                visibility_user_id: None,
+                visibility_workspace_id: None,
+                object_type: "memory_record".to_string(),
+                memory_type: MemoryType::Note,
+                status: AuthorityStatus::Active,
+                authority: AuthorityClass::PrivateKnowledge,
+                created_at: OffsetDateTime::now_utc(),
+                effective_at: OffsetDateTime::now_utc(),
+                embedding_version: "v1".to_string(),
+                projection_version: "v1".to_string(),
+                source_stream_seq: 1,
+                data_class: DataClass::Internal,
+                egress_disposition: EgressDisposition::Allowed,
+            }
+            .into_indexable()
+            .expect("indexable")
+        };
+        let note = MemoryId::new();
+        let others = [MemoryId::new(), MemoryId::new(), MemoryId::new()];
+        let note_payload = payload(note);
+        let other_payloads: Vec<_> = others.iter().map(|m| payload(*m)).collect();
+        let mut rows = Vec::new();
+        let note_points: Vec<PointId> = (0..6).map(|_| PointId::Uuid(Uuid::now_v7())).collect();
+        for (chunk, point) in note_points.iter().enumerate() {
+            rows.push((
+                *point,
+                &note_payload,
+                vec![1.0, 0.01 * f32::from(chunk as u8), 0.0, 0.0],
+            ));
+        }
+        for (rank, other) in other_payloads.iter().enumerate() {
+            let tilt = 0.5 + 0.5 * f32::from(rank as u8);
+            rows.push((
+                PointId::Uuid(Uuid::now_v7()),
+                other,
+                vec![1.0, tilt, 0.0, 0.0],
+            ));
+        }
+        upsert(
+            transport.as_ref(),
+            &permit,
+            &collection,
+            &rows,
+            ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+        )
+        .await
+        .expect("points upsert");
+
+        let scope = AuthorizationScope::new(
+            tenant_id,
+            PrincipalId::new(),
+            None,
+            BoundedSet::new(Vec::<WorkspaceId>::new()).expect("empty workspace set is valid"),
+        );
+        let placement = TenantPlacementRow {
+            tenant_id,
+            projection_family: humaux_adapters::qdrant::RetrievalFamily::PrivateMemoryV1,
+            collection_name: collection.clone(),
+            shard_key: None,
+            placement_class: humaux_adapters::qdrant::PlacementClass::SharedFallback,
+            point_count: 9,
+            bytes_estimate: 0,
+            promotion_state: humaux_adapters::qdrant::PromotionState::Stable,
+        };
+        let query = DenseQuery::new(
+            &scope,
+            &placement,
+            DenseQueryVersions {
+                projection: "v1",
+                embedding: "v1",
+            },
+            vec![1.0, 0.0, 0.0, 0.0],
+            4,
+            vec![],
+            ha_profile_for(QdrantOperation::ReadYourWriteStrict),
+        )
+        .expect("typed dense query");
+
+        let points = query_dense(transport.as_ref(), &permit, &query)
+            .await
+            .expect("point query");
+        assert_eq!(points.len(), 4);
+        assert!(
+            points.iter().all(|c| note_points.contains(&c.point_id)),
+            "the point query is monopolized by the long note"
+        );
+        assert!(
+            points.iter().all(|c| c.memory_id.is_none()),
+            "a point query carries no group"
+        );
+
+        let groups = query_dense_groups(transport.as_ref(), &permit, &query)
+            .await
+            .expect("grouped query");
+        let memories: Vec<Option<Uuid>> = groups.iter().map(|c| c.memory_id).collect();
+        let want: Vec<Option<Uuid>> = std::iter::once(note)
+            .chain(others)
+            .map(|m| Some(m.0))
+            .collect();
+        assert_eq!(memories, want, "four distinct Memories, best first");
     });
     let primary = primary.await;
     let cleanup = delete_test_collection(&transport, &permit, &collection).await;

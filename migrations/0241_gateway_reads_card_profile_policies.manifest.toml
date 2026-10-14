@@ -1,0 +1,31 @@
+# §46.1 migration manifest. ADR-0068 D-E / D-I (card 40d-1c-ii): role_gateway gets SELECT on
+# projection.card_profile_policies, so recall can group by Memory exactly when the projection chunks long notes. No
+# owner, policy or other grant changes. §46 forward-fix (EXPAND_CONTRACT, first free number after 0240).
+
+migration_id = "0241_gateway_reads_card_profile_policies"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0238 policy table or one where the gateway already holds a grant on it.
+precheck = """
+select to_regclass('projection.card_profile_policies') is not null
+ and not has_table_privilege('role_gateway', 'projection.card_profile_policies', 'SELECT')
+ as precheck_ok
+"""
+
+# Fails on: the gateway without SELECT or with any write privilege, the retrieval worker's 0238 SELECT gone, any other
+# writer, or the owner changed.
+postcheck = """
+select has_table_privilege('role_gateway', 'projection.card_profile_policies', 'SELECT')
+ and not has_table_privilege('role_gateway', 'projection.card_profile_policies', 'INSERT')
+ and not has_table_privilege('role_gateway', 'projection.card_profile_policies', 'UPDATE')
+ and not has_table_privilege('role_gateway', 'projection.card_profile_policies', 'DELETE')
+ and has_table_privilege('role_retrieval_worker', 'projection.card_profile_policies', 'SELECT')
+ and not has_table_privilege('role_retrieval_worker', 'projection.card_profile_policies', 'UPDATE')
+ and not has_table_privilege('role_maintenance', 'projection.card_profile_policies', 'SELECT')
+ and (select pg_get_userbyid(c.relowner) = 'role_migration_owner' from pg_class c
+       where c.oid = to_regclass('projection.card_profile_policies'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: REVOKE SELECT ON projection.card_profile_policies FROM role_gateway — only once no deployed gateway reads the policy (a gateway built from 40d-1c-ii or later fails every recall card_profile_policy_read_failed without the grant)."
+backup_restore_requirement = "none: one table-level GRANT, no row data touched."
