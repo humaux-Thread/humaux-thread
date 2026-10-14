@@ -1,0 +1,51 @@
+# §46.1 migration manifest. ADR-0068 D-D / D-I (card 40d-1b-iii-a): v3 of projection.stream_point_ledger counts
+# expected point slots (a NoteChunksV1 note is C) and returns a fifth column, points_retiring. DROP + CREATE in one
+# transaction (the return shape changes; the 0200 precedent): same name, argument signature, owner, SECURITY DEFINER,
+# STABLE, search_path and EXECUTE grants as 0219. No table grant, no DML.
+
+migration_id = "0240_stream_point_ledger_v3"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without v2 (0219), without 0237/0238's chunk functions and policy table, or one already on v3.
+precheck = """
+select to_regprocedure('projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[])') is not null
+ and to_regprocedure('projection.note_chunk_count(text,text)') is not null
+ and to_regprocedure('projection.note_legacy_capacity_holds(text,text)') is not null
+ and to_regclass('projection.card_profile_policies') is not null
+ and not exists (select 1 from pg_proc p
+                  where p.oid = to_regprocedure('projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[])')
+                    and 'points_retiring' = any(coalesce(p.proargnames, '{}')))
+ as precheck_ok
+"""
+
+# Fails on: no points_retiring column, a body without the slot count, the policy read, the built count or the v2 F/Q
+# fences, a changed owner / security / volatility / search_path, or any EXECUTE beyond role_gateway and
+# role_retrieval_worker (PUBLIC included).
+postcheck = """
+select coalesce(bool_and(
+   'points_retiring' = any(coalesce(p.proargnames, '{}'))
+   and p.prosrc ~ 'projection\\.note_chunk_count\\(r\\.title, r\\.body\\)'
+   and p.prosrc ~ 'projection\\.card_profile_policies'
+   and p.prosrc ~ 'p\\.card_profile_hash = v_profile'
+   and p.prosrc ~ 'NOT x\\.tomb AND x\\.in_flight AND x\\.indexable\\)'
+   and p.prosrc ~ 'NOT x\\.in_flight AND x\\.indexable\\s+AND x\\.latest IN'
+   and pg_get_userbyid(p.proowner) = 'role_migration_owner' and p.prosecdef and p.provolatile = 's'
+   and 'search_path=pg_catalog' = any(coalesce(p.proconfig,'{}'))
+   and has_function_privilege('role_gateway', p.oid, 'EXECUTE')
+   and has_function_privilege('role_retrieval_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_maintenance', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_private_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_consolidation_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_public_worker', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_batch_issuer', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_admin', p.oid, 'EXECUTE')
+   and not has_function_privilege('role_health_reader', p.oid, 'EXECUTE')
+   and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                    where x.grantee = 0 and x.privilege_type = 'EXECUTE')), false)
+ and count(*) = 1 as postcheck_ok
+from pg_proc p
+where p.oid = to_regprocedure('projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[])')
+"""
+
+rollback_or_forward_fix = "forward-fix only: DROP + CREATE the function with 0219's body and four columns, in one transaction — only once no deployed binary reads points_retiring (a gateway or retrieval worker built from 40d-1b-iii-a or later fails every ledger read without it). While every card_profile_policies hash is NULL, v3's four v2 columns equal v2's."
+backup_restore_requirement = "none: function definition only, no row data touched."

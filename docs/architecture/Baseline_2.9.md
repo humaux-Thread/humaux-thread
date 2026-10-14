@@ -5924,6 +5924,8 @@ A2 可见闭合（有向；差额的方向决定处置）
 
 **ADR-0057 D-A 修订（卡 31）**：上式只在「每票恰好一个点、没有生命周期票」时成立，故 A2 改为两侧都按记忆点计（A1 仍是票据单位）：PG 侧由 0189 `projection.stream_point_ledger` 在账本同一快照读出 `points_settled` L、`points_in_flight` F、`points_unsettled` Q（最新票 FAILED / LOST / RETIRED_FAILED 的记忆，点数 0 或 1）、`points_expected` U，判据为 `visible < L` ⇒ 丢失（处置不变）、`L ≤ visible ≤ L + Q` ⇒ 闭合、`≤ L + Q + F` ⇒ 在途、再超出 ⇒ `cannot_establish`；四个读数上线值。
 
+**ADR-0068 D-D / D-I 修订（卡 40d-1b-iii-a，0240 v3）**：「点」改为**期望点槽**——遗留卡 1 槽，`NoteChunksV1` 长笔记 C 槽（`projection.note_chunk_count`），L 对分块记忆只计注册表里已建成的槽，最新票 DONE 而槽未建齐的差额计入 Q（回填缺口只显示为未结清，绝不显示为完成）；另增第五个读数 `points_retiring` R（分块笔记在最后一个分块可见前仍保留的遗留点）。判据变为 `L ≤ visible ≤ L + Q + R` ⇒ 闭合、`≤ L + Q + R + F` ⇒ 在途；`completeness_ratio = (visible − R) / U`。策略为 NULL 时 R = 0，四个旧读数与 v2 逐一相等。
+
 **`current` 的冻结定义（全文只此一处，envelope 的 `projection.current` 与 §22 的降级判定都读它）**：
 
 ```text

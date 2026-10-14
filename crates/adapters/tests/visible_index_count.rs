@@ -307,7 +307,7 @@ fn read_ledger(admin: &mut Client, k: &StreamKey, user: UserId) -> LedgerClosure
     .expect("act as role_gateway");
     let points = txn
         .query_one(
-            "SELECT points_expected, points_settled, points_in_flight, points_unsettled \
+            "SELECT points_expected, points_settled, points_in_flight, points_unsettled, points_retiring \
              FROM projection.stream_point_ledger($1, $2, $3, $4, $5, $6, 'SECRET_MATERIAL', $7)",
             &[
                 &k.tenant_id.0,
@@ -329,6 +329,7 @@ fn read_ledger(admin: &mut Client, k: &StreamKey, user: UserId) -> LedgerClosure
             points_settled: point(1),
             points_in_flight: point(2),
             points_unsettled: point(3),
+            points_retiring: point(4),
             oldest_pending_age_secs: None,
         },
     )

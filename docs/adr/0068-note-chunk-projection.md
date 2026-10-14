@@ -352,9 +352,7 @@ Two facts frame every decision:
   `adapters::qdrant`. `rust_sql_chunk_count_parity` gained the NULL-body arm: both SQL functions are STRICT, and a
   caller coalesces the predicate to true (legacy), as the plan treats a Memory with no body.
 - **Left for 40d-1b-iii.**
-  - The slot ledger: `projection.stream_point_ledger` v3 counting expected slots (legacy 1, chunked
-    C(char_length(body)), the predicate coalesced as above) and a `points_retiring` term for a live legacy point of
-    a note mid-backfill.
+  - The slot ledger (shipped in 40d-1b-iii-a, below).
   - Rebuild per vector key: `expected_points` (the rebuild verifier's Project(PG)) per slot through
     `build_projection_plan`, chunk payload fields included; until then a rebuild under an enabled policy would
     expect the legacy point of a long note.
@@ -366,6 +364,32 @@ Two facts frame every decision:
     `partial_projection_does_not_settle_memory` and `equal_counts_do_not_prove_manifest_equality`, and
     `source_seal_cannot_be_disabled_by_note_text` as a named gate (the source seal reuses the invocation that already
     passes `--ignore-gitleaks-allow`).
+
+**40d-1b-iii-a as shipped (the slot ledger).**
+
+- **Ledger v3 (migration 0240).** `projection.stream_point_ledger` counts expected point slots. A Memory is CHUNKED
+  when the projection's policy names a profile, it is the output of an identity contract, its content carries string
+  `title` and `key_claim` (what `note_repo::memory_content` writes), and `note_legacy_capacity_holds` is false:
+  `build_projection_plan`'s predicate, with the secret term carried by the `indexable` fence every count already has.
+  A CHUNKED Memory is C = `note_chunk_count(title, body)` slots, any other one slot.
+  - Settled: a legacy Memory exactly as v2; a CHUNKED one by its built slots (distinct live registry ordinals < C
+    under the policy's profile), and only under v2's settled filter (no pending ticket, latest DONE). A note whose
+    chunks were never built settles 0 of C, and a note whose chunk ticket is still retrying settles none of its slots
+    (they are in flight).
+  - Unsettled: v2's term in slots, plus `C - built` of a CHUNKED Memory settled short (the backfill gap).
+  - `points_retiring` (a fifth column): CHUNKED, indexable, not tombstoned Memories that still hold a live
+    `LegacyCardV1` row. The return shape changes, so the function is dropped and re-created in one transaction (the
+    0200 precedent), one definer as before. With no policy row or a NULL hash, v3's four v2 columns equal v2's and
+    retiring is 0.
+- **A2 (Baseline §23.1② amended).** `L <= visible <= L + Q + R` is closed and `<= L + Q + R + F` in flight; the
+  ratio is `(visible - R) / U`. `points_retiring` rides on `ProjectionReads` and on the wire's `pipeline.projection`
+  block (`contracts/mcp/context.output.schema.json`).
+- **Gates.** `ledger_counts_unbuilt_chunk_slots` and `partial_projection_does_not_settle_memory` in
+  `adapters::tests::projection_worker::note_chunk_projection` read the real definer as `role_gateway`;
+  `retiring_legacy_point_is_band_slack_not_ratio` in `retrieval::envelope`.
+- **Declared.** The SQL predicate reads `title` and `key_claim` as strings; the worker's `card_input` falls back to a
+  truncated rendering when `title` is not one. An identity note always carries both (ADR-0067 D-E), so the two agree
+  on every Memory the policy can chunk.
 
 ## Slices
 

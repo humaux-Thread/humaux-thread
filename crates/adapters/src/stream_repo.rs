@@ -293,7 +293,7 @@ pub(crate) async fn close_ledger_in_txn(
         .collect();
     let points = bind_key(
         sqlx::query(
-            "SELECT points_expected, points_settled, points_in_flight, points_unsettled \
+            "SELECT points_expected, points_settled, points_in_flight, points_unsettled, points_retiring \
                FROM projection.stream_point_ledger($1, $2, $3, $4, $5, $6, $7, $8)",
         ),
         key,
@@ -318,6 +318,7 @@ pub(crate) async fn close_ledger_in_txn(
             points_settled: count("points_settled")?,
             points_in_flight: count("points_in_flight")?,
             points_unsettled: count("points_unsettled")?,
+            points_retiring: count("points_retiring")?,
             oldest_pending_age_secs,
         },
     ))
