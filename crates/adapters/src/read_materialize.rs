@@ -304,7 +304,7 @@ pub(crate) async fn final_memory_ids_about_in_txn(
 /// ADR-0071 D-C: the `can_read` set ([`readable_memory_ids`]) the shared final gate computed over its candidates,
 /// in the caller's transaction. Only [`final_memory_ids_with_readable_in_txn`] constructs it, so a census handed one
 /// narrows by a set the gate itself produced — never by an arbitrary id list.
-pub(crate) struct GateReadable(HashSet<Uuid>);
+pub struct GateReadable(HashSet<Uuid>);
 
 impl GateReadable {
     /// Whether the gate found `memory_id` readable.
