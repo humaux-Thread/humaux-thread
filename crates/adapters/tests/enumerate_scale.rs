@@ -307,3 +307,106 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
     drop(admin);
     drop(db);
 }
+
+/// EXPERIMENT (card 35b-iii, throwaway branch): the evidence-visibility statement of `readable_memory_ids` under four
+/// `private.memory_evidence` policy variants, each installed inside a rolled-back owner transaction and timed as
+/// `role_gateway` with JIT off, over 50 000 / 50 / 1 candidate ids.
+#[test]
+#[ignore = "experiment"]
+fn exp_35b_iii_evidence_visibility_variants() {
+    let db = throwaway_db::create("c35_exp").expect("throwaway db");
+    let dsn = db.dsn();
+    // dep: PostgreSQL(owner) — the experiment's owner connection
+    let mut admin = Client::connect(&dsn, NoTls).expect("owner connection");
+    let (tenant, _workspace) = seed(&mut admin);
+    let all: Vec<Uuid> = admin
+        .query(
+            "SELECT memory_id FROM private.memory_records WHERE tenant_id = $1",
+            &[&tenant],
+        )
+        .expect("ids")
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    let sets: [(&str, Vec<Uuid>); 3] = [
+        ("50000", all.clone()),
+        ("50", all[..50].to_vec()),
+        ("1", all[..1].to_vec()),
+    ];
+    let variants: [(&str, &str); 4] = [
+        ("V0_current", ""),
+        (
+            "V1_uncorrelated_in",
+            "ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING (memory_id IN (\
+               SELECT mr.memory_id FROM private.memory_records mr \
+                WHERE mr.tenant_id = current_setting('humaux.tenant_id', true)::uuid))",
+        ),
+        (
+            "V2_no_sublink_bound",
+            "ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING (true)",
+        ),
+        ("V3_current_workmem64", "SET LOCAL work_mem = '64MB'"),
+    ];
+    let stmt = "SELECT me.memory_id, eo.evidence_id AS visible_evidence_id, eo.visibility_class, \
+                eo.visibility_user_id, eo.visibility_workspace_id \
+         FROM private.memory_evidence me \
+         LEFT JOIN private.evidence_objects eo \
+           ON eo.evidence_id = me.evidence_id AND eo.tenant_id = $1 \
+         WHERE me.memory_id = ANY($2)";
+    for (name, setup) in variants {
+        for (label, ids) in &sets {
+            let mut txn = admin.transaction().expect("experiment txn");
+            if !setup.is_empty() {
+                txn.batch_execute(setup).expect("variant setup");
+            }
+            // dep: PostgreSQL(role_gateway) — the timed statement under the gateway's policies
+            txn.batch_execute(&format!(
+                "SET LOCAL jit = off; SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}'; \
+                 SET LOCAL humaux.user_id = '{}'",
+                Uuid::nil()
+            ))
+            .expect("act as role_gateway");
+            let prepared = txn.prepare(stmt).expect("prepare");
+            let mut times = Vec::new();
+            let mut rows = 0;
+            for i in 0..9 {
+                let start = Instant::now();
+                rows = txn
+                    .query(&prepared, &[&tenant, ids])
+                    .expect("timed statement")
+                    .len();
+                if i >= 2 {
+                    times.push(ms(start));
+                }
+            }
+            let plan: Vec<String> = txn
+                .query(
+                    &format!("EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF) {stmt}"),
+                    &[&tenant, ids],
+                )
+                .expect("explain")
+                .iter()
+                .map(|r| r.get::<_, String>(0))
+                .filter(|line| {
+                    line.contains("SubPlan")
+                        || line.contains("Join")
+                        || line.contains("Scan")
+                        || line.contains("hashed")
+                })
+                .take(8)
+                .collect();
+            txn.rollback().expect("rollback");
+            println!(
+                "EXP variant={name} ids={label} rows={rows} p50_ms={:.2} p95_ms={:.2} plan={}",
+                pct(&mut times.clone(), 0.5),
+                pct(&mut times, 0.95),
+                plan.join(" | ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+    }
+    drop(admin);
+    drop(db);
+}
