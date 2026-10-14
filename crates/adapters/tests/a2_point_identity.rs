@@ -4,7 +4,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, humaux-testkit, postgres, serde_json, sqlx];
 //!   services=[PostgreSQL(owner) r=[ops.commit_seq_seq, projection.ticket_reissues] w=[control.users,
 //!   control.workspaces, ops.outbox, private.evidence_objects, private.memory_evidence,
-//!   projection.stream_checkpoints, projection.stream_log] x=[private.memory_subject_visibility_ok],
+//!   private.memory_subject_presence, projection.stream_checkpoints, projection.stream_log] x=[private.memory_subject_visibility_ok],
 //!   PostgreSQL(role_gateway) r=[private.memory_records] x=[projection.stream_point_ledger],
 //!   PostgreSQL(role_maintenance), PostgreSQL(role_retrieval_worker) w=[projection.stream_log], Qdrant(*)]; env=[];
 //!   modules=[adapters::affect_repo, adapters::maintenance_repo, adapters::retrieve, adapters::stream_repo,
@@ -507,6 +507,13 @@ fn subject_restricted_memory_closes_the_identity() {
             "CREATE OR REPLACE FUNCTION private.memory_subject_visibility_ok(p_tenant_id uuid, p_memory_id uuid) \
              RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog \
              AS $$ SELECT false $$;",
+        )
+        .expect("the subject guard now refuses every memory");
+        // ADR-0070: the guard runs only for memories with a presence row, so mark every memory linked.
+        txn.execute(
+            "INSERT INTO private.memory_subject_presence (tenant_id, memory_id) \
+             SELECT tenant_id, memory_id FROM private.memory_records WHERE tenant_id = $1",
+            &[&tenant],
         )
         .expect("the subject policy now hides every memory from role_gateway");
         let (_, settled) = definer_as_gateway(&mut txn, tenant, user, ws, &[ws]);

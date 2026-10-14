@@ -10,7 +10,8 @@
 //!   control.tenants, control.workspace_memberships, control.workspaces, coord.tasks, ops.memory_lifecycle_events,
 //!   ops.outbox, ops.selection_snapshots, private.context_bindings, private.distill_candidates,
 //!   private.evidence_objects, private.memory_affects, private.memory_consolidation_inputs,
-//!   private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_subjects,
+//!   private.memory_consolidation_runs, private.memory_evidence, private.memory_records,
+//!   private.memory_subject_presence, private.memory_subjects,
 //!   private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
 //!   projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace,
 //!   control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker),
@@ -15756,6 +15757,137 @@ fn memory_grep_pages_a_large_universe_exactly() {
                     millis[9], millis[18]
                 );
             }
+        },
+    );
+}
+
+/// ADR-0070 gate, on the real policies as `role_gateway`. 2 000 unlinked memories, one linked to a real subject through
+/// the ordinary insert path with no tenant setting on the session (the trigger still records its presence — the
+/// owner-only insert policy) and one linked — with FK and trigger checks off for the owner session — to a
+/// subject that does not exist (its presence written by hand, as the trigger would). A full read of the tenant calls
+/// `memory_subject_visibility_ok` exactly twice (the two linked memories), keeps the real link visible and hides the
+/// dangling one (0155's truth table). Faults: the 0155 policy without the presence shortcut ⇒ 2 002 calls ⇒ red; the
+/// shortcut without the guard fallback ⇒ the linked memory disappears ⇒ red; no guard ⇒ the dangling link is visible
+/// ⇒ red; no insert trigger, or no owner insert policy ⇒ the real link has no presence row (or its insert fails) ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one seeded tenant, the call count, both truth-table arms and the trigger
+fn subject_guard_runs_only_for_linked_memories() {
+    run_db_fixture::<Fixture, _>(
+        "subject_guard_runs_only_for_linked_memories",
+        |mut handle| {
+            seed_bulk_memories(&mut handle, 2_000, "'unlinked memory ' || g");
+            let linked = handle.seed_workspace_visible_context_record();
+            let dangling = handle.seed_workspace_visible_context_record();
+            let tenant = handle.tenant_id;
+            let user = handle.user_id;
+            let unlinked: Vec<Uuid> = handle
+                .admin
+                .query(
+                    "SELECT memory_id FROM private.memory_records \
+                     WHERE tenant_id = $1 AND content->>'key_claim' LIKE 'unlinked memory %'",
+                    &[&tenant],
+                )
+                .expect("the unlinked memories")
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            assert_eq!(unlinked.len(), 2_000);
+            let subject: Uuid = handle
+                .admin
+                .query_one(
+                    "INSERT INTO private.subjects (tenant_id, kind, display_name) \
+                 VALUES ($1, 'PERSON', 'Ada') RETURNING subject_id",
+                    &[&tenant],
+                )
+                .expect("owner registers a subject")
+                .get(0);
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO private.memory_subjects \
+                   (tenant_id, memory_id, subject_id, relation, source_kind, confidence_bp) \
+                 VALUES ($1, $2, $3, 'ABOUT', 'DECLARED', 10000)",
+                    &[&tenant, &linked.memory_id, &subject],
+                )
+                .expect("owner links the memory through the ordinary insert path");
+            let presence = |handle: &mut Handle, memory: Uuid| -> bool {
+                handle
+                    .admin
+                    .query_one(
+                        "SELECT EXISTS (SELECT 1 FROM private.memory_subject_presence \
+                      WHERE tenant_id = $1 AND memory_id = $2)",
+                        &[&tenant, &memory],
+                    )
+                    .expect("presence read")
+                    .get(0)
+            };
+            assert!(
+                presence(&mut handle, linked.memory_id),
+                "the insert trigger records the linked memory"
+            );
+            assert!(!presence(&mut handle, dangling.memory_id));
+            let mut txn = handle
+                .admin
+                .transaction()
+                .expect("dangling link transaction");
+            txn.batch_execute("SET LOCAL session_replication_role = replica")
+                .expect("owner turns FK and trigger checks off");
+            txn.execute(
+                "INSERT INTO private.memory_subjects \
+               (tenant_id, memory_id, subject_id, relation, source_kind, confidence_bp) \
+             VALUES ($1, $2, $3, 'ABOUT', 'DECLARED', 10000)",
+                &[&tenant, &dangling.memory_id, &Uuid::new_v4()],
+            )
+            .expect("a link to a subject that does not exist");
+            txn.execute(
+            "INSERT INTO private.memory_subject_presence (tenant_id, memory_id) VALUES ($1, $2)",
+            &[&tenant, &dangling.memory_id],
+        )
+        .expect("its presence, as the trigger would record it");
+            txn.commit().expect("commit the dangling link");
+
+            let mut txn = handle
+                .admin
+                .transaction()
+                .expect("gateway read transaction");
+            // dep: PostgreSQL(role_gateway) — SET LOCAL ROLE to read under the gateway's real policies
+            txn.batch_execute(&format!(
+                "SET LOCAL track_functions = 'all'; SET LOCAL ROLE role_gateway; \
+             SET LOCAL humaux.tenant_id = '{tenant}'; SET LOCAL humaux.user_id = '{user}'"
+            ))
+            .expect("act as role_gateway with function tracking");
+            let visible: Vec<Uuid> = txn
+                .query(
+                    "SELECT memory_id FROM private.memory_records WHERE tenant_id = $1",
+                    &[&tenant],
+                )
+                .expect("the gateway's read of the tenant")
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            txn.batch_execute("RESET ROLE").expect("back to the owner");
+            let calls: i64 = txn
+                .query_one(
+                    "SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_xact_user_functions \
+                  WHERE schemaname = 'private' AND funcname = 'memory_subject_visibility_ok'",
+                    &[],
+                )
+                .expect("this transaction's guard calls")
+                .get(0);
+            txn.rollback().expect("read only");
+            assert_eq!(calls, 2, "the guard runs for the two linked memories only");
+            assert!(
+                visible.contains(&linked.memory_id),
+                "a link to a real subject stays visible"
+            );
+            assert!(
+                !visible.contains(&dangling.memory_id),
+                "a link to a missing subject is refused, as 0155 refuses it"
+            );
+            assert!(
+                unlinked.iter().all(|memory| visible.contains(memory)),
+                "every unlinked memory stays visible"
+            );
         },
     );
 }
