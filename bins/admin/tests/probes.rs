@@ -166,6 +166,7 @@ fn migrate(client: &mut Client) {
     // The mutex only covers this process. cargo-nextest runs test binaries (and tests) in parallel processes, and
     // role DDL is cluster-global ("tuple concurrently updated" on 0201, run 38634175179), so the migration bodies
     // also take one session advisory lock in the `postgres` database; dropping the client releases it.
+    // dep: PostgreSQL(owner) — session advisory lock in the `postgres` database around the migration bodies
     let mut cluster_lock = Client::connect(
         &with_db(
             &std::env::var(OWNER_DSN).expect("HUMAUX_TEST_PG_DSN"),
@@ -175,7 +176,7 @@ fn migrate(client: &mut Client) {
     )
     .expect("connect for the migration lock");
     cluster_lock
-        .batch_execute("SELECT pg_advisory_lock(0x4855_4d41_5854_4d47_i64)")
+        .batch_execute("SELECT pg_advisory_lock(5212157086801349959)")
         .expect("migration lock");
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
