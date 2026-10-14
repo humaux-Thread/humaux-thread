@@ -2028,7 +2028,8 @@ mod lifecycle_prefilter_tests {
     }
 
     /// ADR-0068 D-E: the group parser keeps Qdrant's order and tags each hit with its group, and refuses — never
-    /// truncates — more groups than asked, a group without exactly one hit, a non-uuid group id, or a repeated group.
+    /// truncates — more groups than asked, a group without exactly one hit, a non-uuid group id, a repeated group or a
+    /// repeated point.
     /// Fault: accept any of them ⇒ red.
     #[test]
     fn group_response_is_parsed_strictly() {
@@ -2060,6 +2061,10 @@ mod lifecycle_prefilter_tests {
             json!({ "result": { "groups": [
                 group(json!(m1.to_string()), json!([hit(p1, 0.9)])),
                 group(json!(m1.to_string()), json!([hit(p2, 0.5)])),
+            ] } }),
+            json!({ "result": { "groups": [
+                group(json!(m1.to_string()), json!([hit(p1, 0.9)])),
+                group(json!(m2.to_string()), json!([hit(p1, 0.5)])),
             ] } }),
             json!({ "result": { "points": [] } }),
         ] {

@@ -723,9 +723,10 @@ async fn one_long_note_cannot_monopolize_candidates() {
         let note_payload = payload(note);
         let other_payloads: Vec<_> = others.iter().map(|m| payload(*m)).collect();
         let mut rows = Vec::new();
-        for chunk in 0..6 {
+        let note_points: Vec<PointId> = (0..6).map(|_| PointId::Uuid(Uuid::now_v7())).collect();
+        for (chunk, point) in note_points.iter().enumerate() {
             rows.push((
-                PointId::Uuid(Uuid::now_v7()),
+                *point,
                 &note_payload,
                 vec![1.0, 0.01 * f32::from(chunk as u8), 0.0, 0.0],
             ));
@@ -782,6 +783,10 @@ async fn one_long_note_cannot_monopolize_candidates() {
             .await
             .expect("point query");
         assert_eq!(points.len(), 4);
+        assert!(
+            points.iter().all(|c| note_points.contains(&c.point_id)),
+            "the point query is monopolized by the long note"
+        );
         assert!(
             points.iter().all(|c| c.memory_id.is_none()),
             "a point query carries no group"

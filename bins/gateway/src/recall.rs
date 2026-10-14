@@ -230,7 +230,7 @@ enum Stage {
     Scan,
     /// the `embed_query` RPC (worker scan + provider + ledger).
     Embed,
-    /// tombstoned-seq read + `query_dense`.
+    /// tombstoned-seq read + the chunk policy read + `query_dense` / `query_dense_groups`.
     Qdrant,
     /// `materialize_private_read_serving_about` (the PG gate).
     Hydrate,

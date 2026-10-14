@@ -130,6 +130,8 @@ struct Handle {
     tenant_id: Uuid,
     user_id: Uuid,
     memory_id: Uuid,
+    /// A second active, visible Memory of the same tenant with no point: the wrong label a grouped hit can carry.
+    decoy_memory_id: Uuid,
     body_sha256: Vec<u8>,
     authorization: AuthorizationScope,
     family: StreamFamily,
@@ -247,6 +249,32 @@ fn seed_memory(
     Ok((memory_id, body_sha256))
 }
 
+/// A second active TENANT_SHARED Memory supported by the same Evidence as `memory_id`.
+fn seed_decoy(
+    admin: &mut Client,
+    tenant_id: Uuid,
+    memory_id: Uuid,
+) -> Result<Uuid, postgres::Error> {
+    let mut txn = admin.transaction()?;
+    let decoy: Uuid = txn
+        .query_one(
+            "INSERT INTO private.memory_records \
+                (tenant_id,memory_type,content,visibility_class,authority_class,confidence,status,asserted_at,updated_at) \
+             VALUES($1,'FACT','{\"body\": \"decoy\"}','TENANT_SHARED','PrivateKnowledge',1,'active','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z') \
+             RETURNING memory_id",
+            &[&tenant_id],
+        )?
+        .get(0);
+    // dep: PostgreSQL(any) — pool/txn query execution
+    txn.execute(
+        "INSERT INTO private.memory_evidence(memory_id,evidence_id,role) \
+         SELECT $1, evidence_id, 'SUPPORTING' FROM private.memory_evidence WHERE memory_id = $2",
+        &[&decoy, &memory_id],
+    )?;
+    txn.commit()?;
+    Ok(decoy)
+}
+
 impl DbIntegrationFixture for RegistryFixture {
     type Handle = Handle;
 
@@ -277,6 +305,8 @@ impl DbIntegrationFixture for RegistryFixture {
         let user_id = Uuid::new_v4();
         let content = serde_json::json!({"body": "registry source"});
         let (memory_id, body_sha256) = seed_memory(&mut admin, tenant_id, user_id, &content)
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(format!("{e:?}")))?;
+        let decoy_memory_id = seed_decoy(&mut admin, tenant_id, memory_id)
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(format!("{e:?}")))?;
 
         let authorization = AuthorizationScope::new(
@@ -316,6 +346,7 @@ impl DbIntegrationFixture for RegistryFixture {
             tenant_id,
             user_id,
             memory_id,
+            decoy_memory_id,
             body_sha256,
             authorization,
             family,
@@ -724,9 +755,10 @@ async fn assert_registration_and_resolution(
         [MaterializedItem::Memory { memory_id, .. }] if *memory_id == handle.memory_id
     ));
     // ADR-0068 gate `group_identity_is_verified_against_registry` (D-E): a grouped hit is accepted only when its group
-    // id is the Memory the registry resolves its point to; a mislabeled group drops the point, never re-labels it.
-    // Fault: skip the group check in `materialize_private_read_serving_in_txn` ⇒ the mislabeled arm returns the body.
-    for (group, kept) in [(handle.memory_id, true), (Uuid::new_v4(), false)] {
+    // id is the Memory the registry resolves its point to; a mislabeled group (another real, visible Memory of the
+    // tenant) drops the point, never re-labels it. Faults: skip the group check in
+    // `materialize_private_read_serving_in_txn` ⇒ the point's own body comes back; trust the group id ⇒ the decoy's.
+    for (group, kept) in [(handle.memory_id, true), (handle.decoy_memory_id, false)] {
         let bodies = materialize_private_read_serving(
             &handle.runtime,
             None,

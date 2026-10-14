@@ -472,8 +472,9 @@ Two facts frame every decision:
   `grouped_query_body_groups_by_memory_one_hit_each` and `group_response_is_parsed_strictly` (`adapters::qdrant`).
 - **Left for 40d-1c-iii.** The bounded refill (two exclusion sets: Memories done, by `must_not match memory_id any`,
   and points rejected, by `must_not has_id`; total budget `cand_k`, at most three calls, a deadline; an oversized
-  `match any` fails loudly), and the D-E count fields with a `truncated` reason. Until then `candidate_count` is the
-  number of groups returned in grouped mode.
+  `match any` fails loudly), the D-E count fields with a `truncated` reason, and a pinned "fewer groups than exist"
+  test (research batch 12's L=6 counterexample) so Qdrant's bounded group search is documented by CI, not assumed.
+  Until then `candidate_count` is the number of groups returned in grouped mode.
 
 ## Slices
 
