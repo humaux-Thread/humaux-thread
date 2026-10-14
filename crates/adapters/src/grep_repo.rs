@@ -170,6 +170,45 @@ fn hits_sql() -> String {
     )
 }
 
+/// The memories a grep may report: the enumeration scope, the census's tombstone overlay, the lifecycle selection
+/// and the literal over the whole text, then the census's authorization authority. Sorted for the `ANY($2)` bind.
+async fn authorized_candidates(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    authorization: &AuthorizationScope,
+    workspace: WorkspaceId,
+    stream: &StreamKey,
+    query: &GrepQuery,
+    like: &str,
+) -> Result<Vec<Uuid>, ErrorCode> {
+    // $1 tenant, $2 workspace, $3..$7 stream key, $8/$9 lifecycle, $10 pattern.
+    let candidates_sql = format!(
+        "SELECT memory_id FROM {ENUMERATION_SCOPE} AND {NOT_TOMBSTONED} AND {} \
+         AND {} ILIKE $10 ESCAPE '!'",
+        Lifecycle::sql("memory_records", 8),
+        memory_text("memory_records"),
+    );
+    let candidates: Vec<Uuid> = sqlx::query_scalar(&candidates_sql)
+        .bind(authorization.tenant_id().0)
+        .bind(workspace.0)
+        .bind(&stream.scope_kind)
+        .bind(stream.scope_id)
+        .bind(&stream.domain)
+        .bind(&stream.projection_kind)
+        .bind(&stream.projection_version)
+        .bind(query.lifecycle.status_wires())
+        .bind(query.lifecycle.archive_wire())
+        .bind(like)
+        .fetch_all(&mut **txn)
+        .await
+        .map_err(|e| read_error(&e))?;
+    let mut authorized: Vec<Uuid> = readable_memory_ids(txn, authorization, &candidates)
+        .await?
+        .into_iter()
+        .collect();
+    authorized.sort_unstable();
+    Ok(authorized)
+}
+
 /// ADR-0069: one `memory.grep` page over `workspace` (the stream key scopes the tombstone overlay, exactly as the
 /// enumeration census does).
 ///
@@ -202,33 +241,8 @@ pub async fn grep(
     }
     set_authorization_local(&mut txn, authorization).await?;
     let like = literal_like_pattern(&query.pattern);
-
-    // $1 tenant, $2 workspace, $3..$7 stream key, $8/$9 lifecycle, $10 pattern.
-    let candidates_sql = format!(
-        "SELECT memory_id FROM {ENUMERATION_SCOPE} AND {NOT_TOMBSTONED} AND {} \
-         AND {} ILIKE $10 ESCAPE '!'",
-        Lifecycle::sql("memory_records", 8),
-        memory_text("memory_records"),
-    );
-    let candidates: Vec<Uuid> = sqlx::query_scalar(&candidates_sql)
-        .bind(tenant)
-        .bind(workspace.0)
-        .bind(&stream.scope_kind)
-        .bind(stream.scope_id)
-        .bind(&stream.domain)
-        .bind(&stream.projection_kind)
-        .bind(&stream.projection_version)
-        .bind(query.lifecycle.status_wires())
-        .bind(query.lifecycle.archive_wire())
-        .bind(&like)
-        .fetch_all(&mut *txn)
-        .await
-        .map_err(|e| read_error(&e))?;
-    let mut authorized: Vec<Uuid> = readable_memory_ids(&mut txn, authorization, &candidates)
-        .await?
-        .into_iter()
-        .collect();
-    authorized.sort_unstable();
+    let authorized =
+        authorized_candidates(&mut txn, authorization, workspace, stream, query, &like).await?;
 
     let (after_memory, after_line) = query.after.unzip();
     let row = sqlx::query(&hits_sql())

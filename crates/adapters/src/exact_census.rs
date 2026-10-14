@@ -1,6 +1,6 @@
 //! `adapters::exact_census` — §22.1 EXACT enumeration census: the physical IO behind `completeness::CensusResult`.
 //! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
-//! Called-by: [adapters::context_repo, tests]
+//! Called-by: [adapters::context_repo, adapters::grep_repo, tests]
 //! Invariants: [total, returned items and the probe snapshot come from ONE REPEATABLE READ transaction (§22.1); total
 //!   is its own count(*), never the recall length; a census failure is trigger 4 (Internal), never a guessed total]
 //! Spec: Baseline §22.4; §22.1; §23.4; §23.1; §60; ADR-0062 D-K; ADR-0067 D-G, D-J2
