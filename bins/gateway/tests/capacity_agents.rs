@@ -178,14 +178,74 @@ fn op_ceiling() {
             .enumerate()
         {
             ONLY_OP.store(index, std::sync::atomic::Ordering::Relaxed);
-            report(
-                &format!("op_ceiling_{}", op.name()),
-                lab.run(&[(0, 8, 0), (1, 8, 0), (2, 8, 0), (3, 8, 0)], 20),
-                20,
+            let before = cpu_snapshot(lab.gateway.child.id());
+            let groups = lab.run(&[(0, 8, 0), (1, 8, 0), (2, 8, 0), (3, 8, 0)], 20);
+            let after = cpu_snapshot(lab.gateway.child.id());
+            println!(
+                "CAPCPU op={} gateway_ms={} postgres_ms={} loadgen_ms={} host_ms={} wall_ms=20000",
+                op.name(),
+                after.0 - before.0,
+                after.1 - before.1,
+                after.2 - before.2,
+                after.3 - before.3
             );
+            report(&format!("op_ceiling_{}", op.name()), groups, 20);
         }
         ONLY_OP.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
     });
+}
+
+/// CPU milliseconds so far of (the gateway, every `postgres` process on the host, this test process, the whole host)
+/// from `/proc` (utime + stime at 100 ticks/s; the host total from `/proc/stat`'s user + nice + system + irq + softirq).
+fn cpu_snapshot(gateway_pid: u32) -> (u64, u64, u64, u64) {
+    fn ticks(stat: &str) -> u64 {
+        // Fields after the `(comm)`: state is field 3, utime 14, stime 15 (1-based over the whole line).
+        let rest = stat.rsplit_once(')').map_or("", |(_, r)| r);
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        fields
+            .get(11)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+            + fields
+                .get(12)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+    }
+    let proc_ticks =
+        |pid: &str| std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(0, |s| ticks(&s));
+    let mut postgres = 0;
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name
+                .to_str()
+                .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            else {
+                continue;
+            };
+            if std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .is_ok_and(|c| c.trim() == "postgres")
+            {
+                postgres += proc_ticks(pid);
+            }
+        }
+    }
+    let host = std::fs::read_to_string("/proc/stat").map_or(0, |s| {
+        s.lines().next().map_or(0, |cpu| {
+            let v: Vec<u64> = cpu
+                .split_whitespace()
+                .skip(1)
+                .filter_map(|x| x.parse().ok())
+                .collect();
+            [0usize, 1, 2, 5, 6].iter().filter_map(|i| v.get(*i)).sum()
+        })
+    });
+    (
+        proc_ticks(&gateway_pid.to_string()) * 10,
+        postgres * 10,
+        proc_ticks("self") * 10,
+        host * 10,
+    )
 }
 
 /// Every SQL statement one request runs: `log_min_duration_statement = 0` for the window, `TRACE_BEGIN/END <op>`
