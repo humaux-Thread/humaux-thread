@@ -20,8 +20,10 @@
 --            settles 0 of C, never C.
 --   in_flight / unsettled  slots, under v2's filters; a CHUNKED Memory settled short also adds `slots - built` to
 --            unsettled (the backfill gap: ADR-0068 D-I "the gap shows as unsettled, never as complete").
---   retiring a CHUNKED, indexable, not tombstoned Memory that still holds a live LegacyCardV1 registry row: the one
---            extra visible point per note mid-backfill. Its own column, so A2's band widens by exactly that term.
+--   retiring a CHUNKED, indexable, not tombstoned Memory that still holds a live LegacyCardV1 registry row, or any
+--            LegacyCardV1 row while its latest ticket is not settled DONE (the completion step retires the binding,
+--            then deletes the point, then settles the ticket): the one extra visible point per note mid-backfill,
+--            0 or 1 each. Its own column, so A2's band widens by exactly that term.
 -- With no policy row or a NULL hash nothing is CHUNKED and v3 returns v2's four numbers plus retiring = 0.
 --
 -- The return shape gains a column, which CREATE OR REPLACE cannot do, so the function is dropped and re-created in
@@ -132,7 +134,10 @@ BEGIN
               WHERE p.tenant_id = p_tenant_id AND p.scope_kind = p_scope_kind AND p.scope_id = p_scope_id
                 AND p.domain = p_domain AND p.projection_kind = p_projection_kind
                 AND p.projection_version = p_projection_version AND p.memory_id = r.memory_id
-                AND p.projection_live AND p.card_profile_hash = 'LegacyCardV1') AS retiring
+                AND p.card_profile_hash = 'LegacyCardV1'
+                -- the completion step retires the binding before it deletes the point and settles the ticket, so
+                -- until the latest ticket is DONE a retired legacy binding may still be a visible point
+                AND (p.projection_live OR r.in_flight OR r.latest IS DISTINCT FROM 'DONE')) AS retiring
       FROM reached r
       CROSS JOIN LATERAL (
         SELECT CASE WHEN r.chunked THEN projection.note_chunk_count(r.title, r.body)::bigint

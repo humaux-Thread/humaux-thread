@@ -378,7 +378,9 @@ Two facts frame every decision:
     (they are in flight).
   - Unsettled: v2's term in slots, plus `C - built` of a CHUNKED Memory settled short (the backfill gap).
   - `points_retiring` (a fifth column): CHUNKED, indexable, not tombstoned Memories that still hold a live
-    `LegacyCardV1` row. The return shape changes, so the function is dropped and re-created in one transaction (the
+    `LegacyCardV1` row, or any `LegacyCardV1` row while the latest ticket is not settled DONE: the completion step
+    retires the binding, then deletes the point, then settles the ticket, so between the first and the last a retired
+    binding can still be a visible point (0 or 1). The return shape changes, so the function is dropped and re-created in one transaction (the
     0200 precedent), one definer as before. With no policy row or a NULL hash, v3's four v2 columns equal v2's and
     retiring is 0.
 - **A2 (Baseline §23.1② amended).** `L <= visible <= L + Q + R` is closed and `<= L + Q + R + F` in flight; the
@@ -387,6 +389,16 @@ Two facts frame every decision:
 - **Gates.** `ledger_counts_unbuilt_chunk_slots` and `partial_projection_does_not_settle_memory` in
   `adapters::tests::projection_worker::note_chunk_projection` read the real definer as `role_gateway`;
   `retiring_legacy_point_is_band_slack_not_ratio` in `retrieval::envelope`.
+- **Declared (ledger).**
+  - The policy is one-way: a hash set back to NULL after chunks are built counts each note as one slot while its C
+    chunk points stay visible, so its streams read `cannot_establish` until every such note is re-projected legacy.
+    Turning chunking off is a re-projection, not a policy edit.
+  - `points_retiring` widens only the band's top. A legacy point lost from Qdrant while 0 of C chunks exist leaves
+    the note unrecallable and the ledger closed: the same shape as Q's slack (ADR-0057 known limit 12), now per
+    note mid-backfill.
+  - The definer reads `identity_note_materializations` under 0235's policy, whose Evidence arm the caller's
+    visibility must admit. `note_repo` gives a note's Evidence and Memory the same visibility, so a Memory the
+    caller counts is a Memory whose contract row it sees; the gates seed TENANT_SHARED notes only.
 - **Declared.** The SQL predicate reads `title` and `key_claim` as strings; the worker's `card_input` falls back to a
   truncated rendering when `title` is not one. An identity note always carries both (ADR-0067 D-E), so the two agree
   on every Memory the policy can chunk.
