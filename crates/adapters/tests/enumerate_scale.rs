@@ -333,7 +333,7 @@ fn exp_35b_iii_evidence_visibility_variants() {
         ("50", all[..50].to_vec()),
         ("1", all[..1].to_vec()),
     ];
-    let variants: [(&str, &str); 4] = [
+    let variants: [(&str, &str); 5] = [
         ("V0_current", ""),
         (
             "V1_uncorrelated_in",
@@ -346,6 +346,10 @@ fn exp_35b_iii_evidence_visibility_variants() {
             "ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING (true)",
         ),
         ("V3_current_workmem64", "SET LOCAL work_mem = '64MB'"),
+        (
+            "V4_copied_visibility",
+            "ALTER TABLE private.memory_evidence ADD COLUMN tenant_id uuid, ADD COLUMN visibility_class text, ADD COLUMN visibility_user_id uuid, ADD COLUMN visibility_workspace_id uuid; UPDATE private.memory_evidence me SET tenant_id = mr.tenant_id, visibility_class = mr.visibility_class, visibility_user_id = mr.visibility_user_id, visibility_workspace_id = mr.visibility_workspace_id FROM private.memory_records mr WHERE mr.memory_id = me.memory_id; ANALYZE private.memory_evidence; ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING (current_user = 'role_migration_owner' OR (tenant_id = current_setting('humaux.tenant_id', true)::uuid AND (current_user IN ('role_retrieval_worker', 'role_consolidation_worker', 'role_private_worker') OR private.visibility_allowed(visibility_class, true, visibility_user_id = NULLIF(current_setting('humaux.user_id', true), '')::uuid, EXISTS (SELECT 1 FROM control.workspace_memberships wm WHERE wm.tenant_id = memory_evidence.tenant_id AND wm.workspace_id = memory_evidence.visibility_workspace_id AND wm.user_id = NULLIF(current_setting('humaux.user_id', true), '')::uuid AND wm.state = 'ACTIVE'))) AND (NOT EXISTS (SELECT 1 FROM private.memory_subject_presence p WHERE p.tenant_id = memory_evidence.tenant_id AND p.memory_id = memory_evidence.memory_id) OR private.memory_subject_visibility_ok(tenant_id, memory_id))))",
+        ),
     ];
     let stmt = "SELECT me.memory_id, eo.evidence_id AS visible_evidence_id, eo.visibility_class, \
                 eo.visibility_user_id, eo.visibility_workspace_id \
@@ -516,7 +520,7 @@ fn exp_35b_iii_evidence_visibility_concurrency() {
         )
         .expect("original policy")
         .get(0);
-    let variants: [(&str, String); 3] = [
+    let variants: [(&str, String); 4] = [
         ("V0_current", original.clone()),
         (
             "V1_uncorrelated_in",
@@ -525,8 +529,12 @@ fn exp_35b_iii_evidence_visibility_concurrency() {
                 .to_owned(),
         ),
         ("V2_no_sublink_bound", "true".to_owned()),
+        ("V4_copied_visibility", "current_user = 'role_migration_owner' OR (tenant_id = current_setting('humaux.tenant_id', true)::uuid AND (current_user IN ('role_retrieval_worker', 'role_consolidation_worker', 'role_private_worker') OR private.visibility_allowed(visibility_class, true, visibility_user_id = NULLIF(current_setting('humaux.user_id', true), '')::uuid, EXISTS (SELECT 1 FROM control.workspace_memberships wm WHERE wm.tenant_id = memory_evidence.tenant_id AND wm.workspace_id = memory_evidence.visibility_workspace_id AND wm.user_id = NULLIF(current_setting('humaux.user_id', true), '')::uuid AND wm.state = 'ACTIVE'))) AND (NOT EXISTS (SELECT 1 FROM private.memory_subject_presence p WHERE p.tenant_id = memory_evidence.tenant_id AND p.memory_id = memory_evidence.memory_id) OR private.memory_subject_visibility_ok(tenant_id, memory_id)))".to_owned()),
     ];
     for (name, using) in &variants {
+        if *name == "V4_copied_visibility" {
+            admin.batch_execute("ALTER TABLE private.memory_evidence ADD COLUMN tenant_id uuid, ADD COLUMN visibility_class text, ADD COLUMN visibility_user_id uuid, ADD COLUMN visibility_workspace_id uuid; UPDATE private.memory_evidence me SET tenant_id = mr.tenant_id, visibility_class = mr.visibility_class, visibility_user_id = mr.visibility_user_id, visibility_workspace_id = mr.visibility_workspace_id FROM private.memory_records mr WHERE mr.memory_id = me.memory_id; ANALYZE private.memory_evidence").expect("V4 columns");
+        }
         admin
             .batch_execute(&format!(
                 "ALTER POLICY memory_evidence_tenant ON private.memory_evidence USING ({using})"
