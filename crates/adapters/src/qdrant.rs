@@ -1902,14 +1902,10 @@ mod lifecycle_prefilter_tests {
     /// chunk body minus exactly those two keys. Fault: write the fields unconditionally ⇒ red on the legacy arm.
     #[test]
     fn chunk_fields_ride_only_chunk_payloads() {
-        let legacy = upsert_point_body(PointId::Num(1), &payload().into_indexable().expect("idx"));
-        let chunk = upsert_point_body(
-            PointId::Num(1),
-            &payload()
-                .into_indexable()
-                .expect("idx")
-                .with_chunk("NoteChunksV1-x", 3),
-        );
+        // One payload for both arms: `payload()` mints fresh ids per call.
+        let indexable = payload().into_indexable().expect("idx");
+        let legacy = upsert_point_body(PointId::Num(1), &indexable);
+        let chunk = upsert_point_body(PointId::Num(1), &indexable.with_chunk("NoteChunksV1-x", 3));
         let mut stripped = chunk["payload"].clone();
         let fields = stripped.as_object_mut().expect("object");
         assert_eq!(
