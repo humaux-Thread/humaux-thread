@@ -15738,6 +15738,23 @@ fn memory_grep_pages_a_large_universe_exactly() {
                 0,
                 "ß does not fold to SS: ILIKE folds letter by letter"
             );
+
+            // ADR-0069 measurement record (printed, not asserted): 20 greps each for a common word (every row), a rare
+            // one and a two-character pattern over the 10 043-memory universe.
+            for pattern in ["filler", "zq137x", "ro"] {
+                let mut millis: Vec<u128> = (0..20)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        let _ = page(None, pattern);
+                        started.elapsed().as_millis()
+                    })
+                    .collect();
+                millis.sort_unstable();
+                println!(
+                    "GREP_MEASURE pattern={pattern} rows=10043 p50_ms={} p95_ms={}",
+                    millis[9], millis[18]
+                );
+            }
         },
     );
 }
