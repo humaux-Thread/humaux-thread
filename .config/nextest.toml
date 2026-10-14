@@ -1,10 +1,140 @@
-# cargo-nextest profiles (trial, M24 test-speed). Every test runs in its own process, binaries run in parallel.
+# cargo-nextest profiles (M24 test-speed trial). nextest runs every test in its own process and test
+# binaries in parallel; cargo test ran binaries one after another and threads inside one process. Two
+# consequences, both handled with test groups (max-threads = 1):
+#  - global-db: binaries that share cluster-global state (the 4 fixed provider slots, global append, outbox/job
+#    tables) and were only safe because no other binary ran at the same time (run 38626567082: 54 failures,
+#    "N provider slot(s) are bound to live claims").
+#  - serial-<binary>: binaries whose tests serialise on an in-process static Mutex, which a per-test process
+#    no longer shares.
+
+[test-groups]
+global-db = { max-threads = 1 }
+serial-consolidate-snapshot = { max-threads = 1 }
+serial-contribution-pipeline = { max-threads = 1 }
+serial-contribution-policy-lifecycle-0132 = { max-threads = 1 }
+serial-contribution-reasoner = { max-threads = 1 }
+serial-contribution-repo = { max-threads = 1 }
+serial-health-snapshot = { max-threads = 1 }
+serial-mechanism-observation = { max-threads = 1 }
+serial-phase9-exact-assessed-storage-binding = { max-threads = 1 }
+serial-phase9-independence-attestation = { max-threads = 1 }
+serial-public-provenance = { max-threads = 1 }
+serial-public-runtime = { max-threads = 1 }
+serial-public-runtime-qdrant = { max-threads = 1 }
+serial-public-trust = { max-threads = 1 }
+serial-quota-and-rate = { max-threads = 1 }
+serial-rebuild = { max-threads = 1 }
+serial-selection-snapshot = { max-threads = 1 }
+serial-probes = { max-threads = 1 }
+serial-mcp-gateway = { max-threads = 1 }
+serial-drill = { max-threads = 1 }
+serial-onboarding = { max-threads = 1 }
+serial-reasoning-routes = { max-threads = 1 }
+serial-contribution-execution-runner = { max-threads = 1 }
+serial-start-manual-contribution-command-0131 = { max-threads = 1 }
+
 [profile.ci]
 fail-fast = false
 retries = 0
 slow-timeout = { period = "60s", terminate-after = 10 }
 status-level = "fail"
 final-status-level = "slow"
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::distill_dispatch_v2) | binary_id(humaux-adapters::email_outbox) | binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-adapters::jobs_claim) | binary_id(humaux-adapters::maintenance_doors) | binary_id(humaux-adapters::outbox_batch_remember) | binary_id(humaux-adapters::projection_worker) | binary_id(humaux-adapters::scheduler_exactly_once) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::run_once_e2e) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-private-worker::distill_hop_e2e)'
+test-group = 'global-db'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::consolidate_snapshot)'
+test-group = 'serial-consolidate-snapshot'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::contribution_pipeline)'
+test-group = 'serial-contribution-pipeline'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::contribution_policy_lifecycle_0132)'
+test-group = 'serial-contribution-policy-lifecycle-0132'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::contribution_reasoner)'
+test-group = 'serial-contribution-reasoner'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::contribution_repo)'
+test-group = 'serial-contribution-repo'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::health_snapshot)'
+test-group = 'serial-health-snapshot'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::mechanism_observation)'
+test-group = 'serial-mechanism-observation'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::phase9_exact_assessed_storage_binding)'
+test-group = 'serial-phase9-exact-assessed-storage-binding'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::phase9_independence_attestation)'
+test-group = 'serial-phase9-independence-attestation'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::public_provenance)'
+test-group = 'serial-public-provenance'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::public_runtime)'
+test-group = 'serial-public-runtime'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::public_runtime_qdrant)'
+test-group = 'serial-public-runtime-qdrant'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::public_trust)'
+test-group = 'serial-public-trust'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::quota_and_rate)'
+test-group = 'serial-quota-and-rate'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::rebuild)'
+test-group = 'serial-rebuild'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-adapters::selection_snapshot)'
+test-group = 'serial-selection-snapshot'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-admin::probes)'
+test-group = 'serial-probes'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-gateway::mcp_gateway)'
+test-group = 'serial-mcp-gateway'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-maintenance::drill)'
+test-group = 'serial-drill'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-maintenance::onboarding)'
+test-group = 'serial-onboarding'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-maintenance::reasoning_routes)'
+test-group = 'serial-reasoning-routes'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-private-worker::contribution_execution_runner)'
+test-group = 'serial-contribution-execution-runner'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-private-worker::start_manual_contribution_command_0131)'
+test-group = 'serial-start-manual-contribution-command-0131'
 
 [profile.ci.junit]
 path = "junit.xml"

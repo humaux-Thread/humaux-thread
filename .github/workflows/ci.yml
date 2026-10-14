@@ -441,7 +441,7 @@ jobs:
           # portability defect is a follow-up card. Everything else in the package runs.
           cargo nextest run --profile ci -p humaux-retrieval-provider -E 'not (test(=adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport) | test(=adapters::tests::dispatched_transport_failure_consumes_budget) | test(=adapters::tests::mark_failure_stops_before_transport_and_releases_budget) | test(=adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure))' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-provider.xml" 2>/dev/null || true
-          cargo nextest run --profile ci -p humaux-gateway -j 2 || rc=1
+          cargo nextest run --profile ci -p humaux-gateway || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-gateway.xml" 2>/dev/null || true
           # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
           # `stat -c %d` of the bind target vs PGDATA refuses `repo_shares_pgdata_fs`). The
