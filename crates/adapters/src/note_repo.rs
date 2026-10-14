@@ -195,7 +195,7 @@ pub(crate) async fn output_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consolidate_repo::authority_class_to_db_str;
+    use crate::memory_repo::authority_class_to_db_str;
     use humaux_domain::note::requested_authority_wire;
 
     /// §78.2: the wire spelling of `requested_authority` is `private.memory_records.authority_class` verbatim — the

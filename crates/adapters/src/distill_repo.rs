@@ -1,7 +1,7 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
 //! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
@@ -47,7 +47,7 @@ use crate::postgres::{PrivateWorkerDbPool, RuntimeDbPool};
 use crate::{
     Counter,
     confirm_token_repo::{self, ConfirmationClaim},
-    memory_repo::{self, memory_type_db_str},
+    memory_repo::{self, authority_class_to_db_str, memory_type_db_str},
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberCommand},
     request_guard_repo::{self, AuditTenant},
@@ -110,11 +110,6 @@ pub(crate) fn origin_class_from_db_str(s: &str) -> Option<EvidenceOriginClass> {
         "SystemMigration" => EvidenceOriginClass::SystemMigration,
         _ => return None,
     })
-}
-
-const fn authority_class_db_str(class: AuthorityClass) -> &'static str {
-    // One mapping for the whole crate (§78.2): consolidate_repo owns it.
-    crate::consolidate_repo::authority_class_to_db_str(class)
 }
 
 /// One claimed `ops.outbox` work item.
@@ -588,7 +583,7 @@ pub async fn finish_job_in_txn(
 // evidence issuer + the shared BMO/confirm-token/audit helpers, never a second token path.
 // ============================================================================
 
-/// Read-side inverse of [`authority_class_db_str`] (over all 7 variants; no parallel CHECK copy).
+/// Read-side inverse of [`authority_class_to_db_str`] (over all 7 variants; no parallel CHECK copy).
 fn authority_class_from_db_str(wire: &str) -> Option<AuthorityClass> {
     [
         AuthorityClass::PublicKnowledge,
@@ -600,7 +595,7 @@ fn authority_class_from_db_str(wire: &str) -> Option<AuthorityClass> {
         AuthorityClass::ExplicitTaskContext,
     ]
     .into_iter()
-    .find(|c| authority_class_db_str(*c) == wire)
+    .find(|c| authority_class_to_db_str(*c) == wire)
 }
 
 /// Read-side inverse of [`memory_type_db_str`] (over all 12 variants).
@@ -647,6 +642,7 @@ fn remember_err(error: remember::RememberError) -> ErrorCode {
         | remember::RememberError::Note(code) => code,
         remember::RememberError::ReasoningDomainUnresolved
         | remember::RememberError::TokenKeysUnset => ErrorCode::DependencyUnavailable,
+        remember::RememberError::EvidenceClassOutsideSet { .. } => ErrorCode::Internal,
     }
 }
 
@@ -692,7 +688,7 @@ pub async fn insert_candidate(
     .bind(candidate.body)
     .bind(candidate.sha256)
     .bind(candidate.rejection.as_db_str())
-    .bind(authority_class_db_str(candidate.requested_class))
+    .bind(authority_class_to_db_str(candidate.requested_class))
     .bind(memory_type_db_str(candidate.memory_type))
     .bind(candidate.confidence)
     .bind(&evidence.data_class)
@@ -1429,6 +1425,16 @@ pub async fn list_pending_candidates(
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
+    #[test]
+    fn evidence_class_outside_the_set_maps_to_internal() {
+        let error = remember::RememberError::EvidenceClassOutsideSet {
+            column: "data_class",
+            value: "x".to_owned(),
+        };
+        assert_eq!(remember_err(error), ErrorCode::Internal);
+    }
 
     const MIGRATION_SQL: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

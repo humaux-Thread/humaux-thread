@@ -76,6 +76,16 @@ pub enum RememberError {
     /// ADR-0067 D-C: a `memory.note_put` intake was refused before the first write — the requested authority exceeds the
     /// server-fixed origin's ceiling (`FORBIDDEN`; the gateway renders the business error). Nothing is committed.
     Note(ErrorCode),
+    /// A `data_class` / `visibility_class` string outside its closed CHECK set reached the typed Evidence door
+    /// ([`crate::evidence_repo::NewEvidence`]): a producer bug, not an infrastructure fault — every in-repo producer
+    /// emits closed-set literals. Refused before the INSERT, nothing is written; every mapper renders it
+    /// `INTERNAL` (a retry cannot change a deterministic fault).
+    EvidenceClassOutsideSet {
+        /// The `private.evidence_objects` column the value was meant for.
+        column: &'static str,
+        /// The offending string, verbatim.
+        value: String,
+    },
 }
 
 impl From<sqlx::Error> for RememberError {
@@ -96,6 +106,9 @@ impl std::fmt::Display for RememberError {
             Self::Subject(code) => write!(f, "subject declaration rejected: {code}"),
             Self::Affect(code) => write!(f, "affect declaration rejected: {code}"),
             Self::Note(code) => write!(f, "note intake rejected: {code}"),
+            Self::EvidenceClassOutsideSet { column, value } => {
+                write!(f, "evidence {column} {value:?} is outside its closed set")
+            }
             Self::ReasoningDomainUnresolved => {
                 write!(f, "no reasoning domain for this tenant (§11.2.1)")
             }
@@ -251,11 +264,12 @@ pub(crate) async fn next_commit_seq(
 }
 
 /// A `data_class` / `visibility_class` string outside the CHECK sets: the typed door cannot express it, so it is refused
-/// before the INSERT as the same `Db` failure class the CHECK constraint produced, and nothing is written.
-fn unknown_evidence_literal(column: &str, value: &str) -> RememberError {
-    RememberError::Db(sqlx::Error::Protocol(format!(
-        "evidence {column} has no value {value:?}"
-    )))
+/// before the INSERT as [`RememberError::EvidenceClassOutsideSet`], and nothing is written.
+fn unknown_evidence_literal(column: &'static str, value: &str) -> RememberError {
+    RememberError::EvidenceClassOutsideSet {
+        column,
+        value: value.to_owned(),
+    }
 }
 
 /// `create_evidence_object` — maps `cmd` onto M07's Evidence door
@@ -676,4 +690,26 @@ pub async fn remember(
     let pending = remember_in_txn(&mut txn, cmd).await?;
     txn.commit().await?;
     Ok(pending.into_accepted())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refusal is a typed, non-retryable invariant breach carrying the column and the offending string, never a
+    /// `Db` error (which the callers' `db_error` mappers would read as a retryable dependency fault).
+    #[test]
+    fn class_outside_the_closed_set_is_its_own_error_variant() {
+        match unknown_evidence_literal("data_class", "private") {
+            RememberError::EvidenceClassOutsideSet { column, value } => {
+                assert_eq!(column, "data_class");
+                assert_eq!(value, "private");
+            }
+            other => panic!("expected EvidenceClassOutsideSet, got {other:?}"),
+        }
+        assert_eq!(
+            unknown_evidence_literal("visibility_class", "x").to_string(),
+            "evidence visibility_class \"x\" is outside its closed set"
+        );
+    }
 }

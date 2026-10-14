@@ -3,7 +3,7 @@
 //!   contract both hop ends share (§78 single-source): the input manifest hash ([`compute_input_manifest_hash`]), the
 //!   prompt/schema contract ([`consolidation_prompt_contract`]) and the rollup output parser
 //!   ([`parse_rollup_output`]).
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::byok, adapters::consolidate_repo, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::consolidate, domain::dataclass, domain::error, domain::ledger]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::byok, adapters::consolidate_repo, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::consolidate, domain::dataclass, domain::error, domain::ledger]
 //! Called-by: [adapters::distill_reasoner, humaux-consolidation-worker, private-worker::inference_rpc, private-worker::main, tests]
 //! Invariants: [reads only under role_private_worker's SELECT grants and writes only §7.4 disclosure-ledger rows; the
 //!   run is located by the registered call id, never a caller-supplied memory id; admission or provider failure
@@ -54,7 +54,7 @@ use crate::{
     },
     disclosure::{self, DisclosureSource},
     distill_reasoner::admissible_classes,
-    model_call_ledger,
+    memory_repo, model_call_ledger,
     postgres::PrivateWorkerDbPool,
     reasoning_route_admission::{
         ProviderFor, resolve_user_reasoning_admission, route_health_refusal,
@@ -113,7 +113,7 @@ fn class_menu(ceiling: AuthorityClass) -> Vec<&'static str> {
     // read is now a class it may assert.
     admissible_classes(ceiling)
         .into_iter()
-        .map(consolidate_repo::authority_class_to_db_str)
+        .map(memory_repo::authority_class_to_db_str)
         .collect()
 }
 
@@ -173,7 +173,7 @@ pub fn consolidation_prompt_contract(ceiling: AuthorityClass) -> ConsolidationPr
     let menu = class_menu(ceiling);
     let system_prompt = render_system_prompt(&menu);
     let json_schema = render_schema(&menu);
-    let ceiling_wire = consolidate_repo::authority_class_to_db_str(ceiling);
+    let ceiling_wire = memory_repo::authority_class_to_db_str(ceiling);
     let mut hasher = Sha256::new();
     hasher.update(b"humaux.consolidation-prompt-contract\0");
     hasher.update(CONSOLIDATION_PROMPT_CONTRACT_VERSION.to_be_bytes());
@@ -849,7 +849,7 @@ mod tests {
                 .collect();
             let admitted: Vec<&str> = admissible_classes(ceiling)
                 .into_iter()
-                .map(consolidate_repo::authority_class_to_db_str)
+                .map(memory_repo::authority_class_to_db_str)
                 .collect();
             assert_eq!(offered, admitted, "{ceiling:?}");
             assert!(contract.system_prompt.contains(&admitted.join(", ")));
