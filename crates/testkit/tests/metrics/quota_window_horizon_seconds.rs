@@ -1,7 +1,7 @@
 // witness: family=quota_window_horizon_seconds labels=-
 //! `testkit::tests::metrics::quota_window_horizon_seconds` — Metric Witness for `quota_window_horizon_seconds` (§80.2
 //!   W-side; registry row §41.2 「QUOTA_RENEWAL 任务每次租户门调用收尾 · 1」; consumer §42 QuotaWindowRenewalMissing).
-//! Depends-on: crates=[humaux-adapters, humaux-domain]; services=[]; env=[]; modules=[adapters::quota_repo, domain::ids]
+//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[adapters::quota_repo, domain::ids]
 //! Called-by: []
 //! Invariants: [drives the family's one `.set()` (`quota_repo::record_quota_window_horizon`, called by
 //!   `maintenance::serve` after each QUOTA_RENEWAL tenant call) and asserts the sample is the smallest recorded

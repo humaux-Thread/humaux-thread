@@ -534,6 +534,7 @@ fn window_count(handle: &mut Handle, tenant: Uuid) -> i64 {
 ///     past the boundary; (6) `GRANT EXECUTE ... TO role_gateway` ⇒ the ACL assert.
 #[test]
 #[ignore = "lane(a:request_guard) requires migration 0245 and the dedicated request-guard PostgreSQL fixture"]
+#[allow(clippy::too_many_lines)] // one tenant pair through the boundary: issue, stage, promote, rerun, suspended, ACL
 fn quota_window_renews_before_period_end() {
     run_db_fixture::<Fixture, _>("quota_window_renews_before_period_end", |mut h| {
         for tenant in [TENANT_ID, TENANT2_ID] {
