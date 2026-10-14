@@ -195,6 +195,56 @@ fn op_ceiling() {
     });
 }
 
+/// The experiment switches `op_ceiling_exp` compares, each variant on a freshly booted gateway and fresh tenants.
+const EXP_VARIANTS: [(&str, &[(&str, &str)]); 5] = [
+    ("baseline", &[]),
+    ("ledger_cache", &[("HUMAUX_EXP_LEDGER_CACHE_MS", "1000")]),
+    ("rate_in_process", &[("HUMAUX_EXP_RATE_IN_PROCESS", "1")]),
+    (
+        "touch_throttle",
+        &[("HUMAUX_EXP_TOUCH_THROTTLE_MS", "60000")],
+    ),
+    (
+        "all",
+        &[
+            ("HUMAUX_EXP_LEDGER_CACHE_MS", "1000"),
+            ("HUMAUX_EXP_RATE_IN_PROCESS", "1"),
+            ("HUMAUX_EXP_TOUCH_THROTTLE_MS", "60000"),
+        ],
+    ),
+];
+
+/// `op_ceiling` for memory.get and tools/list only, once per [`EXP_VARIANTS`] entry: each switch's own gain.
+#[test]
+#[ignore = "experiment"]
+fn op_ceiling_exp() {
+    for (variant, extra_env) in EXP_VARIANTS {
+        lab_with_env(&format!("op_ceiling_exp_{variant}"), 4, extra_env, |lab| {
+            for (index, op) in [(0, Op::Get), (3, Op::ToolsList)] {
+                ONLY_OP.store(index, std::sync::atomic::Ordering::Relaxed);
+                let before = cpu_snapshot(lab.gateway.child.id());
+                let groups = lab.run(&[(0, 8, 0), (1, 8, 0), (2, 8, 0), (3, 8, 0)], 20);
+                let after = cpu_snapshot(lab.gateway.child.id());
+                println!(
+                    "CAPCPU variant={variant} op={} gateway_ms={} postgres_ms={} loadgen_ms={} host_ms={} \
+                     wall_ms=20000",
+                    op.name(),
+                    after.0 - before.0,
+                    after.1 - before.1,
+                    after.2 - before.2,
+                    after.3 - before.3
+                );
+                report(
+                    &format!("op_ceiling_exp variant={variant} op={}", op.name()),
+                    groups,
+                    20,
+                );
+            }
+            ONLY_OP.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+}
+
 /// CPU milliseconds so far of (the gateway, every `postgres` process on the host, this test process, the whole host)
 /// from `/proc` (utime + stime at 100 ticks/s; the host total from `/proc/stat`'s user + nice + system + irq + softirq).
 fn cpu_snapshot(gateway_pid: u32) -> (u64, u64, u64, u64) {
@@ -321,6 +371,16 @@ struct Lab {
 /// fixture's SERIAL guard allows), seeds them, boots the gateway binary, warms every op up once per tenant, runs
 /// `body`, then tears everything down.
 fn lab(test_name: &str, tenants: usize, body: impl FnOnce(&Lab)) {
+    lab_with_env(test_name, tenants, &[], body);
+}
+
+/// [`lab`] with `extra_env` added to the gateway's environment (the `HUMAUX_EXP_*` switches).
+fn lab_with_env(
+    test_name: &str,
+    tenants: usize,
+    extra_env: &[(&str, &str)],
+    body: impl FnOnce(&Lab),
+) {
     run_db_fixture::<Fixture, _>(test_name, |primary| {
         let mut handles = vec![primary];
         for _ in 1..tenants {
@@ -334,8 +394,13 @@ fn lab(test_name: &str, tenants: usize, body: impl FnOnce(&Lab)) {
             .enumerate()
             .map(|(index, handle)| Arc::new(seed_tenant(handle, index)))
             .collect();
-        let env = gateway_env(&handles[0]);
+        let mut env = gateway_env(&handles[0]);
         print_host_facts(&mut handles[0], &env);
+        env.extend(
+            extra_env
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
+        );
         let lab = Lab {
             rt: tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -569,8 +634,9 @@ impl Gateway {
         // dep: subprocess(humaux-gateway) — spawns the humaux-gateway binary under test
         let mut command = Command::new(env!("CARGO_BIN_EXE_humaux-gateway"));
         for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with(GATEWAY_ENV_PREFIX) {
-                command.env_remove(key);
+            let key_text = key.to_string_lossy();
+            if key_text.starts_with(GATEWAY_ENV_PREFIX) || key_text.starts_with("HUMAUX_EXP_") {
+                command.env_remove(&key);
             }
         }
         let mut child = command

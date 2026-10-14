@@ -2309,6 +2309,33 @@ pub async fn materialize_memory_get_target(
     target: MemoryGetTarget,
     include_history: bool,
 ) -> Result<MaterializedMemory, ErrorCode> {
+    materialize_memory_get_target_with_ledger(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        target,
+        include_history,
+        None,
+    )
+    .await
+}
+
+/// EXPERIMENT (exp/capacity-agents, never merged): [`materialize_memory_get_target`] with an optional
+/// caller-cached ledger. `Some` skips `close_ledger_in_txn` and returns that ledger as read, so the projection block
+/// may be up to the caller's cache age stale (`HUMAUX_EXP_LEDGER_CACHE_MS`).
+#[allow(clippy::too_many_arguments)]
+pub async fn materialize_memory_get_target_with_ledger(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    target: MemoryGetTarget,
+    include_history: bool,
+    cached_ledger: Option<humaux_retrieval::completeness::LedgerClosure>,
+) -> Result<MaterializedMemory, ErrorCode> {
     let (read_authorization, _) = canonical_scope(authorization, scope)?;
     materialized_identity(scope, expected_family, validated_key)?;
     let mut txn = pool
@@ -2371,9 +2398,12 @@ pub async fn materialize_memory_get_target(
     } else {
         None
     };
-    let ledger = close_ledger_in_txn(&mut txn, validated_key, authorization)
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    let ledger = match cached_ledger {
+        Some(ledger) => ledger,
+        None => close_ledger_in_txn(&mut txn, validated_key, authorization)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?,
+    };
     txn.commit()
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;

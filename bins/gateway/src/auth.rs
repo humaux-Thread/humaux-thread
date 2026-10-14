@@ -199,8 +199,43 @@ pub async fn authenticate_service_credential(
         rehash_to_current(pool, &record, pepper, raw_key).await;
     }
     // Reuse the gateway-only definer; rejected credentials never get a usage write.
-    credential_repo::mark_used(pool, record.api_key_id()).await?;
+    if exp_touch_due(record.api_key_id()) {
+        credential_repo::mark_used(pool, record.api_key_id()).await?;
+    }
     Ok(authenticated)
+}
+
+/// EXPERIMENT (exp/capacity-agents, never merged): `HUMAUX_EXP_TOUCH_THROTTLE_MS` (unset / 0 = off, every request
+/// touches), read once per process. When on, a key's `last_used_at` is written at most once per that many ms per
+/// process; the slot is claimed before the write, so a failed touch is not retried until the window passes.
+fn exp_touch_due(api_key_id: uuid::Uuid) -> bool {
+    use std::{
+        collections::HashMap,
+        sync::{LazyLock, Mutex, PoisonError},
+        time::{Duration, Instant},
+    };
+    static THROTTLE_MS: LazyLock<u64> = LazyLock::new(|| {
+        std::env::var("HUMAUX_EXP_TOUCH_THROTTLE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    });
+    // ponytail: unbounded map, no eviction; bounded by the number of live keys.
+    static LAST: LazyLock<Mutex<HashMap<uuid::Uuid, Instant>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    if *THROTTLE_MS == 0 {
+        return true;
+    }
+    let now = Instant::now();
+    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    if last
+        .get(&api_key_id)
+        .is_some_and(|at| now.duration_since(*at) < Duration::from_millis(*THROTTLE_MS))
+    {
+        return false;
+    }
+    last.insert(api_key_id, now);
+    true
 }
 
 /// §73.5 / ADR-0059 D-H: moves a previous-pepper verifier to the current pepper. Runs only after

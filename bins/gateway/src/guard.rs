@@ -217,6 +217,11 @@ impl GuardMetrics {
     }
 }
 
+/// EXPERIMENT (exp/capacity-agents, never merged): `HUMAUX_EXP_RATE_IN_PROCESS=1`, read once per process.
+static EXP_RATE_IN_PROCESS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("HUMAUX_EXP_RATE_IN_PROCESS").is_ok_and(|v| v == "1")
+});
+
 pub struct GatewayGuard {
     pool: Arc<RuntimeDbPool>,
     settings: GuardSettings,
@@ -357,9 +362,14 @@ impl GatewayGuard {
     /// `rate_limit_rejected_total` under the scope of the charge that was denied, as the sequential path did.
     async fn rate(&self, charges: Vec<(RateCharge<'_>, &'static str)>) -> Result<(), ErrorCode> {
         let (charges, scopes): (Vec<_>, Vec<_>) = charges.into_iter().unzip();
-        match quota_repo::consume_rate_batch(&self.pool, &charges, self.settings.rates.lock_timeout)
-            .await
-        {
+        // EXPERIMENT (exp/capacity-agents, never merged): post-auth buckets only; `preflight`'s IP bucket stays in PG.
+        let verdict = if *EXP_RATE_IN_PROCESS {
+            quota_repo::consume_rate_batch_in_process(&charges)
+        } else {
+            quota_repo::consume_rate_batch(&self.pool, &charges, self.settings.rates.lock_timeout)
+                .await
+        };
+        match verdict {
             Ok(()) => Ok(()),
             Err((code, i)) => {
                 if code == ErrorCode::RateLimited {

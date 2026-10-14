@@ -708,6 +708,50 @@ pub async fn consume_rate_batch(
     Ok(())
 }
 
+/// EXPERIMENT (exp/capacity-agents, never merged; `HUMAUX_EXP_RATE_IN_PROCESS=1`): [`consume_rate_batch`]'s
+/// verdicts from an in-process token bucket per resolved bucket (keyed by its advisory-lock key), same capacity,
+/// refill, input-order taking and first-denial semantics. Per process only: N gateways each grant the full rate, and
+/// a restart refills every bucket.
+pub fn consume_rate_batch_in_process(charges: &[RateCharge<'_>]) -> Result<(), (ErrorCode, usize)> {
+    use std::{
+        collections::HashMap,
+        sync::{LazyLock, Mutex, PoisonError},
+        time::Instant,
+    };
+    // ponytail: one global lock and no eviction; shard / evict idle keys if the experiment wins.
+    static BUCKETS: LazyLock<Mutex<HashMap<String, (f64, Instant)>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let buckets = charges
+        .iter()
+        .enumerate()
+        .map(|(i, charge)| resolve(charge).map_err(|code| (code, i)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let first = buckets.first().ok_or((ErrorCode::InvalidInput, 0))?;
+    if let Some(i) = buckets
+        .iter()
+        .position(|b| (b.tenant, b.user) != (first.tenant, first.user))
+    {
+        return Err((ErrorCode::InvalidInput, i));
+    }
+    let mut map = BUCKETS.lock().unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    for (i, (bucket, charge)) in buckets.iter().zip(charges).enumerate() {
+        let capacity = charge.policy.capacity as f64;
+        let (tokens, updated_at) = map
+            .entry(bucket.lock_key.clone())
+            .or_insert((capacity, now));
+        let elapsed = now.saturating_duration_since(*updated_at).as_secs_f64();
+        let available = capacity.min(*tokens + elapsed * charge.policy.refill_per_second as f64);
+        let allowed = available >= 1.0;
+        *tokens = if allowed { available - 1.0 } else { available };
+        *updated_at = (*updated_at).max(now);
+        if !allowed {
+            return Err((ErrorCode::RateLimited, i));
+        }
+    }
+    Ok(())
+}
+
 /// One bucket: a batch of one ([`consume_rate_batch`]). The pre-auth `ip` bucket runs alone, before
 /// authentication and under the SYSTEM tenant (ADR-0065 D-D rejected d). A later entitlement/quota failure cannot
 /// refund an already admitted abuse-limit attempt.

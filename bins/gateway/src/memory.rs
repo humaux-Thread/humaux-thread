@@ -11,14 +11,18 @@
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory]
 //! Spec: Baseline §22.0; §23.1; §33; §36; ADR-0025; ADR-0026; ADR-0054; ADR-0067; ADR-0069
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, LazyLock, Mutex, PoisonError},
+    time::{Duration, Instant},
+};
 
 use humaux_adapters::{
     affect_repo::{self, AffectInput, AffectRow, AnnotateDone},
     context_repo::{
         self, BindingWriteOutcome, BindingWriteRequest, EnumerationCensus, MaterializedMemory,
         MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter,
-        materialize_memory_enumeration_filtered, materialize_memory_get_target,
+        materialize_memory_enumeration_filtered, materialize_memory_get_target_with_ledger,
     },
     distill_repo::{
         self, ConfirmOutcome, ConfirmRequest, PendingCandidate, RejectOutcome, RejectRequest,
@@ -44,7 +48,7 @@ use humaux_domain::{
 };
 use humaux_projection::{serving::StreamFamily, stream::StreamKey};
 use humaux_retrieval::{
-    completeness::{CensusResult, FreshnessClass},
+    completeness::{CensusResult, FreshnessClass, LedgerClosure},
     envelope::{
         CompletenessBlock, CompletenessInputs, CountScope, Envelope, EvidenceBlock, FreshnessBlock,
         KnowledgeBlock, LaneStatus, MandatoryReport, PendingEnvelope, PinnedReport, PipelineBlock,
@@ -226,6 +230,21 @@ async fn affects_by_memory(
     Ok(out)
 }
 
+/// EXPERIMENT (exp/capacity-agents, never merged): `HUMAUX_EXP_LEDGER_CACHE_MS` (unset / 0 = off), read once per
+/// process. When on, `memory.get` reuses its projection block's (ledger, visible count) pair for that long.
+static EXP_LEDGER_CACHE_MS: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("HUMAUX_EXP_LEDGER_CACHE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+});
+
+/// EXPERIMENT: (stream key, narrowed authorization, serving version) → (read at, ledger, visible count).
+// ponytail: unbounded map, entries never evicted; fine for a bounded experiment population.
+type LedgerCacheEntry = (Instant, LedgerClosure, Option<u64>);
+static EXP_LEDGER_CACHE: LazyLock<Mutex<HashMap<String, LedgerCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// `include_history` (ADR-0067 D-H): `false` keeps the pre-40b contract byte for byte (a superseded id is
 /// `NOT_FOUND`); `true` returns the exact version asked for with its lifecycle and provenance. `target` (ADR-0067 D-J2)
 /// is one version or one note; a note is read at its head, and the DirectGet plan names the version actually read.
@@ -240,7 +259,21 @@ pub(crate) async fn get<T>(
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
     let (authorization, scope, family, stream, serving_version) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    let materialized = materialize_memory_get_target(
+    // EXPERIMENT: the key carries the narrowed authorization because the ledger's A2 point reading and the Qdrant
+    // count both apply the caller's §6.1 visibility; only staleness is traded, never another caller's view.
+    let cache_key = (*EXP_LEDGER_CACHE_MS > 0)
+        .then(|| format!("{stream:?}|{authorization:?}|{serving_version:?}"));
+    let cached = cache_key.as_ref().and_then(|key| {
+        let cache = EXP_LEDGER_CACHE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache
+            .get(key)
+            .filter(|(at, ..)| at.elapsed() < Duration::from_millis(*EXP_LEDGER_CACHE_MS))
+            .map(|(_, ledger, visible)| (ledger.clone(), *visible))
+    });
+    let (cached_ledger, cached_visible) = cached.unzip();
+    let materialized = materialize_memory_get_target_with_ledger(
         &pool,
         &authorization,
         &scope,
@@ -248,6 +281,7 @@ pub(crate) async fn get<T>(
         &stream,
         target,
         include_history,
+        cached_ledger,
     )
     .await?;
     let memory_id = match materialized.bodies.items.as_slice() {
@@ -261,15 +295,27 @@ pub(crate) async fn get<T>(
     .map_err(|_| ErrorCode::Internal)?;
     let affects = affects_by_memory(&pool, &authorization, &materialized).await?;
     let archived = materialized.archived;
-    let visible = bootstrap
-        .visible_index_count(
-            &pool,
-            &authorization,
-            &stream,
-            serving_version.as_deref(),
-            &materialized.ledger,
-        )
-        .await;
+    let visible = match cached_visible {
+        Some(visible) => visible,
+        None => {
+            let visible = bootstrap
+                .visible_index_count(
+                    &pool,
+                    &authorization,
+                    &stream,
+                    serving_version.as_deref(),
+                    &materialized.ledger,
+                )
+                .await;
+            if let Some(key) = cache_key {
+                EXP_LEDGER_CACHE
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key, (Instant::now(), materialized.ledger.clone(), visible));
+            }
+            visible
+        }
+    };
     accept_memory_envelope(
         materialized,
         affects,
