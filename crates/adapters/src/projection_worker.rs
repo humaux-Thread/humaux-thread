@@ -1100,10 +1100,12 @@ fn plan_slots(
     Ok((planned, slots))
 }
 
-/// (c)-(d) per slot, ADR-0068 D-F. Stored-first as before: when every slot has a vector stored under the label's
-/// fingerprint and its exact input bytes, nothing is sealed or sent. Otherwise each distinct vector key
-/// `(memory, input_sha256)` — the fingerprint is the label's, one per worker — is sealed and embedded once, and its
-/// vector is handed to every slot with that key, looked up by key, never by position.
+/// (c)-(d) per slot, ADR-0068 D-F. Stored-first per slot: a slot whose vector is stored under the label's fingerprint
+/// and its exact input bytes reuses it, so a retry after a partial failure embeds only the slots that never
+/// committed (`retry_reuses_committed_batch_vectors`). When every slot is stored, nothing is sealed or sent.
+/// Otherwise each distinct vector key `(memory, input_sha256)` without a stored vector — the fingerprint is the
+/// label's, one per worker — is sealed and embedded once, and its vector is handed to every slot with that key,
+/// looked up by key, never by position. Every chunked source of the ticket is still sealed before that call (D-G).
 async fn slot_vectors(
     ctx: &RowCtx<'_>,
     commit_seq: i64,
@@ -1111,7 +1113,7 @@ async fn slot_vectors(
     slots: &[SlotCard],
     stored: &[(Uuid, Vec<u8>, Vec<f32>)],
 ) -> Result<Vec<Vec<f32>>, (RowTerminal, &'static str)> {
-    let reused: Option<Vec<Vec<f32>>> = slots
+    let reused: Vec<Option<Vec<f32>>> = slots
         .iter()
         .map(|slot| {
             let memory_id = planned[slot.memory].memory.memory_id.0;
@@ -1125,13 +1127,13 @@ async fn slot_vectors(
                 .map(|(_, _, v)| v.clone())
         })
         .collect();
-    if let Some(vectors) = reused {
+    if reused.iter().all(Option::is_some) {
         // No provider call, so no egress and nothing for the §1.2.3 scanner to gate.
-        return Ok(vectors);
+        return Ok(reused.into_iter().flatten().collect());
     }
     let mut distinct: Vec<&SlotCard> = Vec::new();
     let mut by_key: HashMap<(usize, [u8; 32]), usize> = HashMap::new();
-    for slot in slots {
+    for (slot, _) in slots.iter().zip(&reused).filter(|(_, v)| v.is_none()) {
         by_key
             .entry((slot.memory, slot.input_sha256))
             .or_insert_with(|| {
@@ -1142,7 +1144,10 @@ async fn slot_vectors(
     let vectors = seal_and_embed(ctx, commit_seq, planned, &distinct).await?;
     Ok(slots
         .iter()
-        .map(|slot| vectors[by_key[&(slot.memory, slot.input_sha256)]].clone())
+        .zip(reused)
+        .map(|(slot, stored)| {
+            stored.unwrap_or_else(|| vectors[by_key[&(slot.memory, slot.input_sha256)]].clone())
+        })
         .collect())
 }
 
@@ -1204,8 +1209,8 @@ fn seal_failure(code: ErrorCode) -> (RowTerminal, &'static str) {
 /// chunked note's whole source is sealed first, so a secret anywhere in it — the last window, or across a window
 /// boundary — fails the row `secret_scan_rejected` exactly like a secret in a legacy card, before any card is sealed
 /// and before any provider call. The provider splits the call into requests of at most its `max_batch_items` (ADR-0068
-/// D-F); any failed request fails the whole call, and nothing is persisted before every input has its vector, so the
-/// ticket retries whole.
+/// D-F); any failed request fails the whole call and nothing from this attempt is persisted, so the retry embeds these
+/// inputs again (slots committed by an earlier attempt are reused by [`slot_vectors`]).
 async fn seal_and_embed(
     ctx: &RowCtx<'_>,
     commit_seq: i64,

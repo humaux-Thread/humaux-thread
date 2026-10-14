@@ -152,7 +152,7 @@ Two facts frame every decision:
 - **Retries.** A failed slice fails the whole call and returns no vectors. Earlier slices stay billed. The worker
   persists vectors only per memory in `finish_row`, after every vector is in hand, so the ticket retries whole and
   re-embeds every slice. Reusing a committed batch's vectors on retry (gate `retry_reuses_committed_batch_vectors`) is
-  deferred to 40d-1b with the slot ledger.
+  deferred to 40d-1b with the slot ledger (shipped in 40d-1b-iii-c: committed slots are reused per slot).
 - **Gates.** `embedding_batches_respect_provider_limit` (7 cards with a cap of 3: requests 3/3/1, one ledger row,
   reservation and disclosure per request, and each card gets its own vector under reversed responses) and
   `a_duplicate_index_in_a_later_batch_returns_no_vectors`, both in `retrieval-provider::adapters`.
@@ -354,14 +354,13 @@ Two facts frame every decision:
 - **Left for 40d-1b-iii.**
   - The slot ledger (shipped in 40d-1b-iii-a, below).
   - Rebuild per slot (shipped in 40d-1b-iii-b, below).
-  - Retry reuse of committed batch vectors (`retry_reuses_committed_batch_vectors`): stored-first is still
-    all-or-nothing per ticket, so a retry after a partial failure re-embeds every distinct input.
+  - Retry reuse of committed batch vectors (shipped in 40d-1b-iii-c, below).
   - Disclosure granularity: the embedder receives one Memory id per distinct input, not one source row per
-    (memory, ordinal) the input serves (D-F).
-  - The ADR gates `chunk_backfill_embeds_only_note_chunk_inputs`, `ledger_counts_unbuilt_chunk_slots`,
-    `partial_projection_does_not_settle_memory` and `equal_counts_do_not_prove_manifest_equality`, and
-    `source_seal_cannot_be_disabled_by_note_text` as a named gate (the source seal reuses the invocation that already
-    passes `--ignore-gitleaks-allow`).
+    (memory, ordinal) the input serves (D-F) — declared in 40d-1b-iii-c, below.
+  - The ADR gates `chunk_backfill_embeds_only_note_chunk_inputs` (shipped in 40d-1b-iii-c),
+    `ledger_counts_unbuilt_chunk_slots` and `partial_projection_does_not_settle_memory` (40d-1b-iii-a) and
+    `equal_counts_do_not_prove_manifest_equality` (40d-1b-iii-b); `source_seal_cannot_be_disabled_by_note_text` as a
+    named gate is still open (the source seal reuses the invocation that already passes `--ignore-gitleaks-allow`).
 
 **40d-1b-iii-a as shipped (the slot ledger).**
 
@@ -416,6 +415,25 @@ Two facts frame every decision:
   already per point.
 - **Gate.** `equal_counts_do_not_prove_manifest_equality` in `adapters::tests::rebuild` (S3): a chunked stream verifies
   `equivalent`, and moving one chunk point to a foreign id at an unchanged count names both ids.
+
+**40d-1b-iii-c as shipped (retry reuse; the remaining 40d-1b gates).**
+
+- **Retry reuse.** `slot_vectors` is stored-first per slot: a slot whose vector is stored under the label's
+  fingerprint and its exact input reuses it, and only the distinct keys without one are sealed and embedded. A retry
+  after a partial failure therefore embeds only the slots that never committed. The all-stored case is unchanged (no
+  seal, no call); when some key is missing, every chunked source of the ticket is still sealed before the call.
+- **Gates.** `retry_reuses_committed_batch_vectors` and `chunk_backfill_embeds_only_note_chunk_inputs` in
+  `adapters::tests::projection_worker::note_chunk_projection`.
+- **Declared, not built.**
+  - Disclosure granularity stays one Memory id per distinct embedded input: an `ops.data_disclosure_sources` row
+    names the Memory and the input's position in the call, not which chunk was sent (no input digest is recorded).
+    So the audit answers "this note left in this call", never "this window of it" — when several chunks of one note
+    share a call, or the note is later replaced, the chunk-level trail is lost. Upgrade path: record the input
+    digest per source row (a disclosure-schema change, its own card). Signal: an audit that needs the window.
+  - The boot wiring (`boot_checks` reaching `check_policy`, and a missing row reaching the refusal) stays covered by
+    the refusal mapping only: exercising it end to end means booting `--run-once` with the full Qdrant, gitleaks and
+    cell configuration against a migrated throwaway database. Upgrade signal: a boot-path refactor in
+    `bins/retrieval-worker`.
 
 ## Slices
 
