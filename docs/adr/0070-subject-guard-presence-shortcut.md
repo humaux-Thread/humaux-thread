@@ -35,11 +35,17 @@ construction (`NOT EXISTS` over no links).
   (AFTER INSERT on `memory_subjects`, `ON CONFLICT DO NOTHING`), removed only with its memory (FK cascade). Links are
   insert-only at runtime; a subject deletion cascades them away and leaves a stale presence row, which is the safe
   direction (the full guard runs). No DELETE in the definer, so it is not a maintenance delete door. FORCE RLS with a
-  tenant-only policy and no reference to `memory_records`, so reading it from `memory_records`' policy has no cycle.
+  tenant policy and no reference to `memory_records`, so reading it from `memory_records`' policy has no cycle. The
+  definer obeys FORCE RLS as `role_migration_owner` (§73.5.1) and a link insert need not carry `humaux.tenant_id`
+  (a superuser or ops path bypasses `memory_subjects`' RLS), so a second policy admits the index write for the owner
+  alone — `FOR INSERT TO role_migration_owner WITH CHECK (current_user = 'role_migration_owner')`, the 0112 shape; no
+  runtime role holds INSERT, and the composite FK pins each row to its memory's tenant.
 - **D-B Policy.** `memory_records_subject_visibility` becomes
-  `tenant AND (NOT EXISTS presence OR private.memory_subject_visibility_ok(tenant_id, memory_id))`. `OR` evaluates left
-  to right, so an unlinked memory never calls the definer; a linked one runs exactly the 0155 guard. The truth table
-  (no subject → pass; every subject readable → pass; any unreadable or missing subject → deny) is unchanged.
+  `tenant AND (NOT EXISTS presence OR private.memory_subject_visibility_ok(tenant_id, memory_id))`. PostgreSQL does not
+  promise an OR order, and correctness does not need one: for an unlinked memory the guard is true by construction.
+  The saving does: the planner runs the cheap hashed anti-join arm first, which the call-count gate pins. A linked
+  memory runs exactly the 0155 guard. The truth table (no subject → pass; every subject readable → pass; any unreadable
+  or missing subject → deny) is unchanged.
 - **D-C Grants.** `SELECT` on the presence table to `role_gateway` and `role_maintenance` (the two roles the
   RESTRICTIVE policy applies to); every other non-owner cell `—` (§6.2.2 header and `rls_check` matrix).
 
@@ -57,8 +63,12 @@ construction (`NOT EXISTS` over no links).
 
 - `subject_guard_runs_only_for_linked_memories` (`bins/gateway/tests/mcp_gateway.rs`, real policies as
   `role_gateway`, `track_functions = 'all'`): over 2 002 memories the guard is called exactly twice (the two linked
-  ones); a link to a real subject stays visible; a link to a missing subject is refused; the insert trigger records
-  presence. The call count is deterministic, unlike a latency threshold.
+  ones); every unlinked memory and the link to a real subject stay visible; a link to a missing subject is refused;
+  the insert trigger records presence for a link written without a tenant setting. The call count is deterministic,
+  unlike a latency threshold.
+- Card 41's grep measurement (targeted run 38536153236, 10 043 memories, 20 calls each): a common word p50 240 ms /
+  p95 243 ms (was 1 539 / 2 418), a rare word 28 / 29 ms (was 229 / 230), a two-character pattern 240 / 250 ms (was
+  1 537 / 1 546).
 
 ## Declared limits
 

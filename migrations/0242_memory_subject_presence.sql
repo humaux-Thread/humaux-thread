@@ -13,9 +13,10 @@
 --      go away (links are insert-only at runtime; a subject deletion cascades them) — a stale presence row is the safe
 --      direction: the full guard runs for that memory. The table has a tenant-only RLS policy and no memory_records
 --      reference, so reading it from memory_records' policy has no cycle (the reason 0155 needed a definer at all).
---   2. The RESTRICTIVE policy becomes `tenant AND (NOT EXISTS presence OR memory_subject_visibility_ok(...))`: OR
---      evaluates left to right, so a memory without links never calls the definer, and one with links runs exactly
---      the 0155 guard. The authorization truth table is unchanged.
+--   2. The RESTRICTIVE policy becomes `tenant AND (NOT EXISTS presence OR memory_subject_visibility_ok(...))`. For a
+--      memory without links the guard is true by construction, so the result never depends on which OR arm runs;
+--      the planner evaluates the cheap hashed anti-join arm first (the call-count gate pins it). A memory with links
+--      gets exactly the 0155 guard. The authorization truth table is unchanged.
 --   3. Backfill from the existing links.
 --
 -- Locks: CREATE TABLE / TRIGGER and ALTER POLICY take brief catalog locks; the backfill reads memory_subjects once.
@@ -40,6 +41,12 @@ ALTER TABLE private.memory_subject_presence FORCE ROW LEVEL SECURITY;
 CREATE POLICY memory_subject_presence_tenant ON private.memory_subject_presence
   USING (tenant_id = current_setting('humaux.tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('humaux.tenant_id', true)::uuid);
+-- §73.5.1 / 0112: the trigger's SECURITY DEFINER still obeys FORCE RLS as role_migration_owner, and a link insert
+-- need not carry humaux.tenant_id (a superuser or ops path bypasses memory_subjects' RLS). The index write is the
+-- owner's alone — no runtime role holds INSERT — and the composite FK pins each row to its memory's tenant.
+CREATE POLICY memory_subject_presence_owner_insert ON private.memory_subject_presence
+  FOR INSERT TO role_migration_owner
+  WITH CHECK (current_user = 'role_migration_owner');
 
 COMMENT ON TABLE private.memory_subject_presence IS
   'Card 35b / ADR-0070: one row per memory with at least one private.memory_subjects link, maintained by the '

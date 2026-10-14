@@ -94,7 +94,10 @@ literal lane: recall is semantic only (ADR-0044) and enumerate filters by struct
   `private.memory_records` (the SECURITY DEFINER subject-visibility function and the membership `EXISTS` run for every
   row before any non-leakproof filter) — card 35b's set-based subject visibility, scheduled next — and the common-word
   cost adds the final gate over every candidate. Upgrade path: card 35b, then the definer-mediated trigram card if a
-  re-measurement still misses the bar. The 100k figure is recorded by card 53's soak on the release stack.
+  re-measurement still misses the bar. After card 35b (ADR-0070, targeted run 38536153236, same seed): a common word
+  p50 240 ms / p95 243 ms, a rare word 28 / 29 ms, a two-character pattern 240 / 250 ms — the rare word meets the bar
+  at 10k; a common word at 50k extrapolates to ~1.2 s, inside the 10 s budget but over the bar (the final gate over
+  every candidate), so the trigram card stays conditioned on a production need. The 100k figure is recorded by card 53's soak on the release stack.
 - **Budget knob.** Production runs under the role pool's §78 statement timeout; `GrepQuery`'s explicit budget is
   set only by tests (the same refusal path).
 - **No per-operation concurrency slot.** Greps share the gateway's admission controller (§67.2); a dedicated slot

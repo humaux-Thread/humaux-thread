@@ -10,7 +10,8 @@
 //!   control.tenants, control.workspace_memberships, control.workspaces, coord.tasks, ops.memory_lifecycle_events,
 //!   ops.outbox, ops.selection_snapshots, private.context_bindings, private.distill_candidates,
 //!   private.evidence_objects, private.memory_affects, private.memory_consolidation_inputs,
-//!   private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_subjects,
+//!   private.memory_consolidation_runs, private.memory_evidence, private.memory_records,
+//!   private.memory_subject_presence, private.memory_subjects,
 //!   private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
 //!   projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace,
 //!   control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker),
@@ -15760,14 +15761,14 @@ fn memory_grep_pages_a_large_universe_exactly() {
     );
 }
 
-/// ADR-0070 gates `subject_guard_runs_only_for_linked_memories` and `subject_presence_follows_links`, on the real
-/// policies as `role_gateway`. 2 000 unlinked memories, one linked to a real subject through the ordinary insert path
-/// (the trigger records its presence) and one linked — with FK and trigger checks off for the owner session — to a
+/// ADR-0070 gate, on the real policies as `role_gateway`. 2 000 unlinked memories, one linked to a real subject through
+/// the ordinary insert path with no tenant setting on the session (the trigger still records its presence — the
+/// owner-only insert policy) and one linked — with FK and trigger checks off for the owner session — to a
 /// subject that does not exist (its presence written by hand, as the trigger would). A full read of the tenant calls
 /// `memory_subject_visibility_ok` exactly twice (the two linked memories), keeps the real link visible and hides the
 /// dangling one (0155's truth table). Faults: the 0155 policy without the presence shortcut ⇒ 2 002 calls ⇒ red; the
 /// shortcut without the guard fallback ⇒ the linked memory disappears ⇒ red; no guard ⇒ the dangling link is visible
-/// ⇒ red; no insert trigger ⇒ the real link has no presence row ⇒ red.
+/// ⇒ red; no insert trigger, or no owner insert policy ⇒ the real link has no presence row (or its insert fails) ⇒ red.
 #[test]
 #[allow(clippy::too_many_lines)] // one seeded tenant, the call count, both truth-table arms and the trigger
 fn subject_guard_runs_only_for_linked_memories() {
@@ -15779,6 +15780,18 @@ fn subject_guard_runs_only_for_linked_memories() {
             let dangling = handle.seed_workspace_visible_context_record();
             let tenant = handle.tenant_id;
             let user = handle.user_id;
+            let unlinked: Vec<Uuid> = handle
+                .admin
+                .query(
+                    "SELECT memory_id FROM private.memory_records \
+                     WHERE tenant_id = $1 AND content->>'key_claim' LIKE 'unlinked memory %'",
+                    &[&tenant],
+                )
+                .expect("the unlinked memories")
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            assert_eq!(unlinked.len(), 2_000);
             let subject: Uuid = handle
                 .admin
                 .query_one(
@@ -15837,6 +15850,7 @@ fn subject_guard_runs_only_for_linked_memories() {
                 .admin
                 .transaction()
                 .expect("gateway read transaction");
+            // dep: PostgreSQL(role_gateway) — SET LOCAL ROLE to read under the gateway's real policies
             txn.batch_execute(&format!(
                 "SET LOCAL track_functions = 'all'; SET LOCAL ROLE role_gateway; \
              SET LOCAL humaux.tenant_id = '{tenant}'; SET LOCAL humaux.user_id = '{user}'"
@@ -15871,7 +15885,7 @@ fn subject_guard_runs_only_for_linked_memories() {
                 "a link to a missing subject is refused, as 0155 refuses it"
             );
             assert!(
-                visible.len() >= 2_001,
+                unlinked.iter().all(|memory| visible.contains(memory)),
                 "every unlinked memory stays visible"
             );
         },

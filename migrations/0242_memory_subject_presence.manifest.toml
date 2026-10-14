@@ -14,13 +14,17 @@ select to_regclass('private.memory_subject_presence') is null
  as precheck_ok
 """
 
-# Fails on: the table missing FORCE RLS or its tenant policy, any write grant to a runtime role, the insert trigger
-# missing or not owner-defined, a link without its presence row after the backfill, or a guard that lost either arm.
+# Fails on: the table missing FORCE RLS, its tenant policy or the owner-only insert policy, any write grant to a runtime
+# role, the insert trigger missing or not owner-defined, a link without its presence row after the backfill, or a guard
+# that lost either arm.
 postcheck = """
 select (select c.relrowsecurity and c.relforcerowsecurity from pg_class c
          where c.oid = to_regclass('private.memory_subject_presence'))
- and (select count(*) = 1 from pg_policies
+ and (select count(*) = 2 from pg_policies
        where schemaname = 'private' and tablename = 'memory_subject_presence')
+ and exists (select 1 from pg_policies where schemaname = 'private' and tablename = 'memory_subject_presence'
+              and policyname = 'memory_subject_presence_owner_insert' and cmd = 'INSERT'
+              and roles = '{role_migration_owner}')
  and has_table_privilege('role_gateway', 'private.memory_subject_presence', 'SELECT')
  and has_table_privilege('role_maintenance', 'private.memory_subject_presence', 'SELECT')
  and not has_table_privilege('role_gateway', 'private.memory_subject_presence', 'INSERT')
