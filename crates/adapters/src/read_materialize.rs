@@ -7,7 +7,7 @@
 //!   adapters::context_repo, adapters::postgres, adapters::retrieve, application::affect, domain::affect,
 //!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
 //!   projection::serving, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::operation_receipt, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
 //!   [`Lifecycle`] and always run [`Lifecycle::CURRENT`] (ADR-0067 D-J2)]
@@ -212,7 +212,7 @@ impl Lifecycle {
     }
 
     /// The bound `text[]` of statuses, in canonical order (`active` before `superseded`).
-    pub(crate) fn status_wires(self) -> Vec<String> {
+    pub fn status_wires(self) -> Vec<String> {
         let wires: &[&str] = match self.statuses {
             StatusSet::Active => &["active"],
             StatusSet::Superseded => &["superseded"],
@@ -222,7 +222,7 @@ impl Lifecycle {
     }
 
     /// The bound archive mode.
-    pub(crate) const fn archive_wire(self) -> &'static str {
+    pub const fn archive_wire(self) -> &'static str {
         match self.archive {
             ArchiveMode::Exclude => "exclude",
             ArchiveMode::Only => "only",

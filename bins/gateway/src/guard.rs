@@ -569,7 +569,7 @@ impl GatewayGuard {
             let admitted = self.admit(context, operation, requested_workspace).await?;
             if !matches!(
                 operation.operation_key(),
-                "context.assemble" | "memory.get" | "memory.enumerate"
+                "context.assemble" | "memory.get" | "memory.enumerate" | "memory.grep"
             ) {
                 return self
                     .denied(

@@ -109,13 +109,14 @@ use crate::{
 /// have had working dispatch arms since ADR-0025/ADR-0026, while this array still said 15 —
 /// nothing read it, so nothing noticed. The new gate also compares it against the `invoke`
 /// dispatch below, which is what makes that class of drift impossible to repeat.
-pub const SUPPORTED_OPERATION_KEYS: [&str; 21] = [
+pub const SUPPORTED_OPERATION_KEYS: [&str; 22] = [
     "remember.put",
     "memory.note_put",
     "recall.search",
     "context.assemble",
     "memory.get",
     "memory.enumerate",
+    "memory.grep",
     "continuity.get",
     DestructiveOp::MemorySupersede.operation_key(),
     DestructiveOp::MemoryPin.operation_key(),
@@ -828,6 +829,82 @@ impl GatewayMcpApplication {
                         },
                     )
                     .await
+                },
+            )
+            .await
+    }
+
+    /// ADR-0069 `memory.grep`: the enumerate read gate (same admission, workspace rule and cursor lifetime), a literal
+    /// line search instead of a manifest. No enumeration TTL configured ⇒ fail closed like `memory.enumerate`.
+    async fn memory_grep(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        raw_arguments: &str,
+        value: &Value,
+    ) -> Result<ToolOutput, ErrorCode> {
+        let requested_workspace = workspace(value)?;
+        let Some((ttl, _)) = self.enumeration else {
+            return self.reject_unsupported(context, operation, None).await;
+        };
+        let pattern = value
+            .get("pattern")
+            .and_then(Value::as_str)
+            .ok_or(ErrorCode::InvalidInput)?
+            .to_owned();
+        let page_size = u16::try_from(
+            value
+                .get("limit")
+                .map_or(Ok(50), |v| v.as_u64().ok_or(ErrorCode::InvalidInput))?,
+        )
+        .map_err(|_| ErrorCode::InvalidInput)?;
+        let cursor = value
+            .get("cursor")
+            .map(|v| v.as_str().map(str::to_owned).ok_or(ErrorCode::InvalidInput))
+            .transpose()?;
+        let statuses: Option<Vec<&str>> = value
+            .get("statuses")
+            .map(|v| {
+                v.as_array()
+                    .ok_or(ErrorCode::InvalidInput)?
+                    .iter()
+                    .map(|s| s.as_str().ok_or(ErrorCode::InvalidInput))
+                    .collect()
+            })
+            .transpose()?;
+        let archive = value
+            .get("archive")
+            .map(|v| v.as_str().ok_or(ErrorCode::InvalidInput))
+            .transpose()?;
+        let lifecycle = Lifecycle::for_enumerate(statuses.as_deref(), archive)?;
+        let pool = self.runtime_pool.clone();
+        let bootstrap = self.context_bootstrap.clone();
+        let catalog = self.catalog.clone();
+        let mac_key = self.guard.enumeration_mac_key();
+        self.guard
+            .run_local_read(
+                context,
+                operation,
+                requested_workspace,
+                raw_arguments,
+                move |request| async move {
+                    let value = memory::grep(
+                        pool,
+                        request.authorization().clone(),
+                        request.workspace_id(),
+                        bootstrap,
+                        memory::GrepParams {
+                            pattern: &pattern,
+                            lifecycle,
+                            page_size,
+                            cursor: cursor.as_deref(),
+                            ttl,
+                            mac_key: &mac_key,
+                        },
+                    )
+                    .await?;
+                    catalog.validate_output(ToolName::Memory, &value)?;
+                    output(value)
                 },
             )
             .await
@@ -2071,6 +2148,10 @@ impl McpApplication for GatewayMcpApplication {
             }
             "memory.enumerate" => {
                 self.memory_enumerate(context, &operation, &raw_arguments, &value)
+                    .await
+            }
+            "memory.grep" => {
+                self.memory_grep(context, &operation, &raw_arguments, &value)
                     .await
             }
             "continuity.get" => {

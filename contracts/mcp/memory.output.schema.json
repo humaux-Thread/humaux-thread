@@ -838,6 +838,110 @@
    },
    "additionalProperties": false
   },
+  "GrepPage": {
+   "type": "object",
+   "description": "memory.grep (ADR-0069): one keyset page of matching lines with \u00b11 line of context. total = total_matching_lines over the caller's whole view in one snapshot (never an estimate); truncated means this response did not carry the rest, and next_cursor continues it.",
+   "required": [
+    "items",
+    "total",
+    "total_unit",
+    "total_matching_lines",
+    "total_memories",
+    "has_more",
+    "truncated",
+    "next_cursor",
+    "consistency"
+   ],
+   "properties": {
+    "items": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "memory_id",
+       "line_no",
+       "line",
+       "before",
+       "after",
+       "memory_matching_lines",
+       "status",
+       "archived"
+      ],
+      "properties": {
+       "memory_id": {
+        "type": "string",
+        "format": "uuid"
+       },
+       "line_no": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "line": {
+        "type": "string"
+       },
+       "before": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "after": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "memory_matching_lines": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "active",
+         "superseded"
+        ]
+       },
+       "archived": {
+        "type": "boolean"
+       }
+      },
+      "additionalProperties": false
+     }
+    },
+    "total": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "total_unit": {
+     "const": "matching_lines"
+    },
+    "total_matching_lines": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "total_memories": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "has_more": {
+     "type": "boolean"
+    },
+    "truncated": {
+     "type": "boolean"
+    },
+    "next_cursor": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "consistency": {
+     "const": "per_call_snapshot"
+    }
+   },
+   "additionalProperties": false
+  },
   "StaleNoteVersion": {
    "type": "object",
    "description": "memory.note_put replacement business refusal (ADR-0067 D-J), returned with isError=true: supersedes is not the note's current head (another replacement won). Nothing was written and no token was minted or consumed. It names no head id. A result shape, not a 19th ErrorCode (\u00a752.1 stays closed at 18).",
@@ -954,6 +1058,9 @@
   },
   {
    "$ref": "#/$defs/StaleNoteVersion"
+  },
+  {
+   "$ref": "#/$defs/GrepPage"
   }
  ]
 }

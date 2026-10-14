@@ -41,7 +41,8 @@
 //!   HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo,
-//!   adapters::forget_repo, adapters::membership_repo, adapters::operation_receipt, adapters::postgres,
+//!   adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt,
+//!   adapters::postgres, adapters::read_materialize,
 //!   adapters::qdrant, adapters::quota_repo, adapters::remember, adapters::subject_repo,
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
 //!   contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm,
@@ -15261,4 +15262,500 @@ fn native_mcp_note_reads_filter_by_kind_refuse_project_and_get_history() {
             stop_server(server).await.expect("server shutdown");
         });
     });
+}
+
+/// Sets a fixture memory's `content` (the grep tests' known text).
+fn set_memory_content(handle: &mut Handle, memory_id: Uuid, content: &Value) {
+    handle
+        .admin
+        .execute(
+            "UPDATE private.memory_records SET content = $2 WHERE memory_id = $1",
+            &[&memory_id, content],
+        )
+        .expect("owner sets the fixture memory text");
+}
+
+/// The `(memory_id, line_no)` keys of a grep page, in order.
+fn grep_keys(response: &Value) -> Vec<(String, i64)> {
+    response["result"]["structuredContent"]["items"]
+        .as_array()
+        .expect("grep items")
+        .iter()
+        .map(|item| {
+            (
+                item["memory_id"].as_str().expect("memory id").to_owned(),
+                item["line_no"].as_i64().expect("line number"),
+            )
+        })
+        .collect()
+}
+
+/// ADR-0069 gates `grep_totals_page_and_exclude_like_the_final_gate` and `grep_budget_never_guesses`, against the
+/// real gateway and PostgreSQL. Two visible memories hold three matching lines of "needle" (case-insensitive, one a
+/// bare-string content); the word is also in a peer's private memory, a memory whose only evidence is a peer's private
+/// evidence (RLS admits the row, `can_read` refuses it), an archived one, one tombstoned on this stream, a
+/// workspace-less one tombstoned on ANOTHER workspace's stream, a secret-linked one and a superseded one. The totals
+/// are 3 lines in 2 memories; two keyset pages carry exactly those three hits once; context, the archive and status
+/// axes follow the contract; `%` matches only a literal `%` (a `!`-only decoy stays out); a cursor replayed with another
+/// pattern is refused. A direct read with a 1 ms budget over 20 000 rows is CANNOT_ESTABLISH_COMPLETENESS. Faults:
+/// drop the ESCAPE clause ⇒ `%!%%` matches the `!` decoy ⇒ red; replace the final gate by the census's stream-scoped
+/// overlay, or drop it, or drop `can_read` ⇒ the totals rise ⇒ red; drop the statement timeout ⇒ the budget arm returns
+/// a page ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one seeded universe, every contract arm against it
+fn native_mcp_memory_grep_counts_pages_and_excludes() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>(
+        "native_mcp_memory_grep_counts_pages_and_excludes",
+        |mut handle| {
+            let credential = enumeration_credential(&mut handle, "grep");
+            handle.seed_current_entitlement_and_window(40);
+            let two = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                two.memory_id,
+                &json!({"title": "Alpha note", "key_claim": "line one\nthe needle here\nline three\nNEEDLE again"}),
+            );
+            let bare = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                bare.memory_id,
+                &json!("a needle in a bare string\nend"),
+            );
+            let literal = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                literal.memory_id,
+                &json!({"title": "50% off_now!"}),
+            );
+            let bang = handle.seed_workspace_visible_context_record();
+            set_memory_content(&mut handle, bang.memory_id, &json!({"title": "wow! done"}));
+            let peer_user = handle.seed_peer_user();
+            let private = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                private.memory_id,
+                &json!({"key_claim": "private needle"}),
+            );
+            set_record_user_visibility(&mut handle, &private, peer_user);
+            let hidden_source = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                hidden_source.memory_id,
+                &json!({"key_claim": "needle behind a private source"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.evidence_objects SET visibility_class = 'USER_PRIVATE', \
+                       visibility_user_id = $2, visibility_workspace_id = NULL WHERE evidence_id = $1",
+                    &[&hidden_source.evidence_id, &peer_user],
+                )
+                .expect("owner hides the only evidence behind the peer");
+            let elsewhere = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                elsewhere.memory_id,
+                &json!({"key_claim": "needle forgotten in another workspace"}),
+            );
+            for table in ["private.memory_records", "private.evidence_objects"] {
+                let id_column = if table == "private.memory_records" {
+                    "memory_id"
+                } else {
+                    "evidence_id"
+                };
+                let id = if table == "private.memory_records" {
+                    elsewhere.memory_id
+                } else {
+                    elsewhere.evidence_id
+                };
+                handle
+                    .admin
+                    .execute(
+                        &format!(
+                            "UPDATE {table} SET visibility_class = 'TENANT_SHARED', \
+                               visibility_workspace_id = NULL WHERE {id_column} = $1"
+                        ),
+                        &[&id],
+                    )
+                    .expect("owner makes the memory workspace-less");
+            }
+            let other_workspace = handle.seed_workspace();
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO projection.stream_checkpoints \
+                       (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version,issued_highwater) \
+                     VALUES($1,'workspace',$2,'knowledge','ingest','v1',1) ON CONFLICT DO NOTHING",
+                    &[&handle.tenant_id, &other_workspace],
+                )
+                .expect("owner seeds the other stream's checkpoint identity");
+            let other_commit: i64 = handle
+                .admin
+                .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+                .expect("owner allocates the other stream's commit")
+                .get(0);
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO projection.stream_log \
+                       (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version, \
+                        stream_seq,commit_seq,state,settled_at) \
+                     VALUES($1,'workspace',$2,'knowledge','ingest','v1',1,$3,'TOMBSTONED',clock_timestamp())",
+                    &[&handle.tenant_id, &other_workspace, &other_commit],
+                )
+                .expect("owner seeds a tombstone on another workspace's stream");
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
+                     VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)",
+                    &[&handle.tenant_id, &other_commit, &elsewhere.evidence_id],
+                )
+                .expect("owner maps the evidence to that tombstone");
+            let replaced = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                replaced.memory_id,
+                &json!({"key_claim": "superseded needle"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.memory_records SET status = 'superseded', superseded_by = $2 \
+                      WHERE memory_id = $1",
+                    &[&replaced.memory_id, &two.memory_id],
+                )
+                .expect("owner supersedes the fixture memory");
+            let archived = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                archived.memory_id,
+                &json!({"key_claim": "archived needle"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.memory_records SET archived_at = clock_timestamp() WHERE memory_id = $1",
+                    &[&archived.memory_id],
+                )
+                .expect("owner archives the fixture memory");
+            let secret = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                secret.memory_id,
+                &json!({"key_claim": "secret needle"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.evidence_objects SET data_class = 'SECRET_MATERIAL' WHERE evidence_id = $1",
+                    &[&secret.evidence_id],
+                )
+                .expect("owner marks the backing evidence secret");
+            let tombstoned = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                tombstoned.memory_id,
+                &json!({"key_claim": "tombstoned needle"}),
+            );
+            let tombstone_key = seed_done_stream_identity(&mut handle, &tombstoned);
+            assert!(
+                handle
+                    .rt
+                    .block_on(forget_repo::tombstone(
+                        &handle.maintenance,
+                        &tombstone_key,
+                        1
+                    ))
+                    .expect("maintenance tombstone")
+            );
+
+            let runtime_handle = handle.rt.handle().clone();
+            let runtime = runtime_handle
+                .block_on(handle.fresh_runtime())
+                .expect("checked grep runtime");
+            let app = application(&handle, runtime);
+            let workspace = handle.workspace_id;
+            runtime_handle.block_on(async {
+                let (address, server) = start(app).await;
+                let grep = |arguments: Value| enumerate_call(address, &credential.bearer, arguments);
+
+                let (status, first) = grep(json!({"action":"grep","pattern":"needle","limit":2,"workspace_id":workspace})).await;
+                assert_eq!(status, 200, "{first}");
+                let page = &first["result"]["structuredContent"];
+                assert_eq!(page["total_matching_lines"], 3, "{first}");
+                assert_eq!(page["total"], 3);
+                assert_eq!(page["total_unit"], "matching_lines");
+                assert_eq!(page["total_memories"], 2, "{first}");
+                assert_eq!(page["has_more"], true);
+                assert_eq!(page["truncated"], true);
+                assert_eq!(page["consistency"], "per_call_snapshot");
+                let cursor = page["next_cursor"].as_str().expect("a next cursor").to_owned();
+                let (status, second) = grep(json!({"action":"grep","pattern":"needle","limit":2,"workspace_id":workspace,"cursor":cursor})).await;
+                assert_eq!(status, 200, "{second}");
+                let rest = &second["result"]["structuredContent"];
+                assert_eq!(rest["has_more"], false, "{second}");
+                assert!(rest["next_cursor"].is_null());
+                assert_eq!(rest["total_matching_lines"], 3);
+                let mut keys = grep_keys(&first);
+                keys.extend(grep_keys(&second));
+                let mut want = vec![
+                    (two.memory_id.to_string(), 3),
+                    (two.memory_id.to_string(), 5),
+                    (bare.memory_id.to_string(), 1),
+                ];
+                want.sort();
+                let mut got = keys.clone();
+                got.sort();
+                assert_eq!(got, want, "every hit once, across both pages");
+                let hit = |response: &Value, memory: Uuid| {
+                    response["result"]["structuredContent"]["items"]
+                        .as_array()
+                        .expect("items")
+                        .iter()
+                        .find(|item| item["memory_id"] == memory.to_string())
+                        .cloned()
+                };
+                let bare_hit = hit(&first, bare.memory_id)
+                    .or_else(|| hit(&second, bare.memory_id))
+                    .expect("the bare-string hit");
+                assert_eq!(bare_hit["line"], "a needle in a bare string");
+                assert!(bare_hit["before"].is_null());
+                assert_eq!(bare_hit["after"], "end");
+                assert_eq!(bare_hit["memory_matching_lines"], 1);
+                assert_eq!(bare_hit["status"], "active");
+                assert_eq!(bare_hit["archived"], false);
+
+                let (_, archive) = grep(json!({"action":"grep","pattern":"needle","archive":"include","workspace_id":workspace})).await;
+                assert_eq!(archive["result"]["structuredContent"]["total_matching_lines"], 4, "{archive}");
+                let archived_hit = hit(&archive, archived.memory_id).expect("the archived hit");
+                assert_eq!(archived_hit["archived"], true);
+
+                let (_, history) = grep(json!({"action":"grep","pattern":"needle","statuses":["active","superseded"],"workspace_id":workspace})).await;
+                assert_eq!(history["result"]["structuredContent"]["total_matching_lines"], 4, "{history}");
+                let superseded_hit = hit(&history, replaced.memory_id).expect("the superseded hit");
+                assert_eq!(superseded_hit["status"], "superseded");
+
+                let (_, percent) = grep(json!({"action":"grep","pattern":"%","workspace_id":workspace})).await;
+                assert_eq!(percent["result"]["structuredContent"]["total_memories"], 1, "{percent}");
+                let percent_hit = hit(&percent, literal.memory_id).expect("the literal % hit");
+                assert_eq!(percent_hit["line"], "50% off_now!");
+
+                let (_, rescoped) = grep(json!({"action":"grep","pattern":"NEEDLE","limit":2,"workspace_id":workspace,"cursor":cursor})).await;
+                assert_eq!(rescoped["error"]["data"]["code"], "INVALID_INPUT", "{rescoped}");
+                let (_, multiline) = grep(json!({"action":"grep","pattern":"a\nb","workspace_id":workspace})).await;
+                assert_eq!(multiline["error"]["data"]["code"], "INVALID_INPUT", "{multiline}");
+                server.abort();
+            });
+
+            // The budget arm, on the adapter directly: 20 000 more rows under a 1 ms statement timeout.
+            let mut txn = handle.admin.transaction().expect("bulk seed transaction");
+            let evidence: Uuid = txn
+                .query_one(
+                    "INSERT INTO private.evidence_objects \
+                       (tenant_id,evidence_kind,payload_sha256,data_class,origin_class,visibility_class, \
+                        visibility_workspace_id,reasoning_domain_id) \
+                     VALUES($1,'EVENT',$2,'INTERNAL','DirectUserInput','WORKSPACE_SHARED',$3,$4) RETURNING evidence_id",
+                    &[&handle.tenant_id, &vec![4_u8; 32], &handle.workspace_id, &handle.reasoning_domain_id],
+                )
+                .expect("bulk evidence")
+                .get(0);
+            txn.execute(
+                "WITH m AS (INSERT INTO private.memory_records \
+                   (tenant_id,memory_type,content,visibility_class,visibility_workspace_id,authority_class, \
+                    confidence,status,asserted_at) \
+                   SELECT $1,'NOTE',jsonb_build_object('key_claim', 'bulk row ' || g || ' with filler text'), \
+                          'WORKSPACE_SHARED',$2,'ProjectConstraint',0.5,'active',clock_timestamp() \
+                     FROM generate_series(1, 20000) g RETURNING memory_id) \
+                 INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+                 SELECT memory_id, $3, 'SUPPORTING', 'SNAPSHOT' FROM m",
+                &[&handle.tenant_id, &handle.workspace_id, &evidence],
+            )
+            .expect("bulk memories");
+            txn.commit().expect("commit the bulk seed");
+            let pool = handle
+                .rt
+                .block_on(handle.fresh_runtime())
+                .expect("direct grep runtime");
+            let auth = direct_write_scope(
+                handle.tenant_id,
+                credential.api_key_id,
+                handle.user_id,
+                handle.workspace_id,
+            );
+            let query = humaux_adapters::grep_repo::GrepQuery::new(
+                "needle",
+                humaux_adapters::read_materialize::Lifecycle::CURRENT,
+                10,
+                None,
+                Some(std::time::Duration::from_millis(1)),
+            )
+            .expect("valid query");
+            let refused = handle.rt.block_on(humaux_adapters::grep_repo::grep(
+                &pool,
+                &auth,
+                WorkspaceId(handle.workspace_id),
+                &query,
+            ));
+            assert_eq!(
+                refused,
+                Err(ErrorCode::CannotEstablishCompleteness),
+                "a scan over budget is refused, never a guessed total"
+            );
+        },
+    );
+}
+
+/// Inserts `rows` memories of the fixture workspace in one statement, all backed by one INTERNAL evidence: row `g`'s
+/// `key_claim` is `text(g)` (an SQL expression over `g`).
+fn seed_bulk_memories(handle: &mut Handle, rows: i32, text_sql: &str) {
+    let mut txn = handle.admin.transaction().expect("bulk seed transaction");
+    let evidence: Uuid = txn
+        .query_one(
+            "INSERT INTO private.evidence_objects \
+               (tenant_id,evidence_kind,payload_sha256,data_class,origin_class,visibility_class, \
+                visibility_workspace_id,reasoning_domain_id) \
+             VALUES($1,'EVENT',$2,'INTERNAL','DirectUserInput','WORKSPACE_SHARED',$3,$4) RETURNING evidence_id",
+            &[&handle.tenant_id, &vec![5_u8; 32], &handle.workspace_id, &handle.reasoning_domain_id],
+        )
+        .expect("bulk evidence")
+        .get(0);
+    txn.execute(
+        &format!(
+            "WITH m AS (INSERT INTO private.memory_records \
+               (tenant_id,memory_type,content,visibility_class,visibility_workspace_id,authority_class, \
+                confidence,status,asserted_at) \
+               SELECT $1,'NOTE',jsonb_build_object('key_claim', {text_sql}), \
+                      'WORKSPACE_SHARED',$2,'ProjectConstraint',0.5,'active',clock_timestamp() \
+                 FROM generate_series(1, $3::int) g RETURNING memory_id) \
+             INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+             SELECT memory_id, $4, 'SUPPORTING', 'SNAPSHOT' FROM m"
+        ),
+        &[&handle.tenant_id, &handle.workspace_id, &rows, &evidence],
+    )
+    .expect("bulk memories");
+    txn.commit().expect("commit the bulk seed");
+}
+
+/// ADR-0069 gates `grep_pages_a_large_universe_exactly` and `grep_case_profile_is_frozen`, on the adapter over the
+/// real database. 10 000 filler memories, 41 memories with three matching lines each and one with fourteen: every
+/// page of 10 reports 137 lines in 42 memories, and the pages together carry each of the 137 hits exactly once, in
+/// `(memory_id, line_no)` order. The case profile is the database collation's, pinned: ASCII and CJK fold or match as
+/// expected; `İ`/`i`, `ß`/`SS` and Greek final sigma are recorded as this database decides them. Faults: an off-by-one
+/// in the keyset comparison (`>=`) ⇒ a hit repeats ⇒ red; a count over the page instead of the hit set ⇒ the totals
+/// drop ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one seeded universe: paging, the case profile and the measurement record
+fn memory_grep_pages_a_large_universe_exactly() {
+    run_db_fixture::<Fixture, _>(
+        "memory_grep_pages_a_large_universe_exactly",
+        |mut handle| {
+            let credential = enumeration_credential(&mut handle, "grepscale");
+            seed_bulk_memories(
+                &mut handle,
+                10_000,
+                "'filler row ' || g || E'\\nnothing to see'",
+            );
+            seed_bulk_memories(
+                &mut handle,
+                41,
+                "'zq137x one ' || g || E'\\nplain\\nZQ137X two\\nthen zQ137x three'",
+            );
+            seed_bulk_memories(
+                &mut handle,
+                1,
+                "array_to_string(ARRAY(SELECT 'line ' || i || ' zq137x' FROM generate_series(1, 14) i), E'\\n')",
+            );
+            seed_bulk_memories(
+                &mut handle,
+                1,
+                "E'İstanbul trip\\nSTRASSE sign\\nΣΟΦΙΑ notes\\n中文测试 line\\nMixedCase Word'",
+            );
+            let pool = handle
+                .rt
+                .block_on(handle.fresh_runtime())
+                .expect("direct grep runtime");
+            let auth = direct_write_scope(
+                handle.tenant_id,
+                credential.api_key_id,
+                handle.user_id,
+                handle.workspace_id,
+            );
+            let page = |after: Option<(Uuid, i64)>, pattern: &str| {
+                let query = humaux_adapters::grep_repo::GrepQuery::new(
+                    pattern,
+                    humaux_adapters::read_materialize::Lifecycle::CURRENT,
+                    10,
+                    after,
+                    None,
+                )
+                .expect("valid query");
+                handle
+                    .rt
+                    .block_on(humaux_adapters::grep_repo::grep(
+                        &pool,
+                        &auth,
+                        WorkspaceId(handle.workspace_id),
+                        &query,
+                    ))
+                    .expect("grep page")
+            };
+            let mut seen = Vec::new();
+            let mut after = None;
+            let mut pages = 0;
+            loop {
+                let current = page(after, "zq137x");
+                assert_eq!(current.total_matching_lines, 137, "page {pages}");
+                assert_eq!(current.total_memories, 42, "page {pages}");
+                seen.extend(current.items.iter().map(|hit| (hit.memory_id, hit.line_no)));
+                pages += 1;
+                match current.next_after() {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+                assert!(pages <= 14, "137 hits fit in 14 pages of 10");
+            }
+            assert_eq!(pages, 14);
+            let mut sorted = seen.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, seen, "hits arrive in keyset order");
+            sorted.dedup();
+            assert_eq!(sorted.len(), 137, "every hit exactly once");
+
+            let hits = |pattern: &str| page(None, pattern).total_matching_lines;
+            assert_eq!(hits("mixedcase word"), 1, "ASCII folds");
+            assert_eq!(hits("中文测试"), 1, "CJK matches itself");
+            assert_eq!(
+                hits("σοφια"),
+                1,
+                "Greek capitals fold to their small letters"
+            );
+            assert_eq!(hits("istanbul"), 1, "İ folds to i under this collation");
+            assert_eq!(
+                hits("straße"),
+                0,
+                "ß does not fold to SS: ILIKE folds letter by letter"
+            );
+
+            // ADR-0069 measurement record (printed, not asserted): 20 greps each for a common word (every row), a rare
+            // one and a two-character pattern over the 10 043-memory universe.
+            for pattern in ["filler", "zq137x", "ro"] {
+                let mut millis: Vec<u128> = (0..20)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        let _ = page(None, pattern);
+                        started.elapsed().as_millis()
+                    })
+                    .collect();
+                millis.sort_unstable();
+                println!(
+                    "GREP_MEASURE pattern={pattern} rows=10043 p50_ms={} p95_ms={}",
+                    millis[9], millis[18]
+                );
+            }
+        },
+    );
 }

@@ -1,6 +1,6 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
-//! Called-by: [adapters::continuity_read, adapters::exact_census, adapters::memory_governance_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, tests]
+//! Called-by: [adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::memory_governance_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes go through the same can_read re-check; a PG error is
 //!   DependencyUnavailable/Internal, never an empty context; memory.enumerate writes at most MANIFEST_CAP manifest
@@ -1396,7 +1396,7 @@ impl StreamPipelineCounts {
 /// `AUTHORIZED_MEMORY_ENUMERATION_V1` ("Authorized Gateway enumeration, distinct from the
 /// worker's tenant-shared predicate"). Registering an NL surface for a trusted-intent
 /// predicate would make it reachable from query text, which is the opposite of what it is.
-const ENUMERATION_SCOPE: &str = "private.memory_records \
+pub(crate) const ENUMERATION_SCOPE: &str = "private.memory_records \
      WHERE memory_records.tenant_id = $1 \
        AND (memory_records.visibility_workspace_id IS NULL \
             OR memory_records.visibility_workspace_id = $2)";

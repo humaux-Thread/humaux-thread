@@ -1187,6 +1187,69 @@
         }
       },
       "additionalProperties": false
+    },
+    {
+      "x-humaux-operation": {
+        "operation_key": "memory.grep",
+        "required_scope": "context:read",
+        "feature_key": "mcp.billable_operations.per_period",
+        "meter_kind": "ordinary1"
+      },
+      "description": "ADR-0069: a case-insensitive literal substring search over each authorized memory's text (title, key claim and evidence excerpt, or a bare-string content), one hit per matching line, with ±1 line of context, the true totals over the caller's view and keyset paging. Not a recall mode: no ranking, no projection.",
+      "properties": {
+        "action": {
+          "const": "grep"
+        },
+        "pattern": {
+          "description": "The literal to find, matched case-insensitively by PostgreSQL's ILIKE with %, _ and ! taken literally; one line only (a pattern containing a line break is refused).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\n\\r]+$"
+        },
+        "workspace_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "statuses": {
+          "description": "ADR-0067 D-J2: the lifecycle statuses searched; default [\"active\"]. A cursor is bound to the selection.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "active",
+              "superseded"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "archive": {
+          "description": "ADR-0067 D-J2: exclude (default) leaves archived versions out, only searches just them, include searches both; a cursor is bound to the selection.",
+          "type": "string",
+          "enum": [
+            "exclude",
+            "only",
+            "include"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "required": [
+        "action",
+        "pattern"
+      ],
+      "additionalProperties": false
     }
   ]
 }
