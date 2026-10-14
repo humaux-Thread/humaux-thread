@@ -35,13 +35,17 @@ literal lane: recall is semantic only (ADR-0044) and enumerate filters by struct
   shape) whole, otherwise `title`, `key_claim` and `evidence_excerpt` joined by line breaks (an absent field is
   skipped). Key names, other keys and JSON escaping are never searched. Line numbers and the ±1 context come from that
   same text, split exactly as `string_to_array(text, E'\n')` splits it (a `\r` stays on its line).
-- **D-D Visibility and budget.** Candidates are the enumeration scope (tenant + workspace), the census's tombstone
-  overlay (`exact_census::NOT_TOMBSTONED`) and the `Lifecycle` selector (`statuses`, `archive`, defaults active and
-  not archived), then `context_repo::readable_memory_ids` — the same authorization authority as the census, so there
-  is no second visibility predicate. A memory linked to `SECRET_MATERIAL` evidence is neither counted nor shown.
-  Everything runs in one `REPEATABLE READ READ ONLY` transaction under the role's statement timeout; a statement
-  cancelled by it (`57014`) is `CANNOT_ESTABLISH_COMPLETENESS` — the closed set's "a total we cannot vouch for" —
-  never a partial total. No new error variant.
+- **D-D Visibility and budget.** Candidates are the enumeration scope (tenant + workspace) and the literal over the
+  whole text; what a grep may count or show is then exactly what the shared final read gate admits
+  (`read_materialize::final_memory_ids_about_in_txn` under the request's `Lifecycle` selection — defaults active and
+  not archived): `can_read` over the memory and every backing evidence, revoked/expired never, `SECRET_MATERIAL`
+  backing excluded, and a tombstoned evidence on ANY stream excluded — the gate `memory.get` uses, so grep cannot show
+  a forgotten memory another read would refuse. (The census's tombstone overlay is scoped to one stream and is a
+  counting device; a workspace-less memory forgotten in another workspace would pass it.) Everything runs in one
+  `REPEATABLE READ READ ONLY` transaction under the role's statement timeout. A statement of this module cancelled
+  by it (`57014`) is `CANNOT_ESTABLISH_COMPLETENESS` — the closed set's "a total we cannot vouch for"; one cancelled
+  inside the shared gate keeps that gate's own `DEPENDENCY_UNAVAILABLE`. Either way a refusal, never a partial total.
+  No new error variant.
 - **D-E Page and cursor.** Hits ordered by `(memory_id, line_no)`; a page is `limit` (1–100, default 50) hits; the
   cursor is the §20.4 signed `Cursor` (enumeration MAC key and TTL) carrying the keyset position (`snapshot_id` =
   the last hit's memory id, `last_ordinal` = its line) and bound to a fingerprint of the pattern, the lifecycle
@@ -66,17 +70,27 @@ literal lane: recall is semantic only (ADR-0044) and enumerate filters by struct
 ## Gates
 
 - `native_mcp_memory_grep_counts_pages_and_excludes` (`bins/gateway/tests/mcp_gateway.rs`, real gateway and
-  PostgreSQL): totals 3 lines in 2 memories while a peer's private, an archived, a tombstoned and a secret-linked
-  memory also contain the word; two keyset pages carry the three hits once; context, the archive axis, the literal
-  `%` and the cursor binding; a 1 ms budget over 20 000 rows is `CANNOT_ESTABLISH_COMPLETENESS`.
+  PostgreSQL): totals 3 lines in 2 memories while the word is also in a peer's private memory, a memory whose only
+  evidence is a peer's, an archived, a superseded, a secret-linked one, one tombstoned on this stream and a
+  workspace-less one tombstoned on another workspace's stream; two keyset pages carry the three hits once; context,
+  the archive and status axes, the literal `%` (with a `!`-only decoy) and the cursor binding; a 1 ms budget over
+  20 000 rows is `CANNOT_ESTABLISH_COMPLETENESS`.
+- `memory_grep_pages_a_large_universe_exactly` (adapter over the real database): 10 000 filler memories plus 42
+  holding 137 matching lines — every page of 10 reports 137/42 and the 14 pages carry each hit once in keyset order;
+  the case profile pinned (ASCII and Greek fold, CJK matches, `İ` folds to `i`, `ß` does not fold to `SS`); the
+  printed `GREP_MEASURE` lines are the latency record for a common word, a rare one and a two-character pattern.
 - `literal_pattern_escapes_every_wildcard`, `query_shape_is_validated`, `context_lines_follow_string_to_array`
   (`adapters::grep_repo`).
 
 ## Declared limits
 
 - **Sequential scan.** Without a usable index a grep reads every candidate row of the workspace; the role's
-  statement timeout bounds it and an over-budget grep is refused, not approximated. Upgrade signal: a measured p95
-  over budget at the target corpus size — then the definer-mediated trigram card.
+  statement timeout bounds it and an over-budget grep is refused, not approximated. The CI record is at 10 043
+  memories (the card's 100k figure is not measured in CI; the go-live soak of card 53 records it on the release
+  stack). Upgrade signal: a measured p95 over budget at the target corpus size — then the definer-mediated trigram
+  card.
+- **Budget knob.** Production runs under the role pool's §78 statement timeout; `GrepQuery`'s explicit budget is
+  set only by tests (the same refusal path).
 - **No per-operation concurrency slot.** Greps share the gateway's admission controller (§67.2); a dedicated slot
   waits for a measured need.
 - **Per-call snapshot.** Totals and pages are consistent within a call, not across pages.
