@@ -20,7 +20,7 @@
 //!   adapters::tests::support::governance_ops, adapters::tests::support::scratch_qdrant,
 //!   adapters::tests::support::throwaway_db, domain::authority, domain::confirm, domain::egress, domain::error,
 //!   domain::ids, humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, projection::embedding_fingerprint, projection::serving]
+//!   infra-cell::transport, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns its throwaway database humaux_thread_c37_s1_<pid>_<n> / humaux_thread_c37_s2_<pid>_<n>,
 //!   created and migrated by the fixture and dropped WITH (FORCE) by its Drop even on panic, so nothing here touches
@@ -1741,7 +1741,7 @@ fn a_tampered_payload_vector_or_extra_point_is_not_equivalent() {
 /// note projects C chunk points, and `verify` judges the stream `equivalent`: Project(PG) is planned per slot, so its
 /// manifest is the C v2 ids. Then one chunk point is moved to a foreign id: the point count is unchanged, and `verify`
 /// names both ids. Faults: plan Project(PG) per Memory (one legacy point) ⇒ the clean stream reads not equivalent ⇒
-/// red; judge E3 by counts ⇒ the moved point reads equivalent ⇒ red.
+/// red; judge E3 by counts ⇒ E4/E5 still flag the moved point but neither id is named ⇒ red.
 #[test]
 fn equal_counts_do_not_prove_manifest_equality() {
     run_db_fixture::<S3Fixture, _>("equal_counts_do_not_prove_manifest_equality", |mut s| {

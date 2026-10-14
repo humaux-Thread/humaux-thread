@@ -11,7 +11,8 @@
 //!   projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], Qdrant(*)]; env=[];
 //!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning,
 //!   adapters::qdrant, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan,
-//!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream]
+//!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks,
+//!   projection::serving, projection::stream]
 //! Called-by: [maintenance::drill, maintenance::rebuild_cli, tests]
 //! Invariants: [every write is an owner definer call as role_maintenance under the tenant GUC (rebuild_open,
 //!   issue_rebuild_tickets, rebuild_close), none is a table write; the verifier reads PostgreSQL in READ ONLY
