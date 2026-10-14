@@ -1209,8 +1209,8 @@ fn seal_failure(code: ErrorCode) -> (RowTerminal, &'static str) {
 /// chunked note's whole source is sealed first, so a secret anywhere in it — the last window, or across a window
 /// boundary — fails the row `secret_scan_rejected` exactly like a secret in a legacy card, before any card is sealed
 /// and before any provider call. The provider splits the call into requests of at most its `max_batch_items` (ADR-0068
-/// D-F); any failed request fails the whole call, and nothing is persisted before every input has its vector, so the
-/// ticket retries whole.
+/// D-F); any failed request fails the whole call and nothing from this attempt is persisted, so the retry embeds these
+/// inputs again (slots committed by an earlier attempt are reused by [`slot_vectors`]).
 async fn seal_and_embed(
     ctx: &RowCtx<'_>,
     commit_seq: i64,

@@ -152,7 +152,7 @@ Two facts frame every decision:
 - **Retries.** A failed slice fails the whole call and returns no vectors. Earlier slices stay billed. The worker
   persists vectors only per memory in `finish_row`, after every vector is in hand, so the ticket retries whole and
   re-embeds every slice. Reusing a committed batch's vectors on retry (gate `retry_reuses_committed_batch_vectors`) is
-  deferred to 40d-1b with the slot ledger.
+  deferred to 40d-1b with the slot ledger (shipped in 40d-1b-iii-c: committed slots are reused per slot).
 - **Gates.** `embedding_batches_respect_provider_limit` (7 cards with a cap of 3: requests 3/3/1, one ledger row,
   reservation and disclosure per request, and each card gets its own vector under reversed responses) and
   `a_duplicate_index_in_a_later_batch_returns_no_vectors`, both in `retrieval-provider::adapters`.
@@ -356,11 +356,11 @@ Two facts frame every decision:
   - Rebuild per slot (shipped in 40d-1b-iii-b, below).
   - Retry reuse of committed batch vectors (shipped in 40d-1b-iii-c, below).
   - Disclosure granularity: the embedder receives one Memory id per distinct input, not one source row per
-    (memory, ordinal) the input serves (D-F).
-  - The ADR gates `chunk_backfill_embeds_only_note_chunk_inputs`, `ledger_counts_unbuilt_chunk_slots`,
-    `partial_projection_does_not_settle_memory` and `equal_counts_do_not_prove_manifest_equality`, and
-    `source_seal_cannot_be_disabled_by_note_text` as a named gate (the source seal reuses the invocation that already
-    passes `--ignore-gitleaks-allow`).
+    (memory, ordinal) the input serves (D-F) — declared in 40d-1b-iii-c, below.
+  - The ADR gates `chunk_backfill_embeds_only_note_chunk_inputs` (shipped in 40d-1b-iii-c),
+    `ledger_counts_unbuilt_chunk_slots` and `partial_projection_does_not_settle_memory` (40d-1b-iii-a) and
+    `equal_counts_do_not_prove_manifest_equality` (40d-1b-iii-b); `source_seal_cannot_be_disabled_by_note_text` as a
+    named gate is still open (the source seal reuses the invocation that already passes `--ignore-gitleaks-allow`).
 
 **40d-1b-iii-a as shipped (the slot ledger).**
 
@@ -425,9 +425,11 @@ Two facts frame every decision:
 - **Gates.** `retry_reuses_committed_batch_vectors` and `chunk_backfill_embeds_only_note_chunk_inputs` in
   `adapters::tests::projection_worker::note_chunk_projection`.
 - **Declared, not built.**
-  - Disclosure granularity stays one Memory id per distinct embedded input (D-F's per-call disclosure names the
-    Memories it sends); the ordinal is derivable from the input digest, so a per-(memory, ordinal) source row adds
-    no disclosure the row does not already make.
+  - Disclosure granularity stays one Memory id per distinct embedded input: an `ops.data_disclosure_sources` row
+    names the Memory and the input's position in the call, not which chunk was sent (no input digest is recorded).
+    So the audit answers "this note left in this call", never "this window of it" — when several chunks of one note
+    share a call, or the note is later replaced, the chunk-level trail is lost. Upgrade path: record the input
+    digest per source row (a disclosure-schema change, its own card). Signal: an audit that needs the window.
   - The boot wiring (`boot_checks` reaching `check_policy`, and a missing row reaching the refusal) stays covered by
     the refusal mapping only: exercising it end to end means booting `--run-once` with the full Qdrant, gitleaks and
     cell configuration against a migrated throwaway database. Upgrade signal: a boot-path refactor in
