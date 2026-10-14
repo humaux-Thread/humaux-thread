@@ -26,14 +26,25 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - name: run episodes (MiniMax-M3, direct API, quota-guarded)
+      # Round 2 (2026-10-15): weak model + second rep on the finalists, decided by the pre-registered rule
+      # (worst-model accuracy within 3 pp of the best, then fewest tool-list tokens).
+      - name: run episodes (MiniMax-M2.5 weak model, finalists, direct API, quota-guarded)
+        working-directory: experiments/tool_surface
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
+          MINIMAX_MODEL: MiniMax-M2.5
+        run: timeout 80m python3 run_api.py --arms A8,D18,E30,P --reps 1 --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET"
+      - name: run episodes (MiniMax-M3 second rep, finalists)
+        if: always()
         working-directory: experiments/tool_surface
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
           MINIMAX_MODEL: MiniMax-M3
-        run: timeout 170m python3 run_api.py --arms "$EXP_ARMS" --reps "$EXP_REPS" --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET"
+        run: timeout 80m python3 run_api.py --arms D18,E30,P --reps 1 --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET" --out results_m3_rep2
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-minimax-api
-          path: experiments/tool_surface/results/
+          path: |
+            experiments/tool_surface/results/
+            experiments/tool_surface/results_m3_rep2/
