@@ -309,26 +309,27 @@ pub(crate) async fn final_memory_ids_about_in_txn(
                 AND ms.memory_id = m.memory_id
                 AND ms.subject_id = ANY($3::uuid[])
           ))
-          AND NOT EXISTS (
-              SELECT 1
+          -- ADR-0071 D-A: the secret-backed and the tombstoned memories are two small uncorrelated sets the planner
+          -- hashes once (`memory_evidence.memory_id` is NOT NULL, so NOT IN is the exact anti-join); the tenant
+          -- legs bind $1, which `m.tenant_id = $1` above already fixes.
+          AND m.memory_id NOT IN (
+              SELECT me.memory_id
               FROM private.memory_evidence AS me
               JOIN private.evidence_objects AS source
                 ON source.evidence_id = me.evidence_id
-               AND source.tenant_id = m.tenant_id
-              WHERE me.memory_id = m.memory_id
-                AND source.data_class = 'SECRET_MATERIAL'
+               AND source.tenant_id = $1
+              WHERE source.data_class = 'SECRET_MATERIAL'
           )
-          AND NOT EXISTS (
-              SELECT 1
+          AND m.memory_id NOT IN (
+              SELECT me.memory_id
               FROM private.memory_evidence AS me
               JOIN ops.outbox AS ob
-                ON ob.tenant_id = m.tenant_id
+                ON ob.tenant_id = $1
                AND ob.evidence_id = me.evidence_id
               JOIN projection.stream_log AS sl
                 ON sl.tenant_id = ob.tenant_id
                AND sl.commit_seq = ob.commit_seq
-              WHERE me.memory_id = m.memory_id
-                AND sl.state = 'TOMBSTONED'
+              WHERE sl.state = 'TOMBSTONED'
           )
         "#,
         lifecycle = Lifecycle::sql("m", 4),
