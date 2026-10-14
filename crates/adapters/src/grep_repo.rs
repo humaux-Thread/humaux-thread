@@ -1,16 +1,14 @@
 //! `adapters::grep_repo` — ADR-0069 `memory.grep`: a literal, case-insensitive substring search over the caller's
 //!   authorized memories, one hit per matching line with ±1 line of context, true totals and a keyset page, all in one
 //!   snapshot.
-//! Depends-on: crates=[humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records,
-//!   projection.stream_log]]; env=[]; modules=[adapters::context_repo, adapters::exact_census, adapters::postgres,
-//!   adapters::read_materialize, domain::error, domain::identity, domain::ids, projection::stream]
+//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_gateway) r=[private.memory_records]]; env=[];
+//!   modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, domain::error, domain::identity,
+//!   domain::ids]
 //! Called-by: [gateway::memory, tests]
-//! Invariants: [candidates, the authorization filter, the totals, the page and the context bodies come from ONE
-//!   REPEATABLE READ READ ONLY transaction; visibility is the census's own (`context_repo::readable_memory_ids` over the
-//!   enumeration scope, the tombstone overlay and the lifecycle selector), never a second predicate; a statement
-//!   cancelled by the query budget is CANNOT_ESTABLISH_COMPLETENESS, never a partial total; a memory linked to
-//!   SECRET_MATERIAL evidence is neither counted nor shown]
+//! Invariants: [candidates, the final gate, the totals, the page and the context bodies come from ONE REPEATABLE READ
+//!   READ ONLY transaction; what a grep may count or show is exactly what the shared final gate admits
+//!   (`read_materialize::final_memory_ids_about_in_txn`: can_read, lifecycle, secret backing, tombstoned Evidence on
+//!   any stream), never a second predicate; a cancelled statement is a refusal, never a partial total]
 //! Spec: Baseline §33; §33.10; §22.1; §52; ADR-0069
 
 use std::time::Duration;
@@ -18,14 +16,12 @@ use std::time::Duration;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::WorkspaceId;
-use humaux_projection::stream::StreamKey;
 use sqlx::Row;
 use sqlx::types::Uuid;
 
-use crate::context_repo::{ENUMERATION_SCOPE, readable_memory_ids, set_authorization_local};
-use crate::exact_census::NOT_TOMBSTONED;
+use crate::context_repo::{ENUMERATION_SCOPE, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
-use crate::read_materialize::Lifecycle;
+use crate::read_materialize::{Lifecycle, final_memory_ids_about_in_txn};
 
 /// ADR-0069 D-B: the longest pattern accepted, in Unicode scalars (the contract's `maxLength`).
 pub const MAX_PATTERN_CHARS: usize = 512;
@@ -96,25 +92,34 @@ impl GrepQuery {
 /// One matching line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrepHit {
+    /// The memory the line belongs to.
     pub memory_id: Uuid,
     /// 1-based, over [`MEMORY_TEXT`]'s lines.
     pub line_no: i64,
+    /// The matching line.
     pub line: String,
+    /// The line before it, `None` on the first line.
     pub before: Option<String>,
+    /// The line after it, `None` on the last line.
     pub after: Option<String>,
     /// Every matching line of this memory in the whole result, not only this page's.
     pub memory_matching_lines: i64,
     /// `active` or `superseded`.
     pub status: String,
+    /// Whether the memory is archived (only with an `archive` selection that admits archived rows).
     pub archived: bool,
 }
 
 /// One keyset page with the totals of the same snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrepPage {
+    /// This page's hits, ordered by `(memory_id, line_no)`.
     pub items: Vec<GrepHit>,
+    /// Every matching line in the caller's view, in this snapshot.
     pub total_matching_lines: i64,
+    /// The memories those lines belong to.
     pub total_memories: i64,
+    /// Whether hits follow this page.
     pub has_more: bool,
 }
 
@@ -145,10 +150,7 @@ fn hits_sql() -> String {
     format!(
         "WITH docs AS NOT MATERIALIZED ( \
            SELECT m.memory_id, {text} AS body FROM private.memory_records m \
-            WHERE m.tenant_id = $1 AND m.memory_id = ANY($2) \
-              AND NOT EXISTS (SELECT 1 FROM private.memory_evidence me \
-                                JOIN private.evidence_objects eo ON eo.evidence_id = me.evidence_id \
-                               WHERE me.memory_id = m.memory_id AND eo.data_class = 'SECRET_MATERIAL')), \
+            WHERE m.tenant_id = $1 AND m.memory_id = ANY($2)), \
          hits AS MATERIALIZED ( \
            SELECT d.memory_id, l.line_no FROM docs d \
             CROSS JOIN LATERAL unnest(string_to_array(d.body, E'\\n')) WITH ORDINALITY AS l(line_text, line_no) \
@@ -170,56 +172,44 @@ fn hits_sql() -> String {
     )
 }
 
-/// The memories a grep may report: the enumeration scope, the census's tombstone overlay, the lifecycle selection
-/// and the literal over the whole text, then the census's authorization authority. Sorted for the `ANY($2)` bind.
-async fn authorized_candidates(
+/// The memories a grep may report: the enumeration scope and the literal over the whole text, then the shared final
+/// gate under the request's lifecycle selection. Sorted for the `ANY($2)` bind.
+async fn admitted_candidates(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     authorization: &AuthorizationScope,
     workspace: WorkspaceId,
-    stream: &StreamKey,
     query: &GrepQuery,
     like: &str,
 ) -> Result<Vec<Uuid>, ErrorCode> {
-    // $1 tenant, $2 workspace, $3..$7 stream key, $8/$9 lifecycle, $10 pattern.
+    // $1 tenant, $2 workspace, $3 pattern.
     let candidates_sql = format!(
-        "SELECT memory_id FROM {ENUMERATION_SCOPE} AND {NOT_TOMBSTONED} AND {} \
-         AND {} ILIKE $10 ESCAPE '!'",
-        Lifecycle::sql("memory_records", 8),
+        "SELECT memory_id FROM {ENUMERATION_SCOPE} AND {} ILIKE $3 ESCAPE '!'",
         memory_text("memory_records"),
     );
     let candidates: Vec<Uuid> = sqlx::query_scalar(&candidates_sql)
         .bind(authorization.tenant_id().0)
         .bind(workspace.0)
-        .bind(&stream.scope_kind)
-        .bind(stream.scope_id)
-        .bind(&stream.domain)
-        .bind(&stream.projection_kind)
-        .bind(&stream.projection_version)
-        .bind(query.lifecycle.status_wires())
-        .bind(query.lifecycle.archive_wire())
         .bind(like)
         .fetch_all(&mut **txn)
         .await
         .map_err(|e| read_error(&e))?;
-    let mut authorized: Vec<Uuid> = readable_memory_ids(txn, authorization, &candidates)
-        .await?
-        .into_iter()
-        .collect();
-    authorized.sort_unstable();
-    Ok(authorized)
+    let mut admitted =
+        final_memory_ids_about_in_txn(txn, authorization, &candidates, query.lifecycle, &[], None)
+            .await?;
+    admitted.sort_unstable();
+    Ok(admitted)
 }
 
-/// ADR-0069: one `memory.grep` page over `workspace` (the stream key scopes the tombstone overlay, exactly as the
-/// enumeration census does).
+/// ADR-0069: one `memory.grep` page over `workspace`.
 ///
 /// # Errors
-/// [`ErrorCode::CannotEstablishCompleteness`] when a statement exceeds the query budget; [`ErrorCode::Internal`] for
-/// any other read failure; the authorization filter's own errors.
+/// [`ErrorCode::CannotEstablishCompleteness`] when one of this module's statements exceeds the query budget;
+/// [`ErrorCode::DependencyUnavailable`] when the shared final gate's does (its own mapping); [`ErrorCode::Internal`]
+/// for any other read failure.
 pub async fn grep(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
     workspace: WorkspaceId,
-    stream: &StreamKey,
     query: &GrepQuery,
 ) -> Result<GrepPage, ErrorCode> {
     let tenant = authorization.tenant_id().0;
@@ -229,6 +219,7 @@ pub async fn grep(
         .execute(&mut *txn)
         .await
         .map_err(|e| read_error(&e))?;
+    set_authorization_local(&mut txn, authorization).await?;
     if let Some(budget) = query.budget {
         // A bound integer, not caller text: `SET` takes no parameters.
         sqlx::query(&format!(
@@ -239,10 +230,8 @@ pub async fn grep(
         .await
         .map_err(|e| read_error(&e))?;
     }
-    set_authorization_local(&mut txn, authorization).await?;
     let like = literal_like_pattern(&query.pattern);
-    let authorized =
-        authorized_candidates(&mut txn, authorization, workspace, stream, query, &like).await?;
+    let authorized = admitted_candidates(&mut txn, authorization, workspace, query, &like).await?;
 
     let (after_memory, after_line) = query.after.unzip();
     let row = sqlx::query(&hits_sql())

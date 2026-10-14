@@ -15290,15 +15290,17 @@ fn grep_keys(response: &Value) -> Vec<(String, i64)> {
         .collect()
 }
 
-/// ADR-0069 gates `grep_totals_page_and_exclude_like_the_census` and `grep_budget_never_guesses`, against the real
-/// gateway and PostgreSQL. Seven memories carry known text: two visible ones hold three matching lines of "needle"
-/// (case-insensitive, one a bare-string content), and a peer's private one, an archived one, a tombstoned one and a
-/// secret-linked one hold the word too. The totals are 3 lines in 2 memories; two keyset pages carry exactly those
-/// three hits with no repeat; context and the archive axis follow the contract; `%` matches only a literal `%`; a
-/// cursor replayed with another pattern is refused. A direct read with a 1 ms budget over 20 000 rows is
-/// CANNOT_ESTABLISH_COMPLETENESS. Faults: drop the ESCAPE clause ⇒ the `%` arm counts every memory ⇒ red; drop the
-/// tombstone overlay (or the secret exclusion, or the authorization filter) ⇒ the totals rise ⇒ red; drop the
-/// statement timeout ⇒ the budget arm returns a page ⇒ red.
+/// ADR-0069 gates `grep_totals_page_and_exclude_like_the_final_gate` and `grep_budget_never_guesses`, against the
+/// real gateway and PostgreSQL. Two visible memories hold three matching lines of "needle" (case-insensitive, one a
+/// bare-string content); the word is also in a peer's private memory, a memory whose only evidence is a peer's private
+/// evidence (RLS admits the row, `can_read` refuses it), an archived one, one tombstoned on this stream, a
+/// workspace-less one tombstoned on ANOTHER workspace's stream, a secret-linked one and a superseded one. The totals
+/// are 3 lines in 2 memories; two keyset pages carry exactly those three hits once; context, the archive and status
+/// axes follow the contract; `%` matches only a literal `%` (a `!`-only decoy stays out); a cursor replayed with another
+/// pattern is refused. A direct read with a 1 ms budget over 20 000 rows is CANNOT_ESTABLISH_COMPLETENESS. Faults:
+/// drop the ESCAPE clause ⇒ `%!%%` matches the `!` decoy ⇒ red; replace the final gate by the census's stream-scoped
+/// overlay, or drop it, or drop `can_read` ⇒ the totals rise ⇒ red; drop the statement timeout ⇒ the budget arm returns
+/// a page ⇒ red.
 #[test]
 #[allow(clippy::too_many_lines)] // one seeded universe, every contract arm against it
 fn native_mcp_memory_grep_counts_pages_and_excludes() {
@@ -15328,6 +15330,8 @@ fn native_mcp_memory_grep_counts_pages_and_excludes() {
                 literal.memory_id,
                 &json!({"title": "50% off_now!"}),
             );
+            let bang = handle.seed_workspace_visible_context_record();
+            set_memory_content(&mut handle, bang.memory_id, &json!({"title": "wow! done"}));
             let peer_user = handle.seed_peer_user();
             let private = handle.seed_workspace_visible_context_record();
             set_memory_content(
@@ -15336,6 +15340,95 @@ fn native_mcp_memory_grep_counts_pages_and_excludes() {
                 &json!({"key_claim": "private needle"}),
             );
             set_record_user_visibility(&mut handle, &private, peer_user);
+            let hidden_source = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                hidden_source.memory_id,
+                &json!({"key_claim": "needle behind a private source"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.evidence_objects SET visibility_class = 'USER_PRIVATE', \
+                       visibility_user_id = $2, visibility_workspace_id = NULL WHERE evidence_id = $1",
+                    &[&hidden_source.evidence_id, &peer_user],
+                )
+                .expect("owner hides the only evidence behind the peer");
+            let elsewhere = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                elsewhere.memory_id,
+                &json!({"key_claim": "needle forgotten in another workspace"}),
+            );
+            for table in ["private.memory_records", "private.evidence_objects"] {
+                let id_column = if table == "private.memory_records" {
+                    "memory_id"
+                } else {
+                    "evidence_id"
+                };
+                let id = if table == "private.memory_records" {
+                    elsewhere.memory_id
+                } else {
+                    elsewhere.evidence_id
+                };
+                handle
+                    .admin
+                    .execute(
+                        &format!(
+                            "UPDATE {table} SET visibility_class = 'TENANT_SHARED', \
+                               visibility_workspace_id = NULL WHERE {id_column} = $1"
+                        ),
+                        &[&id],
+                    )
+                    .expect("owner makes the memory workspace-less");
+            }
+            let other_workspace = handle.seed_workspace();
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO projection.stream_checkpoints \
+                       (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version,issued_highwater) \
+                     VALUES($1,'workspace',$2,'knowledge','ingest','v1',1) ON CONFLICT DO NOTHING",
+                    &[&handle.tenant_id, &other_workspace],
+                )
+                .expect("owner seeds the other stream's checkpoint identity");
+            let other_commit: i64 = handle
+                .admin
+                .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+                .expect("owner allocates the other stream's commit")
+                .get(0);
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO projection.stream_log \
+                       (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version, \
+                        stream_seq,commit_seq,state,settled_at) \
+                     VALUES($1,'workspace',$2,'knowledge','ingest','v1',1,$3,'TOMBSTONED',clock_timestamp())",
+                    &[&handle.tenant_id, &other_workspace, &other_commit],
+                )
+                .expect("owner seeds a tombstone on another workspace's stream");
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
+                     VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)",
+                    &[&handle.tenant_id, &other_commit, &elsewhere.evidence_id],
+                )
+                .expect("owner maps the evidence to that tombstone");
+            let replaced = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                replaced.memory_id,
+                &json!({"key_claim": "superseded needle"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.memory_records SET status = 'superseded', superseded_by = $2 \
+                      WHERE memory_id = $1",
+                    &[&replaced.memory_id, &two.memory_id],
+                )
+                .expect("owner supersedes the fixture memory");
             let archived = handle.seed_workspace_visible_context_record();
             set_memory_content(
                 &mut handle,
@@ -15441,6 +15534,11 @@ fn native_mcp_memory_grep_counts_pages_and_excludes() {
                 let archived_hit = hit(&archive, archived.memory_id).expect("the archived hit");
                 assert_eq!(archived_hit["archived"], true);
 
+                let (_, history) = grep(json!({"action":"grep","pattern":"needle","statuses":["active","superseded"],"workspace_id":workspace})).await;
+                assert_eq!(history["result"]["structuredContent"]["total_matching_lines"], 4, "{history}");
+                let superseded_hit = hit(&history, replaced.memory_id).expect("the superseded hit");
+                assert_eq!(superseded_hit["status"], "superseded");
+
                 let (_, percent) = grep(json!({"action":"grep","pattern":"%","workspace_id":workspace})).await;
                 assert_eq!(percent["result"]["structuredContent"]["total_memories"], 1, "{percent}");
                 let percent_hit = hit(&percent, literal.memory_id).expect("the literal % hit");
@@ -15500,13 +15598,145 @@ fn native_mcp_memory_grep_counts_pages_and_excludes() {
                 &pool,
                 &auth,
                 WorkspaceId(handle.workspace_id),
-                &memory_stream_key(&handle),
                 &query,
             ));
             assert_eq!(
                 refused,
                 Err(ErrorCode::CannotEstablishCompleteness),
                 "a scan over budget is refused, never a guessed total"
+            );
+        },
+    );
+}
+
+/// Inserts `rows` memories of the fixture workspace in one statement, all backed by one INTERNAL evidence: row `g`'s
+/// `key_claim` is `text(g)` (an SQL expression over `g`).
+fn seed_bulk_memories(handle: &mut Handle, rows: i32, text_sql: &str) {
+    let mut txn = handle.admin.transaction().expect("bulk seed transaction");
+    let evidence: Uuid = txn
+        .query_one(
+            "INSERT INTO private.evidence_objects \
+               (tenant_id,evidence_kind,payload_sha256,data_class,origin_class,visibility_class, \
+                visibility_workspace_id,reasoning_domain_id) \
+             VALUES($1,'EVENT',$2,'INTERNAL','DirectUserInput','WORKSPACE_SHARED',$3,$4) RETURNING evidence_id",
+            &[&handle.tenant_id, &vec![5_u8; 32], &handle.workspace_id, &handle.reasoning_domain_id],
+        )
+        .expect("bulk evidence")
+        .get(0);
+    txn.execute(
+        &format!(
+            "WITH m AS (INSERT INTO private.memory_records \
+               (tenant_id,memory_type,content,visibility_class,visibility_workspace_id,authority_class, \
+                confidence,status,asserted_at) \
+               SELECT $1,'NOTE',jsonb_build_object('key_claim', {text_sql}), \
+                      'WORKSPACE_SHARED',$2,'ProjectConstraint',0.5,'active',clock_timestamp() \
+                 FROM generate_series(1, $3::int) g RETURNING memory_id) \
+             INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+             SELECT memory_id, $4, 'SUPPORTING', 'SNAPSHOT' FROM m"
+        ),
+        &[&handle.tenant_id, &handle.workspace_id, &rows, &evidence],
+    )
+    .expect("bulk memories");
+    txn.commit().expect("commit the bulk seed");
+}
+
+/// ADR-0069 gates `grep_pages_a_large_universe_exactly` and `grep_case_profile_is_frozen`, on the adapter over the
+/// real database. 10 000 filler memories, 41 memories with three matching lines each and one with fourteen: every
+/// page of 10 reports 137 lines in 42 memories, and the pages together carry each of the 137 hits exactly once, in
+/// `(memory_id, line_no)` order. The case profile is the database collation's, pinned: ASCII and CJK fold or match as
+/// expected; `İ`/`i`, `ß`/`SS` and Greek final sigma are recorded as this database decides them. Faults: an off-by-one
+/// in the keyset comparison (`>=`) ⇒ a hit repeats ⇒ red; a count over the page instead of the hit set ⇒ the totals
+/// drop ⇒ red.
+#[test]
+fn memory_grep_pages_a_large_universe_exactly() {
+    run_db_fixture::<Fixture, _>(
+        "memory_grep_pages_a_large_universe_exactly",
+        |mut handle| {
+            let credential = enumeration_credential(&mut handle, "grepscale");
+            seed_bulk_memories(
+                &mut handle,
+                10_000,
+                "'filler row ' || g || E'\\nnothing to see'",
+            );
+            seed_bulk_memories(
+                &mut handle,
+                41,
+                "'zq137x one ' || g || E'\\nplain\\nZQ137X two\\nthen zQ137x three'",
+            );
+            seed_bulk_memories(
+                &mut handle,
+                1,
+                "array_to_string(ARRAY(SELECT 'line ' || i || ' zq137x' FROM generate_series(1, 14) i), E'\\n')",
+            );
+            seed_bulk_memories(
+                &mut handle,
+                1,
+                "E'İstanbul trip\\nSTRASSE sign\\nΣΟΦΙΑ notes\\n中文测试 line\\nMixedCase Word'",
+            );
+            let pool = handle
+                .rt
+                .block_on(handle.fresh_runtime())
+                .expect("direct grep runtime");
+            let auth = direct_write_scope(
+                handle.tenant_id,
+                credential.api_key_id,
+                handle.user_id,
+                handle.workspace_id,
+            );
+            let page = |after: Option<(Uuid, i64)>, pattern: &str| {
+                let query = humaux_adapters::grep_repo::GrepQuery::new(
+                    pattern,
+                    humaux_adapters::read_materialize::Lifecycle::CURRENT,
+                    10,
+                    after,
+                    None,
+                )
+                .expect("valid query");
+                handle
+                    .rt
+                    .block_on(humaux_adapters::grep_repo::grep(
+                        &pool,
+                        &auth,
+                        WorkspaceId(handle.workspace_id),
+                        &query,
+                    ))
+                    .expect("grep page")
+            };
+            let mut seen = Vec::new();
+            let mut after = None;
+            let mut pages = 0;
+            loop {
+                let current = page(after, "zq137x");
+                assert_eq!(current.total_matching_lines, 137, "page {pages}");
+                assert_eq!(current.total_memories, 42, "page {pages}");
+                seen.extend(current.items.iter().map(|hit| (hit.memory_id, hit.line_no)));
+                pages += 1;
+                match current.next_after() {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+                assert!(pages <= 14, "137 hits fit in 14 pages of 10");
+            }
+            assert_eq!(pages, 14);
+            let mut sorted = seen.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, seen, "hits arrive in keyset order");
+            sorted.dedup();
+            assert_eq!(sorted.len(), 137, "every hit exactly once");
+
+            let hits = |pattern: &str| page(None, pattern).total_matching_lines;
+            assert_eq!(hits("mixedcase word"), 1, "ASCII folds");
+            assert_eq!(hits("中文测试"), 1, "CJK matches itself");
+            assert_eq!(
+                hits("σοφια"),
+                1,
+                "Greek capitals fold to their small letters"
+            );
+            assert_eq!(hits("istanbul"), 1, "İ folds to i under this collation");
+            assert_eq!(
+                hits("straße"),
+                0,
+                "ß does not fold to SS: ILIKE folds letter by letter"
             );
         },
     );

@@ -1100,7 +1100,7 @@ pub(crate) async fn grep(
     bootstrap: ContextBootstrap,
     params: GrepParams<'_>,
 ) -> Result<serde_json::Value, ErrorCode> {
-    let (authorization, _scope, _family, stream, _serving) =
+    let (authorization, _scope, _family, _stream, _serving) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
     let workspace = requested_workspace.ok_or(ErrorCode::DependencyUnavailable)?;
     let tenant = authorization.tenant_id().0;
@@ -1126,7 +1126,7 @@ pub(crate) async fn grep(
         after,
         None,
     )?;
-    let page = grep_repo::grep(&pool, &authorization, workspace, &stream, &query).await?;
+    let page = grep_repo::grep(&pool, &authorization, workspace, &query).await?;
     let expires = now.saturating_add(i64::try_from(params.ttl.as_secs()).unwrap_or(i64::MAX));
     let next_cursor = page.next_after().map(|(memory_id, line_no)| {
         Cursor::sign(
