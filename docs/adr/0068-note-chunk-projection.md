@@ -110,7 +110,9 @@ Two facts frame every decision:
   `limit = candidate_memory_budget`. The budget keeps today's number, `min(top_k × 5, 200)`, but counts Memories now.
 - **Verification.** Each group id is checked against the PG registry's resolution of its point; a mismatch is a
   projection inconsistency, never a result. The PG final gate stays the authority.
-- **Refill.** A bounded refill (configured rounds and limit) applies when the gate leaves fewer than `top_k`.
+- **Refill.** A bounded refill (configured rounds and limit). As shipped in 40d-1c-iii it applies when Qdrant's
+  grouped search returns fewer groups than `cand_k`, within the same `cand_k` budget; the PG gate's drops stay
+  absorbed by the `cand_k` over-fetch (amended 2026-10-14).
 - **Counts.** `candidate_count == cand_k` is replaced by `candidate_point_count`, `candidate_memory_count`,
   `eligible_memory_count` and `returned_count`, plus the budget. A response with fewer groups than the budget is valid.
 - **`truncated`.** Carries a reason.
@@ -478,8 +480,9 @@ Two facts frame every decision:
 
 **40d-1c-iii as shipped (the bounded refill).**
 
-- **Budget (decision).** The total stays `cand_k` Memories across every grouped call (research batch 12's "keep the
-  first-round budget" branch): a refill spends only what Qdrant left unreturned, never a second budget. So the PG
+- **Budget (decision).** The total stays `cand_k` Memories across every grouped call (research batch 12 §5.3: when the
+  first round keeps the full budget, a refill may only use the remainder actually unconsumed): a refill spends only
+  what Qdrant left unreturned, never a second budget. So the PG
   gate's drops are absorbed, as before, by the `cand_k = 5 × top_k` over-fetch, and the refill exists for one
   failure only — Qdrant's bounded group search coming back short while more qualifying Memories exist.
 - **Refill.** `qdrant::query_dense_groups_bounded`: when a grouped call returns fewer groups than `limit`, the next
@@ -491,9 +494,15 @@ Two facts frame every decision:
 - **Mislabeled groups.** Excluding by `memory_id` cannot tell a mislabeled point from its group, so a group whose
   representative the PG gate later rejects as mislabeled is not re-queried in the same recall; the inconsistency is
   logged (40d-1c-ii) and the rebuild verifier's E4 names the point's payload. Declared, not refilled.
+- **No separate deadline (declared).** Each call carries the Qdrant transport timeout and there are at most three, so
+  the worst case is three timeouts; and a corpus with fewer qualifying Memories than `cand_k` always pays one extra
+  call that comes back empty (fewer groups cannot tell exhaustion from the bounded search). Both are latency, not
+  correctness, and the 40d-2 enabling eval's p95 gate measures them before grouping is switched on. Upgrade: a
+  per-recall deadline, if that gate fails.
 - **Gates.** `bounded_group_search_is_refilled` (`adapters::tests::qdrant_live`, real Qdrant, pins research batch 12's
-  counterexample: one call returns five of six qualifying Memories, the refill returns the sixth) and
-  `grouped_refill_excludes_the_memories_already_seen` (`adapters::qdrant`).
+  counterexample: one call returns five of seven qualifying Memories, the refill returns only the sixth — the
+  remainder of the budget, never the seventh) and `grouped_refill_excludes_the_memories_already_seen`
+  (`adapters::qdrant`). The three-call cap itself is not gated (the loop also ends on a call that adds nothing).
 - **Left.** The D-E count fields (`candidate_point_count`, `candidate_memory_count`, `eligible_memory_count`,
   `returned_count`, a `truncated` reason) — a wire change of their own, with the 40d-2 enabling eval; until then
   `candidate_count` is the number of groups returned across the calls.
