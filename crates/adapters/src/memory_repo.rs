@@ -1,7 +1,7 @@
 //! `adapters::memory_repo` — the sole `INSERT INTO private.memory_records` door (M07 D9, gate G-M07-1): one authorized Memory plus its PRIMARY
 //!   `memory_evidence` link, written in the caller's transaction.
 //! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::consolidate_repo, adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
-//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, private-worker::distill]
+//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo]
 //! Invariants: [every non-test Memory INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
 //!   Memory row and its PRIMARY `memory_evidence` link are written together, because 0004's deferred `memory_records_requires_evidence` trigger
 //!   needs both by COMMIT; visibility is the Evidence's own three columns verbatim and a Memory's authority class is the caller's
