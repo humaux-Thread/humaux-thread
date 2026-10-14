@@ -1,6 +1,6 @@
-//! `maintenance::rebuild_cli` — the one-shot arms `projection rebuild` and `projection verify` (ADR-0064 D-E, D-F):
-//!   flag parsing, the two pools and the Qdrant face, the per-stream loop and the one JSON receipt. Every step and
-//!   every verdict lives in `adapters::rebuild`.
+//! `maintenance::rebuild_cli` — the one-shot arms `projection rebuild`, `projection verify` (ADR-0064 D-E, D-F) and
+//!   `projection backfill-memory-id` (ADR-0068 40d-2a): flag parsing, the two pools and the Qdrant face, the
+//!   per-stream loop and the one JSON receipt. Every step and every verdict lives in `adapters::rebuild`.
 //! Depends-on: crates=[humaux-adapters, serde_json, tokio, uuid]; services=[PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_QDRANT_CIDR,
 //!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION,
@@ -10,9 +10,10 @@
 //! Invariants: [every flag is required with no default except the D-G consent `--allow-reembed` (§78.1); flags are
 //!   parsed before any connection (a missing flag is exit 2 with nothing read); exactly one receipt object per stream
 //!   in `streams`; exit 0 only when every stream closed (rebuild) or reads (verify) `equivalent`, 3 when any stream
-//!   was refused, 1 otherwise; `verify` writes nothing; the worker's label, its DSN and the Qdrant face are read
+//!   was refused, 1 otherwise; backfill-memory-id exits 0 when no stream has a stray, 3 when any has or none matched, 1 on an error;
+//!   `verify` writes nothing; the worker's label, its DSN and the Qdrant face are read
 //!   under their own names (the card-35 peer-key precedent), never copied into a maintenance key]
-//! Spec: Baseline §16.2; §44; §78.1; ADR-0053 D-F; ADR-0064 D-E; ADR-0064 D-F; ADR-0064 D-G
+//! Spec: Baseline §16.2; §44; §78.1; ADR-0053 D-F; ADR-0064 D-E; ADR-0064 D-F; ADR-0064 D-G; ADR-0068
 //!
 //! Why the retrieval worker's DSN: X and the E4 payloads are what the projector builds, and only
 //! `role_retrieval_worker` sees every memory of a tenant (0140); `role_maintenance`'s view is narrowed by the
@@ -182,4 +183,33 @@ pub(crate) async fn verify(args: &Args) -> Result<Output> {
         });
     }
     Ok(receipt("projection verify", outcomes))
+}
+
+/// `projection backfill-memory-id (--tenant <uuid> [--workspace <uuid>] | --all)` (ADR-0068 40d-2a): writes the
+/// registry's `memory_id` on every registered point of each stream. Exit 0 when no stream has a stray, 3 when any
+/// has (named in its object, left unpatched) or when the scope matched no stream (nothing was backfilled, so the
+/// switch gate must not read it as done), 1 on an error.
+pub(crate) async fn backfill_memory_id(args: &Args) -> Result<Output> {
+    let scope = scope(args)?;
+    let wiring = wiring().await?;
+    let deps = wiring.deps();
+    let mut streams = Vec::new();
+    let mut strays = 0;
+    for stream in wiring.streams(&scope).await? {
+        let report = rebuild::backfill_memory_ids(&deps, &stream).await?;
+        strays += report.strays;
+        streams.push(report.json);
+    }
+    let outcome = match (streams.is_empty(), strays > 0) {
+        (true, _) => "no_streams",
+        (false, true) => "strays",
+        (false, false) => "backfilled",
+    };
+    let mut output = Output::ok(json!({
+        "command": "projection backfill-memory-id",
+        "outcome": outcome,
+        "streams": streams,
+    }));
+    output.refused = outcome != "backfilled";
+    Ok(output)
 }

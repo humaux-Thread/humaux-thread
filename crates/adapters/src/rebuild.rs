@@ -1,6 +1,7 @@
 //! `adapters::rebuild` — the Qdrant rebuild from PostgreSQL as generation g+1 on the same stream (ADR-0064 D-A,
 //!   D-E), its equivalence verifier against Project(PG@H2) (D-F E1–E5, orphan deletion under the quiescent rule),
-//!   the embedding-fingerprint precheck (D-G), and the closed no-provider deps of the restore drill (D-M).
+//!   the embedding-fingerprint precheck (D-G), the closed no-provider deps of the restore drill (D-M), and the
+//!   registry-driven `memory_id` payload backfill (ADR-0068 40d-2a).
 //! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
 //!   humaux-projection, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(role_maintenance) r=[projection.embedding_fingerprints,
@@ -22,9 +23,11 @@
 //!   fenced at H2; a fingerprint other than the worker label's refuses before any write; NoProviderEmbedder can
 //!   only refuse and count, and drill_projection_deps takes no embedder; drill_closed_deps can reach only the
 //!   drill's own Qdrant on 127.0.0.1; with require_stored_vector (the drill) only generation tickets count as in
-//!   flight for the stream-quiescence verdict, restored non-generation tickets being frozen quarantine state]
+//!   flight for the stream-quiescence verdict, restored non-generation tickets being frozen quarantine state;
+//!   backfill_memory_ids writes only the memory_id payload key, only on points with a registry row (live or
+//!   retired) and only the value that row names, never PostgreSQL, a vector or a provider]
 //! Spec: Baseline §16.2; §44; ADR-0057; ADR-0064 D-A; ADR-0064 D-E; ADR-0064 D-F; ADR-0064 D-G; ADR-0064 D-M;
-//!   ADR-0064 D-N
+//!   ADR-0064 D-N; ADR-0068
 //!
 //! ## One stream, in order (D-E)
 //!
@@ -56,7 +59,7 @@ use humaux_infra_cell::{
     authorize_cell_access,
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalCard};
-use humaux_projection::dense::build_stream_count_filter;
+use humaux_projection::dense::{StreamCountFilter, build_stream_count_filter};
 use humaux_projection::note_chunks::{NoteChunkPolicy, UnknownNoteChunkProfile};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
@@ -467,12 +470,7 @@ pub struct Scrolled {
 
 /// D-F E3: scrolls every point of `stream` (payload and vector) and counts the same filter exactly.
 pub async fn scroll_stream(deps: &RebuildDeps<'_>, stream: &Stream) -> Result<Scrolled> {
-    let filter = build_stream_count_filter(
-        stream.key.tenant_id,
-        WorkspaceId(stream.key.scope_id),
-        &stream.key.projection_version,
-    )
-    .ok_or_else(|| ProvisioningError::InvalidInput("empty projection_version".to_owned()))?;
+    let filter = stream_filter(stream)?;
     let (transport, permit) = deps.qdrant.wire()?;
     let qerr = |e: qdrant::QdrantTransportError| ProvisioningError::Qdrant(e.to_string());
     let mut scrolled = Scrolled::default();
@@ -517,6 +515,16 @@ pub async fn scroll_stream(deps: &RebuildDeps<'_>, stream: &Stream) -> Result<Sc
     .await
     .map_err(qerr)?;
     Ok(scrolled)
+}
+
+/// Every point of `stream` in Qdrant (ADR-0064 D-F E3's one stream filter).
+fn stream_filter(stream: &Stream) -> Result<StreamCountFilter> {
+    build_stream_count_filter(
+        stream.key.tenant_id,
+        WorkspaceId(stream.key.scope_id),
+        &stream.key.projection_version,
+    )
+    .ok_or_else(|| ProvisioningError::InvalidInput("empty projection_version".to_owned()))
 }
 
 /// One live registry row of the stream under the worker label (R), with its vector row.
@@ -1255,6 +1263,159 @@ pub async fn verify_run(
             Ok((again, ids.len() as u64))
         }
     }
+}
+
+// ============================================================================
+// ADR-0068 40d-2a — the memory_id backfill
+// ============================================================================
+
+/// What [`backfill_memory_ids`] found and did on one stream (ADR-0068 40d-2a).
+#[derive(Debug, Clone)]
+pub struct BackfillReport {
+    /// Every point of the stream the scroll returned, any label.
+    pub scrolled: u64,
+    /// Registered points whose payload already carried the registry's `memory_id`.
+    pub correct: u64,
+    /// Registered points whose `memory_id` was absent, not a scalar string, or another value; now patched.
+    pub patched: u64,
+    /// Points with no registry row: counted and left untouched.
+    pub strays: u64,
+    /// The first stray ids (at most `DIFF_REPORT_LIMIT`).
+    pub stray_ids: Vec<PointId>,
+    /// The stream's receipt object.
+    pub json: Value,
+}
+
+/// ADR-0068 40d-2a: point id → Memory for the registry rows of `point_ids` in the stream, live or retired, any label —
+/// a point the registry ever wrote is repaired whatever state its row is in now. Read per scrolled page, AFTER that
+/// page's scroll (the D-F verifier's order): the projection worker upserts a point before it registers it, so a row
+/// read before the scroll could miss a point the scroll then sees and call it a stray.
+async fn read_point_memories(
+    deps: &RebuildDeps<'_>,
+    stream: &Stream,
+    point_ids: &[Uuid],
+) -> Result<BTreeMap<Uuid, Uuid>> {
+    let mut txn = begin_projector_read(deps.reader, stream.key.tenant_id.0).await?;
+    let rows = key_query(
+        "SELECT point_id, memory_id FROM projection.private_memory_points \
+          WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
+            AND projection_kind = $5 AND projection_version = $6 AND point_id = ANY($7)",
+        &stream.key,
+    )
+    .bind(point_ids)
+    .fetch_all(&mut *txn)
+    .await?;
+    txn.commit().await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.try_get::<Uuid, _>("point_id")?,
+                row.try_get::<Uuid, _>("memory_id")?,
+            ))
+        })
+        .collect()
+}
+
+/// ADR-0068 40d-2a (D-I step 1): writes the registry's `memory_id` on every point of `stream` whose payload does not
+/// carry it as that exact scalar string (absent, an array, another type, `""` or another value), one
+/// [`qdrant::set_memory_id_payload`] batch per scroll page (at most `SCROLL_PAGE` points). A point without a registry
+/// row is a stray: counted, named, never written. No PostgreSQL write, no vector, no provider; a second run patches 0.
+pub async fn backfill_memory_ids(
+    deps: &RebuildDeps<'_>,
+    stream: &Stream,
+) -> Result<BackfillReport> {
+    let filter = stream_filter(stream)?;
+    let (transport, permit) = deps.qdrant.wire()?;
+    let qerr = |e: qdrant::QdrantTransportError| ProvisioningError::Qdrant(e.to_string());
+    let (mut scrolled, mut correct, mut patched, mut strays) = (0u64, 0u64, 0u64, 0u64);
+    let mut stray_ids = Vec::new();
+    let mut offset = None;
+    loop {
+        // dep: Qdrant(*) — one page of the stream's points, payload only
+        let page = qdrant::scroll_stream_points(
+            transport,
+            &permit,
+            &stream.collection,
+            &filter,
+            offset,
+            SCROLL_PAGE,
+            false,
+        )
+        .await
+        .map_err(qerr)?;
+        let page_ids: Vec<Uuid> = page
+            .points
+            .iter()
+            .filter_map(|point| match point.id {
+                PointId::Uuid(id) => Some(id),
+                PointId::Num(_) => None,
+            })
+            .collect();
+        let registry = read_point_memories(deps, stream, &page_ids).await?;
+        let mut groups: BTreeMap<Uuid, Vec<PointId>> = BTreeMap::new();
+        for point in &page.points {
+            scrolled += 1;
+            let memory = match point.id {
+                PointId::Uuid(id) => registry.get(&id),
+                PointId::Num(_) => None,
+            };
+            let Some(memory) = memory else {
+                strays += 1;
+                if stray_ids.len() < DIFF_REPORT_LIMIT {
+                    stray_ids.push(point.id);
+                }
+                continue;
+            };
+            let canonical = memory.to_string();
+            let stored = point
+                .payload
+                .get(qdrant::MEMORY_ID_FIELD)
+                .and_then(Value::as_str);
+            if stored == Some(canonical.as_str()) {
+                correct += 1;
+            } else {
+                groups.entry(*memory).or_default().push(point.id);
+            }
+        }
+        let groups: Vec<(Uuid, Vec<PointId>)> = groups.into_iter().collect();
+        // dep: Qdrant(*) — the page's patch, one batch call, strong ordering
+        qdrant::set_memory_id_payload(
+            transport,
+            &permit,
+            &stream.collection,
+            &groups,
+            qdrant::ha_profile_for(QdrantOperation::CorrectionDeleteSupersede),
+        )
+        .await
+        .map_err(qerr)?;
+        patched += groups.iter().map(|(_, ids)| ids.len() as u64).sum::<u64>();
+        offset = page.next;
+        if offset.is_none() {
+            break;
+        }
+    }
+    let mut json = stream.receipt_head();
+    json["scrolled"] = json!(scrolled);
+    json["correct"] = json!(correct);
+    json["patched"] = json!(patched);
+    json["strays"] = json!(strays);
+    json["stray_ids"] = json!(
+        stray_ids
+            .iter()
+            .map(|id| match id {
+                PointId::Uuid(u) => json!(u),
+                PointId::Num(n) => json!(n),
+            })
+            .collect::<Vec<_>>()
+    );
+    Ok(BackfillReport {
+        scrolled,
+        correct,
+        patched,
+        strays,
+        stray_ids,
+        json,
+    })
 }
 
 // ============================================================================
