@@ -7,6 +7,7 @@
 -- qualified, `TimeZone = UTC` (period arithmetic and the RFC3339 spelling never depend on the caller's session),
 -- REVOKE ALL FROM PUBLIC, EXECUTE to role_maintenance only (§6.2.2). Like control.issue_quota_window (0113) it
 -- asserts the caller's tenant GUC, takes the same `quota-window:` advisory lock, and reads the clock from PG.
+-- A BEFORE UPDATE trigger drops a pending successor whenever `effective` changes without it (ADR-0072 L3).
 -- No role, table or grant is added; the touched tables stay FORCE RLS.
 
 -- ADR-0072 D-A: the staged next period. `successor` is a whole `effective` object (the current one with the BMO
@@ -22,6 +23,26 @@ ALTER TABLE control.entitlement_snapshots
 COMMENT ON COLUMN control.entitlement_snapshots.successor IS
   'ADR-0072 D-A: the next period''s effective object, in force from successor_from; written only by '
   'control.renew_quota_period.';
+
+-- ADR-0072 D-A / L3: a successor is a copy of `effective` at staging time. Any statement that changes `effective`
+-- without also setting `successor` (a Projector recompute, an operator lowering or revoking an entitlement) drops the
+-- pending successor, so the next daemon visit re-stages it from the new `effective` and a stale copy can never be
+-- promoted over it. The door's own promotion sets both columns and passes through. Invoker rights (it only edits
+-- NEW, the 0113 `quota_window_immutable` shape); firing needs no EXECUTE.
+CREATE FUNCTION control.entitlement_snapshot_drop_stale_successor() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.effective IS DISTINCT FROM OLD.effective AND NEW.successor IS NOT DISTINCT FROM OLD.successor THEN
+    NEW.successor := NULL;
+    NEW.successor_from := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+ALTER FUNCTION control.entitlement_snapshot_drop_stale_successor() OWNER TO role_migration_owner;
+REVOKE ALL ON FUNCTION control.entitlement_snapshot_drop_stale_successor() FROM PUBLIC;
+CREATE TRIGGER entitlement_snapshot_drop_stale_successor BEFORE UPDATE ON control.entitlement_snapshots
+FOR EACH ROW EXECUTE FUNCTION control.entitlement_snapshot_drop_stale_successor();
 
 -- ADR-0072 D-B..D-D: one tenant's renewal step. Returns how many successor periods this call staged (0 on a rerun,
 -- while one is pending, or for a tenant that does not renew) and the end of the tenant's latest BMO window (NULL when
@@ -114,6 +135,9 @@ BEGIN
 
     -- ADR-0072 D-B: contiguous with the current period; `calendar_month` ends at the next UTC month start, a
     -- `subscription_period` lasts the configured interval.
+    -- ponytail: the next end is the previous end plus the interval, so an anchor on the 29th-31st becomes the
+    -- 28th/29th after the first shorter month and stays there (ADR-0072 L2); store the anchor day on the snapshot
+    -- and compute each end from it if billing days past the 28th must hold.
     v_next := CASE v_policy ->> 'period'
                 WHEN 'calendar_month' THEN date_trunc('month', v_end) + interval '1 month'
                 ELSE v_end + p_subscription_period

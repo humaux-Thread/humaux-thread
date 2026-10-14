@@ -192,9 +192,9 @@
 | `HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |
 | `HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |
 | `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |
-| `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS` | runtime | process(humaux-maintenance) | `maintenance::serve`, `maintenance::tests::support::throwaway` | literal | raw |
+| `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS` | runtime | process(humaux-maintenance) | `maintenance::serve`, `maintenance::tests::serve`, `maintenance::tests::support::throwaway` | literal | raw |
 | `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |
-| `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS` | runtime | process(humaux-maintenance) | `maintenance::serve`, `maintenance::tests::support::throwaway` | literal | raw |
+| `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS` | runtime | process(humaux-maintenance) | `maintenance::serve`, `maintenance::tests::serve`, `maintenance::tests::support::throwaway` | literal | raw |
 | `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |
 | `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |
 | `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS` | runtime | process(humaux-maintenance) | `maintenance::serve` | literal | raw |

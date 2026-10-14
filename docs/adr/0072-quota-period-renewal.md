@@ -45,8 +45,10 @@ before the boundary and take effect at it without a maintenance call.
   `quota_repo::renew_period`, counted by `maintenance_task_runs_total` / `maintenance_task_rows_total` (rows = staged
   periods). Registered keys, no code default (§78.1): `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS`,
   `…_QUOTA_RENEWAL_LIMIT`, `…_QUOTA_RENEWAL_LEAD_SECONDS` (> 0), `…_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS` (> 0). Bundle
-  values: every 300 s, limit 12, lead 14 days, 1 month. `sweep once` runs it like every task.
-- **D-D Alert.** The task records each tenant's latest BMO `window_end` (dropped when the tenant stops renewing);
+  values: every 300 s, limit 12, lead 14 days, 1 month. `sweep once` runs it like every task. Boot refuses a lead at
+  or below the 7-day alert threshold (D-D), which would fire the alert every period before the successor is staged.
+- **D-D Alert.** `quota_repo::renew_period` records each tenant's latest BMO `window_end` after the call commits
+  (dropped when the tenant stops renewing; that call is the helper's one production caller, `EMIT_HELPERS` / D5);
   `quota_window_horizon_seconds` (§41.2, gauge, no label) renders the smallest of them minus the scrape time, so a
   renewal that stops running drifts toward the alert instead of holding a stale value; no sample until a renewing
   tenant was visited (`ABSENT_UNTIL_FIRST_RUN`; a failing call is `MaintenanceTaskFailing`). `QuotaWindowRenewalMissing`
@@ -54,7 +56,10 @@ before the boundary and take effect at it without a maintenance call.
 - **D-E Gate.** `crates/adapters/tests/quota_and_rate.rs::quota_window_renews_before_period_end` (live PG, request-guard
   lane): staging before the boundary, contiguity / length / limit, one successor under four concurrent calls and on
   rerun, the gateway's entitlement read and a reservation inside the successor after the boundary with no call in
-  between, promotion, a SUSPENDED tenant not renewed, no runtime EXECUTE. `rls-check`'s "ADR-0062 maintenance doors"
+  between, the horizon equal to the successor window's end, a changed `effective` dropping the successor and the
+  re-stage carrying the new limit, promotion, a SUSPENDED tenant not renewed, no runtime EXECUTE.
+  `bins/maintenance/tests/serve.rs::quota_renewal_publishes_the_horizon_gauge` proves the `/metrics` sample and
+  `serve_refuses_a_renewal_lead_not_above_the_alert_threshold` the boot refusal. `rls-check`'s "ADR-0062 maintenance doors"
   pins the door's owner / definer / search_path / exact EXECUTE set. Promtool: two cases, mutations `renewal_lt`,
   `renewal_min`.
 
@@ -72,12 +77,17 @@ before the boundary and take effect at it without a maintenance call.
 - L1 "Renewing" is `tenants.state = 'ACTIVE'`. The schema has no §71.2 subscription (no CANCEL_AT_PERIOD_END,
   PAST_DUE, GRACE): stopping renewal today means suspending the tenant, which also blocks it at once. Upgrade: the
   §71 subscription table, read by the door's first predicate.
-- L2 One deployment-wide `subscription_period` length (months, UTC, PG month arithmetic: an anchor on the 29th–31st
-  clamps to the month end and stays there). Upgrade: per-plan period input from the §76 Projector.
-- L3 The successor copies `effective` at staging time. A later write to `effective` before `successor_from` (no
-  production writer exists today; onboarding never rewrites a snapshot) is overwritten at promotion, and the staged
-  window's limit is immutable (§72.2.1 "mid-period change affects the next window" then means the one after). The
-  §76 Projector, when wired, must rewrite or clear `successor` with `effective`.
+- L2 One deployment-wide `subscription_period` length (months, UTC, PG month arithmetic on the previous end). An
+  anchor on the 29th–31st does not hold: after the first shorter month the end lands on the 28th/29th and every
+  later period keeps that day (Jan 31 → Feb 28 → Mar 28 …). Upgrade: store the anchor day on the snapshot and compute
+  each end from it; per-plan period input from the §76 Projector. Only `subscription_period` has a producer
+  (onboarding); the door's `calendar_month` branch has no producer and no test.
+- L3 The successor copies `effective` at staging time. A BEFORE UPDATE trigger on `control.entitlement_snapshots`
+  (0245) drops a pending successor whenever a statement changes `effective` without setting `successor`, and the next
+  daemon visit re-stages it from the new `effective`, so a stale copy is never promoted over a lowered or revoked
+  entitlement. The successor *window* already issued keeps its limit (window limits are immutable, §72.2.1): a limit
+  change inside the lead takes effect one window later; a revoked feature or a removed BMO key still blocks at once
+  through the online entitlement read.
 - L4 An operator re-run of `onboard tenant` between `successor_from` and the next daemon visit fails in
   `issue_quota_window` (its snapshot is not current); rerun after the visit.
 - L5 The gauge covers tenants this process visited since boot; after a restart it fills over one page rotation.

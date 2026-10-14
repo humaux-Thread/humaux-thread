@@ -433,19 +433,21 @@ pub async fn reap_expired(
     Ok(reaped)
 }
 
-/// What one tenant's renewal call did (ADR-0072 D-C).
+/// What one tenant's renewal call did (Baseline §72.2.1; ADR-0072 D-C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Renewal {
     /// Successor periods this call staged: 0 on a rerun, while one is pending, or for a tenant that does not renew.
     pub staged: i32,
-    /// The end of the tenant's latest BMO window; `None` when the tenant does not renew (ADR-0072 D-B).
+    /// The end of the tenant's latest BMO window; `None` when the tenant does not renew (ADR-0072 D-B). Also recorded
+    /// as this tenant's `quota_window_horizon_seconds` input (§41.2, ADR-0072 D-D).
     pub horizon: Option<OffsetDateTime>,
 }
 
 /// §72.2.1 / ADR-0072: one tenant's renewal step through the owner door `control.renew_quota_period` (0245). Within
 /// `lead` of the current period's end it stages the contiguous next period on the snapshot and issues its window
 /// with the snapshot's limit; a `subscription_period` lasts `subscription_months`. Idempotent and serialized with
-/// the issuer per tenant; at most `limit` periods per call.
+/// the issuer per tenant; at most `limit` periods per call. A committed call records the tenant's horizon for
+/// `quota_window_horizon_seconds` (§41.2, ADR-0072 D-D).
 pub async fn renew_period(
     pool: &MaintenanceDbPool,
     tenant: TenantId,
@@ -476,6 +478,7 @@ pub async fn renew_period(
         horizon: field(&row, "horizon")?,
     };
     txn.commit().await.map_err(db_error)?;
+    record_quota_window_horizon(tenant, renewal.horizon.map(OffsetDateTime::unix_timestamp));
     Ok(renewal)
 }
 
@@ -503,9 +506,9 @@ impl HorizonByTenant {
 static QUOTA_WINDOW_HORIZON_SECONDS: HorizonByTenant =
     HorizonByTenant(std::sync::Mutex::new(std::collections::BTreeMap::new()));
 
-/// ADR-0072 D-D: records one renewal call's horizon for `tenant` (`None` drops a tenant that no longer renews). The
-/// family's only `.set()`; public so the G80-6 witness drives it without a database; the one production caller is
-/// `maintenance::serve`'s QUOTA_RENEWAL task.
+/// Baseline §41.2 `quota_window_horizon_seconds` / §72.2.1, ADR-0072 D-D: records one renewal call's horizon for
+/// `tenant` (`None` drops a tenant that no longer renews). The family's only `.set()`; public so the G80-6 witness
+/// drives it without a database; the one production caller is [`renew_period`] (`EMIT_HELPERS`, D5).
 pub fn record_quota_window_horizon(tenant: TenantId, horizon_unix: Option<i64>) {
     // labels: -
     QUOTA_WINDOW_HORIZON_SECONDS.set(tenant.0, horizon_unix);

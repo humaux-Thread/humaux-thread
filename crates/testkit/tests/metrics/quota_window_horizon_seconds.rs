@@ -4,13 +4,14 @@
 //! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[adapters::quota_repo, domain::ids]
 //! Called-by: []
 //! Invariants: [drives the family's one `.set()` (`quota_repo::record_quota_window_horizon`, called by
-//!   `maintenance::serve` after each QUOTA_RENEWAL tenant call) and asserts the sample is the smallest recorded
+//!   `quota_repo::renew_period` after each committed QUOTA_RENEWAL tenant call) and asserts the sample is the smallest recorded
 //!   horizon minus the render time; a `None` horizon drops that tenant; nothing recorded means no sample]
 //! Spec: Baseline §41.2; §42; §80.2; ADR-0072 D-D
 //!
-//! The real horizon is asserted against PostgreSQL by `crates/adapters/tests/quota_and_rate.rs`
-//! (`quota_window_renews_before_period_end`). Compiled and run standalone by `cargo xtask metrics-registry`
-//! (`run_witness_probe`).
+//! The horizon `quota_repo::renew_period` records is asserted equal to the successor window's end against PostgreSQL
+//! by `crates/adapters/tests/quota_and_rate.rs` (`quota_window_renews_before_period_end`), and the daemon's `/metrics`
+//! sample by `bins/maintenance/tests/serve.rs` (`quota_renewal_publishes_the_horizon_gauge`). Compiled and run
+//! standalone by `cargo xtask metrics-registry` (`run_witness_probe`).
 
 use humaux_adapters::quota_repo::{quota_window_horizon_seconds, record_quota_window_horizon};
 use humaux_domain::ids::TenantId;

@@ -566,8 +566,11 @@ key is revoked (`apikey revoke --tenant <id> --key-name <name>`) and a new one i
 then on `maintenance-serve`'s `quota_renewal` task (§5.1, ADR-0072) renews every ACTIVE tenant: from
 `QUOTA_RENEWAL_LEAD_SECONDS` (14 days) before the end it stages the next period on the snapshot and issues its quota
 window, contiguous and `QUOTA_RENEWAL_SUBSCRIPTION_MONTHS` long, with the snapshot's limit; the gateway switches to it
-at the boundary by itself. Pick `--period-end` on the day of month the customer's periods should turn over (the 1st
-for calendar billing; anchors on the 29th–31st clamp to the month end). Never give a far-future date to dodge
+at the boundary by itself. Pick `--period-end` on the day of month the customer's periods should turn over, at most
+the 28th: an anchor on the 29th–31st drifts to the 28th/29th after the first shorter month and stays there
+(ADR-0072 L2). Onboarding always writes `subscription_period`; true calendar-month billing (`calendar_month`) has no
+producer and is untested. A change to a tenant's `effective` entitlement drops its staged successor, which the next
+daemon visit re-stages from the new value (ADR-0072 L3). Never give a far-future date to dodge
 renewal: it hides a stopped daemon until the date arrives. To stop renewing a tenant, suspend it (ADR-0072 L1: there
 is no cancel-at-period-end yet). `QuotaWindowRenewalMissing` (CRITICAL) fires when any renewing tenant's last window
 ends within 7 days: check `maintenance_task_runs_total{task="quota_renewal",outcome="failed"}` and the daemon's

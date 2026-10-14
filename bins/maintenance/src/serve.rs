@@ -33,7 +33,8 @@
 //! Called-by: [maintenance::main]
 //! Invariants: [HUMAUX_MIGRATOR_PG_DSN in the environment refuses boot before anything else (ADR-0063 D-H); every
 //!   key is required with no code default and checked before any connection; LOST_AFTER must
-//!   exceed the gateway's projection-lag key; only the first connect is boot-fatal, every later failure is logged,
+//!   exceed the gateway's projection-lag key; QUOTA_RENEWAL_LEAD_SECONDS must exceed the 7-day renewal alert threshold
+//!   (ADR-0072 D-D); only the first connect is boot-fatal, every later failure is logged,
 //!   kept for /status and answered 503 while the loop goes on; every call is bounded by CYCLE_SECONDS on the server
 //!   and the client; the signal latch is checked between calls, so SIGTERM never waits out a cycle; it never
 //!   samples health and never holds a cross-tenant write path; every purge is one owner door statement with its
@@ -107,6 +108,10 @@ const REDRIVE_COOLDOWN_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOW
 /// ADR-0072 D-C: seconds before a renewing tenant's period end from which its successor period and window are
 /// staged (> 0; above the 7-day QuotaWindowRenewalMissing threshold, or that alert fires every period).
 const QUOTA_RENEWAL_LEAD_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS";
+/// ADR-0072 D-D: `QuotaWindowRenewalMissing`'s threshold in deploy/prometheus/alerts.rules.yml (7 days). A lead at or
+/// below it means the alert fires every period before the successor is staged, so boot refuses such a lead; change
+/// both together.
+const RENEWAL_ALERT_HORIZON_SECONDS: u64 = 604_800;
 /// ADR-0072 D-B: whole months a renewed `subscription_period` lasts (> 0).
 const QUOTA_RENEWAL_SUBSCRIPTION_MONTHS: &str =
     "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS";
@@ -220,6 +225,13 @@ impl Config {
         }
         let lost_after: u64 = positive(LOST_AFTER_SECONDS)?;
         let lag: u64 = env_parsed(PROJECTION_LAG_SECONDS)?;
+        let renewal_lead: u64 = positive(QUOTA_RENEWAL_LEAD_SECONDS)?;
+        if renewal_lead <= RENEWAL_ALERT_HORIZON_SECONDS {
+            return Err(Failure::Usage(format!(
+                "{QUOTA_RENEWAL_LEAD_SECONDS} ({renewal_lead}) must be greater than the QuotaWindowRenewalMissing \
+                 threshold ({RENEWAL_ALERT_HORIZON_SECONDS} s), or that alert fires every period (ADR-0072 D-D)"
+            )));
+        }
         // ADR-0057 D-F: a stalled ticket must read as projection lag before the sweep turns it LOST.
         if lost_after <= lag {
             return Err(Failure::Usage(format!(
@@ -239,7 +251,7 @@ impl Config {
             },
             reissue_cooldown: Duration::from_secs(positive(REISSUE_COOLDOWN_SECONDS)?),
             redrive_cooldown: Duration::from_secs(positive(REDRIVE_COOLDOWN_SECONDS)?),
-            renewal_lead: Duration::from_secs(positive(QUOTA_RENEWAL_LEAD_SECONDS)?),
+            renewal_lead: Duration::from_secs(renewal_lead),
             renewal_months: positive(QUOTA_RENEWAL_SUBSCRIPTION_MONTHS)?,
             tasks,
             dr_paths: [env(DR_REPO_FS_PATH)?, env(DR_PGDATA_FS_PATH)?],
@@ -316,13 +328,7 @@ async fn call(
             limit,
         )
         .await
-        .map(|renewal| {
-            quota_repo::record_quota_window_horizon(
-                TenantId(tenant),
-                renewal.horizon.map(|end| end.unix_timestamp()),
-            );
-            u64::from(renewal.staged.unsigned_abs())
-        })
+        .map(|renewal| u64::from(renewal.staged.unsigned_abs()))
         .map_err(|e| e.to_string()),
         // dep: PostgreSQL(role_maintenance) — ops.reap_expired_retrieval_provider_budget (0117 owner definer)
         Task::ProviderBudgets => {

@@ -402,10 +402,10 @@ pub fn serve_keys(
             "120".to_owned(),
         ),
         ("HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS", "60".to_owned()),
-        // ADR-0072 D-B / D-C: a seeded tenant without a snapshot does not renew, so any valid value works.
+        // ADR-0072 D-C / D-D: the bundle's 14 days (boot refuses a lead at or below the 7-day alert threshold).
         (
             "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS",
-            "3600".to_owned(),
+            "1209600".to_owned(),
         ),
         (
             "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS",

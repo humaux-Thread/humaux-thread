@@ -86,6 +86,12 @@ const EMIT_HELPERS: &[(&str, &str)] = &[
         "private_reasoning_usage_total",
         "count_private_reasoning_usage",
     ),
+    // ADR-0072 D-D: the gauge's one `.set()` sits in a pub helper the witness drives; its one production caller is
+    // `quota_repo::renew_period`, so dropping that call (no alert feed) is red here.
+    (
+        "quota_window_horizon_seconds",
+        "record_quota_window_horizon",
+    ),
 ];
 
 /// §42 ①: third-party exporter families a rule may name although §41.2 does not register them.

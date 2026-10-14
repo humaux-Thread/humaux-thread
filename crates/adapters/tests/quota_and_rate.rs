@@ -53,6 +53,9 @@ const TENANT2_ID: Uuid = Uuid::from_u128(0x0bad_cafe_0000_4000_8000_0000_0000_01
 const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 /// ADR-0072 D-C: the renewal lead the gate passes (deployments set it through the daemon's LEAD_SECONDS key).
 const RENEWAL_LEAD: Duration = Duration::from_secs(3600);
+/// The gate's current period ends this many seconds after seeding: the staging steps must finish before it (the
+/// test asserts so by name), and the wait after it is bounded by it plus 30 s.
+const BOUNDARY_SECS: i32 = 30;
 
 struct Handle {
     rt: tokio::runtime::Runtime,
@@ -519,27 +522,42 @@ fn window_count(handle: &mut Handle, tenant: Uuid) -> i64 {
         .get(0)
 }
 
+/// The successor window's end in unix microseconds, `None` while no successor is staged.
+fn successor_end_micros(handle: &mut Handle, tenant: Uuid) -> Option<i64> {
+    handle
+        .admin
+        .query_opt(
+            "SELECT (extract(epoch FROM w.window_end) * 1000000)::bigint
+             FROM control.quota_windows w
+             JOIN control.entitlement_snapshots s
+               ON s.tenant_id = w.tenant_id AND w.window_start = s.successor_from
+             WHERE w.tenant_id = $1",
+            &[&tenant],
+        )
+        .expect("admin reads the successor window")
+        .map(|row| row.get(0))
+}
+
 /// Card W0 / ADR-0072 gate (§72.2.1): before a renewing tenant's period ends, the renewal step stages the next period
 /// on the snapshot and issues its window contiguous with the current one, with the snapshot's limit and the
-/// configured length; after the old end — with no maintenance call at the boundary — the gateway's entitlement read
-/// is the successor and a reservation lands in the successor window. Four concurrent renewals and every rerun stage
-/// exactly one successor; the first call after the boundary promotes it and stages nothing; a SUSPENDED tenant is not
-/// renewed; no runtime role may execute the door. Fault injections (each one red here):
-/// (1) delete the `INSERT INTO control.quota_windows` of 0245 ⇒ one window, and the reservation after the boundary
-///     is QuotaExhausted; (2) delete `v_successor IS NOT NULL OR` from the loop exit ⇒ every call re-stages the pending
-///     successor up to its limit (staged sums to 16, the rerun stages 4); (3) delete the `t.state = 'ACTIVE'`
-///     predicate ⇒ the suspended tenant gets a second window; (4) revert
-///     `request_guard_repo::read_effective_entitlements` to read `effective` only ⇒ the read after the boundary is the
-///     ended period, not the successor; (5) delete the promotion `IF` block ⇒ `successor` stays set after the first call
-///     past the boundary; (6) `GRANT EXECUTE ... TO role_gateway` ⇒ the ACL assert.
+/// configured length, and reports that window's end as the horizon; a later change of `effective` drops the staged
+/// successor and the next call re-stages it from the new `effective`; after the old end — with no maintenance call at
+/// the boundary — the gateway's entitlement read is the successor and a reservation lands in the successor window.
+/// Four concurrent renewals and every rerun stage exactly one successor; the first call after the boundary promotes it
+/// and stages nothing; a SUSPENDED tenant is not renewed; no runtime role may execute the door. Fault injections
+/// (each one red here): (1) delete the `INSERT INTO control.quota_windows` of 0245 ⇒ one window, and the reservation
+/// after the boundary is QuotaExhausted; (2) delete `v_successor IS NOT NULL OR` from the loop exit ⇒ every call
+/// re-stages the pending successor up to its limit (staged sums to 16, the rerun stages 4); (3) delete the
+/// `t.state = 'ACTIVE'` predicate ⇒ the suspended tenant gets a second window; (4) revert
+/// `request_guard_repo::read_effective_entitlements` to read `effective` only ⇒ the read after the boundary is the
+/// ended period, not the successor.
 #[test]
 #[ignore = "lane(a:request_guard) requires migration 0245 and the dedicated request-guard PostgreSQL fixture"]
-#[allow(clippy::too_many_lines)] // one tenant pair through the boundary: issue, stage, promote, rerun, suspended, ACL
+#[allow(clippy::too_many_lines)] // one tenant pair through the boundary: issue, stage, re-stage, promote, suspended, ACL
 fn quota_window_renews_before_period_end() {
     run_db_fixture::<Fixture, _>("quota_window_renews_before_period_end", |mut h| {
         for tenant in [TENANT_ID, TENANT2_ID] {
-            // Ten seconds: long enough that the staging asserts run before the boundary, short for the wait.
-            snapshot_ending_in(&mut h, tenant, 3, 10);
+            snapshot_ending_in(&mut h, tenant, 3, BOUNDARY_SECS);
             h.rt.block_on(quota_repo::issue_window(&h.maintenance, TenantId(tenant)))
                 .expect("maintenance issues the current window");
         }
@@ -570,18 +588,25 @@ fn quota_window_renews_before_period_end() {
         );
         let rerun = renew(&h, TENANT_ID).expect("rerun");
         assert_eq!(rerun.staged, 0, "a pending successor is never staged twice");
-        assert!(
-            rerun.horizon.is_some(),
-            "a renewing tenant reports its horizon"
+        let successor_end = successor_end_micros(&mut h, TENANT_ID);
+        assert!(successor_end.is_some(), "a successor window is staged");
+        assert_eq!(
+            rerun
+                .horizon
+                .map(|end| i64::try_from(end.unix_timestamp_nanos() / 1000).expect("micros fit")),
+            successor_end,
+            "the horizon is the successor window's end"
         );
         assert_eq!(window_count(&mut h, TENANT_ID), 2);
-        let shaped: bool = h
+        let shaped: Option<bool> = h
             .admin
             .query_one(
                 "SELECT n.window_start = c.window_end
                     AND n.window_end = ((c.window_end AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
                     AND n.hard_limit = 3 AND n.reserved = 0 AND n.consumed = 0
                     AND s.successor_from = n.window_start
+                    AND (s.successor -> 'mcp.billable_operations.per_period' ->> 'period_start')::timestamptz
+                        = c.window_end
                     AND (s.successor -> 'mcp.billable_operations.per_period' ->> 'period_end')::timestamptz
                         = n.window_end
                     AND (s.successor -> 'mcp.billable_operations.per_period' ->> 'limit')::bigint = 3
@@ -593,21 +618,76 @@ fn quota_window_renews_before_period_end() {
             )
             .expect("admin reads the staged period")
             .get(0);
-        assert!(
+        assert_eq!(
             shaped,
-            "the successor is contiguous, one month long, with the snapshot limit"
+            Some(true),
+            "the successor starts at the current end, is one month long, with the snapshot limit"
+        );
+
+        // ADR-0072 L3: lowering the limit on `effective` drops the stale successor; the next call re-stages from the
+        // new `effective` (the issued successor window keeps its immutable limit).
+        h.admin
+            .execute(
+                "UPDATE control.entitlement_snapshots
+                 SET effective = jsonb_set(effective, '{mcp.billable_operations.per_period,limit}', '2'::jsonb)
+                 WHERE tenant_id = $1",
+                &[&TENANT_ID],
+            )
+            .expect("admin lowers the projected limit");
+        let dropped: bool = h
+            .admin
+            .query_one(
+                "SELECT successor IS NULL AND successor_from IS NULL
+                 FROM control.entitlement_snapshots WHERE tenant_id = $1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the snapshot")
+            .get(0);
+        assert!(dropped, "a changed effective drops the stale successor");
+        let restaged = renew(&h, TENANT_ID).expect("re-stage after the change");
+        assert_eq!(restaged.staged, 1, "the next call re-stages the successor");
+        let restaged_limit: Option<i64> = h
+            .admin
+            .query_one(
+                "SELECT (successor -> 'mcp.billable_operations.per_period' ->> 'limit')::bigint
+                 FROM control.entitlement_snapshots WHERE tenant_id = $1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the re-staged successor")
+            .get(0);
+        assert_eq!(
+            restaged_limit,
+            Some(2),
+            "the successor carries the new limit"
+        );
+        assert_eq!(successor_end_micros(&mut h, TENANT_ID), successor_end);
+        assert_eq!(window_count(&mut h, TENANT_ID), 2);
+        let before_boundary: Option<bool> = h
+            .admin
+            .query_one(
+                "SELECT clock_timestamp() < successor_from FROM control.entitlement_snapshots WHERE tenant_id=$1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the clock")
+            .get(0);
+        assert_eq!(
+            before_boundary,
+            Some(true),
+            "the staging steps finished before the boundary (raise BOUNDARY_SECS on a slower runner)"
         );
 
         // The old period ends with no maintenance call in between.
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !h
+        let deadline =
+            Instant::now() + Duration::from_secs(u64::from(BOUNDARY_SECS.unsigned_abs()) + 30);
+        while h
             .admin
             .query_one(
                 "SELECT clock_timestamp() > successor_from FROM control.entitlement_snapshots WHERE tenant_id=$1",
                 &[&TENANT_ID],
             )
             .expect("admin reads the clock")
-            .get::<_, bool>(0)
+            .get::<_, Option<bool>>(0)
+            != Some(true)
         {
             assert!(Instant::now() < deadline, "the current period never ended");
             std::thread::sleep(Duration::from_millis(200));
@@ -637,7 +717,7 @@ fn quota_window_renews_before_period_end() {
             ))
             .expect("a reservation after the boundary succeeds");
         assert!(matches!(reserved, ReserveResult::Created(_)));
-        let in_successor: bool = h
+        let in_successor: Option<bool> = h
             .admin
             .query_one(
                 "SELECT bool_and(r.window_start = s.successor_from)
@@ -647,8 +727,9 @@ fn quota_window_renews_before_period_end() {
             )
             .expect("admin reads the reservation")
             .get(0);
-        assert!(
+        assert_eq!(
             in_successor,
+            Some(true),
             "the reservation is charged to the successor window"
         );
 
