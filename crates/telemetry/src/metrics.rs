@@ -315,6 +315,15 @@ pub mod families {
         Kind::Gauge,
         &["table"],
     );
+    // §41.2: §72.2.1 the QUOTA_RENEWAL task of `humaux-maintenance --serve` (card W0; emit
+    // `adapters::quota_repo::record_quota_window_horizon`, ADR-0072 D-D; no sample until a renewing tenant was visited).
+    /// `quota_window_horizon_seconds`.
+    pub const QUOTA_WINDOW_HORIZON_SECONDS: Family = f(
+        "quota_window_horizon_seconds",
+        "Seconds until the latest issued quota window of the renewing tenant closest to running out ends.",
+        Kind::Gauge,
+        &[],
+    );
     // §41.2: §44 the DR_EVIDENCE run of `humaux-maintenance --serve` (card 37; emit `telemetry::dr::publish`,
     // ADR-0064 D-K / 10.11 D). `target` is the one value `telemetry::dr::TARGET_LOCAL` (ruling E17).
     /// `backup_last_success_timestamp_seconds{target}`.

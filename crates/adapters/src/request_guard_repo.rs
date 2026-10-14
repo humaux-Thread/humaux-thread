@@ -4,9 +4,10 @@
 //!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres,
 //!   adapters::quota_repo, domain::audit, domain::error, domain::identity]
 //! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, gateway::guard, tests]
-//! Invariants: [policy stays in RequestGuard; this reads the effective entitlement snapshot and commits quota
-//!   transitions together with the §77 audit row in one transaction; a missing entitlement is EntitlementRequired]
-//! Spec: Baseline §77
+//! Invariants: [policy stays in RequestGuard; this reads the effective entitlement snapshot (its staged successor
+//!   once that is in force, ADR-0072 D-A) and commits quota transitions together with the §77 audit row in one
+//!   transaction; a missing entitlement is EntitlementRequired]
+//! Spec: Baseline §72.2.1; §77; ADR-0072
 //!
 //! Policy stays in RequestGuard. This adapter reads the effective snapshot and commits
 //! read-request quota transitions together with §77's audit writer, preserving the rule
@@ -106,9 +107,13 @@ pub async fn read_effective_entitlements(
     // dep: PostgreSQL(role_gateway) — transaction entry for `read_effective_entitlements`
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
     set_authorization_local(&mut txn, authorization).await?;
+    // ADR-0072 D-A: a staged successor is the effective object from its own start, read with the one clock value
+    // the guard then checks the period against.
     let row = sqlx::query(
-        "SELECT effective, source_grant_ids, computed_at, clock_timestamp() AS observed_at \
-         FROM control.entitlement_snapshots WHERE tenant_id = $1",
+        "SELECT CASE WHEN s.successor_from <= c.observed_at THEN s.successor ELSE s.effective END AS effective, \
+                s.source_grant_ids, s.computed_at, c.observed_at \
+         FROM control.entitlement_snapshots s CROSS JOIN (SELECT clock_timestamp() AS observed_at) c \
+         WHERE s.tenant_id = $1",
     )
     .bind(authorization.tenant_id().0)
     .fetch_optional(&mut *txn)

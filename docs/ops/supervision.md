@@ -56,6 +56,12 @@ receipts. It needs no budget key, no docker access and
 no cipher pass: the backup, `restore drill` and `restore pitr` arms are one-shot (row above, runbook §11) and the
 daemon only reports what their receipts recorded.
 
+Since card W0 (ADR-0072) it also runs the per-tenant `quota_renewal` task, with four more required keys (no default;
+not secrets): `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS`, `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT`,
+`HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS` and `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS`
+(bundle values in `deploy/env/values/maintenance.env`). A daemon that is down past a tenant's period end leaves that
+tenant on ENTITLEMENT_REQUIRED until it runs again; `QuotaWindowRenewalMissing` fires a week before that.
+
 `humaux-maintenance health serve` (ADR-0061 D-D) **is** a supervised unit: the one process that samples
 the §41.2 SQL-derived health gauges (`jobs_*`, `oldest_pending_age_seconds`, `projection_lag_events`,
 `processing_gap_count`, `data_disclosures_*`) through `ops.health_snapshot()` as `role_maintenance`,

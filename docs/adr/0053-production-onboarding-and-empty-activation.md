@@ -337,7 +337,7 @@ invoker, raises 55000; no non-owner role holds INSERT/UPDATE on `control.workspa
 ## Known limits / upgrade signals
 - Generation = collection name + config digest (card 37 introduces a real generation column).
 - `LEGACY` workspaces are never gated; activating them goes through `projection-serve` (non-empty path) as today.
-- Entitlement period and quota windows are issued at onboarding only; renewal is card 35's `--serve` job.
+- Entitlement period and quota windows are issued at onboarding only; renewal is card 35's `--serve` job. Card 35 did not deliver it; renewal is ADR-0072 (`quota_renewal` task, card W0).
 - `onboard tenant` spans three steps (PG txn, Qdrant, activation txn); a crash leaves PROVISIONING (writes
   closed, reads PG-served / B) and a re-run completes it.
 

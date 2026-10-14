@@ -4,11 +4,13 @@
 //!   page rotation, the §77-gated one-page sweep with its per-task counts, the boot refusal of both resident
 //!   modes when the migrator DSN is in their environment (ADR-0063 D-H, T-H3), the PARTITIONS proposer with its
 //!   `partition_horizon_months` family (ADR-0063 D-K, T-K1..T-K3), and the DR_EVIDENCE task with the six DR
-//!   families (ADR-0064 D-K / 10.11 D; card 37 T-K1..T-K4, T-K3' through the archiver parameter seam).
+//!   families (ADR-0064 D-K / 10.11 D; card 37 T-K1..T-K4, T-K3' through the archiver parameter seam), and the
+//!   QUOTA_RENEWAL task's lead refusal and `quota_window_horizon_seconds` sample (ADR-0072 D-C, D-D).
 //! Depends-on: crates=[humaux-adapters, serde_json, time, tokio]; services=[PostgreSQL(any), PostgreSQL(owner)
-//!   r=[control.partition_registry, control.retention_policies, ops.maintenance_receipts, ops.stage_runs,
-//!   ops.wal_archive_failures]
-//!   w=[control.confirm_tokens, control.rate_buckets, control.tenants, control.users, control.workspaces,
+//!   r=[control.partition_registry, control.quota_windows, control.retention_policies, ops.maintenance_receipts,
+//!   ops.stage_runs, ops.wal_archive_failures]
+//!   w=[control.confirm_tokens, control.entitlement_snapshots, control.rate_buckets, control.tenants, control.users,
+//!   control.workspaces,
 //!   ops.backup_receipts, ops.backup_sets, ops.jobs, ops.restore_drills, ops.selection_snapshots,
 //!   projection.stream_log]
 //!   x=[control.maintenance_tenant_page, control.reap_quota_reservations], PostgreSQL(role_maintenance),
@@ -21,6 +23,7 @@
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS, HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS,
 //!   HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN,
@@ -31,7 +34,7 @@
 //!   fixture's Drop even on panic, so no LOST transition ever touches the shared dev database; every spawned
 //!   daemon is killed by its own Drop; the key tests point at a closed port and never reach a database]
 //! Spec: Baseline §15.2; §77; §78.1; §79.2; ADR-0037; ADR-0057 D-F; ADR-0062 D-A; ADR-0062 D-B; ADR-0062 D-D;
-//!   ADR-0062 D-Q; ADR-0063 D-H; ADR-0063 D-K; ADR-0064 D-K; ADR-0064 10.11 D
+//!   ADR-0062 D-Q; ADR-0063 D-H; ADR-0063 D-K; ADR-0064 D-K; ADR-0064 10.11 D; ADR-0072 D-C; ADR-0072 D-D
 
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::process::{Command, Stdio};
@@ -56,10 +59,15 @@ const CLOSED_DSN: &str = "postgres://role_maintenance:unused@127.0.0.1:1/none";
 const PARTITIONS_EVERY: &str = "HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS";
 /// ADR-0064 D-K: the DR_EVIDENCE cadence (seconds, >= CYCLE_SECONDS).
 const DR_EVIDENCE_EVERY: &str = "HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS";
+/// ADR-0072 D-C / D-D: the renewal lead (seconds, > the 7-day QuotaWindowRenewalMissing threshold).
+const QUOTA_RENEWAL_LEAD: &str = "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS";
+/// ADR-0072 D-D: the renewal gauge's unlabeled sample line prefix.
+const HORIZON_SAMPLE: &str = "quota_window_horizon_seconds ";
 /// Their `/status` and receipt labels, in the same order.
-const LABELS: [&str; 9] = [
+const LABELS: [&str; 10] = [
     "lost",
     "quota_reservations",
+    "quota_renewal",
     "provider_budgets",
     "confirm_tokens",
     "snapshots",
@@ -201,6 +209,12 @@ fn serve_refuses_to_boot_without_each_key_naming_it() {
         ("HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS", "0"),
         // ADR-0062 D-P: a zero cool-down would re-drive a death in the pass that killed it.
         ("HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS", "0"),
+        // ADR-0072 D-D: a lead at the 7-day alert threshold fires QuotaWindowRenewalMissing every period.
+        (QUOTA_RENEWAL_LEAD, "604800"),
+        (
+            "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS",
+            "0",
+        ),
     ] {
         let env: Vec<(String, String)> = full
             .iter()
@@ -210,6 +224,31 @@ fn serve_refuses_to_boot_without_each_key_naming_it() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{key}={bad}: {stderr}");
         assert!(stderr.contains(key), "{key}={bad}: {stderr}");
+    }
+}
+
+/// Card W0 (ADR-0072 D-D): the lead must exceed the renewal alert's 7-day threshold; at it or below, boot refuses and
+/// names the key. Fault: drop the threshold check ⇒ 604800 reaches the closed DSN (exit 1, not 2) ⇒ red.
+#[test]
+fn serve_refuses_a_renewal_lead_not_above_the_alert_threshold() {
+    for lead in ["604800", "3600"] {
+        let env: Vec<(String, String)> = keys(free_addr(), CLOSED_DSN, 1, 10)
+            .into_iter()
+            .map(|(k, v)| {
+                if k == QUOTA_RENEWAL_LEAD {
+                    (k, lead.to_owned())
+                } else {
+                    (k, v)
+                }
+            })
+            .collect();
+        let out = serve_with(&env);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "lead {lead}: {stderr}");
+        assert!(
+            stderr.contains(QUOTA_RENEWAL_LEAD) && stderr.contains("QuotaWindowRenewalMissing"),
+            "names the key and the alert: {stderr}"
+        );
     }
 }
 
@@ -660,10 +699,11 @@ fn sweep_once_requires_admin_fields_and_prints_per_task_counts() {
         assert_eq!(run["ran"], true, "{name}: {receipt}");
         assert_eq!(run["failed"], 0, "{name}: {receipt}");
         // The orphan has no outbox carrier, so it reaches no memory and the reissue door has nothing to drain; no
-        // distill job died of its schema, so the re-drive door has nothing to re-arm.
+        // distill job died of its schema, so the re-drive door has nothing to re-arm; no tenant has a snapshot, so
+        // none renews (ADR-0072 D-B).
         let expected = u64::from(!matches!(
             name,
-            "quota_reservations" | "provider_budgets" | "reissue" | "redrive"
+            "quota_reservations" | "quota_renewal" | "provider_budgets" | "reissue" | "redrive"
         ));
         assert_eq!(run["affected"], expected, "{name}: {receipt}");
     }
@@ -1379,4 +1419,67 @@ fn budget_headroom_is_max_minus_repo_minus_estimate() {
         value(&body, repo_max).is_some_and(|v| v < 0.0),
         "BackupBudgetLow: {body}"
     );
+}
+
+// ---- card W0: the QUOTA_RENEWAL task (ADR-0072 D-C / D-D) ----
+
+/// Card W0 (ADR-0072 D-C, D-D): one cycle over an ACTIVE tenant whose period ends in ten minutes (inside the 14-day
+/// lead) stages its successor through the owner door and publishes `quota_window_horizon_seconds` on `/metrics`; the
+/// successor window ends one month after the period, so the sample lies between 27 and 32 days. Before the visit the
+/// family has its header and no sample. Fault: drop the `record_quota_window_horizon` call in
+/// `quota_repo::renew_period` ⇒ no sample under 200 ⇒ red (and metrics-registry D5 red).
+#[test]
+fn quota_renewal_publishes_the_horizon_gauge() {
+    let Some(mut db) = db("quota_renewal_publishes_the_horizon_gauge") else {
+        return;
+    };
+    let tenant: String = db
+        .client()
+        .query_one(
+            "WITH t AS (INSERT INTO control.tenants (name, state) VALUES ('w0-renewing', 'ACTIVE') \
+               RETURNING tenant_id) \
+             INSERT INTO control.entitlement_snapshots (tenant_id, effective, computed_at) \
+             SELECT tenant_id, jsonb_build_object('mcp.billable_operations.per_period', jsonb_build_object( \
+               'limit', 50, 'period', 'subscription_period', 'charge_policy', 'success_only', \
+               'period_start', to_char((clock_timestamp() - interval '1 second') AT TIME ZONE 'UTC', \
+                 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+               'period_end', to_char((clock_timestamp() + interval '10 minutes') AT TIME ZONE 'UTC', \
+                 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))), clock_timestamp() \
+             FROM t RETURNING tenant_id::text",
+            &[],
+        )
+        .expect("seed a renewing tenant")
+        .get(0);
+    let addr = free_addr();
+    let _serve = spawn(&keys(addr, &db.maintenance_dsn, 1, 1000));
+    let published = poll(addr, "/metrics", Duration::from_secs(20), |(c, b)| {
+        *c == 200 && b.lines().any(|l| l.starts_with(HORIZON_SAMPLE))
+    });
+    let (code, body) = published.expect("/metrics after the first quota_renewal run");
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        body.contains("# TYPE quota_window_horizon_seconds gauge"),
+        "{body}"
+    );
+    let seconds: f64 = body
+        .lines()
+        .find_map(|l| l.strip_prefix(HORIZON_SAMPLE)?.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no horizon sample: {body}"));
+    let day = 86_400.0;
+    assert!(
+        (27.0 * day..32.0 * day).contains(&seconds),
+        "the successor window ends a month after the period: {seconds} s"
+    );
+    let staged: bool = db
+        .client()
+        .query_one(
+            "SELECT s.successor_from IS NOT NULL AND EXISTS ( \
+               SELECT 1 FROM control.quota_windows w \
+                WHERE w.tenant_id = s.tenant_id AND w.window_start = s.successor_from) \
+             FROM control.entitlement_snapshots s WHERE s.tenant_id = $1::text::uuid",
+            &[&tenant],
+        )
+        .expect("the renewed snapshot")
+        .get(0);
+    assert!(staged, "the cycle staged the successor and its window");
 }

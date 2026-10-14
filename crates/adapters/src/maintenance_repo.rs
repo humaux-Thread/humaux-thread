@@ -2,8 +2,8 @@
 //!   page every task walks, three of the four owner purge doors (snapshots, rate buckets, terminal jobs; the
 //!   confirm-token door lives with its table in `confirm_token_repo::sweep_expired`), the Q-drain reissue door
 //!   (D-N) and the schema-failed distill auto re-drive with its §77 row (D-P). The per-tenant sweeps it drives besides
-//!   live with their tables (`stream_repo::sweep_lost`, `quota_repo::reap_expired`,
-//!   `provider_budget::reap_expired_provider_budgets`). It also owns the closed D-C task enum and the two D-S counters
+//!   live with their tables (`stream_repo::sweep_lost`, `quota_repo::reap_expired`, `quota_repo::renew_period`
+//!   (ADR-0072), `provider_budget::reap_expired_provider_budgets`). It also owns the closed D-C task enum and the two D-S counters
 //!   (`maintenance_task_runs_total{task,outcome}`, `maintenance_task_rows_total{task}`, one emit each in
 //!   [`count_task_call`]), which `humaux-maintenance --serve` renders (ADR-0061 D-C). For §48.1 (ADR-0063) it owns
 //!   the closed table_key enum, the daemon's PARTITIONS proposer with the `partition_horizon_months{table}` gauge
@@ -42,7 +42,7 @@
 //!   DR_EVIDENCE writes at most one latch row per run and only when no row since the newest VERIFIED start exists]
 //! Spec: Baseline §4.2; §6.2.1; §6.2.2; §15.2; §48.1; ADR-0057 D-H; ADR-0062 D-D; ADR-0062 D-E; ADR-0062 D-H;
 //!   ADR-0062 D-I; ADR-0062 D-J; ADR-0062 D-N; ADR-0062 D-P; ADR-0062 D-S; ADR-0063 D-F..D-K; ADR-0064 D-J;
-//!   ADR-0064 D-K; ADR-0064 D-V; §41.2; §44; §77
+//!   ADR-0064 D-K; ADR-0064 D-V; ADR-0072 D-C; §41.2; §44; §77
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -244,6 +244,8 @@ pub enum MaintenanceTask {
     Lost,
     /// `quota_repo::reap_expired`.
     QuotaReservations,
+    /// `quota_repo::renew_period` (ADR-0072 D-C).
+    QuotaRenewal,
     /// `provider_budget::reap_expired_provider_budgets`.
     ProviderBudgets,
     /// `confirm_token_repo::sweep_expired` (D-G).
@@ -266,9 +268,10 @@ pub enum MaintenanceTask {
 
 impl MaintenanceTask {
     /// Every task, in D-C cycle order (the counters' slot order).
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Lost,
         Self::QuotaReservations,
+        Self::QuotaRenewal,
         Self::ProviderBudgets,
         Self::ConfirmTokens,
         Self::Snapshots,
@@ -285,6 +288,7 @@ impl MaintenanceTask {
         match self {
             Self::Lost => "lost",
             Self::QuotaReservations => "quota_reservations",
+            Self::QuotaRenewal => "quota_renewal",
             Self::ProviderBudgets => "provider_budgets",
             Self::ConfirmTokens => "confirm_tokens",
             Self::Snapshots => "snapshots",
