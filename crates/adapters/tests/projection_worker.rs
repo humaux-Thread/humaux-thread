@@ -9,7 +9,8 @@
 //!   private.memory_subjects, private.subjects, projection.card_profile_policies, projection.memory_vectors,
 //!   projection.private_memory_points, projection.stream_checkpoints, projection.stream_log]
 //!   x=[private.memory_subject_visibility_ok, projection.note_chunk_count],
-//!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*),
+//!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway) x=[projection.stream_point_ledger],
+//!   PostgreSQL(role_retrieval_worker), Qdrant(*),
 //!   subprocess(gitleaks)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::memory_governance_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant, adapters::remember,
