@@ -2019,8 +2019,9 @@ mod lifecycle_prefilter_tests {
     /// group count) and the filter are unchanged. Fault: drop either key ⇒ red.
     #[test]
     fn grouped_query_body_groups_by_memory_one_hit_each() {
-        let points = dense_query_body(&query());
-        let groups = dense_group_query_body(&query());
+        let query = query();
+        let points = dense_query_body(&query);
+        let groups = dense_group_query_body(&query);
         assert_eq!(groups["group_by"], json!(MEMORY_ID_FIELD));
         assert_eq!(groups["group_size"], json!(1));
         assert_eq!(groups["limit"], points["limit"]);

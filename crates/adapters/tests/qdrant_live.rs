@@ -639,6 +639,9 @@ async fn dense_query_never_returns_an_archived_or_non_active_point() {
 /// nearer the query than three single-point Memories. A point query with `limit` 4 returns four points of that one
 /// Memory; the grouped query with `limit` 4 returns four distinct Memories, best first, each tagged with its group.
 /// Faults: drop `group_by` (or `group_size: 1`) from the grouped body, or parse groups as points ⇒ red.
+// One spawned body (collection, points, both queries) so a panic still reaches the collection cleanup below, as in
+// `dense_query_never_returns_an_archived_or_non_active_point`.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn one_long_note_cannot_monopolize_candidates() {
     if !qdrant_reachable() {
