@@ -136,3 +136,6 @@ jobs:
           fi
           echo "TARGETED RESULT exit=$rc ref=$(git rev-parse HEAD)"
           exit $rc
+      - name: diag postgres log
+        if: always()
+        run: docker logs humaux-thread-pg 2>&1 | grep -v "checkpoint" | tail -n 6000

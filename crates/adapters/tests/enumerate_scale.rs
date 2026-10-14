@@ -39,7 +39,7 @@ mod throwaway_db;
 
 const NAME: &str = "enumerate_first_page_scales_with_a_capped_manifest";
 const N: i64 = 50_000;
-const RUNS: usize = 30;
+const RUNS: usize = 3;
 const WARMUPS: usize = 3;
 const PAGE: u16 = 50;
 const MAC_KEY: &[u8] = b"c35 enumerate scale test mac key";
@@ -230,6 +230,16 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
     let mut admin = Client::connect(&dsn, NoTls).expect("owner connection");
     let (tenant, workspace) = seed(&mut admin);
 
+    admin
+        .batch_execute(
+            "ALTER SYSTEM SET session_preload_libraries = 'auto_explain'; \
+             ALTER SYSTEM SET auto_explain.log_min_duration = -1; \
+             ALTER SYSTEM SET auto_explain.log_analyze = on; \
+             ALTER SYSTEM SET auto_explain.log_nested_statements = on; \
+             ALTER SYSTEM SET auto_explain.log_buffers = on; \
+             SELECT pg_reload_conf();",
+        )
+        .expect("diag: auto_explain");
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     // dep: PostgreSQL(role_gateway) — the production enumerate path's pool
     let pool = rt
@@ -260,6 +270,25 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
         page(first.next_cursor.as_deref());
         floor_ms_once(&mut admin, tenant, workspace);
     }
+    admin
+        .batch_execute(
+            "ALTER SYSTEM SET auto_explain.log_min_duration = 20; SELECT pg_reload_conf();",
+        )
+        .expect("diag: on");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    println!("DIAG_BEGIN");
+    let start = Instant::now();
+    let diag_first = page(None);
+    println!("DIAG_FIRST_PAGE_MS {}", ms(start));
+    let start = Instant::now();
+    page(diag_first.next_cursor.as_deref());
+    println!("DIAG_SECOND_PAGE_MS {}", ms(start));
+    admin
+        .batch_execute(
+            "ALTER SYSTEM SET auto_explain.log_min_duration = -1; SELECT pg_reload_conf();",
+        )
+        .expect("diag: off");
+    println!("DIAG_END");
     let (mut first_ms, mut later_ms, mut floor_ms) = (Vec::new(), Vec::new(), Vec::new());
     let mut last_snapshot = Uuid::nil();
     for _ in 0..RUNS {
