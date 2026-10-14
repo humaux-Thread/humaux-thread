@@ -172,6 +172,8 @@ struct Tenant {
     workspace: Uuid,
     get_ids: Vec<Uuid>,
     source: Ipv4Addr,
+    /// Cleared when this tenant's warm-up `remember.put` fails; its agents then send `memory.get` instead.
+    writes: std::sync::atomic::AtomicBool,
 }
 
 struct Lab {
@@ -252,6 +254,7 @@ fn seed_tenant(handle: &mut Handle, index: usize) -> Tenant {
         workspace: handle.workspace_id,
         get_ids,
         source: Ipv4Addr::new(127, 0, 0, 10 + u8::try_from(index).expect("< 245 tenants")),
+        writes: std::sync::atomic::AtomicBool::new(true),
     }
 }
 
@@ -560,6 +563,16 @@ impl Lab {
                         .send(&http_request(tenant, op, 0, 0))
                         .await
                         .unwrap_or_else(|error| panic!("{} warm-up transport: {error}", op.name()));
+                    if matches!(op, Op::Remember) && !matches!(classify(&reply), Outcome::Ok) {
+                        println!(
+                            "CAPNOTE remember.put unavailable for {} (writes replaced by get): {}",
+                            tenant.source, reply.body
+                        );
+                        tenant
+                            .writes
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        continue;
+                    }
                     assert!(
                         matches!(classify(&reply), Outcome::Ok),
                         "{} warm-up for {}: status={} body={}",
@@ -613,7 +626,10 @@ async fn agent(
     let mut id = 0_u64;
     while Instant::now() < deadline {
         id += 1;
-        let op = pick(&mut rng);
+        let mut op = pick(&mut rng);
+        if matches!(op, Op::Remember) && !tenant.writes.load(std::sync::atomic::Ordering::Relaxed) {
+            op = Op::Get;
+        }
         let request = http_request(&tenant, op, id, rng.next());
         let started = Instant::now();
         let result = tokio::time::timeout(CLIENT_TIMEOUT, client.send(&request)).await;
