@@ -682,7 +682,7 @@ pub fn run(_args: &[String]) -> i32 {
             .iter()
             .all(|t| tiers.contains(t))
         && r["placements"][0]["collection_name"] == collection.as_str()
-        && r["collection"]["payload_indexes"] == json!(["tenant_id", "subject_ids"])
+        && r["collection"]["payload_indexes"] == json!(["tenant_id", "subject_ids", "memory_id"])
         && activation["outcome"] == "activated"
         && activation["evidence"] == "VerifiedEmpty"
         && r["lifecycle"] == "READY"

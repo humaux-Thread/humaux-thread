@@ -1501,7 +1501,7 @@ pub async fn collection_generation(
     Ok(GenerationId(format!("{collection}@{digest}")))
 }
 
-/// `collection ensure`: creates the collection and both payload indexes unless present. A
+/// `collection ensure`: creates the collection and every payload index unless present. A
 /// non-2xx create is re-read and accepted when the collection now exists (a concurrent
 /// onboarding created it); the index PUTs are idempotent and wait for completion so the
 /// generation read right after sees them.
@@ -1876,9 +1876,10 @@ mod tests {
     /// Card 9 P2 / card 24 (moved from `xtask::e2e_seed` with the function). FAULT SENTINEL:
     /// goes red the moment a seeded collection stops getting the `subject_ids` uuid payload
     /// index, the state this repo shipped in while `docs/ops/runbook.md` already told operators
-    /// both indexes were created.
+    /// both indexes were created; and, since ADR-0068 D-E, the `memory_id` keyword index recall groups by.
+    /// Fault: drop any of the three index PUTs ⇒ red.
     #[test]
-    fn a_seeded_collection_gets_both_payload_indexes() {
+    fn a_seeded_collection_gets_every_payload_index() {
         let puts = collection_setup_puts("c", 1024);
         assert_eq!(
             puts.len(),
