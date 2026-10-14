@@ -33,6 +33,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  # Same linker as ci.yml (M24), so a targeted run links exactly like CI.
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
 jobs:
   targeted:
@@ -98,6 +100,17 @@ jobs:
             echo "ref $(git rev-parse HEAD) predates .github/actions/setup (5f77fa7): not supported by this workflow"
             exit 2
           }
+
+      # M24: the flag above comes from this (main's) workflow file, but a ref cut before the lld card has a setup
+      # action that does not install lld — install it here so such a ref links instead of failing every link.
+      - name: lld for the M24 linker flag (idempotent)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(uname -m)" = aarch64 ] && ! command -v ld.lld >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq lld
+          fi
 
       - uses: ./.github/actions/setup
 

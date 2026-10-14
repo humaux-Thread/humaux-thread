@@ -42,6 +42,13 @@ env:
   # time instead of hashing the binary at runtime — is a card-39 finding, not CI's call.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  # M24 build speed (exp/build-speed runs 38623139052 + 38624334420, ubuntu-24.04-arm, `cargo test --workspace
+  # --no-run`, median of 3): default linker cold 149 s / core-crate rebuild 114 s; lld 119 s / 82 s; mold 129 / 86;
+  # nightly -Zthreads=8 139 / 92; nightly Cranelift 104 / 77. lld is the stable-toolchain winner; Cranelift's
+  # extra 15 s / 5 s needs nightly and is not production-ready, so it is not used. lld is the default linker only
+  # on x86_64 Linux, not on our aarch64 runners, hence the explicit flag; it applies to every cargo job here (all
+  # run on ubuntu-24.04-arm; the x64 `ci` summary job runs no cargo). The `linker is lld` step in test-a proves it.
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
 jobs:
   # Every job: the pinned image ubuntu-24.04-arm, not ubuntu-latest — a runner image upgrade must not change what
@@ -358,6 +365,22 @@ jobs:
           rc=0
           cargo test --workspace --no-fail-fast --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
           exit $rc
+      # M24: every humaux_domain test binary must carry lld's `.comment` mark. Ubuntu's lld writes
+      # "Linker: Ubuntu LLD 18.x", hence the vendor-tolerant pattern; GNU ld writes no "Linker:" line.
+      - name: linker is lld (M24)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t bins < <(find target/debug/deps -maxdepth 1 -type f -perm -u+x -name 'humaux_domain-*')
+          [ "${#bins[@]}" -gt 0 ] || { echo "linker is lld: FAIL (no humaux_domain test binary under target/debug/deps)"; exit 1; }
+          bad=0
+          for f in "${bins[@]}"; do
+            if readelf -p .comment "$f" | grep -q 'Linker: .*LLD'; then echo "linker is lld: pass ($f)"
+            else echo "linker is lld: FAIL ($f was not linked by lld)"; readelf -p .comment "$f"; bad=1; fi
+          done
+          exit $bad
+
       # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
       # ADR-0058 §2.1 I-SLOT probe over the whole table: a test binary that leaves claimable
       # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
