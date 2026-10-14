@@ -15,8 +15,8 @@ env:
   EXP_ARMS: A8,B11,C14,D18,E30,P
   EXP_CLAUDE_ARMS: A8,D18,P   # control on 3 arms only: Claude API usage is paid
   EXP_REPS: '1'
-  EXP_LIMIT: '4'     # 0 = whole suite; small = plumbing smoke
-  EXP_WORKERS: '4'
+  EXP_LIMIT: '0'     # 0 = whole suite; small = plumbing smoke
+  EXP_WORKERS: '3'   # gentle on the shared MiniMax plan
 
 jobs:
   run:
@@ -51,13 +51,16 @@ jobs:
         working-directory: experiments/tool_surface
         env:
           CLAUDE_TOKEN: ${{ secrets.CLAUDE_SUBSCRIPTION_API }}
+          CLAUDE_WS: ${{ secrets.CLAUDE_DEFAULT_WORKSPACE_ID }}
           ANTHROPIC_MODEL: claude-sonnet-5-5
           DISABLE_AUTOUPDATER: '1'
           DISABLE_TELEMETRY: '1'
         # The secret may be an OAuth (subscription) token or an API key; pick the matching variable without printing it.
         run: |
           case "$CLAUDE_TOKEN" in sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN";; *) export ANTHROPIC_API_KEY="$CLAUDE_TOKEN";; esac
-          unset CLAUDE_TOKEN
+          # An unscoped API key needs the workspace header (Claude Code sends ANTHROPIC_CUSTOM_HEADERS verbatim).
+          [ -n "$CLAUDE_WS" ] && export ANTHROPIC_CUSTOM_HEADERS="anthropic-workspace-id: $CLAUDE_WS"
+          unset CLAUDE_TOKEN CLAUDE_WS
           timeout 230m python3 run.py --model-label claude-sonnet-5-5 --arms "$EXP_CLAUDE_ARMS" --reps 1 --limit "$EXP_LIMIT" --workers "$EXP_WORKERS"
       - uses: actions/upload-artifact@v4
         if: always()
