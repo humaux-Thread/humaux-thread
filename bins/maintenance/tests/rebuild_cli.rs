@@ -174,8 +174,7 @@ fn receipt_of(out: &std::process::Output) -> Value {
 /// CLI (ADR-0068 40d-2a): `projection backfill-memory-id` without its scope exits 2 before reading anything; a tenant
 /// with no stream exits 3 `no_streams` (nothing was backfilled, so the switch gate must not read it as done); a clean
 /// tenant exits 0 `backfilled`; a point of a stream with no registry row exits 3 `strays`, named in the receipt and
-/// left in place. Faults: `refused` not set on strays ⇒ exit 0 ⇒ red; the empty-scope arm reported as `backfilled` ⇒
-/// exit 0 ⇒ red.
+/// left in place. Fault: `refused` not set on strays ⇒ exit 0 ⇒ red (run 38570553525).
 #[test]
 fn projection_backfill_memory_id_exits_3_on_strays_and_on_no_streams() {
     let out = run(&["projection", "backfill-memory-id"], &[]);

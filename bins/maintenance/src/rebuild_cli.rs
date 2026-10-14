@@ -10,7 +10,7 @@
 //! Invariants: [every flag is required with no default except the D-G consent `--allow-reembed` (§78.1); flags are
 //!   parsed before any connection (a missing flag is exit 2 with nothing read); exactly one receipt object per stream
 //!   in `streams`; exit 0 only when every stream closed (rebuild) or reads (verify) `equivalent`, 3 when any stream
-//!   was refused, 1 otherwise; backfill-memory-id exits 0 when no stream has a stray, 3 when any has, 1 on an error;
+//!   was refused, 1 otherwise; backfill-memory-id exits 0 when no stream has a stray, 3 when any has or none matched, 1 on an error;
 //!   `verify` writes nothing; the worker's label, its DSN and the Qdrant face are read
 //!   under their own names (the card-35 peer-key precedent), never copied into a maintenance key]
 //! Spec: Baseline §16.2; §44; §78.1; ADR-0053 D-F; ADR-0064 D-E; ADR-0064 D-F; ADR-0064 D-G; ADR-0068
