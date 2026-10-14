@@ -15648,6 +15648,7 @@ fn seed_bulk_memories(handle: &mut Handle, rows: i32, text_sql: &str) {
 /// in the keyset comparison (`>=`) ⇒ a hit repeats ⇒ red; a count over the page instead of the hit set ⇒ the totals
 /// drop ⇒ red.
 #[test]
+#[allow(clippy::too_many_lines)] // one seeded universe: paging, the case profile and the measurement record
 fn memory_grep_pages_a_large_universe_exactly() {
     run_db_fixture::<Fixture, _>(
         "memory_grep_pages_a_large_universe_exactly",
