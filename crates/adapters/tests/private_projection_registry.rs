@@ -714,6 +714,7 @@ async fn assert_registration_and_resolution(
         &[DenseCandidate {
             point_id: PointId::Uuid(point.as_uuid()),
             score: 0.9,
+            memory_id: None,
         }],
     )
     .await
@@ -722,6 +723,41 @@ async fn assert_registration_and_resolution(
         bodies.bodies.items.as_slice(),
         [MaterializedItem::Memory { memory_id, .. }] if *memory_id == handle.memory_id
     ));
+    // ADR-0068 gate `group_identity_is_verified_against_registry` (D-E): a grouped hit is accepted only when its group
+    // id is the Memory the registry resolves its point to; a mislabeled group drops the point, never re-labels it.
+    // Fault: skip the group check in `materialize_private_read_serving_in_txn` ⇒ the mislabeled arm returns the body.
+    for (group, kept) in [(handle.memory_id, true), (Uuid::new_v4(), false)] {
+        let bodies = materialize_private_read_serving(
+            &handle.runtime,
+            None,
+            &handle.authorization,
+            &handle.family,
+            "private-v1",
+            "embed-v1",
+            &[DenseCandidate {
+                point_id: PointId::Uuid(point.as_uuid()),
+                score: 0.9,
+                memory_id: Some(group),
+            }],
+        )
+        .await
+        .unwrap();
+        let memories: Vec<Uuid> = bodies
+            .bodies
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MaterializedItem::Memory { memory_id, .. } => Some(*memory_id),
+                _ => None,
+            })
+            .collect();
+        let want = if kept {
+            vec![handle.memory_id]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(memories, want, "group {group}");
+    }
 }
 
 async fn assert_scope_and_point_guards(handle: &Handle, point: ProjectionPointId) {
@@ -736,6 +772,7 @@ async fn assert_scope_and_point_guards(handle: &Handle, point: ProjectionPointId
             &[DenseCandidate {
                 point_id: PointId::Num(7),
                 score: 0.9,
+                memory_id: None,
             }],
         )
         .await,

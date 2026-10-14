@@ -1127,6 +1127,12 @@ const MATRIX: &[Cell] = &[
         "role_retrieval_worker",
         ["SELECT"]
     ),
+    // 0241 (ADR-0068 D-E): the gateway reads the same row to decide whether recall groups by Memory. SELECT only.
+    cell!(
+        "projection.card_profile_policies",
+        "role_gateway",
+        ["SELECT"]
+    ),
 ];
 
 // 0120 is an additive observation-window seam, not a rewrite of the frozen §6.2.2 header.

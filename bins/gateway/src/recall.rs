@@ -21,12 +21,12 @@ use humaux_adapters::{
     postgres::RuntimeDbPool,
     qdrant::{
         DenseQuery, DenseQueryVersions, QdrantOperation, RetrievalFamily, ha_profile_for,
-        query_dense,
+        query_dense, query_dense_groups,
     },
     read_materialize::MaterializedItem,
     retrieve::{
-        IndexFace, MaterializedPrivateReadServing, materialize_private_read_serving_about,
-        tombstoned_source_seqs, visible_index_count,
+        IndexFace, MaterializedPrivateReadServing, grouped_recall,
+        materialize_private_read_serving_about, tombstoned_source_seqs, visible_index_count,
     },
     serving_repo::family_read_state,
 };
@@ -521,26 +521,36 @@ pub async fn search(
     .with_subject_ids(&input.subject_ids)
     .with_affect_filter(input.affect.as_ref())
     .in_workspace_stream(input.workspace_id, tombstoned_seqs);
-    let candidates = query_dense(runtime.qdrant.as_ref(), &runtime.qdrant_permit()?, &dense)
-        .await
-        .map_err(|error| {
-            // ADR-0014: a `WriteDenied` here means the registered `QDRANT_REST` entry itself is
-            // misconfigured (a read-only permit rejected a request `query_dense` never should
-            // have shaped as a write) — a Forbidden, not a transient dependency failure a
-            // caller could usefully retry.
-            if matches!(
-                error,
-                humaux_adapters::qdrant::QdrantTransportError::Transport(
-                    humaux_infra_cell::IntraCellError::WriteDenied
-                )
-            ) {
-                ErrorCode::Forbidden
-            } else {
-                // Operator signal: transport error class only (no body/URL), §ADR-0014.
-                eprintln!("humaux-gateway: recall request_id={request_id} qdrant_query_failed");
-                ErrorCode::DependencyUnavailable
-            }
-        })?;
+    // ADR-0068 D-E: a projection whose policy chunks long notes is queried grouped by Memory, so `cand_k` counts
+    // Memories and one note's chunks cannot fill it; the registry check in materialize stays the identity authority.
+    let grouped = grouped_recall(&pool, &serving_key).await.map_err(|_| {
+        eprintln!("humaux-gateway: recall request_id={request_id} card_profile_policy_read_failed");
+        ErrorCode::DependencyUnavailable
+    })?;
+    let permit = runtime.qdrant_permit()?;
+    let candidates = if grouped {
+        query_dense_groups(runtime.qdrant.as_ref(), &permit, &dense).await
+    } else {
+        query_dense(runtime.qdrant.as_ref(), &permit, &dense).await
+    };
+    let candidates = candidates.map_err(|error| {
+        // ADR-0014: a `WriteDenied` here means the registered `QDRANT_REST` entry itself is
+        // misconfigured (a read-only permit rejected a request `query_dense` never should
+        // have shaped as a write) — a Forbidden, not a transient dependency failure a
+        // caller could usefully retry.
+        if matches!(
+            error,
+            humaux_adapters::qdrant::QdrantTransportError::Transport(
+                humaux_infra_cell::IntraCellError::WriteDenied
+            )
+        ) {
+            ErrorCode::Forbidden
+        } else {
+            // Operator signal: transport error class only (no body/URL), §ADR-0014.
+            eprintln!("humaux-gateway: recall request_id={request_id} qdrant_query_failed");
+            ErrorCode::DependencyUnavailable
+        }
+    })?;
     clock.lap(Stage::Qdrant);
     let mut materialized = materialize_private_read_serving_about(
         &pool,
