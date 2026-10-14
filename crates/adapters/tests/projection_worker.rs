@@ -3500,6 +3500,26 @@ mod note_chunk_projection {
             .collect()
     }
 
+    /// The `memory_id` payload of every point among `ids` present in the collection.
+    fn payload_memory_ids(handle: &Handle, ids: &[Uuid]) -> HashMap<Uuid, Option<String>> {
+        let scrolled = scroll_payloads(handle, &admin_permit(handle), ids);
+        scrolled["result"]["points"]
+            .as_array()
+            .expect("scroll points")
+            .iter()
+            .map(|point| {
+                let id = point["id"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok())
+                    .expect("a uuid point id");
+                (
+                    id,
+                    point["payload"]["memory_id"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
     fn key(
         handle: &Handle,
         scope_id: Uuid,
@@ -4236,5 +4256,51 @@ mod note_chunk_projection {
                 }
             },
         );
+    }
+
+    /// ADR-0068 gate `written_memory_id_matches_the_registry` (D-E): every point the worker writes — each chunk of a
+    /// long note and the legacy point of an ordinary memory — carries as `memory_id` the Memory its registry row
+    /// resolves to. Fault: fill the payload's `memory_id` from anything but the resolved Memory ⇒ red.
+    #[test]
+    fn written_memory_id_matches_the_registry() {
+        run_db_fixture::<Fixture, _>("written_memory_id_matches_the_registry", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a long note";
+            let body = prose(1_500);
+            let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+            let (_, ordinary) = seed_memory_with_visibility(
+                &mut handle,
+                scope_id,
+                "an ordinary memory",
+                "TENANT_SHARED",
+                None,
+                None,
+            );
+            let spy = Spy::new();
+            let (deps, _) = labeled_deps(&handle, scope_id, &spy);
+            assert_eq!(run(&handle, &deps), (2, 0, 0));
+            let count = sql_chunk_count(&mut handle, title, &body);
+            let mut expected: Vec<(Uuid, Uuid)> = chunk_ids(
+                &registration_for(&mut handle, scope_id, &deps.embedding_version, note),
+                count,
+            )
+            .into_iter()
+            .map(|id| (id, note))
+            .collect();
+            let legacy = registration_for(&mut handle, scope_id, &deps.embedding_version, ordinary);
+            expected.push((legacy.point_id.as_uuid(), ordinary));
+            let ids: Vec<Uuid> = expected.iter().map(|(id, _)| *id).collect();
+            let written = payload_memory_ids(&handle, &ids);
+            assert_eq!(written.len(), expected.len(), "{written:?}");
+            for (id, memory) in expected {
+                assert_eq!(
+                    written.get(&id).cloned().flatten(),
+                    Some(memory.to_string()),
+                    "point {id}"
+                );
+            }
+        });
     }
 }
