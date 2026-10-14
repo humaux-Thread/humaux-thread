@@ -1,7 +1,9 @@
 name: exp tool-surface
 # Experiment X2/X4 (MCP tool count / grouping) — runs only on the exp/tool-surface branch, never on main.
-# Synthetic scenarios only; logs are public (public repository), so nothing private is ever printed.
-# Model credentials come from the `minimax m3` environment and are passed as env, never echoed.
+# MiniMax only (owner 2026-10-15: no Claude subscription API; the Claude baseline already exists from pilot 2,
+# run 38623560203). Direct Anthropic-compatible Messages API calls (run_api.py), ~10x fewer tokens than headless
+# Claude Code, with a quota guard on the owner's shared plan: stop when the 5-hour window < 50 % or the weekly
+# window < 25 %, or past the run's token budget. Synthetic scenarios only; logs are public, nothing private printed.
 on:
   push:
     branches: ['exp/tool-surface']
@@ -13,57 +15,25 @@ concurrency:
 
 env:
   EXP_ARMS: A8,B11,C14,D18,E30,P
-  EXP_CLAUDE_ARMS: A8,D18,P   # control on 3 arms only: Claude API usage is paid
-  EXP_REPS: '2'
-  EXP_LIMIT: '0'     # 0 = whole suite; small = plumbing smoke
-  EXP_WORKERS: '3'   # gentle on the shared MiniMax plan
+  EXP_REPS: '1'
+  EXP_WORKERS: '3'
+  EXP_TOKEN_BUDGET: '12000000'
 
 jobs:
-  run:
-    strategy:
-      fail-fast: false
-      matrix:
-        model: [minimax, claude]
+  minimax:
     runs-on: ubuntu-24.04
     environment: minimax m3
-    timeout-minutes: 240
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: install claude code
-        run: npm install -g @anthropic-ai/claude-code && claude --version
-      - name: run episodes (MiniMax via Anthropic-compatible endpoint)
-        if: matrix.model == 'minimax'
+      - name: run episodes (MiniMax-M3, direct API, quota-guarded)
         working-directory: experiments/tool_surface
         env:
-          ANTHROPIC_BASE_URL: https://api.minimaxi.com/anthropic
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAXAPIKEY }}
-          ANTHROPIC_MODEL: MiniMax-M3
-          ANTHROPIC_SMALL_FAST_MODEL: MiniMax-M3
-          API_TIMEOUT_MS: '120000'
-          DISABLE_AUTOUPDATER: '1'
-          DISABLE_TELEMETRY: '1'
-        run: timeout 230m python3 run.py --model-label minimax-m3 --arms "$EXP_ARMS" --reps "$EXP_REPS" --limit "$EXP_LIMIT" --workers "$EXP_WORKERS"
-      - name: run episodes (Claude control)
-        if: matrix.model == 'claude'
-        working-directory: experiments/tool_surface
-        env:
-          CLAUDE_TOKEN: ${{ secrets.CLAUDE_SUBSCRIPTION_API }}
-          CLAUDE_WS: ${{ secrets.CLAUDE_DEFAULT_WORKSPACE_ID }}
-          ANTHROPIC_MODEL: claude-sonnet-5-5
-          DISABLE_AUTOUPDATER: '1'
-          DISABLE_TELEMETRY: '1'
-        # The secret may be an OAuth (subscription) token or an API key; pick the matching variable without printing it.
-        run: |
-          case "$CLAUDE_TOKEN" in sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN";; *) export ANTHROPIC_API_KEY="$CLAUDE_TOKEN";; esac
-          # An unscoped API key needs the workspace header (Claude Code sends ANTHROPIC_CUSTOM_HEADERS verbatim).
-          [ -n "$CLAUDE_WS" ] && export ANTHROPIC_CUSTOM_HEADERS="anthropic-workspace-id: $CLAUDE_WS"
-          unset CLAUDE_TOKEN CLAUDE_WS
-          timeout 230m python3 run.py --model-label claude-sonnet-5-5 --arms "$EXP_CLAUDE_ARMS" --reps 1 --limit "$EXP_LIMIT" --workers "$EXP_WORKERS"
+          MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
+          MINIMAX_MODEL: MiniMax-M3
+        run: timeout 170m python3 run_api.py --arms "$EXP_ARMS" --reps "$EXP_REPS" --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-${{ matrix.model }}
+          name: results-minimax-api
           path: experiments/tool_surface/results/
