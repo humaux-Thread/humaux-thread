@@ -539,6 +539,11 @@ pub mod ledger {
         /// Not tombstoned, nothing pending, latest ticket `FAILED`/`LOST`/`RETIRED_FAILED` —
         /// may hold 0 or 1 point until a later ticket acts on the memory (W5).
         pub points_unsettled: u64,
+        /// ADR-0068 D-I: chunked notes that may still show a legacy point — a live legacy binding, or a retired one
+        /// while the note's latest ticket is not settled `DONE` (the completion step retires, deletes, then
+        /// settles). 0 or 1 point each, neither expected nor missing: it widens A2's closed band by exactly this
+        /// term and is kept out of the ratio.
+        pub points_retiring: u64,
         /// ADR-0057 D-D: age in whole seconds (DB clock) of the stream's oldest
         /// `ISSUED`/`PROCESSING`/`RETRY_WAIT` ticket, read in the same snapshot; `None` when
         /// nothing is pending. Judged only by [`LedgerClosure::lagging`].

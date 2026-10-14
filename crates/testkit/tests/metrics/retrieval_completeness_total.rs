@@ -187,6 +187,7 @@ fn close(reads: ledger::LedgerReads) -> humaux_retrieval::completeness::LedgerCl
             points_settled: reads.done - reads.deleted - reads.skipped,
             points_in_flight: reads.pending,
             points_unsettled: 0,
+            points_retiring: 0,
             oldest_pending_age_secs: None,
         },
     )

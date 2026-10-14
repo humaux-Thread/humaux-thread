@@ -9,7 +9,8 @@
 //!   private.memory_subjects, private.subjects, projection.card_profile_policies, projection.memory_vectors,
 //!   projection.private_memory_points, projection.stream_checkpoints, projection.stream_log]
 //!   x=[private.memory_subject_visibility_ok, projection.note_chunk_count],
-//!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*),
+//!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway) x=[projection.stream_point_ledger],
+//!   PostgreSQL(role_retrieval_worker), Qdrant(*),
 //!   subprocess(gitleaks)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::memory_governance_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant, adapters::remember,
@@ -3969,6 +3970,152 @@ mod note_chunk_projection {
                 "control: every slot written and visible"
             );
             assert_eq!(stream_log_state(&mut handle, &key, seq), "DONE");
+        });
+    }
+
+    /// The five `projection.stream_point_ledger` readings (expected, settled, in flight, unsettled, retiring) of the
+    /// test family, read as role_gateway the way `stream_repo::close_ledger_in_txn` reads them (tenant GUC, a reader
+    /// whose §6.1 visibility admits the TENANT_SHARED memories seeded here).
+    fn ledger_slots(handle: &mut Handle, scope_id: Uuid) -> (i64, i64, i64, i64, i64) {
+        let (tenant_id, scope_kind, scope_id, domain, kind, version) = key(handle, scope_id);
+        let mut txn = handle.admin.transaction().expect("ledger read txn");
+        // dep: PostgreSQL(role_gateway) — role switch for the definer call (the visible_index_count pattern)
+        txn.batch_execute(&format!(
+            "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant_id}'; \
+             SET LOCAL humaux.user_id = '{}';",
+            Uuid::new_v4()
+        ))
+        .expect("act as role_gateway");
+        let row = txn
+            .query_one(
+                "SELECT points_expected, points_settled, points_in_flight, points_unsettled, points_retiring \
+                 FROM projection.stream_point_ledger($1, $2, $3, $4, $5, $6, 'SECRET_MATERIAL', $7)",
+                &[
+                    &tenant_id,
+                    &scope_kind,
+                    &scope_id,
+                    &domain,
+                    &kind,
+                    &version,
+                    &vec![scope_id],
+                ],
+            )
+            .expect("point ledger");
+        txn.rollback().expect("read only");
+        (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
+    }
+
+    /// ADR-0068 gate `ledger_counts_unbuilt_chunk_slots` (D-D, D-I). A long note and an ordinary memory projected
+    /// legacy-only read v2's numbers. Enabling the policy, with nothing re-projected, makes the note C expected slots
+    /// with 0 built: the gap is unsettled (never settled) and its live legacy point is retiring. The re-projection
+    /// that settles every chunk retires the legacy point and settles 1 + C. Faults: count a Memory as one slot ⇒ red
+    /// on the enabled arm; settle a chunked Memory by its DONE ticket instead of its built slots ⇒ red there too; drop
+    /// the gap from unsettled, or the retiring term ⇒ red there too.
+    #[test]
+    fn ledger_counts_unbuilt_chunk_slots() {
+        run_db_fixture::<Fixture, _>("ledger_counts_unbuilt_chunk_slots", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
+            let scope_id = seed_workspace(&mut handle);
+            gov.join(&mut handle.admin, scope_id);
+            let title = "a note projected before chunking";
+            let body = prose(1_500);
+            let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+            seed_memory_with_visibility(
+                &mut handle,
+                scope_id,
+                "an ordinary memory beside the note",
+                "TENANT_SHARED",
+                None,
+                None,
+            );
+            let spy = Spy::new();
+            let (deps, _) = labeled_deps(&handle, scope_id, &spy);
+            assert_eq!(run(&handle, &deps), (2, 0, 0), "legacy-only projection");
+            assert_eq!(
+                ledger_slots(&mut handle, scope_id),
+                (2, 2, 0, 0, 0),
+                "legacy only: one slot per memory, v2's numbers"
+            );
+
+            guard.enable();
+            let count = i64::from(sql_chunk_count(&mut handle, title, &body));
+            assert!(count > 1, "the note is over the legacy capacity");
+            assert_eq!(
+                ledger_slots(&mut handle, scope_id),
+                (1 + count, 1, 0, count, 1),
+                "enabled, nothing re-projected: C expected, 0 built, the gap unsettled, the legacy point retiring"
+            );
+
+            let archived = governance_ops::archive(
+                &handle.rt,
+                &handle.gateway,
+                &gov.scope(scope_id),
+                &governance_ops::stream(handle.tenant_id, scope_id),
+                note,
+                DestructiveOp::MemoryArchive,
+            )
+            .expect("a lifecycle ticket through the real op");
+            assert!(matches!(archived, ArchiveResult::Done(_)), "{archived:?}");
+            assert_eq!(run(&handle, &deps), (1, 0, 0), "the chunk re-projection");
+            assert_eq!(
+                ledger_slots(&mut handle, scope_id),
+                (1 + count, 1 + count, 0, 0, 0),
+                "every chunk slot built and settled, the legacy point retired"
+            );
+        });
+    }
+
+    /// ADR-0068 gate `partial_projection_does_not_settle_memory` (D-D): under `NoteChunksV1` a note whose last slot's
+    /// upsert fails, or whose last slot is written but not yet visible, has C - 1 slots registered and settles none of
+    /// them: its C slots are in flight until the ticket is DONE, then all C settle. Faults: settle a chunked Memory by
+    /// its registered slots whatever its latest ticket ⇒ C - 1 settled on both midway arms ⇒ red; count it as one
+    /// slot ⇒ red on every arm.
+    #[test]
+    fn partial_projection_does_not_settle_memory() {
+        run_db_fixture::<Fixture, _>("partial_projection_does_not_settle_memory", |mut handle| {
+            let mut guard = PolicyGuard::hold();
+            guard.enable();
+            let scope_id = Uuid::new_v4();
+            let title = "a long note";
+            let body = prose(1_500);
+            let (_, note) = seed_note(&mut handle, scope_id, title, &body);
+            let count = sql_chunk_count(&mut handle, title, &body);
+            let spy = Spy::new();
+            let (mut deps, _) = labeled_deps(&handle, scope_id, &spy);
+            let ids = chunk_ids(
+                &registration_for(&mut handle, scope_id, &deps.embedding_version, note),
+                count,
+            );
+            let last = *ids.last().expect("C >= 1");
+            let slots = i64::from(count);
+            for (fail_upsert, hide, arm) in [
+                (Some(last), None, "the last upsert failed"),
+                (None, Some(last), "the last slot is not yet visible"),
+            ] {
+                deps.transport = Arc::new(SlotFault {
+                    inner: handle.transport.clone(),
+                    fail_upsert,
+                    hide,
+                });
+                assert_eq!(run(&handle, &deps), (0, 0, 1), "{arm}");
+                assert!(
+                    slot_rows(&mut handle, note).len() >= count as usize - 1,
+                    "{arm}: C - 1 slots registered at least"
+                );
+                assert_eq!(
+                    ledger_slots(&mut handle, scope_id),
+                    (slots, 0, slots, 0, 0),
+                    "{arm}: every slot in flight, none settled"
+                );
+            }
+            deps.transport = handle.transport.clone();
+            assert_eq!(run(&handle, &deps), (1, 0, 0), "control");
+            assert_eq!(
+                ledger_slots(&mut handle, scope_id),
+                (slots, slots, 0, 0, 0),
+                "every slot settled once the ticket is DONE"
+            );
         });
     }
 }

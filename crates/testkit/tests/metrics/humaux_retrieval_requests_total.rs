@@ -91,6 +91,7 @@ fn pending(request: &RetrievalRequest) -> humaux_retrieval::envelope::PendingEnv
             points_settled: 1,
             points_in_flight: 0,
             points_unsettled: 0,
+            points_retiring: 0,
             oldest_pending_age_secs: None,
         },
     );

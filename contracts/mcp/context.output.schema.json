@@ -151,6 +151,7 @@
                 "points_settled",
                 "points_in_flight",
                 "points_unsettled",
+                "points_retiring",
                 "completeness_ratio",
                 "current"
               ],
@@ -166,6 +167,7 @@
                 "points_settled": {"type":"integer","minimum":0},
                 "points_in_flight": {"type":"integer","minimum":0},
                 "points_unsettled": {"type":"integer","minimum":0},
+                "points_retiring": {"type":"integer","minimum":0},
                 "completeness_ratio": {"type":["number","null"],"minimum":0},
                 "current": {"type":"boolean"}
               },

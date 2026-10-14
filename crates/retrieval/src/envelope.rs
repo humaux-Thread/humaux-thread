@@ -117,7 +117,7 @@ pub struct KnowledgeBlock {
 /// itself splits again at `points_in_flight` (in-flight vs. untrustworthy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum A2Closure {
-    /// `points_settled <= visible <= points_settled + points_unsettled`.
+    /// `points_settled <= visible <= points_settled + points_unsettled + points_retiring`.
     Closed,
     /// `visible < points_settled` — the index lacks a point the ledger says must be visible: a
     /// real loss.
@@ -133,12 +133,20 @@ enum A2Closure {
 // §23.1② (ADR-0057 D-A): both sides count memory points; tickets stay A1's unit. Unsettled
 // memories (latest ticket FAILED/LOST/RETIRED_FAILED) hold 0 or 1 point, so they widen the
 // closed band instead of reading as in-flight (known limit 12: the slack can absorb one loss each).
-fn judge_a2(visible: u64, settled: u64, in_flight: u64, unsettled: u64) -> A2Closure {
+// ADR-0068 D-I: a retiring legacy point is the same kind of known, bounded presence, so it widens the closed band
+// by its own term rather than reading as in-flight or as an overshoot.
+fn judge_a2(
+    visible: u64,
+    settled: u64,
+    in_flight: u64,
+    unsettled: u64,
+    retiring: u64,
+) -> A2Closure {
     if visible < settled {
         A2Closure::InvisibleLoss
-    } else if visible - settled <= unsettled {
+    } else if visible - settled <= unsettled + retiring {
         A2Closure::Closed
-    } else if visible - settled - unsettled <= in_flight {
+    } else if visible - settled - unsettled - retiring <= in_flight {
         A2Closure::InFlight
     } else {
         A2Closure::Inconsistent
@@ -167,11 +175,14 @@ pub struct ProjectionBlock {
     pub points_in_flight: u64,
     /// Memories whose latest ticket failed or was retired — the closed band's width.
     pub points_unsettled: u64,
+    /// ADR-0068 D-I: legacy points of chunked notes still mid-backfill — widens the closed band, kept out of
+    /// `completeness_ratio`.
+    pub points_retiring: u64,
     /// `null` whenever it cannot be established: A1 broken, `visible` unavailable, or A2's
     /// `>` side exceeds the in-flight slack — all three are the *same* "don't know the true
     /// count" failure (§23.1②: "把 A2 的 `<` 侧也判成 cannot_establish 等于把真实的丢失藏进测不出来
-    /// 里"，其反面同样成立). Otherwise `visible / points_expected` (ADR-0057 D-A: one unit on both
-    /// sides). Only one ratio is ever output — there is no second "ledger-only" ratio (§23.1②).
+    /// 里"，其反面同样成立). Otherwise `(visible - points_retiring) / points_expected` (ADR-0057 D-A: one unit on
+    /// both sides; ADR-0068 D-I: a retiring legacy point is not an expected slot). Only one ratio is ever output — there is no second "ledger-only" ratio (§23.1②).
     pub completeness_ratio: Option<f64>,
     /// §23.1② frozen definition, this crate's only computation of it:
     /// `current = (open_gaps == 0) && A2 闭合`. `pending` never enters this — see this
@@ -222,6 +233,7 @@ fn projection_block_a2(ledger: &LedgerClosure, visible: Option<u64>) -> Outcome<
         points_settled: points.points_settled,
         points_in_flight: points.points_in_flight,
         points_unsettled: points.points_unsettled,
+        points_retiring: points.points_retiring,
         completeness_ratio: None,
         current: false,
     };
@@ -241,6 +253,7 @@ fn projection_block_a2(ledger: &LedgerClosure, visible: Option<u64>) -> Outcome<
         points.points_settled,
         points.points_in_flight,
         points.points_unsettled,
+        points.points_retiring,
     );
 
     // §23.1②: `>` side beyond the in-flight slack is untrustworthy on both sides — same
@@ -254,10 +267,12 @@ fn projection_block_a2(ledger: &LedgerClosure, visible: Option<u64>) -> Outcome<
     // "0 of a 0-point universe" is complete by definition — rather than `null`, so this branch
     // cannot silently drift back to the undefined `ratio: null, current: true` shape.
     let denom = points.points_expected;
+    // ADR-0068 D-I: a retiring legacy point is not one of the expected slots, so it never counts toward the ratio.
+    let counted = v.saturating_sub(points.points_retiring);
     let ratio = Some(if denom == 0 {
         1.0
     } else {
-        v as f64 / denom as f64
+        counted as f64 / denom as f64
     });
     let block = ProjectionBlock {
         completeness_ratio: ratio,
@@ -1736,6 +1751,7 @@ mod tests {
             points_settled: reads.done.saturating_sub(reads.deleted + reads.skipped),
             points_in_flight: reads.pending,
             points_unsettled: 0,
+            points_retiring: 0,
             oldest_pending_age_secs: None,
         }
     }
@@ -3283,6 +3299,7 @@ mod a2_point_tests {
                 points_settled,
                 points_in_flight,
                 points_unsettled,
+                points_retiring: 0,
                 oldest_pending_age_secs: None,
             },
         );
@@ -3304,6 +3321,7 @@ mod a2_point_tests {
                 points_settled: settled,
                 points_in_flight: in_flight,
                 points_unsettled: 0,
+                points_retiring: 0,
                 oldest_pending_age_secs: Some(age_secs),
             },
         )
@@ -3453,6 +3471,48 @@ mod a2_point_tests {
         assert_eq!(
             over.value.completeness_ratio, None,
             "L+Q+1 with F=0 is beyond the slack"
+        );
+        assert!(!over.value.current);
+    }
+
+    /// ADR-0068 gate `retiring_legacy_point_is_band_slack_not_ratio`: a long note mid-backfill (C = 3 expected slots,
+    /// none settled, the gap unsettled) keeps its one legacy point visible. That point is inside the closed band and
+    /// counts 0 toward the ratio; one point more is beyond the band. Faults: drop R from the judge ⇒ `visible = L + Q
+    /// + R` reads Inconsistent (no ratio) ⇒ red; count R in the ratio ⇒ 2/4, not 1/4 ⇒ red.
+    #[test]
+    fn retiring_legacy_point_is_band_slack_not_ratio() {
+        let mid_backfill = |visible| {
+            build_projection_block(
+                &ledger::close(
+                    settled_tickets(2),
+                    ProjectionReads {
+                        points_expected: 4,
+                        points_settled: 1,
+                        points_in_flight: 0,
+                        points_unsettled: 3,
+                        points_retiring: 1,
+                        oldest_pending_age_secs: None,
+                    },
+                ),
+                Some(visible),
+                LAG,
+            )
+        };
+        let out = mid_backfill(2);
+        assert!(out.value.current, "L + R is inside the closed band");
+        assert_eq!(
+            out.value.completeness_ratio,
+            Some(0.25),
+            "(visible - R) / U"
+        );
+        assert!(out.degradations.is_empty());
+        let full = mid_backfill(5);
+        assert!(full.value.current, "L + Q + R is the band's top");
+        assert_eq!(full.value.completeness_ratio, Some(1.0));
+        let over = mid_backfill(6);
+        assert_eq!(
+            over.value.completeness_ratio, None,
+            "L + Q + R + 1 with F = 0"
         );
         assert!(!over.value.current);
     }
