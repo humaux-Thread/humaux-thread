@@ -32,7 +32,7 @@
 //! [`StreamKey`] (`ops.outbox` is written in the same transaction as the seq issuance, §60, so
 //! the mapping shares the write's atomicity).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
@@ -45,6 +45,7 @@ use sqlx::{Acquire, Row};
 
 use crate::context_repo::{NoteEnumerationFilter, readable_memory_ids, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
+use crate::read_materialize::GateReadable;
 use crate::read_materialize::Lifecycle;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -151,10 +152,9 @@ pub struct ExactCensusOutcome {
 /// §23.1② overlay, EXACT-channel face (see module doc): scoped to one [`StreamKey`] via `$3..$7` (the registry's
 /// post-0079 `enumerable_scope` already claims `$1` = tenant and `$2` = workspace).
 ///
-/// ADR-0071 D-A: uncorrelated — the tombstoned memories of the stream are one small set the planner hashes once
-/// (`NOT IN` over a `NOT NULL` key is the anti-join), where the correlated `NOT EXISTS` ran the three-way join per
-/// candidate row. `ob.tenant_id = $1` replaces the correlation on `memory_records.tenant_id`, which the scope fixes to
-/// `$1`.
+/// ADR-0071 D-A: uncorrelated — the stream's tombstoned memories are one set the planner hashes once (`NOT IN` over a
+/// `NOT NULL` key is the exact anti-join); `ob.tenant_id = $1` holds because the scope fixes
+/// `memory_records.tenant_id = $1`. Bounded by the stream, which the census scans whole anyway.
 const NOT_TOMBSTONED: &str = "memory_records.memory_id NOT IN ( \
    SELECT me.memory_id FROM private.memory_evidence me \
    JOIN ops.outbox ob ON ob.evidence_id = me.evidence_id AND ob.tenant_id = $1 \
@@ -239,11 +239,12 @@ pub(crate) fn bind_note_axes<'q>(
 
 /// §18/§22.1 `SECRET_MATERIAL` linkage: a memory whose evidence chain carries secret material
 /// is excluded from `returned` and counted by `excluded_secret`. ADR-0071 D-A: an uncorrelated set (hashed once),
-/// as [`NOT_TOMBSTONED`]; `memory_evidence.memory_id` is `NOT NULL`, so `NOT IN` is the exact negation.
+/// bounded by the authorized ids `$8` every readout statement binds; `memory_evidence.memory_id` is `NOT NULL`, so
+/// `NOT ( … IN … )` is the exact negation.
 const SECRET_LINKED: &str = "memory_records.memory_id IN ( \
    SELECT me2.memory_id FROM private.memory_evidence me2 \
    JOIN private.evidence_objects eo ON eo.evidence_id = me2.evidence_id \
-   WHERE eo.data_class = 'SECRET_MATERIAL')";
+   WHERE me2.memory_id = ANY($8) AND eo.data_class = 'SECRET_MATERIAL')";
 
 /// The readout statements' binds: `$1..$7` tenant, workspace, stream key; `$8` authorized ids; `$9` subject; `$10`
 /// segment bound; `$11..$16` [`note_axes`].
@@ -293,7 +294,7 @@ struct CandidateQuery<'a> {
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
     notes: &'a NoteEnumerationFilter,
-    readable: Option<&'a HashSet<Uuid>>,
+    readable: Option<&'a GateReadable>,
 }
 
 async fn authorized_candidate_ids(
@@ -418,12 +419,11 @@ pub struct CensusInputs<'a> {
     /// ADR-0067 D-G / D-J2: the note axes (kinds, `occurred_at` window, note) and the lifecycle selection, bound on
     /// every statement; the default is "no note axis" under [`Lifecycle::CURRENT`].
     pub notes: &'a NoteEnumerationFilter,
-    /// ADR-0071 D-C: the `can_read` set the caller's shared final gate already computed IN THIS SNAPSHOT over a superset
-    /// of this census's candidates (`memory.enumerate`'s mint: same scope and predicate without the stream overlay).
-    /// The census then narrows its own candidates by membership instead of re-reading evidence visibility. `None` =
-    /// run [`readable_memory_ids`] here. A candidate outside the set is dropped, so a mismatch shrinks the census and
-    /// fails the mint's set-equality cross-check — never a wider universe.
-    pub readable: Option<&'a HashSet<Uuid>>,
+    /// ADR-0071 D-C: the shared final gate's `can_read` set, computed in this snapshot over a superset of this census's
+    /// candidates (`memory.enumerate`'s mint: same scope and predicate without the stream overlay). The census narrows
+    /// its own candidates by membership; `None` = run [`readable_memory_ids`] here. A candidate outside the set is
+    /// dropped, so a mismatch shrinks the census and fails the mint's set-equality cross-check, never widens it.
+    pub readable: Option<&'a GateReadable>,
 }
 
 /// §22.1 census inside a transaction the caller owns (isolation level and the RLS GUCs are

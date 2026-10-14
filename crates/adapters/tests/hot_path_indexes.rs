@@ -1,7 +1,7 @@
 //! `adapters::tests::hot_path_indexes` — pins the seven card-27 hot-path indexes (audit P1-15 + the ADR-0052 claim
-//!   index) in the live catalog: present, valid, ready, and shaped exactly as their migrations create them.
+//!   index) and ADR-0071's two exclusion-set indexes in the live catalog: present, valid, ready, and shaped exactly as their migrations create them.
 //! Depends-on: crates=[humaux-testkit, postgres]; services=[PostgreSQL(any) r=[ops.jobs, ops.outbox,
-//!   private.memory_evidence, private.memory_records, projection.stream_log]]; env=[CARGO_MANIFEST_DIR,
+//!   private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_log]]; env=[CARGO_MANIFEST_DIR,
 //!   HUMAUX_TEST_PG_DSN]; modules=[humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [read-only (catalog SELECTs only); no DSN is a visible SKIP and HUMAUX_REQUIRE_DB=1 turns it into a
@@ -11,8 +11,9 @@ use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::{Client, NoTls};
 
 /// `(migration file, index name, pg_get_indexdef as the server prints it)` — the audit P1-15 list plus
-/// the ADR-0052 claim index, one CONCURRENTLY file each (0177–0183).
-const PINNED: [(&str, &str, &str); 7] = [
+/// the ADR-0052 claim index, one CONCURRENTLY file each (0177–0183), plus ADR-0071 D-A's two exclusion-set
+/// indexes (0243, 0244).
+const PINNED: [(&str, &str, &str); 9] = [
     (
         "0177_idx_stream_log_issued_claim.sql",
         "stream_log_issued_claim_idx",
@@ -48,6 +49,16 @@ const PINNED: [(&str, &str, &str); 7] = [
         "memory_records_superseded_by_idx",
         "CREATE INDEX memory_records_superseded_by_idx ON private.memory_records USING btree (superseded_by) WHERE (superseded_by IS NOT NULL)",
     ),
+    (
+        "0243_idx_evidence_objects_secret.sql",
+        "evidence_objects_secret_idx",
+        "CREATE INDEX evidence_objects_secret_idx ON private.evidence_objects USING btree (tenant_id, evidence_id) WHERE (data_class = 'SECRET_MATERIAL'::text)",
+    ),
+    (
+        "0244_idx_stream_log_tombstoned.sql",
+        "stream_log_tombstoned_idx",
+        "CREATE INDEX stream_log_tombstoned_idx ON projection.stream_log USING btree (tenant_id, commit_seq) WHERE (state = 'TOMBSTONED'::text)",
+    ),
 ];
 
 /// Uncaught fault `f_delete_p1_15_index` (review 2026-09-29): the rehearsal's EXPLAIN gate went
@@ -55,7 +66,7 @@ const PINNED: [(&str, &str, &str); 7] = [
 /// has another path for the other four, so a plan cannot pin an index. This pins them in the
 /// catalog instead: every index exists under its name, is valid and ready (a failed
 /// `CREATE INDEX CONCURRENTLY` leaves an INVALID one), and has exactly the definition its
-/// migration file creates. Fault injection: drop any one of the seven (throwaway schema copy) ⇒
+/// migration file creates. Fault injection: drop any one of the nine (throwaway schema copy) ⇒
 /// red naming it.
 #[test]
 fn p1_15_hot_path_indexes_exist_valid_and_shaped() {

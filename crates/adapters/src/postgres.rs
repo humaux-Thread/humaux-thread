@@ -131,10 +131,9 @@ pub struct PoolSettings {
 async fn open(dsn: &str, settings: Option<&PoolSettings>) -> Result<PgPool, PoolInitError> {
     // dep: PostgreSQL(any) — ADR-0065 D-A: the workspace's one pool builder; `settings` sizes it, `None` keeps sqlx defaults
     let builder = PgPoolOptions::new();
-    // ADR-0071 D-B: every pool's sessions run with JIT off. A read over an id array of tens of thousands carries a plan
-    // cost far above `jit_above_cost`, and compiling it cost 5.2 s of a 6.7 s `memory.enumerate` first page at 50k
-    // (CI, PostgreSQL 18.6) for statements that execute in tens of milliseconds. A startup option like the timeouts
-    // below (ADR-0065 D-B), so it holds for every role and every deployment without a server-config dependency.
+    // ADR-0071 D-B: every pool's sessions run with JIT off — a read over an id array of tens of thousands plans far
+    // above `jit_above_cost` and would compile code for statements that execute in milliseconds. A startup option
+    // like the timeouts below (ADR-0065 D-B), so it holds for every role and deployment without server config.
     let options = PgConnectOptions::from_str(dsn)
         .map_err(PoolInitError::Connect)?
         .options([("jit", "off")]);

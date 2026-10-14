@@ -18,18 +18,24 @@ hits each), and the census re-running the evidence-visibility read the mint's fi
 
 - **D-A Exclusion sets, hashed once.** In the shared final gate (`read_materialize`) and in the census
   (`exact_census::SECRET_LINKED` / `NOT_TOMBSTONED`) the two exclusions are uncorrelated `NOT IN` / `IN` subqueries:
-  the memories with a `SECRET_MATERIAL` evidence, and the memories with a `TOMBSTONED` stream row (the census's overlay
-  stays scoped to its stream). `memory_evidence.memory_id` is `NOT NULL`, so `NOT IN` is the exact anti-join; the
-  tenant legs bind `$1`, which the outer `tenant_id = $1` already fixes. Two partial indexes make each set cost one
-  probe per excluded row instead of a tenant scan: `private.evidence_objects (tenant_id, evidence_id) WHERE data_class
+  the memories with a `SECRET_MATERIAL` evidence, and the memories with a `TOMBSTONED` stream row. Each set is bounded
+  by the statement's own id array where it has one (the final gate's candidates `$2`, the census readouts' authorized
+  ids `$8`), so a 20-id recall or `memory.get` never pays for the tenant's whole secret or tombstone history; the
+  census's tombstone overlay stays scoped to its stream, which the census scans whole anyway.
+  `memory_evidence.memory_id` is `NOT NULL`, so `NOT IN` is the exact anti-join; the tenant legs bind `$1`, which the
+  outer `tenant_id = $1` already fixes. Two partial indexes give the planner a path that costs one probe per excluded
+  row instead of a tenant scan: `private.evidence_objects (tenant_id, evidence_id) WHERE data_class
   = 'SECRET_MATERIAL'` (0243) and `projection.stream_log (tenant_id, commit_seq) WHERE state = 'TOMBSTONED'` (0244),
   both `CREATE INDEX CONCURRENTLY`, the 0212 shape. Without them a 50-id page paid for the tenant-wide set (later pages
   48 → 58 ms); with them later pages are back at baseline.
 - **D-B JIT off for every pool.** `adapters::postgres::open` starts every session with `-c jit=off` (a startup option
-  beside the ADR-0065 timeouts, so it holds for every role, sized or not, with no server-config dependency). The
-  workload is short OLTP reads and bounded scans; nothing here benefits from LLVM.
+  beside the ADR-0065 timeouts, so it holds for every role, sized or not, with no server-config dependency). It also
+  reaches the migrator, retention, maintenance and worker pools; their statements are DDL, bounded batch writes and
+  short reads, none of which was measured to benefit from LLVM — only the gateway's enumerate was measured to lose by
+  it.
 - **D-C One evidence-visibility read per mint.** `final_memory_ids_with_readable_in_txn` returns the gate's survivors
-  and the `can_read` set it computed; `memory.enumerate`'s mint passes that set to its census
+  and the `can_read` set it computed (`GateReadable`, constructed only there); `memory.enumerate`'s mint passes that set
+  to its census
   (`CensusInputs::readable`), whose candidates are a subset of the mint's in the same REPEATABLE READ snapshot (same
   scope and predicate plus the stream overlay). A candidate outside the set is dropped, so a mismatch can only shrink
   the census and fail the mint's set-equality cross-check (§22.4 trigger 4) — never widen the universe. The registry

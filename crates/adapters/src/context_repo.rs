@@ -56,7 +56,7 @@ use crate::exact_census::{CensusInputs, bind_note_axes, census_in_txn, note_axes
 use crate::postgres::RuntimeDbPool;
 use crate::quota_repo::{self, ReservationStatus, ReserveResult};
 use crate::read_materialize::{
-    Lifecycle, MaterializedBodies, MaterializedItem, MemoryHistory,
+    GateReadable, Lifecycle, MaterializedBodies, MaterializedItem, MemoryHistory,
     final_memory_ids_with_readable_in_txn, materialize_final_bodies_in_txn,
     materialize_one_memory_in_txn, materialize_selected_bodies_in_txn, memory_history_in_txn,
     memory_note_kinds_in_txn, memory_versions_in_txn,
@@ -1729,7 +1729,7 @@ async fn mint_census_in_txn(
     stream: &StreamKey,
     filter: EnumerationFilter<'_>,
     universe: &[Uuid],
-    readable: &HashSet<Uuid>,
+    readable: &GateReadable,
 ) -> Result<Option<FrozenCensus>, ErrorCode> {
     let outcome = census_in_txn(
         txn,

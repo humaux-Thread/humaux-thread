@@ -301,9 +301,21 @@ pub(crate) async fn final_memory_ids_about_in_txn(
     .map(|(survivors, _)| survivors)
 }
 
-/// [`final_memory_ids_about_in_txn`], also handing back the `can_read` set ([`readable_memory_ids`]) it computed over
-/// `candidates`. ADR-0071 D-C: `memory.enumerate`'s mint passes that set to its §22.1 census, whose candidates are a
-/// subset of these in the same snapshot, instead of the census re-running the evidence-visibility read.
+/// ADR-0071 D-C: the `can_read` set ([`readable_memory_ids`]) the shared final gate computed over its candidates,
+/// in the caller's transaction. Only [`final_memory_ids_with_readable_in_txn`] constructs it, so a census handed one
+/// narrows by a set the gate itself produced — never by an arbitrary id list.
+pub(crate) struct GateReadable(HashSet<Uuid>);
+
+impl GateReadable {
+    /// Whether the gate found `memory_id` readable.
+    pub(crate) fn contains(&self, memory_id: &Uuid) -> bool {
+        self.0.contains(memory_id)
+    }
+}
+
+/// [`final_memory_ids_about_in_txn`], also handing back the [`GateReadable`] set it computed over `candidates`.
+/// ADR-0071 D-C: `memory.enumerate`'s mint passes it to its §22.1 census, whose candidates are a subset of these in
+/// the same snapshot.
 pub(crate) async fn final_memory_ids_with_readable_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
@@ -311,7 +323,7 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
     lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
-) -> Result<(Vec<Uuid>, HashSet<Uuid>), ErrorCode> {
+) -> Result<(Vec<Uuid>, GateReadable), ErrorCode> {
     let readable = readable_memory_ids(txn, authorization, candidates).await?;
     let subject_filter: Option<Vec<Uuid>> =
         (!subject_ids.is_empty()).then(|| subject_ids.iter().map(|s| s.0).collect());
@@ -332,16 +344,18 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
                 AND ms.memory_id = m.memory_id
                 AND ms.subject_id = ANY($3::uuid[])
           ))
-          -- ADR-0071 D-A: the secret-backed and the tombstoned memories are two small uncorrelated sets the planner
-          -- hashes once (`memory_evidence.memory_id` is NOT NULL, so NOT IN is the exact anti-join); the tenant
-          -- legs bind $1, which `m.tenant_id = $1` above already fixes.
+          -- ADR-0071 D-A: the secret-backed and the tombstoned memories among the candidates, each one uncorrelated
+          -- set the planner hashes once (`memory_evidence.memory_id` is NOT NULL, so NOT IN is the exact anti-join).
+          -- Both are bounded by $2, so a small read never pays for the tenant's whole history; the tenant legs bind
+          -- $1, which `m.tenant_id = $1` above already fixes.
           AND m.memory_id NOT IN (
               SELECT me.memory_id
               FROM private.memory_evidence AS me
               JOIN private.evidence_objects AS source
                 ON source.evidence_id = me.evidence_id
                AND source.tenant_id = $1
-              WHERE source.data_class = 'SECRET_MATERIAL'
+              WHERE me.memory_id = ANY($2)
+                AND source.data_class = 'SECRET_MATERIAL'
           )
           AND m.memory_id NOT IN (
               SELECT me.memory_id
@@ -352,7 +366,8 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
               JOIN projection.stream_log AS sl
                 ON sl.tenant_id = ob.tenant_id
                AND sl.commit_seq = ob.commit_seq
-              WHERE sl.state = 'TOMBSTONED'
+              WHERE me.memory_id = ANY($2)
+                AND sl.state = 'TOMBSTONED'
           )
         "#,
         lifecycle = Lifecycle::sql("m", 4),
@@ -387,7 +402,7 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
         );
         survivors.retain(|id| matching.contains(id));
     }
-    Ok((survivors, readable))
+    Ok((survivors, GateReadable(readable)))
 }
 
 async fn load_memories(
