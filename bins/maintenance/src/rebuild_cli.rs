@@ -187,7 +187,8 @@ pub(crate) async fn verify(args: &Args) -> Result<Output> {
 
 /// `projection backfill-memory-id (--tenant <uuid> [--workspace <uuid>] | --all)` (ADR-0068 40d-2a): writes the
 /// registry's `memory_id` on every registered point of each stream. Exit 0 when no stream has a stray, 3 when any
-/// has (named in its object, left unpatched), 1 on an error.
+/// has (named in its object, left unpatched) or when the scope matched no stream (nothing was backfilled, so the
+/// switch gate must not read it as done), 1 on an error.
 pub(crate) async fn backfill_memory_id(args: &Args) -> Result<Output> {
     let scope = scope(args)?;
     let wiring = wiring().await?;
@@ -199,11 +200,16 @@ pub(crate) async fn backfill_memory_id(args: &Args) -> Result<Output> {
         strays += report.strays;
         streams.push(report.json);
     }
+    let outcome = match (streams.is_empty(), strays > 0) {
+        (true, _) => "no_streams",
+        (false, true) => "strays",
+        (false, false) => "backfilled",
+    };
     let mut output = Output::ok(json!({
         "command": "projection backfill-memory-id",
-        "outcome": if strays > 0 { "strays" } else { "backfilled" },
+        "outcome": outcome,
         "streams": streams,
     }));
-    output.refused = strays > 0;
+    output.refused = outcome != "backfilled";
     Ok(output)
 }

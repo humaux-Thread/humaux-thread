@@ -1286,19 +1286,23 @@ pub struct BackfillReport {
     pub json: Value,
 }
 
-/// ADR-0068 40d-2a: point id → Memory for every registry row of the stream, live or retired, any label — a point the
-/// registry ever wrote is repaired whatever state its row is in now.
+/// ADR-0068 40d-2a: point id → Memory for the registry rows of `point_ids` in the stream, live or retired, any label —
+/// a point the registry ever wrote is repaired whatever state its row is in now. Read per scrolled page, AFTER that
+/// page's scroll (the D-F verifier's order): the projection worker upserts a point before it registers it, so a row
+/// read before the scroll could miss a point the scroll then sees and call it a stray.
 async fn read_point_memories(
     deps: &RebuildDeps<'_>,
     stream: &Stream,
+    point_ids: &[Uuid],
 ) -> Result<BTreeMap<Uuid, Uuid>> {
     let mut txn = begin_projector_read(deps.reader, stream.key.tenant_id.0).await?;
     let rows = key_query(
         "SELECT point_id, memory_id FROM projection.private_memory_points \
           WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
-            AND projection_kind = $5 AND projection_version = $6",
+            AND projection_kind = $5 AND projection_version = $6 AND point_id = ANY($7)",
         &stream.key,
     )
+    .bind(point_ids)
     .fetch_all(&mut *txn)
     .await?;
     txn.commit().await?;
@@ -1320,7 +1324,6 @@ pub async fn backfill_memory_ids(
     deps: &RebuildDeps<'_>,
     stream: &Stream,
 ) -> Result<BackfillReport> {
-    let registry = read_point_memories(deps, stream).await?;
     let filter = stream_filter(stream)?;
     let (transport, permit) = deps.qdrant.wire()?;
     let qerr = |e: qdrant::QdrantTransportError| ProvisioningError::Qdrant(e.to_string());
@@ -1340,6 +1343,15 @@ pub async fn backfill_memory_ids(
         )
         .await
         .map_err(qerr)?;
+        let page_ids: Vec<Uuid> = page
+            .points
+            .iter()
+            .filter_map(|point| match point.id {
+                PointId::Uuid(id) => Some(id),
+                PointId::Num(_) => None,
+            })
+            .collect();
+        let registry = read_point_memories(deps, stream, &page_ids).await?;
         let mut groups: BTreeMap<Uuid, Vec<PointId>> = BTreeMap::new();
         for point in &page.points {
             scrolled += 1;
