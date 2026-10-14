@@ -907,7 +907,7 @@ fn first_ids(ids: impl IntoIterator<Item = Uuid>) -> Vec<Uuid> {
     ids.into_iter().take(DIFF_REPORT_LIMIT).collect()
 }
 
-/// D-F E1: the collection's canonical config digest (dimension from the fingerprint row, both payload indexes)
+/// D-F E1: the collection's canonical config digest (dimension from the fingerprint row, every payload index)
 /// and status `green`. Returns the failed terms.
 async fn judge_collection(deps: &RebuildDeps<'_>, stream: &Stream) -> Result<Vec<String>> {
     let mut reasons = Vec::new();

@@ -489,7 +489,7 @@ fn onboard_tenant_creates_every_row_and_activates_verified_empty() {
     assert_eq!(r["placements"][0]["collection_name"], f.collection.as_str());
     assert_eq!(
         r["collection"]["payload_indexes"],
-        serde_json::json!(["tenant_id", "subject_ids"])
+        serde_json::json!(["tenant_id", "subject_ids", "memory_id"])
     );
     let activation = &r["activations"][0];
     assert_eq!(activation["outcome"], "activated");

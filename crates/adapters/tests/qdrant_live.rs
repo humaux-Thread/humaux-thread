@@ -260,6 +260,7 @@ async fn upsert_then_search_visible_round_trips_over_real_qdrant() {
         let user_id = UserId::new();
         let workspace_id = WorkspaceId::new();
         let payload = QdrantPointPayload {
+            memory_id: humaux_domain::authority::MemoryId::new(),
             tenant_id,
             workspace_id,
             visibility_class: VisibilityClass::UserPrivate,
@@ -278,6 +279,7 @@ async fn upsert_then_search_visible_round_trips_over_real_qdrant() {
             egress_disposition: EgressDisposition::Forbidden,
         };
         let other_tenant = QdrantPointPayload {
+            memory_id: humaux_domain::authority::MemoryId::new(),
             tenant_id: TenantId::new(),
             ..payload.clone()
         }
@@ -503,6 +505,7 @@ async fn dense_query_never_returns_an_archived_or_non_active_point() {
 
         let tenant_id = TenantId::new();
         let payload = |status: AuthorityStatus| QdrantPointPayload {
+            memory_id: humaux_domain::authority::MemoryId::new(),
             tenant_id,
             workspace_id: WorkspaceId::new(),
             visibility_class: VisibilityClass::TenantShared,

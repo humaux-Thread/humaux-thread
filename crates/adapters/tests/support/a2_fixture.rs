@@ -34,7 +34,7 @@ use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool, Runtim
 use humaux_adapters::projection_worker::{CardEmbedder, ProjectionWorkerDeps, run_once};
 use humaux_adapters::qdrant::{
     Distance, PlacementClass, PromotionState, RetrievalFamily, ShardingMethod, TenantPlacementRow,
-    create_collection_body, subject_index_body, tenant_index_body,
+    create_collection_body, memory_id_index_body, subject_index_body, tenant_index_body,
 };
 use humaux_adapters::remember::{self, RememberCommand};
 use humaux_adapters::retrieve::{IndexFace, visible_count_of_version};
@@ -337,6 +337,10 @@ async fn setup_qdrant_collection(
         (
             format!("/collections/{collection}/index"),
             subject_index_body(),
+        ),
+        (
+            format!("/collections/{collection}/index"),
+            memory_id_index_body(),
         ),
     ] {
         // dep: Qdrant(*) — collection setup for this fixture

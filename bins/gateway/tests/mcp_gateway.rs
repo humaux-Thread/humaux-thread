@@ -804,6 +804,7 @@ fn semantic_payload_with(
     source_stream_seq: i64,
 ) -> humaux_adapters::qdrant::IndexablePayload {
     QdrantPointPayload {
+        memory_id: humaux_domain::authority::MemoryId::new(),
         tenant_id: TenantId(handle.tenant_id),
         workspace_id: WorkspaceId(handle.workspace_id),
         visibility_class: VisibilityClass::WorkspaceShared,
@@ -4334,6 +4335,7 @@ fn foreign_tenant_shared_payload(
 ) -> humaux_adapters::qdrant::IndexablePayload {
     let now = time::OffsetDateTime::now_utc();
     QdrantPointPayload {
+        memory_id: humaux_domain::authority::MemoryId::new(),
         tenant_id: TenantId(handle.tenant_id),
         workspace_id: WorkspaceId(workspace),
         visibility_class: VisibilityClass::TenantShared,

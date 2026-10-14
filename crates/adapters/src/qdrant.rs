@@ -40,7 +40,7 @@
 //! SQL, Domain never imports either) — not a boundary violation.
 
 use humaux_domain::affect::{AffectAnnotation, AffectFilter, BasisPoints, EmotionLabel};
-use humaux_domain::authority::{AuthorityClass, AuthorityStatus};
+use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::identity::{AuthorizationScope, VisibilityClass};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
@@ -210,6 +210,15 @@ pub fn subject_index_body() -> Value {
     })
 }
 
+/// `PUT /collections/{name}/index` request body for ADR-0068 D-E: `memory_id` carries a keyword payload index, the
+/// field grouped recall groups by. One call per family collection, next to [`subject_index_body`].
+pub fn memory_id_index_body() -> Value {
+    json!({
+        "field_name": MEMORY_ID_FIELD,
+        "field_schema": { "type": "keyword" }
+    })
+}
+
 // ============================================================================
 // §17 — payload schema (§17's own text block: "at least" 14 fields, plus §18.2's mandatory
 // data_class/egress_disposition)
@@ -240,6 +249,9 @@ pub fn subject_index_body() -> Value {
 /// ([`tombstoned_seq_overlay_filter`]). Two hand-typed copies of this string would silently
 /// filter nothing (§78.1: no literals at a contract boundary).
 pub const SOURCE_STREAM_SEQ_FIELD: &str = "source_stream_seq";
+/// ADR-0068 D-E: the scalar keyword payload naming a point's Memory, on every point; carries a keyword payload index
+/// ([`memory_id_index_body`]) so recall can group by it.
+pub const MEMORY_ID_FIELD: &str = "memory_id";
 /// ADR-0068 D-E: a note chunk point's profile (`projection.private_memory_points.card_profile_hash`). Written only on
 /// chunk points; a legacy point's payload is unchanged.
 pub const CARD_PROFILE_HASH_FIELD: &str = "card_profile_hash";
@@ -249,6 +261,9 @@ pub const CHUNK_ORDINAL_FIELD: &str = "chunk_ordinal";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QdrantPointPayload {
     pub tenant_id: TenantId,
+    /// ADR-0068 D-E: the Memory this point projects, written as [`MEMORY_ID_FIELD`] on every point (legacy and chunk),
+    /// the key recall groups by. The PG registry stays the authority for which Memory a point resolves to.
+    pub memory_id: MemoryId,
     pub workspace_id: WorkspaceId,
     pub visibility_class: VisibilityClass,
     pub visibility_user_id: Option<UserId>,
@@ -340,6 +355,7 @@ impl QdrantPointPayload {
     pub fn to_json(&self) -> Value {
         let mut obj = serde_json::Map::with_capacity(16);
         obj.insert("tenant_id".into(), json!(self.tenant_id.0.to_string()));
+        obj.insert(MEMORY_ID_FIELD.into(), json!(self.memory_id.0.to_string()));
         obj.insert(
             "workspace_id".into(),
             json!(self.workspace_id.0.to_string()),
@@ -1841,6 +1857,7 @@ mod lifecycle_prefilter_tests {
         let now = OffsetDateTime::now_utc();
         QdrantPointPayload {
             tenant_id: TenantId::new(),
+            memory_id: MemoryId::new(),
             workspace_id: WorkspaceId::new(),
             visibility_class: VisibilityClass::TenantShared,
             visibility_user_id: None,
@@ -1896,6 +1913,25 @@ mod lifecycle_prefilter_tests {
         let body = upsert_point_body(PointId::Num(1), &payload().into_indexable().expect("idx"));
         assert_eq!(body["payload"][ARCHIVED_FIELD], json!(false));
         assert_eq!(body["payload"]["status"], "active");
+    }
+
+    /// ADR-0068 gate `every_point_names_its_memory` (D-E): a legacy and a chunk point both carry their Memory as the
+    /// scalar `memory_id` keyword the recall groups by. Fault: drop the insert from `to_json` (or write it only on chunk
+    /// points) ⇒ red on the legacy arm.
+    #[test]
+    fn every_point_names_its_memory() {
+        let base = payload();
+        let memory = base.memory_id.0.to_string();
+        let indexable = base.into_indexable().expect("idx");
+        for body in [
+            upsert_point_body(PointId::Num(1), &indexable),
+            upsert_point_body(
+                PointId::Num(2),
+                &indexable.clone().with_chunk("NoteChunksV1-x", 0),
+            ),
+        ] {
+            assert_eq!(body["payload"][MEMORY_ID_FIELD], json!(memory));
+        }
     }
 
     /// ADR-0068 D-E: only a chunk point carries `card_profile_hash` / `chunk_ordinal`; the legacy body is the

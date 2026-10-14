@@ -549,7 +549,7 @@ It writes, in ONE transaction, the owner user (email stored unverified, §74 is 
 (`onboarding_name` = `--name`, the idempotency key), the OWNER membership, the reasoning domain, the entitlement
 snapshot, the TENANT + two PURPOSE tiers, the workspace in `PROVISIONING` with its OWNER workspace membership and
 zeroed checkpoint rows, the placement row and — only when the tenant was created — the API key; then issues the
-quota window, ensures the Qdrant collection with **both** payload indexes (`tenant_id`, `subject_ids`), and
+quota window, ensures the Qdrant collection with its three payload indexes (`tenant_id`, `subject_ids`, `memory_id`), and
 performs the VerifiedEmpty first activation (§6), which flips the workspace to `READY`. The receipt lists
 `tenant_id`, `workspace_id`, `owner_user_id`, `reasoning_domain_id`, `api_key.fingerprint`, `admission_tiers`,
 `placements`, `collection`, `activations[]` and `lifecycle`. **The API key is printed once**, as the line
@@ -562,7 +562,10 @@ More workspaces and users: `onboard workspace --tenant <id> --name <n> --owner <
 <id> --email <e> --role OWNER|ADMIN|MEMBER [--workspace <id>]`. Repair steps after an interrupted run:
 `placement ensure --tenant <id>`, `collection ensure`, `activate --tenant <id> --workspace <id>`; `status --tenant
 <id>` shows workspaces + lifecycle, families, activation receipts, placement, key prefixes and tiers. A collection
-created before card 24 lacks the `subject_ids` index; `collection ensure` PUTs both indexes idempotently.
+created before card 24 lacks the `subject_ids` index, and one created before card 40d-1c-i lacks the `memory_id` keyword
+index (ADR-0068 D-E); `collection ensure` PUTs every index idempotently. Until it does, the collection's generation
+reads `collection_misconfigured` (a rebuild verify's E1 and onboarding both refuse), so run it once after deploying
+40d-1c-i.
 
 ## 4. Environment
 

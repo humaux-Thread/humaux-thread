@@ -71,7 +71,7 @@ no INSERT of its own for tenant, users, workspaces, keys, tiers or placement). I
 `deploy-init` (GLOBAL/REGION tiers for `--embedding-provider`/`--embedding-region`, 1e9, never
 torn down), onboards a tenant named `e2e-seed-<uuid>` (owner `e2e-seed-<uuid>@e2e.invalid`,
 stored unverified), issues the quota window, adds `--workspaces` 2..n with their own keys,
-ensures the Qdrant collection with **both** payload indexes (`tenant_id`, `subject_ids`) and then
+ensures the Qdrant collection with its three payload indexes (`tenant_id`, `subject_ids`, `memory_id`) and then
 **activates every workspace empty (VerifiedEmpty)** — a seeded workspace is `READY` and serving
 before any write, so the rehearsal's later `projection-serve` calls print "already serving" and
 exit 0. Only the BYOK distill lane (`seed_lane`, TEST health rows, not production) is still
