@@ -476,6 +476,28 @@ Two facts frame every decision:
   test (research batch 12's L=6 counterexample) so Qdrant's bounded group search is documented by CI, not assumed.
   Until then `candidate_count` is the number of groups returned in grouped mode.
 
+**40d-1c-iii as shipped (the bounded refill).**
+
+- **Budget (decision).** The total stays `cand_k` Memories across every grouped call (research batch 12's "keep the
+  first-round budget" branch): a refill spends only what Qdrant left unreturned, never a second budget. So the PG
+  gate's drops are absorbed, as before, by the `cand_k = 5 × top_k` over-fetch, and the refill exists for one
+  failure only — Qdrant's bounded group search coming back short while more qualifying Memories exist.
+- **Refill.** `qdrant::query_dense_groups_bounded`: when a grouped call returns fewer groups than `limit`, the next
+  asks for the remainder with a `must_not` on `memory_id` naming every Memory already returned
+  (`DenseQuery::refill`); at most `RETRIEVAL_GROUP_QUERY_MAX_CALLS` = 3 calls (`contracts::retrieval_config`, next to
+  the `cand_k` multiplier), stopping at the first call that adds nothing. A refill that returns a Memory or a point
+  already seen is an unexpected shape, never merged. The `match any` list is at most `cand_k` ≤ 200 ids; a Qdrant
+  that refuses it fails the call loudly.
+- **Mislabeled groups.** Excluding by `memory_id` cannot tell a mislabeled point from its group, so a group whose
+  representative the PG gate later rejects as mislabeled is not re-queried in the same recall; the inconsistency is
+  logged (40d-1c-ii) and the rebuild verifier's E4 names the point's payload. Declared, not refilled.
+- **Gates.** `bounded_group_search_is_refilled` (`adapters::tests::qdrant_live`, real Qdrant, pins research batch 12's
+  counterexample: one call returns five of six qualifying Memories, the refill returns the sixth) and
+  `grouped_refill_excludes_the_memories_already_seen` (`adapters::qdrant`).
+- **Left.** The D-E count fields (`candidate_point_count`, `candidate_memory_count`, `eligible_memory_count`,
+  `returned_count`, a `truncated` reason) — a wire change of their own, with the 40d-2 enabling eval; until then
+  `candidate_count` is the number of groups returned across the calls.
+
 ## Slices
 
 | slice | scope | L-4 |

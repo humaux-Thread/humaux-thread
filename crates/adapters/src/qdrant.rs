@@ -727,6 +727,19 @@ pub fn tombstoned_seq_overlay_filter(base_filter: Value, tombstoned_seqs: &[i64]
     )
 }
 
+/// ADR-0068 D-E: a grouped refill's exclusion of the Memories already returned, by their `memory_id` payload, in the
+/// same `must_not` fold as the overlays. A no-op when `seen` is empty (every non-refill query).
+fn seen_memory_filter(base_filter: Value, seen: &[Uuid]) -> Value {
+    if seen.is_empty() {
+        return base_filter;
+    }
+    let ids: Vec<String> = seen.iter().map(Uuid::to_string).collect();
+    fold_must_not(
+        base_filter,
+        json!({ "key": MEMORY_ID_FIELD, "match": { "any": ids } }),
+    )
+}
+
 /// The one `must_not` fold both overlay builders share — appending to an existing `must_not`
 /// array rather than replacing it, so folding two overlays into one filter keeps both.
 fn fold_must_not(base_filter: Value, condition: Value) -> Value {
@@ -1278,6 +1291,8 @@ pub struct DenseQuery {
     tombstoned: Vec<PointId>,
     /// ADR-0055 D-B: §37 `TOMBSTONED` stream seqs, folded as the `source_stream_seq` overlay.
     tombstoned_seqs: Vec<i64>,
+    /// ADR-0068 D-E: Memories a grouped refill excludes (`must_not` on [`MEMORY_ID_FIELD`]); empty otherwise.
+    seen_memories: Vec<Uuid>,
     ha_profile: HaConsistencyProfile,
 }
 
@@ -1348,6 +1363,7 @@ impl DenseQuery {
             limit,
             tombstoned,
             tombstoned_seqs: Vec::new(),
+            seen_memories: Vec::new(),
             ha_profile,
         })
     }
@@ -1391,6 +1407,15 @@ impl DenseQuery {
         self.tombstoned_seqs = tombstoned_seqs;
         self
     }
+
+    /// ADR-0068 D-E: the refill of a grouped query — the same query with `limit` groups, excluding every Memory in
+    /// `seen` by its `memory_id` payload.
+    fn refill(&self, seen: &[Uuid], limit: u32) -> Self {
+        let mut next = self.clone();
+        next.limit = limit;
+        next.seen_memories = seen.to_vec();
+        next
+    }
 }
 
 /// ADR-0068 D-E: [`dense_query_body`] grouped by [`MEMORY_ID_FIELD`], one hit per group, so `limit` counts Memories
@@ -1410,9 +1435,12 @@ pub fn dense_group_query_body(query: &DenseQuery) -> Value {
 pub fn dense_query_body(query: &DenseQuery) -> Value {
     let mut body = json!({
         "query": query.vector,
-        "filter": tombstoned_seq_overlay_filter(
-            overlay_filter(condition_to_filter(&query.filter), &query.tombstoned),
-            &query.tombstoned_seqs,
+        "filter": seen_memory_filter(
+            tombstoned_seq_overlay_filter(
+                overlay_filter(condition_to_filter(&query.filter), &query.tombstoned),
+                &query.tombstoned_seqs,
+            ),
+            &query.seen_memories,
         ),
         "limit": query.limit,
         "with_payload": false,
@@ -1558,6 +1586,40 @@ pub async fn query_dense_groups(
     )
     .await?;
     parse_group_candidates(&result, query.limit)
+}
+
+/// ADR-0068 D-E: [`query_dense_groups`] with a bounded refill. Qdrant's group search is bounded (research batch 12:
+/// it can return fewer groups than `limit` while more qualifying Memories exist), so when a call comes back short
+/// the next one asks for the remainder, excluding every Memory already returned; at most `max_calls` calls, and it
+/// stops at the first call that adds nothing. The total stays `query.limit` groups. A refill that returns a Memory
+/// or a point already seen is an unexpected shape, never merged.
+pub async fn query_dense_groups_bounded(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    query: &DenseQuery,
+    max_calls: u32,
+) -> Result<Vec<DenseCandidate>, QdrantTransportError> {
+    let mut found = query_dense_groups(transport, permit, query).await?;
+    let mut calls = 1;
+    while calls < max_calls && found.len() < query.limit as usize {
+        let seen: Vec<Uuid> = found.iter().filter_map(|c| c.memory_id).collect();
+        let remaining = query.limit - found.len() as u32;
+        let more = query_dense_groups(transport, permit, &query.refill(&seen, remaining)).await?;
+        calls += 1;
+        if more.is_empty() {
+            break;
+        }
+        if more.iter().any(|c| {
+            c.memory_id.is_some_and(|m| seen.contains(&m))
+                || found.iter().any(|f| f.point_id == c.point_id)
+        }) {
+            return Err(QdrantTransportError::UnexpectedResponseShape(
+                "grouped refill returned a Memory or point already seen".to_owned(),
+            ));
+        }
+        found.extend(more);
+    }
+    Ok(found)
 }
 
 /// Executes one permit-bound dense query. This never substitutes scroll for nearest-neighbour
@@ -2026,6 +2088,31 @@ mod lifecycle_prefilter_tests {
         assert_eq!(groups["group_size"], json!(1));
         assert_eq!(groups["limit"], points["limit"]);
         assert_eq!(groups["filter"], points["filter"]);
+    }
+
+    /// ADR-0068 D-E: a refill asks for the remaining groups and folds one `must_not` on `memory_id` naming every
+    /// Memory already returned, next to the overlays; the first query carries no such clause. Fault: drop the fold (or
+    /// the new `limit`) ⇒ red.
+    #[test]
+    fn grouped_refill_excludes_the_memories_already_seen() {
+        let query = query();
+        let seen = [Uuid::now_v7(), Uuid::now_v7()];
+        let first = dense_group_query_body(&query);
+        let refill = dense_group_query_body(&query.refill(&seen, 3));
+        let exclusion = json!({
+            "key": MEMORY_ID_FIELD,
+            "match": { "any": [seen[0].to_string(), seen[1].to_string()] }
+        });
+        let must_not = |body: &Value| {
+            body["filter"]["must_not"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert!(!must_not(&first).contains(&exclusion));
+        assert!(must_not(&refill).contains(&exclusion), "{refill}");
+        assert_eq!(refill["limit"], json!(3));
+        assert_eq!(refill["group_by"], json!(MEMORY_ID_FIELD));
     }
 
     /// ADR-0068 D-E: the group parser keeps Qdrant's order and tags each hit with its group, and refuses — never

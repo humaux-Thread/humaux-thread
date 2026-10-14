@@ -22,6 +22,9 @@ const PRODUCTION_ENABLED: &str = "retrieval.profile.production_enabled";
 /// §55.6's registered-profile candidate-depth multiplier. Request construction imports this
 /// constant so typed validation and the derived `cand_k` formula cannot drift.
 pub const RETRIEVAL_CANDIDATE_MULTIPLIER: u32 = 5;
+/// ADR-0068 D-E: the most grouped dense calls one recall makes — the first plus at most two refills of the groups
+/// Qdrant's bounded group search left short of `cand_k`. The budget stays `cand_k` Memories across every call.
+pub const RETRIEVAL_GROUP_QUERY_MAX_CALLS: u32 = 3;
 
 /// The transform that §55.1 places on a request after profile resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

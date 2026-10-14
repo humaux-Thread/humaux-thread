@@ -27,7 +27,8 @@ use humaux_adapters::qdrant::{
     DenseQuery, DenseQueryVersions, Distance, IndexablePayload, PointId, QdrantOperation,
     QdrantPointPayload, ShardingMethod, TenantPlacementRow, VisibleCountFilter, count,
     create_collection_body, ha_profile_for, memory_id_index_body, query_dense, query_dense_groups,
-    scroll_by_ids, subject_index_body, tenant_index_body, upsert, verify_visible_via_transport,
+    query_dense_groups_bounded, scroll_by_ids, subject_index_body, tenant_index_body, upsert,
+    verify_visible_via_transport,
 };
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
@@ -804,6 +805,174 @@ async fn one_long_note_cannot_monopolize_candidates() {
             .map(|m| Some(m.0))
             .collect();
         assert_eq!(memories, want, "four distinct Memories, best first");
+    });
+    let primary = primary.await;
+    let cleanup = delete_test_collection(&transport, &permit, &collection).await;
+    match primary {
+        Ok(()) => cleanup.expect("test collection cleanup must succeed"),
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => panic!("qdrant live test task was cancelled: {error}"),
+    }
+}
+
+/// ADR-0068 gate `bounded_group_search_is_refilled` (D-E), pinning research batch 12's counterexample against the real
+/// Qdrant CI runs: six Memories qualify — A with 36 top points, B..E with 6 each in lower bands, F with one point
+/// below them. One grouped call with `limit` 6 returns only A..E (Qdrant's bounded discover rounds spend themselves
+/// on A's chunks), and the bounded refill recovers F. Faults: no refill (one call) ⇒ five groups ⇒ red; a refill that
+/// does not exclude the Memories already seen ⇒ it returns one again ⇒ unexpected shape ⇒ red.
+// One spawned body (collection, points, both queries) so a panic still reaches the collection cleanup below.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn bounded_group_search_is_refilled() {
+    if !qdrant_reachable() {
+        skip_or_fail(
+            "bounded_group_search_is_refilled",
+            &format!("missing object: live Qdrant server at {}", qdrant_addr()),
+            ExternalDep::Qdrant,
+        );
+        return;
+    }
+    let registry = registry(
+        CellId(Uuid::now_v7()),
+        CallerId("qdrant-live-test".to_string()),
+    );
+    let transport = Arc::new(
+        HttpIntraCellTransport::new(
+            registry.clone(),
+            Duration::from_secs(10),
+            humaux_infra_cell::DEFAULT_MAX_RESPONSE_BYTES,
+        )
+        .expect("client builds"),
+    );
+    let permit = authorize_cell_access(
+        &registry,
+        IntraCellResource::QDRANT_REST,
+        Duration::from_secs(60),
+    )
+    .expect("same-cell, allowlisted caller must mint");
+    let collection = format!("c40d_refill_{}", Uuid::now_v7().simple());
+    let (body_transport, body_registry, body_collection) =
+        (Arc::clone(&transport), registry.clone(), collection.clone());
+    let primary = tokio::spawn(async move {
+        let (transport, collection) = (body_transport, body_collection);
+        let permit = authorize_cell_access(
+            &body_registry,
+            IntraCellResource::QDRANT_REST,
+            Duration::from_secs(60),
+        )
+        .expect("body permit");
+        put_json(
+            &transport,
+            &permit,
+            format!("/collections/{collection}"),
+            create_collection_body(4, Distance::Cosine, 1, 1, 1, ShardingMethod::Auto),
+        )
+        .await;
+        for index in [tenant_index_body(), memory_id_index_body()] {
+            put_json(
+                &transport,
+                &permit,
+                format!("/collections/{collection}/index"),
+                index,
+            )
+            .await;
+        }
+        let tenant_id = TenantId::new();
+        let payload = |memory_id: MemoryId| {
+            QdrantPointPayload {
+                memory_id,
+                tenant_id,
+                workspace_id: WorkspaceId::new(),
+                visibility_class: VisibilityClass::TenantShared,
+                visibility_user_id: None,
+                visibility_workspace_id: None,
+                object_type: "memory_record".to_string(),
+                memory_type: MemoryType::Note,
+                status: AuthorityStatus::Active,
+                authority: AuthorityClass::PrivateKnowledge,
+                created_at: OffsetDateTime::now_utc(),
+                effective_at: OffsetDateTime::now_utc(),
+                embedding_version: "v1".to_string(),
+                projection_version: "v1".to_string(),
+                source_stream_seq: 1,
+                data_class: DataClass::Internal,
+                egress_disposition: EgressDisposition::Allowed,
+            }
+            .into_indexable()
+            .expect("indexable")
+        };
+        // (Memory, points, band): cosine to [1, 0, 0, 0] falls as the second component grows, so each band is
+        // strictly below the one before it.
+        let memories: Vec<MemoryId> = (0..6).map(|_| MemoryId::new()).collect();
+        let payloads: Vec<_> = memories.iter().map(|m| payload(*m)).collect();
+        let bands: [(usize, f32); 6] =
+            [(36, 0.0), (6, 1.0), (6, 2.0), (6, 3.0), (6, 4.0), (1, 6.0)];
+        let mut rows = Vec::new();
+        for (memory, (points, band)) in bands.iter().enumerate() {
+            for i in 0..*points {
+                let jitter = 0.001 * f32::from(u8::try_from(i).expect("small"));
+                rows.push((
+                    PointId::Uuid(Uuid::now_v7()),
+                    &payloads[memory],
+                    vec![1.0, band + jitter, 0.0, 0.0],
+                ));
+            }
+        }
+        upsert(
+            transport.as_ref(),
+            &permit,
+            &collection,
+            &rows,
+            ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+        )
+        .await
+        .expect("points upsert");
+        let scope = AuthorizationScope::new(
+            tenant_id,
+            PrincipalId::new(),
+            None,
+            BoundedSet::new(Vec::<WorkspaceId>::new()).expect("empty workspace set is valid"),
+        );
+        let placement = TenantPlacementRow {
+            tenant_id,
+            projection_family: humaux_adapters::qdrant::RetrievalFamily::PrivateMemoryV1,
+            collection_name: collection.clone(),
+            shard_key: None,
+            placement_class: humaux_adapters::qdrant::PlacementClass::SharedFallback,
+            point_count: 61,
+            bytes_estimate: 0,
+            promotion_state: humaux_adapters::qdrant::PromotionState::Stable,
+        };
+        let query = DenseQuery::new(
+            &scope,
+            &placement,
+            DenseQueryVersions {
+                projection: "v1",
+                embedding: "v1",
+            },
+            vec![1.0, 0.0, 0.0, 0.0],
+            6,
+            vec![],
+            ha_profile_for(QdrantOperation::ReadYourWriteStrict),
+        )
+        .expect("typed dense query");
+        let order = |found: &[humaux_adapters::qdrant::DenseCandidate]| -> Vec<Option<Uuid>> {
+            found.iter().map(|c| c.memory_id).collect()
+        };
+        let want: Vec<Option<Uuid>> = memories.iter().map(|m| Some(m.0)).collect();
+
+        let once = query_dense_groups(transport.as_ref(), &permit, &query)
+            .await
+            .expect("one grouped call");
+        assert_eq!(
+            order(&once),
+            want[..5].to_vec(),
+            "pin: one bounded group search misses F (if Qdrant now finds it, update research batch 12)"
+        );
+        let refilled = query_dense_groups_bounded(transport.as_ref(), &permit, &query, 3)
+            .await
+            .expect("bounded refill");
+        assert_eq!(order(&refilled), want, "the refill recovers F");
     });
     let primary = primary.await;
     let cleanup = delete_test_collection(&transport, &permit, &collection).await;
