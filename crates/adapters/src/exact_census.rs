@@ -32,7 +32,7 @@
 //! [`StreamKey`] (`ops.outbox` is written in the same transaction as the seq issuance, §60, so
 //! the mapping shares the write's atomicity).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
@@ -293,6 +293,7 @@ struct CandidateQuery<'a> {
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
     notes: &'a NoteEnumerationFilter,
+    readable: Option<&'a HashSet<Uuid>>,
 }
 
 async fn authorized_candidate_ids(
@@ -333,10 +334,16 @@ async fn authorized_candidate_ids(
             .map_err(|_| ErrorCode::Internal)?,
         Err(_) => return Err(ErrorCode::Internal),
     };
-    let mut authorized_ids: Vec<_> = readable_memory_ids(txn, query.authorization, &candidates)
-        .await?
-        .into_iter()
-        .collect();
+    let mut authorized_ids: Vec<_> = match query.readable {
+        Some(readable) => candidates
+            .into_iter()
+            .filter(|id| readable.contains(id))
+            .collect(),
+        None => readable_memory_ids(txn, query.authorization, &candidates)
+            .await?
+            .into_iter()
+            .collect(),
+    };
     authorized_ids.sort_unstable();
     Ok(authorized_ids)
 }
@@ -411,6 +418,12 @@ pub struct CensusInputs<'a> {
     /// ADR-0067 D-G / D-J2: the note axes (kinds, `occurred_at` window, note) and the lifecycle selection, bound on
     /// every statement; the default is "no note axis" under [`Lifecycle::CURRENT`].
     pub notes: &'a NoteEnumerationFilter,
+    /// ADR-0071 D-C: the `can_read` set the caller's shared final gate already computed IN THIS SNAPSHOT over a superset
+    /// of this census's candidates (`memory.enumerate`'s mint: same scope and predicate without the stream overlay).
+    /// The census then narrows its own candidates by membership instead of re-reading evidence visibility. `None` =
+    /// run [`readable_memory_ids`] here. A candidate outside the set is dropped, so a mismatch shrinks the census and
+    /// fails the mint's set-equality cross-check — never a wider universe.
+    pub readable: Option<&'a HashSet<Uuid>>,
 }
 
 /// §22.1 census inside a transaction the caller owns (isolation level and the RLS GUCs are
@@ -470,6 +483,7 @@ async fn census_readout_in_savepoint(
         subject_id: inputs.subject_id,
         before_id: inputs.before_id,
         notes: inputs.notes,
+        readable: inputs.readable,
     };
     let authorized_ids = authorized_candidate_ids(sp, &candidate_query)
         .await
@@ -556,6 +570,7 @@ pub async fn exact_enumerate(
             subject_id: None,
             before_id: None,
             notes: &registry_axes,
+            readable: None,
         },
     )
     .await;

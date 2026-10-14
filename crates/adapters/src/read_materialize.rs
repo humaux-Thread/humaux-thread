@@ -289,6 +289,29 @@ pub(crate) async fn final_memory_ids_about_in_txn(
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
 ) -> Result<Vec<Uuid>, ErrorCode> {
+    final_memory_ids_with_readable_in_txn(
+        txn,
+        authorization,
+        candidates,
+        lifecycle,
+        subject_ids,
+        affect,
+    )
+    .await
+    .map(|(survivors, _)| survivors)
+}
+
+/// [`final_memory_ids_about_in_txn`], also handing back the `can_read` set ([`readable_memory_ids`]) it computed over
+/// `candidates`. ADR-0071 D-C: `memory.enumerate`'s mint passes that set to its §22.1 census, whose candidates are a
+/// subset of these in the same snapshot, instead of the census re-running the evidence-visibility read.
+pub(crate) async fn final_memory_ids_with_readable_in_txn(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    candidates: &[Uuid],
+    lifecycle: Lifecycle,
+    subject_ids: &[SubjectId],
+    affect: Option<&AffectFilter>,
+) -> Result<(Vec<Uuid>, HashSet<Uuid>), ErrorCode> {
     let readable = readable_memory_ids(txn, authorization, candidates).await?;
     let subject_filter: Option<Vec<Uuid>> =
         (!subject_ids.is_empty()).then(|| subject_ids.iter().map(|s| s.0).collect());
@@ -364,7 +387,7 @@ pub(crate) async fn final_memory_ids_about_in_txn(
         );
         survivors.retain(|id| matching.contains(id));
     }
-    Ok(survivors)
+    Ok((survivors, readable))
 }
 
 async fn load_memories(

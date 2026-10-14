@@ -56,10 +56,10 @@ use crate::exact_census::{CensusInputs, bind_note_axes, census_in_txn, note_axes
 use crate::postgres::RuntimeDbPool;
 use crate::quota_repo::{self, ReservationStatus, ReserveResult};
 use crate::read_materialize::{
-    Lifecycle, MaterializedBodies, MaterializedItem, MemoryHistory, final_memory_ids_about_in_txn,
-    materialize_final_bodies_in_txn, materialize_one_memory_in_txn,
-    materialize_selected_bodies_in_txn, memory_history_in_txn, memory_note_kinds_in_txn,
-    memory_versions_in_txn,
+    Lifecycle, MaterializedBodies, MaterializedItem, MemoryHistory,
+    final_memory_ids_with_readable_in_txn, materialize_final_bodies_in_txn,
+    materialize_one_memory_in_txn, materialize_selected_bodies_in_txn, memory_history_in_txn,
+    memory_note_kinds_in_txn, memory_versions_in_txn,
 };
 use crate::request_guard_repo::{self, AuditTenant};
 use crate::selection_repo::{
@@ -1704,7 +1704,7 @@ async fn census_mint_barrier_in_txn(txn: &mut Txn<'_>) -> Result<(), ErrorCode> 
 
 /// Runs the §22.1 census for the authorized universe this manifest is being minted from, in
 /// the SAME transaction (and therefore the same snapshot) as `universe` — the id list
-/// `final_memory_ids_about_in_txn` just produced.
+/// `final_memory_ids_with_readable_in_txn` just produced (with the `can_read` set it computed, ADR-0071 D-C).
 ///
 /// `universe` is not the source of any count (§22.1: "禁止用召回条数冒充 `total`" — the three
 /// statements inside the census do their own `count(*)`). It is the cross-check: the census
@@ -1729,6 +1729,7 @@ async fn mint_census_in_txn(
     stream: &StreamKey,
     filter: EnumerationFilter<'_>,
     universe: &[Uuid],
+    readable: &HashSet<Uuid>,
 ) -> Result<Option<FrozenCensus>, ErrorCode> {
     let outcome = census_in_txn(
         txn,
@@ -1742,6 +1743,7 @@ async fn mint_census_in_txn(
             subject_id: filter.subject_id,
             before_id: filter.before_id,
             notes: filter.notes,
+            readable: Some(readable),
         },
     )
     .await?;
@@ -1835,7 +1837,7 @@ async fn mint_segment_in_txn(
         .collect::<Result<Vec<Uuid>, ErrorCode>>()?;
     // ADR-0067 D-J2: the final gate runs the request's selection, so a superseded or archived row the predicate
     // selected is not dropped here (and recall's `CURRENT` face is untouched).
-    let ids = final_memory_ids_about_in_txn(
+    let (ids, readable) = final_memory_ids_with_readable_in_txn(
         txn,
         authorization,
         &candidates,
@@ -1851,7 +1853,16 @@ async fn mint_segment_in_txn(
     // read below it (§22.1's "与返回项取同一事务快照").
     let census = match scope.workspace_id {
         Some(workspace) => {
-            mint_census_in_txn(txn, authorization, workspace, validated_key, filter, &ids).await?
+            mint_census_in_txn(
+                txn,
+                authorization,
+                workspace,
+                validated_key,
+                filter,
+                &ids,
+                &readable,
+            )
+            .await?
         }
         // No workspace means no `$2` for the enumerable scope — there is no universe to
         // count, so nothing is claimed (never a total of 0).
