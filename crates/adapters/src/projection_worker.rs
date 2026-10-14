@@ -2,14 +2,15 @@
 //!   memories per §17.4's contract, restated verbatim in the task card: "upsert -> await/verify search-visible
 //!   according to adapter policy -> commit stream checkpoint".
 //! Depends-on: crates=[async-trait, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection,
-//!   serde_json, sha2, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects, private.memory_evidence,
-//!   private.memory_records, private.memory_subjects, projection.embedding_fingerprints, projection.memory_vectors]
+//!   serde_json, sha2, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects,
+//!   private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects,
+//!   projection.card_profile_policies, projection.embedding_fingerprints, projection.memory_vectors]
 //!   w=[ops.outbox, projection.stream_log],
 //!   PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::affect_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::qdrant, adapters::remember, adapters::stream_repo,
 //!   domain::affect, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
 //!   domain::ids, domain::memory, domain::subject, humaux-local-secret-scan, infra-cell::permit,
-//!   infra-cell::transport, projection::card, projection::serving, projection::stream]
+//!   infra-cell::transport, projection::card, projection::note_chunks, projection::serving, projection::stream]
 //! Called-by: [adapters::rebuild, maintenance::drill, retrieval-worker::main, tests]
 //! Invariants: [run_claimed_pass claims across tenants by lease and processes one family's tickets sequentially in one
 //!   worker; every family a pass holds is lease-renewed while any of them is worked; per row: resolve bound memories,
@@ -23,9 +24,14 @@
 //!   under the worker label's fingerprint and the same input bytes is never sealed or embedded again, and every
 //!   vector that is embedded is stored in the registry transaction (ADR-0064 D-B); run_claimed_pass_for_run claims
 //!   only the generation tickets of one rebuild run (ADR-0064 D-N(g)); expected_points is the rebuild verifier's
-//!   Project(PG) with the same card and payload builders, read in a READ ONLY projector transaction (ADR-0064 D-F)]
+//!   Project(PG) with the same card and payload builders, read in a READ ONLY projector transaction (ADR-0064 D-F);
+//!   every Memory is planned by build_projection_plan under the projection's policy, read once per pass (ADR-0068
+//!   D-A/D-I); a chunked note's whole source is sealed before any of its chunk cards and before any provider call
+//!   (ADR-0068 D-G); one distinct vector key is embedded once and mapped to its slots by key (ADR-0068 D-F); a Memory
+//!   counts toward DONE only when every one of its slots is registered and confirmed visible, and a chunked note's
+//!   legacy point retires only in that same completion step (ADR-0068 D-F/D-I)]
 //! Spec: Baseline §4.2; §15.1; §17.4; §18.2; §15.7; §6.1.2; ADR-0052; ADR-0057; ADR-0064 D-B; ADR-0064 D-F;
-//!   ADR-0064 D-N
+//!   ADR-0064 D-N; ADR-0068
 //!
 //! §4.2 (line 818): there is no separate `projection-worker` process — this is
 //! `humaux-retrieval-worker`'s own consumer loop, owned by `role_retrieval_worker`.
@@ -45,8 +51,9 @@
 //! `ops.outbox`/`private.memory_evidence` (see `resolve_memories`: one Evidence routinely
 //! carries N memories, and card 9 reported that only the first one used to be projected) (c)
 //! the stored vectors of the cards (ADR-0064 D-B, stored-first: when every card has one, (c') is skipped) (c')
-//! seal + `embed_cards` (one batched call for the whole Evidence) (d) reject a short batch or a
-//! dimension mismatch (e) build a `QdrantPointPayload` per memory (f)
+//! seal + `embed_cards` (one batched call for the whole Evidence, one input per distinct vector key; a chunked note's
+//! whole source is sealed first, ADR-0068 D-G) (d) reject a short batch or a
+//! dimension mismatch (e) build a `QdrantPointPayload` per memory, one point per expected slot (f)
 //! [`crate::qdrant::upsert_fenced`] (g)
 //! [`crate::private_projection_registry::register_private_memory_point_with_vector`] (the vector and the binding
 //! in one transaction)
@@ -113,6 +120,7 @@
 //! "stream-routing binding, not Evidence visibility" reasoning). A `"tenant"`-scoped family is
 //! rejected with [`ErrorCode::InvalidInput`] before any row is touched.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -130,9 +138,13 @@ use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_domain::memory::MemoryType;
 use humaux_domain::subject::SubjectId;
 use humaux_infra_cell::{CellAccessPermit, IntraCellHttpTransport};
-use humaux_local_secret_scan::{LocalSecretScanner, SealedRetrievalCard};
+use humaux_local_secret_scan::{LocalSecretScanner, SealedRetrievalCard, SealedSource};
 use humaux_projection::card::{
     CardBudget, CardBuildOutcome, CardInput, EgressDisposition, RetrievalCard, build_card,
+};
+use humaux_projection::note_chunks::{
+    LEGACY_CARD_PROFILE_HASH, NoteChunkPolicy, PlanInput, ProjectionPlan, UnknownNoteChunkProfile,
+    build_projection_plan, chunk_card,
 };
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
@@ -144,7 +156,7 @@ use sqlx::types::time::OffsetDateTime;
 use crate::postgres::RetrievalWorkerDbPool;
 use crate::private_projection_registry::{
     self, PrivateMemoryPointRegistration, PrivateProjectionRegistryError, RegistrationOutcome,
-    StoredVector, retire_points_for_memory,
+    StoredVector, retire_legacy_point_for_memory, retire_points_for_memory,
 };
 use crate::qdrant::{
     self, IndexablePayload, PointId, QdrantOperation, QdrantPointPayload, TenantPlacementRow,
@@ -336,10 +348,12 @@ struct RowCtx<'a> {
     embedding_version: &'a str,
     projection_version: &'a str,
     dimension: u32,
+    /// ADR-0068 D-I: the projection's note chunk policy, read once per pass ([`pass_policy`]).
+    policy: NoteChunkPolicy,
 }
 
 impl<'a> RowCtx<'a> {
-    fn of(deps: &'a ProjectionWorkerDeps) -> Self {
+    fn of(deps: &'a ProjectionWorkerDeps, policy: NoteChunkPolicy) -> Self {
         Self {
             pool: &deps.pool,
             embedder: deps.embedder.as_ref(),
@@ -351,8 +365,70 @@ impl<'a> RowCtx<'a> {
             embedding_version: &deps.embedding_version,
             projection_version: &deps.projection_version,
             dimension: deps.dimension,
+            policy,
         }
     }
+}
+
+/// ADR-0068 D-I: the projection's `note_chunk_profile_hash` row — `None` = no row, `Some(None)` = NULL (legacy only).
+pub async fn card_profile_policy_row(
+    pool: &RetrievalWorkerDbPool,
+    domain: &str,
+    projection_kind: &str,
+    projection_version: &str,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT note_chunk_profile_hash FROM projection.card_profile_policies \
+          WHERE domain = $1 AND projection_kind = $2 AND projection_version = $3",
+    )
+    .bind(domain)
+    .bind(projection_kind)
+    .bind(projection_version)
+    // dep: PostgreSQL(role_retrieval_worker) — the projection's note chunk policy row (ADR-0068 D-I)
+    .fetch_optional(pool.pool())
+    .await
+}
+
+/// ADR-0068 D-I, the boot check of the binary's own projection: `None` when the row exists and its hash (NULL
+/// included) names a profile this build knows; otherwise the refusal line (exit 2, an operator must change
+/// something). A missing row is refused here, never read as legacy: migration 0238 seeds the serving projection's
+/// row, so its absence is a broken deployment, and a worker that guessed would build slots the ledger does not count.
+pub fn note_chunk_policy_refusal(row: Option<Option<&str>>) -> Option<String> {
+    match row {
+        None => Some(
+            "boot refused: card_profile_policy_missing: the projection has no card profile policy row \
+             (ADR-0068 D-I)"
+                .to_owned(),
+        ),
+        Some(hash) => NoteChunkPolicy::from_profile_hash(hash).err().map(
+            |UnknownNoteChunkProfile(hash)| {
+                format!(
+                    "boot refused: card_profile_policy_unknown: note chunk profile {hash:?} is not \
+                     a profile this build knows (ADR-0068 D-I)"
+                )
+            },
+        ),
+    }
+}
+
+/// ADR-0068 D-I: the policy one pass plans under, read before anything is claimed. A missing row reads as NULL, as
+/// the ledger reads the same row (the binary refuses a missing row of its own projection at boot); a hash this build
+/// does not know refuses the pass (`InvalidInput`) before any ticket is touched.
+async fn pass_policy(
+    pool: &RetrievalWorkerDbPool,
+    domain: &str,
+    projection_kind: &str,
+    projection_version: &str,
+) -> Result<NoteChunkPolicy, ErrorCode> {
+    let row = card_profile_policy_row(pool, domain, projection_kind, projection_version)
+        .await
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    NoteChunkPolicy::from_profile_hash(row.flatten().as_deref()).map_err(
+        |UnknownNoteChunkProfile(hash)| {
+            eprintln!("projection_worker: card_profile_policy_unknown hash={hash:?}");
+            ErrorCode::InvalidInput
+        },
+    )
 }
 
 /// Sets `humaux.tenant_id` for the remainder of `txn` — same technique as
@@ -480,6 +556,9 @@ pub(crate) struct ResolvedMemory {
     /// ADR-0055 D-B: `archived_at IS NOT NULL`, read here so every ticket that re-projects the
     /// memory writes the current flag (no transition-specific ticket exists or is needed).
     archived: bool,
+    /// ADR-0068 D-A: the Memory is the output of an identity contract
+    /// (`identity_note_materializations.output_memory_id`), read in the same statement as the row.
+    is_identity_note: bool,
 }
 
 /// (b): resolves the Memories one `stream_log` row's bound Evidence carries, through
@@ -510,7 +589,10 @@ pub(crate) async fn resolve_memories(
                 m.visibility_workspace_id, m.memory_type, m.status, m.authority_class, \
                 m.occurred_at, m.effective_from, m.created_at, m.updated_at, eo.data_class, \
                 m.archived_at IS NOT NULL AS archived, \
-                sha256(convert_to(m.content::text, 'UTF8')) AS body_sha256 \
+                sha256(convert_to(m.content::text, 'UTF8')) AS body_sha256, \
+                EXISTS (SELECT 1 FROM private.identity_note_materializations c \
+                         WHERE c.tenant_id = m.tenant_id AND c.output_memory_id = m.memory_id) \
+                  AS is_identity_note \
          FROM ops.outbox ob \
          JOIN private.memory_evidence me ON me.evidence_id = ob.evidence_id \
          JOIN private.memory_records m ON m.memory_id = me.memory_id \
@@ -596,6 +678,7 @@ async fn parse_resolved_memory(
         subject_ids,
         affects,
         archived: row.try_get("archived")?,
+        is_identity_note: row.try_get("is_identity_note")?,
     }))
 }
 
@@ -603,7 +686,8 @@ fn extract_str(value: &serde_json::Value, key: &str) -> Option<String> {
     value.get(key).and_then(|v| v.as_str()).map(str::to_owned)
 }
 
-/// Builds the [`CardInput`] this worker feeds [`build_card`] from a [`ResolvedMemory`].
+/// Builds the [`CardInput`] this worker plans from ([`build_projection_plan`]; the rebuild verifier feeds it to
+/// [`build_card`]) from a [`ResolvedMemory`].
 /// `content` is arbitrary `jsonb` (§8.5) — `title`/`key_claim`/`evidence_excerpt` are read as
 /// optional string fields on it, falling back to a truncated stringified `content` for `title`
 /// only (never for `key_claim`/`evidence_excerpt` — a missing one of those is a genuine §18.4
@@ -797,13 +881,8 @@ async fn process_row(
             other => return other,
         }
     }
-    for (memory, vector, input_sha256) in prepared.live {
-        let stored = prepared.fingerprint.map(|fingerprint_sha256| StoredVector {
-            fingerprint_sha256,
-            input_sha256,
-            vector: vector.clone(),
-        });
-        match finish_row(ctx, stream_seq, workspace_id, memory, vector, stored).await {
+    for live in prepared.live {
+        match finish_row(ctx, stream_seq, workspace_id, live, prepared.fingerprint).await {
             (RowTerminal::Done, _) => any_done = true,
             (RowTerminal::SkippedByPolicy, class) => {
                 skipped = Some((RowTerminal::SkippedByPolicy, class));
@@ -819,21 +898,67 @@ async fn process_row(
     }
 }
 
-/// What [`resolve_and_embed`] hands [`process_row`]: the live memories with their vectors and the
-/// sha256 of their card text, the memories whose ticket means retirement (ADR-0049), and the worker
-/// label's fingerprint. Never both empty.
+/// One expected point slot of a live memory (ADR-0068 D-C): its profile and ordinal, the card that fills it, and the
+/// sha256 of that card's text — the input half of the vector key (ADR-0064 D-B). `memory` indexes the [`Planned`]
+/// list it was built with.
+struct SlotCard {
+    memory: usize,
+    profile: &'static str,
+    ordinal: u32,
+    card: RetrievalCard,
+    input_sha256: [u8; 32],
+}
+
+impl SlotCard {
+    fn new(memory: usize, profile: &'static str, ordinal: u32, card: RetrievalCard) -> Self {
+        // ADR-0064 D-B: the embedded bytes are the card text (`seal_card` seals it unchanged).
+        let input_sha256 = Sha256::digest(card.card_text.as_bytes()).into();
+        Self {
+            memory,
+            profile,
+            ordinal,
+            card,
+            input_sha256,
+        }
+    }
+}
+
+/// A live memory the plan kept. `source` is `Some((title, body))` iff its profile is `NoteChunksV1`: the whole
+/// source ADR-0068 D-G seals before any of its chunk cards.
+struct Planned {
+    memory: ResolvedMemory,
+    source: Option<(String, String)>,
+}
+
+/// One slot of a [`LiveMemory`], ready to write: its identity, its input digest and its vector.
+struct LiveSlot {
+    profile: &'static str,
+    ordinal: u32,
+    input_sha256: [u8; 32],
+    vector: Vec<f32>,
+}
+
+/// A live memory with one entry per expected point slot (ADR-0068 D-F). `chunked` = profile `NoteChunksV1`: every
+/// slot gets a v2 id and chunk payload fields, and the completion step retires the legacy point.
+struct LiveMemory {
+    memory: ResolvedMemory,
+    chunked: bool,
+    slots: Vec<LiveSlot>,
+}
+
+/// What [`resolve_and_embed`] hands [`process_row`]: the live memories with every slot's vector, the memories whose
+/// ticket means retirement (ADR-0049), and the worker label's fingerprint. Never both empty.
 struct Prepared {
-    live: Vec<(ResolvedMemory, Vec<f32>, [u8; 32])>,
+    live: Vec<LiveMemory>,
     dead: Vec<ResolvedMemory>,
     /// ADR-0064 D-C: `None` only while the label is unbound — the retrieval worker binds it before
     /// its first pass, so a resident worker always has it; an unbound label stores no vector.
     fingerprint: Option<[u8; 32]>,
 }
 
-/// (b)-(d) of the module doc's per-row order: resolve the bound Evidence's Memories, build+seal
-/// each card, and embed them in ONE batch. Split out of [`process_row`] purely to stay under
-/// this repo's line-count lint — see that function for the full per-row order. Returns a
-/// non-empty vec or an `Err`.
+/// (b)-(d) of the module doc's per-row order: resolve the bound Evidence's Memories, plan each one's slots, and embed
+/// them in ONE batched call. Split out of [`process_row`] purely to stay under this repo's line-count lint — see that
+/// function for the full per-row order. Returns a non-empty vec or an `Err`.
 async fn resolve_and_embed(
     ctx: &RowCtx<'_>,
     workspace_id: WorkspaceId,
@@ -885,38 +1010,16 @@ async fn resolve_and_embed(
         .into_iter()
         .partition(|memory| memory.status != AuthorityStatus::Active);
 
-    // §18.2 `ExcludedSecret` is a property of ONE memory, not of the ticket: on an Evidence that
-    // carries a secret memory and an ordinary one, the ordinary one must still be indexed. Only
-    // an Evidence where NOTHING is indexable settles the row `SKIPPED_BY_POLICY`. `Unbuildable`
-    // stays a whole-row permanent failure — the stored record itself is malformed (§18.4).
-    let mut kept: Vec<ResolvedMemory> = Vec::with_capacity(memories.len());
-    let mut cards = Vec::with_capacity(memories.len());
-    for memory in memories {
-        match build_card(card_input(&memory, workspace_id), CardBudget::default()) {
-            CardBuildOutcome::Card(card) => {
-                cards.push(card);
-                kept.push(memory);
-            }
-            CardBuildOutcome::ExcludedSecret => {}
-            CardBuildOutcome::Unbuildable => {
-                return Err((RowTerminal::Failed, "card_unbuildable"));
-            }
-        }
-    }
-    // ADR-0064 D-B stored-first, in the same read transaction and before any sealing: the
-    // embedded bytes are the card text (`seal_card` seals it unchanged), so a stored vector under
-    // the label's fingerprint and the same sha256 IS this card's provider vector.
-    let inputs: Vec<[u8; 32]> = cards
-        .iter()
-        .map(|card| Sha256::digest(card.card_text.as_bytes()).into())
-        .collect();
-    let (fingerprint, stored) = stored_vectors(&mut txn, ctx, &kept)
+    let (planned, slots) = plan_slots(memories, workspace_id, ctx.policy)?;
+    // ADR-0064 D-B stored-first, in the same read transaction and before any sealing.
+    let kept_ids: Vec<Uuid> = planned.iter().map(|p| p.memory.memory_id.0).collect();
+    let (fingerprint, stored) = stored_vectors(&mut txn, ctx, &kept_ids)
         .await
         .map_err(|e| pg_failure(&e, "db_resolve_failed"))?;
     txn.commit()
         .await
         .map_err(|e| pg_failure(&e, "db_commit_failed"))?;
-    if kept.is_empty() {
+    if planned.is_empty() {
         if dead.is_empty() {
             return Err((RowTerminal::SkippedByPolicy, "secret_material"));
         }
@@ -926,44 +1029,132 @@ async fn resolve_and_embed(
             fingerprint,
         });
     }
-    let reused: Option<Vec<Vec<f32>>> = kept
-        .iter()
-        .zip(&inputs)
-        .map(|(memory, input)| {
-            stored
-                .iter()
-                .find(|(id, sha, v)| {
-                    *id == memory.memory_id.0
-                        && sha[..] == input[..]
-                        && v.len() == ctx.dimension as usize
-                })
-                .map(|(_, _, v)| v.clone())
+    let vectors = slot_vectors(ctx, commit_seq, &planned, &slots, &stored).await?;
+
+    let mut live: Vec<LiveMemory> = planned
+        .into_iter()
+        .map(|entry| LiveMemory {
+            chunked: entry.source.is_some(),
+            memory: entry.memory,
+            slots: Vec::new(),
         })
         .collect();
-    let vectors = match reused {
-        // No provider call, so no egress and nothing for the §1.2.3 scanner to gate.
-        Some(vectors) => vectors,
-        None => seal_and_embed(ctx, commit_seq, &kept, &cards).await?,
-    };
-
+    // `vectors` is per slot, in `slots` order, built by `slot_vectors` from the vector key — not a provider batch.
+    for (slot, vector) in slots.into_iter().zip(vectors) {
+        live[slot.memory].slots.push(LiveSlot {
+            profile: slot.profile,
+            ordinal: slot.ordinal,
+            input_sha256: slot.input_sha256,
+            vector,
+        });
+    }
     Ok(Prepared {
-        live: kept
-            .into_iter()
-            .zip(vectors)
-            .zip(inputs)
-            .map(|((memory, vector), input)| (memory, vector, input))
-            .collect(),
+        live,
         dead,
         fingerprint,
     })
 }
 
-/// ADR-0064 D-B/D-C: the worker label's fingerprint and the non-purged vectors stored under it for
-/// `kept`, as `(memory_id, input_sha256, vector)`. An unbound label reads `(None, [])`.
+/// The planned memories of one row and the slots they expand to (ADR-0068 D-A).
+type SlotPlan = (Vec<Planned>, Vec<SlotCard>);
+
+/// ADR-0068 D-A: every live memory through [`build_projection_plan`] under the pass's policy, as one entry per
+/// expected slot. §18.2 `ExcludedSecret` is a property of ONE memory, not of the ticket: on an Evidence that carries a
+/// secret memory and an ordinary one, the ordinary one must still be indexed, so an excluded memory is dropped and the
+/// row is `SKIPPED_BY_POLICY` only when nothing is left. `Unbuildable` stays a whole-row permanent failure — the stored
+/// record itself is malformed (§18.4).
+fn plan_slots(
+    memories: Vec<ResolvedMemory>,
+    workspace_id: WorkspaceId,
+    policy: NoteChunkPolicy,
+) -> Result<SlotPlan, (RowTerminal, &'static str)> {
+    let mut planned = Vec::with_capacity(memories.len());
+    let mut slots = Vec::with_capacity(memories.len());
+    for memory in memories {
+        let input = card_input(&memory, workspace_id);
+        let plan = build_projection_plan(PlanInput {
+            card: input.clone(),
+            is_identity_note: memory.is_identity_note,
+            policy,
+        });
+        let index = planned.len();
+        let source = match plan {
+            ProjectionPlan::LegacyCardV1(CardBuildOutcome::Card(card)) => {
+                slots.push(SlotCard::new(index, LEGACY_CARD_PROFILE_HASH, 0, *card));
+                None
+            }
+            ProjectionPlan::LegacyCardV1(CardBuildOutcome::ExcludedSecret) => continue,
+            ProjectionPlan::LegacyCardV1(CardBuildOutcome::Unbuildable) => {
+                return Err((RowTerminal::Failed, "card_unbuildable"));
+            }
+            ProjectionPlan::NoteChunksV1(chunks) => {
+                for chunk in &chunks {
+                    let ordinal = u32::try_from(chunk.chunk_ordinal)
+                        .expect("ADR-0068 D-B: a 64 KiB body has at most 158 chunks");
+                    let card = chunk_card(&input, chunk);
+                    slots.push(SlotCard::new(index, chunk.card_profile_hash, ordinal, card));
+                }
+                Some((input.title, input.key_claim.unwrap_or_default()))
+            }
+        };
+        planned.push(Planned { memory, source });
+    }
+    Ok((planned, slots))
+}
+
+/// (c)-(d) per slot, ADR-0068 D-F. Stored-first as before: when every slot has a vector stored under the label's
+/// fingerprint and its exact input bytes, nothing is sealed or sent. Otherwise each distinct vector key
+/// `(memory, input_sha256)` — the fingerprint is the label's, one per worker — is sealed and embedded once, and its
+/// vector is handed to every slot with that key, looked up by key, never by position.
+async fn slot_vectors(
+    ctx: &RowCtx<'_>,
+    commit_seq: i64,
+    planned: &[Planned],
+    slots: &[SlotCard],
+    stored: &[(Uuid, Vec<u8>, Vec<f32>)],
+) -> Result<Vec<Vec<f32>>, (RowTerminal, &'static str)> {
+    let reused: Option<Vec<Vec<f32>>> = slots
+        .iter()
+        .map(|slot| {
+            let memory_id = planned[slot.memory].memory.memory_id.0;
+            stored
+                .iter()
+                .find(|(id, sha, v)| {
+                    *id == memory_id
+                        && sha[..] == slot.input_sha256[..]
+                        && v.len() == ctx.dimension as usize
+                })
+                .map(|(_, _, v)| v.clone())
+        })
+        .collect();
+    if let Some(vectors) = reused {
+        // No provider call, so no egress and nothing for the §1.2.3 scanner to gate.
+        return Ok(vectors);
+    }
+    let mut distinct: Vec<&SlotCard> = Vec::new();
+    let mut by_key: HashMap<(usize, [u8; 32]), usize> = HashMap::new();
+    for slot in slots {
+        by_key
+            .entry((slot.memory, slot.input_sha256))
+            .or_insert_with(|| {
+                distinct.push(slot);
+                distinct.len() - 1
+            });
+    }
+    let vectors = seal_and_embed(ctx, commit_seq, planned, &distinct).await?;
+    Ok(slots
+        .iter()
+        .map(|slot| vectors[by_key[&(slot.memory, slot.input_sha256)]].clone())
+        .collect())
+}
+
+/// ADR-0068 D-B/D-C: the worker label's fingerprint and the non-purged vectors stored under it for `memory_ids`, as
+/// `(memory_id, input_sha256, vector)` — every slot of a memory shares its rows (the vector key has no ordinal). An
+/// unbound label reads `(None, [])`.
 async fn stored_vectors(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ctx: &RowCtx<'_>,
-    kept: &[ResolvedMemory],
+    memory_ids: &[Uuid],
 ) -> Result<(Option<[u8; 32]>, Vec<(Uuid, Vec<u8>, Vec<f32>)>), sqlx::Error> {
     let fingerprint: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT fingerprint_sha256 FROM projection.embedding_fingerprints WHERE embedding_version = $1",
@@ -974,17 +1165,16 @@ async fn stored_vectors(
     let Some(fingerprint) = fingerprint.and_then(|f| <[u8; 32]>::try_from(f).ok()) else {
         return Ok((None, Vec::new()));
     };
-    if kept.is_empty() {
+    if memory_ids.is_empty() {
         return Ok((Some(fingerprint), Vec::new()));
     }
-    let ids: Vec<Uuid> = kept.iter().map(|m| m.memory_id.0).collect();
     let rows = sqlx::query(
         "SELECT memory_id, input_sha256, vector FROM projection.memory_vectors \
           WHERE tenant_id = $1 AND fingerprint_sha256 = $2 AND memory_id = ANY($3) AND vector IS NOT NULL",
     )
     .bind(ctx.family.tenant_id.0)
     .bind(&fingerprint[..])
-    .bind(ids)
+    .bind(memory_ids.to_vec())
     .fetch_all(&mut **txn)
     .await?;
     let stored = rows
@@ -1000,33 +1190,60 @@ async fn stored_vectors(
     Ok((Some(fingerprint), stored))
 }
 
-/// (c')-(d): seal every card and embed them in one embedder call; reject a short batch or a
-/// dimension mismatch. Reached only when some card of the Evidence has no stored vector (ADR-0064
-/// D-B). The provider splits the call into requests of at most its `max_batch_items` (ADR-0068
-/// D-F); any failed request fails the whole call, and nothing is persisted before every card has
-/// its vector, so the ticket retries whole.
+/// ADR-0052 D-E: a scanner process that did not run (`DependencyUnavailable`) is environmental; a gitleaks finding
+/// (`Forbidden`) or an unsealable card or source (`InvalidInput`) is a verdict on this input and would be the same
+/// verdict on every retry.
+fn seal_failure(code: ErrorCode) -> (RowTerminal, &'static str) {
+    if code_is_transient(code) {
+        (RowTerminal::Retry, "secret_scan_failed")
+    } else {
+        (RowTerminal::Failed, "secret_scan_rejected")
+    }
+}
+
+/// (c')-(d): seal every distinct input and embed them in one embedder call; reject a short batch or a dimension
+/// mismatch. Reached only when some slot of the Evidence has no stored vector (ADR-0064 D-B). ADR-0068 D-G: every
+/// chunked note's whole source is sealed first, so a secret anywhere in it — the last window, or across a window
+/// boundary — fails the row `secret_scan_rejected` exactly like a secret in a legacy card, before any card is sealed
+/// and before any provider call. The provider splits the call into requests of at most its `max_batch_items` (ADR-0068
+/// D-F); any failed request fails the whole call, and nothing is persisted before every input has its vector, so the
+/// ticket retries whole.
 async fn seal_and_embed(
     ctx: &RowCtx<'_>,
     commit_seq: i64,
-    kept: &[ResolvedMemory],
-    cards: &[Box<RetrievalCard>],
+    planned: &[Planned],
+    inputs: &[&SlotCard],
 ) -> Result<Vec<Vec<f32>>, (RowTerminal, &'static str)> {
-    let mut sealed_cards = Vec::with_capacity(cards.len());
-    for card in cards {
-        // ADR-0052 D-E: a scanner process that did not run (`DependencyUnavailable`) is
-        // environmental; a gitleaks finding (`Forbidden`) or an unsealable card (`InvalidInput`)
-        // is a verdict on this card and would be the same verdict on every retry.
-        sealed_cards.push(ctx.scanner.seal_card(card).map_err(|code| {
-            if code_is_transient(code) {
-                (RowTerminal::Retry, "secret_scan_failed")
-            } else {
-                (RowTerminal::Failed, "secret_scan_rejected")
-            }
-        })?);
+    let mut sources: Vec<Option<SealedSource>> = Vec::with_capacity(planned.len());
+    for entry in planned {
+        sources.push(match &entry.source {
+            Some((title, body)) => Some(
+                ctx.scanner
+                    .seal_source(
+                        entry.memory.memory_id.0,
+                        entry.memory.data_class,
+                        title,
+                        body,
+                    )
+                    .map_err(seal_failure)?,
+            ),
+            None => None,
+        });
     }
-    let memory_ids: Vec<Uuid> = kept.iter().map(|m| m.memory_id.0).collect();
+    let mut sealed_cards = Vec::with_capacity(inputs.len());
+    for slot in inputs {
+        let sealed = match &sources[slot.memory] {
+            Some(source) => ctx.scanner.seal_chunk_card(source, &slot.card),
+            None => ctx.scanner.seal_card(&slot.card),
+        };
+        sealed_cards.push(sealed.map_err(seal_failure)?);
+    }
+    let memory_ids: Vec<Uuid> = inputs
+        .iter()
+        .map(|slot| planned[slot.memory].memory.memory_id.0)
+        .collect();
 
-    // One embedder call for the whole Evidence — `embed_cards` is batch-shaped, so N memories
+    // One embedder call for the whole Evidence — `embed_cards` is batch-shaped, so N inputs
     // cost ceil(N / max_batch_items) provider round trips, not N (§19.2, ADR-0068 D-F).
     let vectors = ctx
         .embedder
@@ -1046,12 +1263,12 @@ async fn seal_and_embed(
                 (RowTerminal::Failed, "embedding_rejected")
             }
         })?;
-    // (d): reject a short batch or a dimension mismatch — checked against the actual returned
+    // (d): reject a short batch or a dimension mismatch, per distinct input — checked against the actual returned
     // vector lengths, since this trait carries no separate `EmbeddingBatch::dimension` field
-    // (see `CardEmbedder`'s doc). A provider that returns fewer vectors than cards would
-    // otherwise silently drop the tail memories of a multi-memory Evidence. A short batch is a
+    // (see `CardEmbedder`'s doc). A provider that returns fewer vectors than inputs would
+    // otherwise silently drop the tail slots of a multi-memory Evidence. A short batch is a
     // provider blip (transient); a wrong width is configuration (permanent).
-    if vectors.len() != kept.len() {
+    if vectors.len() != inputs.len() {
         return Err((RowTerminal::Retry, "embedding_batch_empty"));
     }
     if vectors.iter().any(|v| v.len() != ctx.dimension as usize) {
@@ -1185,17 +1402,22 @@ pub(crate) async fn expected_points(
     Ok(points)
 }
 
-/// (e)-(h) of the module doc's per-row order: build the payload, upsert, register (with the
-/// stored vector, ADR-0064 D-B), verify. Split out of [`process_row`] purely to stay under this
-/// repo's line-count lint.
+/// (e)-(h) of the module doc's per-row order for one live memory: build the payload, then per slot upsert and
+/// register (with the stored vector, ADR-0064 D-B), then verify every slot, then — for a chunked note — retire its
+/// legacy point. ADR-0068 D-F: the memory counts toward DONE only when every expected slot is registered and
+/// confirmed visible; any slot that is not leaves the whole ticket not-DONE through the same classified failure.
 async fn finish_row(
     ctx: &RowCtx<'_>,
     stream_seq: i64,
     workspace_id: WorkspaceId,
-    memory: ResolvedMemory,
-    vector: Vec<f32>,
-    stored: Option<StoredVector>,
+    live: LiveMemory,
+    fingerprint: Option<[u8; 32]>,
 ) -> (RowTerminal, &'static str) {
+    let LiveMemory {
+        memory,
+        chunked,
+        slots,
+    } = live;
     // §18.2: `build_card` already refused a `SecretMaterial` input, so this can only fail if the
     // two disagree — kept as a belt-and-braces check rather than an `expect`, per repo fail-loud
     // convention (§50).
@@ -1210,7 +1432,7 @@ async fn finish_row(
         return (RowTerminal::SkippedByPolicy, "secret_material");
     };
 
-    let registration = PrivateMemoryPointRegistration::deterministic(
+    let legacy = PrivateMemoryPointRegistration::deterministic(
         ctx.family.clone(),
         ctx.projection_version.to_owned(),
         ctx.embedding_version.to_owned(),
@@ -1218,6 +1440,84 @@ async fn finish_row(
         memory.updated_at,
         memory.body_sha256,
     );
+    let authorization = worker_authorization_scope(ctx.family, workspace_id);
+    let mut point_ids = Vec::with_capacity(slots.len());
+    for slot in slots {
+        // ADR-0068 D-C/D-E: the legacy slot keeps the v1 id and today's payload; a chunk slot is re-keyed to its v2 id
+        // and its payload names the profile and ordinal.
+        let (registration, payload) = if chunked {
+            (
+                legacy.clone().for_chunk(slot.profile, slot.ordinal),
+                indexable.clone().with_chunk(slot.profile, slot.ordinal),
+            )
+        } else {
+            (legacy.clone(), indexable.clone())
+        };
+        let stored = fingerprint.map(|fingerprint_sha256| StoredVector {
+            fingerprint_sha256,
+            input_sha256: slot.input_sha256,
+            vector: slot.vector.clone(),
+        });
+        if let Err(failure) = write_slot(
+            ctx,
+            stream_seq,
+            &authorization,
+            &registration,
+            (&payload, slot.vector),
+            stored.as_ref(),
+        )
+        .await
+        {
+            return failure;
+        }
+        point_ids.push(PointId::Uuid(registration.point_id.as_uuid()));
+    }
+
+    match verify_visible_via_transport(
+        ctx.transport,
+        ctx.permit,
+        &ctx.placement.collection_name,
+        &point_ids,
+    )
+    .await
+    {
+        // ADR-0068 D-F: the completion check — `verify_visible` confirms only when every slot's point is observed,
+        // not "some point of the memory" (§17.4), so a confirmation here covers the whole slot set.
+        Ok(Some(_)) => {}
+        // ADR-0052 D-E: not yet observed is a retry, not a verdict — the points are registered,
+        // so the next attempt re-upserts the same ids and probes again.
+        _ => return (RowTerminal::Retry, "visibility_not_confirmed"),
+    }
+    if chunked {
+        // ADR-0068 D-I: every chunk slot is now registered and visible, so a legacy point (one projected before the
+        // policy was enabled) retires in this same completion step; until here it kept answering recall.
+        return match retire_legacy_point_for_memory(
+            ctx.pool,
+            &authorization,
+            ctx.family,
+            ctx.projection_version,
+            ctx.embedding_version,
+            memory.memory_id,
+        )
+        .await
+        {
+            Ok(points) => delete_retired(ctx, stream_seq, &points).await,
+            Err(error) => registry_failure(&error),
+        };
+    }
+    (RowTerminal::Done, "")
+}
+
+/// (f)-(g) for one slot: the fenced upsert, then the registration with its stored vector. A registration the
+/// registry refuses deletes the point the upsert just landed (ADR-0052 D-E (b)).
+async fn write_slot(
+    ctx: &RowCtx<'_>,
+    stream_seq: i64,
+    authorization: &AuthorizationScope,
+    registration: &PrivateMemoryPointRegistration,
+    (payload, vector): (&IndexablePayload, Vec<f32>),
+    stored: Option<&StoredVector>,
+) -> Result<(), (RowTerminal, &'static str)> {
     let point_id = PointId::Uuid(registration.point_id.as_uuid());
 
     // ADR-0057 D-I: fenced on this ticket's seq — a stalled worker whose lease was reclaimed
@@ -1226,11 +1526,13 @@ async fn finish_row(
     // point and re-inserts it (reads as A2 overshoot, never a false close; ADR-0057 known limits
     // 9-10). `humaux-maintenance projection rebuild` detects it in its id-set check and deletes it
     // as an orphan (ADR-0064 D-F E3); a Qdrant-side tombstone is the upgrade path if it recurs.
+    // ponytail: one upsert request per slot (up to 158 for a 64 KiB note); batch the slots of a memory into one fenced
+    // request if chunk backfill latency (40d-2) says the round trips matter.
     if let Err(error) = qdrant::upsert_fenced(
         ctx.transport,
         ctx.permit,
         &ctx.placement.collection_name,
-        (point_id, &indexable, vector),
+        (point_id, payload, vector),
         ha_profile_for(QdrantOperation::NormalImmutableUpsert),
     )
     .await
@@ -1241,19 +1543,18 @@ async fn finish_row(
             "projection_worker: stream_seq={stream_seq} qdrant_upsert transient={}",
             error.is_transient()
         );
-        return if error.is_transient() {
+        return Err(if error.is_transient() {
             (RowTerminal::Retry, "qdrant_upsert_failed")
         } else {
             (RowTerminal::Failed, "qdrant_upsert_rejected")
-        };
+        });
     }
 
-    let authorization = worker_authorization_scope(ctx.family, workspace_id);
     match private_projection_registry::register_private_memory_point_with_vector(
         ctx.pool,
-        &authorization,
-        &registration,
-        stored.as_ref(),
+        authorization,
+        registration,
+        stored,
     )
     .await
     {
@@ -1261,7 +1562,7 @@ async fn finish_row(
             RegistrationOutcome::Inserted
             | RegistrationOutcome::AlreadyRegistered
             | RegistrationOutcome::Revived,
-        ) => {}
+        ) => Ok(()),
         Err(error) => {
             let (terminal, class) = registry_failure(&error);
             // ADR-0052 D-E (b): the upsert above landed a point the registry refused to bind, so
@@ -1282,33 +1583,17 @@ async fn finish_row(
                 .await
                 .is_err()
             {
-                return (RowTerminal::Retry, class);
+                return Err((RowTerminal::Retry, class));
             }
-            return (terminal, class);
+            Err((terminal, class))
         }
     }
-
-    match verify_visible_via_transport(
-        ctx.transport,
-        ctx.permit,
-        &ctx.placement.collection_name,
-        &[point_id],
-    )
-    .await
-    {
-        Ok(Some(confirmation)) if confirmation.contains(&point_id) => {}
-        // ADR-0052 D-E: not yet observed is a retry, not a verdict — the point is registered,
-        // so the next attempt re-upserts the same id and probes again.
-        _ => return (RowTerminal::Retry, "visibility_not_confirmed"),
-    }
-
-    (RowTerminal::Done, "")
 }
 
 /// ADR-0049: the projection consequence of a memory that is no longer live. The registry binds
 /// live sources only, so the memory's bindings in this family are retired and every point ever
-/// bound for it (live or already retired — retry-safe) leaves the index. `DONE` settles the
-/// ticket and lets the §15.4 prefix advance past it; the reader's PG re-check
+/// bound for it (live or already retired — retry-safe; every chunk slot included, ADR-0068 D-H) leaves the index.
+/// `DONE` settles the ticket and lets the §15.4 prefix advance past it; the reader's PG re-check
 /// (`resolve_private_memory_points`) never served the dead memory anyway, so this is hygiene
 /// plus settlement, not a visibility change.
 async fn retire_row(
@@ -1318,7 +1603,7 @@ async fn retire_row(
     memory: &ResolvedMemory,
 ) -> (RowTerminal, &'static str) {
     let authorization = worker_authorization_scope(ctx.family, workspace_id);
-    let points = match retire_points_for_memory(
+    match retire_points_for_memory(
         ctx.pool,
         &authorization,
         ctx.family,
@@ -1328,9 +1613,18 @@ async fn retire_row(
     )
     .await
     {
-        Ok(points) => points,
-        Err(error) => return registry_failure(&error),
-    };
+        Ok(points) => delete_retired(ctx, stream_seq, &points).await,
+        Err(error) => registry_failure(&error),
+    }
+}
+
+/// The Qdrant half of a retirement the registry already committed: delete every returned point, fenced on this
+/// ticket's seq. Nothing to delete is `DONE`.
+async fn delete_retired(
+    ctx: &RowCtx<'_>,
+    stream_seq: i64,
+    points: &[private_projection_registry::ProjectionPointId],
+) -> (RowTerminal, &'static str) {
     if points.is_empty() {
         return (RowTerminal::Done, "");
     }
@@ -1526,7 +1820,14 @@ pub async fn run_once(
         deps.family.projection_kind.clone(),
         deps.projection_version.clone(),
     );
-    let ctx = RowCtx::of(deps);
+    let policy = pass_policy(
+        &deps.pool,
+        &deps.family.domain,
+        &deps.family.projection_kind,
+        &deps.projection_version,
+    )
+    .await?;
+    let ctx = RowCtx::of(deps, policy);
 
     let rows = fetch_issued_rows(&deps.pool, &key, batch as i64).await?;
     let mut outcome = RunOnceOutcome::default();
@@ -1588,7 +1889,8 @@ pub async fn run_once(
 
 /// ADR-0052 D-F: one resident pass across every placed tenant — see the module doc's "resident
 /// path" section for the order. Returns `Err` only when the database is unreachable for the
-/// unplaced count or the claim itself (the caller logs it and polls again); a per-ticket failure
+/// policy read, the unplaced count or the claim itself (the caller logs it and polls again), or when the projection's
+/// note chunk policy names a profile this build does not know (`InvalidInput`, ADR-0068 D-I); a per-ticket failure
 /// is classified and counted, never propagated. A settle/retry/release that cannot reach the
 /// database either leaves the ticket leased, and the lease expiry returns it (the expired-lease
 /// arm of the claim).
@@ -1616,6 +1918,14 @@ async fn claimed_pass(
     only_run: Option<OnlyRun>,
 ) -> Result<PassOutcome, ErrorCode> {
     let mut outcome = PassOutcome::default();
+    // ADR-0068 D-I: one policy read per pass, before anything is claimed.
+    let policy = pass_policy(
+        &shared.pool,
+        &cfg.claim.domain,
+        &cfg.claim.projection_kind,
+        &cfg.claim.projection_version,
+    )
+    .await?;
 
     let batch = claim_for_pass(shared, cfg, only_run, &mut outcome).await?;
     let mut claimed = batch.tickets;
@@ -1670,7 +1980,7 @@ async fn claimed_pass(
     // projection-lag p95 (ADR-0052 measurements) says a pass is the bottleneck.
     let work = async {
         for family in &families {
-            run_family(shared, cfg, family, &mut outcome).await;
+            run_family(shared, cfg, policy, family, &mut outcome).await;
         }
     };
     // Review 2026-09-29 P0: every family this pass holds is renewed while ANY of them is being
@@ -1782,6 +2092,7 @@ async fn while_running(work: impl Future<Output = ()>, side: impl Future<Output 
 async fn run_family(
     shared: &SharedProjectionDeps,
     cfg: &PassConfig,
+    policy: NoteChunkPolicy,
     tickets: &[ClaimedTicket],
     outcome: &mut PassOutcome,
 ) {
@@ -1820,7 +2131,7 @@ async fn run_family(
             outcome.lost_lease += (tickets.len() - index) as u64;
             break;
         }
-        process_and_write(shared, cfg, &family, ticket, fence, outcome).await;
+        process_and_write(shared, cfg, policy, &family, ticket, fence, outcome).await;
     }
     // One watermark move per family (j). A failure here is logged: the next pass over this
     // family (or the next write) moves it, and the settled rows above stay settled.
@@ -1837,6 +2148,7 @@ async fn run_family(
 async fn process_and_write(
     shared: &SharedProjectionDeps,
     cfg: &PassConfig,
+    policy: NoteChunkPolicy,
     family: &StreamFamily,
     ticket: &ClaimedTicket,
     fence: TicketFence<'_>,
@@ -1857,6 +2169,7 @@ async fn process_and_write(
                 embedding_version: &shared.embedding_version,
                 projection_version: &key.projection_version,
                 dimension: shared.dimension,
+                policy,
             };
             process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await
         }

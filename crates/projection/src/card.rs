@@ -289,10 +289,10 @@ impl Default for CardBudget {
 }
 
 /// §18.2's fixed field list, plus the builder's own output metadata (`schema_version`/
-/// `card_builder_version`/`card_template_hash`/`card_status`/`card_text`). The only way to
-/// obtain one is [`build_card`] — there is no `pub` constructor here, so a value with, say, a
-/// `data_class` of [`DataClass::SecretMaterial`] or a `card_text` that does not contain `title`
-/// cannot be hand-assembled by a caller that skips [`build_card`]'s checks.
+/// `card_builder_version`/`card_template_hash`/`card_status`/`card_text`). The only ways to
+/// obtain one are [`build_card`] and, for a note chunk, `note_chunks::chunk_card` (ADR-0068 D-G:
+/// its `card_text` is the chunk text and carries the bounded title prefix, not the whole title,
+/// and its plan never admits SECRET_MATERIAL) — there is no other `pub` constructor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetrievalCard {
     pub schema_version: u32,

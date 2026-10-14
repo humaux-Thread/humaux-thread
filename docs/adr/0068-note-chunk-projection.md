@@ -293,6 +293,80 @@ Two facts frame every decision:
   ledger and the DONE completion check. Rebuild works per vector key, and the legacy point retires in the
   last-slot step.
 
+**40d-1b-ii as shipped (the worker; the slot ledger is not wired).**
+
+- **Policy.** `--serve` / `--run-once` read the `card_profile_policies` row of their claim family after the
+  fingerprint binding and before the first pass. A missing row or a hash the build does not know refuses boot
+  (exit 2, `card_profile_policy_missing` / `card_profile_policy_unknown`); a database failure is a failed pass, as
+  for the fingerprint. Each pass (and each `run_once`) then reads the row once, before it claims anything, and plans
+  every ticket under it. At pass time a missing row reads as NULL, as the ledger reads the same row, so a test or
+  rebuild family with no row stays legacy only; only the binary's own projection is required to have one. An
+  unknown hash at pass time refuses the pass (`InvalidInput`) before any ticket is touched.
+- **Identity note.** `resolve_memories` reads `EXISTS (identity_note_materializations.output_memory_id = memory_id)`
+  in the statement that resolves the ticket's Memories. Migration 0239 grants `role_retrieval_worker` SELECT on the
+  contract table (0235's FORCE RLS policy unchanged); the rls-check matrix and §6.2.2 carry the cell.
+- **Plan.** Every live Memory goes through `build_projection_plan` with the pass's policy. `LegacyCardV1` is
+  exactly the old path: one slot, `deterministic`'s v1 id, the old payload. `NoteChunksV1` is C slots, each a
+  `RetrievalCard` from `note_chunks::chunk_card`: `card_text` = the chunk text (what is sealed, hashed and
+  embedded), the note's `memory_id` / `data_class` / §18.2 fields, the full title in `title`, the window in
+  `key_claim`, and the legacy `card_builder_version` / `card_template_hash` pair (§18.4: one hash per builder
+  version; the fingerprint is per projection, D-B). The profile is named by the registry identity, never by the
+  card.
+- **Source seal (D-G).** `local-secret-scan::SealedSource`: no text and no accessor to any, accepted by nothing but
+  `seal_chunk_card`, which refuses a card of another Memory or data class. `seal_source` scans
+  `title + "\n" + body` once with the same gitleaks invocation (`--ignore-gitleaks-allow`), under
+  `SEALED_SOURCE_MAX_BYTES` = 1024 + 1 + 65 536 (ADR-0067 D-E's caps), not the 16 KiB card cap or the configured
+  disclosure cap. Every chunked note of a ticket is source-sealed before any card is sealed and before the one
+  embedder call. A finding is `FAILED secret_scan_rejected` for the whole ticket and a scanner that did not run is a
+  retry, exactly the legacy card path; no chunk of the note is sent.
+- **Per-slot preparation.** `Prepared.live` is one entry per live Memory holding one entry per expected slot
+  (profile, ordinal, `input_sha256`, vector): the per-memory grouping is what the completion step and the legacy
+  retirement need. Stored-first is unchanged (all slots stored ⇒ no seal, no call). Otherwise each distinct vector
+  key (memory, `input_sha256`; the fingerprint is the label's) is sealed and embedded once, in the 40d-0 bounded
+  batches, and its vector is handed to every slot with that key through a key lookup. The length and width checks
+  are per distinct input. Duplicate slots share one `memory_vectors` row and stay distinct points.
+- **Register and upsert.** Per slot, in ordinal order: the seq-fenced upsert, then the registration with its
+  vector, as before. A chunk slot uses `deterministic(...).for_chunk(NOTE_CHUNKS_V1_PROFILE_HASH, ordinal)` and its
+  payload gains `card_profile_hash` and `chunk_ordinal` (`IndexablePayload::with_chunk`); a legacy payload is byte
+  for byte what it was. One upsert request per slot (marked `ponytail:`).
+- **DONE.** A Memory counts toward DONE only when the visibility probe confirms every one of its slot ids; any
+  failed or unconfirmed slot leaves the whole ticket on the existing retry / fail outcome.
+- **Legacy retirement (D-I).** After every chunk slot of a note is registered and confirmed, the same completion
+  step retires the note's `(LegacyCardV1, 0)` bindings (`retire_legacy_point_for_memory`, a narrowed
+  `retire_points_for_memory`) and deletes their points under the ticket's seq fence. It is a registry transaction of
+  its own right after the last slot's, not the same one: the registry has no multi-binding write, and the order
+  (every slot registered and visible, then retire) already rules out a window with no live point. A failed retire or
+  delete leaves the ticket not-DONE; the retry re-registers the chunks (`AlreadyRegistered`) and retires again
+  (every legacy id ever bound is returned).
+- **Gates.** `legacy_cards_are_byte_identical_end_to_end`, `long_note_is_projected_as_chunks`,
+  `repeated_chunk_text_embeds_once`, `source_seal_blocks_a_secret_anywhere` (the last-window token, a PEM block
+  straddling a window boundary that no chunk holds whole, and the legacy control), `legacy_point_retired_only_with_last_chunk`
+  and `partial_chunks_are_not_done` are in `adapters::tests::projection_worker::note_chunk_projection`; they hold one
+  process-wide lock on the global policy row and restore it on drop. `boot_refuses_unknown_or_missing_policy` is in
+  `retrieval-worker::main::config_tests` (the refusal → exit-2 mapping, no database; `boot_checks` reaching
+  `check_policy`, and a missing row reaching the refusal, are not covered without a database — left for 40d-1b-iii).
+  The policy lock is per process: the suite relies on `cargo test` running test binaries one after another.
+  `secret_material_note_is_never_chunked` and `chunk_card_carries_the_chunk_text_and_the_note_identity` are in
+  `projection::note_chunks`; `source_seal_scans_the_whole_note_under_its_own_cap` and
+  `chunk_card_seal_is_bound_to_its_own_source` in `local-secret-scan`; `chunk_fields_ride_only_chunk_payloads` in
+  `adapters::qdrant`. `rust_sql_chunk_count_parity` gained the NULL-body arm: both SQL functions are STRICT, and a
+  caller coalesces the predicate to true (legacy), as the plan treats a Memory with no body.
+- **Left for 40d-1b-iii.**
+  - The slot ledger: `projection.stream_point_ledger` v3 counting expected slots (legacy 1, chunked
+    C(char_length(body)), the predicate coalesced as above) and a `points_retiring` term for a live legacy point of
+    a note mid-backfill.
+  - Rebuild per vector key: `expected_points` (the rebuild verifier's Project(PG)) per slot through
+    `build_projection_plan`, chunk payload fields included; until then a rebuild under an enabled policy would
+    expect the legacy point of a long note.
+  - Retry reuse of committed batch vectors (`retry_reuses_committed_batch_vectors`): stored-first is still
+    all-or-nothing per ticket, so a retry after a partial failure re-embeds every distinct input.
+  - Disclosure granularity: the embedder receives one Memory id per distinct input, not one source row per
+    (memory, ordinal) the input serves (D-F).
+  - The ADR gates `chunk_backfill_embeds_only_note_chunk_inputs`, `ledger_counts_unbuilt_chunk_slots`,
+    `partial_projection_does_not_settle_memory` and `equal_counts_do_not_prove_manifest_equality`, and
+    `source_seal_cannot_be_disabled_by_note_text` as a named gate (the source seal reuses the invocation that already
+    passes `--ignore-gitleaks-allow`).
+
 ## Slices
 
 | slice | scope | L-4 |

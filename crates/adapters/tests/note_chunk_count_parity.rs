@@ -128,7 +128,10 @@ fn connect(test: &str) -> Option<Client> {
 /// ADR-0068 gate `rust_sql_chunk_count_parity`. Faults: `<` for `<=` or `+ 2` for `+ 3` in 0237's or 0238's body ⇒
 /// red at `title=N body=600-3-N`; `octet_length` for `char_length` ⇒ red on every multi-byte case; a window or stride
 /// drift on either side ⇒ red at 481 / 897; drop `char_length(p_body) = 0` from 0238 ⇒ red at `title=598 body=0`;
-/// a predicate rewritten as `note_chunk_count(...) = 1` ⇒ red on every one-slot NoteChunksV1 case.
+/// a predicate rewritten as `note_chunk_count(...) = 1` ⇒ red on every one-slot NoteChunksV1 case;
+/// `note_chunk_count` re-created without STRICT (a forward migration) ⇒ red on the NULL-body arm's SQL half
+/// (`greatest` skips the NULL, so the count reads 1; the 0238 predicate is NULL with or without STRICT);
+/// `build_projection_plan` reading a missing `key_claim` as over capacity ⇒ red on its plan half.
 #[test]
 fn rust_sql_chunk_count_parity() {
     let Some(mut client) = connect("rust_sql_chunk_count_parity") else {
@@ -175,6 +178,51 @@ fn rust_sql_chunk_count_parity() {
         one_chunk_notes > 0,
         "the matrix has no one-slot NoteChunksV1 case, so count == 1 would pass for legacy"
     );
+
+    // Both functions are STRICT: a NULL body (a Memory with no `key_claim`) yields NULL, never a classification.
+    // Callers coalesce the predicate to true, because the plan takes the legacy branch for `key_claim: None`.
+    let row = client
+        .query_one(
+            "SELECT projection.note_chunk_count('t', NULL), projection.note_legacy_capacity_holds('t', NULL), \
+                    coalesce(projection.note_legacy_capacity_holds('t', NULL), true)",
+            &[],
+        )
+        .expect("the NULL-body arm");
+    let null_body: (Option<i32>, Option<bool>, bool) = (row.get(0), row.get(1), row.get(2));
+    assert_eq!(
+        null_body,
+        (None, None, true),
+        "a NULL body is NULL, coalesced to legacy"
+    );
+    let mut bodiless = PlanInput {
+        card: CardInput {
+            memory_id: MemoryId::new(),
+            memory_type: MemoryType::Note,
+            data_class: DataClass::Private,
+            egress_disposition: EgressDisposition::Allowed,
+            workspace_id: None,
+            topic: None,
+            effective_from: SystemTime::UNIX_EPOCH,
+            title: "t".repeat(700),
+            key_claim: None,
+            entities: Vec::new(),
+            evidence_excerpt: None,
+        },
+        is_identity_note: true,
+        policy: NoteChunkPolicy::NoteChunksV1,
+    };
+    assert!(
+        matches!(
+            build_projection_plan(bodiless.clone()),
+            ProjectionPlan::LegacyCardV1(_)
+        ),
+        "the plan reads no body as legacy, which is what the coalesce encodes"
+    );
+    bodiless.card.key_claim = Some(String::new());
+    assert!(matches!(
+        build_projection_plan(bodiless),
+        ProjectionPlan::LegacyCardV1(_)
+    ));
 }
 
 /// ADR-0068 D-I / D-C (0238): the serving projection's policy row exists and is NULL (legacy only), and the Rust

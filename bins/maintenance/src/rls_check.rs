@@ -1476,6 +1476,13 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
         "role_maintenance",
         ["SELECT"]
     ),
+    // 0239 / ADR-0068 D-A: the projection worker reads the contract in the statement that resolves a ticket's
+    // Memories, to tell an identity note (chunkable) from any other Memory. SELECT only.
+    cell!(
+        "private.identity_note_materializations",
+        "role_retrieval_worker",
+        ["SELECT"]
+    ),
     // 0236 / ADR-0067 D-J note heads: the gateway inserts a head with a note's first version and moves it (column-level
     // UPDATE(head_memory_id), also what its SELECT ... FOR UPDATE needs) in the memory.note_put receipt transaction;
     // maintenance reads. Nobody holds DELETE (the memory_records cascade is the only delete path); every other

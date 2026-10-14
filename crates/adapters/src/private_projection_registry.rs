@@ -13,8 +13,9 @@
 //!   the vector bytes the last live binding held, by UPDATE (ADR-0064 D-D); one embedding label is bound to one
 //!   fingerprint and a different one is refused, never overwritten (ADR-0064 D-C); the identity is the source fence
 //!   plus (card_profile_hash, chunk_ordinal), the legacy profile at ordinal 0 keeps the v1 point id byte for byte and
-//!   every other slot gets a v2 id (ADR-0068 D-C)]
-//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C
+//!   every other slot gets a v2 id (ADR-0068 D-C); the legacy-only retirement touches the (LegacyCardV1, 0) bindings
+//!   of one Memory and never a chunk binding (ADR-0068 D-I)]
+//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C; ADR-0068 D-I
 //!
 //! Qdrant returns an opaque point id plus a score.  This module is the sole private-plane
 //! point-id resolver: it binds that id to a Memory through PostgreSQL and then rechecks the
@@ -610,15 +611,46 @@ pub async fn retire_points_for_memory(
     embedding_version: &str,
     memory_id: MemoryId,
 ) -> Result<Vec<ProjectionPointId>, PrivateProjectionRegistryError> {
+    let versions = (projection_version, embedding_version);
+    retire_bindings(pool, authorization, family, versions, memory_id, false).await
+}
+
+/// ADR-0068 D-I: the legacy point of a note whose every chunk slot is now registered and visible. Only the
+/// `(LegacyCardV1, 0)` bindings of `memory_id` in this family/version are retired; chunk bindings are untouched. Like
+/// [`retire_points_for_memory`], every legacy point id ever bound (live or already retired) is returned, so the
+/// caller's Qdrant delete is safe to repeat.
+pub async fn retire_legacy_point_for_memory(
+    pool: &RetrievalWorkerDbPool,
+    authorization: &AuthorizationScope,
+    family: &StreamFamily,
+    projection_version: &str,
+    embedding_version: &str,
+    memory_id: MemoryId,
+) -> Result<Vec<ProjectionPointId>, PrivateProjectionRegistryError> {
+    let versions = (projection_version, embedding_version);
+    retire_bindings(pool, authorization, family, versions, memory_id, true).await
+}
+
+/// The retire transaction behind both retire paths: `legacy_only` narrows it to the `(LegacyCardV1, 0)` slot.
+async fn retire_bindings(
+    pool: &RetrievalWorkerDbPool,
+    authorization: &AuthorizationScope,
+    family: &StreamFamily,
+    (projection_version, embedding_version): (&str, &str),
+    memory_id: MemoryId,
+    legacy_only: bool,
+) -> Result<Vec<ProjectionPointId>, PrivateProjectionRegistryError> {
     validate_family(authorization, family, projection_version, embedding_version)?;
-    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for `retire_points_for_memory`
+    // `$9` NULL = every binding of the memory; the legacy marker = only its v1 slot (0238: legacy ⇒ ordinal 0).
+    let profile = legacy_only.then_some(LEGACY_CARD_PROFILE_HASH);
+    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for `retire_bindings`
     let mut txn = pool.pool().begin().await?;
     set_authorization_local(&mut txn, authorization).await?;
     let point_ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT point_id FROM projection.private_memory_points \
           WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
             AND projection_kind = $5 AND projection_version = $6 AND embedding_version = $7 \
-            AND memory_id = $8 \
+            AND memory_id = $8 AND ($9::text IS NULL OR (card_profile_hash = $9 AND chunk_ordinal = 0)) \
           ORDER BY created_at, point_id",
     )
     .bind(family.tenant_id.0)
@@ -629,6 +661,7 @@ pub async fn retire_points_for_memory(
     .bind(projection_version)
     .bind(embedding_version)
     .bind(memory_id.0)
+    .bind(profile)
     .fetch_all(&mut *txn)
     .await?;
     sqlx::query(
@@ -636,7 +669,8 @@ pub async fn retire_points_for_memory(
             SET projection_live = false, retired_at = now() \
           WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
             AND projection_kind = $5 AND projection_version = $6 AND embedding_version = $7 \
-            AND memory_id = $8 AND projection_live",
+            AND memory_id = $8 AND projection_live \
+            AND ($9::text IS NULL OR (card_profile_hash = $9 AND chunk_ordinal = 0))",
     )
     .bind(family.tenant_id.0)
     .bind(&family.scope_kind)
@@ -646,6 +680,7 @@ pub async fn retire_points_for_memory(
     .bind(projection_version)
     .bind(embedding_version)
     .bind(memory_id.0)
+    .bind(profile)
     .execute(&mut *txn)
     .await?;
     sqlx::query(PURGE_UNREFERENCED_VECTORS)

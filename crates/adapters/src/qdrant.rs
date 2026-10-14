@@ -240,6 +240,11 @@ pub fn subject_index_body() -> Value {
 /// ([`tombstoned_seq_overlay_filter`]). Two hand-typed copies of this string would silently
 /// filter nothing (§78.1: no literals at a contract boundary).
 pub const SOURCE_STREAM_SEQ_FIELD: &str = "source_stream_seq";
+/// ADR-0068 D-E: a note chunk point's profile (`projection.private_memory_points.card_profile_hash`). Written only on
+/// chunk points; a legacy point's payload is unchanged.
+pub const CARD_PROFILE_HASH_FIELD: &str = "card_profile_hash";
+/// ADR-0068 D-E: a note chunk point's slot within its profile (`chunk_ordinal`). Chunk points only.
+pub const CHUNK_ORDINAL_FIELD: &str = "chunk_ordinal";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QdrantPointPayload {
@@ -399,6 +404,7 @@ impl QdrantPointPayload {
             subject_ids: Vec::new(),
             affects: Vec::new(),
             archived: false,
+            chunk: None,
         })
     }
 }
@@ -421,6 +427,9 @@ pub struct IndexablePayload {
     /// as the JSON bool [`ARCHIVED_FIELD`] on every upsert. Not a [`QdrantPointPayload`] field so
     /// its constructors stay untouched; default `false`.
     archived: bool,
+    /// ADR-0068 D-E: `(card_profile_hash, chunk_ordinal)` of a note chunk point; `None` (a legacy point) writes neither
+    /// field, so a legacy payload stays byte-identical.
+    chunk: Option<(String, u32)>,
 }
 
 impl IndexablePayload {
@@ -452,6 +461,13 @@ impl IndexablePayload {
     /// (`DenseQueryFilter::servable`) drops `archived == true`; the PG gate stays the authority.
     pub fn with_archived(mut self, archived: bool) -> Self {
         self.archived = archived;
+        self
+    }
+
+    /// ADR-0068 D-E: marks the payload as slot `chunk_ordinal` of `card_profile_hash`, written as
+    /// [`CARD_PROFILE_HASH_FIELD`] / [`CHUNK_ORDINAL_FIELD`]. Never called for a legacy point.
+    pub fn with_chunk(mut self, card_profile_hash: &str, chunk_ordinal: u32) -> Self {
+        self.chunk = Some((card_profile_hash.to_owned(), chunk_ordinal));
         self
     }
 
@@ -493,6 +509,10 @@ impl IndexablePayload {
             column(|a| json!(a.intensity.get())),
         );
         obj.insert(ARCHIVED_FIELD.into(), json!(self.archived));
+        if let Some((profile, ordinal)) = &self.chunk {
+            obj.insert(CARD_PROFILE_HASH_FIELD.into(), json!(profile));
+            obj.insert(CHUNK_ORDINAL_FIELD.into(), json!(ordinal));
+        }
         json
     }
 }
@@ -1876,6 +1896,24 @@ mod lifecycle_prefilter_tests {
         let body = upsert_point_body(PointId::Num(1), &payload().into_indexable().expect("idx"));
         assert_eq!(body["payload"][ARCHIVED_FIELD], json!(false));
         assert_eq!(body["payload"]["status"], "active");
+    }
+
+    /// ADR-0068 D-E: only a chunk point carries `card_profile_hash` / `chunk_ordinal`; the legacy body is the
+    /// chunk body minus exactly those two keys. Fault: write the fields unconditionally ⇒ red on the legacy arm.
+    #[test]
+    fn chunk_fields_ride_only_chunk_payloads() {
+        // One payload for both arms: `payload()` mints fresh ids per call.
+        let indexable = payload().into_indexable().expect("idx");
+        let legacy = upsert_point_body(PointId::Num(1), &indexable);
+        let chunk = upsert_point_body(PointId::Num(1), &indexable.with_chunk("NoteChunksV1-x", 3));
+        let mut stripped = chunk["payload"].clone();
+        let fields = stripped.as_object_mut().expect("object");
+        assert_eq!(
+            fields.remove(CARD_PROFILE_HASH_FIELD),
+            Some(json!("NoteChunksV1-x"))
+        );
+        assert_eq!(fields.remove(CHUNK_ORDINAL_FIELD), Some(json!(3)));
+        assert_eq!(stripped, legacy["payload"]);
     }
 
     #[test]
