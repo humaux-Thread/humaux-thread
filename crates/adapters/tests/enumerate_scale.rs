@@ -39,7 +39,7 @@ mod throwaway_db;
 
 const NAME: &str = "enumerate_first_page_scales_with_a_capped_manifest";
 const N: i64 = 50_000;
-const RUNS: usize = 3;
+const RUNS: usize = 30;
 const WARMUPS: usize = 3;
 const PAGE: u16 = 50;
 const MAC_KEY: &[u8] = b"c35 enumerate scale test mac key";
