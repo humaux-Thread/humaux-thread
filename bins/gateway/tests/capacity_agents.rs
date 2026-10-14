@@ -214,6 +214,117 @@ const EXP_VARIANTS: [(&str, &[(&str, &str)]); 5] = [
     ),
 ];
 
+/// Real-demand burst (old system, oracle-tokyo, 72 h: peak second 60 calls): every agent fires ONE request at the same
+/// instant (a barrier), no retry, 6 bursts 5 s apart. B1 = one tenant × 60 agents on one key; B2 = 5 tenants × 60
+/// (300 at once). Deployed admission vs a burst-absorbing variant.
+const BURST_VARIANTS: [(&str, &[(&str, &str)]); 2] = [
+    ("deployed", &[]),
+    (
+        "k80_q256",
+        &[
+            ("HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT", "80"),
+            ("HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH", "256"),
+        ],
+    ),
+];
+
+#[test]
+#[ignore = "experiment"]
+fn burst() {
+    for (variant, extra_env) in BURST_VARIANTS {
+        lab_with_env(&format!("burst_{variant}"), 5, extra_env, |lab| {
+            for (scenario, tenants) in [("B1_1x60", 1usize), ("B2_5x60", 5usize)] {
+                let mut lat = Vec::new();
+                let (mut ok, mut r503, mut r429, mut other) = (0u64, 0u64, 0u64, 0u64);
+                for round in 0..6u64 {
+                    let results = lab.rt.block_on(async {
+                        let barrier = Arc::new(tokio::sync::Barrier::new(tenants * 60));
+                        let mut handles = Vec::new();
+                        for t in 0..tenants {
+                            for a in 0..60u64 {
+                                let tenant = Arc::clone(&lab.tenants[t]);
+                                let barrier = Arc::clone(&barrier);
+                                let address = lab.gateway.address;
+                                handles.push(tokio::spawn(async move {
+                                    let mut client = Client::new(address, tenant.source);
+                                    let mut rng = Rng((round * 1000 + a + 1)
+                                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                                        | 1);
+                                    let mut op = pick(&mut rng);
+                                    if matches!(op, Op::Remember) {
+                                        op = Op::Get;
+                                    }
+                                    let request =
+                                        http_request(&tenant, op, round * 1000 + a, rng.next());
+                                    barrier.wait().await;
+                                    let started = Instant::now();
+                                    let reply =
+                                        tokio::time::timeout(CLIENT_TIMEOUT, client.send(&request))
+                                            .await;
+                                    let ms = started.elapsed().as_secs_f64() * 1000.0;
+                                    let outcome = match reply {
+                                        Ok(Ok(reply)) => classify(&reply),
+                                        Ok(Err(e)) => Outcome::Other(format!("transport={e}")),
+                                        Err(_) => Outcome::Other("client timeout".into()),
+                                    };
+                                    (ms, outcome)
+                                }));
+                            }
+                        }
+                        let mut out = Vec::new();
+                        for h in handles {
+                            out.push(h.await.expect("burst task"));
+                        }
+                        out
+                    });
+                    for (ms, outcome) in results {
+                        match outcome {
+                            Outcome::Ok => {
+                                ok += 1;
+                                lat.push(ms);
+                            }
+                            Outcome::Rejected503(_) => r503 += 1,
+                            Outcome::RateLimited(_) => r429 += 1,
+                            Outcome::Other(_) => other += 1,
+                        }
+                    }
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+                let total = ok + r503 + r429 + other;
+                let (p50, p95, p99, max) = if lat.is_empty() {
+                    (0.0, 0.0, 0.0, 0.0)
+                } else {
+                    let max = lat.iter().copied().fold(0.0, f64::max);
+                    (
+                        pct(&mut lat, 0.50),
+                        pct(&mut lat, 0.95),
+                        pct(&mut lat, 0.99),
+                        max,
+                    )
+                };
+                println!(
+                    "BURST variant={variant} scenario={scenario} requests={total} ok={ok} rejected_503={r503} \
+                     rate_limited_429={r429} other={other} ok_p50_ms={p50:.1} ok_p95_ms={p95:.1} ok_p99_ms={p99:.1} \
+                     ok_max_ms={max:.1}"
+                );
+            }
+            lab.print_rejection_metrics(&format!("burst_{variant}"));
+        });
+    }
+}
+
+/// Nearest-rank percentile of `samples` (ms).
+fn pct(samples: &mut [f64], q: f64) -> f64 {
+    samples.sort_by(f64::total_cmp);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let index = ((samples.len() - 1) as f64 * q).round() as usize;
+    samples[index]
+}
+
 /// `op_ceiling` for memory.get and tools/list only, once per [`EXP_VARIANTS`] entry: each switch's own gain.
 #[test]
 #[ignore = "experiment"]
