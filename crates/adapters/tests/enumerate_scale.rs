@@ -230,16 +230,16 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
     let mut admin = Client::connect(&dsn, NoTls).expect("owner connection");
     let (tenant, workspace) = seed(&mut admin);
 
-    admin
-        .batch_execute(
-            "ALTER SYSTEM SET session_preload_libraries = 'auto_explain'; \
-             ALTER SYSTEM SET auto_explain.log_min_duration = -1; \
-             ALTER SYSTEM SET auto_explain.log_analyze = on; \
-             ALTER SYSTEM SET auto_explain.log_nested_statements = on; \
-             ALTER SYSTEM SET auto_explain.log_buffers = on; \
-             SELECT pg_reload_conf();",
-        )
-        .expect("diag: auto_explain");
+    for stmt in [
+        "ALTER SYSTEM SET session_preload_libraries = 'auto_explain'",
+        "ALTER SYSTEM SET auto_explain.log_min_duration = -1",
+        "ALTER SYSTEM SET auto_explain.log_analyze = on",
+        "ALTER SYSTEM SET auto_explain.log_nested_statements = on",
+        "ALTER SYSTEM SET auto_explain.log_buffers = on",
+        "SELECT pg_reload_conf()",
+    ] {
+        admin.batch_execute(stmt).expect("diag: auto_explain");
+    }
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     // dep: PostgreSQL(role_gateway) — the production enumerate path's pool
     let pool = rt
@@ -271,10 +271,11 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
         floor_ms_once(&mut admin, tenant, workspace);
     }
     admin
-        .batch_execute(
-            "ALTER SYSTEM SET auto_explain.log_min_duration = 20; SELECT pg_reload_conf();",
-        )
+        .batch_execute("ALTER SYSTEM SET auto_explain.log_min_duration = 20")
         .expect("diag: on");
+    admin
+        .batch_execute("SELECT pg_reload_conf()")
+        .expect("diag: reload");
     std::thread::sleep(std::time::Duration::from_millis(500));
     println!("DIAG_BEGIN");
     let start = Instant::now();
@@ -284,10 +285,11 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
     page(diag_first.next_cursor.as_deref());
     println!("DIAG_SECOND_PAGE_MS {}", ms(start));
     admin
-        .batch_execute(
-            "ALTER SYSTEM SET auto_explain.log_min_duration = -1; SELECT pg_reload_conf();",
-        )
+        .batch_execute("ALTER SYSTEM SET auto_explain.log_min_duration = -1")
         .expect("diag: off");
+    admin
+        .batch_execute("SELECT pg_reload_conf()")
+        .expect("diag: reload");
     println!("DIAG_END");
     let (mut first_ms, mut later_ms, mut floor_ms) = (Vec::new(), Vec::new(), Vec::new());
     let mut last_snapshot = Uuid::nil();
