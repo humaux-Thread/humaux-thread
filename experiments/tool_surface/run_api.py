@@ -51,13 +51,16 @@ def episode(case, arm, rep, tools, decode, cfg):
     api_tools = [{"name": t["name"], "description": t["description"], "input_schema": t["inputSchema"]}
                  for t in tools]
     messages = [{"role": "user", "content": case["prompt"]}]
-    calls, usage_in, err, t0 = [], 0, None, time.time()
+    calls, usage_in, first_in, err, t0 = [], 0, None, None, time.time()
     try:
         for _ in range(MAX_TURNS):
             out = post(f"{cfg['base']}/v1/messages", {"model": cfg["model"], "max_tokens": 1024, "system": SYSTEM,
                                                        "tools": api_tools, "messages": messages}, cfg["key"])
             u = out.get("usage") or {}
-            usage_in += (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+            turn_in = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+            usage_in += turn_in
+            if first_in is None:
+                first_in = turn_in  # ≈ system line + this arm's tool list + the user message: the context cost
             uses = [b for b in out.get("content", []) if b.get("type") == "tool_use"]
             if not uses:
                 break
@@ -75,6 +78,7 @@ def episode(case, arm, rep, tools, decode, cfg):
     except Exception as e:  # recorded as a failed episode, never dropped
         err = f"{type(e).__name__}: {str(e)[:160]}"
     row = grade(case, arm, rep, cfg["label"], calls, {"usage": {"input_tokens": usage_in}}, err, time.time() - t0)
+    row["first_turn_input_tokens"] = first_in
     return row
 
 
@@ -115,6 +119,13 @@ def main():
             if stop:
                 break
     md = summarize(rows, cfg["label"] + " (direct API)")
+    # Context cost per arm (owner 2026-10-15: 70+ tools eat the agent's context): the smallest first-turn input seen
+    # for the arm is the tool list + system line + the shortest prompt.
+    md += "\n| arm | tool-list context (first-turn input tokens, min / median) |\n|---|---|\n"
+    for arm in a.arms.split(","):
+        v = sorted(r["first_turn_input_tokens"] for r in rows if r["arm"] == arm and r.get("first_turn_input_tokens"))
+        if v:
+            md += f"| {arm} | {v[0]} / {v[len(v) // 2]} |\n"
     md += f"\nrun input tokens: {spent}; stop: {stop or 'none'}; final quota: {quota(cfg['key'])}\n"
     open(os.path.join(a.out, f"summary_{cfg['label']}_api.md"), "w").write(md)
     print(md)
