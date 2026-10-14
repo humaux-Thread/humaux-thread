@@ -349,6 +349,10 @@ jobs:
       # composite action so the `live` job below provisions its cluster the same way.
       - uses: ./.github/actions/setup
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: cargo test
         # A hung test fails here, not at the job's 90 min (run 38343204163: one test spun 80 min).
         timeout-minutes: 40
@@ -405,6 +409,10 @@ jobs:
       # Toolchain, cache, gitleaks fixture and the runbook §2 cluster provisioning live in one
       # composite action so the `live` job below provisions its cluster the same way.
       - uses: ./.github/actions/setup
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       # --no-fail-fast: one run shows every red binary, not just the first (§57.1 rule 2:
       # a stop at the first failure hides the rest behind it). Three invocations, not one:
