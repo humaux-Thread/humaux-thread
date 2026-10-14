@@ -56,6 +56,7 @@ use humaux_infra_cell::{
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalCard};
 use humaux_projection::dense::build_stream_count_filter;
+use humaux_projection::note_chunks::{NoteChunkPolicy, UnknownNoteChunkProfile};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
 use serde_json::{Map, Value, json};
@@ -737,6 +738,20 @@ async fn read_pg_side(
     require_stored_vector: bool,
 ) -> Result<PgSide> {
     let key = &stream.key;
+    // ADR-0068 D-D: Project(PG) plans under the projection's own policy row, as the worker's pass does (a missing
+    // row is legacy only); a hash this build has no profile for refuses the verify.
+    let row = projection_worker::card_profile_policy_row(
+        deps.reader,
+        &key.domain,
+        &key.projection_kind,
+        &key.projection_version,
+    )
+    .await?;
+    let policy = NoteChunkPolicy::from_profile_hash(row.flatten().as_deref()).map_err(
+        |UnknownNoteChunkProfile(hash)| {
+            ProvisioningError::InvalidInput(format!("card_profile_policy_unknown: {hash:?}"))
+        },
+    )?;
     let mut txn = begin_projector_read(deps.reader, key.tenant_id.0).await?;
     let h2: i64 = key_query(
         "SELECT issued_highwater FROM projection.stream_checkpoints \
@@ -797,6 +812,7 @@ async fn read_pg_side(
             &deps.worker.label,
             &key.projection_version,
             input.home_commit,
+            policy,
         )
         .await?
         {

@@ -139,9 +139,7 @@ use humaux_domain::memory::MemoryType;
 use humaux_domain::subject::SubjectId;
 use humaux_infra_cell::{CellAccessPermit, IntraCellHttpTransport};
 use humaux_local_secret_scan::{LocalSecretScanner, SealedRetrievalCard, SealedSource};
-use humaux_projection::card::{
-    CardBudget, CardBuildOutcome, CardInput, EgressDisposition, RetrievalCard, build_card,
-};
+use humaux_projection::card::{CardBuildOutcome, CardInput, EgressDisposition, RetrievalCard};
 use humaux_projection::note_chunks::{
     LEGACY_CARD_PROFILE_HASH, NoteChunkPolicy, PlanInput, ProjectionPlan, UnknownNoteChunkProfile,
     build_projection_plan, chunk_card,
@@ -516,8 +514,8 @@ fn parse_visibility_class(wire: &str) -> Option<humaux_domain::identity::Visibil
 /// §7.5.1-adjacent, first-pass mapping (no §18.4 policy registry exists yet, same "later task's
 /// deliverable" situation `retrieval-provider::contract`'s module doc names for the pricing/
 /// calibration registries): `Sensitive` content needs a policy check before egress,
-/// `SecretMaterial` never reaches this function (excluded at [`build_card`] already), anything
-/// else is unconditionally allowed.
+/// `SecretMaterial` never reaches this function (excluded at
+/// [`build_card`](humaux_projection::card::build_card) already), anything else is unconditionally allowed.
 // ponytail: a real `§18.4` per-tenant policy gate is a separate deliverable; this is the
 // smallest disposition that is not simply always-`Allowed` (tracked in coord task 7e6da2f9).
 fn egress_disposition_for(data_class: DataClass) -> EgressDisposition {
@@ -686,8 +684,8 @@ fn extract_str(value: &serde_json::Value, key: &str) -> Option<String> {
     value.get(key).and_then(|v| v.as_str()).map(str::to_owned)
 }
 
-/// Builds the [`CardInput`] this worker plans from ([`build_projection_plan`]; the rebuild verifier feeds it to
-/// [`build_card`]) from a [`ResolvedMemory`].
+/// Builds the [`CardInput`] this worker plans from ([`build_projection_plan`], for the rebuild verifier too, through
+/// [`plan_slots`]) from a [`ResolvedMemory`].
 /// `content` is arbitrary `jsonb` (§8.5) — `title`/`key_claim`/`evidence_excerpt` are read as
 /// optional string fields on it, falling back to a truncated stringified `content` for `title`
 /// only (never for `key_claim`/`evidence_excerpt` — a missing one of those is a genuine §18.4
@@ -1322,8 +1320,28 @@ pub(crate) fn point_payload(
     )
 }
 
+/// ADR-0068 D-C/D-E: one slot's registry identity and payload. A legacy slot keeps the v1 id and today's payload; a
+/// chunk slot is re-keyed to its v2 id and its payload names the profile and ordinal. The worker writes through it and
+/// the rebuild verifier's [`expected_points`] derives through it, so the two cannot disagree on a slot's point.
+fn slot_point(
+    legacy: &PrivateMemoryPointRegistration,
+    indexable: &IndexablePayload,
+    chunked: bool,
+    profile: &str,
+    ordinal: u32,
+) -> (PrivateMemoryPointRegistration, IndexablePayload) {
+    if chunked {
+        (
+            legacy.clone().for_chunk(profile, ordinal),
+            indexable.clone().with_chunk(profile, ordinal),
+        )
+    } else {
+        (legacy.clone(), indexable.clone())
+    }
+}
+
 /// ADR-0064 D-F X/E4: one point Project(PG) yields for an input, computed with the projector's own steps
-/// (`resolve_memories` → `card_input` → `build_card` → the deterministic point id → [`point_payload`]), so the
+/// (`resolve_memories` → `card_input` → [`plan_slots`] → [`slot_point`] → [`point_payload`]), so the
 /// verifier has no second card or payload builder. `payload` is the point's canonical payload JSON object
 /// without `source_stream_seq` (which differs between generations by design).
 pub(crate) struct ExpectedPoint {
@@ -1347,15 +1365,18 @@ pub(crate) async fn begin_projector_read(
     Ok(txn)
 }
 
-/// The points the projector writes for the input whose home commit is `commit_seq` (ADR-0064 D-F X): every
-/// Active memory whose card builds, under `embedding_version`. An Unbuildable memory yields nothing here (its
-/// ticket fails `card_unbuildable`, which E3 accounts as an outcome exclusion); secret material yields nothing.
+/// The points the projector writes for the input whose home commit is `commit_seq` (ADR-0064 D-F X): one per
+/// expected slot of every Active memory, planned under `policy` by the worker's own [`plan_slots`] and keyed by
+/// [`slot_point`] (ADR-0068 D-D: the verifier's manifest is per slot, so a chunked note is C points with their v2
+/// ids). An Unbuildable memory yields nothing here (its ticket fails `card_unbuildable`, which E3 accounts as an
+/// outcome exclusion); secret material yields nothing.
 pub(crate) async fn expected_points(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     family: &StreamFamily,
     embedding_version: &str,
     projection_version: &str,
     commit_seq: i64,
+    policy: NoteChunkPolicy,
 ) -> Result<Vec<ExpectedPoint>, sqlx::Error> {
     let workspace_id = WorkspaceId(family.scope_id);
     let mut points = Vec::new();
@@ -1363,11 +1384,6 @@ pub(crate) async fn expected_points(
         if memory.status != AuthorityStatus::Active {
             continue;
         }
-        let CardBuildOutcome::Card(_) =
-            build_card(card_input(&memory, workspace_id), CardBudget::default())
-        else {
-            continue;
-        };
         let Some(indexable) = point_payload(
             family.tenant_id,
             workspace_id,
@@ -1378,7 +1394,7 @@ pub(crate) async fn expected_points(
         ) else {
             continue;
         };
-        let registration = PrivateMemoryPointRegistration::deterministic(
+        let legacy = PrivateMemoryPointRegistration::deterministic(
             family.clone(),
             projection_version.to_owned(),
             embedding_version.to_owned(),
@@ -1386,18 +1402,27 @@ pub(crate) async fn expected_points(
             memory.updated_at,
             memory.body_sha256.clone(),
         );
-        let point_id = registration.point_id.as_uuid();
-        let mut body = qdrant::upsert_point_body(PointId::Uuid(point_id), &indexable);
-        let mut payload = match body.get_mut("payload").map(serde_json::Value::take) {
-            Some(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
+        let memory_id = memory.memory_id.0;
+        let Ok((planned, slots)) = plan_slots(vec![memory], workspace_id, policy) else {
+            continue;
         };
-        payload.remove(qdrant::SOURCE_STREAM_SEQ_FIELD);
-        points.push(ExpectedPoint {
-            point_id,
-            memory_id: memory.memory_id.0,
-            payload,
-        });
+        let chunked = planned.first().is_some_and(|entry| entry.source.is_some());
+        for slot in &slots {
+            let (registration, payload) =
+                slot_point(&legacy, &indexable, chunked, slot.profile, slot.ordinal);
+            let point_id = registration.point_id.as_uuid();
+            let mut body = qdrant::upsert_point_body(PointId::Uuid(point_id), &payload);
+            let mut payload = match body.get_mut("payload").map(serde_json::Value::take) {
+                Some(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+            payload.remove(qdrant::SOURCE_STREAM_SEQ_FIELD);
+            points.push(ExpectedPoint {
+                point_id,
+                memory_id,
+                payload,
+            });
+        }
     }
     Ok(points)
 }
@@ -1445,14 +1470,8 @@ async fn finish_row(
     for slot in slots {
         // ADR-0068 D-C/D-E: the legacy slot keeps the v1 id and today's payload; a chunk slot is re-keyed to its v2 id
         // and its payload names the profile and ordinal.
-        let (registration, payload) = if chunked {
-            (
-                legacy.clone().for_chunk(slot.profile, slot.ordinal),
-                indexable.clone().with_chunk(slot.profile, slot.ordinal),
-            )
-        } else {
-            (legacy.clone(), indexable.clone())
-        };
+        let (registration, payload) =
+            slot_point(&legacy, &indexable, chunked, slot.profile, slot.ordinal);
         let stored = fingerprint.map(|fingerprint_sha256| StoredVector {
             fingerprint_sha256,
             input_sha256: slot.input_sha256,

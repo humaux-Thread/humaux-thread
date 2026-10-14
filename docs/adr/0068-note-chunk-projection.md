@@ -353,9 +353,7 @@ Two facts frame every decision:
   caller coalesces the predicate to true (legacy), as the plan treats a Memory with no body.
 - **Left for 40d-1b-iii.**
   - The slot ledger (shipped in 40d-1b-iii-a, below).
-  - Rebuild per vector key: `expected_points` (the rebuild verifier's Project(PG)) per slot through
-    `build_projection_plan`, chunk payload fields included; until then a rebuild under an enabled policy would
-    expect the legacy point of a long note.
+  - Rebuild per slot (shipped in 40d-1b-iii-b, below).
   - Retry reuse of committed batch vectors (`retry_reuses_committed_batch_vectors`): stored-first is still
     all-or-nothing per ticket, so a retry after a partial failure re-embeds every distinct input.
   - Disclosure granularity: the embedder receives one Memory id per distinct input, not one source row per
@@ -404,6 +402,20 @@ Two facts frame every decision:
 - **Declared.** The SQL predicate reads `title` and `key_claim` as strings; the worker's `card_input` falls back to a
   truncated rendering when `title` is not one. An identity note always carries both (ADR-0067 D-E), so the two agree
   on every Memory the policy can chunk.
+
+**40d-1b-iii-b as shipped (the rebuild verifier per slot).**
+
+- **Project(PG).** `projection_worker::expected_points` takes the projection's policy and plans each Active memory
+  through the worker's own `plan_slots`; every slot's id and payload come from `slot_point`, which `finish_row` now
+  writes through as well. So a chunked note is C expected points with their v2 ids and chunk payload fields, a legacy
+  memory exactly one point as before, and the verifier still has no second card, plan or payload builder (ADR-0064
+  D-F X).
+- **Policy.** `rebuild::read_pg_side` reads `card_profile_policies` for the stream's projection once per verify, as
+  the worker's pass does (a missing row is legacy only); a hash this build has no profile for refuses the verify
+  (`InvalidInput`, exit 2). The registry side, the vector join on `input_sha256` and E3's id-set differences were
+  already per point.
+- **Gate.** `equal_counts_do_not_prove_manifest_equality` in `adapters::tests::rebuild` (S3): a chunked stream verifies
+  `equivalent`, and moving one chunk point to a foreign id at an unchanged count names both ids.
 
 ## Slices
 

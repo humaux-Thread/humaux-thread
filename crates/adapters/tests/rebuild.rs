@@ -5,10 +5,11 @@
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
 //!   humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx, tokio];
 //!   services=[PostgreSQL(owner) w=[control.private_reasoning_domains, control.tenants,
-//!   ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
+//!   ops.outbox, private.events, private.evidence_objects, private.identity_note_materializations,
+//!   private.memory_evidence, private.memory_records, projection.card_profile_policies,
 //!   projection.embedding_fingerprints, projection.memory_vectors, projection.private_memory_points,
 //!   projection.stream_checkpoints, projection.stream_log, projection.tenant_placements]
-//!   r=[ops.commit_seq_seq, projection.rebuild_runs, projection.rebuild_tickets],
+//!   r=[ops.commit_seq_seq, projection.rebuild_runs, projection.rebuild_tickets] x=[projection.note_chunk_count],
 //!   PostgreSQL(role_maintenance) w=[ops.backup_receipts,
 //!   ops.backup_sets, ops.restore_drills] x=[projection.issue_rebuild_tickets, projection.rebuild_close,
 //!   projection.rebuild_open], PostgreSQL(role_retrieval_worker) w=[projection.embedding_fingerprints,
@@ -843,6 +844,7 @@ use humaux_domain::confirm::DestructiveOp;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::TenantId;
 use humaux_local_secret_scan::SealedRetrievalCard;
+use humaux_projection::note_chunks::NOTE_CHUNKS_V1_PROFILE_HASH;
 use humaux_projection::serving::StreamFamily;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use sha2::{Digest, Sha256};
@@ -1733,6 +1735,100 @@ fn a_tampered_payload_vector_or_extra_point_is_not_equivalent() {
             assert!(!scrolled(h, port, &stream).label.contains_key(&foreign));
         },
     );
+}
+
+/// ADR-0068 gate `equal_counts_do_not_prove_manifest_equality` (D-D). Under the `NoteChunksV1` policy a long identity
+/// note projects C chunk points, and `verify` judges the stream `equivalent`: Project(PG) is planned per slot, so its
+/// manifest is the C v2 ids. Then one chunk point is moved to a foreign id: the point count is unchanged, and `verify`
+/// names both ids. Faults: plan Project(PG) per Memory (one legacy point) ⇒ the clean stream reads not equivalent ⇒
+/// red; judge E3 by counts ⇒ the moved point reads equivalent ⇒ red.
+#[test]
+fn equal_counts_do_not_prove_manifest_equality() {
+    run_db_fixture::<S3Fixture, _>("equal_counts_do_not_prove_manifest_equality", |mut s| {
+        let port = s.port;
+        let h = &mut s.h;
+        prepare(h);
+        // The throwaway database's own policy row (0238 seeds it NULL); nothing else reads it.
+        let enabled = h
+            .admin
+            .execute(
+                "UPDATE projection.card_profile_policies SET note_chunk_profile_hash = $1 \
+                  WHERE domain = 'private_memory' AND projection_kind = 'PRIVATE_MEMORY' \
+                    AND projection_version = 'v1'",
+                &[&NOTE_CHUNKS_V1_PROFILE_HASH],
+            )
+            .expect("enable the chunk profile");
+        assert_eq!(enabled, 1);
+        let ws = h.workspace();
+        let evidence = h.evidence(ws, "c40d note");
+        let note = h.memory(evidence, "c40d note", TENANT_SHARED);
+        let body: String = (0..300).map(|i| format!("w{i} ")).collect();
+        let mut txn = h.admin.transaction().expect("owner txn");
+        txn.execute(
+            "UPDATE private.memory_records SET content = $2 WHERE memory_id = $1",
+            &[&note, &json!({ "title": "a long note", "key_claim": body })],
+        )
+        .expect("make the Memory a long note");
+        txn.execute(
+            "INSERT INTO private.identity_note_materializations \
+               (tenant_id, evidence_id, strategy, output_memory_id, body_sha256, policy_version) \
+             VALUES ($1, $2, 'identity_note_v1', $3, sha256(convert_to($4, 'UTF8')), 'origin_ceiling_v1')",
+            &[&h.tenant_id, &evidence, &note, &body],
+        )
+        .expect("bind the identity contract");
+        let chunks: i32 = txn
+            .query_one(
+                "SELECT projection.note_chunk_count('a long note', $1)",
+                &[&body],
+            )
+            .expect("the SQL chunk count")
+            .get(0);
+        txn.commit().expect("commit the note");
+        assert!(chunks > 1, "the note is over the legacy capacity");
+        drain(h, ws, &Arc::new(CountingEmbedder::default()));
+        serve(h, ws);
+        let stream = stream_of(h, ws);
+
+        let report = verify(h, port, &stream, None);
+        assert_eq!(report.verdict, Verdict::Equivalent, "{}", report.json);
+        assert_eq!(report.points, i64::from(chunks), "{}", report.json);
+
+        let points = scrolled(h, port, &stream);
+        let (&moved, point) = points
+            .label
+            .iter()
+            .find(|(_, p)| p.payload.contains_key("chunk_ordinal"))
+            .expect("a chunk point");
+        let vector = point.vector.clone().expect("vector");
+        let payload = point.payload.clone();
+        qdrant_call(
+            h,
+            IntraCellMethod::Post,
+            format!("/collections/{}/points/delete?wait=true", h.collection),
+            Some(json!({ "points": [moved.to_string()] })),
+        );
+        let foreign = Uuid::new_v4();
+        put_point(h, foreign, &vector, &payload);
+        assert_eq!(
+            scrolled(h, port, &stream).label.len(),
+            points.label.len(),
+            "the same number of points"
+        );
+        let report = verify(h, port, &stream, None);
+        assert_eq!(report.verdict, Verdict::NotEquivalent, "{}", report.json);
+        assert_eq!(
+            report.json["differing_ids"]["registered_not_in_qdrant"],
+            json!([moved]),
+            "{}",
+            report.json
+        );
+        assert_eq!(
+            report.json["differing_ids"]["qdrant_not_registered"],
+            json!([foreign]),
+            "{}",
+            report.json
+        );
+    });
 }
 
 /// T-F2 (ADR-0064 D-G, card fault): registry rows of the label rewritten to a second fingerprint F2 (the tamper
