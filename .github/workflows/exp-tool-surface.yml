@@ -16,7 +16,7 @@ concurrency:
 env:
   EXP_ARMS: A8,B11,C14,D18,E30,P
   EXP_REPS: '1'
-  EXP_WORKERS: '3'
+  EXP_WORKERS: '2'
   EXP_TOKEN_BUDGET: '12000000'
 
 jobs:

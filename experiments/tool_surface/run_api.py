@@ -15,6 +15,8 @@ import concurrent.futures as cf
 import json
 import os
 import time
+import random
+import urllib.error
 import urllib.request
 
 from canned import canned
@@ -27,12 +29,21 @@ SYSTEM = ("The user's persistent memory and task system, Humaux Thread, is avail
 MAX_TURNS = 5
 
 
-def post(url, body, key, timeout=120):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={
-        "content-type": "application/json", "x-api-key": key, "authorization": f"Bearer {key}",
-        "anthropic-version": "2023-06-01"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+def post(url, body, key, timeout=120, tries=7):
+    """POST with backoff on 429/5xx (run 38642028234: 103 episodes lost to HTTP 429 at 3 workers)."""
+    data = json.dumps(body).encode()
+    for attempt in range(tries):
+        req = urllib.request.Request(url, data=data, method="POST", headers={
+            "content-type": "application/json", "x-api-key": key, "authorization": f"Bearer {key}",
+            "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 529) or attempt == tries - 1:
+                raise
+            wait = float(e.headers.get("retry-after") or 0) or min(60, 2 ** attempt * 2)
+            time.sleep(wait + random.uniform(0, 1.5))
 
 
 def quota(key):
