@@ -28,6 +28,7 @@ jobs:
           - s2-stable-mold
           - s3-nightly-llvm-mold-threads8
           - s4-nightly-cranelift-mold
+        rep: [1, 2, 3]   # round 1 was n=1 per arm; runner-to-runner noise needs repeats
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
@@ -59,7 +60,7 @@ jobs:
           export RUSTFLAGS="$RF"
           t() { local s=$(date +%s); cargo $TC $EXTRA test --workspace --no-run --locked -q >"/tmp/$1.log" 2>&1; local rc=$?; echo "$1 $(( $(date +%s) - s ))s rc=$rc"; [ $rc -eq 0 ] || tail -25 "/tmp/$1.log"; return 0; }
           {
-            echo "### $ARM"; echo '```'
+            echo "### $ARM rep ${{ matrix.rep }}"; echo '```'
             cargo $TC --version; rustc $TC --version
             t cold
             echo "// exp touch $(date +%s)" >> bins/gateway/src/main.rs;  t warm_leaf_gateway
