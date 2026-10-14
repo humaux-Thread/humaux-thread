@@ -816,10 +816,12 @@ async fn one_long_note_cannot_monopolize_candidates() {
 }
 
 /// ADR-0068 gate `bounded_group_search_is_refilled` (D-E), pinning research batch 12's counterexample against the real
-/// Qdrant CI runs: six Memories qualify — A with 36 top points, B..E with 6 each in lower bands, F with one point
-/// below them. One grouped call with `limit` 6 returns only A..E (Qdrant's bounded discover rounds spend themselves
-/// on A's chunks), and the bounded refill recovers F. Faults: no refill (one call) ⇒ five groups ⇒ red; a refill that
-/// does not exclude the Memories already seen ⇒ it returns one again ⇒ unexpected shape ⇒ red.
+/// Qdrant CI runs: seven Memories qualify — A with 36 top points, B..E with 6 each in lower bands, F and G with one
+/// point each below them. One grouped call with `limit` 6 returns only A..E (Qdrant's bounded discover rounds spend
+/// themselves on A's chunks), and the bounded refill recovers F — the one group left in the budget, never G.
+/// Faults: no refill (one call) ⇒ five groups ⇒ red; a refill that does not exclude the Memories already seen ⇒ it
+/// returns one again ⇒ unexpected shape ⇒ red; a refill that asks for `limit` again instead of the remainder ⇒ F and
+/// G ⇒ seven ⇒ red.
 // One spawned body (collection, points, both queries) so a panic still reaches the collection cleanup below.
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
@@ -903,10 +905,17 @@ async fn bounded_group_search_is_refilled() {
         };
         // (Memory, points, band): cosine to [1, 0, 0, 0] falls as the second component grows, so each band is
         // strictly below the one before it.
-        let memories: Vec<MemoryId> = (0..6).map(|_| MemoryId::new()).collect();
+        let memories: Vec<MemoryId> = (0..7).map(|_| MemoryId::new()).collect();
         let payloads: Vec<_> = memories.iter().map(|m| payload(*m)).collect();
-        let bands: [(usize, f32); 6] =
-            [(36, 0.0), (6, 1.0), (6, 2.0), (6, 3.0), (6, 4.0), (1, 6.0)];
+        let bands: [(usize, f32); 7] = [
+            (36, 0.0),
+            (6, 1.0),
+            (6, 2.0),
+            (6, 3.0),
+            (6, 4.0),
+            (1, 6.0),
+            (1, 8.0),
+        ];
         let mut rows = Vec::new();
         for (memory, (points, band)) in bands.iter().enumerate() {
             for i in 0..*points {
@@ -939,7 +948,7 @@ async fn bounded_group_search_is_refilled() {
             collection_name: collection.clone(),
             shard_key: None,
             placement_class: humaux_adapters::qdrant::PlacementClass::SharedFallback,
-            point_count: 61,
+            point_count: 62,
             bytes_estimate: 0,
             promotion_state: humaux_adapters::qdrant::PromotionState::Stable,
         };
@@ -972,7 +981,11 @@ async fn bounded_group_search_is_refilled() {
         let refilled = query_dense_groups_bounded(transport.as_ref(), &permit, &query, 3)
             .await
             .expect("bounded refill");
-        assert_eq!(order(&refilled), want, "the refill recovers F");
+        assert_eq!(
+            order(&refilled),
+            want[..6].to_vec(),
+            "the refill recovers F and stays within the six-group budget"
+        );
     });
     let primary = primary.await;
     let cleanup = delete_test_collection(&transport, &permit, &collection).await;
