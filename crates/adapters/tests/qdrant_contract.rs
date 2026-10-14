@@ -191,6 +191,7 @@ fn shard_key_body_carries_the_key_verbatim() {
 
 fn sample_payload() -> QdrantPointPayload {
     QdrantPointPayload {
+        memory_id: humaux_domain::authority::MemoryId::new(),
         tenant_id: TenantId::new(),
         workspace_id: WorkspaceId::new(),
         visibility_class: VisibilityClass::UserPrivate,

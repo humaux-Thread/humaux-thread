@@ -1292,6 +1292,7 @@ pub(crate) fn point_payload(
     memory: &ResolvedMemory,
 ) -> Option<IndexablePayload> {
     let payload = QdrantPointPayload {
+        memory_id: memory.memory_id,
         tenant_id,
         workspace_id,
         visibility_class: memory.visibility.class,

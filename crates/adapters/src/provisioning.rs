@@ -66,7 +66,8 @@ use uuid::Uuid;
 use crate::membership_repo::{self, AdminAction, MembershipRepoError, MembershipRequest};
 use crate::postgres::MaintenanceDbPool;
 use crate::qdrant::{
-    Distance, ShardingMethod, create_collection_body, subject_index_body, tenant_index_body,
+    Distance, ShardingMethod, create_collection_body, memory_id_index_body, subject_index_body,
+    tenant_index_body,
 };
 use crate::retrieve::{IndexFace, stream_count_of_version};
 
@@ -1432,6 +1433,10 @@ pub fn collection_setup_puts(collection: &str, dimension: u32) -> Vec<(String, V
             format!("/collections/{collection}/index"),
             subject_index_body(),
         ),
+        (
+            format!("/collections/{collection}/index"),
+            memory_id_index_body(),
+        ),
     ]
 }
 
@@ -1875,7 +1880,11 @@ mod tests {
     #[test]
     fn a_seeded_collection_gets_both_payload_indexes() {
         let puts = collection_setup_puts("c", 1024);
-        assert_eq!(puts.len(), 3, "collection + tenant index + subject index");
+        assert_eq!(
+            puts.len(),
+            4,
+            "collection + tenant index + subject index + memory_id index"
+        );
         assert_eq!(puts[0].0, "/collections/c");
         let fields: Vec<&str> = puts[1..]
             .iter()
@@ -1884,10 +1893,14 @@ mod tests {
                 body["field_name"].as_str().expect("field_name")
             })
             .collect();
-        assert_eq!(fields, vec!["tenant_id", "subject_ids"]);
+        assert_eq!(fields, vec!["tenant_id", "subject_ids", "memory_id"]);
         assert_eq!(puts[1].1["field_schema"]["is_tenant"], true);
         assert_eq!(puts[2].1["field_schema"]["type"], "uuid");
-        assert_eq!(payload_index_names("c"), vec!["tenant_id", "subject_ids"]);
+        assert_eq!(puts[3].1["field_schema"]["type"], "keyword");
+        assert_eq!(
+            payload_index_names("c"),
+            vec!["tenant_id", "subject_ids", "memory_id"]
+        );
     }
 
     /// The prefix is deterministic per (tenant, key name) — a re-run finds the same key — and

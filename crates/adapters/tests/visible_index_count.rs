@@ -402,6 +402,7 @@ fn payload(
     seq: i64,
 ) -> QdrantPointPayload {
     QdrantPointPayload {
+        memory_id: humaux_domain::authority::MemoryId::new(),
         tenant_id,
         workspace_id,
         visibility_class: VisibilityClass::UserPrivate,

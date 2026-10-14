@@ -481,6 +481,7 @@ async fn upsert_private_qdrant_points(
     point: ProjectionPointId,
 ) -> Result<(), String> {
     let payload = QdrantPointPayload {
+        memory_id: humaux_domain::authority::MemoryId::new(),
         tenant_id: TenantId(handle.tenant_id),
         workspace_id: WorkspaceId(handle.tenant_id),
         visibility_class: VisibilityClass::TenantShared,

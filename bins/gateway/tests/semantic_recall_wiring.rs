@@ -451,6 +451,7 @@ fn payload(
     source_updated_at: time::OffsetDateTime,
 ) -> humaux_adapters::qdrant::IndexablePayload {
     QdrantPointPayload {
+        memory_id: humaux_domain::authority::MemoryId::new(),
         tenant_id: TenantId(tenant_id),
         workspace_id: WorkspaceId(workspace_id),
         visibility_class: VisibilityClass::WorkspaceShared,

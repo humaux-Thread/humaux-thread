@@ -435,6 +435,19 @@ Two facts frame every decision:
     cell configuration against a migrated throwaway database. Upgrade signal: a boot-path refactor in
     `bins/retrieval-worker`.
 
+**40d-1c-i as shipped (the `memory_id` payload and its index).**
+
+- **Payload.** `QdrantPointPayload` carries `memory_id` (a required field, so every constructor names it), written as
+  the scalar keyword `memory_id` on every point, legacy and chunk alike. The projection worker fills it from the
+  resolved Memory; the rebuild verifier's Project(PG) derives the same payload through the same builder.
+- **Index.** `collection_setup_puts` PUTs a third payload index, `memory_id` keyword, after `tenant_id` and
+  `subject_ids`; it is part of the collection's generation digest, so a collection created earlier reads
+  `collection_misconfigured` until `collection ensure` (idempotent) adds it — runbook §3 says so.
+- **Gate.** `every_point_names_its_memory` (`adapters::qdrant`), and the provisioning sentinel pins the third index.
+- **Declared.** A point written before this slice has no `memory_id` until 40d-2's `set_payload` backfill (or a
+  re-projection) writes it, so a rebuild verify of such a stream reports a payload difference on every such point.
+  Recall does not read the field yet: grouped recall (40d-1c-ii) is gated on the backfill.
+
 ## Slices
 
 | slice | scope | L-4 |
