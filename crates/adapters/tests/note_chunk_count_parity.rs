@@ -128,10 +128,10 @@ fn connect(test: &str) -> Option<Client> {
 /// ADR-0068 gate `rust_sql_chunk_count_parity`. Faults: `<` for `<=` or `+ 2` for `+ 3` in 0237's or 0238's body ⇒
 /// red at `title=N body=600-3-N`; `octet_length` for `char_length` ⇒ red on every multi-byte case; a window or stride
 /// drift on either side ⇒ red at 481 / 897; drop `char_length(p_body) = 0` from 0238 ⇒ red at `title=598 body=0`;
-/// a predicate rewritten as `note_chunk_count(...) = 1` ⇒ red on every one-slot NoteChunksV1 case; either function
-/// re-created without STRICT (a forward migration) ⇒ red on the NULL-body arm's SQL half (`greatest` skips the NULL,
-/// so the count reads 1); `build_projection_plan` reading a missing `key_claim` as over capacity ⇒ red on its plan
-/// half.
+/// a predicate rewritten as `note_chunk_count(...) = 1` ⇒ red on every one-slot NoteChunksV1 case;
+/// `note_chunk_count` re-created without STRICT (a forward migration) ⇒ red on the NULL-body arm's SQL half
+/// (`greatest` skips the NULL, so the count reads 1; the 0238 predicate is NULL with or without STRICT);
+/// `build_projection_plan` reading a missing `key_claim` as over capacity ⇒ red on its plan half.
 #[test]
 fn rust_sql_chunk_count_parity() {
     let Some(mut client) = connect("rust_sql_chunk_count_parity") else {
