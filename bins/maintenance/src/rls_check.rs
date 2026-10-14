@@ -1133,6 +1133,18 @@ const MATRIX: &[Cell] = &[
         "role_gateway",
         ["SELECT"]
     ),
+    // 0242 (ADR-0070): the two roles the subject guard applies to read the presence index from that policy; only the
+    // owner-defined trigger writes it.
+    cell!(
+        "private.memory_subject_presence",
+        "role_gateway",
+        ["SELECT"]
+    ),
+    cell!(
+        "private.memory_subject_presence",
+        "role_maintenance",
+        ["SELECT"]
+    ),
 ];
 
 // 0120 is an additive observation-window seam, not a rewrite of the frozen §6.2.2 header.

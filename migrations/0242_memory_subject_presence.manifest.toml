@@ -1,0 +1,43 @@
+# §46.1 migration manifest. Card 35b / ADR-0070: private.memory_subject_presence (trigger-maintained, tenant RLS,
+# SELECT to role_gateway and role_maintenance only) and the memory_records_subject_visibility shortcut. §46 forward-fix
+# (EXPAND_CONTRACT, first free number after 0241).
+
+migration_id = "0242_memory_subject_presence"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without 0155's guard, or one that already has the presence table.
+precheck = """
+select to_regclass('private.memory_subject_presence') is null
+ and to_regprocedure('private.memory_subject_visibility_ok(uuid,uuid)') is not null
+ and exists (select 1 from pg_policies where schemaname = 'private' and tablename = 'memory_records'
+              and policyname = 'memory_records_subject_visibility' and permissive = 'RESTRICTIVE')
+ as precheck_ok
+"""
+
+# Fails on: the table missing FORCE RLS or its tenant policy, any write grant to a runtime role, the insert trigger
+# missing or not owner-defined, a link without its presence row after the backfill, or a guard that lost either arm.
+postcheck = """
+select (select c.relrowsecurity and c.relforcerowsecurity from pg_class c
+         where c.oid = to_regclass('private.memory_subject_presence'))
+ and (select count(*) = 1 from pg_policies
+       where schemaname = 'private' and tablename = 'memory_subject_presence')
+ and has_table_privilege('role_gateway', 'private.memory_subject_presence', 'SELECT')
+ and has_table_privilege('role_maintenance', 'private.memory_subject_presence', 'SELECT')
+ and not has_table_privilege('role_gateway', 'private.memory_subject_presence', 'INSERT')
+ and not has_table_privilege('role_private_worker', 'private.memory_subject_presence', 'INSERT')
+ and not has_table_privilege('role_private_worker', 'private.memory_subject_presence', 'SELECT')
+ and exists (select 1 from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+              where t.tgrelid = 'private.memory_subjects'::regclass
+                and t.tgname = 'memory_subject_presence_on_insert'
+                and p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and not exists (select 1 from private.memory_subjects ms
+                  where not exists (select 1 from private.memory_subject_presence p
+                                     where p.tenant_id = ms.tenant_id and p.memory_id = ms.memory_id))
+ and (select qual ~ 'memory_subject_presence' and qual ~ 'memory_subject_visibility_ok' from pg_policies
+       where schemaname = 'private' and tablename = 'memory_records'
+         and policyname = 'memory_records_subject_visibility')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: ALTER POLICY memory_records_subject_visibility back to 0155's USING (tenant AND memory_subject_visibility_ok(...)), then DROP TRIGGER memory_subject_presence_on_insert, DROP FUNCTION private.memory_subject_presence_on_insert(), DROP TABLE private.memory_subject_presence — reads go back to the per-row definer cost."
+backup_restore_requirement = "none: a derived index table rebuilt from private.memory_subjects by its own backfill; no authority row is changed."
