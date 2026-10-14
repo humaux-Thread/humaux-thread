@@ -1,6 +1,6 @@
 //! `gateway::recall` — Native authenticated semantic recall wiring.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell,
-//!   humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
+//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
 //! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for cand_k for this request's workspace stream only; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions search() exhaustively and is reported only when every lap followed LAP_SEQUENCE]
 //! Spec: Baseline §17.3; §23.3; §33; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056
@@ -21,7 +21,7 @@ use humaux_adapters::{
     postgres::RuntimeDbPool,
     qdrant::{
         DenseQuery, DenseQueryVersions, QdrantOperation, RetrievalFamily, ha_profile_for,
-        query_dense, query_dense_groups,
+        query_dense, query_dense_groups_bounded,
     },
     read_materialize::MaterializedItem,
     retrieve::{
@@ -37,6 +37,7 @@ use humaux_application::{
     },
     retrieve::{RetrievalIntent, prepare_request},
 };
+use humaux_contracts::retrieval_config::RETRIEVAL_GROUP_QUERY_MAX_CALLS;
 use humaux_domain::{
     affect::{AffectFilter, MoodPoint},
     error::ErrorCode,
@@ -529,7 +530,13 @@ pub async fn search(
     })?;
     let permit = runtime.qdrant_permit()?;
     let candidates = if grouped {
-        query_dense_groups(runtime.qdrant.as_ref(), &permit, &dense).await
+        query_dense_groups_bounded(
+            runtime.qdrant.as_ref(),
+            &permit,
+            &dense,
+            RETRIEVAL_GROUP_QUERY_MAX_CALLS,
+        )
+        .await
     } else {
         query_dense(runtime.qdrant.as_ref(), &permit, &dense).await
     };
