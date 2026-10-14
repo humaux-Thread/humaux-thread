@@ -271,7 +271,7 @@ fn enumerate_first_page_scales_with_a_capped_manifest() {
         floor_ms_once(&mut admin, tenant, workspace);
     }
     admin
-        .batch_execute("ALTER SYSTEM SET auto_explain.log_min_duration = 20")
+        .batch_execute("ALTER SYSTEM SET auto_explain.log_min_duration = 2")
         .expect("diag: on");
     admin
         .batch_execute("SELECT pg_reload_conf()")
