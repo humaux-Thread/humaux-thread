@@ -1396,7 +1396,7 @@ impl StreamPipelineCounts {
 /// `AUTHORIZED_MEMORY_ENUMERATION_V1` ("Authorized Gateway enumeration, distinct from the
 /// worker's tenant-shared predicate"). Registering an NL surface for a trusted-intent
 /// predicate would make it reachable from query text, which is the opposite of what it is.
-const ENUMERATION_SCOPE: &str = "private.memory_records \
+pub(crate) const ENUMERATION_SCOPE: &str = "private.memory_records \
      WHERE memory_records.tenant_id = $1 \
        AND (memory_records.visibility_workspace_id IS NULL \
             OR memory_records.visibility_workspace_id = $2)";

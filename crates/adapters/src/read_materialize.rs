@@ -212,7 +212,7 @@ impl Lifecycle {
     }
 
     /// The bound `text[]` of statuses, in canonical order (`active` before `superseded`).
-    pub(crate) fn status_wires(self) -> Vec<String> {
+    pub fn status_wires(self) -> Vec<String> {
         let wires: &[&str] = match self.statuses {
             StatusSet::Active => &["active"],
             StatusSet::Superseded => &["superseded"],
@@ -222,7 +222,7 @@ impl Lifecycle {
     }
 
     /// The bound archive mode.
-    pub(crate) const fn archive_wire(self) -> &'static str {
+    pub const fn archive_wire(self) -> &'static str {
         match self.archive {
             ArchiveMode::Exclude => "exclude",
             ArchiveMode::Only => "only",

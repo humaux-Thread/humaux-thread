@@ -151,7 +151,7 @@ pub struct ExactCensusOutcome {
 /// §23.1② overlay, EXACT-channel face (see module doc): correlated on the outer
 /// `memory_records` row, scoped to one [`StreamKey`] via `$3..$7` (the registry's
 /// post-0079 `enumerable_scope` already claims `$1` = tenant and `$2` = workspace).
-const NOT_TOMBSTONED: &str = "NOT EXISTS ( \
+pub(crate) const NOT_TOMBSTONED: &str = "NOT EXISTS ( \
    SELECT 1 FROM private.memory_evidence me \
    JOIN ops.outbox ob ON ob.evidence_id = me.evidence_id \
                         AND ob.tenant_id = memory_records.tenant_id \

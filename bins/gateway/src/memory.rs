@@ -1,13 +1,15 @@
 //! `gateway::memory` — Authenticated Memory reads through the existing final-body and Envelope boundaries.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
-//!   time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
-//!   adapters::distill_repo, adapters::memory_governance_repo, adapters::postgres, adapters::read_materialize,
+//!   sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
+//!   adapters::distill_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
+//!   adapters::read_materialize,
 //!   adapters::subject_repo, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
-//!   domain::evidence, domain::identity, domain::ids, domain::subject, gateway::context, gateway::guard,
+//!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::context,
+//!   gateway::guard,
 //!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory]
-//! Spec: Baseline §22.0; §23.1; §36; ADR-0025; ADR-0026; ADR-0054; ADR-0067
+//! Spec: Baseline §22.0; §23.1; §33; §36; ADR-0025; ADR-0026; ADR-0054; ADR-0067; ADR-0069
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -21,12 +23,13 @@ use humaux_adapters::{
     distill_repo::{
         self, ConfirmOutcome, ConfirmRequest, PendingCandidate, RejectOutcome, RejectRequest,
     },
+    grep_repo::{self, GrepQuery},
     memory_governance_repo::{
         self, ArchiveRequest, ArchiveResult, CorrectDone, CorrectRequest, RestoreRequest,
         RestoreResult, SupersedeOutcome, SupersedeRequest,
     },
     postgres::RuntimeDbPool,
-    read_materialize::{MaterializedItem, MemoryHistory},
+    read_materialize::{Lifecycle, MaterializedItem, MemoryHistory},
     subject_repo,
 };
 use humaux_domain::{
@@ -36,6 +39,7 @@ use humaux_domain::{
     error::ErrorCode,
     identity::AuthorizationScope,
     ids::{Scope, WorkspaceId},
+    selection::Cursor,
     subject::{SubjectDeclaration, SubjectId, SubjectKey, SubjectKind, SubjectRole},
 };
 use humaux_projection::{serving::StreamFamily, stream::StreamKey};
@@ -1050,4 +1054,116 @@ fn accept_memory_envelope<T>(
             })
         },
     )
+}
+
+/// ADR-0069 `memory.grep`'s request inputs, after schema validation.
+pub(crate) struct GrepParams<'a> {
+    pub(crate) pattern: &'a str,
+    pub(crate) lifecycle: Lifecycle,
+    pub(crate) page_size: u16,
+    pub(crate) cursor: Option<&'a str>,
+    /// The cursor lifetime (the enumeration TTL, §20.4).
+    pub(crate) ttl: Duration,
+    pub(crate) mac_key: &'a [u8],
+}
+
+/// ADR-0069 D-E: what a grep cursor is bound to — the pattern, the lifecycle selection and the workspace — so a
+/// cursor replayed against any other request is refused, never silently re-scoped.
+fn grep_fingerprint(params: &GrepParams<'_>, workspace: WorkspaceId) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in [
+        "memory.grep",
+        params.pattern,
+        &params.lifecycle.status_wires().join(","),
+        params.lifecycle.archive_wire(),
+        &workspace.0.to_string(),
+    ] {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// ADR-0069 `memory.grep`: one keyset page of matching lines over the caller's view of the requested workspace (the
+/// read routes' scope rule, [`read_scope`]). The cursor is the §20.4 signed [`Cursor`] carrying the keyset position
+/// (`snapshot_id` = the last hit's memory id, `last_ordinal` = its line number), bound to [`grep_fingerprint`];
+/// there is no server-side snapshot, so each page is its own `per_call_snapshot`.
+///
+/// # Errors
+/// [`ErrorCode::InvalidInput`] for a malformed, foreign, tampered, expired or re-scoped cursor and for an invalid
+/// pattern; the scope and adapter errors otherwise.
+pub(crate) async fn grep(
+    pool: Arc<RuntimeDbPool>,
+    authorization: AuthorizationScope,
+    requested_workspace: Option<WorkspaceId>,
+    bootstrap: ContextBootstrap,
+    params: GrepParams<'_>,
+) -> Result<serde_json::Value, ErrorCode> {
+    let (authorization, _scope, _family, stream, _serving) =
+        read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
+    let workspace = requested_workspace.ok_or(ErrorCode::DependencyUnavailable)?;
+    let tenant = authorization.tenant_id().0;
+    let fingerprint = grep_fingerprint(&params, workspace);
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let after = params
+        .cursor
+        .map(|encoded| {
+            let cursor = Cursor::decode(encoded).map_err(|_| ErrorCode::InvalidInput)?;
+            cursor
+                .validate(tenant, params.mac_key, now)
+                .map_err(|_| ErrorCode::InvalidInput)?;
+            if cursor.query_fingerprint != fingerprint {
+                return Err(ErrorCode::InvalidInput);
+            }
+            Ok((cursor.snapshot_id, cursor.last_ordinal))
+        })
+        .transpose()?;
+    let query = GrepQuery::new(
+        params.pattern,
+        params.lifecycle,
+        params.page_size,
+        after,
+        None,
+    )?;
+    let page = grep_repo::grep(&pool, &authorization, workspace, &stream, &query).await?;
+    let expires = now.saturating_add(i64::try_from(params.ttl.as_secs()).unwrap_or(i64::MAX));
+    let next_cursor = page.next_after().map(|(memory_id, line_no)| {
+        Cursor::sign(
+            memory_id,
+            tenant,
+            fingerprint.clone(),
+            line_no,
+            expires,
+            params.mac_key,
+        )
+        .encode()
+    });
+    let items: Vec<serde_json::Value> = page
+        .items
+        .iter()
+        .map(|hit| {
+            serde_json::json!({
+                "memory_id": hit.memory_id,
+                "line_no": hit.line_no,
+                "line": hit.line,
+                "before": hit.before,
+                "after": hit.after,
+                "memory_matching_lines": hit.memory_matching_lines,
+                "status": hit.status,
+                "archived": hit.archived,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "items": items,
+        "total": page.total_matching_lines,
+        "total_unit": "matching_lines",
+        "total_matching_lines": page.total_matching_lines,
+        "total_memories": page.total_memories,
+        "has_more": page.has_more,
+        "truncated": page.has_more,
+        "next_cursor": next_cursor,
+        "consistency": "per_call_snapshot",
+    }))
 }

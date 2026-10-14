@@ -8930,6 +8930,7 @@ recall.search
 context.assemble
 memory.get
 memory.enumerate
+memory.grep
 continuity.get
 memory.supersede
 memory.pin
@@ -14000,6 +14001,7 @@ remember
 recall
 memory.get
 memory.enumerate
+memory.grep
 memory.correct
 memory.supersede
 memory.restore

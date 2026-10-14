@@ -41,7 +41,8 @@
 //!   HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo,
-//!   adapters::forget_repo, adapters::membership_repo, adapters::operation_receipt, adapters::postgres,
+//!   adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt,
+//!   adapters::postgres, adapters::read_materialize,
 //!   adapters::qdrant, adapters::quota_repo, adapters::remember, adapters::subject_repo,
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
 //!   contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm,
@@ -15261,4 +15262,252 @@ fn native_mcp_note_reads_filter_by_kind_refuse_project_and_get_history() {
             stop_server(server).await.expect("server shutdown");
         });
     });
+}
+
+/// Sets a fixture memory's `content` (the grep tests' known text).
+fn set_memory_content(handle: &mut Handle, memory_id: Uuid, content: &Value) {
+    handle
+        .admin
+        .execute(
+            "UPDATE private.memory_records SET content = $2 WHERE memory_id = $1",
+            &[&memory_id, content],
+        )
+        .expect("owner sets the fixture memory text");
+}
+
+/// The `(memory_id, line_no)` keys of a grep page, in order.
+fn grep_keys(response: &Value) -> Vec<(String, i64)> {
+    response["result"]["structuredContent"]["items"]
+        .as_array()
+        .expect("grep items")
+        .iter()
+        .map(|item| {
+            (
+                item["memory_id"].as_str().expect("memory id").to_owned(),
+                item["line_no"].as_i64().expect("line number"),
+            )
+        })
+        .collect()
+}
+
+/// ADR-0069 gates `grep_totals_page_and_exclude_like_the_census` and `grep_budget_never_guesses`, against the real
+/// gateway and PostgreSQL. Seven memories carry known text: two visible ones hold three matching lines of "needle"
+/// (case-insensitive, one a bare-string content), and a peer's private one, an archived one, a tombstoned one and a
+/// secret-linked one hold the word too. The totals are 3 lines in 2 memories; two keyset pages carry exactly those
+/// three hits with no repeat; context and the archive axis follow the contract; `%` matches only a literal `%`; a
+/// cursor replayed with another pattern is refused. A direct read with a 1 ms budget over 20 000 rows is
+/// CANNOT_ESTABLISH_COMPLETENESS. Faults: drop the ESCAPE clause ⇒ the `%` arm counts every memory ⇒ red; drop the
+/// tombstone overlay (or the secret exclusion, or the authorization filter) ⇒ the totals rise ⇒ red; drop the
+/// statement timeout ⇒ the budget arm returns a page ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one seeded universe, every contract arm against it
+fn native_mcp_memory_grep_counts_pages_and_excludes() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>(
+        "native_mcp_memory_grep_counts_pages_and_excludes",
+        |mut handle| {
+            let credential = enumeration_credential(&mut handle, "grep");
+            handle.seed_current_entitlement_and_window(40);
+            let two = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                two.memory_id,
+                &json!({"title": "Alpha note", "key_claim": "line one\nthe needle here\nline three\nNEEDLE again"}),
+            );
+            let bare = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                bare.memory_id,
+                &json!("a needle in a bare string\nend"),
+            );
+            let literal = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                literal.memory_id,
+                &json!({"title": "50% off_now!"}),
+            );
+            let peer_user = handle.seed_peer_user();
+            let private = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                private.memory_id,
+                &json!({"key_claim": "private needle"}),
+            );
+            set_record_user_visibility(&mut handle, &private, peer_user);
+            let archived = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                archived.memory_id,
+                &json!({"key_claim": "archived needle"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.memory_records SET archived_at = clock_timestamp() WHERE memory_id = $1",
+                    &[&archived.memory_id],
+                )
+                .expect("owner archives the fixture memory");
+            let secret = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                secret.memory_id,
+                &json!({"key_claim": "secret needle"}),
+            );
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.evidence_objects SET data_class = 'SECRET_MATERIAL' WHERE evidence_id = $1",
+                    &[&secret.evidence_id],
+                )
+                .expect("owner marks the backing evidence secret");
+            let tombstoned = handle.seed_workspace_visible_context_record();
+            set_memory_content(
+                &mut handle,
+                tombstoned.memory_id,
+                &json!({"key_claim": "tombstoned needle"}),
+            );
+            let tombstone_key = seed_done_stream_identity(&mut handle, &tombstoned);
+            assert!(
+                handle
+                    .rt
+                    .block_on(forget_repo::tombstone(
+                        &handle.maintenance,
+                        &tombstone_key,
+                        1
+                    ))
+                    .expect("maintenance tombstone")
+            );
+
+            let runtime_handle = handle.rt.handle().clone();
+            let runtime = runtime_handle
+                .block_on(handle.fresh_runtime())
+                .expect("checked grep runtime");
+            let app = application(&handle, runtime);
+            let workspace = handle.workspace_id;
+            runtime_handle.block_on(async {
+                let (address, server) = start(app).await;
+                let grep = |arguments: Value| enumerate_call(address, &credential.bearer, arguments);
+
+                let (status, first) = grep(json!({"action":"grep","pattern":"needle","limit":2,"workspace_id":workspace})).await;
+                assert_eq!(status, 200, "{first}");
+                let page = &first["result"]["structuredContent"];
+                assert_eq!(page["total_matching_lines"], 3, "{first}");
+                assert_eq!(page["total"], 3);
+                assert_eq!(page["total_unit"], "matching_lines");
+                assert_eq!(page["total_memories"], 2, "{first}");
+                assert_eq!(page["has_more"], true);
+                assert_eq!(page["truncated"], true);
+                assert_eq!(page["consistency"], "per_call_snapshot");
+                let cursor = page["next_cursor"].as_str().expect("a next cursor").to_owned();
+                let (status, second) = grep(json!({"action":"grep","pattern":"needle","limit":2,"workspace_id":workspace,"cursor":cursor})).await;
+                assert_eq!(status, 200, "{second}");
+                let rest = &second["result"]["structuredContent"];
+                assert_eq!(rest["has_more"], false, "{second}");
+                assert!(rest["next_cursor"].is_null());
+                assert_eq!(rest["total_matching_lines"], 3);
+                let mut keys = grep_keys(&first);
+                keys.extend(grep_keys(&second));
+                let mut want = vec![
+                    (two.memory_id.to_string(), 3),
+                    (two.memory_id.to_string(), 5),
+                    (bare.memory_id.to_string(), 1),
+                ];
+                want.sort();
+                let mut got = keys.clone();
+                got.sort();
+                assert_eq!(got, want, "every hit once, across both pages");
+                let hit = |response: &Value, memory: Uuid| {
+                    response["result"]["structuredContent"]["items"]
+                        .as_array()
+                        .expect("items")
+                        .iter()
+                        .find(|item| item["memory_id"] == memory.to_string())
+                        .cloned()
+                };
+                let bare_hit = hit(&first, bare.memory_id)
+                    .or_else(|| hit(&second, bare.memory_id))
+                    .expect("the bare-string hit");
+                assert_eq!(bare_hit["line"], "a needle in a bare string");
+                assert!(bare_hit["before"].is_null());
+                assert_eq!(bare_hit["after"], "end");
+                assert_eq!(bare_hit["memory_matching_lines"], 1);
+                assert_eq!(bare_hit["status"], "active");
+                assert_eq!(bare_hit["archived"], false);
+
+                let (_, archive) = grep(json!({"action":"grep","pattern":"needle","archive":"include","workspace_id":workspace})).await;
+                assert_eq!(archive["result"]["structuredContent"]["total_matching_lines"], 4, "{archive}");
+                let archived_hit = hit(&archive, archived.memory_id).expect("the archived hit");
+                assert_eq!(archived_hit["archived"], true);
+
+                let (_, percent) = grep(json!({"action":"grep","pattern":"%","workspace_id":workspace})).await;
+                assert_eq!(percent["result"]["structuredContent"]["total_memories"], 1, "{percent}");
+                let percent_hit = hit(&percent, literal.memory_id).expect("the literal % hit");
+                assert_eq!(percent_hit["line"], "50% off_now!");
+
+                let (_, rescoped) = grep(json!({"action":"grep","pattern":"NEEDLE","limit":2,"workspace_id":workspace,"cursor":cursor})).await;
+                assert_eq!(rescoped["error"]["data"]["code"], "INVALID_INPUT", "{rescoped}");
+                let (_, multiline) = grep(json!({"action":"grep","pattern":"a\nb","workspace_id":workspace})).await;
+                assert_eq!(multiline["error"]["data"]["code"], "INVALID_INPUT", "{multiline}");
+                server.abort();
+            });
+
+            // The budget arm, on the adapter directly: 20 000 more rows under a 1 ms statement timeout.
+            let mut txn = handle.admin.transaction().expect("bulk seed transaction");
+            let evidence: Uuid = txn
+                .query_one(
+                    "INSERT INTO private.evidence_objects \
+                       (tenant_id,evidence_kind,payload_sha256,data_class,origin_class,visibility_class, \
+                        visibility_workspace_id,reasoning_domain_id) \
+                     VALUES($1,'EVENT',$2,'INTERNAL','DirectUserInput','WORKSPACE_SHARED',$3,$4) RETURNING evidence_id",
+                    &[&handle.tenant_id, &vec![4_u8; 32], &handle.workspace_id, &handle.reasoning_domain_id],
+                )
+                .expect("bulk evidence")
+                .get(0);
+            txn.execute(
+                "WITH m AS (INSERT INTO private.memory_records \
+                   (tenant_id,memory_type,content,visibility_class,visibility_workspace_id,authority_class, \
+                    confidence,status,asserted_at) \
+                   SELECT $1,'NOTE',jsonb_build_object('key_claim', 'bulk row ' || g || ' with filler text'), \
+                          'WORKSPACE_SHARED',$2,'ProjectConstraint',0.5,'active',clock_timestamp() \
+                     FROM generate_series(1, 20000) g RETURNING memory_id) \
+                 INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+                 SELECT memory_id, $3, 'SUPPORTING', 'SNAPSHOT' FROM m",
+                &[&handle.tenant_id, &handle.workspace_id, &evidence],
+            )
+            .expect("bulk memories");
+            txn.commit().expect("commit the bulk seed");
+            let pool = handle
+                .rt
+                .block_on(handle.fresh_runtime())
+                .expect("direct grep runtime");
+            let auth = direct_write_scope(
+                handle.tenant_id,
+                credential.api_key_id,
+                handle.user_id,
+                handle.workspace_id,
+            );
+            let query = humaux_adapters::grep_repo::GrepQuery::new(
+                "needle",
+                humaux_adapters::read_materialize::Lifecycle::CURRENT,
+                10,
+                None,
+                Some(std::time::Duration::from_millis(1)),
+            )
+            .expect("valid query");
+            let refused = handle.rt.block_on(humaux_adapters::grep_repo::grep(
+                &pool,
+                &auth,
+                WorkspaceId(handle.workspace_id),
+                &memory_stream_key(&handle),
+                &query,
+            ));
+            assert_eq!(
+                refused,
+                Err(ErrorCode::CannotEstablishCompleteness),
+                "a scan over budget is refused, never a guessed total"
+            );
+        },
+    );
 }
