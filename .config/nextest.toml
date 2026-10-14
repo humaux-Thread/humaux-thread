@@ -1,0 +1,10 @@
+# cargo-nextest profiles (trial, M24 test-speed). Every test runs in its own process, binaries run in parallel.
+[profile.ci]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 10 }
+status-level = "fail"
+final-status-level = "slow"
+
+[profile.ci.junit]
+path = "junit.xml"

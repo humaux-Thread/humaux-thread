@@ -356,8 +356,14 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo test --workspace --no-fail-fast --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
+          cargo test --doc --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
           exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nextest-junit-test-a
+          path: target/nextest/ci/junit.xml
       # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
       # ADR-0058 §2.1 I-SLOT probe over the whole table: a test binary that leaves claimable
       # or half-claimed DERIVED_* jobs behind breaks every later binary that asserts the
@@ -425,12 +431,10 @@ jobs:
           # database like g80_31_handoff.rs does, so under HUMAUX_REQUIRE_DB they can only
           # fail here. Skipped BY NAME, not by unsetting the require flag (§79.2); the
           # portability defect is a follow-up card. Everything else in the package runs.
-          cargo test -p humaux-retrieval-provider --no-fail-fast -- \
-            --skip adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport \
-            --skip adapters::tests::dispatched_transport_failure_consumes_budget \
-            --skip adapters::tests::mark_failure_stops_before_transport_and_releases_budget \
-            --skip adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure || rc=1
-          cargo test -p humaux-gateway --no-fail-fast -- --test-threads=2 || rc=1
+          cargo nextest run --profile ci -p humaux-retrieval-provider -E 'not (test(=adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport) | test(=adapters::tests::dispatched_transport_failure_consumes_budget) | test(=adapters::tests::mark_failure_stops_before_transport_and_releases_budget) | test(=adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure))' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-provider.xml" 2>/dev/null || true
+          cargo nextest run --profile ci -p humaux-gateway -j 2 || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-gateway.xml" 2>/dev/null || true
           # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
           # `stat -c %d` of the bind target vs PGDATA refuses `repo_shares_pgdata_fs`). The
           # dev Mac gets that for free (virtiofs); on the runner a loop-mounted ext4 image
@@ -447,6 +451,11 @@ jobs:
           sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c 'umask 000 && cargo test -p humaux-maintenance --no-fail-fast' || rc=1
           sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
           exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nextest-junit-test-b
+          path: ${{ runner.temp }}/junit-*.xml
 
       # test-b runs on its own database, so it gets the same leak / I-SLOT probe (gateway tests write
       # stream_checkpoints, maintenance onboarding enqueues DERIVED_DISTILL; PR #3 independent review P2).
