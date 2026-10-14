@@ -527,7 +527,10 @@ Two facts frame every decision:
   a second run patches 0.
 - **CLI.** `projection backfill-memory-id (--tenant <uuid> [--workspace <uuid>] | --all)` writes one receipt object
   per stream (`scrolled`, `correct`, `patched`, `strays`, `stray_ids`). It exits 0 when no stream has a stray, 3
-  when any has, and 1 on an error.
+  when any has or when the scope matched no stream (`no_streams`: nothing was backfilled), and 1 on an error. The
+  registry is read per scrolled page after that page's scroll (the D-F verifier's order: the worker upserts before it
+  registers, so an earlier read could call a just-written point a stray); a run during live projection that still
+  reports strays is rerun until it reads 0, or run with dispatch drained.
 - **Switch gate (for 40d-2b).** The policy row may be flipped only after three things hold. First, the backfill
   reports `strays = 0` on every stream. Second, `projection verify` reads `equivalent` on every stream: E4 compares
   whole payloads with Project(PG), so it covers the `memory_id` value, and E3 covers the registry's expected points.
@@ -537,8 +540,19 @@ Two facts frame every decision:
   (`lib/collection/src/shards/resolve.rs:35-44`, verified), so a zero proves nothing about every replica. A
   multi-replica deployment needs a per-replica inventory before the switch. Upgrade signal: a `replication_factor`
   above 1 in `collection_setup_puts`.
-- **Gates.** `memory_id_backfill_patches_only_registered_points` (`adapters::tests::rebuild`, real PG and Qdrant)
-  and `memory_id_backfill_body_is_identity_only_by_filter` (`adapters::qdrant`).
+- **Gates** (green at cb7c041: runs 38570205624, 38570268187; each red on CI against the mutation named, branch
+  `red/40d-2a-*`):
+
+  | gate | mutation | red run |
+  |---|---|---|
+  | `memory_id_backfill_patches_only_registered_points` (`adapters::tests::rebuild`, real PG and Qdrant) | `presence`: any present `memory_id` counts as correct | 38570325865 |
+  | same | `liveonly`: retired registry rows ignored | 38570380960 |
+  | `memory_id_backfill_body_is_identity_only_by_filter` (`adapters::qdrant`) | `byids`: a points list instead of the `has_id` filter | 38570438875 |
+  | same | `status`: an `acknowledged` or short batch reply accepted | 38570497105 |
+  | `projection_backfill_memory_id_exits_3_on_strays_and_on_no_streams` (`maintenance::tests::rebuild_cli`) | `refused`: strays do not refuse the run | 38570553525 |
+
+  Not gated: that a filtered patch of an id deleted after the scroll leaves no point behind — Qdrant's `set_payload`
+  updates existing points only (research batch 14, Q2), argued by construction, not shown on a live server.
 - **Left for 40d-2b.** The receipt the switch consumes, and the migration that flips the policy row.
 
 ## Slices
