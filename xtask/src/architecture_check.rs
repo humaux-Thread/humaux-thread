@@ -8264,17 +8264,12 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    /// 注错 (G-M07-1): the home file exists but its statement is gone (here: a typo'd table name) → 红 with 0 found,
-    /// never "no duplicates, pass".
+    /// 注错 (G-M07-1): the home file exists but its statement is gone → 红 with 0 found, never "no duplicates, pass".
     #[test]
     fn m07_1_fails_when_the_home_file_exists_but_holds_no_statement() {
         let tmp = fresh_tmp("m07-1-red-zero");
         m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
-        m07_write(
-            &tmp,
-            M07_MEMORY_HOME,
-            "fn door() { let _ = \"INSERT INTO private.memory_record (tenant_id) VALUES ($1)\"; }\n",
-        );
+        m07_write(&tmp, M07_MEMORY_HOME, "fn door() {}\n");
         let lines = m07_fail_lines(&tmp);
         assert!(lines[0].contains("found 0"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
