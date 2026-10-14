@@ -57,9 +57,10 @@ const PARTITIONS_EVERY: &str = "HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECOND
 /// ADR-0064 D-K: the DR_EVIDENCE cadence (seconds, >= CYCLE_SECONDS).
 const DR_EVIDENCE_EVERY: &str = "HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS";
 /// Their `/status` and receipt labels, in the same order.
-const LABELS: [&str; 9] = [
+const LABELS: [&str; 10] = [
     "lost",
     "quota_reservations",
+    "quota_renewal",
     "provider_budgets",
     "confirm_tokens",
     "snapshots",
@@ -660,10 +661,11 @@ fn sweep_once_requires_admin_fields_and_prints_per_task_counts() {
         assert_eq!(run["ran"], true, "{name}: {receipt}");
         assert_eq!(run["failed"], 0, "{name}: {receipt}");
         // The orphan has no outbox carrier, so it reaches no memory and the reissue door has nothing to drain; no
-        // distill job died of its schema, so the re-drive door has nothing to re-arm.
+        // distill job died of its schema, so the re-drive door has nothing to re-arm; no tenant has a snapshot, so
+        // none renews (ADR-0072 D-B).
         let expected = u64::from(!matches!(
             name,
-            "quota_reservations" | "provider_budgets" | "reissue" | "redrive"
+            "quota_reservations" | "quota_renewal" | "provider_budgets" | "reissue" | "redrive"
         ));
         assert_eq!(run["affected"], expected, "{name}: {receipt}");
     }

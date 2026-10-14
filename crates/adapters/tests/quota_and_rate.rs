@@ -1,12 +1,13 @@
 //! `adapters::tests::quota_and_rate` — §72.2.1 acceptance candidates for quota reservations and independent rate
 //!   buckets.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
 //!   services=[PostgreSQL(any) w=[control.entitlement_snapshots, control.memberships, control.quota_windows,
 //!   control.rate_buckets, control.tenants, control.usage_reservations, control.users]
-//!   x=[control.issue_quota_window], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
+//!   x=[control.issue_quota_window, control.renew_quota_period], PostgreSQL(role_gateway),
+//!   PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres,
-//!   adapters::quota_repo, adapters::tests::support::throwaway_db, domain::error, domain::identity, domain::ids,
-//!   humaux-testkit]
+//!   adapters::quota_repo, adapters::request_guard_repo, adapters::tests::support::throwaway_db, domain::error,
+//!   domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [needs the dedicated RequestGuard fixture after migration 0113 (gateway + maintenance DSNs); exhausted
 //!   windows are QuotaExhausted/RateLimited, never an allow; the fixture tests are #[ignore] lane tests; the SEC-6
@@ -14,7 +15,7 @@
 //!   system tenant, which no fixture Drop on the shared database may clean; the c38 batch tests (lock order under
 //!   contention, parity, lock_timeout, statement_timeout, deadlock victim) likewise own a humaux_thread_c38_rate_*
 //!   database each, so their holder sessions and deadlock experiments never touch the shared one]
-//! Spec: Baseline §72.2.1; §73.2; §79.2; ADR-0062 E5; ADR-0065 D-D
+//! Spec: Baseline §72.2.1; §73.2; §79.2; ADR-0062 E5; ADR-0065 D-D; ADR-0072
 //!
 //! These tests intentionally require the dedicated RequestGuard fixture after migration 0113.
 
@@ -26,6 +27,7 @@ use std::time::{Duration, Instant};
 use humaux_adapters::{
     postgres::{MaintenanceDbPool, PoolSettings, RuntimeDbPool},
     quota_repo::{self, RateCharge, RatePolicy, RateSubject, ReservationStatus, ReserveResult},
+    request_guard_repo,
 };
 use humaux_domain::{
     error::ErrorCode,
@@ -49,6 +51,8 @@ const PRINCIPAL_ID: Uuid = Uuid::from_u128(0x0bad_cafe_0000_4000_8000_0000_0000_
 const TENANT2_ID: Uuid = Uuid::from_u128(0x0bad_cafe_0000_4000_8000_0000_0000_0111);
 /// ADR-0065 D-D: the former `SET LOCAL lock_timeout` literal, now the registered key's fixture value.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+/// ADR-0072 D-C: the renewal lead the gate passes (deployments set it through the daemon's LEAD_SECONDS key).
+const RENEWAL_LEAD: Duration = Duration::from_secs(3600);
 
 struct Handle {
     rt: tokio::runtime::Runtime,
@@ -465,6 +469,227 @@ fn issuer_is_projection_only_and_runtime_cannot_issue_or_insert_window() {
             &[],
         ).expect("admin checks ACL").get::<_, bool>(0);
         assert!(!denied);
+    });
+}
+
+/// A snapshot whose BMO period started a second ago and ends `ends_in_secs` from now (the onboarding shape).
+fn snapshot_ending_in(handle: &mut Handle, tenant: Uuid, limit: i64, ends_in_secs: i32) {
+    handle
+        .admin
+        .execute(
+            "INSERT INTO control.entitlement_snapshots(tenant_id,effective,source_grant_ids,computed_at)
+             VALUES($1,jsonb_build_object('mcp.billable_operations.per_period',jsonb_build_object(
+               'limit',$2::bigint,'period','subscription_period','charge_policy','success_only',
+               'period_start',to_char((clock_timestamp()-interval '1 second') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+               'period_end',to_char((clock_timestamp()+make_interval(secs=>$3::int)) AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))),
+               '{}'::uuid[],clock_timestamp())
+             ON CONFLICT (tenant_id) DO UPDATE SET effective=EXCLUDED.effective,computed_at=EXCLUDED.computed_at,
+               successor=NULL,successor_from=NULL",
+            &[&tenant, &limit, &ends_in_secs],
+        )
+        .expect("admin seeds a period ending soon");
+}
+
+fn renew(handle: &Handle, tenant: Uuid) -> Result<quota_repo::Renewal, ErrorCode> {
+    handle.rt.block_on(quota_repo::renew_period(
+        &handle.maintenance,
+        TenantId(tenant),
+        RENEWAL_LEAD,
+        1,
+        4,
+    ))
+}
+
+async fn renew_at_barrier(
+    pool: &MaintenanceDbPool,
+    barrier: Arc<Barrier>,
+) -> Result<quota_repo::Renewal, ErrorCode> {
+    barrier.wait().await;
+    quota_repo::renew_period(pool, TenantId(TENANT_ID), RENEWAL_LEAD, 1, 4).await
+}
+
+fn window_count(handle: &mut Handle, tenant: Uuid) -> i64 {
+    handle
+        .admin
+        .query_one(
+            "SELECT count(*) FROM control.quota_windows WHERE tenant_id=$1",
+            &[&tenant],
+        )
+        .expect("admin counts windows")
+        .get(0)
+}
+
+/// Card W0 / ADR-0072 gate (§72.2.1): before a renewing tenant's period ends, the renewal step stages the next period
+/// on the snapshot and issues its window contiguous with the current one, with the snapshot's limit and the
+/// configured length; after the old end — with no maintenance call at the boundary — the gateway's entitlement read
+/// is the successor and a reservation lands in the successor window. Four concurrent renewals and every rerun stage
+/// exactly one successor; the first call after the boundary promotes it and stages nothing; a SUSPENDED tenant is not
+/// renewed; no runtime role may execute the door. Fault injections (each one red here):
+/// (1) delete the `INSERT INTO control.quota_windows` of 0245 ⇒ one window, and the reservation after the boundary
+///     is QuotaExhausted; (2) delete `v_successor IS NOT NULL OR` from the loop exit ⇒ every call re-stages the pending
+///     successor up to its limit (staged sums to 16, the rerun stages 4); (3) delete the `t.state = 'ACTIVE'`
+///     predicate ⇒ the suspended tenant gets a second window; (4) revert
+///     `request_guard_repo::read_effective_entitlements` to read `effective` only ⇒ the read after the boundary is the
+///     ended period, not the successor; (5) delete the promotion `IF` block ⇒ `successor` stays set after the first call
+///     past the boundary; (6) `GRANT EXECUTE ... TO role_gateway` ⇒ the ACL assert.
+#[test]
+#[ignore = "lane(a:request_guard) requires migration 0245 and the dedicated request-guard PostgreSQL fixture"]
+fn quota_window_renews_before_period_end() {
+    run_db_fixture::<Fixture, _>("quota_window_renews_before_period_end", |mut h| {
+        for tenant in [TENANT_ID, TENANT2_ID] {
+            // Ten seconds: long enough that the staging asserts run before the boundary, short for the wait.
+            snapshot_ending_in(&mut h, tenant, 3, 10);
+            h.rt.block_on(quota_repo::issue_window(&h.maintenance, TenantId(tenant)))
+                .expect("maintenance issues the current window");
+        }
+        h.admin
+            .execute(
+                "UPDATE control.tenants SET state='SUSPENDED' WHERE tenant_id=$1",
+                &[&TENANT2_ID],
+            )
+            .expect("admin suspends the second tenant");
+
+        let barrier = Arc::new(Barrier::new(4));
+        let (a, b, c, d) = h.rt.block_on(bounded(async {
+            tokio::join!(
+                renew_at_barrier(&h.maintenance, barrier.clone()),
+                renew_at_barrier(&h.maintenance, barrier.clone()),
+                renew_at_barrier(&h.maintenance, barrier.clone()),
+                renew_at_barrier(&h.maintenance, barrier),
+            )
+        }));
+        let staged: Vec<i32> = [a, b, c, d]
+            .into_iter()
+            .map(|r| r.expect("concurrent renewal").staged)
+            .collect();
+        assert_eq!(
+            staged.iter().sum::<i32>(),
+            1,
+            "exactly one successor: {staged:?}"
+        );
+        let rerun = renew(&h, TENANT_ID).expect("rerun");
+        assert_eq!(rerun.staged, 0, "a pending successor is never staged twice");
+        assert!(
+            rerun.horizon.is_some(),
+            "a renewing tenant reports its horizon"
+        );
+        assert_eq!(window_count(&mut h, TENANT_ID), 2);
+        let shaped: bool = h
+            .admin
+            .query_one(
+                "SELECT n.window_start = c.window_end
+                    AND n.window_end = ((c.window_end AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
+                    AND n.hard_limit = 3 AND n.reserved = 0 AND n.consumed = 0
+                    AND s.successor_from = n.window_start
+                    AND (s.successor -> 'mcp.billable_operations.per_period' ->> 'period_end')::timestamptz
+                        = n.window_end
+                    AND (s.successor -> 'mcp.billable_operations.per_period' ->> 'limit')::bigint = 3
+                 FROM control.quota_windows c
+                 JOIN control.quota_windows n ON n.tenant_id = c.tenant_id AND n.window_start > c.window_start
+                 JOIN control.entitlement_snapshots s ON s.tenant_id = c.tenant_id
+                 WHERE c.tenant_id = $1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the staged period")
+            .get(0);
+        assert!(
+            shaped,
+            "the successor is contiguous, one month long, with the snapshot limit"
+        );
+
+        // The old period ends with no maintenance call in between.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !h
+            .admin
+            .query_one(
+                "SELECT clock_timestamp() > successor_from FROM control.entitlement_snapshots WHERE tenant_id=$1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the clock")
+            .get::<_, bool>(0)
+        {
+            assert!(Instant::now() < deadline, "the current period never ended");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let successor: serde_json::Value = h
+            .admin
+            .query_one(
+                "SELECT successor FROM control.entitlement_snapshots WHERE tenant_id=$1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the successor")
+            .get(0);
+        let facts =
+            h.rt.block_on(request_guard_repo::read_effective_entitlements(
+                &h.runtime, &h.auth,
+            ))
+            .expect("the gateway reads an entitlement after the boundary");
+        assert_eq!(facts.effective, successor, "the successor is in force");
+        let reserved =
+            h.rt.block_on(quota_repo::reserve_bmo(
+                &h.runtime,
+                &h.auth,
+                Uuid::now_v7(),
+                "mcp.read",
+                &"b".repeat(64),
+                Duration::from_secs(60),
+            ))
+            .expect("a reservation after the boundary succeeds");
+        assert!(matches!(reserved, ReserveResult::Created(_)));
+        let in_successor: bool = h
+            .admin
+            .query_one(
+                "SELECT bool_and(r.window_start = s.successor_from)
+                 FROM control.usage_reservations r JOIN control.entitlement_snapshots s USING (tenant_id)
+                 WHERE r.tenant_id = $1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the reservation")
+            .get(0);
+        assert!(
+            in_successor,
+            "the reservation is charged to the successor window"
+        );
+
+        let promoted = renew(&h, TENANT_ID).expect("the first call after the boundary");
+        assert_eq!(
+            promoted.staged, 0,
+            "the successor's own end is a month away"
+        );
+        assert_eq!(window_count(&mut h, TENANT_ID), 2);
+        let row = h
+            .admin
+            .query_one(
+                "SELECT successor IS NULL AND successor_from IS NULL, effective
+                 FROM control.entitlement_snapshots WHERE tenant_id=$1",
+                &[&TENANT_ID],
+            )
+            .expect("admin reads the promoted snapshot");
+        assert!(row.get::<_, bool>(0), "the successor was promoted");
+        assert_eq!(row.get::<_, serde_json::Value>(1), successor);
+
+        assert_eq!(
+            renew(&h, TENANT2_ID).expect("a suspended tenant is a no-op"),
+            quota_repo::Renewal {
+                staged: 0,
+                horizon: None
+            }
+        );
+        assert_eq!(
+            window_count(&mut h, TENANT2_ID),
+            1,
+            "a suspended tenant is never renewed"
+        );
+        let gateway_can: bool = h
+            .admin
+            .query_one(
+                "SELECT has_function_privilege('role_gateway',
+                   'control.renew_quota_period(uuid,text,interval,interval,integer)','EXECUTE')",
+                &[],
+            )
+            .expect("admin checks the ACL")
+            .get(0);
+        assert!(!gateway_can, "only role_maintenance renews");
     });
 }
 

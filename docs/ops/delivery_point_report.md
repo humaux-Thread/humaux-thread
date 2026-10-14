@@ -781,7 +781,8 @@ and 9), so DEPLOYABLE is **not claimed** until it is green on the final tree; O-
 - **Known limits (ADR-0053):** the collection generation is a config digest (card 37 adds a real
   generation column); `LEGACY` workspaces (every pre-0185 row) are never gated and are still activated
   by `projection-serve`; the entitlement period and quota window are issued at onboarding only (renewal
-  is card 35's `--serve` job, until then a tenant past `--period-end` gets QUOTA/ENTITLEMENT); the owner
+  is card 35's `--serve` job, until then a tenant past `--period-end` gets QUOTA/ENTITLEMENT; card 35
+  did not deliver it, card W0 / ADR-0072 did); the owner
   email is stored unverified (§74 is post-go-live); the BYOK distill lane is not part of onboarding
   (card 52).
 

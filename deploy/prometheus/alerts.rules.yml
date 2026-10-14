@@ -107,6 +107,17 @@ groups:
         labels:
           severity: critical
 
+      # §72.2.1 "quota window renewal missing" (card W0, ADR-0072 D-D): some renewing tenant's latest issued quota
+      # window ends within 7 days, so the QUOTA_RENEWAL task has not staged its successor although the 14-day lead
+      # (HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS) has passed; at that end every call of the tenant turns
+      # ENTITLEMENT_REQUIRED / QUOTA_EXHAUSTED. `quota_window_horizon_seconds` is measured at scrape time, so a renewal
+      # that stopped running drifts into this alert. Only a §41.2 name, no label key.
+      - alert: QuotaWindowRenewalMissing
+        expr: min(quota_window_horizon_seconds) < 604800
+        for: 30m
+        labels:
+          severity: critical
+
       # §42 "backup not offsite" (ADR-0064 E17 / 10.11 F): a standing notice built from no series, so a restart or
       # a scrape gap can neither resolve nor re-fire it. Card 37 keeps every copy on the database host; the
       # notice stays until card 37d adds the NAS pull mirror. Routed weekly (alertmanager.yml).

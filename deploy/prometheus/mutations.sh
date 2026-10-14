@@ -9,7 +9,7 @@
 #   (c) the pinned `promtool test rules` exits 1 AND prints `alertname: <expected>, time:` (W6).
 # Before any row: the promtool pin is checked, and the unmutated tree must pass test-rules.sh in the
 # same copy layout ("baseline red in copy" otherwise), so a path or layout error is never read as red.
-# Rows: `id|rule-file|from|to|expected-alertname`; rows-file overrides the built-in 34 (selftest.sh);
+# Rows: `id|rule-file|from|to|expected-alertname`; rows-file overrides the built-in 36 (selftest.sh);
 # every `absent(...)` branch of CoreMetricAbsent, HealthGaugesAbsent, MaintenanceCountersAbsent and PartitionHorizonAbsent
 # has its own row.
 #
@@ -68,6 +68,8 @@ horizon_le1|alerts.rules.yml|(partition_horizon_months) <= 1|(partition_horizon_
 horizon_min|alerts.rules.yml|min by (table) (partition_horizon_months) <= 1|partition_horizon_months <= 1|PartitionHorizonShort
 horizon_le0|alerts.rules.yml|(partition_horizon_months) <= 0|(partition_horizon_months) < 0|PartitionHorizonExhausted
 horizon_absent|alerts.rules.yml|absent(partition_horizon_months)|absent(vector(1))|PartitionHorizonAbsent
+renewal_lt|alerts.rules.yml|(quota_window_horizon_seconds) < 604800|(quota_window_horizon_seconds) < 0|QuotaWindowRenewalMissing
+renewal_min|alerts.rules.yml|min(quota_window_horizon_seconds)|max(quota_window_horizon_seconds)|QuotaWindowRenewalMissing
 not_offsite|alerts.rules.yml|label_replace(vector(0),|label_replace(vector(0) < 0,|BackupNotOffsite
 drill|alerts.rules.yml|691200|1382400|RestoreDrillFailure
 wal_failing|alerts.rules.yml|wal_archive_failing > 0|wal_archive_failing > 1|WalArchiveFailing

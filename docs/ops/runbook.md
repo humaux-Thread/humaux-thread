@@ -385,9 +385,13 @@ $C run --rm -T ops deploy-init --provider "$(pv HUMAUX_NODE_EMBEDDING_PROVIDER)"
 C="sh deploy/release/compose.sh"
 pv() { sed -n "s/^$1=//p" "$HUMAUX_NODE_DIR/providers.env" | tail -n 1; }
 D="$HUMAUX_NODE_DIR/smoke"
+# ADR-0072: the first period ends at the next UTC month start; maintenance-serve's quota_renewal task renews it.
+m=$(date -u +%m | sed 's/^0//'); y=$(date -u +%Y)
+if [ "$m" -eq 12 ]; then y=$((y + 1)); m=1; else m=$((m + 1)); fi
+PERIOD_END=$(printf '%04d-%02d-01T00:00:00Z' "$y" "$m")
 for t in a b; do
   $C run --rm -T ops onboard tenant --name "smoke-$t" --owner-email "smoke-$t@$HUMAUX_NODE_PROJECT.invalid" \
-    --plan-limit 1000 --period-end 2099-01-01T00:00:00Z --scopes memory:write,context:read --key-name smoke \
+    --plan-limit 1000 --period-end "$PERIOD_END" --scopes memory:write,context:read --key-name smoke \
     --provider "$(pv HUMAUX_NODE_EMBEDDING_PROVIDER)" --region "$(pv HUMAUX_NODE_EMBEDDING_REGION)" \
     --tenant-tpm "$(pv HUMAUX_NODE_SMOKE_TENANT_TPM)" --tenant-rpm "$(pv HUMAUX_NODE_SMOKE_TENANT_RPM)" \
     --actor runbook-v2 --reason "runbook v2 O2 smoke tenant" --ticket "$HUMAUX_NODE_PROJECT" --step-up-auth runbook-v2-executor > "$D/$t.out"
@@ -558,6 +562,17 @@ file, as O2 does. A re-run with the same `--name` writes nothing, prints `"outco
 key is revoked (`apikey revoke --tenant <id> --key-name <name>`) and a new one issued (`apikey issue --tenant
 --user --workspace --scopes --key-name <new name>`).
 
+`--period-end` is the end of the tenant's **first** period only (the period starts at the onboarding second). From
+then on `maintenance-serve`'s `quota_renewal` task (§5.1, ADR-0072) renews every ACTIVE tenant: from
+`QUOTA_RENEWAL_LEAD_SECONDS` (14 days) before the end it stages the next period on the snapshot and issues its quota
+window, contiguous and `QUOTA_RENEWAL_SUBSCRIPTION_MONTHS` long, with the snapshot's limit; the gateway switches to it
+at the boundary by itself. Pick `--period-end` on the day of month the customer's periods should turn over (the 1st
+for calendar billing; anchors on the 29th–31st clamp to the month end). Never give a far-future date to dodge
+renewal: it hides a stopped daemon until the date arrives. To stop renewing a tenant, suspend it (ADR-0072 L1: there
+is no cancel-at-period-end yet). `QuotaWindowRenewalMissing` (CRITICAL) fires when any renewing tenant's last window
+ends within 7 days: check `maintenance_task_runs_total{task="quota_renewal",outcome="failed"}` and the daemon's
+`/status`, then `sweep once` (§5.1) to renew at once.
+
 More workspaces and users: `onboard workspace --tenant <id> --name <n> --owner <user id>`, `onboard user --tenant
 <id> --email <e> --role OWNER|ADMIN|MEMBER [--workspace <id>]`. Repair steps after an interrupted run:
 `placement ensure --tenant <id>`, `collection ensure`, `activate --tenant <id> --workspace <id>`; `status --tenant
@@ -632,6 +647,7 @@ TENANTS_PER_RUN) × EVERY` (ADR-0062 L1).
 |---|---|---|---|---|---|
 | `lost` | `stream_repo::sweep_lost`: ISSUED → LOST, oldest first | `LOST_EVERY_SECONDS`, `LOST_LIMIT` | `LOST_AFTER_SECONDS` (> `HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS`) | a ticket under a live runner lease, a ticket in retry backoff, a ticket with an in-flight job, a ticket whose Evidence is still being distilled | the row itself: `state = LOST`, `error_class = ORPHANED_PIPELINE_ITEM`, `lost_at` |
 | `quota_reservations` | `control.reap_quota_reservations` (0113) | `QUOTA_RESERVATIONS_*` | — (reservation TTL) | live reservations | the reaped reservations' state |
+| `quota_renewal` (ADR-0072) | `control.renew_quota_period` (0245): promote a due successor; within the lead, stage the next period and issue its window | `QUOTA_RENEWAL_*` (LIMIT = periods per call) | `QUOTA_RENEWAL_LEAD_SECONDS`, `QUOTA_RENEWAL_SUBSCRIPTION_MONTHS` | a tenant not ACTIVE; a tenant with a successor pending; an issued window (limit and bounds immutable) | `control.entitlement_snapshots.successor` / `successor_from`; the new `control.quota_windows` row; `quota_window_horizon_seconds` |
 | `provider_budgets` | `ops.reap_expired_retrieval_provider_budget` (0117) | `PROVIDER_BUDGETS_*` | — (reservation TTL) | live reservations | the reaped reservations' state |
 | `confirm_tokens` | `control.sweep_confirm_tokens(interval, integer)` (0218) | `CONFIRM_TOKENS_*` | `CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS` | an unexpired token; a consumed token younger than the retention | `ops.maintenance_receipts` task `confirm_tokens` |
 | `snapshots` | `ops.purge_expired_selection_snapshots(integer)` (0218) | `SNAPSHOTS_*` | — (DB `expires_at`) | an unexpired snapshot; a page read already running | receipts task `selection_snapshots` |

@@ -11,7 +11,8 @@
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS, HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS, HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR,
-//!   HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS, HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_TEST_PG_DSN];
 //!   modules=[humaux-testkit, testkit::reaped]
@@ -333,10 +334,11 @@ pub fn forge_proposal(c: &mut Client, registry_id: &str, revision: i32, proposed
     tx.commit().expect("commit");
 }
 
-/// The nine per-tenant D-C tasks by key stem (each has `_EVERY_SECONDS` and `_LIMIT`, ADR-0062 D-C).
-pub const SERVE_TASKS: [&str; 9] = [
+/// The ten per-tenant D-C tasks by key stem (each has `_EVERY_SECONDS` and `_LIMIT`, ADR-0062 D-C, ADR-0072 D-C).
+pub const SERVE_TASKS: [&str; 10] = [
     "LOST",
     "QUOTA_RESERVATIONS",
+    "QUOTA_RENEWAL",
     "PROVIDER_BUDGETS",
     "CONFIRM_TOKENS",
     "SNAPSHOTS",
@@ -400,6 +402,15 @@ pub fn serve_keys(
             "120".to_owned(),
         ),
         ("HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS", "60".to_owned()),
+        // ADR-0072 D-B / D-C: a seeded tenant without a snapshot does not renew, so any valid value works.
+        (
+            "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS",
+            "3600".to_owned(),
+        ),
+        (
+            "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS",
+            "1".to_owned(),
+        ),
     ] {
         keys.push((key.to_owned(), value));
     }

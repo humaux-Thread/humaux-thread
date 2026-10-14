@@ -2,7 +2,7 @@
 //! Depends-on: crates=[]; services=[subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[]
 //! Called-by: [xtask::main]
 //! Invariants: [each Witness file is really compiled and run in a throwaway probe package; missing/failing/timed-out witnesses count as 0 passed, never substituted by comment; an unknown argument exits 2 naming it; "exported" is read from each process's real `--metrics-families` output, never from a hand list; a rule-referenced family that no process exports fails unless NOT_YET_PRODUCED names its producer card; a header-only family counts as exported only when ABSENT_UNTIL_FIRST_RUN names it (ADR-0063 D-K)]
-//! Spec: Baseline §80.2; §41.2; §42; ADR-0061 D-H
+//! Spec: Baseline §80.2; §41.2; §42; ADR-0061 D-H; ADR-0063 D-K; ADR-0072 D-D
 //!
 //! Modes (ADR-0061 D-H; the strict parser replaces the old `any(--strict)` scan that let
 //! `--check` run the default mode silently, E6): no mode flag = D1–D6; `--check` = D1–D8;
@@ -62,12 +62,19 @@ const PROCESSES: [&str; 6] = [
 const NOT_YET_PRODUCED: &[(&str, &str)] = &[];
 
 /// D7 / D8(c): families a process declares (`# TYPE`) whose zero-state render deliberately has no sample, because
-/// absence is their failure signal and a §42 `absent()` rule reads it. Only these count as exported from the header
-/// alone; any other header-only family stays unexported (ADR-0061 review-fix 3, F10).
-const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[(
-    "partition_horizon_months",
-    "ADR-0063 D-K: rendered only while the last PARTITIONS run succeeded; PartitionHorizonAbsent",
-)];
+/// absence is their failure signal and a §42 `absent()` rule reads it, or because a sample before the first visit
+/// would be a made-up value. Only these count as exported from the header alone; any other header-only family stays
+/// unexported (ADR-0061 review-fix 3, F10).
+const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
+    (
+        "partition_horizon_months",
+        "ADR-0063 D-K: rendered only while the last PARTITIONS run succeeded; PartitionHorizonAbsent",
+    ),
+    (
+        "quota_window_horizon_seconds",
+        "ADR-0072 D-D: no sample until QUOTA_RENEWAL visited a renewing tenant; a failing call is MaintenanceTaskFailing",
+    ),
+];
 
 /// §41.2 R4 (ADR-0061 addendum, D-M): families whose one `.inc(` sits in a `pub` helper so a DB-free
 /// witness can drive it. The helper's production call sites are the real emit sites, so D5 also

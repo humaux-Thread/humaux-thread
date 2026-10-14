@@ -17,7 +17,9 @@
 //!   HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS,
-//!   HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT, HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT,
+//!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT, HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS,
@@ -39,15 +41,17 @@
 //!   one transaction); a re-drive is one owner door call per tenant with its §77 row in the same transaction, under
 //!   the daemon's system identity (`--serve`) or the operator's fields (`sweep once`); `sweep once` requires the §77
 //!   fields like every writing subcommand; DR_EVIDENCE reads no budget key (the receipts carry the limits) and a
-//!   failed run publishes nothing, so the DR gauges keep their last values, never reset]
-//! Spec: Baseline §4.2; §6.2.1; §15.2; §41.2; §77; §78.1; ADR-0037; ADR-0043; ADR-0057 D-F; ADR-0057 D-H;
+//!   failed run publishes nothing, so the DR gauges keep their last values, never reset; a quota renewal is one
+//!   owner door call per tenant whose horizon feeds `quota_window_horizon_seconds` (ADR-0072 D-C, D-D)]
+//! Spec: Baseline §4.2; §6.2.1; §15.2; §41.2; §72.2.1; §77; §78.1; ADR-0037; ADR-0043; ADR-0057 D-F; ADR-0057 D-H;
 //!   ADR-0061 D-B; ADR-0062 D-A..D-D; ADR-0062 D-E..D-J; ADR-0062 D-L; ADR-0062 D-N; ADR-0062 D-P; ADR-0062 D-Q;
-//!   ADR-0063 D-H; ADR-0064 D-K; ADR-0064 10.11 D
+//!   ADR-0063 D-H; ADR-0064 D-K; ADR-0064 10.11 D; ADR-0072 D-C; ADR-0072 D-D
 //!
 //! Metrics: `maintenance_task_runs_total{task,outcome}` and `maintenance_task_rows_total{task}` (ADR-0062 D-S),
 //!   counted once per tenant door call through `adapters::maintenance_repo::count_task_call`, served by `/metrics`
 //!   only while ready and printed at zero by `--serve --metrics-families`; `/status` carries the last finished cycle
-//!   per task. The six DR families (`telemetry::dr`, ADR-0064 D-K) render 0 until the first DR_EVIDENCE run.
+//!   per task. The six DR families (`telemetry::dr`, ADR-0064 D-K) render 0 until the first DR_EVIDENCE run;
+//!   `quota_window_horizon_seconds` (ADR-0072 D-D) renders no sample until a renewing tenant was visited.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
@@ -100,6 +104,12 @@ const DISTILL_BUDGET_WINDOW_SECS: &str = "HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_W
 const REISSUE_COOLDOWN_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS";
 /// ADR-0062 D-P: seconds since a schema-failed death's last counted provider call before it is re-driven (> 0).
 const REDRIVE_COOLDOWN_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS";
+/// ADR-0072 D-C: seconds before a renewing tenant's period end from which its successor period and window are
+/// staged (> 0; above the 7-day QuotaWindowRenewalMissing threshold, or that alert fires every period).
+const QUOTA_RENEWAL_LEAD_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS";
+/// ADR-0072 D-B: whole months a renewed `subscription_period` lasts (> 0).
+const QUOTA_RENEWAL_SUBSCRIPTION_MONTHS: &str =
+    "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS";
 /// ADR-0062 D-P: the §77 identity of a re-drive the resident daemon makes on its own (`sweep once` takes the
 /// operator's fields instead). No operator, ticket or step-up exists for a scheduled task; the trace id is minted per
 /// process at boot.
@@ -112,6 +122,7 @@ const fn every_key(task: Task) -> &'static str {
     match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS",
         Task::QuotaReservations => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS",
+        Task::QuotaRenewal => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS",
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS",
         Task::ConfirmTokens => "HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS",
         Task::Snapshots => "HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_EVERY_SECONDS",
@@ -131,6 +142,7 @@ const fn limit_key(task: Task) -> Option<&'static str> {
     Some(match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT",
         Task::QuotaReservations => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT",
+        Task::QuotaRenewal => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT",
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT",
         Task::ConfirmTokens => "HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT",
         Task::Snapshots => "HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_LIMIT",
@@ -162,6 +174,10 @@ struct Config {
     reissue_cooldown: Duration,
     /// ADR-0062 D-P: how long after its last counted provider call a schema-failed death is re-driven.
     redrive_cooldown: Duration,
+    /// ADR-0072 D-C: how long before a period's end its successor is staged.
+    renewal_lead: Duration,
+    /// ADR-0072 D-B: the months of a renewed `subscription_period`.
+    renewal_months: i32,
     /// Per [`Task::ALL`] index: (every, limit); every is zero under [`Mode::Once`].
     tasks: [(Duration, i32); Task::ALL.len()],
     /// ADR-0064 10.11 D: the `statvfs` path per [`Volume::ALL`] slot.
@@ -223,6 +239,8 @@ impl Config {
             },
             reissue_cooldown: Duration::from_secs(positive(REISSUE_COOLDOWN_SECONDS)?),
             redrive_cooldown: Duration::from_secs(positive(REDRIVE_COOLDOWN_SECONDS)?),
+            renewal_lead: Duration::from_secs(positive(QUOTA_RENEWAL_LEAD_SECONDS)?),
+            renewal_months: positive(QUOTA_RENEWAL_SUBSCRIPTION_MONTHS)?,
             tasks,
             dr_paths: [env(DR_REPO_FS_PATH)?, env(DR_PGDATA_FS_PATH)?],
         })
@@ -269,8 +287,14 @@ async fn call(
     audit: &AdminAction<'_>,
 ) -> std::result::Result<u64, String> {
     // The system tenant (nil id, home of the pre-auth rate buckets) can hold no reservation: both producers refuse
-    // it (quota_repo::validate_auth, provider_budget::validate_request), and so do both reapers: nothing to call.
-    if tenant.is_nil() && matches!(task, Task::QuotaReservations | Task::ProviderBudgets) {
+    // it (quota_repo::validate_auth, provider_budget::validate_request), and so do both reapers and the renewal door
+    // (0245 refuses the nil tenant): nothing to call.
+    if tenant.is_nil()
+        && matches!(
+            task,
+            Task::QuotaReservations | Task::QuotaRenewal | Task::ProviderBudgets
+        )
+    {
         return Ok(0);
     }
     match task {
@@ -283,6 +307,23 @@ async fn call(
             .await
             .map(|n| n.unsigned_abs())
             .map_err(|e| e.to_string()),
+        // dep: PostgreSQL(role_maintenance) — control.renew_quota_period (0245 owner definer)
+        Task::QuotaRenewal => quota_repo::renew_period(
+            pool,
+            TenantId(tenant),
+            cfg.renewal_lead,
+            cfg.renewal_months,
+            limit,
+        )
+        .await
+        .map(|renewal| {
+            quota_repo::record_quota_window_horizon(
+                TenantId(tenant),
+                renewal.horizon.map(|end| end.unix_timestamp()),
+            );
+            u64::from(renewal.staged.unsigned_abs())
+        })
+        .map_err(|e| e.to_string()),
         // dep: PostgreSQL(role_maintenance) — ops.reap_expired_retrieval_provider_budget (0117 owner definer)
         Task::ProviderBudgets => {
             provider_budget::reap_expired_provider_budgets(pool, TenantId(tenant), limit)
@@ -620,6 +661,19 @@ pub(crate) fn render_metrics() -> String {
         })
         .unwrap_or_default();
     write_family(&mut out, &families::PARTITION_HORIZON_MONTHS, &horizon);
+    // ADR-0072 D-D: the renewing tenant closest to its last window end, measured now; no sample before the first.
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let quota_horizon: Vec<(&[&'static str], f64)> = quota_repo::quota_window_horizon_seconds(now)
+        .map(|seconds| -> (&[&'static str], f64) { (&[], seconds as f64) })
+        .into_iter()
+        .collect();
+    write_family(
+        &mut out,
+        &families::QUOTA_WINDOW_HORIZON_SECONDS,
+        &quota_horizon,
+    );
     // ADR-0064 D-K: the six DR families from the last successful DR_EVIDENCE run (0 before the first).
     dr::render(&mut out);
     out

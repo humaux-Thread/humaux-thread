@@ -614,3 +614,32 @@ tests:
       - eval_time: 45m
         alertname: DnsPinDeferred
         exp_alerts: []
+
+  # quota window renewal missing (card W0 injection: QUOTA_RENEWAL never stages a successor, so the horizon falls
+  # under 7 days): two daemons export the gauge, one tenant view 3 days out, the other 30; the 3-day one fires after
+  # the 30m `for:` (comparing the max instead of the min stays silent: mutation renewal_min; `< 0`: renewal_lt).
+  - interval: 1m
+    input_series:
+      - series: 'quota_window_horizon_seconds{job="humaux-maintenance",mode="serve",instance="a"}'
+        values: '259200x60'
+      - series: 'quota_window_horizon_seconds{job="humaux-maintenance",mode="serve",instance="b"}'
+        values: '2592000x60'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: QuotaWindowRenewalMissing
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: QuotaWindowRenewalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # quota window renewal silent: every renewing tenant's latest window ends 14 days out (the lead staged it).
+  - interval: 1m
+    input_series:
+      - series: 'quota_window_horizon_seconds{job="humaux-maintenance",mode="serve"}'
+        values: '1209600x90'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: QuotaWindowRenewalMissing
+        exp_alerts: []

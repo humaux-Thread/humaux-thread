@@ -1,16 +1,18 @@
 //! `adapters::quota_repo` — §72.2.1: durable, tenant-bound quota reservations and independent rate buckets.
 //! Depends-on: crates=[humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) w=[control.quota_windows,
 //!   control.rate_buckets, control.usage_reservations] x=[control.issue_quota_window,
-//!   control.reap_quota_reservations], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[];
+//!   control.reap_quota_reservations, control.renew_quota_period], PostgreSQL(role_gateway),
+//!   PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::postgres, domain::audit, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo,
 //!   adapters::operation_receipt, adapters::request_guard_repo, gateway::bootstrap, gateway::guard,
 //!   maintenance::main, maintenance::serve, tests, xtask::e2e_seed, xtask::load]
-//! Invariants: [the gateway only consumes existing quota windows; only role_maintenance can issue or reap them;
+//! Invariants: [the gateway only consumes existing quota windows; only role_maintenance can issue, renew or reap them;
 //!   exhaustion is QuotaExhausted/RateLimited and a PG error DependencyUnavailable, never an allow; one request's
 //!   rate buckets are one transaction whose advisory locks are taken in tier order (tenant, user, credential/shared,
-//!   credential/operation), the only rate-lock statement in the workspace]
-//! Spec: Baseline §72.2.1; §73.2; ADR-0062 E5; ADR-0065 D-D, D-E
+//!   credential/operation), the only rate-lock statement in the workspace; `quota_window_horizon_seconds` has one
+//!   `.set()` ([`record_quota_window_horizon`]) and its sample is computed at render time, never cached]
+//! Spec: Baseline §41.2; §72.2.1; §73.2; ADR-0062 E5; ADR-0065 D-D, D-E; ADR-0072
 //!
 //! The gateway consumes existing windows; only maintenance can invoke their issuer.
 
@@ -429,6 +431,94 @@ pub async fn reap_expired(
         .map_err(db_error)?;
     txn.commit().await.map_err(db_error)?;
     Ok(reaped)
+}
+
+/// What one tenant's renewal call did (ADR-0072 D-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Renewal {
+    /// Successor periods this call staged: 0 on a rerun, while one is pending, or for a tenant that does not renew.
+    pub staged: i32,
+    /// The end of the tenant's latest BMO window; `None` when the tenant does not renew (ADR-0072 D-B).
+    pub horizon: Option<OffsetDateTime>,
+}
+
+/// §72.2.1 / ADR-0072: one tenant's renewal step through the owner door `control.renew_quota_period` (0245). Within
+/// `lead` of the current period's end it stages the contiguous next period on the snapshot and issues its window
+/// with the snapshot's limit; a `subscription_period` lasts `subscription_months`. Idempotent and serialized with
+/// the issuer per tenant; at most `limit` periods per call.
+pub async fn renew_period(
+    pool: &MaintenanceDbPool,
+    tenant: TenantId,
+    lead: Duration,
+    subscription_months: i32,
+    limit: i32,
+) -> Result<Renewal, ErrorCode> {
+    if tenant.0.is_nil() || subscription_months <= 0 || limit <= 0 {
+        return Err(ErrorCode::InvalidInput);
+    }
+    // dep: PostgreSQL(role_maintenance) — transaction entry for `renew_period`
+    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    bind_tenant(&mut txn, tenant, None).await?;
+    let row = sqlx::query(
+        "SELECT staged, horizon FROM control.renew_quota_period( \
+         $1, $2, make_interval(secs => $3), make_interval(months => $4), $5)",
+    )
+    .bind(tenant.0)
+    .bind(BMO_ENTITLEMENT)
+    .bind(lead.as_secs_f64())
+    .bind(subscription_months)
+    .bind(limit)
+    .fetch_one(&mut *txn)
+    .await
+    .map_err(db_error)?;
+    let renewal = Renewal {
+        staged: field(&row, "staged")?,
+        horizon: field(&row, "horizon")?,
+    };
+    txn.commit().await.map_err(db_error)?;
+    Ok(renewal)
+}
+
+/// `quota_window_horizon_seconds` (§41.2, ADR-0072 D-D): the latest window end (unix seconds) of every renewing
+/// tenant the daemon visited. The sample is computed at render time, so a tenant whose renewal stops being
+/// visited drifts toward the alert instead of holding a stale value.
+struct HorizonByTenant(std::sync::Mutex<std::collections::BTreeMap<Uuid, i64>>);
+
+impl HorizonByTenant {
+    fn slot(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<Uuid, i64>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn set(&self, tenant: Uuid, horizon_unix: Option<i64>) {
+        let mut horizons = self.slot();
+        match horizon_unix {
+            Some(end) => horizons.insert(tenant, end),
+            None => horizons.remove(&tenant),
+        };
+    }
+}
+
+static QUOTA_WINDOW_HORIZON_SECONDS: HorizonByTenant =
+    HorizonByTenant(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+/// ADR-0072 D-D: records one renewal call's horizon for `tenant` (`None` drops a tenant that no longer renews). The
+/// family's only `.set()`; public so the G80-6 witness drives it without a database; the one production caller is
+/// `maintenance::serve`'s QUOTA_RENEWAL task.
+pub fn record_quota_window_horizon(tenant: TenantId, horizon_unix: Option<i64>) {
+    // labels: -
+    QUOTA_WINDOW_HORIZON_SECONDS.set(tenant.0, horizon_unix);
+}
+
+/// This process's `quota_window_horizon_seconds` at `now_unix`: the smallest recorded horizon minus now; `None`
+/// (no sample) until a renewing tenant was visited.
+pub fn quota_window_horizon_seconds(now_unix: i64) -> Option<i64> {
+    QUOTA_WINDOW_HORIZON_SECONDS
+        .slot()
+        .values()
+        .min()
+        .map(|end| end.saturating_sub(now_unix))
 }
 
 /// Bootstrap supplies policy from the Config Registry; no hardcoded limit or fallback.
