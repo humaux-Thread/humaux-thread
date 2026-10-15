@@ -121,6 +121,8 @@ impl RetrievalEmbeddingPort for CachedEmbeddingPort {
         &self,
         input: RetrievalEmbeddingInput<'_>,
     ) -> Result<RetrievalEmbeddingOutcome, ErrorCode> {
+        // RED G-M12-6: bypass the decorator.
+        return self.inner.embed_query(input).await;
         let scope = input.authorization;
         // ADR-0012 §2: the inner client refuses a scope without a user (Unauthorized) or a workspace outside the
         // allowed set (Forbidden). The cache must not answer what the inner port would refuse, whatever the caller
