@@ -3,7 +3,7 @@ name = "humaux-local-secret-scan"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
-license.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true

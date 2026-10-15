@@ -3,7 +3,7 @@ name = "humaux-gateway"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
-license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # why: typed PG pools, repositories and wire adapters this package drives; used-by: [gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
