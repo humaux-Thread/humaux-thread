@@ -5,7 +5,6 @@
 //!   tenant at its cap is bypassed and evicts nobody else's entries]
 //! Spec: Baseline §51; §67.2; M12 design §6 D5, §8 G-M12-5
 
-use std::sync::Mutex;
 use std::time::Duration;
 
 use humaux_cache::{BoundedCache, CacheConfig, CacheKey, EmbeddingMode, EmbeddingQueryKey};
@@ -17,7 +16,7 @@ type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 const VALUE_LEN: usize = 200;
 
 /// The request counters are process-global; each test holds this lock for its whole body.
-static COUNTERS: Mutex<()> = Mutex::new(());
+static COUNTERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn key(tenant: TenantId, user: UserId, n: u64) -> EmbeddingQueryKey {
     let mut input = [0_u8; 32];
@@ -64,9 +63,7 @@ async fn is_cached(cache: &Cache, k: EmbeddingQueryKey) -> bool {
 /// entries that actually survive (so the weigher counts bytes, not entries).
 #[tokio::test]
 async fn weighted_size_stays_within_capacity() {
-    let _serial = COUNTERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = COUNTERS.lock().await;
     let (tenant, user) = (TenantId::new(), UserId::new());
     let weight = entry_weight(&key(tenant, user, 0));
     let capacity = 50 * weight;
@@ -95,9 +92,7 @@ async fn weighted_size_stays_within_capacity() {
 /// A tenant at its byte cap is bypassed; another tenant's entries stay intact.
 #[tokio::test]
 async fn tenant_over_cap_is_bypassed_and_others_stay_intact() {
-    let _serial = COUNTERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = COUNTERS.lock().await;
     let (greedy, polite) = (TenantId::new(), TenantId::new());
     let (u_greedy, u_polite) = (UserId::new(), UserId::new());
     let weight = entry_weight(&key(greedy, u_greedy, 0));

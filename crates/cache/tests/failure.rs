@@ -5,7 +5,6 @@
 //!   zero-capacity cache still serves every call]
 //! Spec: Baseline §51.3; §41.2; M12 design §6 D7, §8 G-M12-3
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -17,7 +16,7 @@ type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 
 /// The request counters are process-global and libtest runs these tests on parallel threads: each test holds this
 /// lock for its whole body so its deltas are its own.
-static COUNTERS: Mutex<()> = Mutex::new(());
+static COUNTERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn config(capacity_bytes: u64, enabled: bool) -> CacheConfig {
     CacheConfig {
@@ -46,9 +45,7 @@ fn count(result: CacheResult) -> u64 {
 /// An `Err` is returned, counted as `error`, not cached: the next call recomputes, and only its `Ok` is cached.
 #[tokio::test]
 async fn error_is_not_cached_and_next_call_recomputes() {
-    let _serial = COUNTERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = COUNTERS.lock().await;
     let cache = Cache::new(CacheName::EmbedQuery, config(1 << 20, true));
     let computes = AtomicUsize::new(0);
     let k = key();
@@ -96,9 +93,7 @@ async fn error_is_not_cached_and_next_call_recomputes() {
 /// A zero-capacity and a disabled cache serve every call by computing it, counted as `bypass`.
 #[tokio::test]
 async fn zero_capacity_and_disabled_caches_still_serve() {
-    let _serial = COUNTERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = COUNTERS.lock().await;
     for (label, cfg) in [
         ("zero capacity", config(0, true)),
         ("disabled", config(1 << 20, false)),
