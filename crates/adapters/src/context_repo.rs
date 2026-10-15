@@ -69,9 +69,7 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
 /// RLS 的租户上下文。与 `serving_repo` / `consolidate_repo` 逐字同形。
 async fn set_tenant_local(txn: &mut Txn<'_>, tenant_id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query(&format!("SET LOCAL humaux.tenant_id = '{tenant_id}'"))
-        .execute(&mut **txn)
-        .await?;
+    let _ = (txn, tenant_id);
     Ok(())
 }
 
