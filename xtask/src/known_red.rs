@@ -1,5 +1,5 @@
 //! `xtask::known_red` — `cargo xtask known-red`: the ledger of gates that are due but still red, every row owned by a module card and forced out when its item passes.
-//! Depends-on: crates=[toml]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::benchset_declaration, xtask::dod_check, xtask::phase]
+//! Depends-on: crates=[toml]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::architecture_check, xtask::benchset_declaration, xtask::dod_check, xtask::phase]
 //! Called-by: [xtask::main]
 //! Invariants: [a failing item without a ledger row is red; a ledger row whose item no longer fails is red (the row must be deleted); a row without a module-card owner is red; --release turns every row without deferred_past_go_live red and lists every deferred row for owner sign-off; an unknown ledger section or key, and an unparsable --phase value, is rejected, never ignored]
 //! Spec: Baseline §57.1; §69; §80.1.1; §46
@@ -9,10 +9,11 @@
 //! echo line or a waiver. A row is forced out when its item passes (§80.1.1 shape); adding a row is a reviewed
 //! diff line that must name its owner, and every run prints `rows: N (deferred: M)` so growth shows in the log.
 //!
-//! Three sections, one evaluator each: `dod` (G80-33 verdicts per DoD id, reused from `dod_check`),
+//! Sections, one evaluator each: `dod` (G80-33 verdicts per DoD id, reused from `dod_check`),
 //! `benchset` (G80-16 verdicts per benchmark set, reused from `benchset_declaration`) and `due_items`
-//! (the §57.1 rule 3 list, judged against the `PHASE` file). M01 cards add their sections to [`SECTIONS`]
-//! together with an evaluator.
+//! (the §57.1 rule 3 list, judged against the `PHASE` file); `crate_boundary` (G-M01-3 violations from
+//! `architecture_check`, M01 D5) is the fourth. M01 cards add their sections to [`SECTIONS`] together with an
+//! evaluator.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -25,7 +26,7 @@ const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml")
 const LEDGER_FILE: &str = "xtask/known_red.toml";
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
-const SECTIONS: [&str; 3] = ["dod", "benchset", "due_items"];
+const SECTIONS: [&str; 4] = ["dod", "benchset", "due_items", "crate_boundary"];
 /// Keys a ledger row may carry; anything else is a typo that would silently weaken a rule.
 const ROW_KEYS: [&str; 4] = ["id", "owner", "reason", "deferred_past_go_live"];
 
@@ -413,11 +414,26 @@ fn due_items(phase: u32) -> Vec<Item> {
         .collect()
 }
 
+/// M01 D5: one failing item per G-M01-3 violation `(id, detail)`; the id is `<package> -> <dependency> (<kind>)`.
+fn boundary_items(violations: Vec<(String, String)>) -> Vec<Item> {
+    violations
+        .into_iter()
+        .map(|(id, detail)| Item {
+            id,
+            status: Status::Fail,
+            detail,
+        })
+        .collect()
+}
+
 fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
     match section {
         "dod" => dod_items(phase),
         "benchset" => benchset_section(phase),
         "due_items" => Ok(due_items(phase)),
+        "crate_boundary" => {
+            crate::architecture_check::crate_boundary_violations().map(boundary_items)
+        }
         other => Err(format!("no evaluator is wired for section `{other}`")),
     }
 }
@@ -831,7 +847,8 @@ mod tests {
             "{:?}",
             out.reds
         );
-        assert_eq!(out.reports.len(), 2);
+        // every section but the broken one still reports
+        assert_eq!(out.reports.len(), SECTIONS.len() - 1);
     }
 
     /// Unchanged ledger through `check`: green, and the totals the log prints count rows and deferrals.
@@ -1076,6 +1093,21 @@ mod tests {
         ] {
             assert_eq!(parse_args(&bad), None, "{bad:?}");
         }
+    }
+
+    /// Each G-M01-3 violation is a failing item, so an unledgered one goes red in `judge` and a ledgered one is listed.
+    #[test]
+    fn boundary_violations_become_failing_items() {
+        let items = boundary_items(vec![("a -> sqlx (normal)".into(), "why".into())]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "a -> sqlx (normal)");
+        assert_eq!(items[0].status, Status::Fail);
+        let red = judge("crate_boundary", &items, &[], false);
+        assert_eq!(red.reds.len(), 1, "{:?}", red.reds);
+        let rows = [row("a -> sqlx (normal)", "M23")];
+        let covered = judge("crate_boundary", &items, &rows, false);
+        assert!(covered.reds.is_empty(), "{:?}", covered.reds);
+        assert_eq!(covered.ledgered_lines.len(), 1);
     }
 
     /// The committed ledger is well formed: it parses clean and every row has a module-card owner and a reason.
