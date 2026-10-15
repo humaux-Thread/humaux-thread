@@ -652,6 +652,34 @@ mod tests {
         ));
     }
 
+    /// §7.4: the loopback exception must judge the host the client will actually dial. A host
+    /// cut at the first `/`, `:` or `?` read `http://localhost:80@evil.example/` as loopback
+    /// while the URL's real host is `evil.example` (`localhost:80` is userinfo) — this
+    /// transport's platform credential would have gone there in cleartext.
+    #[test]
+    fn loopback_exception_judges_the_host_the_client_dials() {
+        for allowed in [
+            "https://dashscope.aliyuncs.com/v1/embeddings",
+            "http://127.0.0.1:9999/x",
+            "http://localhost:9999/x",
+            "http://localhost/x",
+            "http://[::1]:9999/x",
+        ] {
+            assert!(endpoint_scheme_is_allowed(allowed), "{allowed}");
+        }
+        for refused in [
+            "http://localhost:80@evil.example/",
+            "http://127.0.0.1@evil.example/x",
+            "http://localhost.evil.example/x",
+            "http://attacker.example/x",
+            "ftp://localhost/x",
+            "https://",
+            "not a url",
+        ] {
+            assert!(!endpoint_scheme_is_allowed(refused), "{refused}");
+        }
+    }
+
     #[test]
     fn https_endpoint_is_accepted() {
         let result = HttpExternalCall::new(

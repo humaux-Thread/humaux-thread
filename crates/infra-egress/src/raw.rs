@@ -233,6 +233,20 @@ mod tests {
         assert!(matches!(err, RawSendError::NonHttpsEndpoint));
     }
 
+    /// §7.4: userinfo must not dress a remote host up as loopback — the BYOK key would travel
+    /// in cleartext to `evil.example`. Refused before any connection, by the same check as
+    /// `crate::http`.
+    #[tokio::test]
+    async fn userinfo_cannot_pass_a_remote_host_off_as_loopback() {
+        let raw = RawHttpPost::new(Duration::from_secs(1), Arc::new(SystemCheckedResolve))
+            .expect("client");
+        let err = raw
+            .send("http://localhost:80@evil.example/v1/x", &[], vec![], 1024)
+            .await
+            .expect_err("the real host is evil.example");
+        assert!(matches!(err, RawSendError::NonHttpsEndpoint));
+    }
+
     /// 响应体超限 ⇒ BodyTooLarge，不静默截断。用本地真监听器。
     #[tokio::test]
     async fn an_oversized_body_is_rejected_not_truncated() {
