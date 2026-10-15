@@ -1,6 +1,6 @@
 //! `cache::key` — the cache key and value traits and the query-embedding key.
 //! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::ids]
-//! Called-by: [cache::bounded, tests]
+//! Called-by: [cache::bounded, gateway::cached_embedding, tests]
 //! Invariants: [`EmbeddingQueryKey` derives `Hash`/`Eq` over every field, so changing any one field is a different
 //!   key (§51, M12 D3/D4); the input hash covers the exact provider bytes with no case or whitespace folding]
 //! Spec: Baseline §51; §20.0

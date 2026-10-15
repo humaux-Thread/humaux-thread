@@ -3,15 +3,19 @@
 //!   (ADR-0031 D-A / ADR-0032 D-A, §34.0.1 Q9: one process serves every pair; no registry table, no per-process
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell,
-//!   humaux-protocol, humaux-telemetry, serde_json, tokio, uuid]; services=[PostgreSQL(role_gateway)];
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
+//!   humaux-infra-cell, humaux-protocol, humaux-telemetry, serde_json, tokio, uuid];
+//!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
 //!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR,
+//!   HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES, HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED,
+//!   HUMAUX_GATEWAY_CACHE_EMBED_QUERY_TTL_SECONDS, HUMAUX_GATEWAY_CACHE_PER_TENANT_BYTES,
 //!   HUMAUX_GATEWAY_CALLER_ID, HUMAUX_GATEWAY_CELL_ID, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS,
 //!   HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX,
-//!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
+//!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
+//!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
 //!   HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS,
 //!   HUMAUX_GATEWAY_GLOBAL_DENYLIST, HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST,
 //!   HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS, HUMAUX_GATEWAY_MAX_FORWARDED_HOPS,
@@ -36,9 +40,9 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
 //!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::postgres, adapters::quota_repo,
-//!   adapters::retrieve, application::retrieval_embedding_port, contracts::config_registry,
+//!   adapters::retrieve, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
-//!   gateway::context,
+//!   gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::metrics]
@@ -66,6 +70,7 @@ use humaux_adapters::{
     retrieve::{TokenKeys, install_token_keys},
 };
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
+use humaux_cache::CacheConfig;
 use humaux_contracts::config_registry::{
     ConfigEntry, effective_config_fingerprint, resolve_effective_config,
 };
@@ -88,6 +93,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     admission::{Admission, AdmissionSettings},
+    cached_embedding::{CachedEmbeddingPort, GenerationStamp},
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
@@ -235,6 +241,8 @@ struct SemanticRecallConfig {
     qdrant_tls: bool,
     cell_id: CellId,
     caller_id: CallerId,
+    /// M12 D2: the query-embedding cache; `None` when no generation stamp is configured.
+    query_cache: Option<(GenerationStamp, CacheConfig)>,
 }
 
 /// Ready-to-serve components for `main`: bind [`Self::bind_addr`], then serve
@@ -760,7 +768,17 @@ fn parse_semantic_recall(
     if socket_path.trim().is_empty() {
         return Ok(None);
     }
+    let embedding_dimension = parse_u32(
+        required(effective, "HUMAUX_GATEWAY_EMBEDDING_DIMENSION")?,
+        "HUMAUX_GATEWAY_EMBEDDING_DIMENSION",
+    )?;
+    let embedding_version = nonempty(
+        required(effective, "HUMAUX_GATEWAY_EMBEDDING_VERSION")?,
+        "HUMAUX_GATEWAY_EMBEDDING_VERSION",
+    )?
+    .to_owned();
     Ok(Some(SemanticRecallConfig {
+        query_cache: parse_query_cache(effective, &embedding_version, embedding_dimension)?,
         socket_path: socket_path.to_owned(),
         server_uid: parse_u32(
             required(effective, "HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID")?,
@@ -770,15 +788,8 @@ fn parse_semantic_recall(
             required(effective, "HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS")?,
             "HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS",
         )?,
-        embedding_dimension: parse_u32(
-            required(effective, "HUMAUX_GATEWAY_EMBEDDING_DIMENSION")?,
-            "HUMAUX_GATEWAY_EMBEDDING_DIMENSION",
-        )?,
-        embedding_version: nonempty(
-            required(effective, "HUMAUX_GATEWAY_EMBEDDING_VERSION")?,
-            "HUMAUX_GATEWAY_EMBEDDING_VERSION",
-        )?
-        .to_owned(),
+        embedding_dimension,
+        embedding_version,
         qdrant_host: nonempty(
             required(effective, "HUMAUX_GATEWAY_QDRANT_HOST")?,
             "HUMAUX_GATEWAY_QDRANT_HOST",
@@ -817,6 +828,61 @@ fn parse_semantic_recall(
             .to_owned(),
         ),
     }))
+}
+
+/// M12 D4 / D5 (§51, §78.1): the query-embedding cache of the semantic-recall lane. An all-blank generation stamp
+/// (`EMBEDDING_{PROVIDER_ID,MODEL_ID,MODEL_REVISION}`) is `None`: the cache stays off and `build` prints
+/// not_applicable. A partly filled stamp is a boot error, never a cache keyed on a guessed field.
+fn parse_query_cache(
+    effective: &BTreeMap<String, String>,
+    embedding_version: &str,
+    dimension: u32,
+) -> Result<Option<(GenerationStamp, CacheConfig)>, BootstrapError> {
+    const STAMP: [&str; 3] = [
+        "HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID",
+        "HUMAUX_GATEWAY_EMBEDDING_MODEL_ID",
+        "HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION",
+    ];
+    const ENABLED: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED";
+    const BYTES: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES";
+    const PER_TENANT_BYTES: &str = "HUMAUX_GATEWAY_CACHE_PER_TENANT_BYTES";
+    const TTL: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_TTL_SECONDS";
+    let stamp = STAMP.map(|key| effective.get(key).map_or("", |value| value.trim()));
+    if stamp.iter().all(|value| value.is_empty()) {
+        return Ok(None);
+    }
+    if let Some(missing) = stamp.iter().position(|value| value.is_empty()) {
+        return Err(BootstrapError::new(STAMP[missing], "missing or empty"));
+    }
+    let [provider_id, model_id, model_revision] = stamp;
+    let bytes = |key: &str| -> Result<u64, BootstrapError> {
+        required(effective, key)?
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| BootstrapError::new(key, "must be a positive integer"))
+    };
+    let enabled = match required(effective, ENABLED)? {
+        "true" => true,
+        "false" => false,
+        _ => return Err(BootstrapError::new(ENABLED, "must be true or false")),
+    };
+    Ok(Some((
+        GenerationStamp {
+            embedding_version: embedding_version.to_owned(),
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+            model_revision: model_revision.to_owned(),
+            dimension,
+        },
+        CacheConfig {
+            capacity_bytes: bytes(BYTES)?,
+            per_tenant_bytes: bytes(PER_TENANT_BYTES)?,
+            // u32 seconds (~136 years) keeps the TTL under moka's 1000-year limit, which panics (cache::bounded).
+            ttl: Duration::from_secs(u64::from(parse_u32(required(effective, TTL)?, TTL)?)),
+            enabled,
+        },
+    )))
 }
 
 /// Builds the one native semantic-recall lane's runtime — `IntraCellResource::QDRANT_REST`
@@ -887,7 +953,17 @@ fn build_semantic_recall_runtime(
         qdrant: qdrant_transport.clone(),
         registry: registry.clone(),
     };
-    let embedding_port: Arc<dyn RetrievalEmbeddingPort> = client;
+    let embedding_port: Arc<dyn RetrievalEmbeddingPort> = match config.query_cache {
+        Some((stamp, cache)) => Arc::new(CachedEmbeddingPort::new(client, stamp, cache)),
+        None => {
+            // §57.1: not_applicable names the missing object.
+            eprintln!(
+                "gateway bootstrap: not_applicable: HUMAUX_GATEWAY_EMBEDDING_{{PROVIDER_ID,MODEL_ID,MODEL_REVISION}} \
+                 (query-embedding cache stays off, every recall embeds through the retrieval worker)"
+            );
+            client
+        }
+    };
     // ADR-0056 D-C: no scanner here — the retrieval worker's `seal_query` is the one query seal.
     SemanticRecallRuntime::new(
         embedding_port,
@@ -1024,6 +1100,31 @@ pub fn registry() -> Vec<ConfigEntry> {
         .into_iter()
         .map(|(suffix, type_name, secret)| {
             entry_with_default(&format!("{PREFIX}{suffix}"), type_name, secret, "")
+        }),
+    );
+    // M12 D4: the generation stamp the query-embedding cache admits; blank (the default) keeps the cache off
+    // (`parse_query_cache`). It must equal what the retrieval worker reports for HUMAUX_GATEWAY_EMBEDDING_VERSION.
+    entries.extend(
+        [
+            "EMBEDDING_PROVIDER_ID",
+            "EMBEDDING_MODEL_ID",
+            "EMBEDDING_MODEL_REVISION",
+        ]
+        .into_iter()
+        .map(|suffix| entry_with_default(&format!("{PREFIX}{suffix}"), "string", false, "")),
+    );
+    // M12 D5 (§51, §78.1): the design's starting sizes (256 MiB total, 16 MiB per tenant, 24 h); the B23 load test
+    // sets the deployed values. The gateway's memory ceiling must hold the total (deploy/compose/prod.yml).
+    entries.extend(
+        [
+            ("CACHE_EMBED_QUERY_ENABLED", "bool", "true"),
+            ("CACHE_EMBED_QUERY_BYTES", "u64", "268435456"),
+            ("CACHE_PER_TENANT_BYTES", "u64", "16777216"),
+            ("CACHE_EMBED_QUERY_TTL_SECONDS", "u32", "86400"),
+        ]
+        .into_iter()
+        .map(|(suffix, type_name, default)| {
+            entry_with_default(&format!("{PREFIX}{suffix}"), type_name, false, default)
         }),
     );
     for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
@@ -1927,6 +2028,44 @@ mod tests {
             assert!(
                 GatewayBootstrap::from_raw(broken).is_err(),
                 "{key} must be required once semantic recall is enabled"
+            );
+        }
+    }
+
+    /// M12 D4: the query-embedding cache needs the whole generation stamp. All blank keeps it off, all set turns it on
+    /// with the registry sizes, and any one blank of a filled stamp refuses to boot (never a guessed field).
+    #[test]
+    fn query_cache_needs_the_whole_generation_stamp_or_none() {
+        let values = semantic_recall_enabled_values();
+        let config = |values: BTreeMap<String, String>| {
+            GatewayBootstrap::from_raw(values).map(|boot| {
+                boot.semantic_recall
+                    .expect("semantic recall is configured")
+                    .query_cache
+            })
+        };
+        assert!(config(values.clone()).expect("blank stamp boots").is_none());
+        let stamp = [
+            ("HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID", "test-provider"),
+            ("HUMAUX_GATEWAY_EMBEDDING_MODEL_ID", "test-model"),
+            ("HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION", "v1"),
+        ];
+        let mut full = values;
+        for (key, value) in stamp {
+            full.insert(key.into(), value.into());
+        }
+        let (generation, cache) = config(full.clone())
+            .expect("full stamp boots")
+            .expect("full stamp enables the cache");
+        assert_eq!(generation.model_id, "test-model");
+        assert_eq!(generation.dimension, 4);
+        assert!(cache.enabled && cache.capacity_bytes > 0 && cache.per_tenant_bytes > 0);
+        for (key, _) in stamp {
+            let mut partial = full.clone();
+            partial.insert(key.into(), String::new());
+            assert!(
+                config(partial).is_err(),
+                "{key} blank in a filled stamp must refuse to boot"
             );
         }
     }
