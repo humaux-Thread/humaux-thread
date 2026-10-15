@@ -18,7 +18,7 @@
 //!   under one REPEATABLE READ snapshot and surface absent, hidden and gated rows alike as NotFound, a PG error as
 //!   DependencyUnavailable or Internal, never an empty page; no cached allow decision, and the only write is the
 //!   enumeration manifest a first page mints through `context_repo` and `selection_repo`]
-//! Spec: Baseline §6.1.1; §6.1.3; §8.6; ADR-0067 D-J2; ADR-0071
+//! Spec: Baseline §6.1.1; §6.1.3; §8.6; §22.1; ADR-0067 D-J2; ADR-0071
 //!
 //! M08 D1 (module design "one gate, one home"): every read op passes the shared final gate before any body leaves
 //! PostgreSQL, and the closure it rests on lives in this file, so a change to the readability rule edits one module.

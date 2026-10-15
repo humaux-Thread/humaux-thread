@@ -46,7 +46,6 @@ use humaux_retrieval::handoff::{Handoff, assemble_with_context};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::types::Uuid;
-use sqlx::types::time::OffsetDateTime;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 
