@@ -236,6 +236,15 @@ async fn recall_embed(
     .expect("typed outcome")
 }
 
+/// The outcome's variant only: failure messages never print a vector, a stamp or anything of the caller's scope.
+fn kind(outcome: &RetrievalEmbeddingOutcome) -> &'static str {
+    match outcome {
+        RetrievalEmbeddingOutcome::Embedded { .. } => "Embedded",
+        RetrievalEmbeddingOutcome::Skipped => "Skipped",
+        RetrievalEmbeddingOutcome::Unavailable { .. } => "Unavailable",
+    }
+}
+
 /// Registration rows of `tenant`, read as `role_gateway` under that tenant's RLS context.
 async fn registered_calls(pool: &sqlx::PgPool, tenant: TenantId) -> i64 {
     // dep: PostgreSQL(role_gateway) — one read transaction carrying the tenant RLS context
@@ -288,7 +297,8 @@ async fn identical_recall_by_one_user_registers_one_call_and_another_user_one_mo
     let first = recall_embed(&port, &alice, workspace_id, query).await;
     assert!(
         matches!(first, RetrievalEmbeddingOutcome::Embedded { .. }),
-        "the first recall embeds through the worker: {first:?}"
+        "the first recall embeds through the worker, got {}",
+        kind(&first)
     );
     assert_eq!(registered_calls(&count_pool, tenant).await, 1);
 
@@ -298,7 +308,7 @@ async fn identical_recall_by_one_user_registers_one_call_and_another_user_one_mo
         1,
         "G-M12-6: an identical recall by the same user must be a hit, not a second RPC registration"
     );
-    assert_eq!(second, first, "a hit returns the identical outcome");
+    assert!(second == first, "a hit returns the identical outcome");
 
     let other_user = recall_embed(&port, &bob, workspace_id, query).await;
     assert_eq!(
@@ -306,7 +316,10 @@ async fn identical_recall_by_one_user_registers_one_call_and_another_user_one_mo
         2,
         "G-M12-6: another user's identical recall is its own namespace and registers one more call"
     );
-    assert_eq!(other_user, first, "same text, same generation, same vector");
+    assert!(
+        other_user == first,
+        "same text, same generation, same vector"
+    );
 }
 
 /// Answers every call with one fixed outcome and counts the calls.
@@ -366,16 +379,14 @@ async fn incompatible_stamp_not_cached() {
         calls, 2,
         "G-M12-7: an incompatible stamp must not be cached; the next identical call must miss"
     );
-    assert_eq!(
-        got,
-        [outcome.clone(), outcome],
+    assert!(
+        got == [outcome.clone(), outcome],
         "a foreign stamp passes through unchanged"
     );
     let (control, outcome, got) = inner_calls_for_two_recalls(MODEL_ID).await;
     assert_eq!(control, 1, "control: the generation's own stamp is cached");
-    assert_eq!(
-        got,
-        [outcome.clone(), outcome],
+    assert!(
+        got == [outcome.clone(), outcome],
         "a hit returns the stored outcome"
     );
 }
