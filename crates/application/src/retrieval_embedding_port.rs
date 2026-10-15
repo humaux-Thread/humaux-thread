@@ -2,7 +2,7 @@
 //!   query embedding.
 //! Depends-on: crates=[async-trait, humaux-domain, uuid]; services=[]; env=[]; modules=[domain::error,
 //!   domain::identity, domain::ids]
-//! Called-by: [gateway::bootstrap, gateway::recall, gateway::retrieval_embedding_client, tests]
+//! Called-by: [gateway::bootstrap, gateway::cached_embedding, gateway::recall, gateway::retrieval_embedding_client, tests]
 //! Invariants: []
 //! Spec: ADR-0012; §4.2; §2
 //!

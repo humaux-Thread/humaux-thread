@@ -23,6 +23,9 @@ humaux-protocol = { path = "../../crates/protocol" }
 humaux-projection = { path = "../../crates/projection" }
 # why: retrieval request/envelope/planner (sole request constructor, §55.1); used-by: [gateway::context, gateway::memory, gateway::recall, tests]
 humaux-retrieval = { path = "../../crates/retrieval" }
+# M12 D2 / ADR-0076: the query-embedding cache in front of the ADR-0012 port (§51, §67.2).
+# why: bounded, per-tenant, single-flight query-embedding cache; used-by: [gateway::cached_embedding]
+humaux-cache = { path = "../../crates/cache" }
 # why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls; used-by: [gateway::bootstrap, gateway::recall, gateway::retrieval_embedding_client, tests]
 humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0061 D-A/D-B: the §41.2 family table, text encoder and loopback ops listener (no metrics crate).

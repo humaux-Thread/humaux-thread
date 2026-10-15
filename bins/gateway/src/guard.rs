@@ -4,7 +4,7 @@
 //!   adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::quota_repo, adapters::remember,
 //!   adapters::request_guard_repo, application::supersede, domain::affect, domain::audit, domain::confirm,
 //!   domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
-//!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::metrics]
+//!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
 //! Invariants: [transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D
@@ -214,6 +214,8 @@ impl GuardMetrics {
             write_family(out, family, &samples);
         }
         humaux_telemetry::admission::render(out);
+        // ADR-0076 D-C: the §51 cache families are served by the process that owns the cache (M12 D2).
+        humaux_telemetry::cache::render(out);
     }
 }
 

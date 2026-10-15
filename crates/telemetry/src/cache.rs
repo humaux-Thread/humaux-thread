@@ -1,7 +1,7 @@
 //! `telemetry::cache` — the four §51 cache families (`cache_requests_total`, `cache_evictions_total`, `cache_bytes`,
 //!   `cache_singleflight_waiters`, §41.2) and their closed label sets.
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[telemetry::metrics]
-//! Called-by: [cache::bounded, tests]
+//! Called-by: [cache::bounded, gateway::cached_embedding, gateway::guard, tests]
 //! Invariants: [each family has exactly one `.inc(` / `.set(` site (§41.2 R4); `cache`, `result` and `cause` are
 //!   closed enums so a tenant id or free text can never become a label (§41.2 R5); a cache fault is counted, never
 //!   raised (§51.3)]

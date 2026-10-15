@@ -34,7 +34,7 @@ const METRICS_ADDR: &str = "HUMAUX_GATEWAY_METRICS_ADDR";
 /// The test's refresh interval; every "within" bound below is derived from it.
 const INTERVAL: Duration = Duration::from_secs(1);
 const START: Duration = Duration::from_secs(15);
-const GATEWAY_FAMILIES: [&str; 10] = [
+const GATEWAY_FAMILIES: [&str; 14] = [
     "degrade_total",
     "humaux_retrieval_requests_total",
     "retrieval_completeness_total",
@@ -45,6 +45,11 @@ const GATEWAY_FAMILIES: [&str; 10] = [
     "mcp_bmo_consumed_total",
     "rate_limit_rejected_total",
     "admission_rejected_total",
+    // ADR-0076 D-C / M12-2: the query-embedding cache families.
+    "cache_requests_total",
+    "cache_evictions_total",
+    "cache_bytes",
+    "cache_singleflight_waiters",
 ];
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);

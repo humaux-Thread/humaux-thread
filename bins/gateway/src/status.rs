@@ -358,8 +358,9 @@ fn degrade_json() -> Value {
     Value::Object(codes)
 }
 
-/// The gateway's nine §41.2 families (ADR-0061 D-C): `degrade_total`, the two retrieval families and
-/// the six guard families. `--metrics-families` and `/metrics` both call this.
+/// The gateway's §41.2 families (ADR-0061 D-C): `degrade_total`, the two retrieval families, the six
+/// guard families, `admission_rejected_total` and the four §51 cache families (ADR-0076 D-C).
+/// `--metrics-families` and `/metrics` both call this.
 #[must_use]
 pub fn render_metrics(guard: &GuardMetrics) -> String {
     let mut out = String::new();
@@ -484,6 +485,10 @@ mod tests {
                 "mcp_bmo_consumed_total",
                 "rate_limit_rejected_total",
                 "admission_rejected_total",
+                "cache_requests_total",
+                "cache_evictions_total",
+                "cache_bytes",
+                "cache_singleflight_waiters",
             ]
         );
         for family in families {
