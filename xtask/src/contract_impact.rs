@@ -1224,7 +1224,7 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
     #[test]
     fn warm_up_block_without_the_real_step_does_not_count() {
         let ci = real_ci_yml();
-        let mut lines: Vec<&str> = ci.lines().collect();
+        let lines: Vec<&str> = ci.lines().collect();
         let at = lines
             .iter()
             .position(|l| *l == "      - name: cargo xtask metrics-registry")
