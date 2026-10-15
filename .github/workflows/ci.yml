@@ -259,28 +259,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo xtask phase-check
 
-      # ---------------------------------------------------------------------
-      # 还没接进来的两道，以及为什么 —— 写在这里是为了留痕，不是为了免责。
-      #
-      #   cargo xtask dod-check
-      #   cargo xtask benchset-declaration
-      #
-      # 相位真源已修（PHASE 文件 + xtask/src/phase.rs）：两道闸不传参数即按真实相位判，
-      # 「默认 0 豁免一切」已不存在。但按真实相位它们当前是红的：
-      #   · dod-check --phase 7  → 9 pass / 40 fail / 50 na，40 条全是
-      #     「no verifier registered」——§69 要求的 DoD→verifier→注错三段绑定，
-      #     94 条里只登记了 5 条（crates/testkit/src/dod.rs 模块注释自陈「Phase 0 only」）。
-      #   · benchset-declaration（PHASE=8 实跑）→ 5 个集合 owning phase 已到期仍
-      #     NOT_DECLARED（continuation_198_v2 / longmemeval_style / agent_workflow_outcome /
-      #     project_continuity / memory_security_lifecycle），缺的是**实测**数据，不能估。
-      #     exact_completeness 已于 2026-08-27 实测声明（evals/exact_completeness/ +
-      #     crates/adapters/tests/exact_completeness_eval.rs），从红名单摘除。
-      #
-      # 接的前提是先把缺口补上，而不是把相位调低到让它们变绿——那正是 §80.1.2
-      # 批评已退休 G80-21 时说的「调松定义」。补完这两块即在此处接上，并把相位值
-      # 从一处真源读取而不是写死在这个文件里。
-      # ---------------------------------------------------------------------
-
       # EmbarkStudios/cargo-deny-action runs an x86_64 binary in a container: "Exec format
       # error" on the arm64 runner (run 37656756823). The crate installs natively instead;
       # rust-cache keeps ~/.cargo/bin across runs. Blocking since M24-1 (the wildcard and licence
@@ -333,34 +311,18 @@ jobs:
           cargo install cargo-sbom --version 0.10.0 --locked
           cargo sbom --output-format=spdx_json_2_3 > sbom.spdx.json
 
-      # §57.1 第3条: 依赖运行时基础设施（vector store / mutation harness / live
-      # deploy target / image registry），Phase 0 尚无被测对象。按三态输出
-      # not_applicable 并点名缺失对象，不是注释掉这些步骤、也不是假装它们通过。
-      # §57.1 rule 2: the two gates the comment above explains are printed as tri-state
-      # lines naming the missing object, not left as prose.
-      - name: dod-check (not_applicable — verifiers unregistered)
+      # M24-4 / G-M24-4 (D4): one shrink-only ledger instead of echo lines. dod-check (G80-33), benchset-declaration
+      # (G80-16) and the four §57.1 rule 3 gates (retrieval benchmark, mutation tests, deploy smoke, container scan) are
+      # judged against the PHASE file. A gate that is due and red must be a row in xtask/known_red.toml naming the module
+      # card that fixes it; a row whose gate now passes must be deleted; an unlisted red fails here. The echo lines this
+      # step replaces printed `not_applicable` for gates that were already due (retrieval benchmark since Phase 6,
+      # mutation tests since Phase 1), which §57.1 rule 2 forbids: `not_applicable` is for an object not yet due, and
+      # it names that object. `cargo xtask known-red --release` is the go-live rehearsal: red for any row that is not
+      # deferred_past_go_live. It runs the registered DoD verifiers (cargo test), hence the step timeout.
+      - name: cargo xtask known-red (G-M24-4)
         if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: DoD verifiers — 94 DoD rows, 5 registered in crates/testkit/src/dod.rs; §69 three-way binding pending)"'
-
-      - name: benchset-declaration (not_applicable — benchsets undeclared)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: measured declarations for continuation_198_v2 / longmemeval_style / agent_workflow_outcome / project_continuity / memory_security_lifecycle)"'
-
-      - name: retrieval benchmark (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: retrieval benchmark corpus / embedding index — delivered Phase 6, §57.1 rule 3)"'
-
-      - name: mutation tests (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: mutation harness / testkit fault targets — delivered Phase 1, §57.1 rule 3)"'
-
-      - name: deploy smoke (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: live deploy target with /live /ready /status — delivered Phase 14, §57.1 rule 3)"'
-
-      - name: container scan (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: container image to scan — delivered Phase 14, §57.1 rule 3)"'
+        timeout-minutes: 25
+        run: cargo xtask known-red
 
   test-a:
     name: cargo test (workspace)

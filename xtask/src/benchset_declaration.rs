@@ -1,6 +1,6 @@
 //! `xtask::benchset_declaration` — G80-16 benchset-declaration-check: §69 benchmark set-denominator declaration table shape.
 //! Depends-on: crates=[]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::phase]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::known_red, xtask::main]
 //! Invariants: [missing any of the 7 §55.3 fields ⇒ NOT_DECLARED; an owning phase past due while still NOT_DECLARED ⇒ fail]
 //! Spec: Baseline §69; §55
 //!
@@ -624,6 +624,42 @@ pub fn evaluate(
         violations,
         na_list,
     }
+}
+
+/// One repo-wide evaluation, flattened to text for the `known-red` ledger (which attributes it to sets).
+pub struct RepoEval {
+    /// `set_id` of every row of the §69 declaration table, in table order.
+    pub set_ids: Vec<String>,
+    /// Violation texts; each concerning one set begins `<set_id>: `, the rest concern the table as a whole.
+    pub violations: Vec<String>,
+    /// `<set_id> (owner phase=N)` for the sets that are not yet due.
+    pub na_list: Vec<String>,
+}
+
+/// [`run`] without the printing. An unreadable spec or a missing declaration table is an `Err` here (the CLI
+/// prints that case as `not_applicable`): a ledger cannot attribute anything without the table.
+pub fn evaluate_repo(current_phase: u32) -> Result<RepoEval, String> {
+    let spec_md =
+        fs::read_to_string(SPEC_PATH).map_err(|e| format!("cannot read {SPEC_PATH}: {e}"))?;
+    let table = parse_declaration_table(&spec_md);
+    if table.is_empty() {
+        return Err(format!(
+            "heading `{TABLE_HEADING}` not found in {SPEC_PATH}"
+        ));
+    }
+    let EvalResult {
+        violations,
+        na_list,
+    } = evaluate(&spec_md, &table, current_phase, Some(Path::new(".")));
+    Ok(RepoEval {
+        set_ids: table
+            .iter()
+            .filter_map(|row| row.first())
+            .map(|s| strip_backticks(s))
+            .collect(),
+        violations: violations.into_iter().map(|v| v.0).collect(),
+        na_list,
+    })
 }
 
 pub fn run(args: &[String]) -> i32 {

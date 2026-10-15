@@ -1,0 +1,7 @@
+# Known-red ledger (M24-4, G-M24-4; Baseline §57.1 rule 2, §80.1.1). Read by `cargo xtask known-red`.
+#
+# A gate that is due at the current PHASE and still red is a row here, owned by the module card that fixes it.
+# Rows only leave: when the item passes, the row must be deleted in the same PR (the gate goes red otherwise).
+# `deferred_past_go_live = "<why>"` marks a row that stays red at go-live on purpose; `--release` is red for every
+# row without it. Sections: [[dod]], [[benchset]], [[due_items]]; any other section or key is rejected.
+# Row keys: id (required), owner (module card, M<nn>[-<card>], required), reason (required), deferred_past_go_live.
