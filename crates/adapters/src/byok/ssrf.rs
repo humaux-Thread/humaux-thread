@@ -539,6 +539,59 @@ mod tests {
         assert!(matches!(err, SsrfError::UrlMalformed(_)));
     }
 
+    /// §11.4 parser differential: each URL reaches a forbidden IP literal under the WHATWG parser
+    /// `reqwest` dials with (`\` ends a special-scheme authority; tab/newline are stripped; the
+    /// host is percent-decoded; IPv4 takes hex/octal/short forms). A hand-cut authority reads a
+    /// hostname instead and asks the resolver, which an attacker's wildcard DNS answers with a
+    /// public address. The literal is dialed directly, so no connect-time resolver sees it.
+    #[test]
+    fn hosts_the_dialer_reads_as_forbidden_literals_are_refused() {
+        let wildcard_dns = FakeResolver(vec![public_ip()]);
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let metadata = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
+        for (url, dialed) in [
+            ("https://127.0.0.1\\.x.attacker.example/v1", loopback),
+            ("https://127.0.0.1:6333\\.x.attacker.example/", loopback),
+            (
+                "https://169.254.169.254\\.x.attacker.example/latest/meta-data",
+                metadata,
+            ),
+            ("https://127.0.0.\t1/v1", loopback),
+            ("https://127.0.\n0.1/v1", loopback),
+            ("https://127.0.0.%31/v1", loopback),
+            ("https://0x7f.1/v1", loopback),
+            ("https://2130706433/v1", loopback),
+            ("https://0177.0.0.1/v1", loopback),
+        ] {
+            assert_eq!(
+                validate_custom_endpoint(url, &wildcard_dns).map(|ok| ok.host),
+                Err(SsrfError::HostIpForbidden(dialed)),
+                "{url:?}"
+            );
+        }
+    }
+
+    /// The host the check approves (and `https_host` binds a recipient to) is the host the client
+    /// dials, never a different reading of the same string.
+    #[test]
+    fn the_approved_host_is_the_dialed_host() {
+        let wildcard_dns = FakeResolver(vec![public_ip()]);
+        for (url, dialed) in [
+            ("https://API.Example.com\\v1\\chat", "api.example.com"),
+            ("https://api.exa\tmple.com/v1", "api.example.com"),
+            ("https://api.example.com\\@127.0.0.1/", "api.example.com"),
+        ] {
+            let ok = validate_custom_endpoint(url, &wildcard_dns).expect(url);
+            assert_eq!(ok.host, dialed, "{url:?}");
+            assert_eq!(https_host(url).as_deref(), Ok(dialed), "{url:?}");
+        }
+        // A recipient bound to `api.example.com` must not match a loopback dial.
+        assert_eq!(
+            https_host("https://127.0.0.1\\.api.example.com/v1").as_deref(),
+            Ok("127.0.0.1")
+        );
+    }
+
     #[test]
     fn ipv6_loopback_literal_is_rejected() {
         let resolver = FakeResolver(vec![public_ip()]);
