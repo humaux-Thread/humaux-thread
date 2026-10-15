@@ -5,7 +5,7 @@
 # and must name its owner; every run prints `rows: N (deferred: M)` so growth shows in the log.
 # `deferred_past_go_live = "<why>"` marks a row that stays red at go-live on purpose; `--release` is red for
 # every row without it and lists every deferred row for owner sign-off.
-# Sections: [[dod]], [[benchset]], [[due_items]]; any other section or key is rejected.
+# Sections: [[dod]], [[benchset]], [[due_items]], [[crate_boundary]] (G-M01-3; id = "<package> -> <dependency>"); any other section or key is rejected.
 # Row keys: id (required), owner (module card, M<nn>[-<card>], required), reason (required), deferred_past_go_live.
 #
 # Initial population (2026-10-15, PHASE 9, from CI run 38682651185 of the known-red step). Owners use the module

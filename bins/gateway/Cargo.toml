@@ -46,8 +46,6 @@ time = { version = "0.3", features = ["parsing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal", "sync"] }
 # why: UUID ids (v7) and parsing; used-by: [gateway::bootstrap, gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
-# why: runtime SQL through the typed per-role pools; used-by: [tests]
-sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "time"] }
 
 [dev-dependencies]
 # why: shared DB-bound test harness (skip_or_fail, fixtures); used-by: [gateway::mcp_application, tests]
@@ -67,6 +65,9 @@ humaux-retrieval-worker = { path = "../retrieval-worker" }
 # retrieval worker's seal is the recall path's one query seal.
 # why: pinned scanner for the in-process retrieval-worker test fixtures; used-by: [tests]
 humaux-local-secret-scan = { path = "../../crates/local-secret-scan" }
+# G-M01-3 (M01 D5): sqlx is a dev-dependency only, the gateway reaches Postgres through humaux-adapters.
+# why: typed per-role pool connections of the gateway integration tests; used-by: [tests]
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "time"] }
 
 [lints]
 workspace = true

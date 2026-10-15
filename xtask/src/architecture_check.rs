@@ -1,13 +1,13 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
 //! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
-//! Called-by: [xtask::direction_table, xtask::main]
+//! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
 //!
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
-//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074).
+//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074) and the crate boundary table G-M01-3 (M01 D5).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -1082,6 +1082,223 @@ fn m01_2_core_cloud_edges(root: &Path) -> Verdict {
         Ok(json) => core_cloud_edges_from(&json),
         Err(e) => Verdict::Fail(vec![e]),
     }
+}
+
+// ============================================================================
+// M01 D5 — G-M01-3: crate boundary table (§78 Boundary Lints, generalising the §78.3 domain rule)
+// ============================================================================
+
+/// Ledger file of known violations; the `[[crate_boundary]]` section is read here and evaluated by `known-red`.
+const KNOWN_RED_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml");
+
+/// One row of the crate-boundary table: the dependency `dep` may be declared only by the `allowed_in` packages.
+struct BoundaryRule {
+    dep: &'static str,
+    allowed_in: &'static [&'static str],
+    /// A `[dev-dependencies]` entry is "testing" (§78 sqlx line) and is not counted.
+    dev_exempt: bool,
+    why: &'static str,
+}
+
+/// M01 D5 table. Matching is by package name (`dependencies[].name`), so a renamed dependency counts under its
+/// real name; target-specific and build dependencies count like normal ones, optional ones too.
+// ponytail: crate-granular like G-M01-2 — a forbidden `use` inside an allowed crate is the file-level ledger of
+// M01-5; `qdrant-client` is not in Cargo.lock (Qdrant is reached over REST through humaux-infra-cell), the row is
+// the guard for the day a client crate is added.
+const BOUNDARY_TABLE: &[BoundaryRule] = &[
+    BoundaryRule {
+        dep: "reqwest",
+        allowed_in: &["humaux-infra-network"],
+        dev_exempt: false,
+        why: "§78 / ADR-0003: Layer 0 is the only raw HTTP transport",
+    },
+    BoundaryRule {
+        dep: "sqlx",
+        allowed_in: &["humaux-adapters"],
+        dev_exempt: true,
+        why: "§78: Postgres access lives in the postgres adapter (dev-dependencies are testing)",
+    },
+    BoundaryRule {
+        dep: "qdrant-client",
+        allowed_in: &["humaux-adapters", "humaux-projection"],
+        dev_exempt: false,
+        why: "§78: the Qdrant client lives in the projection adapter",
+    },
+];
+
+/// L0 kernel rows (M01 design §4): each package, and the workspace members it may depend on, in any dependency
+/// kind. Every other workspace member is a violation.
+const L0_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
+    ("humaux-domain", &[]),
+    ("humaux-contracts", &[]),
+    ("humaux-fail-closed-macro", &[]),
+    (
+        "humaux-telemetry",
+        &[
+            "humaux-domain",
+            "humaux-contracts",
+            "humaux-fail-closed-macro",
+        ],
+    ),
+];
+
+/// One G-M01-3 violation: `id` is the ledger key (`<package> -> <dependency>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundaryViolation {
+    /// `[[crate_boundary]]` row id that ledgers this violation.
+    pub id: String,
+    /// Human-readable cause, naming the rule.
+    pub detail: String,
+}
+
+/// Every violation of [`BOUNDARY_TABLE`] and [`L0_WORKSPACE_DEPS`] in a `cargo metadata --no-deps` document.
+/// `Err` is a shape problem (no packages, a missing L0 package, a package without `dependencies`, a nameless
+/// dependency): fail-closed and never ledgerable, because a missing list cannot prove the absence of an edge.
+fn boundary_violations_in(metadata_json: &str) -> Result<Vec<BoundaryViolation>, String> {
+    let packages = metadata_packages(metadata_json)?;
+    let members: BTreeSet<&str> = packages.iter().filter_map(package_name).collect();
+    if members.is_empty() {
+        return Err("cargo metadata lists no workspace package (a vacuous boundary check)".into());
+    }
+    if let Some((missing, _)) = L0_WORKSPACE_DEPS.iter().find(|(n, _)| !members.contains(n)) {
+        return Err(format!(
+            "L0 package `{missing}` not found in cargo metadata output: matcher target missing"
+        ));
+    }
+    let mut out = Vec::new();
+    for pkg in &packages {
+        let name = package_name(pkg).ok_or("cargo metadata lists a package without a `name`")?;
+        let deps = pkg
+            .get("dependencies")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| {
+                format!("package `{name}` has no `dependencies` array in cargo metadata")
+            })?;
+        for dep in deps {
+            let dep_name = dep
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| format!("package `{name}` lists a dependency without a `name`"))?;
+            let kind = dep.get("kind").and_then(|k| k.as_str()).unwrap_or("normal");
+            let id = format!("{name} -> {dep_name}");
+            for rule in BOUNDARY_TABLE.iter().filter(|r| r.dep == dep_name) {
+                if !rule.allowed_in.contains(&name) && !(rule.dev_exempt && kind == "dev") {
+                    out.push(BoundaryViolation {
+                        id: id.clone(),
+                        detail: format!(
+                            "`{name}` declares `{dep_name}` ({kind} dependency) but only {:?} may ({})",
+                            rule.allowed_in, rule.why
+                        ),
+                    });
+                }
+            }
+            if let Some((_, allowed)) = L0_WORKSPACE_DEPS.iter().find(|(n, _)| *n == name)
+                && members.contains(dep_name)
+                && !allowed.contains(&dep_name)
+            {
+                out.push(BoundaryViolation {
+                    id,
+                    detail: format!(
+                        "L0 package `{name}` depends on workspace package `{dep_name}` ({kind} dependency) but may depend only on {allowed:?} (M01 design §4)"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// G-M01-3 pure comparator: a violation whose id is in `ledgered` is known-red, not green-silent (it comes back
+/// as a note line for the log and `known-red` forces the row out once the violation is gone); any other
+/// violation is `Fail`. Injected-fault record: ADR-0074 (G-M01-3 section).
+pub fn crate_boundary_from(
+    metadata_json: &str,
+    ledgered: &BTreeSet<String>,
+) -> (Verdict, Vec<String>) {
+    let violations = match boundary_violations_in(metadata_json) {
+        Ok(v) => v,
+        Err(e) => return (Verdict::Fail(vec![e]), Vec::new()),
+    };
+    let (known, unknown): (Vec<_>, Vec<_>) = violations
+        .into_iter()
+        .partition(|v| ledgered.contains(&v.id));
+    let notes = known
+        .iter()
+        .map(|v| {
+            format!(
+                "known-red: ledgered [crate_boundary] {}: {}",
+                v.id, v.detail
+            )
+        })
+        .collect();
+    let verdict = if unknown.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(
+            unknown
+                .iter()
+                .map(|v| {
+                    format!(
+                        "{}; not in xtask/known_red.toml [[crate_boundary]]",
+                        v.detail
+                    )
+                })
+                .collect(),
+        )
+    };
+    (verdict, notes)
+}
+
+/// Ids of the `[[crate_boundary]]` rows in the ledger text; no section means none.
+fn ledgered_boundary_ids(ledger_toml: &str) -> Result<BTreeSet<String>, String> {
+    let parsed: toml::Table = ledger_toml
+        .parse()
+        .map_err(|e| format!("xtask/known_red.toml is not valid TOML: {e}"))?;
+    let Some(rows) = parsed.get("crate_boundary") else {
+        return Ok(BTreeSet::new());
+    };
+    rows.as_array()
+        .ok_or("xtask/known_red.toml: crate_boundary must be written [[crate_boundary]]")?
+        .iter()
+        .map(|r| {
+            r.get("id")
+                .and_then(|i| i.as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    "xtask/known_red.toml: a [[crate_boundary]] row has no string `id`".to_string()
+                })
+        })
+        .collect()
+}
+
+/// G-M01-3 over the real workspace.
+fn m01_3_crate_boundary(root: &Path) -> Verdict {
+    let metadata = match workspace_metadata_json(root) {
+        Ok(m) => m,
+        Err(e) => return Verdict::Fail(vec![e]),
+    };
+    let ledgered = match fs::read_to_string(KNOWN_RED_FILE)
+        .map_err(|e| format!("xtask/known_red.toml unreadable: {e}"))
+        .and_then(|raw| ledgered_boundary_ids(&raw))
+    {
+        Ok(ids) => ids,
+        Err(e) => return Verdict::Fail(vec![e]),
+    };
+    let (verdict, notes) = crate_boundary_from(&metadata, &ledgered);
+    for note in notes {
+        println!("{note}");
+    }
+    verdict
+}
+
+/// Every G-M01-3 violation of the real workspace as `(id, detail)`, for the `crate_boundary` section of
+/// `known-red`; `Err` when the metadata cannot be read or is malformed.
+pub fn crate_boundary_violations() -> Result<Vec<(String, String)>, String> {
+    let metadata = workspace_metadata_json(&workspace_root())?;
+    Ok(boundary_violations_in(&metadata)?
+        .into_iter()
+        .map(|v| (v.id, v.detail))
+        .collect())
 }
 
 // ============================================================================
@@ -6580,6 +6797,10 @@ pub fn run(_args: &[String]) -> i32 {
             m01_2_core_cloud_edges(&root),
         ),
         (
+            "M01 D5 / G-M01-3 (crate boundary table: reqwest, sqlx, qdrant client, L0 kernel)",
+            m01_3_crate_boundary(&root),
+        ),
+        (
             "§78 boundary lint (no env::var outside config/bootstrap)",
             env_var_scan(&root),
         ),
@@ -8193,6 +8414,257 @@ mod tests {
     #[test]
     fn g_m01_2_real_repo_passes_with_a_cloud_member_present() {
         assert_eq!(m01_2_core_cloud_edges(&real_root()), Verdict::Pass);
+    }
+
+    // -- M01 D5 crate boundary table (G-M01-3) ---------------------------------------------
+
+    /// The four L0 packages the table requires, plus `extra` packages; telemetry depends on the domain.
+    fn bt_doc(extra: Vec<serde_json::Value>) -> String {
+        let mut pkgs = vec![
+            ed_pkg("humaux-domain", None, vec![]),
+            ed_pkg("humaux-contracts", None, vec![]),
+            ed_pkg("humaux-fail-closed-macro", None, vec![]),
+            ed_pkg(
+                "humaux-telemetry",
+                None,
+                vec![ed_dep("humaux-domain", None)],
+            ),
+            ed_pkg("humaux-adapters", None, vec![]),
+        ];
+        pkgs.extend(extra);
+        ed_doc(&pkgs)
+    }
+
+    fn no_ledger() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    /// Green: each table dependency in an allowed package, and a dev-dependency sqlx anywhere ("testing").
+    #[test]
+    fn g_m01_3_passes_on_allowed_packages_and_a_dev_dependency_sqlx() {
+        let doc = bt_doc(vec![
+            ed_pkg("humaux-infra-network", None, vec![ed_dep("reqwest", None)]),
+            ed_pkg(
+                "humaux-projection",
+                None,
+                vec![ed_dep("qdrant-client", None)],
+            ),
+            ed_pkg("humaux-adapters-x", None, vec![ed_dep("sqlx", Some("dev"))]),
+        ]);
+        assert_eq!(
+            crate_boundary_from(&doc, &no_ledger()),
+            (Verdict::Pass, vec![])
+        );
+        // sqlx in humaux-adapters itself is the table's own row
+        let own = ed_doc(&[
+            ed_pkg("humaux-domain", None, vec![]),
+            ed_pkg("humaux-contracts", None, vec![]),
+            ed_pkg("humaux-fail-closed-macro", None, vec![]),
+            ed_pkg("humaux-telemetry", None, vec![]),
+            ed_pkg("humaux-adapters", None, vec![ed_dep("sqlx", None)]),
+        ]);
+        assert_eq!(crate_boundary_from(&own, &no_ledger()).0, Verdict::Pass);
+    }
+
+    /// 注错 (G-M01-3): a normal sqlx dependency outside humaux-adapters, not in the ledger → red naming it.
+    #[test]
+    fn g_m01_3_fails_on_an_unledgered_violation() {
+        let doc = bt_doc(vec![ed_pkg(
+            "humaux-gateway",
+            None,
+            vec![ed_dep("sqlx", None)],
+        )]);
+        let out = fail_lines(crate_boundary_from(&doc, &no_ledger()).0);
+        assert!(
+            out.contains("`humaux-gateway` declares `sqlx` (normal dependency)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("not in xtask/known_red.toml [[crate_boundary]]"),
+            "{out}"
+        );
+    }
+
+    /// A ledgered violation is not green-silent: the verdict passes, the log gets a known-red line.
+    #[test]
+    fn g_m01_3_reports_a_ledgered_violation_as_known_red() {
+        let doc = bt_doc(vec![ed_pkg(
+            "humaux-gateway",
+            None,
+            vec![ed_dep("sqlx", None)],
+        )]);
+        let ledgered = BTreeSet::from(["humaux-gateway -> sqlx".to_string()]);
+        let (verdict, notes) = crate_boundary_from(&doc, &ledgered);
+        assert_eq!(verdict, Verdict::Pass);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("known-red: ledgered [crate_boundary] humaux-gateway -> sqlx:"),
+            "{notes:?}"
+        );
+        // the row covers that edge only
+        let other = bt_doc(vec![ed_pkg(
+            "humaux-gateway",
+            None,
+            vec![ed_dep("sqlx", None), ed_dep("reqwest", None)],
+        )]);
+        let out = fail_lines(crate_boundary_from(&other, &ledgered).0);
+        assert!(out.contains("`humaux-gateway` declares `reqwest`"), "{out}");
+        assert!(!out.contains("`sqlx`"), "{out}");
+    }
+
+    /// The dev exemption is sqlx's only: a dev-dependency on reqwest outside humaux-infra-network is red.
+    #[test]
+    fn g_m01_3_dev_exemption_does_not_cover_reqwest() {
+        let doc = bt_doc(vec![ed_pkg(
+            "humaux-adapters-x",
+            None,
+            vec![ed_dep("reqwest", Some("dev"))],
+        )]);
+        let out = fail_lines(crate_boundary_from(&doc, &no_ledger()).0);
+        assert!(out.contains("`reqwest` (dev dependency)"), "{out}");
+    }
+
+    /// 注错 (G-M01-3): `pg = { package = "sqlx", .. }` — metadata keeps the package name in `name`.
+    #[test]
+    fn g_m01_3_fails_on_a_renamed_dependency() {
+        let renamed =
+            serde_json::json!({"name": "sqlx", "kind": null, "optional": false, "rename": "pg"});
+        let doc = bt_doc(vec![ed_pkg("humaux-gateway", None, vec![renamed])]);
+        let out = fail_lines(crate_boundary_from(&doc, &no_ledger()).0);
+        assert!(out.contains("`humaux-gateway` declares `sqlx`"), "{out}");
+    }
+
+    /// 注错 (G-M01-3): `[target.'cfg(unix)'.dependencies]` counts; the same target under dev-dependencies is
+    /// still "testing".
+    #[test]
+    fn g_m01_3_fails_on_a_target_specific_dependency() {
+        let normal = serde_json::json!({"name": "sqlx", "kind": null, "optional": false, "target": "cfg(unix)"});
+        let dev = serde_json::json!({"name": "sqlx", "kind": "dev", "optional": false, "target": "cfg(unix)"});
+        let red = bt_doc(vec![ed_pkg("humaux-gateway", None, vec![normal])]);
+        assert!(matches!(
+            crate_boundary_from(&red, &no_ledger()).0,
+            Verdict::Fail(_)
+        ));
+        let green = bt_doc(vec![ed_pkg("humaux-gateway", None, vec![dev])]);
+        assert_eq!(crate_boundary_from(&green, &no_ledger()).0, Verdict::Pass);
+    }
+
+    /// 注错 (G-M01-3): an optional (feature-gated) and a build dependency count like a normal one.
+    #[test]
+    fn g_m01_3_counts_optional_and_build_dependencies() {
+        let optional = serde_json::json!({"name": "reqwest", "kind": null, "optional": true});
+        let build = ed_dep("sqlx", Some("build"));
+        let doc = bt_doc(vec![
+            ed_pkg("humaux-a", None, vec![optional]),
+            ed_pkg("humaux-b", None, vec![build]),
+        ]);
+        let out = fail_lines(crate_boundary_from(&doc, &no_ledger()).0);
+        assert!(out.contains("`humaux-a` declares `reqwest`"), "{out}");
+        assert!(
+            out.contains("`humaux-b` declares `sqlx` (build dependency)"),
+            "{out}"
+        );
+    }
+
+    /// 注错 (G-M01-3, L0 rows): the domain depending on another workspace package, and telemetry on a package
+    /// outside the L0 kernel, are red; telemetry on the kernel stays green.
+    #[test]
+    fn g_m01_3_keeps_the_l0_kernel_free_of_upward_workspace_edges() {
+        let mut pkgs = vec![
+            ed_pkg("humaux-domain", None, vec![ed_dep("humaux-adapters", None)]),
+            ed_pkg("humaux-contracts", None, vec![]),
+            ed_pkg("humaux-fail-closed-macro", None, vec![]),
+            ed_pkg(
+                "humaux-telemetry",
+                None,
+                vec![
+                    ed_dep("humaux-contracts", None),
+                    ed_dep("humaux-adapters", Some("dev")),
+                ],
+            ),
+            ed_pkg("humaux-adapters", None, vec![]),
+        ];
+        let out = fail_lines(crate_boundary_from(&ed_doc(&pkgs), &no_ledger()).0);
+        assert!(
+            out.contains(
+                "L0 package `humaux-domain` depends on workspace package `humaux-adapters`"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("L0 package `humaux-telemetry` depends on workspace package `humaux-adapters` (dev dependency)"),
+            "{out}"
+        );
+        assert!(!out.contains("humaux-contracts` ("), "{out}");
+        pkgs[0] = ed_pkg("humaux-domain", None, vec![ed_dep("uuid", None)]);
+        pkgs[3] = ed_pkg(
+            "humaux-telemetry",
+            None,
+            vec![ed_dep("humaux-contracts", None)],
+        );
+        assert_eq!(
+            crate_boundary_from(&ed_doc(&pkgs), &no_ledger()).0,
+            Verdict::Pass
+        );
+    }
+
+    /// Fail-closed shape: nothing to check, a missing L0 package, a package without `dependencies` and a
+    /// nameless dependency are red, never skipped and never ledgerable.
+    #[test]
+    fn g_m01_3_fails_closed_on_a_malformed_document() {
+        assert!(
+            fail_lines(crate_boundary_from("not json", &no_ledger()).0).contains("not valid JSON")
+        );
+        assert!(
+            fail_lines(crate_boundary_from(&ed_doc(&[]), &no_ledger()).0)
+                .contains("no workspace package")
+        );
+        let missing_l0 = ed_doc(&[ed_pkg("humaux-domain", None, vec![])]);
+        assert!(
+            fail_lines(crate_boundary_from(&missing_l0, &no_ledger()).0)
+                .contains("L0 package `humaux-contracts` not found")
+        );
+        let no_deps = bt_doc(vec![serde_json::json!({"name": "x", "metadata": null})]);
+        assert!(
+            fail_lines(crate_boundary_from(&no_deps, &no_ledger()).0)
+                .contains("package `x` has no `dependencies` array")
+        );
+        let nameless = bt_doc(vec![ed_pkg(
+            "y",
+            None,
+            vec![serde_json::json!({"kind": null})],
+        )]);
+        assert!(
+            fail_lines(crate_boundary_from(&nameless, &no_ledger()).0)
+                .contains("package `y` lists a dependency without a `name`")
+        );
+    }
+
+    #[test]
+    fn ledgered_boundary_ids_reads_the_section_and_rejects_bad_shapes() {
+        assert_eq!(ledgered_boundary_ids("").unwrap(), BTreeSet::new());
+        assert_eq!(
+            ledgered_boundary_ids(
+                "[[dod]]\nid = \"d\"\n[[crate_boundary]]\nid = \"a -> sqlx\"\nowner = \"M23\"\n"
+            )
+            .unwrap(),
+            BTreeSet::from(["a -> sqlx".to_string()])
+        );
+        assert!(ledgered_boundary_ids("[crate_boundary]\nid = \"a\"\n").is_err());
+        assert!(ledgered_boundary_ids("[[crate_boundary]]\nowner = \"M23\"\n").is_err());
+        assert!(ledgered_boundary_ids("not toml [").is_err());
+    }
+
+    /// `run()` must list G-M01-3 exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_crate_boundary_gate_exactly_once() {
+        assert_eq!(own_source_count("m01_3_crate_", "boundary(&root),"), 1);
+    }
+
+    /// The real workspace is clean against the table: gateway's sqlx is a dev-dependency, maintenance's already was.
+    #[test]
+    fn g_m01_3_real_repo_passes() {
+        assert_eq!(m01_3_crate_boundary(&real_root()), Verdict::Pass);
     }
 
     // -- §78 env::var boundary lint --------------------------------------------------------
