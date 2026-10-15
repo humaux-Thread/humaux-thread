@@ -5,6 +5,10 @@ rust-version.workspace = true
 version.workspace = true
 publish.workspace = true
 
+[package.metadata.humaux]
+# ADR-0073 D-A: the public knowledge pool is cloud-only; cloud may depend on core, never the reverse.
+edition = "cloud"
+
 [lints]
 workspace = true
 

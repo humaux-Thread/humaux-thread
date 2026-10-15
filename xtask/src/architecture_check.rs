@@ -6,7 +6,8 @@
 //!
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
-//! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, and §52.4 G52-1.
+//! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
+//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -833,22 +834,209 @@ fn check_package_deps(
     }
 }
 
-fn dependency_rule_check(root: &Path) -> Verdict {
+/// `cargo metadata --no-deps` of the workspace at `root`, as text — the one spawn behind §78.3 and the
+/// two edition gates below. `Err` is the `Fail` detail line.
+fn workspace_metadata_json(root: &Path) -> Result<String, String> {
     // dep: subprocess(cargo) — cargo metadata, workspace dependency graph read
     let output = Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .current_dir(root)
         .output();
     match output {
-        Ok(o) if o.status.success() => {
-            dependency_rule_from_metadata_json(&String::from_utf8_lossy(&o.stdout))
-        }
-        Ok(o) => Verdict::Fail(vec![format!(
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(o) => Err(format!(
             "cargo metadata exited {}: {}",
             o.status,
             String::from_utf8_lossy(&o.stderr)
-        )]),
-        Err(e) => Verdict::Fail(vec![format!("failed to run cargo metadata: {e}")]),
+        )),
+        Err(e) => Err(format!("failed to run cargo metadata: {e}")),
+    }
+}
+
+fn dependency_rule_check(root: &Path) -> Verdict {
+    match workspace_metadata_json(root) {
+        Ok(json) => dependency_rule_from_metadata_json(&json),
+        Err(e) => Verdict::Fail(vec![e]),
+    }
+}
+
+// ============================================================================
+// M01 D1 / ADR-0074 — edition metadata: G-M01-1 (workspace members), G-M01-2 (core never depends on cloud)
+// ============================================================================
+
+/// Crate -> home-module rows G-M01-1 compares the workspace against (M01 D1, ADR-0074 D-B).
+const MODULE_OWNERSHIP_FILE: &str = "docs/architecture/module_ownership.toml";
+
+/// The closed vocabulary of `[package.metadata.humaux] edition` (ADR-0073 D-A, ADR-0074 D-A).
+const EDITIONS: [&str; 2] = ["core", "cloud"];
+
+/// Highest module id the ownership rows may name (M01 design note: M01..M28).
+const MODULE_ID_MAX: u8 = 28;
+
+/// `Mnn` with `nn` in `01..=MODULE_ID_MAX`.
+fn is_module_id(s: &str) -> bool {
+    s.len() == 3
+        && s.starts_with('M')
+        && s[1..].bytes().all(|b| b.is_ascii_digit())
+        && matches!(s[1..].parse::<u8>(), Ok(1..=MODULE_ID_MAX))
+}
+
+/// The `packages` array of a `cargo metadata --no-deps` document.
+fn metadata_packages(metadata_json: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mut parsed: serde_json::Value = serde_json::from_str(metadata_json)
+        .map_err(|e| format!("cargo metadata output not valid JSON: {e}"))?;
+    match parsed.get_mut("packages").map(serde_json::Value::take) {
+        Some(serde_json::Value::Array(packages)) => Ok(packages),
+        _ => Err("cargo metadata output has no `packages` array".to_string()),
+    }
+}
+
+/// `[package.metadata.humaux] edition` of one metadata package, when it is a string.
+fn declared_edition(pkg: &serde_json::Value) -> Option<&str> {
+    pkg.pointer("/metadata/humaux/edition")?.as_str()
+}
+
+/// G-M01-1 pure comparator (M01 D1; spec §58 "workspace tree is a contract"): every workspace member declares
+/// an edition in [`EDITIONS`], and the `[crates]` keys of `ownership_toml` equal the member set, each value a
+/// module id. No `NotApplicable` leg: both objects are delivered together with this gate, so a missing or
+/// unparsable one is a regression, not an undelivered object (§57.1 第2条). Injected-fault record: ADR-0074.
+pub fn workspace_members_from(metadata_json: &str, ownership_toml: &str) -> Verdict {
+    let packages = match metadata_packages(metadata_json) {
+        Ok(p) => p,
+        Err(e) => return Verdict::Fail(vec![e]),
+    };
+    let mut problems = Vec::new();
+    let mut members = BTreeSet::new();
+    for pkg in &packages {
+        let Some(name) = pkg.get("name").and_then(|n| n.as_str()) else {
+            problems.push("cargo metadata lists a package without a `name`".to_string());
+            continue;
+        };
+        members.insert(name);
+        match declared_edition(pkg) {
+            Some(e) if EDITIONS.contains(&e) => {}
+            Some(e) => problems.push(format!(
+                "package `{name}` declares unknown edition `{e}` in [package.metadata.humaux] (expected one of {EDITIONS:?})"
+            )),
+            None => problems.push(format!(
+                "package `{name}` has no [package.metadata.humaux] edition (expected one of {EDITIONS:?})"
+            )),
+        }
+    }
+    if members.is_empty() {
+        problems
+            .push("cargo metadata lists no workspace package (a vacuous member check)".to_string());
+    }
+    let rows = match toml::from_str::<toml::Value>(ownership_toml) {
+        Ok(v) => v,
+        Err(e) => {
+            problems.push(format!("{MODULE_OWNERSHIP_FILE} is not valid TOML: {e}"));
+            return Verdict::Fail(problems);
+        }
+    };
+    let Some(rows) = rows.get("crates").and_then(|c| c.as_table()) else {
+        problems.push(format!("{MODULE_OWNERSHIP_FILE} has no [crates] table"));
+        return Verdict::Fail(problems);
+    };
+    for (name, module) in rows {
+        if !module.as_str().is_some_and(is_module_id) {
+            problems.push(format!(
+                "{MODULE_OWNERSHIP_FILE}: row `{name}` has module {module} (expected M01..M{MODULE_ID_MAX})"
+            ));
+        }
+        if !members.contains(name.as_str()) {
+            problems.push(format!(
+                "{MODULE_OWNERSHIP_FILE}: row `{name}` names no workspace member"
+            ));
+        }
+    }
+    for name in members.iter().filter(|m| !rows.contains_key(**m)) {
+        problems.push(format!(
+            "workspace member `{name}` has no row in {MODULE_OWNERSHIP_FILE}"
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// G-M01-2 pure comparator (ADR-0073 D-B; M01 design §4): no `edition = "core"` package may depend on an
+/// `edition = "cloud"` package through a normal, dev or build dependency, optional or not — cloud may depend on
+/// core. Direct edges of every core package suffice: a transitive core -> cloud path has a first core -> X edge
+/// where X is cloud or X is core with its own offending edge (induction over the member graph), and
+/// `cargo metadata --no-deps` lists every declared edge, target-specific and feature-gated ones included. A
+/// package whose edition is missing or unknown is skipped here — G-M01-1 reports it. `NotApplicable` while no
+/// package is cloud (the expected state in the open-source repository after the split, ADR-0073 D-D).
+/// Injected-fault record: ADR-0074.
+pub fn core_cloud_edges_from(metadata_json: &str) -> Verdict {
+    let packages = match metadata_packages(metadata_json) {
+        Ok(p) => p,
+        Err(e) => return Verdict::Fail(vec![e]),
+    };
+    let cloud: BTreeSet<&str> = packages
+        .iter()
+        .filter(|p| declared_edition(p) == Some("cloud"))
+        .filter_map(|p| p.get("name")?.as_str())
+        .collect();
+    if cloud.is_empty() {
+        return Verdict::NotApplicable("package with edition = \"cloud\"".to_string());
+    }
+    let mut violations = Vec::new();
+    for pkg in &packages {
+        let (Some(name), Some("core")) = (
+            pkg.get("name").and_then(|n| n.as_str()),
+            declared_edition(pkg),
+        ) else {
+            continue;
+        };
+        for dep in pkg
+            .get("dependencies")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Some(dep_name) = dep.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            if cloud.contains(dep_name) {
+                let kind = dep.get("kind").and_then(|k| k.as_str()).unwrap_or("normal");
+                let optional = if dep.get("optional").and_then(|o| o.as_bool()) == Some(true) {
+                    ", optional"
+                } else {
+                    ""
+                };
+                violations.push(format!(
+                    "core package `{name}` depends on cloud package `{dep_name}` ({kind} dependency{optional}; ADR-0073 D-B: cloud may depend on core, never the reverse)"
+                ));
+            }
+        }
+    }
+    if violations.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(violations)
+    }
+}
+
+/// G-M01-1 over the real workspace.
+fn m01_1_workspace_members(root: &Path) -> Verdict {
+    let metadata = match workspace_metadata_json(root) {
+        Ok(m) => m,
+        Err(e) => return Verdict::Fail(vec![e]),
+    };
+    match fs::read_to_string(root.join(MODULE_OWNERSHIP_FILE)) {
+        Ok(rows) => workspace_members_from(&metadata, &rows),
+        Err(e) => Verdict::Fail(vec![format!("{MODULE_OWNERSHIP_FILE} unreadable: {e}")]),
+    }
+}
+
+/// G-M01-2 over the real workspace.
+fn m01_2_core_cloud_edges(root: &Path) -> Verdict {
+    match workspace_metadata_json(root) {
+        Ok(json) => core_cloud_edges_from(&json),
+        Err(e) => Verdict::Fail(vec![e]),
     }
 }
 
@@ -6020,6 +6208,14 @@ pub fn run(_args: &[String]) -> i32 {
             dependency_rule_check(&root),
         ),
         (
+            "M01 D1 / G-M01-1 (workspace members == module_ownership.toml rows; every member declares edition core|cloud)",
+            m01_1_workspace_members(&root),
+        ),
+        (
+            "M01 D1 / G-M01-2 / ADR-0073 D-B (no core package depends on a cloud package)",
+            m01_2_core_cloud_edges(&root),
+        ),
+        (
             "§78 boundary lint (no env::var outside config/bootstrap)",
             env_var_scan(&root),
         ),
@@ -7321,6 +7517,203 @@ mod tests {
     fn dependency_rule_real_repo_passes() {
         let root = real_root();
         assert_eq!(dependency_rule_check(&root), Verdict::Pass);
+    }
+
+    // -- M01 D1 / ADR-0074 edition gates (G-M01-1, G-M01-2) --------------------------------
+
+    fn ed_dep(name: &str, kind: Option<&str>) -> serde_json::Value {
+        serde_json::json!({"name": name, "kind": kind, "optional": false})
+    }
+
+    fn ed_pkg(
+        name: &str,
+        edition: Option<&str>,
+        deps: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        let metadata = edition.map_or(
+            serde_json::Value::Null,
+            |e| serde_json::json!({"humaux": {"edition": e}}),
+        );
+        serde_json::json!({"name": name, "metadata": metadata, "dependencies": deps})
+    }
+
+    fn ed_doc(pkgs: &[serde_json::Value]) -> String {
+        serde_json::json!({ "packages": pkgs }).to_string()
+    }
+
+    fn ownership_rows(names: &[&str]) -> String {
+        let rows: String = names.iter().map(|n| format!("{n} = \"M01\"\n")).collect();
+        format!("[crates]\n{rows}")
+    }
+
+    fn fail_lines(v: Verdict) -> String {
+        match v {
+            Verdict::Fail(lines) => lines.join("\n"),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g_m01_1_passes_when_members_equal_rows_and_editions_valid() {
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![]),
+            ed_pkg("b", Some("cloud"), vec![]),
+        ]);
+        assert_eq!(
+            workspace_members_from(&doc, &ownership_rows(&["a", "b"])),
+            Verdict::Pass
+        );
+    }
+
+    /// 注错 (G-M01-1): a member without an edition → red naming it.
+    #[test]
+    fn g_m01_1_fails_naming_a_member_without_edition() {
+        let doc = ed_doc(&[ed_pkg("a", Some("core"), vec![]), ed_pkg("b", None, vec![])]);
+        let out = fail_lines(workspace_members_from(&doc, &ownership_rows(&["a", "b"])));
+        assert!(
+            out.contains("package `b` has no [package.metadata.humaux] edition"),
+            "{out}"
+        );
+        assert!(!out.contains("`a`"), "{out}");
+    }
+
+    #[test]
+    fn g_m01_1_fails_on_an_unknown_edition_value() {
+        let doc = ed_doc(&[ed_pkg("a", Some("enterprise"), vec![])]);
+        let out = fail_lines(workspace_members_from(&doc, &ownership_rows(&["a"])));
+        assert!(
+            out.contains("package `a` declares unknown edition `enterprise`"),
+            "{out}"
+        );
+    }
+
+    /// 注错 (G-M01-1): a member deleted from module_ownership.toml → red naming it.
+    #[test]
+    fn g_m01_1_fails_on_a_member_missing_from_the_ownership_file() {
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![]),
+            ed_pkg("b", Some("core"), vec![]),
+        ]);
+        let out = fail_lines(workspace_members_from(&doc, &ownership_rows(&["a"])));
+        assert!(out.contains("workspace member `b` has no row in"), "{out}");
+    }
+
+    #[test]
+    fn g_m01_1_fails_on_an_extra_ownership_row() {
+        let doc = ed_doc(&[ed_pkg("a", Some("core"), vec![])]);
+        let out = fail_lines(workspace_members_from(
+            &doc,
+            &ownership_rows(&["a", "ghost"]),
+        ));
+        assert!(
+            out.contains("row `ghost` names no workspace member"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn g_m01_1_fails_on_a_row_whose_module_is_not_a_module_id() {
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![]),
+            ed_pkg("b", Some("core"), vec![]),
+        ]);
+        let rows = "[crates]\na = \"M29\"\nb = \"core\"\n";
+        let out = fail_lines(workspace_members_from(&doc, rows));
+        assert!(out.contains("row `a` has module \"M29\""), "{out}");
+        assert!(out.contains("row `b` has module \"core\""), "{out}");
+    }
+
+    #[test]
+    fn g_m01_1_fails_on_a_missing_table_invalid_toml_or_an_empty_workspace() {
+        let doc = ed_doc(&[ed_pkg("a", Some("core"), vec![])]);
+        assert!(fail_lines(workspace_members_from(&doc, "")).contains("no [crates] table"));
+        assert!(fail_lines(workspace_members_from(&doc, "[crates")).contains("not valid TOML"));
+        assert!(
+            fail_lines(workspace_members_from(&ed_doc(&[]), &ownership_rows(&[])))
+                .contains("no workspace package")
+        );
+    }
+
+    #[test]
+    fn g_m01_1_real_repo_passes() {
+        assert_eq!(m01_1_workspace_members(&real_root()), Verdict::Pass);
+    }
+
+    /// 注错 (G-M01-2): a core package with a normal dependency on a cloud package → red naming the edge.
+    #[test]
+    fn g_m01_2_fails_on_a_core_to_cloud_normal_dependency() {
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![ed_dep("c", None)]),
+            ed_pkg("c", Some("cloud"), vec![]),
+        ]);
+        let out = fail_lines(core_cloud_edges_from(&doc));
+        assert!(
+            out.contains("core package `a` depends on cloud package `c` (normal dependency;"),
+            "{out}"
+        );
+    }
+
+    /// 注错 (G-M01-2): the dev- and build-dependency kinds and an optional (feature-gated) edge count too.
+    #[test]
+    fn g_m01_2_fails_on_a_core_to_cloud_dev_build_or_optional_dependency() {
+        let optional = serde_json::json!({"name": "c", "kind": null, "optional": true});
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![ed_dep("c", Some("dev"))]),
+            ed_pkg("b", Some("core"), vec![ed_dep("c", Some("build"))]),
+            ed_pkg("d", Some("core"), vec![optional]),
+            ed_pkg("c", Some("cloud"), vec![]),
+        ]);
+        let out = fail_lines(core_cloud_edges_from(&doc));
+        assert!(
+            out.contains("`a` depends on cloud package `c` (dev dependency;"),
+            "{out}"
+        );
+        assert!(
+            out.contains("`b` depends on cloud package `c` (build dependency;"),
+            "{out}"
+        );
+        assert!(
+            out.contains("`d` depends on cloud package `c` (normal dependency, optional;"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn g_m01_2_allows_cloud_to_core_and_core_to_core() {
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![ed_dep("b", None)]),
+            ed_pkg("b", Some("core"), vec![]),
+            ed_pkg(
+                "c",
+                Some("cloud"),
+                vec![ed_dep("a", None), ed_dep("b", Some("dev"))],
+            ),
+        ]);
+        assert_eq!(core_cloud_edges_from(&doc), Verdict::Pass);
+    }
+
+    /// §57.1 第2条: with no cloud package there is nothing to guard (the open-source repository after the
+    /// split) — `not_applicable`, naming the missing object, never a bare pass.
+    #[test]
+    fn g_m01_2_is_not_applicable_naming_the_missing_cloud_package() {
+        let doc = ed_doc(&[ed_pkg("a", Some("core"), vec![])]);
+        assert_eq!(
+            core_cloud_edges_from(&doc),
+            Verdict::NotApplicable("package with edition = \"cloud\"".to_string())
+        );
+    }
+
+    #[test]
+    fn g_m01_2_fails_on_unparsable_metadata() {
+        assert!(fail_lines(core_cloud_edges_from("not json")).contains("not valid JSON"));
+        assert!(fail_lines(core_cloud_edges_from("{}")).contains("no `packages` array"));
+    }
+
+    /// The real workspace has a cloud member (`humaux-public-worker`), so this must be `Pass`, not
+    /// `not_applicable`: an edition flip that empties the cloud set must not read as green.
+    #[test]
+    fn g_m01_2_real_repo_passes_with_a_cloud_member_present() {
+        assert_eq!(m01_2_core_cloud_edges(&real_root()), Verdict::Pass);
     }
 
     // -- §78 env::var boundary lint --------------------------------------------------------

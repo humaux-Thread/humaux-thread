@@ -1,0 +1,49 @@
+# Crate -> home module rows (M01 D1, ADR-0074). `cargo xtask architecture-check` G-M01-1 requires this table's keys to
+# equal the `cargo metadata --no-deps` workspace member set (a new crate lands with its row in the same PR) and every
+# value to be a module id M01..M28 (module design notes; module_map_v3 numbers M01..M26 today).
+#
+# Home module = the module whose boundary section names the crate as a whole; a crate that hosts several modules'
+# files carries the module that owns its crate-level contract and is marked `shared` below. The file-level map
+# (every .rs file -> exactly one module) is card M01-5 and replaces the `shared` rows; until then a `shared` row
+# is a placeholder, not a ruling on who owns a given file.
+
+[crates]
+# L0 kernel (M01).
+humaux-domain = "M01"
+humaux-contracts = "M01"
+humaux-fail-closed-macro = "M01"
+
+# shared: degrade/direction are M01's, metrics/health/dr/admission are M22's.
+humaux-telemetry = "M22"
+
+# M05 trust domains and egress layers 0, 1A, 1B; the secret scanner is M05's.
+humaux-infra-network = "M05"
+humaux-infra-egress = "M05"
+humaux-infra-cell = "M05"
+humaux-local-secret-scan = "M05"
+
+# shared: M10 projection, M09 stream.
+humaux-projection = "M10"
+# shared: M11 planner and lanes, M13 completeness/envelope, M14 compiler/handoff.
+humaux-retrieval = "M11"
+humaux-retrieval-provider = "M11"
+
+# shared: hosts every module's repositories (module_map_v3 S9) and use cases.
+humaux-adapters = "M07"
+humaux-application = "M07"
+# shared: M26 MCP surface, M02 edge types.
+humaux-protocol = "M26"
+
+# M24 test and gate tooling.
+humaux-testkit = "M24"
+xtask = "M24"
+
+# Processes. shared: the gateway serves M02/M03/M06/M07/M08/M11/M13/M14 behind the M26 surface.
+humaux-gateway = "M26"
+humaux-retrieval-worker = "M10"
+humaux-private-worker = "M15"
+humaux-consolidation-worker = "M15"
+humaux-public-worker = "M20"
+humaux-maintenance = "M21"
+humaux-admin = "M22"
+humaux-worker = "M06"
