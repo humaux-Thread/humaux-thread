@@ -832,7 +832,8 @@ mod tests {
             "{:?}",
             out.reds
         );
-        assert_eq!(out.reports.len(), 2);
+        // every section but the broken one still reports
+        assert_eq!(out.reports.len(), SECTIONS.len() - 1);
     }
 
     /// Unchanged ledger through `check`: green, and the totals the log prints count rows and deferrals.
