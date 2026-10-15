@@ -400,7 +400,7 @@ async fn census_readout(
 /// Both fragments are interpolated, not bound, so both callers must supply server-owned text —
 /// a `control.retrieval_predicates` row (§50 typed config, CHECK-constrained, the
 /// [`exact_enumerate`] path) or a `const` next to the query whose denominator it describes
-/// (`context_repo`'s trusted `memory.enumerate` route, whose predicate id is frozen in
+/// (`read_gate`'s trusted `memory.enumerate` route, whose predicate id is frozen in
 /// `domain::selection` and never reaches §20.2's surface-pattern planner). Caller input must
 /// never reach these two fields.
 pub struct CensusInputs<'a> {

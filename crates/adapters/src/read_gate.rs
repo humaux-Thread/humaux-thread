@@ -9,26 +9,33 @@
 //! Called-by: [adapters::context_repo, adapters::exact_census, adapters::memory_governance_repo,
 //!   adapters::read_materialize, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [a Memory is readable only when all six conjuncts hold: (1) tenant, the Memory row and each Evidence
-//!   row are read under the caller's tenant_id and RLS; (2) visibility, `identity::can_read` over the Memory's own
-//!   descriptor (§6.1.1); (3) lifecycle selection, one bound `Lifecycle` (ADR-0067 D-J2); (4) subject guard, any-of
-//!   over the requested subjects (§6.1.3); (5) secret-backed and tombstoned exclusion (ADR-0071); (6) all-backing-evidence closure, a Memory with
-//!   zero Evidence rows, or with any Evidence row unreadable or hidden by RLS, fails closed (§8.6); (1), (2) and (6)
-//!   are computed here by `readable_memory_ids`, (3) to (5) by the anti-join SQL of
-//!   `read_materialize::final_memory_ids_with_readable_in_txn`, which calls it first; the materializers here read
-//!   under one REPEATABLE READ snapshot and surface absent, hidden and gated rows alike as NotFound, a PG error as
-//!   DependencyUnavailable or Internal, never an empty page; no cached allow decision, and the only write is the
-//!   enumeration manifest a first page mints through `context_repo` and `selection_repo`]
+//!   row are read under the caller's tenant_id and RLS (§6.1.1); (2) visibility, `identity::can_read` over the
+//!   Memory's own descriptor (§6.1.1); (3) lifecycle selection, one bound `Lifecycle` (ADR-0067 D-J2); (4) subject
+//!   guard, any-of over the requested subjects (§6.1.3); (5) secret-backed and tombstoned exclusion (ADR-0071);
+//!   (6) all-backing-evidence closure, a Memory with zero Evidence rows, or with any Evidence row unreadable or
+//!   hidden by RLS, fails closed (§8.6); (1), (2) and (6) are computed here by `readable_memory_ids`, (3) to (5) by
+//!   the anti-join SQL of `read_materialize::final_memory_ids_with_readable_in_txn`, which calls it first; the
+//!   materializers here read under one REPEATABLE READ snapshot and surface absent, hidden and gated rows alike as
+//!   NotFound, a PG error as DependencyUnavailable or Internal, never an empty page; no cached allow decision, and
+//!   the only write is the enumeration manifest a first page mints through `context_repo` and `selection_repo`]
 //! Spec: Baseline §6.1.1; §6.1.3; §8.6; §22.1; ADR-0067 D-J2; ADR-0071
 //!
 //! M08 D1 (module design "one gate, one home"): every read op passes the shared final gate before any body leaves
 //! PostgreSQL, and the closure it rests on lives in this file, so a change to the readability rule edits one module.
 //! `can_read(` is called from this file and from the few declared exceptions only; the `G-M08-2` sentinel in
-//! `xtask/src/architecture_check.rs` pins that set with `==`, so a new read op that judges visibility itself is red
-//! until it is routed through [`readable_memory_ids`] or declared there.
+//! `xtask/src/architecture_check.rs` pins each file's `can_read` count with `==`, so a new read op that judges
+//! visibility itself is red until it is routed through [`readable_memory_ids`] or declared there.
 //!
 //! The materializers here are the `memory.get` and `memory.enumerate` entry points. Census minting, the frozen
 //! census readout and the stream pipeline counts stay in [`crate::context_repo`] (§22.1, §23.3④, module M13); this
 //! file only calls them inside the transaction it owns.
+
+// ponytail: this module is in two import cycles, with `context_repo` (it takes the census/minting items that stayed
+// there, widened to `pub(crate)` for it: `canonical_scope`, `grounding_from_facts`, `body_ids`, `materialized_identity`,
+// `continuation_bound`, `mint_segment_in_txn`, `frozen_census_in_txn`, `FrozenCensus`, `EnumerationFilter` and its
+// fields; `context_repo` takes `readable_memory_ids` back) and with `read_materialize` (it takes the materialization
+// entry points; `read_materialize` takes `readable_memory_ids`). Both compile and dep-map accepts them, upgrade by
+// card M08-7, which makes `readable_memory_ids` a leaf module that neither side has to import around.
 
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
@@ -174,6 +181,7 @@ pub struct MemoryEnumerationParams<'a> {
     /// `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP` (> 0, ADR-0062 D-K): the most ids one manifest segment stores;
     /// a larger universe continues in keyset segments, each with its own exact census.
     pub manifest_cap: usize,
+    /// The key the manifest's page cursors are MAC-signed and verified with (ADR-0062 D-K); never empty.
     pub mac_key: &'a [u8],
     /// §6.1.3 (ADR-0028 D-D): restrict the EXACT enumeration predicate to memories linked to
     /// this subject (`private.memory_subjects`, under RLS). Part of the manifest's query

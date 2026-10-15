@@ -12,7 +12,7 @@
 //! Spec: Baseline §20.4; §22.1; ADR-0062 D-H; ADR-0062 D-K
 //!
 //! The worker API uses [`RetrievalWorkerDbPool`]; crate-private manifest
-//! helpers also let `context_repo` authorize and materialize Gateway pages in one RR.
+//! helpers also let `context_repo` and `read_gate` authorize and materialize Gateway pages in one RR.
 //!
 //! [`begin_enumeration_snapshot`] is the Mode B "page 1" recipe: one `REPEATABLE READ
 //! READ WRITE` transaction inserts the `ops.selection_snapshots` row, runs exactly one
@@ -411,7 +411,7 @@ async fn authorized_page_in_txn(
 
 /// What one authorized manifest is minted under: its query identity, lifetime and size cap.
 pub(crate) struct ManifestSpec<'a> {
-    /// `context_repo`'s enumeration fingerprint (caller identity + filter), checked on every later page.
+    /// `read_gate`'s enumeration fingerprint (caller identity + filter), checked on every later page.
     pub fingerprint: &'a str,
     /// `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS` (§78.1, ADR-0062 D-K).
     pub ttl: std::time::Duration,
