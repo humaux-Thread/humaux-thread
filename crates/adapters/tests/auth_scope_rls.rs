@@ -564,6 +564,8 @@ fn guc_setup_removed_on_a_reused_gateway_connection_returns_no_rows() {
     );
 }
 
+// ponytail: hand-rolled pgwire framing, simple-query text only; a column spanning frames, a second backend,
+// an extended-protocol reply or a non-text column breaks it. Upgrade: a real pgwire crate if a second test needs a tap.
 /// A byte-for-byte TCP tap between a one-connection `RuntimeDbPool` and PostgreSQL that can ask that same backend
 /// a question while the pool is idle. `RuntimeDbPool` hands no connection out of the crate, so this is the only way
 /// to read a session GUC on the backend the product's reads actually ran on.

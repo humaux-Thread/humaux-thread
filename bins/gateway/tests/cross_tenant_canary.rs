@@ -2,7 +2,7 @@
 //!   every read op, answer exactly as ids that exist nowhere do, and report totals of zero.
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.memory_records,
+//!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.evidence_objects, private.memory_records,
 //!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
 //!   x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, adapters::quota_repo,
@@ -428,8 +428,29 @@ struct Foreign {
 }
 
 fn seed_foreign(foreign: &mut Handle) -> Foreign {
-    let memory = foreign.seed_workspace_visible_context_record().memory_id;
+    let record = foreign.seed_workspace_visible_context_record();
+    let memory = record.memory_id;
     set_text(foreign, memory, FOREIGN_LITERAL);
+    // `can_read` answers `true` for TENANT_SHARED whatever the tenant (identity.rs: callers own the tenant filter), so
+    // the visibility disjunction cannot be what hides this memory and its Evidence from the caller: only the tenant
+    // predicates (and RLS) are left. A WORKSPACE_SHARED row on a workspace the caller is not in would be hidden by
+    // `can_read` alone, and the probe would not isolate tenancy.
+    foreign
+        .admin
+        .execute(
+            "UPDATE private.memory_records SET visibility_class='TENANT_SHARED', visibility_workspace_id=NULL, \
+             visibility_user_id=NULL WHERE memory_id=$1",
+            &[&memory],
+        )
+        .expect("owner makes the foreign memory TENANT_SHARED");
+    foreign
+        .admin
+        .execute(
+            "UPDATE private.evidence_objects SET visibility_class='TENANT_SHARED', visibility_workspace_id=NULL, \
+             visibility_user_id=NULL WHERE evidence_id=$1",
+            &[&record.evidence_id],
+        )
+        .expect("owner makes the foreign Evidence TENANT_SHARED");
     let task: Uuid = foreign
         .admin
         .query_one(
@@ -837,25 +858,63 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
 /// `lane(a:disposable)` one, run alone by `cargo xtask serial-lane`, and the guard restores the attribute.
 struct RlsOutOfThePath {
     owner_dsn: String,
+    /// `role_gateway`'s `rolbypassrls` before the test touched it.
+    prior: bool,
 }
 
 impl RlsOutOfThePath {
-    fn lift(handle: &mut Handle) -> Result<Self, postgres::Error> {
+    /// `Err(reason)` names what is missing; nothing is changed unless the connected database is a local disposable one
+    /// (`humaux_thread_` prefix, the predicate `testkit::fixture_purge` and `e2e-seed` use), because the attribute is
+    /// cluster-wide.
+    fn lift(handle: &mut Handle) -> Result<Self, String> {
+        // dep: PostgreSQL(owner) — database name and the role's current attribute
+        let row = handle
+            .admin
+            .query_one(
+                "SELECT current_database(), \
+                        (SELECT rolbypassrls FROM pg_roles WHERE rolname='role_gateway')",
+                &[],
+            )
+            .map_err(|e| format!("a readable pg_roles row for role_gateway ({e})"))?;
+        let database: String = row.get(0);
+        if !database.starts_with("humaux_thread_") {
+            return Err(format!(
+                "a local disposable database (humaux_thread_*), not {database:?}: BYPASSRLS is cluster-wide"
+            ));
+        }
+        let prior: bool = row
+            .try_get(1)
+            .map_err(|_| "role_gateway in pg_roles".to_owned())?;
         // dep: PostgreSQL(owner) — ALTER ROLE needs the superuser owner connection
         handle
             .admin
-            .batch_execute("ALTER ROLE role_gateway BYPASSRLS")?;
+            .batch_execute("ALTER ROLE role_gateway BYPASSRLS")
+            .map_err(|e| {
+                format!(
+                    "a superuser owner connection able to ALTER ROLE role_gateway BYPASSRLS ({e})"
+                )
+            })?;
         Ok(Self {
             owner_dsn: std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture connected with it"),
+            prior,
         })
     }
 }
 
 impl Drop for RlsOutOfThePath {
     fn drop(&mut self) {
-        // dep: PostgreSQL(owner) — restore the attribute even when an assertion unwound
-        if let Ok(mut owner) = Client::connect(&self.owner_dsn, NoTls) {
-            let _ = owner.batch_execute("ALTER ROLE role_gateway NOBYPASSRLS");
+        let restore = if self.prior {
+            "ALTER ROLE role_gateway BYPASSRLS"
+        } else {
+            "ALTER ROLE role_gateway NOBYPASSRLS"
+        };
+        // dep: PostgreSQL(owner) — restore the prior attribute even when an assertion unwound
+        let outcome = Client::connect(&self.owner_dsn, NoTls)
+            .and_then(|mut owner| owner.batch_execute(restore));
+        if let Err(error) = outcome {
+            eprintln!(
+                "M08-3 LOUD: could not restore role_gateway ({restore}): {error}; the cluster may be left with the wrong BYPASSRLS"
+            );
         }
     }
 }
@@ -863,6 +922,13 @@ impl Drop for RlsOutOfThePath {
 /// G-M08-3, single-fault half: the same three foreign probes (memory id, task id, project id) straight through the
 /// product repo functions on a `role_gateway` pool that RLS no longer filters, so a dropped `tenant_id` predicate in
 /// one read SQL is the only thing left between the caller and the foreign row.
+///
+/// Sensitivity, from the inject-red records: the task probe goes red when the `coord.tasks` predicate is dropped
+/// (its only guard). The memory probe goes red only when every tenant predicate on the get path is dropped
+/// (`readable_memory_ids`' memory query and Evidence join, and the lifecycle query in `read_materialize`); dropping
+/// the lifecycle predicate alone stays green on purpose, because `readable_memory_ids` and `load_memories` bind the
+/// tenant independently (redundancy, not a gap). Known gap: the project probe has no inject-red record, its tenant
+/// binding lives in the `private.read_continuity_project_storage_v1` function behind a second post-check.
 #[test]
 #[allow(clippy::too_many_lines)] // one seeded tenant pair, three probes against controls
 #[ignore = "lane(a:disposable) lifts role_gateway to BYPASSRLS, a cluster-wide attribute, so only a lane run alone on the cluster may do it"]
@@ -874,13 +940,16 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
             let foreign = seed_foreign(&mut foreign_handle);
             run_db_fixture::<Fixture, _>(NAME, |mut handle| {
                 let own = seed_own(&mut handle);
-                let Ok(_lifted) = RlsOutOfThePath::lift(&mut handle) else {
-                    skip_or_fail(
-                        NAME,
-                        "not_applicable: a superuser owner connection able to ALTER ROLE role_gateway BYPASSRLS (§57.1)",
-                        ExternalDep::Postgres,
-                    );
-                    return;
+                let _lifted = match RlsOutOfThePath::lift(&mut handle) {
+                    Ok(lifted) => lifted,
+                    Err(missing) => {
+                        skip_or_fail(
+                            NAME,
+                            &format!("not_applicable: {missing} (§57.1)"),
+                            ExternalDep::Postgres,
+                        );
+                        return;
+                    }
                 };
                 // The bypass must be real, or every NOT_FOUND below proves nothing: the caller's own tenant context
                 // now sees the foreign row.
@@ -970,6 +1039,16 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
                 // Positive controls: each path answers the caller's own data, so a NOT_FOUND cannot be a dead path.
                 assert_eq!(get(own.memory), Ok(()), "own memory");
                 assert_eq!(frozen(None), Ok(()), "own context");
+                // dep: PostgreSQL(owner) — the caller's own task, so the task path is proven live for a task that exists
+                let own_task: Uuid = handle
+                    .admin
+                    .query_one(
+                        "INSERT INTO coord.tasks(tenant_id,title) VALUES($1,'own canary task') RETURNING task_id",
+                        &[&handle.tenant_id],
+                    )
+                    .expect("owner seeds the caller's task")
+                    .get(0);
+                assert_eq!(frozen(Some(TaskId(own_task))), Ok(()), "own task");
                 assert_eq!(continuity(own.project), Ok(()), "own project");
 
                 // The canary: the foreign tenant's real ids answer as ids that exist nowhere do.
