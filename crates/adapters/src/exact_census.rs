@@ -1,5 +1,5 @@
 //! `adapters::exact_census` — §22.1 EXACT enumeration census: the physical IO behind `completeness::CensusResult`.
-//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
+//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
 //! Called-by: [adapters::context_repo, tests]
 //! Invariants: [total, returned items and the probe snapshot come from ONE REPEATABLE READ transaction (§22.1); total
 //!   is its own count(*), never the recall length; a census failure is trigger 4 (Internal), never a guessed total]
@@ -43,8 +43,9 @@ use humaux_retrieval::predicate_registry::PredicateEntry;
 use sqlx::types::Uuid;
 use sqlx::{Acquire, Row};
 
-use crate::context_repo::{NoteEnumerationFilter, readable_memory_ids, set_authorization_local};
+use crate::context_repo::set_authorization_local;
 use crate::postgres::RuntimeDbPool;
+use crate::read_gate::{NoteEnumerationFilter, readable_memory_ids};
 use crate::read_materialize::GateReadable;
 use crate::read_materialize::Lifecycle;
 
@@ -170,7 +171,7 @@ const NOT_TOMBSTONED: &str = "memory_records.memory_id NOT IN ( \
 /// consulted, exactly as the pre-40c-2 `status = 'active' AND superseded_by IS NULL` text.
 const ACTIVE_FINAL: Lifecycle = Lifecycle::ACTIVE_FINAL;
 
-/// The candidate universe has already passed context_repo's sole source-visibility authority.
+/// The candidate universe has already passed read_gate's sole source-visibility authority.
 const AUTHORIZED_CANDIDATE: &str = "memory_records.memory_id = ANY($8)";
 
 /// §6.1.3 (ADR-0028 D-D) subject axis, EXACT-channel face: the bound uuid being NULL means
@@ -521,7 +522,7 @@ async fn census_readout_in_savepoint(
 /// for an unestablished predicate measures nothing the classifier will ever consume).
 ///
 /// One `REPEATABLE READ READ ONLY` transaction first establishes the raw scope/predicate
-/// candidate ids, passes them through `context_repo::readable_memory_ids` (the sole backing
+/// candidate ids, passes them through `read_gate::readable_memory_ids` (the sole backing
 /// source-visibility authority), then performs independent total, returned-id, and
 /// excluded-secret statements over the resulting authorized candidate universe.
 ///

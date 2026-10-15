@@ -2059,6 +2059,113 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
 }
 
 // ============================================================================
+// M08 D1 / G-M08-2 "one home": the final read gate has one home. `can_read(` is the visibility judge (§6.1.1); the
+// all-backing-evidence closure around it (§8.6) lives in `crates/adapters/src/read_gate.rs`, so a read op that calls
+// `can_read(` anywhere else is judging visibility itself and can drift from the closure (a Memory with an unreadable
+// backing Evidence row slipping through). The set of files holding a real call is pinned with `==`.
+// ============================================================================
+
+/// `(file, why it may hold a real call)`: the declared set G-M08-2 pins with `==`, so a file added to the set of
+/// callers OR dropped from it is red. Adapters and bins non-test code only (`domain` defines `can_read`, `projection`
+/// mirrors it for Qdrant filters under G-M08-7).
+///
+/// ponytail: the last three files judge visibility themselves instead of calling `read_gate::readable_memory_ids`
+/// (they are not yet routed through the gate), upgrade by routing each through the gate in a later M08 card and
+/// shrinking this set, `contribution_entry_repo.rs` first since it re-implements the Memory-plus-backing-Evidence
+/// closure for contribution sources.
+const M08_CAN_READ_SITES: [(&str, &str); 5] = [
+    (
+        "crates/adapters/src/read_gate.rs",
+        "the gate: `readable_memory_ids` judges the Memory and every backing Evidence row (§6.1.1, §8.6)",
+    ),
+    (
+        "crates/adapters/src/read_materialize.rs",
+        "`load_overlay`: re-judges just-written Evidence rows of the RYW overlay, no Memory is involved (§15.5)",
+    ),
+    (
+        "crates/adapters/src/contribution_entry_repo.rs",
+        "`visible`: judges a contribution source's Memory and its backing Evidence rows itself, not yet routed through the gate",
+    ),
+    (
+        "crates/adapters/src/operation_receipt.rs",
+        "`replay`: re-judges the prior Evidence row before reissuing a consistency token, not yet routed through the gate",
+    ),
+    (
+        "crates/adapters/src/continuity_read.rs",
+        "`validate_evidence`: re-judges the Evidence rows behind a continuity fact, not yet routed through the gate",
+    ),
+];
+
+/// The call G-M08-2 counts: a `can_read` identifier directly followed by `(`.
+const CAN_READ_CALL: &str = "can_read(";
+
+/// Whether `disp` (repo-relative, `/`-separated) is production code G-M08-2 scans: `crates/adapters/src/**` and
+/// `bins/<bin>/src/**`. Test trees are already excluded by [`door_production_sources`].
+fn can_read_scan_scope(disp: &str) -> bool {
+    let segments: Vec<&str> = disp.split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["crates", "adapters", "src", ..] | ["bins", _, "src", ..]
+    )
+}
+
+/// Whether `source` holds a real `can_read(` call: block comments blanked ([`strip_block_comments`]) and every line
+/// cut at its `//` comment ([`code_before_line_comment`], so `///` and `//!` lines are empty), then `can_read(` not
+/// preceded by an identifier byte (`cannot_read(` and `my_can_read(` are other functions).
+///
+/// ponytail: textual, so a call spelled through a macro or a `use ... as` alias evades it, and `can_read(` inside a
+/// string literal counts, upgrade to a syn-level call-graph check if either ever shows up.
+fn has_can_read_call(source: &str) -> bool {
+    strip_block_comments(source).lines().any(|line| {
+        let code = code_before_line_comment(line);
+        code.match_indices(CAN_READ_CALL)
+            .any(|(at, _)| at == 0 || !is_ident_byte(code.as_bytes()[at - 1]))
+    })
+}
+
+/// M08 D1 / G-M08-2: the files in [`can_read_scan_scope`] holding a real `can_read(` call equal [`M08_CAN_READ_SITES`]
+/// exactly. Red names every file outside the set ("G-M08-2: can_read( call outside the read gate") and every
+/// declared file that holds no call (a file dropped from the set is as red as one added to it).
+/// `not_applicable` only when `crates/adapters/src` itself does not exist, and it names that directory (§57.1 第2条).
+fn m08_2_can_read_one_home(root: &Path) -> Verdict {
+    if !root.join("crates/adapters/src").is_dir() {
+        return Verdict::NotApplicable(
+            "missing object: crates/adapters/src (the read gate's crate) not delivered yet"
+                .to_string(),
+        );
+    }
+    let actual: BTreeSet<String> = door_production_sources(root)
+        .into_iter()
+        .filter(|(disp, source)| can_read_scan_scope(disp) && has_can_read_call(source))
+        .map(|(disp, _)| disp)
+        .collect();
+    let declared: BTreeSet<String> = M08_CAN_READ_SITES
+        .iter()
+        .map(|(file, _)| (*file).to_string())
+        .collect();
+    let mut problems = Vec::new();
+    let outside: Vec<&String> = actual.difference(&declared).collect();
+    if !outside.is_empty() {
+        problems.push(format!(
+            "G-M08-2: can_read( call outside the read gate: {outside:?} (declared sites: {declared:?}; route the read through \
+             read_gate::readable_memory_ids, or declare the file in M08_CAN_READ_SITES with its reason)"
+        ));
+    }
+    let silent: Vec<&String> = declared.difference(&actual).collect();
+    if !silent.is_empty() {
+        problems.push(format!(
+            "G-M08-2: declared can_read( site holds no call (or does not exist): {silent:?} (restore the call, or drop the file \
+             from M08_CAN_READ_SITES)"
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+// ============================================================================
 // §23.1② / §22.5: `LedgerCounts` field set is exactly 6 — same shape as §37.2's "12 列"
 // check. Guards the frozen invariant that the `visible` numerator can never be folded back
 // into the ledger struct (adding a 7th `visible: u64` field would let G23-2's two injections
@@ -6459,6 +6566,10 @@ pub fn run(_args: &[String]) -> i32 {
             "M09 D1 / G-M09-1 (stream_log INSERT and commit_seq nextval: one statement each, in stream_repo.rs, non-test code)",
             m09_1_ticket_doors(&root),
         ),
+        (
+            "M08 D1 / G-M08-2 (can_read( call sites in adapters and bins non-test code == the declared read-gate set)",
+            m08_2_can_read_one_home(&root),
+        ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
 
@@ -9292,6 +9403,189 @@ async fn serving_version_in_txn() {}
         m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
         assert_eq!(m09_1_ticket_doors(&tmp), Verdict::Pass);
         assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M08 D1 / G-M08-2: `can_read(` call sites == the declared read-gate set ---------------
+
+    const M08_CALL: &str = "fn f() { let _ = can_read(auth, &visibility); }\n";
+
+    /// The tree as M08-1 leaves it: one real call in each declared file and nothing else.
+    fn m08_declared_tree(label: &str) -> PathBuf {
+        let tmp = fresh_tmp(label);
+        for (file, _) in M08_CAN_READ_SITES {
+            m07_write(&tmp, file, M08_CALL);
+        }
+        tmp
+    }
+
+    fn m08_fail_lines(root: &Path) -> Vec<String> {
+        match m08_2_can_read_one_home(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The real tree: the files holding a `can_read(` call are exactly the declared set.
+    #[test]
+    fn m08_2_real_repo_passes() {
+        assert_eq!(m08_2_can_read_one_home(&real_root()), Verdict::Pass);
+    }
+
+    /// The gate file is always in its own declared set, and every entry states a reason.
+    #[test]
+    fn m08_2_declared_set_names_the_gate_file_and_a_reason_per_site() {
+        assert!(
+            M08_CAN_READ_SITES
+                .iter()
+                .any(|(file, _)| *file == "crates/adapters/src/read_gate.rs")
+        );
+        assert!(M08_CAN_READ_SITES.iter().all(|(_, why)| !why.is_empty()));
+    }
+
+    /// `run()` must list the gate: a deleted or commented-out call tuple leaves a gate that never runs and reads as
+    /// green (the 恒真闸 shape §57.1 exists to prevent). Counted `== 1`, not `>= 1`.
+    #[test]
+    fn run_wires_the_m08_one_home_gate_exactly_once() {
+        assert_eq!(own_source_count("m08_2_can_read_one_", "home(&root),"), 1);
+    }
+
+    /// Green fixture, plus everything that must NOT count: comments of every kind, other functions that merely end in
+    /// the name, a call after the file's trailing `#[cfg(test)] mod`, integration-test trees, and production code
+    /// outside adapters and bins (`domain` defines `can_read`, `projection` mirrors it).
+    #[test]
+    fn m08_2_passes_on_the_declared_set_and_ignores_comments_tests_and_other_crates() {
+        let tmp = m08_declared_tree("m08-2-green");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "// can_read(a, &b) lives in the read gate\n\
+             /// can_read(a, &b) in a doc comment\n\
+             //! can_read(a, &b) in an inner doc comment\n\
+             fn f() { let n = 1; // can_read(a, &b) trailing\n\
+             }\n\
+             /* can_read(a, &b) in a block comment */\n\
+             fn g() { let _ = cannot_read(a, &b); let _ = my_can_read(a, &b); }\n\
+             #[cfg(test)]\n\
+             mod tests { fn t() { let _ = can_read(a, &b); } }\n",
+        );
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", M08_CALL);
+        m07_write(&tmp, "bins/gateway/tests/seed.rs", M08_CALL);
+        m07_write(&tmp, "crates/domain/src/identity.rs", M08_CALL);
+        m07_write(&tmp, "crates/projection/src/sparse.rs", M08_CALL);
+        m07_write(&tmp, "xtask/src/other.rs", M08_CALL);
+        assert_eq!(m08_2_can_read_one_home(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing object (§57.1 第2条): there is no adapters crate to scan.
+    #[test]
+    fn m08_2_is_not_applicable_naming_the_missing_adapters_src() {
+        let tmp = fresh_tmp("m08-2-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m08_2_can_read_one_home(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains("crates/adapters/src"), "{detail}");
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a `can_read(` call in `context_repo.rs`, the file the closure moved out of → 红, naming it.
+    #[test]
+    fn m08_2_fails_on_a_call_in_context_repo() {
+        let tmp = m08_declared_tree("m08-2-red-context-repo");
+        m07_write(&tmp, "crates/adapters/src/context_repo.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("G-M08-2: can_read( call outside the read gate"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("crates/adapters/src/context_repo.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a call in a bin's `src/` is outside the gate too.
+    #[test]
+    fn m08_2_fails_on_a_call_in_a_bin() {
+        let tmp = m08_declared_tree("m08-2-red-bin");
+        m07_write(&tmp, "bins/gateway/src/memory.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("bins/gateway/src/memory.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a `tests` directory INSIDE `src/` is production code, not a test tree.
+    #[test]
+    fn m08_2_counts_a_call_in_a_src_tests_directory() {
+        let tmp = m08_declared_tree("m08-2-red-src-tests-dir");
+        m07_write(&tmp, "crates/adapters/src/tests/helper.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert!(
+            lines[0].contains("crates/adapters/src/tests/helper.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a path-qualified call (`identity::can_read(..)`) is a call.
+    #[test]
+    fn m08_2_counts_a_path_qualified_call() {
+        let tmp = m08_declared_tree("m08-2-red-qualified");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/grep_repo.rs",
+            "fn f() { let _ = humaux_domain::identity::can_read(a, &b); }\n",
+        );
+        let lines = m08_fail_lines(&tmp);
+        assert!(lines[0].contains("grep_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a declared file that no longer holds a call is red (`==`, never `<=`), naming it, so the set
+    /// shrinks only by an edit to the const.
+    #[test]
+    fn m08_2_fails_when_a_declared_site_holds_no_call() {
+        let tmp = m08_declared_tree("m08-2-red-silent");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/continuity_read.rs",
+            "fn f() {}\n",
+        );
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("holds no call"), "{lines:?}");
+        assert!(lines[0].contains("continuity_read.rs"), "{lines:?}");
+        assert!(!lines[0].contains("outside the read gate"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a declared file that was renamed away is red, not a skip.
+    #[test]
+    fn m08_2_fails_when_a_declared_site_does_not_exist() {
+        let tmp = m08_declared_tree("m08-2-red-missing");
+        fs::remove_file(tmp.join("crates/adapters/src/operation_receipt.rs")).unwrap();
+        m07_write(&tmp, "crates/adapters/src/operation_receipts.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("outside the read gate") && l.contains("operation_receipts.rs")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("holds no call") && l.contains("operation_receipt.rs")),
+            "{lines:?}"
+        );
         fs::remove_dir_all(&tmp).ok();
     }
 
