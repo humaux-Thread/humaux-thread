@@ -33,14 +33,14 @@ jobs:
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
           MINIMAX_MODEL: MiniMax-M2.5
-        run: timeout 80m python3 run_api.py --arms A8,D18,E30,P --reps 1 --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET"
+        run: timeout 80m python3 run_api.py --arms A8,D18,E30,P --reps 1 --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET" --min-weekly 20
       - name: run episodes (MiniMax-M3 second rep, finalists)
         if: always()
         working-directory: experiments/tool_surface
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
           MINIMAX_MODEL: MiniMax-M3
-        run: timeout 80m python3 run_api.py --arms D18,E30,P --reps 1 --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET" --out results_m3_rep2
+        run: timeout 80m python3 run_api.py --arms D18,E30,P --reps 1 --workers "$EXP_WORKERS" --token-budget "$EXP_TOKEN_BUDGET" --min-weekly 20 --out results_m3_rep2
       - uses: actions/upload-artifact@v4
         if: always()
         with:
