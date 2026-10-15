@@ -131,7 +131,7 @@ pub struct BoundedCache<K: CacheKey, V: CacheValue> {
     per_tenant_bytes: u64,
 }
 
-impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
+impl<K: CacheKey, V: CacheValue + Default> BoundedCache<K, V> {
     /// Builds the cache for `name`; a disabled or zero-capacity `config` yields a pass-through.
     pub fn new(name: CacheName, config: CacheConfig) -> Self {
         let state = Arc::new(State {
@@ -204,6 +204,7 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
                     {
                         Ok(v)
                     }
+                    Err(_) => Ok(V::default()),
                     other => {
                         *lock(&leader_outcome) = Some(other);
                         Err(NotCached)
