@@ -7,7 +7,7 @@
 //!   modules=[adapters::postgres, adapters::quota_repo, adapters::tests::support::operation_receipt_fixture,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::context, domain::dataclass,
 //!   domain::error, domain::identity, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall,
-//!   gateway::remember, humaux-testkit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp,
+//!   gateway::remember, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp,
 //!   protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [two real fixture tenants, the foreign one owning a memory, a workspace, a task and a continuity
