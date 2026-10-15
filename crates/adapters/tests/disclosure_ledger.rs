@@ -655,10 +655,25 @@ fn take_exclusive_ledger_lock(admin: &mut Client) {
 
 /// Runs a TRUNCATE the guard must reject inside a never-committed transaction and returns its
 /// error: even if the guard regressed and TRUNCATE succeeded, the rollback on drop discards it.
+/// TRUNCATE … CASCADE takes the parent before the referencing tables, the reverse of an FK
+/// insert, so it can close a lock cycle with another session. `lock_timeout` below
+/// `deadlock_timeout` (1 s default) makes this probe drop its locks first — it never waits long
+/// enough to make the other session the deadlock victim — and it tries again.
+// ponytail: retry loop because every test binary shares one database; once M24-7a gives each
+// binary its own, no concurrent writer exists and a single attempt suffices.
 fn truncate_rejection(admin: &mut Client, sql: &str) -> postgres::Error {
-    let mut txn = admin.transaction().expect("begin txn");
-    txn.execute(sql, &[])
-        .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)")
+    for _ in 0..100 {
+        let mut txn = admin.transaction().expect("begin txn");
+        txn.batch_execute("SET LOCAL lock_timeout = '200ms'")
+            .expect("set lock_timeout");
+        let err = txn
+            .execute(sql, &[])
+            .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)");
+        if err.code() != Some(&SqlState::LOCK_NOT_AVAILABLE) {
+            return err;
+        }
+    }
+    panic!("{sql}: lost the lock to concurrent sessions 100 times in a row");
 }
 
 /// §7.4/§77 append-only: TRUNCATE must be rejected on both tables (0047 originally only
