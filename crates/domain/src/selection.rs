@@ -1,6 +1,6 @@
 //! `domain::selection` — §20.4 Stable Selection / Pagination Contract (T6.3, G20-1/G80-32).
 //! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::context_repo, adapters::selection_repo, gateway::guard, gateway::memory, retrieval::request, tests]
+//! Called-by: [adapters::context_repo, adapters::read_gate, adapters::selection_repo, gateway::guard, gateway::memory, retrieval::request, tests]
 //! Invariants: []
 //! Spec: Baseline §3; §15.5; §20.1
 //!

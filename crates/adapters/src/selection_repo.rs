@@ -2,7 +2,7 @@
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_retrieval_worker) r=[private.memory_records]
 //!   w=[ops.selection_snapshot_items, ops.selection_snapshots]]; env=[]; modules=[adapters::postgres, domain::error,
 //!   domain::selection]
-//! Called-by: [adapters::context_repo, tests]
+//! Called-by: [adapters::context_repo, adapters::read_gate, tests]
 //! Invariants: [page 1 materializes the whole enumeration in one REPEATABLE READ transaction; later pages read only
 //!   the immutable manifest behind a MAC-signed cursor; a mismatched query or unknown snapshot is a typed error;
 //!   every page read, gateway and worker path alike, is the one MANIFEST_PAGE_SQL statement, which sees a snapshot
@@ -12,7 +12,7 @@
 //! Spec: Baseline §20.4; §22.1; ADR-0062 D-H; ADR-0062 D-K
 //!
 //! The worker API uses [`RetrievalWorkerDbPool`]; crate-private manifest
-//! helpers also let `context_repo` authorize and materialize Gateway pages in one RR.
+//! helpers also let `context_repo` and `read_gate` authorize and materialize Gateway pages in one RR.
 //!
 //! [`begin_enumeration_snapshot`] is the Mode B "page 1" recipe: one `REPEATABLE READ
 //! READ WRITE` transaction inserts the `ops.selection_snapshots` row, runs exactly one
@@ -411,7 +411,7 @@ async fn authorized_page_in_txn(
 
 /// What one authorized manifest is minted under: its query identity, lifetime and size cap.
 pub(crate) struct ManifestSpec<'a> {
-    /// `context_repo`'s enumeration fingerprint (caller identity + filter), checked on every later page.
+    /// `read_gate`'s enumeration fingerprint (caller identity + filter), checked on every later page.
     pub fingerprint: &'a str,
     /// `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS` (§78.1, ADR-0062 D-K).
     pub ttl: std::time::Duration,

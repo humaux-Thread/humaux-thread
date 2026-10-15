@@ -4,7 +4,7 @@
 //!   tokio]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.identity_note_materializations,
 //!   projection.stream_log] w=[private.memory_records, private.memory_subjects, private.subjects]]; env=[];
 //!   modules=[adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt,
-//!   adapters::postgres, adapters::read_materialize, adapters::remember,
+//!   adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving,
 //!   projection::stream]
@@ -21,15 +21,16 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use humaux_adapters::{
-    context_repo::{
-        MaterializedMemoryPage, MemoryEnumerationParams, NoteEnumerationFilter,
-        arm_census_mint_barrier, materialize_memory_enumeration_filtered, materialize_memory_get,
-        materialize_memory_get_versioned,
-    },
+    context_repo::arm_census_mint_barrier,
     forget_repo,
     note_repo::NoteIntake,
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION},
     postgres::RuntimeDbPool,
+    read_gate::{
+        MaterializedMemoryPage, MemoryEnumerationParams, NoteEnumerationFilter,
+        materialize_memory_enumeration_filtered, materialize_memory_get,
+        materialize_memory_get_versioned,
+    },
     read_materialize::{MaterializedItem, materialize_final_bodies},
     remember::RememberCommand,
 };
@@ -302,7 +303,7 @@ fn get(
     handle: &Handle,
     memory_id: Uuid,
     include_history: bool,
-) -> Result<humaux_adapters::context_repo::MaterializedMemory, ErrorCode> {
+) -> Result<humaux_adapters::read_gate::MaterializedMemory, ErrorCode> {
     handle.rt.block_on(materialize_memory_get_versioned(
         &handle.runtime,
         &handle.auth,
