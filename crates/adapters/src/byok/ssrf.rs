@@ -1,5 +1,5 @@
 //! `adapters::byok::ssrf` — §11.4 Custom / OpenAI-compatible Endpoint Security.
-//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[humaux-infra-egress]; services=[]; env=[]; modules=[infra-egress::raw]
 //! Called-by: [adapters::byok, private-worker::main, private-worker::route_providers, tests, xtask::e2e_onboard, xtask::e2e_seed]
 //! Invariants: [every custom endpoint URL and every redirect hop passes validate_custom_endpoint; a forbidden or
 //!   unresolvable address is an SsrfError before any connection is made (§11.4)]
@@ -23,6 +23,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
+
+use humaux_infra_egress::raw::{DialAuthority, dial_authority};
 
 // =============================================================================
 // Policy
@@ -86,7 +88,8 @@ pub fn enforce_body_size_bound(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsrfError {
-    /// §11.4 "HTTPS default" — anything else (`http://`, no scheme, etc.) is rejected.
+    /// §11.4 "HTTPS default" — any other scheme (`http://`, `ftp://`, …) is rejected; a string
+    /// that is not an absolute URL is [`SsrfError::UrlMalformed`].
     NonHttps,
     UrlMalformed(String),
     /// The URL's host is itself a literal IP address that resolves (trivially) to a
@@ -221,82 +224,35 @@ impl DnsResolver for SystemDnsResolver {
 }
 
 // =============================================================================
-// URL parsing (minimal, deliberately strict — see module doc)
+// URL parsing — the dialer's own parser
 // =============================================================================
 
-struct ParsedAuthority {
-    host: String,
-    port: u16,
-}
-
-/// Deliberately narrow parser — this is not a general-purpose URL library, it exists only to
-/// pull `(host, port)` out of a `https://...` custom endpoint string safely enough for SSRF
-/// purposes. ponytail: no `url` crate dependency added for this (rung 5 — "already-installed
-/// dependency solves it" does not apply, nothing in this workspace depends on `url` yet, and
-/// pulling one in for four fields is disproportionate); upgrade path is swapping this for the
-/// `url` crate if a real path/query ever needs parsing here too.
+/// `(host, port)` of an `https://` endpoint as the BYOK client will dial it: parsed by
+/// `humaux_infra_egress::raw::dial_authority`, i.e. `reqwest::Url`, never cut by hand (§11.4 —
+/// a hand-cut authority read `https://127.0.0.1\.x.attacker.example/` as a hostname while the
+/// client dialed `127.0.0.1`).
 ///
-/// Rejects any authority containing `@` outright — no userinfo support at all. This is a
-/// narrowing of accepted syntax, not a corner cut: userinfo-in-URL (`https://
-/// trusted.com@evil.com/`) is a classic SSRF/parser-confusion vector, and BYOK custom
-/// endpoints have no legitimate use for embedded credentials in the URL itself (the API key
-/// goes in the `Authorization` header, never the URL).
-fn parse_https_authority(url: &str) -> Result<ParsedAuthority, SsrfError> {
-    let rest = url.strip_prefix("https://").ok_or(SsrfError::NonHttps)?;
-    if rest.is_empty() {
-        return Err(SsrfError::UrlMalformed("empty host".to_string()));
+/// Refuses userinfo outright: `https://trusted.com@evil.com/` is a classic parser-confusion
+/// vector, and the BYOK key travels in the `Authorization` header, never the URL.
+fn parse_https_authority(url: &str) -> Result<DialAuthority, SsrfError> {
+    let authority = dial_authority(url).map_err(SsrfError::UrlMalformed)?;
+    if authority.scheme != "https" {
+        return Err(SsrfError::NonHttps);
     }
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    if authority.contains('@') {
+    if authority.has_userinfo {
         return Err(SsrfError::UrlMalformed(
             "userinfo (@) in custom endpoint URL is not allowed".to_string(),
         ));
     }
-    if authority.is_empty() {
-        return Err(SsrfError::UrlMalformed("empty host".to_string()));
-    }
-
-    if let Some(bracket_rest) = authority.strip_prefix('[') {
-        // IPv6 literal host: `[::1]` or `[::1]:8443`.
-        let close = bracket_rest
-            .find(']')
-            .ok_or_else(|| SsrfError::UrlMalformed("unterminated IPv6 literal".to_string()))?;
-        let host = bracket_rest[..close].to_string();
-        let after = &bracket_rest[close + 1..];
-        let port = if let Some(p) = after.strip_prefix(':') {
-            p.parse::<u16>()
-                .map_err(|_| SsrfError::UrlMalformed(format!("invalid port {p:?}")))?
-        } else {
-            443
-        };
-        return Ok(ParsedAuthority { host, port });
-    }
-
-    match authority.rsplit_once(':') {
-        Some((host, port_str))
-            if port_str.chars().all(|c| c.is_ascii_digit()) && !port_str.is_empty() =>
-        {
-            let port = port_str
-                .parse::<u16>()
-                .map_err(|_| SsrfError::UrlMalformed(format!("invalid port {port_str:?}")))?;
-            Ok(ParsedAuthority {
-                host: host.to_string(),
-                port,
-            })
-        }
-        _ => Ok(ParsedAuthority {
-            host: authority.to_string(),
-            port: 443,
-        }),
-    }
+    Ok(authority)
 }
 
-/// The lowercase host of an `https://` endpoint, parsed by the same narrow parser the §11.4 check
-/// uses and WITHOUT any DNS lookup — the deny-only recipient ↔ host binding (ADR-0060 D-B step 2,
-/// D-L) runs before a resolver or a client is touched. Port, path and IPv6 brackets are dropped.
+/// The lowercase host of an `https://` endpoint, parsed by the same parser the §11.4 check and
+/// the client use and WITHOUT any DNS lookup — the deny-only recipient ↔ host binding (ADR-0060
+/// D-B step 2, D-L) runs before a resolver or a client is touched. Port, path and IPv6 brackets
+/// are dropped.
 pub fn https_host(url: &str) -> Result<String, SsrfError> {
-    parse_https_authority(url).map(|authority| authority.host.to_ascii_lowercase())
+    parse_https_authority(url).map(|authority| authority.host)
 }
 
 // =============================================================================
@@ -394,7 +350,7 @@ pub fn validate_custom_endpoint(
         }
         return Ok(ValidatedEndpoint {
             host: authority.host,
-            port: authority.port,
+            port: authority.port.unwrap_or(443),
             resolved_ips: vec![literal],
         });
     }
@@ -417,7 +373,7 @@ pub fn validate_custom_endpoint(
 
     Ok(ValidatedEndpoint {
         host: authority.host,
-        port: authority.port,
+        port: authority.port.unwrap_or(443),
         resolved_ips: resolved,
     })
 }
@@ -537,6 +493,59 @@ mod tests {
         let resolver = FakeResolver(vec![public_ip()]);
         let err = validate_custom_endpoint("https://trusted.com@evil.com/", &resolver).unwrap_err();
         assert!(matches!(err, SsrfError::UrlMalformed(_)));
+    }
+
+    /// §11.4 parser differential: each URL reaches a forbidden IP literal under the WHATWG parser
+    /// `reqwest` dials with (`\` ends a special-scheme authority; tab/newline are stripped; the
+    /// host is percent-decoded; IPv4 takes hex/octal/short forms). A hand-cut authority reads a
+    /// hostname instead and asks the resolver, which an attacker's wildcard DNS answers with a
+    /// public address. The literal is dialed directly, so no connect-time resolver sees it.
+    #[test]
+    fn hosts_the_dialer_reads_as_forbidden_literals_are_refused() {
+        let wildcard_dns = FakeResolver(vec![public_ip()]);
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let metadata = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
+        for (url, dialed) in [
+            ("https://127.0.0.1\\.x.attacker.example/v1", loopback),
+            ("https://127.0.0.1:6333\\.x.attacker.example/", loopback),
+            (
+                "https://169.254.169.254\\.x.attacker.example/latest/meta-data",
+                metadata,
+            ),
+            ("https://127.0.0.\t1/v1", loopback),
+            ("https://127.0.\n0.1/v1", loopback),
+            ("https://127.0.0.%31/v1", loopback),
+            ("https://0x7f.1/v1", loopback),
+            ("https://2130706433/v1", loopback),
+            ("https://0177.0.0.1/v1", loopback),
+        ] {
+            assert_eq!(
+                validate_custom_endpoint(url, &wildcard_dns).map(|ok| ok.host),
+                Err(SsrfError::HostIpForbidden(dialed)),
+                "{url:?}"
+            );
+        }
+    }
+
+    /// The host the check approves (and `https_host` binds a recipient to) is the host the client
+    /// dials, never a different reading of the same string.
+    #[test]
+    fn the_approved_host_is_the_dialed_host() {
+        let wildcard_dns = FakeResolver(vec![public_ip()]);
+        for (url, dialed) in [
+            ("https://API.Example.com\\v1\\chat", "api.example.com"),
+            ("https://api.exa\tmple.com/v1", "api.example.com"),
+            ("https://api.example.com\\@127.0.0.1/", "api.example.com"),
+        ] {
+            let ok = validate_custom_endpoint(url, &wildcard_dns).expect(url);
+            assert_eq!(ok.host, dialed, "{url:?}");
+            assert_eq!(https_host(url).as_deref(), Ok(dialed), "{url:?}");
+        }
+        // A recipient bound to `api.example.com` must not match a loopback dial.
+        assert_eq!(
+            https_host("https://127.0.0.1\\.api.example.com/v1").as_deref(),
+            Ok("127.0.0.1")
+        );
     }
 
     #[test]
