@@ -1267,7 +1267,7 @@ mod tests {
 
     /// ADR-0065 D-A / F19 (W-1, L13): the dropped statement's connection stays checked out (`return_to_pool`
     /// pings, which waits for its ReadyForQuery) until statement_timeout ends it. Fault: the statement_timeout
-    /// option removed ⇒ the second acquire still times out ⇒ red.
+    /// option removed ⇒ the slot is still held at +1300 ms ⇒ red.
     #[test]
     fn a_dropped_query_holds_its_pool_slot_until_statement_timeout() {
         let Some(db) = C38Db::create("slot") else {
@@ -1276,29 +1276,34 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
             let app = format!("c38-slot-{}", std::process::id());
-            let pool = gateway_pool(&db, &c38_settings(&app, 1, 200, 1000, 10_000)).await;
+            // acquire_timeout bounds every fresh connect of this pool (construction's included), so it is sized for a
+            // cold connect to a throwaway database under parallel CI load; the held probe below has its own deadline.
+            let pool = gateway_pool(&db, &c38_settings(&app, 1, 5_000, 1000, 10_000)).await;
             let dropped = tokio::time::timeout(
                 Duration::from_millis(100),
                 // dep: PostgreSQL(role_gateway) — the statement whose future is dropped
                 sqlx::query("SELECT pg_sleep(5)").execute(&pool.0),
             )
             .await;
-            assert!(dropped.is_err(), "pg_sleep(5) must outlive the 100 ms client timeout");
-            let dropped_at = tokio::time::Instant::now();
-            let held = pool.0.acquire().await;
             assert!(
-                matches!(held, Err(sqlx::Error::PoolTimedOut)),
+                dropped.is_err(),
+                "pg_sleep(5) must outlive the 100 ms client timeout"
+            );
+            let dropped_at = tokio::time::Instant::now();
+            let held = tokio::time::timeout(Duration::from_millis(200), pool.0.acquire()).await;
+            assert!(
+                held.is_err(),
                 "F19: the only slot must still be held by the draining statement, got {:?}",
-                held.map(|_| "a connection")
+                held.map(|r| r.map(|_| "a connection"))
             );
             tokio::time::sleep_until(dropped_at + Duration::from_millis(1300)).await;
-            let freed = pool.0.acquire().await;
-            assert!(
-                freed.is_ok(),
-                "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +1300 ms, got {:?}",
-                freed.map(|_| "a connection")
+            // The release ping reads the 57014 and closes the connection (sqlx-core 0.8.6 pool/connection.rs:314), so
+            // the freed slot shows as size 0; an acquire here would time a fresh connect, not the release.
+            assert_eq!(
+                pool.0.size(),
+                0,
+                "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +1300 ms"
             );
-            drop(freed);
             pool.0.close().await;
         });
     }
