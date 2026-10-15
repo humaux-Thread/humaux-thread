@@ -13,7 +13,7 @@
 # a card of the M24 design note). Reasons summarise the 2026-10-14 gate audit and say why the item is red today.
 # A `deferred_past_go_live` row for an item that is not yet due (not_applicable) pre-declares the deferral so the
 # go-live report lists it; once the item is due it covers the failure, once it passes the row must go.
-# E177 (DCO vs CLA) and E179 (OpenSSF) have no gate item yet, so they have no row; card M24-13 binds them.
+# E177 (DCO vs CLA) and E179 (OpenSSF) have no gate item yet, so they have no row; the M24 design note binds them (module_design_M24.md §9 M24-13, kept outside this repo).
 
 # --- dod -------------------------------------------------------------------
 

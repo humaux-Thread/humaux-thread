@@ -962,6 +962,27 @@ mod tests {
                 d.due_phase
             );
         }
+        // The other direction: a new non-G80 name in a Phase >= 1 row must be a ledger candidate or be
+        // listed here on purpose. These four are enforced by CI jobs outside the ledger and pass today.
+        const NOT_LEDGER_ITEMS: [&str; 4] = [
+            "integration",
+            "migration",
+            "tenant isolation",
+            "secret isolation",
+        ];
+        for (phase, last) in rows.iter().filter(|(phase, _)| *phase >= 1) {
+            for name in last
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|n| !n.starts_with("G80-"))
+            {
+                assert!(
+                    DUE_ITEMS.iter().any(|d| d.id == name) || NOT_LEDGER_ITEMS.contains(&name),
+                    "§57.1 Phase {phase} lists `{name}`, which is neither in DUE_ITEMS nor in NOT_LEDGER_ITEMS"
+                );
+            }
+        }
     }
 
     /// Violations are attributed by their `<set_id>: ` prefix; the rest is the table item.

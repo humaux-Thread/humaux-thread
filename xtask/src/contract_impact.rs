@@ -24,6 +24,7 @@ const SPEC_PATH: &str = "docs/architecture/Baseline_2.9.md";
 const CI_WORKFLOW_PATH: &str = ".github/workflows/ci.yml";
 const FEATURES_TOML_PATH: &str = "config/features.toml";
 const ROOT_CARGO_TOML_PATH: &str = "Cargo.toml";
+const METRICS_REGISTRY_SRC_PATH: &str = "xtask/src/metrics_registry.rs";
 
 /// §80.3「机器识别以下 10 个承重块」正文前的锚点，定位其后紧跟的 ```text 围栏。
 ///
@@ -221,13 +222,17 @@ fn resolve_block_locations(spec_text: &str) -> BTreeMap<&'static str, Vec<Locati
         })
         .map_or(vec![], |(s, e)| vec![Location::SpecRange(s, e)]),
     );
-    m.insert(
-        "METRIC_REGISTRY",
-        section_range(spec_text, "## 41.2 注册表（全集）", |l| {
+    {
+        // G-M24-5: the registry's code-side half (PROCESSES, NOT_YET_PRODUCED, ABSENT_UNTIL_FIRST_RUN)
+        // lives in the checker source, so editing it is a registry change too (§80.2 D7/D8).
+        let mut v = vec![Location::WholeFile(METRICS_REGISTRY_SRC_PATH)];
+        if let Some((s, e)) = section_range(spec_text, "## 41.2 注册表（全集）", |l| {
             l.starts_with("## ")
-        })
-        .map_or(vec![], |(s, e)| vec![Location::SpecRange(s, e)]),
-    );
+        }) {
+            v.push(Location::SpecRange(s, e));
+        }
+        m.insert("METRIC_REGISTRY", v);
+    }
     m.insert(
         "FEATURE_REGISTRY",
         vec![Location::WholeFile(FEATURES_TOML_PATH)],
@@ -319,35 +324,40 @@ fn block_changed(
 /// 不算这次 PR 的责任（§80.3 步骤 4 的「checker 自己未执行」不适用于本来就不存在的 checker）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckerKind {
-    /// 载荷是真正跑判据的 `cargo xtask <subcommand>` 名字。
+    /// 载荷是 CI 里真正跑判据的 `cargo xtask <subcommand>` 名字。
     Implemented(&'static str),
-    NotImplemented,
+    /// 载荷是负责交付它的任务卡（点名在 not_applicable 文案里，§57.1 第2条）。
+    NotImplemented(&'static str),
 }
 
-/// §80.3 impact-map 里出现的 checker id -> 是否已是真正跑判据的 xtask 子命令（不是永远
-/// `not_applicable` 的 Phase 0 占位）。G80-10（mechanism-registry）/ G80-41（config-check）各
-/// 自有独立子命令；**G80-3 没有独立子命令，判据本体活在 `architecture-check` 内部**
-/// （`g80_3_outbound_choke_point`，§83.4）——之前这里按 `NotImplemented` 处理，导致
-/// contract-impact 对 WORKSPACE_LAYOUT 块的闭合永远报「checker G80-3 not implemented yet」，
-/// 即便 G80-3 本身早已实现且每次 CI 都真的跑了（ci.yml 的 `cargo xtask architecture-check`
-/// 步骤，见 [`executed_xtask_subcommands`]）。映射到 `architecture-check` 这个真实存在、真的
-/// 无条件跑 G80-3 的子命令，比新增一个 `architecture-check --only <id>` 子选项更省——后者要求
-/// architecture-check 自己先长出按 checker id 过滤的能力，而 contract-impact 现在只需要知道
-/// 「G80-3 跑了没有」，不需要单独跑它。其余（含任务卡点名的 mcp-contract-lock，Phase 15 交付）
-/// 仍按 `NotImplemented` 处理——各自任务卡交付时在此加一行即可，不改调用方逻辑。
+/// Owner printed for a checker that has no registered delivering card yet.
+const UNASSIGNED_OWNER: &str = "none registered (add it to default_checker_kind)";
+
+/// §80.3 impact-map 里出现的 checker id -> CI 里「跑了它」的那个 xtask 子命令。
+///
+/// "Ran" means the `cargo xtask <sub>` line is in a non-comment line of ci.yml
+/// ([`executed_xtask_subcommands`]); several checkers share one subcommand when their verdict
+/// lives inside it (G80-3/40/43 and G-M01-1 inside `architecture-check`), which is cheaper
+/// than an `--only <id>` filter: this gate needs "ran", not "ran alone" (M24 D5).
 fn default_checker_kind(id: &str) -> CheckerKind {
     match id {
-        "G80-3" => CheckerKind::Implemented("architecture-check"),
-        // §6.2.2/§6.2.3 are live gates, not Phase-0 placeholders. A permission
-        // change must require both actual CI commands rather than silently skipping them.
+        "G80-3" | "G80-40" | "G80-43" | "workspace-member-check" => {
+            CheckerKind::Implemented("architecture-check")
+        }
+        // §6.2.2/§6.2.3 are live gates, not Phase-0 placeholders.
         "G80-26" => CheckerKind::Implemented("rls-check"),
-        "G80-40" => CheckerKind::Implemented("architecture-check"),
-        // G80-43 与 G80-3 同型：判据本体活在 `architecture-check` 内部
-        // （`g80_43_grounding_validity`，§11.10#G11-2），没有独立子命令。
-        "G80-43" => CheckerKind::Implemented("architecture-check"),
         "G80-10" => CheckerKind::Implemented("mechanism-registry"),
         "G80-41" => CheckerKind::Implemented("config-check"),
-        _ => CheckerKind::NotImplemented,
+        "G80-6" => CheckerKind::Implemented("metrics-registry"),
+        // gate-registry evaluates both G80-23 (anchors) and G80-24 (coverage).
+        "G80-23" | "G80-24" => CheckerKind::Implemented("gate-registry"),
+        // dod-check has no CI step of its own: `known-red` runs the same `dod_check::verdicts`
+        // (G80-33 plus G80-17.D1/D2/D3) and fails on any unlisted red, so that step is its invocation.
+        "G80-17" => CheckerKind::Implemented("known-red"),
+        "G80-18" => CheckerKind::NotImplemented("M22"),
+        "G80-46" => CheckerKind::NotImplemented("M14"),
+        "mcp-contract-lock" => CheckerKind::NotImplemented("M26"),
+        _ => CheckerKind::NotImplemented(UNASSIGNED_OWNER),
     }
 }
 
@@ -375,8 +385,8 @@ fn evaluate_checker(
                 ))
             }
         }
-        CheckerKind::NotImplemented => CheckerStatus::NotApplicable(format!(
-            "missing object: checker {id} not implemented yet（no xtask subcommand delivered）"
+        CheckerKind::NotImplemented(owner) => CheckerStatus::NotApplicable(format!(
+            "missing object: checker {id} not implemented yet（no xtask subcommand delivered; owning card: {owner}）"
         )),
     }
 }
@@ -443,19 +453,28 @@ fn parse_unified_hunks(diff_text: &str) -> BTreeSet<usize> {
     lines_touched
 }
 
-/// 扫 ci.yml 全文里每处 `cargo xtask <subcommand>` 出现，取出 subcommand 词——不解析 YAML
-/// 结构（stdlib 够用，见 CLAUDE.md ladder rung 3），因为本闸只关心「这个子命令有没有被跑」，
-/// 不关心它挂在哪个 job/step 名下。
+/// 扫 ci.yml 里每处 `cargo xtask <subcommand>` 出现，取出 subcommand 词——不解析 YAML
+/// 结构（stdlib 够用），因为本闸只关心「这个子命令有没有被跑」，不关心它挂在哪个 job 名下。
+/// 注释行与 `name:` 行只是在谈论命令而不是执行它，不算「跑了」（否则删掉 step、留下注释
+/// 仍判绿）。
+// ponytail: a `continue-on-error` step or a line inside a multi-line `run: |` still counts as ran;
+// parse steps (serde_yaml) if a mandatory checker ever needs to be proven blocking.
 fn executed_xtask_subcommands(ci_text: &str) -> BTreeSet<String> {
     const MARKER: &str = "cargo xtask ";
     let mut out = BTreeSet::new();
-    let mut rest = ci_text;
-    while let Some(idx) = rest.find(MARKER) {
-        let after = &rest[idx + MARKER.len()..];
-        let tok: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
-        rest = &after[tok.len()..];
-        if !tok.is_empty() {
-            out.insert(tok);
+    for line in ci_text.lines() {
+        let t = line.trim_start().trim_start_matches("- ");
+        if t.starts_with('#') || t.starts_with("name:") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(idx) = rest.find(MARKER) {
+            let after = &rest[idx + MARKER.len()..];
+            let tok: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+            rest = &after[tok.len()..];
+            if !tok.is_empty() {
+                out.insert(tok);
+            }
         }
     }
     out
@@ -981,8 +1000,100 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
             .find(|(b, c, _)| b == "MCP_TOOL_CATALOG" && c == "mcp-contract-lock")
             .unwrap();
         assert!(
-            matches!(&mcp_lock.2, CheckerStatus::NotApplicable(d) if d.contains("mcp-contract-lock"))
+            matches!(&mcp_lock.2, CheckerStatus::NotApplicable(d) if d.contains("mcp-contract-lock") && d.contains("owning card: M26"))
         );
+    }
+
+    /// M24 D5: every not-implemented checker prints the card that delivers it.
+    #[test]
+    fn not_applicable_text_names_the_owning_card() {
+        let none = BTreeSet::new();
+        for (id, owner) in [
+            ("G80-18", "M22"),
+            ("G80-46", "M14"),
+            ("mcp-contract-lock", "M26"),
+        ] {
+            let CheckerStatus::NotApplicable(d) = evaluate_checker(id, &none, default_checker_kind)
+            else {
+                panic!("{id} must be not_applicable");
+            };
+            assert!(d.contains(&format!("owning card: {owner}")), "{id}: {d}");
+        }
+        let CheckerStatus::NotApplicable(d) =
+            evaluate_checker("mcp-compat-matrix", &none, default_checker_kind)
+        else {
+            panic!("unmapped checker must stay not_applicable");
+        };
+        assert!(d.contains("none registered"), "{d}");
+    }
+
+    /// M24 D5: the checkers that already run in CI are mapped to the step that runs them.
+    #[test]
+    fn mapped_checkers_point_at_their_ci_subcommand() {
+        for (id, sub) in [
+            ("G80-6", "metrics-registry"),
+            ("G80-23", "gate-registry"),
+            ("G80-24", "gate-registry"),
+            ("G80-17", "known-red"),
+            ("workspace-member-check", "architecture-check"),
+        ] {
+            assert_eq!(
+                default_checker_kind(id),
+                CheckerKind::Implemented(sub),
+                "{id}"
+            );
+        }
+    }
+
+    // ---- G-M24-5: editing metrics_registry.rs without the metrics-registry step -> G80-6 red ----
+
+    #[test]
+    fn g_m24_5_metrics_registry_source_change_without_the_step_is_red_then_green() {
+        let map = parse_impact_map(VALID_FIXTURE);
+        let locations = resolve_block_locations(VALID_FIXTURE);
+        let changed_files: BTreeSet<String> = [METRICS_REGISTRY_SRC_PATH.to_string()].into();
+        let g80_6 = |ci: &str| {
+            evaluate_closure(
+                &map,
+                &locations,
+                &changed_files,
+                &BTreeSet::new(),
+                &executed_xtask_subcommands(ci),
+                default_checker_kind,
+            )
+            .into_iter()
+            .find(|(b, c, _)| b == "METRIC_REGISTRY" && c == "G80-6")
+            .expect("changing the checker source must demand G80-6")
+            .2
+        };
+
+        let red = g80_6("      - run: cargo xtask config-check\n");
+        assert!(
+            matches!(&red, CheckerStatus::Fail(d) if d.contains("G80-6") && d.contains("metrics-registry")),
+            "{red:?}"
+        );
+        // A comment or a step name that merely mentions the command is not the step.
+        let talked_about = "# cargo xtask metrics-registry\n- name: cargo xtask metrics-registry\n";
+        assert!(matches!(g80_6(talked_about), CheckerStatus::Fail(_)));
+
+        let green = g80_6("      - run: cargo xtask metrics-registry\n");
+        assert_eq!(green, CheckerStatus::Pass);
+    }
+
+    /// An untouched checker source and an untouched spec table demand nothing.
+    #[test]
+    fn unrelated_change_does_not_demand_g80_6() {
+        let map = parse_impact_map(VALID_FIXTURE);
+        let locations = resolve_block_locations(VALID_FIXTURE);
+        let statuses = evaluate_closure(
+            &map,
+            &locations,
+            &["xtask/src/config_check.rs".to_string()].into(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            default_checker_kind,
+        );
+        assert!(statuses.is_empty());
     }
 
     #[test]
@@ -1027,7 +1138,15 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
         let executed = executed_xtask_subcommands(&real_ci_yml());
         assert!(executed.contains("mechanism-registry"));
         assert!(executed.contains("config-check"));
-        for checker in ["G80-26", "G80-40"] {
+        for checker in [
+            "G80-26",
+            "G80-40",
+            "G80-6",
+            "G80-23",
+            "G80-24",
+            "G80-17",
+            "workspace-member-check",
+        ] {
             assert_eq!(
                 evaluate_checker(checker, &executed, default_checker_kind),
                 CheckerStatus::Pass
