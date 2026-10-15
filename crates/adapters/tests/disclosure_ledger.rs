@@ -635,54 +635,92 @@ fn guard_trigger_rejects_second_deletion_requested_at_write() {
     );
 }
 
+/// Upgrades this session to the exclusive side of `DISCLOSURE_LEDGER_ADVISORY_LOCK` before a
+/// TRUNCATE: drop the fixture's shared hold first — asking for exclusive while holding shared
+/// in the same session blocks on itself.
+fn take_exclusive_ledger_lock(admin: &mut Client) {
+    admin
+        .execute(
+            "SELECT pg_advisory_unlock_shared($1)",
+            &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
+        )
+        .expect("release shared advisory lock");
+    admin
+        .execute(
+            "SELECT pg_advisory_lock($1)",
+            &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
+        )
+        .expect("take exclusive advisory lock before TRUNCATE");
+}
+
+/// Runs a TRUNCATE the guard must reject inside a never-committed transaction and returns its
+/// error: even if the guard regressed and TRUNCATE succeeded, the rollback on drop discards it.
+fn truncate_rejection(admin: &mut Client, sql: &str) -> postgres::Error {
+    let mut txn = admin.transaction().expect("begin txn");
+    txn.execute(sql, &[])
+        .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)")
+}
+
 /// §7.4/§77 append-only: TRUNCATE must be rejected on both tables (0047 originally only
 /// installed `FOR EACH ROW` triggers, which TRUNCATE never fires — closed by migrations/0057).
-/// Runs inside an explicit, never-committed transaction: even if the guard regressed and
-/// TRUNCATE actually succeeded, the rollback on drop still discards it rather than truncating
-/// the shared dev-DB table for real.
 #[test]
 fn guard_trigger_rejects_truncate() {
     run_db_fixture::<DisclosureFixture, _>("guard_trigger_rejects_truncate", |mut handle| {
         let _ = seed_finalized_disclosure(&mut handle);
-
-        // 升级为排他：先放掉 fixture 取的共享锁，再等所有并发读者放手。
-        // 顺序不能反——同一 session 持共享时申请排他会自己阻塞自己。
-        handle
-            .admin
-            .execute(
-                "SELECT pg_advisory_unlock_shared($1)",
-                &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
-            )
-            .expect("release shared advisory lock");
-        handle
-            .admin
-            .execute(
-                "SELECT pg_advisory_lock($1)",
-                &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
-            )
-            .expect("take exclusive advisory lock before TRUNCATE");
-
-        let mut txn = handle.admin.transaction().expect("begin txn");
-        let err = txn
-            .execute("TRUNCATE ops.data_disclosures CASCADE", &[])
-            .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)");
-        assert_eq!(
-            err.code(),
-            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
-            "expected insufficient_privilege, got: {err:?}"
-        );
-        drop(txn);
-
-        let mut txn = handle.admin.transaction().expect("begin txn");
-        let err = txn
-            .execute("TRUNCATE ops.data_disclosure_sources", &[])
-            .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)");
-        assert_eq!(
-            err.code(),
-            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
-            "expected insufficient_privilege, got: {err:?}"
-        );
+        take_exclusive_ledger_lock(&mut handle.admin);
+        for sql in [
+            "TRUNCATE ops.data_disclosures CASCADE",
+            "TRUNCATE ops.data_disclosure_sources",
+        ] {
+            let err = truncate_rejection(&mut handle.admin, sql);
+            assert_eq!(
+                err.code(),
+                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+                "{sql}: expected insufficient_privilege, got: {err:?}"
+            );
+        }
     });
+}
+
+/// Run 38683479316 (40P01): `TRUNCATE ops.data_disclosures CASCADE` locks the parent, then each
+/// referencing table; another test binary's insert into a referencing table holds the child
+/// (ROW EXCLUSIVE) and then asks for the parent (ROW SHARE, its FK check). The advisory lock
+/// above only fences this binary. Replayed deterministically with a second session: the probe
+/// must still see the guard's rejection, and the other session must never be the victim.
+#[test]
+fn truncate_probe_yields_to_a_child_then_parent_writer() {
+    run_db_fixture::<DisclosureFixture, _>(
+        "truncate_probe_yields_to_a_child_then_parent_writer",
+        |mut handle| {
+            take_exclusive_ledger_lock(&mut handle.admin);
+            let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so it is set");
+            let (child_held, child_held_rx) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || -> Result<(), postgres::Error> {
+                // dep: PostgreSQL(any) — the concurrent child-then-parent writer session
+                let mut other = Client::connect(&dsn, NoTls)?;
+                let mut txn = other.transaction()?;
+                txn.batch_execute("LOCK TABLE ops.data_disclosure_sources IN ROW EXCLUSIVE MODE")?;
+                child_held.send(()).expect("the probe is listening");
+                // By now the probe holds the parent and waits for this child.
+                std::thread::sleep(Duration::from_millis(300));
+                txn.batch_execute("LOCK TABLE ops.data_disclosures IN ROW SHARE MODE")?;
+                std::thread::sleep(Duration::from_millis(100));
+                txn.commit()
+            });
+            child_held_rx.recv().expect("the writer holds the child");
+            let err =
+                truncate_rejection(&mut handle.admin, "TRUNCATE ops.data_disclosures CASCADE");
+            assert_eq!(
+                err.code(),
+                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+                "expected insufficient_privilege, got: {err:?}"
+            );
+            writer
+                .join()
+                .expect("writer thread")
+                .expect("the concurrent writer must never be the deadlock victim");
+        },
+    );
 }
 
 /// §79.3 cross-tenant A/B: tenant B must not be able to finalize tenant A's disclosure, and
