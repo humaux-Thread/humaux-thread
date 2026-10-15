@@ -100,7 +100,7 @@ pub(crate) async fn readable_memory_ids(
         "SELECT me.memory_id, eo.evidence_id AS visible_evidence_id, eo.visibility_class, \
                 eo.visibility_user_id, eo.visibility_workspace_id \
          FROM private.memory_evidence me \
-         LEFT JOIN private.evidence_objects eo \
+         INNER JOIN private.evidence_objects eo \
            ON eo.evidence_id = me.evidence_id AND eo.tenant_id = $1 \
          WHERE me.memory_id = ANY($2)",
     )
