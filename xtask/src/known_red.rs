@@ -466,6 +466,9 @@ fn report_lines(section: &str, r: &Report, release: bool) -> Vec<String> {
     out
 }
 
+/// Where a section's items come from: the real evaluators in `run`, a fake in tests.
+type ItemSource<'a> = dyn Fn(&str, u32) -> Result<Vec<Item>, String> + 'a;
+
 /// What one invocation decided.
 struct Outcome {
     reports: Vec<(&'static str, Report)>,
@@ -475,12 +478,7 @@ struct Outcome {
 }
 
 /// The whole decision from the ledger text and an item source: `run` passes the real evaluators, tests a fake.
-fn check(
-    raw: &str,
-    phase: u32,
-    release: bool,
-    items_for: &dyn Fn(&str, u32) -> Result<Vec<Item>, String>,
-) -> Outcome {
+fn check(raw: &str, phase: u32, release: bool, items_for: &ItemSource<'_>) -> Outcome {
     let (ledger, mut reds) = parse_ledger(raw);
     let mut reports = Vec::new();
     for section in SECTIONS {
