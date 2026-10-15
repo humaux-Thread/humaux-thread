@@ -2314,6 +2314,13 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
             // the answer, so the write leg's memory_evidence INSERT crosses the HTTP cutoff.
             let dsn = handle.dsn.clone();
             let (replied2, called2) = (replied.clone(), called.clone());
+            // Handshake: the sweeper claims only after the gate has seen the PASS's claim. Started
+            // together, the sweeper's first claim_distill could take the job itself (both serialise
+            // on the arbiter row; whoever commits first wins), the pass then drained empty and the
+            // gate waited for a call that never came (CI run 38644754111, ADR-0058 D-E fence).
+            let pass_claimed = std::sync::Arc::new(AtomicBool::new(false));
+            let pass_claimed2 = pass_claimed.clone();
+            let owner = config.lease_owner.clone();
             let gate = std::thread::spawn(move || {
                 // dep: PostgreSQL(owner) — lock-holder connection steering the job's timing
                 let mut admin = Client::connect(&dsn, NoTls).expect("gate connection");
@@ -2338,13 +2345,14 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                     within("the job PROCESSING");
                     let row = probe
                         .query_one(
-                            "SELECT status = 'PROCESSING', \
+                            "SELECT status = 'PROCESSING' AND lease_owner = $3, \
                                     extract(epoch FROM hard_deadline - make_interval(secs => $2) - clock_timestamp())::float8 \
                              FROM ops.jobs WHERE job_id = $1",
-                            &[&job, &(HTTP + LEASE + 0.4)],
+                            &[&job, &(HTTP + LEASE + 0.4), &owner],
                         )
                         .expect("job probe");
                     if row.get::<_, bool>(0) {
+                        pass_claimed2.store(true, Ordering::SeqCst);
                         break row.get::<_, Option<f64>>(1).unwrap_or(0.0);
                     }
                     std::thread::sleep(Duration::from_millis(10));
@@ -2379,6 +2387,10 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
             let stop = AtomicBool::new(false);
             let (report, stolen) = handle.rt.block_on(async {
                 let pass = async {
+                    // The sweeper runs first on purpose (300 ms head start), so the handshake below
+                    // is load-bearing on every run: without it the sweeper takes the job (red run
+                    // on ci/red-e11-flake).
+                    tokio::time::sleep(Duration::from_millis(300)).await;
                     let r = distill::dispatch_pass(
                         &handle.private,
                         &routes(&provider),
@@ -2391,6 +2403,9 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 };
                 let sweeper = async {
                     let mut stolen = 0;
+                    while !pass_claimed.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
                     while !stop.load(Ordering::SeqCst) {
                         if jobs::claim_distill(
                             &sweeper_pool,
@@ -2410,9 +2425,10 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 };
                 tokio::join!(pass, sweeper)
             });
+            // Printed before the join: a gate timeout then still shows who took the claim.
+            println!("E11 report {report:?} stolen {stolen}");
             gate.join().expect("gate thread");
             let report = report.expect("dispatch pass");
-            println!("E11 report {report:?} stolen {stolen}");
             let (status, attempt, _, generation, _) = handle.job(job);
             assert_eq!(
                 (status.as_str(), generation, attempt),
