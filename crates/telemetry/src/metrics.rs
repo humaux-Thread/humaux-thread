@@ -373,6 +373,36 @@ pub mod families {
         Kind::Gauge,
         &[],
     );
+
+    // §41.2: §51 cache layer — emitted by `telemetry::cache` (M12).
+    /// `cache_requests_total{cache,result}`.
+    pub const CACHE_REQUESTS_TOTAL: Family = f(
+        "cache_requests_total",
+        "Cache lookups, by cache and result (hit, miss, bypass, error).",
+        Kind::Counter,
+        &["cache", "result"],
+    );
+    /// `cache_evictions_total{cache,cause}`.
+    pub const CACHE_EVICTIONS_TOTAL: Family = f(
+        "cache_evictions_total",
+        "Cache entries removed, by cache and removal cause.",
+        Kind::Counter,
+        &["cache", "cause"],
+    );
+    /// `cache_bytes{cache}`.
+    pub const CACHE_BYTES: Family = f(
+        "cache_bytes",
+        "Weighted bytes currently accounted to a cache.",
+        Kind::Gauge,
+        &["cache"],
+    );
+    /// `cache_singleflight_waiters{cache}`.
+    pub const CACHE_SINGLEFLIGHT_WAITERS: Family = f(
+        "cache_singleflight_waiters",
+        "Callers currently inside a cache's single-flight section.",
+        Kind::Gauge,
+        &["cache"],
+    );
 }
 
 /// Process-local counters, one slot per closed label value (index = the enum's `ALL` position).

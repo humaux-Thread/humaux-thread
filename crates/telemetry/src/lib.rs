@@ -12,6 +12,7 @@
 //! Domain 永不 import HTTP / SQLx / Qdrant / Provider SDK / ENV（§3 / §78.3）。
 
 pub mod admission;
+pub mod cache;
 pub mod degrade;
 pub mod direction;
 pub mod dr;
