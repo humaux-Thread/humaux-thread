@@ -10,6 +10,7 @@
 //!   damage and array mispairing all fail closed as CannotEstablishCompleteness, never current/complete]
 //! Spec: Baseline §25.3.1; §79.2
 //!
+#[allow(dead_code)] // shared support: read_gate_closure alone uses the second-Evidence helpers
 #[path = "support/continuity_0137_fixture.rs"]
 mod continuity_0137_fixture;
 
