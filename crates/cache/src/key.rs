@@ -5,7 +5,7 @@
 //!   key (§51, M12 D3/D4); the input hash covers the exact provider bytes with no case or whitespace folding]
 //! Spec: Baseline §51; §20.0
 
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use humaux_domain::ids::{TenantId, UserId};
@@ -57,7 +57,7 @@ pub enum EmbeddingMode {
 ///
 /// Fields are private and the only constructors name the principal kind, so a user request cannot be keyed into the
 /// tenant-wide (`None`) namespace by passing a missing user id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct EmbeddingQueryKey {
     tenant_id: TenantId,
     /// `None` only for tenant-scoped service principals.
@@ -124,5 +124,27 @@ impl EmbeddingQueryKey {
 impl CacheKey for EmbeddingQueryKey {
     fn tenant(&self) -> TenantId {
         self.tenant_id
+    }
+}
+
+impl PartialEq for EmbeddingQueryKey {
+    fn eq(&self, o: &Self) -> bool {
+        self.tenant_id == o.tenant_id
+            && self.user_id == o.user_id
+            && self.dimension == o.dimension
+            && self.mode == o.mode
+            && self.input_sha256 == o.input_sha256
+    }
+}
+
+impl Eq for EmbeddingQueryKey {}
+
+impl Hash for EmbeddingQueryKey {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.tenant_id.hash(h);
+        self.user_id.hash(h);
+        self.dimension.hash(h);
+        self.mode.hash(h);
+        self.input_sha256.hash(h);
     }
 }
