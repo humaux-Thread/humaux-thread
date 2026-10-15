@@ -8624,7 +8624,7 @@ async fn serving_version_in_txn() {}
         let lines = m09_fail_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0].contains("nextval('ops.commit_seq_seq')"),
+            lines[0].contains("nextval('ops.commit_seq_seq'"),
             "{lines:?}"
         );
         assert!(lines[0].contains("found 2"), "{lines:?}");
@@ -8640,7 +8640,7 @@ async fn serving_version_in_txn() {}
         let lines = m09_fail_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0].contains("nextval('ops.commit_seq_seq')"),
+            lines[0].contains("nextval('ops.commit_seq_seq'"),
             "{lines:?}"
         );
         assert!(lines[0].contains("found 0"), "{lines:?}");

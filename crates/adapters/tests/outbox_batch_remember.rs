@@ -730,7 +730,6 @@ fn m09_1_ticket_door_issues_one_outbox_row_equal_to_the_stream_log_row_and_the_r
                 ))
                 .expect("remember must succeed")
                 .evidence_id;
-            let tenant_id = handle.tenant_id;
             let raw_gateway = handle
                 .rt
                 // dep: PostgreSQL(any) — open a role-scoped PG connection/pool for this test
@@ -741,50 +740,17 @@ fn m09_1_ticket_door_issues_one_outbox_row_equal_to_the_stream_log_row_and_the_r
             for preallocate in [false, true] {
                 let scope = scope_id();
                 let key = StreamKey::new(
-                    TenantId(tenant_id),
+                    TenantId(handle.tenant_id),
                     "workspace",
                     scope,
                     "private_memory",
                     "PRIVATE_MEMORY",
                     "v1",
                 );
-                let (given, commit_seq, stream_seq) = handle.rt.block_on(async {
-                    // dep: PostgreSQL(any) — transaction entry for the door call
-                    let mut txn = raw_gateway.begin().await.expect("begin door txn");
-                    sqlx::query(
-                        "SELECT set_config('humaux.tenant_id', $1, true), \
-                                set_config('humaux.user_id', $2, true)",
-                    )
-                    .bind(tenant_id.to_string())
-                    .bind(Uuid::nil().to_string())
-                    // dep: PostgreSQL(any) — pool/txn query execution
-                    .execute(&mut *txn)
-                    .await
-                    .expect("install the RLS context");
-                    let given: Option<i64> = if preallocate {
-                        Some(
-                            sqlx::query_scalar("SELECT nextval('ops.commit_seq_seq')")
-                                // dep: PostgreSQL(any) — pool/txn query execution
-                                .fetch_one(&mut *txn)
-                                .await
-                                .expect("take the sequence value first, as remember does"),
-                        )
-                    } else {
-                        None
-                    };
-                    let (commit_seq, stream_seq) = stream_repo::issue_ticket_in_txn_for_test(
-                        &mut txn,
-                        &key,
-                        evidence_id,
-                        "MEMORY_LIFECYCLE",
-                        given,
-                    )
-                    .await
-                    .expect("the door call");
-                    txn.commit().await.expect("commit door txn");
-                    (given, commit_seq, stream_seq)
-                });
-
+                let (given, commit_seq, stream_seq) =
+                    handle
+                        .rt
+                        .block_on(door_call(&raw_gateway, &key, evidence_id, preallocate));
                 if let Some(given) = given {
                     assert_eq!(
                         commit_seq, given,
@@ -792,41 +758,98 @@ fn m09_1_ticket_door_issues_one_outbox_row_equal_to_the_stream_log_row_and_the_r
                     );
                 }
                 assert_eq!(stream_seq, 1, "the first ticket of a fresh stream");
-
-                let outbox = handle
-                    .admin
-                    .query(
-                        "SELECT stream_seq, evidence_id, event_type FROM ops.outbox \
-                         WHERE tenant_id = $1 AND commit_seq = $2",
-                        &[&tenant_id, &commit_seq],
-                    )
-                    .expect("outbox rows of the returned commit_seq");
-                assert_eq!(
-                    outbox.len(),
-                    1,
-                    "exactly one outbox row carries the returned commit_seq (preallocated={preallocate})"
-                );
-                assert_eq!(outbox[0].get::<_, i64>(0), stream_seq);
-                assert_eq!(outbox[0].get::<_, Uuid>(1), evidence_id);
-                assert_eq!(outbox[0].get::<_, String>(2), "MEMORY_LIFECYCLE");
-
-                let log = handle
-                    .admin
-                    .query(
-                        "SELECT stream_seq, commit_seq FROM projection.stream_log \
-                         WHERE tenant_id = $1 AND scope_kind = 'workspace' AND scope_id = $2 \
-                           AND domain = 'private_memory' AND projection_kind = 'PRIVATE_MEMORY' \
-                           AND projection_version = 'v1'",
-                        &[&tenant_id, &scope],
-                    )
-                    .expect("stream_log rows of the stream");
-                assert_eq!(log.len(), 1, "exactly one stream_log row for the stream");
-                assert_eq!(
-                    (log[0].get::<_, i64>(0), log[0].get::<_, i64>(1)),
-                    (stream_seq, commit_seq),
-                    "the stream_log row equals the returned ticket and the outbox row's locator"
-                );
+                assert_door_rows(&mut handle, scope, evidence_id, commit_seq, stream_seq);
             }
         },
+    );
+}
+
+/// One committed door call on its own `role_gateway` transaction, with the RLS context `remember` installs. With
+/// `preallocate` the sequence value is taken first (as `remember` does) and handed in as `Some`. Returns
+/// `(the value handed in, commit_seq, stream_seq)` as the door answered.
+async fn door_call(
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    key: &StreamKey,
+    evidence_id: Uuid,
+    preallocate: bool,
+) -> (Option<i64>, i64, i64) {
+    // dep: PostgreSQL(any) — transaction entry for the door call
+    let mut txn = pool.begin().await.expect("begin door txn");
+    sqlx::query(
+        "SELECT set_config('humaux.tenant_id', $1, true), \
+                set_config('humaux.user_id', $2, true)",
+    )
+    .bind(key.tenant_id.0.to_string())
+    .bind(Uuid::nil().to_string())
+    // dep: PostgreSQL(any) — pool/txn query execution
+    .execute(&mut *txn)
+    .await
+    .expect("install the RLS context");
+    let given: Option<i64> = if preallocate {
+        Some(
+            sqlx::query_scalar("SELECT nextval('ops.commit_seq_seq')")
+                // dep: PostgreSQL(any) — pool/txn query execution
+                .fetch_one(&mut *txn)
+                .await
+                .expect("take the sequence value first, as remember does"),
+        )
+    } else {
+        None
+    };
+    let (commit_seq, stream_seq) = stream_repo::issue_ticket_in_txn_for_test(
+        &mut txn,
+        key,
+        evidence_id,
+        "MEMORY_LIFECYCLE",
+        given,
+    )
+    .await
+    .expect("the door call");
+    txn.commit().await.expect("commit door txn");
+    (given, commit_seq, stream_seq)
+}
+
+/// Exactly one outbox row carries `commit_seq`, exactly one `stream_log` row sits on the stream `scope` names, and both
+/// equal the ticket the door returned.
+fn assert_door_rows(
+    handle: &mut Handle,
+    scope: Uuid,
+    evidence_id: Uuid,
+    commit_seq: i64,
+    stream_seq: i64,
+) {
+    let tenant_id = handle.tenant_id;
+    let outbox = handle
+        .admin
+        .query(
+            "SELECT stream_seq, evidence_id, event_type FROM ops.outbox \
+             WHERE tenant_id = $1 AND commit_seq = $2",
+            &[&tenant_id, &commit_seq],
+        )
+        .expect("outbox rows of the returned commit_seq");
+    assert_eq!(
+        outbox.len(),
+        1,
+        "exactly one outbox row per returned commit_seq"
+    );
+    assert_eq!(outbox[0].get::<_, i64>(0), stream_seq);
+    assert_eq!(outbox[0].get::<_, Uuid>(1), evidence_id);
+    assert_eq!(outbox[0].get::<_, String>(2), "MEMORY_LIFECYCLE");
+
+    let log = handle
+        .admin
+        .query(
+            "SELECT stream_seq, commit_seq FROM projection.stream_log \
+             WHERE tenant_id = $1 AND scope_kind = 'workspace' AND scope_id = $2 \
+               AND domain = 'private_memory' AND projection_kind = 'PRIVATE_MEMORY' \
+               AND projection_version = 'v1'",
+            &[&tenant_id, &scope],
+        )
+        .expect("stream_log rows of the stream");
+    assert_eq!(log.len(), 1, "exactly one stream_log row for the stream");
+    assert_eq!(
+        (log[0].get::<_, i64>(0), log[0].get::<_, i64>(1)),
+        (stream_seq, commit_seq),
+        "the stream_log row equals the returned ticket and the outbox row's locator"
     );
 }
