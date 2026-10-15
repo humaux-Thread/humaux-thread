@@ -311,14 +311,12 @@ jobs:
           cargo install cargo-sbom --version 0.10.0 --locked
           cargo sbom --output-format=spdx_json_2_3 > sbom.spdx.json
 
-      # M24-4 / G-M24-4 (D4): one shrink-only ledger instead of echo lines. dod-check (G80-33), benchset-declaration
-      # (G80-16) and the four §57.1 rule 3 gates (retrieval benchmark, mutation tests, deploy smoke, container scan) are
-      # judged against the PHASE file. A gate that is due and red must be a row in xtask/known_red.toml naming the module
-      # card that fixes it; a row whose gate now passes must be deleted; an unlisted red fails here. The echo lines this
-      # step replaces printed `not_applicable` for gates that were already due (retrieval benchmark since Phase 6,
-      # mutation tests since Phase 1), which §57.1 rule 2 forbids: `not_applicable` is for an object not yet due, and
-      # it names that object. `cargo xtask known-red --release` is the go-live rehearsal: red for any row that is not
-      # deferred_past_go_live. It runs the registered DoD verifiers (cargo test), hence the step timeout.
+      # G-M24-4 (M24-4), §57.1 rule 2: `not_applicable` is only for an object that is not yet due, and it names that
+      # object; a gate that is due and red (dod-check G80-33, benchset-declaration G80-16, retrieval benchmark, mutation
+      # tests, deploy smoke, container scan) is a row in xtask/known_red.toml naming the module card that fixes it.
+      # A row whose item passes is red until deleted (§80.1.1 shape), an unlisted red fails here. dod-check executes the
+      # registered verifiers (cargo test), hence the step timeout. `--release` is the go-live rehearsal (§69): red for
+      # every row without deferred_past_go_live, and it lists each deferred row for owner sign-off.
       - name: cargo xtask known-red (G-M24-4)
         if: ${{ !cancelled() }}
         timeout-minutes: 25

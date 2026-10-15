@@ -1,16 +1,19 @@
 # Known-red ledger (M24-4, G-M24-4; Baseline §57.1 rule 2, §80.1.1). Read by `cargo xtask known-red`.
 #
 # A gate that is due at the current PHASE and still red is a row here, owned by the module card that fixes it.
-# Rows only leave: when the item passes, the row must be deleted in the same PR (the gate goes red otherwise).
-# `deferred_past_go_live = "<why>"` marks a row that stays red at go-live on purpose; `--release` is red for every
-# row without it. Sections: [[dod]], [[benchset]], [[due_items]]; any other section or key is rejected.
+# A row is forced out when its item passes (the gate goes red otherwise). Adding a row is a reviewed diff line
+# and must name its owner; every run prints `rows: N (deferred: M)` so growth shows in the log.
+# `deferred_past_go_live = "<why>"` marks a row that stays red at go-live on purpose; `--release` is red for
+# every row without it and lists every deferred row for owner sign-off.
+# Sections: [[dod]], [[benchset]], [[due_items]]; any other section or key is rejected.
 # Row keys: id (required), owner (module card, M<nn>[-<card>], required), reason (required), deferred_past_go_live.
 #
 # Initial population (2026-10-15, PHASE 9, from CI run 38682651185 of the known-red step). Owners use the module
-# numbering of docs/architecture/module_ownership.toml (`M<nn>`: the module that owns the capability; `M24-<n>`: a card
-# of the M24 design note). Reasons summarise the 2026-10-14 gate audit and say why the item is red today.
+# numbering of docs/architecture/module_ownership.toml (`M<nn>`: the module that owns the capability; `M24-<n>`:
+# a card of the M24 design note). Reasons summarise the 2026-10-14 gate audit and say why the item is red today.
 # A `deferred_past_go_live` row for an item that is not yet due (not_applicable) pre-declares the deferral so the
 # go-live report lists it; once the item is due it covers the failure, once it passes the row must go.
+# E177 (DCO vs CLA) and E179 (OpenSSF) have no gate item yet, so they have no row; card M24-13 binds them.
 
 # --- dod -------------------------------------------------------------------
 
@@ -206,7 +209,7 @@ deferred_past_go_live = "D318: needs a live target with production observations"
 
 [[dod]]
 id = "DOD-086"
-owner = "M15"
+owner = "M24"
 reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (G80-11, processing_runs_fingerprint_rerun.rs), only the verifier is missing"
 
 [[dod]]

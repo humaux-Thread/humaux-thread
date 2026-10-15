@@ -636,22 +636,21 @@ pub struct RepoEval {
     pub na_list: Vec<String>,
 }
 
-/// [`run`] without the printing. An unreadable spec or a missing declaration table is an `Err` here (the CLI
-/// prints that case as `not_applicable`): a ledger cannot attribute anything without the table.
-pub fn evaluate_repo(current_phase: u32) -> Result<RepoEval, String> {
+/// Reads the spec and evaluates every declaration row at `current_phase`; `run` prints the result and `known-red`
+/// attributes it to sets, so the two cannot drift. `Err` = the spec is unreadable; `Ok(None)` = it has no
+/// declaration table (reported as `not_applicable` naming that heading, §57.1 rule 2).
+pub fn evaluate_repo(current_phase: u32) -> Result<Option<RepoEval>, String> {
     let spec_md =
         fs::read_to_string(SPEC_PATH).map_err(|e| format!("cannot read {SPEC_PATH}: {e}"))?;
     let table = parse_declaration_table(&spec_md);
     if table.is_empty() {
-        return Err(format!(
-            "heading `{TABLE_HEADING}` not found in {SPEC_PATH}"
-        ));
+        return Ok(None);
     }
     let EvalResult {
         violations,
         na_list,
     } = evaluate(&spec_md, &table, current_phase, Some(Path::new(".")));
-    Ok(RepoEval {
+    Ok(Some(RepoEval {
         set_ids: table
             .iter()
             .filter_map(|row| row.first())
@@ -659,37 +658,34 @@ pub fn evaluate_repo(current_phase: u32) -> Result<RepoEval, String> {
             .collect(),
         violations: violations.into_iter().map(|v| v.0).collect(),
         na_list,
-    })
+    }))
 }
 
 pub fn run(args: &[String]) -> i32 {
     let current_phase = parse_phase_arg(args);
-    let spec_md = match fs::read_to_string(SPEC_PATH) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("benchset-declaration: fail — cannot read {SPEC_PATH}: {e}");
-            return 1;
-        }
-    };
-
-    let table = parse_declaration_table(&spec_md);
-    if table.is_empty() {
-        eprintln!(
-            "benchset-declaration: not_applicable (missing object: heading `{TABLE_HEADING}` not found in {SPEC_PATH})"
-        );
-        return 0;
-    }
-
-    let EvalResult {
+    let RepoEval {
         violations,
         na_list,
-    } = evaluate(&spec_md, &table, current_phase, Some(Path::new(".")));
+        ..
+    } = match evaluate_repo(current_phase) {
+        Err(e) => {
+            eprintln!("benchset-declaration: fail — {e}");
+            return 1;
+        }
+        Ok(None) => {
+            eprintln!(
+                "benchset-declaration: not_applicable (missing object: heading `{TABLE_HEADING}` not found in {SPEC_PATH})"
+            );
+            return 0;
+        }
+        Ok(Some(eval)) => eval,
+    };
 
     // 三态单一状态行（§57.1）：有 violation ⇒ 只 fail（na_list 作附注打印，不当第二个状态）；
     // 无 violation 且 na_list 非空 ⇒ 只 not_applicable 并点名缺失对象；两者皆无 ⇒ pass。
     if !violations.is_empty() {
         for v in &violations {
-            eprintln!("benchset-declaration: fail — {}", v.0);
+            eprintln!("benchset-declaration: fail — {v}");
         }
         if !na_list.is_empty() {
             eprintln!(

@@ -1,14 +1,13 @@
-//! `xtask::known_red` — `cargo xtask known-red`: the shrink-only ledger of gates that are due but still red, every row owned by a module card.
+//! `xtask::known_red` — `cargo xtask known-red`: the ledger of gates that are due but still red, every row owned by a module card and forced out when its item passes.
 //! Depends-on: crates=[toml]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::benchset_declaration, xtask::dod_check, xtask::phase]
 //! Called-by: [xtask::main]
-//! Invariants: [a failing item without a ledger row is red; a ledger row whose item no longer fails is red (the row must be deleted); a row without a module-card owner is red; --release turns every row without deferred_past_go_live red; an unknown ledger section or key is red, never ignored]
+//! Invariants: [a failing item without a ledger row is red; a ledger row whose item no longer fails is red (the row must be deleted); a row without a module-card owner is red; --release turns every row without deferred_past_go_live red and lists every deferred row for owner sign-off; an unknown ledger section or key, and an unparsable --phase value, is rejected, never ignored]
 //! Spec: Baseline §57.1; §69; §80.1.1; §46
 //!
-//! Replaces the `not_applicable` echo lines that stood in for gates which were already due (§57.1 rule 2:
-//! `not_applicable` is only for an object that is not yet due, and it must name the missing object).
-//! A due gate that is red is not hidden and not waived: it is a row in `xtask/known_red.toml` that names the
-//! module card owning the fix. The ledger can only shrink (§80.1.1): fixing an item without deleting its row is
-//! red, so the list length is the debt.
+//! §57.1 rule 2: `not_applicable` is only for an object that is not yet due, and it names the missing object. A
+//! due gate that is red is therefore a row in `xtask/known_red.toml` with the module card that fixes it, never an
+//! echo line or a waiver. A row is forced out when its item passes (§80.1.1 shape); adding a row is a reviewed
+//! diff line that must name its owner, and every run prints `rows: N (deferred: M)` so growth shows in the log.
 //!
 //! Three sections, one evaluator each: `dod` (G80-33 verdicts per DoD id, reused from `dod_check`),
 //! `benchset` (G80-16 verdicts per benchmark set, reused from `benchset_declaration`) and `due_items`
@@ -59,7 +58,7 @@ struct Row {
 type Ledger = BTreeMap<String, Vec<Row>>;
 
 /// What one section produced: counts for the summary line, the lines §57.1 rule 2 and the go-live report need,
-/// and the red reasons.
+/// and the red reasons. `ledgered_lines` pair each failing row's reason with the verdict it gets today.
 #[derive(Debug, Default)]
 struct Report {
     pass: usize,
@@ -67,6 +66,7 @@ struct Report {
     na: usize,
     ledgered: usize,
     na_lines: Vec<String>,
+    ledgered_lines: Vec<String>,
     deferred: Vec<String>,
     reds: Vec<String>,
 }
@@ -135,7 +135,7 @@ fn parse_ledger(raw: &str) -> (Ledger, Vec<String>) {
     (ledger, errors)
 }
 
-/// `M<nn>` or `M<nn>-<card>`: the module card that owns the fix (module_map_v3 numbering).
+/// `M<nn>` or `M<nn>-<card>`: the module card that owns the fix (module ids of `docs/architecture/module_ownership.toml`).
 // ponytail: checks the shape, not that the card exists; review of known_red.toml is the gate, upgrade is
 // reading the module ids from docs/architecture/module_ownership.toml.
 fn owner_ok(owner: &str) -> bool {
@@ -180,6 +180,7 @@ fn row_shape_reds(tag: &str, row: &Row, release: bool) -> Vec<String> {
     if row.reason.is_empty() {
         reds.push(format!("{tag}: row has no reason"));
     }
+    // ponytail: deferral is self-declared; card 53 (go-live rehearsal) gets owner sign-off on every printed deferred row; upgrade: require an ADR id in the reason
     match &row.deferred {
         Some(d) if d.is_empty() => reds.push(format!(
             "{tag}: deferred_past_go_live is empty (state why, or drop the key)"
@@ -192,7 +193,8 @@ fn row_shape_reds(tag: &str, row: &Row, release: bool) -> Vec<String> {
     reds
 }
 
-/// D4 rules for one section. §80.1.1: the ledger only shrinks, so a row for an item that no longer fails is red.
+/// D4 rules for one section. A row is forced out when its item stops failing (§80.1.1 shape), so a row for an
+/// item that passes, or is not yet due without a declared deferral, is red.
 fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
     let mut by_id: BTreeMap<&str, &Item> = BTreeMap::new();
     for it in items {
@@ -226,20 +228,28 @@ fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
         }
         rep.reds.extend(row_shape_reds(&tag, row, release));
         if let Some(d) = row.deferred.as_deref().filter(|d| !d.is_empty()) {
-            rep.deferred
-                .push(format!("{} (owner {}): {d}", row.id, row.owner));
+            rep.deferred.push(format!(
+                "{} (owner {}): deferred: {d}; red because: {}",
+                row.id, row.owner, row.reason
+            ));
         }
-        match by_id.get(row.id.as_str()).map(|it| it.status) {
+        match by_id.get(row.id.as_str()) {
             None => rep.reds.push(format!(
                 "{tag}: matches no item of this section (typo, or the item was removed): delete the row"
             )),
-            Some(Status::Pass) => rep.reds.push(format!(
-                "{tag}: now passes: delete its row from {LEDGER_FILE} (shrink-only, §80.1.1)"
-            )),
-            Some(Status::NotApplicable) if row.deferred.is_none() => rep.reds.push(format!(
-                "{tag}: is not_applicable (not yet due): delete the row; only a deferred_past_go_live row may pre-declare an item"
-            )),
-            Some(Status::NotApplicable | Status::Fail) => {}
+            Some(it) => match it.status {
+                Status::Pass => rep.reds.push(format!(
+                    "{tag}: now passes: delete its row from {LEDGER_FILE} (§80.1.1)"
+                )),
+                Status::NotApplicable if row.deferred.is_none() => rep.reds.push(format!(
+                    "{tag}: is not_applicable (not yet due): delete the row; only a deferred_past_go_live row may pre-declare an item"
+                )),
+                Status::NotApplicable => {}
+                Status::Fail => rep.ledgered_lines.push(format!(
+                    "{} (owner {}): {} | verdict now: {}",
+                    row.id, row.owner, row.reason, it.detail
+                )),
+            },
         }
     }
     for it in by_id.values().filter(|it| it.status == Status::Fail) {
@@ -320,7 +330,9 @@ fn benchset_items(set_ids: &[String], violations: &[String], na_list: &[String])
 }
 
 fn benchset_section(phase: u32) -> Result<Vec<Item>, String> {
-    let eval = crate::benchset_declaration::evaluate_repo(phase)?;
+    let eval = crate::benchset_declaration::evaluate_repo(phase)?.ok_or_else(|| {
+        "the §69 benchmark declaration table is missing from the spec".to_string()
+    })?;
     Ok(benchset_items(
         &eval.set_ids,
         &eval.violations,
@@ -404,7 +416,9 @@ fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
 // CLI
 // ---------------------------------------------------------------------------
 
-/// `Some(release)` when every argument is understood; `--phase` is read by `phase::current_phase`.
+/// `Some(release)` when every argument is understood; `--phase` is read by `phase::current_phase`. A `--phase`
+/// whose value is missing or not a `u32` is rejected: swallowing the next token (`--phase --release`) would run a
+/// non-release check that passes.
 fn parse_args(args: &[String]) -> Option<bool> {
     let mut release = false;
     let mut it = args.iter();
@@ -412,25 +426,83 @@ fn parse_args(args: &[String]) -> Option<bool> {
         match a.as_str() {
             "--release" => release = true,
             "--phase" => {
-                it.next();
+                if it.next().is_none_or(|v| v.parse::<u32>().is_err()) {
+                    return None;
+                }
             }
-            s if s.starts_with("--phase=") => {}
+            s if s
+                .strip_prefix("--phase=")
+                .is_some_and(|v| v.parse::<u32>().is_ok()) => {}
             _ => return None,
         }
     }
     Some(release)
 }
 
-fn print_report(section: &str, r: &Report) {
-    println!(
+/// The log lines of one section. Deferred rows are listed only under `--release`, where the go-live rehearsal
+/// needs each one for owner sign-off; every run still prints the `rows: N (deferred: M)` totals.
+fn report_lines(section: &str, r: &Report, release: bool) -> Vec<String> {
+    let mut out = vec![format!(
         "known-red: [{section}] pass {} · fail {} · not_applicable {} · ledgered {}",
         r.pass, r.fail, r.na, r.ledgered
+    )];
+    out.extend(
+        r.na_lines
+            .iter()
+            .map(|l| format!("known-red: not_applicable [{section}] {l}")),
     );
-    for l in &r.na_lines {
-        println!("known-red: not_applicable [{section}] {l}");
+    out.extend(
+        r.ledgered_lines
+            .iter()
+            .map(|l| format!("known-red: ledgered [{section}] {l}")),
+    );
+    if release {
+        out.extend(
+            r.deferred.iter().map(|l| {
+                format!("known-red: deferred past go-live, owner sign-off [{section}] {l}")
+            }),
+        );
     }
-    for l in &r.deferred {
-        println!("known-red: deferred past go-live [{section}] {l}");
+    out
+}
+
+/// What one invocation decided.
+struct Outcome {
+    reports: Vec<(&'static str, Report)>,
+    rows: usize,
+    deferred: usize,
+    reds: Vec<String>,
+}
+
+/// The whole decision from the ledger text and an item source: `run` passes the real evaluators, tests a fake.
+fn check(
+    raw: &str,
+    phase: u32,
+    release: bool,
+    items_for: &dyn Fn(&str, u32) -> Result<Vec<Item>, String>,
+) -> Outcome {
+    let (ledger, mut reds) = parse_ledger(raw);
+    let mut reports = Vec::new();
+    for section in SECTIONS {
+        match items_for(section, phase) {
+            Ok(items) => {
+                let rows = ledger.get(section).map_or(&[][..], Vec::as_slice);
+                let mut rep = judge(section, &items, rows, release);
+                reds.append(&mut rep.reds);
+                reports.push((section, rep));
+            }
+            Err(e) => reds.push(format!("[{section}]: cannot evaluate: {e}")),
+        }
+    }
+    Outcome {
+        reports,
+        rows: ledger.values().map(Vec::len).sum(),
+        deferred: ledger
+            .values()
+            .flatten()
+            .filter(|r| r.deferred.is_some())
+            .count(),
+        reds,
     }
 }
 
@@ -448,34 +520,34 @@ pub fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (ledger, mut reds) = parse_ledger(&raw);
     let mode = if release { " (--release)" } else { "" };
     println!("known-red: phase {phase}{mode}");
-    for section in SECTIONS {
-        match section_items(section, phase) {
-            Ok(items) => {
-                let rows = ledger.get(section).map_or(&[][..], Vec::as_slice);
-                let rep = judge(section, &items, rows, release);
-                print_report(section, &rep);
-                reds.extend(rep.reds);
-            }
-            Err(e) => reds.push(format!("[{section}]: cannot evaluate: {e}")),
+    let out = check(&raw, phase, release, &section_items);
+    for (section, rep) in &out.reports {
+        for line in report_lines(section, rep, release) {
+            println!("{line}");
         }
     }
-    if reds.is_empty() {
+    println!("known-red: rows: {} (deferred: {})", out.rows, out.deferred);
+    if out.reds.is_empty() {
         println!("known-red: pass");
         return 0;
     }
-    for r in &reds {
+    for r in &out.reds {
         eprintln!("known-red: RED {r}");
     }
-    eprintln!("known-red: fail: {} red reason(s)", reds.len());
+    eprintln!("known-red: fail: {} red reason(s)", out.reds.len());
     1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SPEC_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../docs/architecture/Baseline_2.9.md"
+    );
 
     fn item(id: &str, status: Status) -> Item {
         Item {
@@ -520,16 +592,19 @@ mod tests {
         assert!(rep.na_lines[0].contains('C'));
     }
 
-    /// Fault: a failing item that lost its row goes red and the reason names the id.
+    /// Fault: a failing item that lost its row goes red and the reason names the id and the rule.
     #[test]
     fn unlisted_failure_is_red() {
         let rep = judge("dod", &[item("DOD-006", Status::Fail)], &[], false);
-        assert_eq!(rep.reds.len(), 1);
-        assert!(rep.reds[0].contains("[dod] DOD-006"), "{:?}", rep.reds);
-        assert!(rep.reds[0].contains("not in"), "{:?}", rep.reds);
+        assert_eq!(rep.reds.len(), 1, "{:?}", rep.reds);
+        assert!(
+            rep.reds[0].contains("[dod] DOD-006: failing and not in xtask/known_red.toml"),
+            "{:?}",
+            rep.reds
+        );
     }
 
-    /// Fault: the item is fixed but its row stays (shrink-only, §80.1.1).
+    /// Fault: the item is fixed but its row stays.
     #[test]
     fn a_row_whose_item_now_passes_is_red() {
         let rep = judge(
@@ -538,8 +613,12 @@ mod tests {
             &[row("DOD-006", "M13")],
             false,
         );
-        assert_eq!(rep.reds.len(), 1);
-        assert!(rep.reds[0].contains("DOD-006") && rep.reds[0].contains("now passes"));
+        assert_eq!(rep.reds.len(), 1, "{:?}", rep.reds);
+        assert!(
+            rep.reds[0].contains("[dod] DOD-006: now passes"),
+            "{:?}",
+            rep.reds
+        );
     }
 
     /// A row for an item that is not due is stale too, unless it is a declared go-live deferral.
@@ -548,20 +627,40 @@ mod tests {
         let items = [item("DOD-081", Status::NotApplicable)];
         let stale = judge("dod", &items, &[row("DOD-081", "M22")], false);
         assert_eq!(stale.reds.len(), 1, "{:?}", stale.reds);
-        assert!(stale.reds[0].contains("not_applicable"));
+        assert!(
+            stale.reds[0].contains("[dod] DOD-081: is not_applicable (not yet due)"),
+            "{:?}",
+            stale.reds
+        );
         let declared = judge("dod", &items, &[deferred("DOD-081", "M22")], false);
         assert!(declared.reds.is_empty(), "{:?}", declared.reds);
         assert_eq!(declared.deferred.len(), 1);
     }
 
-    /// Fault: no owner, or an owner that is not a module card.
+    /// Fault: no owner, or an owner that is not a module card; each is its own rule.
     #[test]
     fn a_row_without_a_module_card_owner_is_red() {
         let items = [item("A", Status::Fail), item("B", Status::Fail)];
         for owner in ["", "TBD", "M1", "M11-", "11-3"] {
             let rep = judge("dod", &items, &[row("A", owner), row("B", "M11")], false);
             assert_eq!(rep.reds.len(), 1, "owner {owner:?}: {:?}", rep.reds);
-            assert!(rep.reds[0].contains("[dod] A"), "{:?}", rep.reds);
+            let want = if owner.is_empty() {
+                "[dod] A: row has no owner"
+            } else {
+                "[dod] A: owner `"
+            };
+            assert!(
+                rep.reds[0].contains(want),
+                "owner {owner:?}: {:?}",
+                rep.reds
+            );
+            if !owner.is_empty() {
+                assert!(
+                    rep.reds[0].contains("is not a module card"),
+                    "{:?}",
+                    rep.reds
+                );
+            }
         }
     }
 
@@ -573,12 +672,24 @@ mod tests {
             reason: String::new(),
             ..row("A", "M11")
         };
-        assert_eq!(judge("dod", &items, &[no_reason], false).reds.len(), 1);
+        let rep = judge("dod", &items, &[no_reason], false);
+        assert_eq!(rep.reds.len(), 1, "{:?}", rep.reds);
+        assert!(
+            rep.reds[0].contains("[dod] A: row has no reason"),
+            "{:?}",
+            rep.reds
+        );
         let empty_deferral = Row {
             deferred: Some(String::new()),
             ..row("A", "M11")
         };
-        assert_eq!(judge("dod", &items, &[empty_deferral], false).reds.len(), 1);
+        let rep = judge("dod", &items, &[empty_deferral], false);
+        assert_eq!(rep.reds.len(), 1, "{:?}", rep.reds);
+        assert!(
+            rep.reds[0].contains("[dod] A: deferred_past_go_live is empty"),
+            "{:?}",
+            rep.reds
+        );
     }
 
     /// Fault: --release with a row that is not deferred; a deferred row stays green.
@@ -589,7 +700,11 @@ mod tests {
         assert!(judge("dod", &items, &rows, false).reds.is_empty());
         let rep = judge("dod", &items, &rows, true);
         assert_eq!(rep.reds.len(), 1, "{:?}", rep.reds);
-        assert!(rep.reds[0].contains("[dod] A") && rep.reds[0].contains("--release"));
+        assert!(
+            rep.reds[0].contains("[dod] A: --release and the row has no deferred_past_go_live"),
+            "{:?}",
+            rep.reds
+        );
     }
 
     /// Fault: a typo'd or removed id, and a duplicated row.
@@ -598,10 +713,18 @@ mod tests {
         let items = [item("A", Status::Fail)];
         let ghost = judge("dod", &items, &[row("A", "M11"), row("Z", "M11")], false);
         assert_eq!(ghost.reds.len(), 1, "{:?}", ghost.reds);
-        assert!(ghost.reds[0].contains("[dod] Z"));
+        assert!(
+            ghost.reds[0].contains("[dod] Z: matches no item"),
+            "{:?}",
+            ghost.reds
+        );
         let twice = judge("dod", &items, &[row("A", "M11"), row("A", "M11")], false);
         assert_eq!(twice.reds.len(), 1, "{:?}", twice.reds);
-        assert!(twice.reds[0].contains("listed twice"));
+        assert!(
+            twice.reds[0].contains("[dod] A: listed twice"),
+            "{:?}",
+            twice.reds
+        );
     }
 
     /// A duplicated item id cannot hide a failure behind a pass.
@@ -610,7 +733,120 @@ mod tests {
         let items = [item("A", Status::Pass), item("A", Status::Fail)];
         let rep = judge("dod", &items, &[], false);
         assert_eq!((rep.pass, rep.fail), (0, 1));
-        assert_eq!(rep.reds.len(), 1);
+        assert_eq!(rep.reds.len(), 1, "{:?}", rep.reds);
+        assert!(
+            rep.reds[0].contains("[dod] A: failing and not in"),
+            "{:?}",
+            rep.reds
+        );
+    }
+
+    /// A ledgered failing row prints today's verdict next to its reason, so a verifier that errors differently
+    /// from "no verifier registered" is visible in the log.
+    #[test]
+    fn a_failing_row_prints_the_verdict_next_to_its_reason() {
+        let rep = judge("dod", &[item("A", Status::Fail)], &[row("A", "M11")], false);
+        assert_eq!(rep.ledgered_lines.len(), 1);
+        let line = &rep.ledgered_lines[0];
+        assert!(
+            line.contains("why it is red") && line.contains("verdict now: detail of A"),
+            "{line}"
+        );
+        let lines = report_lines("dod", &rep, false);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("known-red: ledgered [dod] A")),
+            "{lines:?}"
+        );
+    }
+
+    /// `--release` lists every deferred row (id, owner, reasons) for owner sign-off; a plain run does not.
+    #[test]
+    fn release_lists_every_deferred_row() {
+        let items = [item("A", Status::Fail), item("B", Status::NotApplicable)];
+        let rows = [row("A", "M11"), deferred("B", "M24")];
+        let rep = judge("dod", &items, &rows, true);
+        let lines = report_lines("dod", &rep, true);
+        let listed: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("deferred past go-live, owner sign-off [dod]"))
+            .collect();
+        assert_eq!(listed.len(), 1, "{lines:?}");
+        assert!(
+            listed[0].contains("B (owner M24)")
+                && listed[0].contains("needs production traffic")
+                && listed[0].contains("why it is red"),
+            "{}",
+            listed[0]
+        );
+        let plain = report_lines("dod", &rep, false);
+        assert!(
+            plain.iter().all(|l| !l.contains("owner sign-off")),
+            "{plain:?}"
+        );
+    }
+
+    /// The whole decision, as `run` makes it (ledger text + evaluators in, red reasons out): an unknown section
+    /// goes red here, not only in the parser.
+    #[test]
+    fn an_unknown_section_goes_red_through_check() {
+        let none = |_: &str, _: u32| -> Result<Vec<Item>, String> { Ok(Vec::new()) };
+        let out = check(
+            "[[dods]]\nid = \"x\"\nowner = \"M11\"\nreason = \"r\"\n",
+            9,
+            false,
+            &none,
+        );
+        assert_eq!(out.reds.len(), 1, "{:?}", out.reds);
+        assert!(
+            out.reds[0].contains("[dods]: unknown ledger section"),
+            "{:?}",
+            out.reds
+        );
+    }
+
+    /// An evaluator that cannot run is red for its section, never skipped.
+    #[test]
+    fn an_evaluator_error_goes_red_through_check() {
+        let broken = |section: &str, _: u32| -> Result<Vec<Item>, String> {
+            if section == "benchset" {
+                Err("spec unreadable".to_string())
+            } else {
+                Ok(Vec::new())
+            }
+        };
+        let out = check("", 9, false, &broken);
+        assert_eq!(out.reds.len(), 1, "{:?}", out.reds);
+        assert!(
+            out.reds[0].contains("[benchset]: cannot evaluate: spec unreadable"),
+            "{:?}",
+            out.reds
+        );
+        assert_eq!(out.reports.len(), 2);
+    }
+
+    /// Unchanged ledger through `check`: green, and the totals the log prints count rows and deferrals.
+    #[test]
+    fn check_counts_rows_and_deferrals() {
+        let items_for = |section: &str, _: u32| -> Result<Vec<Item>, String> {
+            Ok(match section {
+                "dod" => vec![item("A", Status::Fail), item("B", Status::NotApplicable)],
+                _ => Vec::new(),
+            })
+        };
+        let raw = "[[dod]]\nid = \"A\"\nowner = \"M11\"\nreason = \"r\"\n\
+                   [[dod]]\nid = \"B\"\nowner = \"M24\"\nreason = \"r\"\ndeferred_past_go_live = \"d\"\n";
+        let out = check(raw, 9, false, &items_for);
+        assert!(out.reds.is_empty(), "{:?}", out.reds);
+        assert_eq!((out.rows, out.deferred), (2, 1));
+        let release = check(raw, 9, true, &items_for);
+        assert_eq!(release.reds.len(), 1, "{:?}", release.reds);
+        assert!(
+            release.reds[0].contains("[dod] A: --release"),
+            "{:?}",
+            release.reds
+        );
     }
 
     #[test]
@@ -686,6 +922,50 @@ mod tests {
         );
     }
 
+    /// `DUE_ITEMS` repeats the §57.1 table; this pins the copy. The spec has a parseable Phase table, so each due
+    /// item must sit (as a backticked name in the last column) in exactly one row, the row of its due Phase.
+    #[test]
+    fn due_item_phases_match_the_57_1_table() {
+        let spec = fs::read_to_string(SPEC_PATH).expect("the spec is committed");
+        let from = spec.find("## 57.1 ").expect("§57.1 heading");
+        let section = spec[from..].split("\n# ").next().unwrap_or_default();
+        let rows: Vec<(u32, &str)> = section
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                let phase = l
+                    .strip_prefix("| ")?
+                    .split(" | ")
+                    .next()?
+                    .trim()
+                    .parse()
+                    .ok()?;
+                let last = l.trim_end_matches('|').rsplit('|').next()?;
+                Some((phase, last))
+            })
+            .collect();
+        assert!(
+            rows.len() >= 18,
+            "found {} Phase rows in §57.1; the table moved or changed shape",
+            rows.len()
+        );
+        for d in &DUE_ITEMS {
+            let needle = format!("`{}`", d.id);
+            let hits: Vec<u32> = rows
+                .iter()
+                .filter(|(_, last)| last.contains(&needle))
+                .map(|(phase, _)| *phase)
+                .collect();
+            assert_eq!(
+                hits,
+                vec![d.due_phase],
+                "`{}`: §57.1 lists it in Phase row(s) {hits:?}, DUE_ITEMS says {}",
+                d.id,
+                d.due_phase
+            );
+        }
+    }
+
     /// Violations are attributed by their `<set_id>: ` prefix; the rest is the table item.
     #[test]
     fn benchset_violations_are_attributed_per_set() {
@@ -727,6 +1007,22 @@ mod tests {
         assert_eq!(parse_args(&s(&["--phase", "9", "--release"])), Some(true));
         assert_eq!(parse_args(&s(&["--phase=9"])), Some(false));
         assert_eq!(parse_args(&s(&["--relase"])), None);
+    }
+
+    /// Fault: `--phase` must not swallow the next flag or accept a non-number (fail-open: `--phase --release`
+    /// would run a non-release check and pass).
+    #[test]
+    fn a_phase_flag_without_a_numeric_value_is_a_usage_error() {
+        for bad in [
+            s(&["--phase", "--release"]),
+            s(&["--phase", "x"]),
+            s(&["--phase"]),
+            s(&["--phase=x"]),
+            s(&["--phase=", "--release"]),
+            s(&["--release", "--phase", "-1"]),
+        ] {
+            assert_eq!(parse_args(&bad), None, "{bad:?}");
+        }
     }
 
     /// The committed ledger is well formed: it parses clean and every row has a module-card owner and a reason.
