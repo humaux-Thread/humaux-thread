@@ -1077,6 +1077,7 @@ dependencies = [
  "hex",
  "humaux-adapters",
  "humaux-application",
+ "humaux-cache",
  "humaux-contracts",
  "humaux-domain",
  "humaux-infra-cell",

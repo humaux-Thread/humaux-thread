@@ -362,6 +362,9 @@ services:
       HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID: ${HUMAUX_NODE_REMEMBER_REASONING_DOMAIN_ID:?}
     volumes:
       - sock-retrieval:/run/humaux/sock-retrieval
+    # M12 (Baseline §51, ADR-0076): this ceiling must hold the in-process query-embedding cache on top of the gateway's
+    # own working set: HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES (registry default 256 MiB) plus ~10% moka overhead, so
+    # HUMAUX_SIZE_GATEWAY_MEM >= working set + 282 MiB while the cache is on. The cache fills only with distinct queries.
     mem_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
     memswap_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
     cpus: ${HUMAUX_SIZE_GATEWAY_CPUS:?}
