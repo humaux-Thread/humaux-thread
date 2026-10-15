@@ -3,7 +3,7 @@
 //! Called-by: [cargo-test]
 //! Invariants: [a compute error is returned to its caller, counted as `result=error` and never cached; a disabled or
 //!   zero-capacity cache still serves every call]
-//! Spec: Baseline §51.3; §41.2; M12 design §6 D7, §8 G-M12-3
+//! Spec: Baseline §51; §41.2; M12 design §6 D7, §8 G-M12-3
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
