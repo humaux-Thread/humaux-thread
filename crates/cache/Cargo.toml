@@ -1,0 +1,25 @@
+[package]
+name = "humaux-cache"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[package.metadata.humaux]
+edition = "core"
+
+[lints]
+workspace = true
+
+[dependencies]
+# why: tenant and user ids that namespace every private cache key; used-by: [cache::bounded, cache::key]
+humaux-domain = { version = "0.1.0", path = "../domain" }
+# why: the four §51 cache metric families and their closed label sets; used-by: [cache::bounded]
+humaux-telemetry = { version = "0.1.0", path = "../telemetry" }
+# §67.2: the in-process cache is moka; D1 of the M12 design note. `future` gives async single-flight (`try_get_with`).
+# why: byte-weighted, TTL-bound, single-flight in-process cache; used-by: [cache::bounded]
+moka = { version = "0.12.16", default-features = false, features = ["future"] }
+
+[dev-dependencies]
+# why: async runtime that drives the cache gate tests; used-by: [tests]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

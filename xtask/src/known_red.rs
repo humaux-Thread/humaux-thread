@@ -351,7 +351,17 @@ struct DueItem {
 
 // ponytail: no due item has a verifier yet, so a due one is always Fail; the card that delivers a verifier
 // adds a verdict column here in the same PR and deletes the row.
-const DUE_ITEMS: [DueItem; 4] = [
+const DUE_ITEMS: [DueItem; 6] = [
+    DueItem {
+        id: "tenant isolation",
+        due_phase: 1,
+        missing_object: "gate tied to the name: cross-tenant canary (G-M08-3, card M08-3)",
+    },
+    DueItem {
+        id: "secret isolation",
+        due_phase: 4,
+        missing_object: "gate tied to the name: workload-secret isolation check",
+    },
     DueItem {
         id: "retrieval benchmark",
         due_phase: 6,
@@ -932,11 +942,8 @@ mod tests {
         );
     }
 
-    /// `DUE_ITEMS` repeats the §57.1 table; this pins the copy. The spec has a parseable Phase table, so each due
-    /// item must sit (as a backticked name in the last column) in exactly one row, the row of its due Phase.
-    #[test]
-    fn due_item_phases_match_the_57_1_table() {
-        let spec = fs::read_to_string(SPEC_PATH).expect("the spec is committed");
+    /// §57.1 Phase rows as `(phase, last column)`; the spec has a parseable Phase table.
+    fn phase_rows(spec: &str) -> Vec<(u32, &str)> {
         let from = spec.find("## 57.1 ").expect("§57.1 heading");
         let section = spec[from..].split("\n# ").next().unwrap_or_default();
         let rows: Vec<(u32, &str)> = section
@@ -959,6 +966,22 @@ mod tests {
             "found {} Phase rows in §57.1; the table moved or changed shape",
             rows.len()
         );
+        rows
+    }
+
+    /// §57.1 names that are not ledger candidates because a CI step enforces them today and
+    /// it is green: `integration` = `cargo test` under `HUMAUX_REQUIRE_DB=1` (test-a / test-b jobs, an
+    /// unreachable database fails instead of skipping); `migration` = `cargo xtask migration-rehearsal`.
+    /// `tenant isolation` and `secret isolation` are NOT here: no gate is tied to those names, so they are
+    /// `DUE_ITEMS` and ledger rows (owners M08-3 and M05).
+    const NOT_LEDGER_ITEMS: [&str; 2] = ["integration", "migration"];
+
+    /// `DUE_ITEMS` repeats the §57.1 table; this pins the copy. Each due item must sit (as a backticked name in
+    /// the last column) in exactly one row, the row of its due Phase.
+    #[test]
+    fn due_item_phases_match_the_57_1_table() {
+        let spec = fs::read_to_string(SPEC_PATH).expect("the spec is committed");
+        let rows = phase_rows(&spec);
         for d in &DUE_ITEMS {
             let needle = format!("`{}`", d.id);
             let hits: Vec<u32> = rows
@@ -972,6 +995,38 @@ mod tests {
                 "`{}`: §57.1 lists it in Phase row(s) {hits:?}, DUE_ITEMS says {}",
                 d.id,
                 d.due_phase
+            );
+        }
+        // The other direction: a new non-G80 name in a Phase >= 1 row must be a ledger candidate or be
+        // listed in NOT_LEDGER_ITEMS on purpose. Phase 0 is skipped on purpose: its names (`cargo fmt`,
+        // `cargo clippy`, `cargo test`, `unit`, ...) are the always-green baseline that runs in CI from the
+        // first commit; a red one is a red main (§46), never a ledger row.
+        for (phase, last) in rows.iter().filter(|(phase, _)| *phase >= 1) {
+            for name in last
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|n| !n.starts_with("G80-"))
+            {
+                assert!(
+                    DUE_ITEMS.iter().any(|d| d.id == name) || NOT_LEDGER_ITEMS.contains(&name),
+                    "§57.1 Phase {phase} lists `{name}`, which is neither in DUE_ITEMS nor in NOT_LEDGER_ITEMS"
+                );
+            }
+        }
+    }
+
+    /// A renamed or removed §57.1 name must not linger in the exclusion list.
+    #[test]
+    fn not_ledger_items_are_still_in_the_57_1_table() {
+        let spec = fs::read_to_string(SPEC_PATH).expect("the spec is committed");
+        let rows = phase_rows(&spec);
+        for name in NOT_LEDGER_ITEMS {
+            let needle = format!("`{name}`");
+            assert!(
+                rows.iter()
+                    .any(|(phase, last)| *phase >= 1 && last.contains(&needle)),
+                "NOT_LEDGER_ITEMS lists `{name}`, which no §57.1 Phase >= 1 row names any more: delete it"
             );
         }
     }
