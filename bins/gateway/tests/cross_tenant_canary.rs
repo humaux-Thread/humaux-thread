@@ -4,7 +4,7 @@
 //!   humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.memory_records,
 //!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
-//!   x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[HUMAUX_TEST_QDRANT_PORT];
+//!   x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, adapters::quota_repo,
 //!   adapters::read_gate, adapters::tests::support::operation_receipt_fixture, application::continuity,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
@@ -864,6 +864,7 @@ impl Drop for RlsOutOfThePath {
 /// product repo functions on a `role_gateway` pool that RLS no longer filters, so a dropped `tenant_id` predicate in
 /// one read SQL is the only thing left between the caller and the foreign row.
 #[test]
+#[allow(clippy::too_many_lines)] // one seeded tenant pair, three probes against controls
 #[ignore = "lane(a:disposable) lifts role_gateway to BYPASSRLS, a cluster-wide attribute, so only a lane run alone on the cluster may do it"]
 fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
     const NAME: &str = "foreign_ids_are_not_found_with_row_level_security_out_of_the_path";
