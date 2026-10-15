@@ -145,13 +145,14 @@ impl RetrievalEmbeddingPort for CachedEmbeddingPort {
             .cache
             .get_or_try_compute(key, async move {
                 match inner.embed_query(input).await {
+                    // RED G-M12-7: insert regardless of stamp.
                     Ok(RetrievalEmbeddingOutcome::Embedded {
                         vector,
                         provider_id,
                         model_id,
                         model_revision,
                         dimension,
-                    }) if stamp.matches(
+                    }) if true || stamp.matches(
                         &provider_id,
                         &model_id,
                         &model_revision,
