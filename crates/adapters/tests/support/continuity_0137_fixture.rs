@@ -9,7 +9,7 @@
 //!   HUMAUX_W2_V4_DIAGNOSTIC_DIR, HUMAUX_W2_V4_DIAGNOSTIC_RUN_UUID]; modules=[adapters::continuity_read,
 //!   adapters::postgres, adapters::tests::support::continuity_0137_cleanup, application::continuity, domain::context,
 //!   domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::tests::project_continuity_read_0137_acceptance]
+//! Called-by: [adapters::tests::project_continuity_read_0137_acceptance, adapters::tests::read_gate_closure]
 //! Invariants: [seeds control, source and continuity rows as owner and reads back as role_gateway; every seeded id is
 //!   registered for cleanup; diagnostic output is bound to one run UUID; a missing DB fails when HUMAUX_REQUIRE_DB=1]
 //! Spec: ADR-0035
@@ -1217,6 +1217,59 @@ impl Fixture {
                 "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
                  VALUES($1,$2,$2,'EVIDENCE_ACCEPTED',$3)",
                 &[&tenant, &commit_seq, &evidence],
+            )
+            .unwrap();
+    }
+
+    /// M08-3 / G-M08-1: links a second backing Evidence row to `self.memory`. `hidden` = `USER_PRIVATE` to
+    /// `other_user`, which the reading principal cannot see; otherwise `TENANT_SHARED`.
+    pub fn add_second_backing_evidence(&self, hidden: bool) -> Uuid {
+        let evidence = Uuid::now_v7();
+        self.cleanup.register_evidence(evidence);
+        let mut payload = vec![0x52_u8; 32];
+        payload[..16].copy_from_slice(evidence.as_bytes());
+        let mut admin = self.admin();
+        let domain: Uuid = admin
+            .query_one(
+                "SELECT reasoning_domain_id FROM control.private_reasoning_domains \
+                 WHERE tenant_id=$1 ORDER BY reasoning_domain_id LIMIT 1",
+                &[&self.tenant],
+            )
+            .unwrap()
+            .get(0);
+        let (class, owner) = if hidden {
+            ("USER_PRIVATE", Some(self.other_user))
+        } else {
+            ("TENANT_SHARED", None)
+        };
+        admin
+            .execute(
+                &format!(
+                    "INSERT INTO private.evidence_objects( \
+                       evidence_id,tenant_id,evidence_kind,payload_sha256,data_class,origin_class, \
+                       visibility_class,visibility_user_id,reasoning_domain_id) \
+                     VALUES($1,$2,'EVENT',$3,'PRIVATE','AuthenticatedAgent','{class}',$4,$5)"
+                ),
+                &[&evidence, &self.tenant, &payload, &owner, &domain],
+            )
+            .unwrap();
+        admin
+            .execute(
+                "INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+                 VALUES($1,$2,'SUPPORTING','IMMUTABLE')",
+                &[&self.memory, &evidence],
+            )
+            .unwrap();
+        evidence
+    }
+
+    /// M08-3: makes `evidence` tenant-readable (the flip side of [`Self::add_second_backing_evidence`]).
+    pub fn make_evidence_readable(&self, evidence: Uuid) {
+        self.admin()
+            .execute(
+                "UPDATE private.evidence_objects SET visibility_class='TENANT_SHARED', \
+                 visibility_user_id=NULL WHERE tenant_id=$1 AND evidence_id=$2",
+                &[&self.tenant, &evidence],
             )
             .unwrap();
     }
