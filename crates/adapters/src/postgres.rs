@@ -1278,7 +1278,7 @@ mod tests {
             let app = format!("c38-slot-{}", std::process::id());
             // acquire_timeout bounds every fresh connect of this pool (construction's included), so it is sized for a
             // cold connect to a throwaway database under parallel CI load; the held probe below has its own deadline.
-            let pool = gateway_pool(&db, &c38_settings(&app, 1, 5_000, 1000, 10_000)).await;
+            let pool = gateway_pool(&db, &c38_settings(&app, 1, 5_000, 10_000, 10_000)).await;
             let dropped = tokio::time::timeout(
                 Duration::from_millis(100),
                 // dep: PostgreSQL(role_gateway) — the statement whose future is dropped
