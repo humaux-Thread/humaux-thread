@@ -5,7 +5,7 @@
 //!   key (§51, M12 D3/D4); the input hash covers the exact provider bytes with no case or whitespace folding]
 //! Spec: Baseline §51; §20.0
 
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use humaux_domain::ids::{TenantId, UserId};
@@ -48,7 +48,7 @@ pub enum EmbeddingMode {
 
 /// Key of the query-embedding cache (M12 D3/D4). Covers §51's version list through `generation_fingerprint`
 /// (provider, model, revision, dimension, preprocessing of the serving generation) and the exact input hash.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct EmbeddingQueryKey {
     /// Privacy namespace, part 1: two tenants never share an entry.
     pub tenant_id: TenantId,
@@ -67,5 +67,25 @@ pub struct EmbeddingQueryKey {
 impl CacheKey for EmbeddingQueryKey {
     fn tenant(&self) -> TenantId {
         self.tenant_id
+    }
+}
+
+impl PartialEq for EmbeddingQueryKey {
+    fn eq(&self, o: &Self) -> bool {
+        self.generation_fingerprint == o.generation_fingerprint
+            && self.dimension == o.dimension
+            && self.mode == o.mode
+            && self.input_sha256 == o.input_sha256
+    }
+}
+
+impl Eq for EmbeddingQueryKey {}
+
+impl Hash for EmbeddingQueryKey {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.generation_fingerprint.hash(h);
+        self.dimension.hash(h);
+        self.mode.hash(h);
+        self.input_sha256.hash(h);
     }
 }
