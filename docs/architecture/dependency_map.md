@@ -1627,17 +1627,17 @@
 
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
-- `bins/consolidation-worker/Cargo.toml:79` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
+- `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
 - `bins/maintenance/src/deploy_check.rs:15` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
-- `bins/retrieval-worker/Cargo.toml:47` [cargo-usedby] (line) — declared but named by no module today (removal is a code change, out of card 26 scope)
+- `bins/retrieval-worker/Cargo.toml:50` [cargo-usedby] (line) — declared but named by no module today (removal is a code change, out of card 26 scope)
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:39` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:41` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
-- `crates/application/Cargo.toml:36` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
+- `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:494` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/protocol/Cargo.toml:37` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/retrieval/src/envelope.rs:1889` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2695` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
@@ -1647,7 +1647,7 @@
 - `crates/retrieval/tests/planner_predicate_eval.rs:218` [table-write] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:219` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:351` [table-undeclared] (line) — parses migration SQL text; no DB connection
-- `crates/testkit/Cargo.toml:16` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
+- `crates/testkit/Cargo.toml:19` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
 - `xtask/src/dep_map.rs:10` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
 - `xtask/src/dep_map.rs:11` [table-write] (file) — unit-test fixtures spell write statements in strings
 - `xtask/src/dep_map.rs:12` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read

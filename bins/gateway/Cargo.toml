@@ -5,6 +5,9 @@ rust-version.workspace = true
 version.workspace = true
 publish.workspace = true
 
+[package.metadata.humaux]
+edition = "core"
+
 [dependencies]
 # why: typed PG pools, repositories and wire adapters this package drives; used-by: [gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
 humaux-adapters = { path = "../../crates/adapters" }
