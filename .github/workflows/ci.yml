@@ -397,8 +397,10 @@ jobs:
           set -uo pipefail
           rc=0
           # Quiet pass (alone, -j 1, after the parallel pass): g80_31_handoff asserts a quiet cluster between two
-          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows that parallel load
-          # squeezed (ci/m24-6-rep2 run 38644754111: a_success_at_the_end_of_the_http_window_is_kept_not_resent).
+          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows. The private E11
+          # scenario no longer needs it: its failures (also seen here under -j 1) were a claim race between its pass
+          # and its sweeper, not load, and the sweeper now starts only after the pass holds the lease. Whether these
+          # binaries can rejoin the parallel pass is a separate decision.
           cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not (binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e))' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-parallel.xml" 2>/dev/null || true
           cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -j 1 -E 'binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e)' || rc=1

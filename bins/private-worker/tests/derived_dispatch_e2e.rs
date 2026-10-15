@@ -2269,7 +2269,8 @@ fn abandoned_pre_dispatch_claims_reach_dead_at_the_cap() {
 /// E11 (ADR-0058 D-J, review finding 2) — a call admitted at the latest admissible moment whose
 /// answer arrives just inside the HTTP window, followed by a write leg slowed past the HTTP
 /// cutoff (but not past `hard_deadline`), is kept in generation 1 and never resent, while a
-/// second dispatcher sweeps every 100 ms. Fault: put the deadline around the whole job future.
+/// second dispatcher — started once the pass holds the lease — sweeps every 100 ms. Fault: put the
+/// deadline around the whole job future.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
@@ -2299,6 +2300,10 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                 StubProvider::new(move |_| {
                     called.store(true, Ordering::SeqCst);
                     // Answered 0.35 s before the HTTP window closes.
+                    // ponytail: the 0.35 s reply margin here and the gate's 0.4 s read-leg margin
+                    // are wall-clock ceilings — a runner stalled longer than either misses the
+                    // latest admissible moment (DISPATCH_REFUSED) or the window. Upgrade: an
+                    // injectable clock for `begin_call`'s `min_remaining` and the local HTTP cutoff.
                     let delay = Duration::from_secs_f64(HTTP - 0.35);
                     let replied = replied.clone();
                     std::thread::spawn(move || {
@@ -2314,10 +2319,9 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
             // the answer, so the write leg's memory_evidence INSERT crosses the HTTP cutoff.
             let dsn = handle.dsn.clone();
             let (replied2, called2) = (replied.clone(), called.clone());
-            // Handshake: the sweeper claims only after the gate has seen the PASS's claim. Started
-            // together, the sweeper's first claim_distill could take the job itself (both serialise
-            // on the arbiter row; whoever commits first wins), the pass then drained empty and the
-            // gate waited for a call that never came (CI run 38644754111, ADR-0058 D-E fence).
+            // Invariant: the sweeper must not race the pass's first claim (ADR-0058 D-E — a claim is
+            // whoever commits first on the arbiter row; a sweeper-owned claim is never worked, so
+            // no call would come). It starts only after the gate has seen the pass's lease.
             let pass_claimed = std::sync::Arc::new(AtomicBool::new(false));
             let pass_claimed2 = pass_claimed.clone();
             let owner = config.lease_owner.clone();
@@ -2345,7 +2349,7 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
                     within("the job PROCESSING");
                     let row = probe
                         .query_one(
-                            "SELECT status = 'PROCESSING' AND lease_owner = $3, \
+                            "SELECT COALESCE(status = 'PROCESSING' AND lease_owner = $3, false), \
                                     extract(epoch FROM hard_deadline - make_interval(secs => $2) - clock_timestamp())::float8 \
                              FROM ops.jobs WHERE job_id = $1",
                             &[&job, &(HTTP + LEASE + 0.4), &owner],
@@ -2387,9 +2391,9 @@ fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
             let stop = AtomicBool::new(false);
             let (report, stolen) = handle.rt.block_on(async {
                 let pass = async {
-                    // The sweeper runs first on purpose (300 ms head start), so the handshake below
-                    // is load-bearing on every run: without it the sweeper takes the job (red run
-                    // on ci/red-e11-flake).
+                    // With the handshake this delay changes nothing; without it, the sweeper's
+                    // first poll claims the job before the pass does, so the test goes red
+                    // deterministically if the handshake is removed.
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     let r = distill::dispatch_pass(
                         &handle.private,
