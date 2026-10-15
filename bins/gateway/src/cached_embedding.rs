@@ -8,7 +8,7 @@
 //!   service principal with no user (M12 D3); only an `Embedded` whose stamp equals the configured generation stamp is
 //!   cached, everything else passes through uncached (M12 D4, G-M12-7); an inner `Err`, `Skipped` or `Unavailable` is
 //!   returned unchanged and never cached (§51.3); sizes and TTL come from the config registry (§78.1)]
-//! Spec: Baseline §51; §51.3; §67.2; §78.1; ADR-0012; ADR-0076
+//! Spec: Baseline §51; §67.2; §78.1; ADR-0012; ADR-0076
 //!
 //! A hit skips the `ops.retrieval_embedding_rpc_calls` registration row, the UDS hop and the provider call. No
 //! authorization decision is cached: the value is the vector of the caller's own query bytes, the key is private to

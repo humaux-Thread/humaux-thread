@@ -13,7 +13,7 @@
 //! Called-by: [cargo-test]
 //! Invariants: [a missing PostgreSQL DSN or gitleaks pin fails the test, it never skips (ADR-0050); each test uses a
 //!   fresh tenant, so registration counts are its own]
-//! Spec: Baseline §51; §51.3; ADR-0012; ADR-0076
+//! Spec: Baseline §51; ADR-0012; ADR-0076
 //!
 //! G-M12-6 counts `ops.retrieval_embedding_rpc_calls` rows, the registration every uncached recall writes before it
 //! dials the worker: a hit writes none. It drives the port `recall.search` calls, not the Qdrant / PostgreSQL stages
@@ -326,8 +326,15 @@ impl RetrievalEmbeddingPort for StubPort {
     }
 }
 
-/// Inner calls made by two identical recalls through a fresh cache over a stub answering with `model_id`.
-async fn inner_calls_for_two_recalls(model_id: &str) -> (usize, RetrievalEmbeddingOutcome) {
+/// Inner calls made by two identical recalls through a fresh cache over a stub answering with `model_id`, the stub's
+/// outcome, and what the two recalls returned.
+async fn inner_calls_for_two_recalls(
+    model_id: &str,
+) -> (
+    usize,
+    RetrievalEmbeddingOutcome,
+    Vec<RetrievalEmbeddingOutcome>,
+) {
     let outcome = RetrievalEmbeddingOutcome::Embedded {
         vector: vec![0.25; DIMENSION as usize],
         provider_id: PROVIDER_ID.to_owned(),
@@ -342,11 +349,11 @@ async fn inner_calls_for_two_recalls(model_id: &str) -> (usize, RetrievalEmbeddi
     let port = CachedEmbeddingPort::new(stub.clone(), stamp(), cache_config());
     let workspace_id = WorkspaceId::new();
     let scope = user_scope(TenantId::new(), workspace_id);
+    let mut got = Vec::new();
     for _ in 0..2 {
-        let got = recall_embed(&port, &scope, workspace_id, "same query twice").await;
-        assert_eq!(got, outcome, "the caller always sees the inner outcome");
+        got.push(recall_embed(&port, &scope, workspace_id, "same query twice").await);
     }
-    (stub.calls.load(Ordering::SeqCst), outcome)
+    (stub.calls.load(Ordering::SeqCst), outcome, got)
 }
 
 /// G-M12-7: a worker answering with another model's stamp is passed through but never cached, so the next identical
@@ -354,11 +361,21 @@ async fn inner_calls_for_two_recalls(model_id: &str) -> (usize, RetrievalEmbeddi
 /// vacuously on a cache that stores nothing.
 #[tokio::test]
 async fn incompatible_stamp_not_cached() {
-    let (calls, _) = inner_calls_for_two_recalls("another-embedding-model").await;
+    let (calls, outcome, got) = inner_calls_for_two_recalls("another-embedding-model").await;
     assert_eq!(
         calls, 2,
         "G-M12-7: an incompatible stamp must not be cached; the next identical call must miss"
     );
-    let (control, _) = inner_calls_for_two_recalls(MODEL_ID).await;
+    assert_eq!(
+        got,
+        [outcome.clone(), outcome],
+        "a foreign stamp passes through unchanged"
+    );
+    let (control, outcome, got) = inner_calls_for_two_recalls(MODEL_ID).await;
     assert_eq!(control, 1, "control: the generation's own stamp is cached");
+    assert_eq!(
+        got,
+        [outcome.clone(), outcome],
+        "a hit returns the stored outcome"
+    );
 }
