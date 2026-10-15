@@ -1265,9 +1265,9 @@ mod tests {
         });
     }
 
-    /// ADR-0065 D-A / F19 (W-1, L13): the dropped statement's connection stays checked out (`return_to_pool`
-    /// pings, which waits for its ReadyForQuery) until statement_timeout ends it. Fault: the statement_timeout
-    /// option removed ⇒ the second acquire still times out ⇒ red.
+    /// §1.7 / ADR-0065 D-A / F19 (W-1, L13): the dropped statement's connection stays checked out (`return_to_pool`
+    /// pings, which waits for its ReadyForQuery) until statement_timeout ends it, and the freed slot serves again.
+    /// Fault: the statement_timeout option removed ⇒ the slot is still held at +3500 ms ⇒ red.
     #[test]
     fn a_dropped_query_holds_its_pool_slot_until_statement_timeout() {
         let Some(db) = C38Db::create("slot") else {
@@ -1276,29 +1276,47 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
             let app = format!("c38-slot-{}", std::process::id());
-            let pool = gateway_pool(&db, &c38_settings(&app, 1, 200, 1000, 10_000)).await;
+            // acquire_timeout bounds every fresh connect of this pool (construction's included), so it is sized for a
+            // cold connect to a throwaway database under parallel CI load; the held probe below has its own deadline.
+            let pool = gateway_pool(&db, &c38_settings(&app, 1, 5_000, 1000, 10_000)).await;
             let dropped = tokio::time::timeout(
                 Duration::from_millis(100),
                 // dep: PostgreSQL(role_gateway) — the statement whose future is dropped
                 sqlx::query("SELECT pg_sleep(5)").execute(&pool.0),
             )
             .await;
-            assert!(dropped.is_err(), "pg_sleep(5) must outlive the 100 ms client timeout");
+            assert!(
+                dropped.is_err(),
+                "pg_sleep(5) must outlive the 100 ms client timeout"
+            );
             let dropped_at = tokio::time::Instant::now();
-            let held = pool.0.acquire().await;
+            let held = tokio::time::timeout(Duration::from_millis(200), pool.0.acquire()).await;
             assert!(
-                matches!(held, Err(sqlx::Error::PoolTimedOut)),
+                held.is_err(),
                 "F19: the only slot must still be held by the draining statement, got {:?}",
-                held.map(|_| "a connection")
+                held.map(|r| r.map(|_| "a connection"))
             );
-            tokio::time::sleep_until(dropped_at + Duration::from_millis(1300)).await;
-            let freed = pool.0.acquire().await;
+            // §1.7: the release ping reads the 57014 and closes the connection (sqlx-core 0.8.6
+            // `Floating::return_to_pool`), so the freed slot shows as size 0 before any reconnect. Polled, not
+            // sampled once: a starved runner may run the release task late. +3500 ms stays below pg_sleep(5)'s own end.
+            let deadline = dropped_at + Duration::from_millis(3500);
+            let mut size = pool.0.size();
+            while size != 0 && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                size = pool.0.size();
+            }
+            assert_eq!(
+                size, 0,
+                "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +3500 ms (last size)"
+            );
+            // Size 0 alone could hide a lost permit; a fresh connection in the freed slot proves capacity is back.
+            let reused = pool.0.acquire().await;
             assert!(
-                freed.is_ok(),
-                "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +1300 ms, got {:?}",
-                freed.map(|_| "a connection")
+                reused.is_ok(),
+                "ADR-0065 D-A: the freed slot must serve a new acquire, got {:?}",
+                reused.map(|_| "a connection")
             );
-            drop(freed);
+            drop(reused);
             pool.0.close().await;
         });
     }
