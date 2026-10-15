@@ -607,6 +607,13 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      # On pull_request events codeql-action defaults to diff-informed queries: data-flow results only on the PR's
+      # changed lines (run 38683131940: 13 results vs 102 on a push of the same tree), so every ledger row of an
+      # untouched file read 0. The ledger is a whole-tree count, so the scan must be whole-tree on every event.
+      # The knob is codeql-action's feature-flag override (src/feature-flags.ts, v4.38.3); the gate step below
+      # turns red if a diff-range pack was built anyway, so a renamed knob cannot pass silently.
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v4
@@ -622,9 +629,11 @@ jobs:
         # A result's level falls back to its rule's defaultConfiguration (SARIF §3.27.10); CodeQL keeps the rules
         # and their `security-severity` in the query pack's extension, not the driver. No SARIF file = red.
         run: |
-          python3 - "${{ runner.temp }}/sarif" .github/codeql/known_findings.toml <<'PY'
-          import collections, glob, json, sys, tomllib
+          python3 - "${{ runner.temp }}/sarif" .github/codeql/known_findings.toml "${{ runner.temp }}/pr-diff-range" <<'PY'
+          import collections, glob, json, os, sys, tomllib
           TEST = ("/tests/", "/benches/", "/crates/testkit/", "/xtask/", "/experiments/")
+          if os.path.isdir(sys.argv[3]):
+              sys.exit("G-M24-3: diff-informed analysis ran (pr-diff-range pack exists); the ledger needs a whole-tree scan")
           files = glob.glob(sys.argv[1] + "/*.sarif")
           if not files:
               sys.exit("G-M24-3: no SARIF produced")
