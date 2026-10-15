@@ -1,6 +1,6 @@
 //! `adapters::distill_reasoner` — §15.5 / §16.1.1 / §10.1 Distill inference (ADR-0016) — the private-worker reasoner
 //!   that turns ONE accepted Evidence into 0..N memory candidates.
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::byok, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::affect, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ledger, domain::memory]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::byok, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::affect, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ledger, domain::memory]
 //! Called-by: [adapters::consolidation_reasoner, private-worker::distill, tests]
 //! Invariants: [reuses the shared provider pipeline (admission -> egress permit -> disclosure reserve -> provider ->
 //!   finalize) with purpose Distill and the same model_call_ledger leg; no second provider path; any step failing
@@ -608,8 +608,8 @@ pub struct DistillEnvelopeInput<'a> {
 }
 
 fn authority_class_wire(class: AuthorityClass) -> &'static str {
-    // Wire name == db name (§53.2 PascalCase variants); one mapping, owned by consolidate_repo.
-    crate::consolidate_repo::authority_class_to_db_str(class)
+    // Wire name == db name (§53.2 PascalCase variants); one mapping, owned by memory_repo.
+    crate::memory_repo::authority_class_to_db_str(class)
 }
 
 pub fn distill_user_envelope(

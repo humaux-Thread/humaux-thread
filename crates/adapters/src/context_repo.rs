@@ -1,5 +1,5 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::memory_governance_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes go through the same can_read re-check; a PG error is
@@ -30,6 +30,7 @@ use humaux_domain::context::{
     TaskGrantIssuer, TaskTargetFacts, authorize_mandatory, authorize_pinned, authorize_task_item,
     spec,
 };
+use humaux_domain::dataclass::DataClass;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::grounding::{GroundingMode, RowGrounding, SnapshotEdge, classify_in_snapshot};
 use humaux_domain::identity::{
@@ -52,6 +53,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::confirm_token_repo::{self, ConfirmationClaim};
+use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::exact_census::{CensusInputs, bind_note_axes, census_in_txn, note_axes};
 use crate::postgres::RuntimeDbPool;
 use crate::quota_repo::{self, ReservationStatus, ReserveResult};
@@ -2678,8 +2680,8 @@ async fn revoke_task_mandatory_binding_in_txn(
 /// `private.memory_evidence`. A task-authorization receipt is not a general-purpose
 /// authority basis — linking it would let the next `AuthorityPolicy::authorize` read a
 /// `UserConfirmed` origin that nobody asserted about the *content* (ruling §五, last line:
-/// 授权材料不洗白). That is why this is a plain INSERT here and not a call into the
-/// memory-evidence writers.
+/// 授权材料不洗白). That is why this is a plain Evidence insert (M07's Evidence door) and not
+/// a call into the memory-evidence writers.
 ///
 /// `reasoning_domain_id` is taken from the target memory's own Evidence, in this transaction:
 /// the domain is a property of where the memory lives, and re-deriving it from anywhere else
@@ -2708,20 +2710,24 @@ async fn insert_task_authorization_evidence_in_txn(
     .map_err(|_| ErrorCode::Internal)?;
     let domain = domain.ok_or(ErrorCode::Forbidden)?;
 
-    sqlx::query_scalar(
-        "INSERT INTO private.evidence_objects \
-           (tenant_id, evidence_kind, payload_sha256, data_class, origin_class, \
-            origin_principal_id, visibility_class, visibility_user_id, reasoning_domain_id, \
-            occurred_at) \
-         VALUES ($1, 'EVENT', sha256(convert_to($2, 'UTF8')), 'INTERNAL', 'UserConfirmed', \
-                 $3, 'USER_PRIVATE', $3, $4, clock_timestamp()) \
-         RETURNING evidence_id",
+    // §48.0①: the digest of the intent's UTF-8 bytes, through the one hasher.
+    let payload_sha256 = humaux_domain::evidence::payload_sha256(intent.as_bytes());
+    evidence_repo::insert_evidence_in_txn(
+        txn,
+        &NewEvidence {
+            tenant_id,
+            payload_sha256: &payload_sha256,
+            data_class: DataClass::Internal,
+            origin_class: humaux_domain::evidence::EvidenceOriginClass::UserConfirmed,
+            origin_principal_id: Some(user_id),
+            origin_connector_id: None,
+            visibility_class: VisibilityClass::UserPrivate,
+            visibility_user_id: Some(user_id),
+            visibility_workspace_id: None,
+            reasoning_domain_id: domain,
+            occurred_at: OccurredAt::DatabaseClock,
+        },
     )
-    .bind(tenant_id)
-    .bind(intent)
-    .bind(user_id)
-    .bind(domain)
-    .fetch_one(&mut **txn)
     .await
     .map_err(|_| ErrorCode::Internal)
 }

@@ -1,6 +1,6 @@
 //! `adapters::consolidate_repo` — §11.6/§11.7 Private Memory Consolidation SQL, through [`ConsolidationDbPool`] only.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
-//! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, adapters::distill_repo, humaux-consolidation-worker, tests]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
+//! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, humaux-consolidation-worker, tests]
 //! Invariants: [input selection and materialization happen in ONE REPEATABLE READ READ WRITE transaction (§11.7), so
 //!   no concurrent insert can leak into a run; a lost lease is LostRace and an unknown source UnknownSource, never a
 //!   partial publish; the rollup ticket lands on the source memory's home stream (ADR-0057 D-M)]
@@ -48,6 +48,7 @@ use humaux_domain::ids::TenantId;
 use humaux_domain::ticket_family::TicketFamily;
 use humaux_projection::stream::StreamKey;
 
+use crate::memory_repo::authority_class_to_db_str;
 use crate::postgres::ConsolidationDbPool;
 use crate::remember;
 
@@ -67,22 +68,6 @@ pub(crate) fn authority_class_from_db_str(s: &str) -> Option<AuthorityClass> {
         "ExplicitTaskContext" => AuthorityClass::ExplicitTaskContext,
         _ => return None,
     })
-}
-
-/// `AuthorityClass`'s DB text encoding — the write-side inverse of
-/// `authority_class_from_db_str` above, needed because `private.memory_rollups.authority_class`
-/// (added by `migrations/0058_memory_rollups_authority_visibility.sql`) is `text`, not a
-/// dedicated Postgres enum.
-pub(crate) const fn authority_class_to_db_str(class: AuthorityClass) -> &'static str {
-    match class {
-        AuthorityClass::PublicKnowledge => "PublicKnowledge",
-        AuthorityClass::PrivateKnowledge => "PrivateKnowledge",
-        AuthorityClass::UserPreference => "UserPreference",
-        AuthorityClass::ProjectDecision => "ProjectDecision",
-        AuthorityClass::UserCorrection => "UserCorrection",
-        AuthorityClass::ProjectConstraint => "ProjectConstraint",
-        AuthorityClass::ExplicitTaskContext => "ExplicitTaskContext",
-    }
 }
 
 /// DB-layer failure. Adapter-local, not one of the workspace's two frozen domain error enums

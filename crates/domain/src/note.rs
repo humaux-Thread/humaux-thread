@@ -1,13 +1,13 @@
 //! `domain::note` — the verbatim note lane's pure rules: `NoteKind`, the verbatim body and its digest, the title,
 //!   and the authority decision of `memory.note_put` (ADR-0067 D-C/D-D/D-E).
 //! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::memory, domain::policy]
-//! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_materialize, gateway::mcp_application, humaux-local-secret-scan, tests]
+//! Called-by: [adapters::context_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_materialize, gateway::mcp_application, humaux-local-secret-scan, tests]
 //! Invariants: [NoteKind is a closed 9-value set whose memory_type mapping is the DB CHECK of migration 0235; the body is
 //!   never trimmed, normalised or re-encoded; authority is decided by the existing ceiling table and never inferred
 //!   from note_kind, title or body]
 //! Spec: Baseline §8.5; §9; §10.1; ADR-0067
 //!
-//! Pure data and decisions only: the one SQL statement lives in `adapters::distill_repo::insert_memory`, the one
+//! Pure data and decisions only: the one SQL statement lives in `adapters::memory_repo::insert_memory_in_txn`, the one
 //! transaction in `adapters::operation_receipt`. A reconciliation test in `adapters` pins [`NoteKind`] against the
 //! live `memory_records_note_kind_*` CHECKs and the generated `facet` (§78.2, ADR-0067 G09).
 

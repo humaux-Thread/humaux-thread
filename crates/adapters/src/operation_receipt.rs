@@ -134,6 +134,7 @@ fn remember_error(error: RememberError) -> ErrorCode {
             ErrorCode::DependencyUnavailable
         }
         RememberError::Db(error) => db_error(error),
+        RememberError::EvidenceClassOutsideSet { .. } => ErrorCode::Internal,
     }
 }
 
@@ -756,6 +757,16 @@ async fn replay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
+    #[test]
+    fn evidence_class_outside_the_set_maps_to_internal() {
+        let error = RememberError::EvidenceClassOutsideSet {
+            column: "data_class",
+            value: "x".to_owned(),
+        };
+        assert_eq!(remember_error(error), ErrorCode::Internal);
+    }
 
     #[test]
     fn idempotency_keys_are_bounded_opaque_identifiers() {

@@ -1,8 +1,8 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.memory_evidence, private.memory_records, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::jobs, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::note, domain::subject, humaux-adapters, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::memory_governance_repo, adapters::note_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
 //!   only ever takes the outbox row of its own Evidence; every read runs under role_private_worker grants + RLS with the acting
@@ -36,7 +36,6 @@ use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_domain::memory::MemoryType;
-use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 use serde_json::Value;
@@ -48,11 +47,16 @@ use crate::postgres::{PrivateWorkerDbPool, RuntimeDbPool};
 use crate::{
     Counter,
     confirm_token_repo::{self, ConfirmationClaim},
+    memory_repo::{self, authority_class_to_db_str, memory_type_db_str},
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberCommand},
     request_guard_repo::{self, AuditTenant},
     retrieve::{self, TokenClaims},
 };
+
+// `bins/private-worker` names these at `distill_repo::`; their definitions and the Memory INSERT live in `memory_repo`
+// (M07 D9, gate G-M07-1).
+pub use crate::memory_repo::{LoadedEvidence, NewMemory, insert_memory_in_txn as insert_memory};
 
 /// The database error/transaction types the private-worker binary names without depending on
 /// `sqlx` itself (same "fewer capability-shaped names in a bin" reasoning as
@@ -91,7 +95,7 @@ pub async fn begin_write_context(
 /// `remember::remember_in_txn`'s call site, pinned here for the claim predicate).
 pub const EVIDENCE_ACCEPTED: &str = "EVIDENCE_ACCEPTED";
 
-/// Read-side inverse of `remember::origin_class_db_str` (the CHECK list of
+/// Read-side inverse of `evidence_repo::origin_class_db_str` (the CHECK list of
 /// `migrations/0004_private_evidence_memory.sql`, pinned by the contract test below).
 pub(crate) fn origin_class_from_db_str(s: &str) -> Option<EvidenceOriginClass> {
     Some(match s {
@@ -106,30 +110,6 @@ pub(crate) fn origin_class_from_db_str(s: &str) -> Option<EvidenceOriginClass> {
         "SystemMigration" => EvidenceOriginClass::SystemMigration,
         _ => return None,
     })
-}
-
-/// `private.memory_records.memory_type` CHECK literal for the six types the Distill contract
-/// may emit (write-side inverse of `projection_worker::parse_memory_type`, scoped to them).
-pub(crate) const fn memory_type_db_str(memory_type: MemoryType) -> &'static str {
-    match memory_type {
-        MemoryType::Fact => "FACT",
-        MemoryType::Preference => "PREFERENCE",
-        MemoryType::Decision => "DECISION",
-        MemoryType::Rejection => "REJECTION",
-        MemoryType::State => "STATE",
-        MemoryType::Issue => "ISSUE",
-        MemoryType::Lesson => "LESSON",
-        MemoryType::Constraint => "CONSTRAINT",
-        MemoryType::Procedure => "PROCEDURE",
-        MemoryType::Outcome => "OUTCOME",
-        MemoryType::Reference => "REFERENCE",
-        MemoryType::Note => "NOTE",
-    }
-}
-
-const fn authority_class_db_str(class: AuthorityClass) -> &'static str {
-    // One mapping for the whole crate (§78.2): consolidate_repo owns it.
-    crate::consolidate_repo::authority_class_to_db_str(class)
 }
 
 /// One claimed `ops.outbox` work item.
@@ -304,30 +284,6 @@ pub async fn resolve_distill_binding(
         ))
     })
     .transpose()
-}
-
-/// One Evidence as the hop reads it: the `evidence_objects` row plus its `events` subtype.
-#[derive(Debug, Clone)]
-pub struct LoadedEvidence {
-    pub evidence_id: Uuid,
-    pub reasoning_domain_id: Uuid,
-    pub origin_class: EvidenceOriginClass,
-    /// The DB CHECK literal of `origin_class` (what the envelope shows the model).
-    pub origin_class_wire: String,
-    pub origin_principal_id: Option<Uuid>,
-    pub data_class: String,
-    pub visibility_class: String,
-    pub visibility_user_id: Option<Uuid>,
-    pub visibility_workspace_id: Option<Uuid>,
-    pub occurred_at: Option<OffsetDateTime>,
-    /// `private.evidence_objects.payload_sha256` verbatim (what `processing_runs.
-    /// evidence_payload_sha256[]` records).
-    pub payload_sha256: Vec<u8>,
-    pub event_kind: String,
-    pub payload: Value,
-    /// The acting user installed for RLS while reading `payload` — the Evidence's own user
-    /// for USER_PRIVATE, else `owner_user_id`; the write leg reuses it.
-    pub rls_user_id: Uuid,
 }
 
 /// Loads `evidence_id` (must belong to `tenant_id` and `reasoning_domain_id`) and its event
@@ -550,79 +506,6 @@ pub fn private_distill_outputs_total() -> u64 {
     PRIVATE_DISTILL_OUTPUTS_TOTAL.get()
 }
 
-/// One authorized memory to insert — `class` is the `AuthorizedAuthority` §10.1 returned, never
-/// the raw candidate class.
-#[derive(Debug, Clone)]
-pub struct NewMemory<'a> {
-    pub content: &'a Value,
-    pub memory_type: MemoryType,
-    pub class: AuthorityClass,
-    pub confidence: f32,
-    /// ADR-0067 D-D: `Some` only for a verbatim note written by `memory.note_put`; every distilled,
-    /// confirmed or corrected Memory is `None`.
-    pub note_kind: Option<NoteKind>,
-    /// ADR-0067 D-J, with `note_kind` only: `None` = a fresh note, whose `note_id` is its own new `memory_id`;
-    /// `Some(note_id)` = a new version of that note. A non-note Memory stores NULL whatever this says (0236 CHECK).
-    pub note_id: Option<Uuid>,
-}
-
-/// `memory_records` + its PRIMARY `memory_evidence` link (ordinal 0) in the caller's
-/// transaction (0004's deferred `memory_records_requires_evidence` trigger needs both by
-/// COMMIT). Visibility is the Evidence's own three columns verbatim (ADR-0016 D4).
-/// Grounding: the link is `IMMUTABLE` against the Evidence's `payload_sha256` — an EVENT
-/// payload is content-addressed and never rewritten (§8.1), so the recorded version is that
-/// digest's hex (§8.8: IMMUTABLE edges are excluded from the recheck derivation).
-///
-/// §6.1.3 / ADR-0028: this is the workspace's single `INSERT INTO private.memory_records`
-/// (Distill hop, `memory.confirm`, `memory.correct` all route here), so the deterministic
-/// subject resolve hook runs here once — after the PRIMARY link exists, because the hook reads
-/// it — and no sibling writer can forget it. Explicit links (rules 1/2) are the caller's; the
-/// hook adds rule 3 (Evidence declaration / correction predecessor) and byte-span mentions.
-pub async fn insert_memory(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: Uuid,
-    evidence: &LoadedEvidence,
-    memory: &NewMemory<'_>,
-) -> Result<Uuid, sqlx::Error> {
-    // ADR-0067 D-J: the id is drawn once (the column's own uuidv7()) so a fresh note's note_id can equal it in the same
-    // statement; `$11` names the note a new version joins.
-    let memory_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO private.memory_records \
-           (memory_id, tenant_id, memory_type, content, visibility_class, visibility_user_id, \
-            visibility_workspace_id, authority_class, confidence, status, asserted_at, occurred_at, \
-            note_kind, note_id) \
-         SELECT g.id, $1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9, $10, \
-                CASE WHEN $10::text IS NULL THEN NULL ELSE COALESCE($11::uuid, g.id) END \
-           FROM (SELECT uuidv7() AS id) AS g \
-         RETURNING memory_id",
-    )
-    .bind(tenant_id)
-    .bind(memory_type_db_str(memory.memory_type))
-    .bind(memory.content)
-    .bind(&evidence.visibility_class)
-    .bind(evidence.visibility_user_id)
-    .bind(evidence.visibility_workspace_id)
-    .bind(authority_class_db_str(memory.class))
-    .bind(memory.confidence)
-    .bind(evidence.occurred_at)
-    .bind(memory.note_kind.map(NoteKind::wire))
-    .bind(memory.note_id)
-    .fetch_one(&mut **txn)
-    .await?;
-    sqlx::query(
-        "INSERT INTO private.memory_evidence \
-           (memory_id, evidence_id, role, ordinal, grounding_mode, recorded_version) \
-         VALUES ($1, $2, 'PRIMARY', 0, 'IMMUTABLE', $3)",
-    )
-    .bind(memory_id)
-    .bind(evidence.evidence_id)
-    .bind(hex::encode(&evidence.payload_sha256))
-    .execute(&mut **txn)
-    .await?;
-    crate::subject_repo::link_memory_in_txn(txn, tenant_id, memory_id, &[]).await?;
-    Ok(memory_id)
-}
-
 /// How a settle leaves the job's one outbox row (ADR-0058 D-C/D-F).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboxSettle {
@@ -700,7 +583,7 @@ pub async fn finish_job_in_txn(
 // evidence issuer + the shared BMO/confirm-token/audit helpers, never a second token path.
 // ============================================================================
 
-/// Read-side inverse of [`authority_class_db_str`] (over all 7 variants; no parallel CHECK copy).
+/// Read-side inverse of [`authority_class_to_db_str`] (over all 7 variants; no parallel CHECK copy).
 fn authority_class_from_db_str(wire: &str) -> Option<AuthorityClass> {
     [
         AuthorityClass::PublicKnowledge,
@@ -712,7 +595,7 @@ fn authority_class_from_db_str(wire: &str) -> Option<AuthorityClass> {
         AuthorityClass::ExplicitTaskContext,
     ]
     .into_iter()
-    .find(|c| authority_class_db_str(*c) == wire)
+    .find(|c| authority_class_to_db_str(*c) == wire)
 }
 
 /// Read-side inverse of [`memory_type_db_str`] (over all 12 variants).
@@ -759,6 +642,7 @@ fn remember_err(error: remember::RememberError) -> ErrorCode {
         | remember::RememberError::Note(code) => code,
         remember::RememberError::ReasoningDomainUnresolved
         | remember::RememberError::TokenKeysUnset => ErrorCode::DependencyUnavailable,
+        remember::RememberError::EvidenceClassOutsideSet { .. } => ErrorCode::Internal,
     }
 }
 
@@ -804,7 +688,7 @@ pub async fn insert_candidate(
     .bind(candidate.body)
     .bind(candidate.sha256)
     .bind(candidate.rejection.as_db_str())
-    .bind(authority_class_db_str(candidate.requested_class))
+    .bind(authority_class_to_db_str(candidate.requested_class))
     .bind(memory_type_db_str(candidate.memory_type))
     .bind(candidate.confidence)
     .bind(&evidence.data_class)
@@ -1175,7 +1059,7 @@ pub async fn confirm_candidate_atomically(
         .await
         .map_err(remember_err)?;
     // §6.1.3 rule 3a: E2's provenance is the candidate's source Evidence, so its subject
-    // declaration rides onto E2 and the ordinary hook in insert_memory links M from it.
+    // declaration rides onto E2 and the ordinary hook in insert_memory_in_txn links M from it.
     crate::subject_repo::inherit_evidence_declarations_in_txn(
         &mut txn,
         auth.tenant_id().0,
@@ -1243,7 +1127,7 @@ pub async fn confirm_candidate_atomically(
         payload: candidate.body.clone(),
         rls_user_id: auth.user_id().map_or_else(Uuid::nil, |u| u.0),
     };
-    let memory_id = insert_memory(
+    let memory_id = memory_repo::insert_memory_in_txn(
         &mut txn,
         auth.tenant_id().0,
         &loaded,
@@ -1259,7 +1143,7 @@ pub async fn confirm_candidate_atomically(
     .await
     .map_err(candidate_db_error)?;
     // §6.1.3 rules 1/2: the caller's explicit subjects, through the same hook (idempotent on
-    // top of what insert_memory already inherited).
+    // top of what insert_memory_in_txn already inherited).
     if !explicit_subjects.is_empty() {
         crate::subject_repo::link_memory_in_txn(
             &mut txn,
@@ -1541,6 +1425,16 @@ pub async fn list_pending_candidates(
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
+    #[test]
+    fn evidence_class_outside_the_set_maps_to_internal() {
+        let error = remember::RememberError::EvidenceClassOutsideSet {
+            column: "data_class",
+            value: "x".to_owned(),
+        };
+        assert_eq!(remember_err(error), ErrorCode::Internal);
+    }
 
     const MIGRATION_SQL: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

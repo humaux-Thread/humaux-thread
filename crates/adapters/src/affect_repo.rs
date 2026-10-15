@@ -109,6 +109,7 @@ fn remember_error(error: RememberError) -> ErrorCode {
         RememberError::ReasoningDomainUnresolved | RememberError::TokenKeysUnset => {
             ErrorCode::DependencyUnavailable
         }
+        RememberError::EvidenceClassOutsideSet { .. } => ErrorCode::Internal,
     }
 }
 
@@ -712,6 +713,16 @@ pub fn parse_mood(value: &Value) -> Result<Option<MoodPoint>, ErrorCode> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
+    #[test]
+    fn evidence_class_outside_the_set_maps_to_internal() {
+        let error = RememberError::EvidenceClassOutsideSet {
+            column: "data_class",
+            value: "x".to_owned(),
+        };
+        assert_eq!(remember_error(error), ErrorCode::Internal);
+    }
 
     #[test]
     fn parse_affects_accepts_closed_values_and_fails_closed_on_range() {

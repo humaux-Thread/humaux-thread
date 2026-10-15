@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.processing_runs, private.task_binding_grants] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.memory_records, private.processing_runs, private.task_binding_grants] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
 //! Called-by: [xtask::direction_table, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -1596,6 +1596,147 @@ fn g80_11_source_hash_unique(root: &Path) -> Verdict {
         Verdict::Fail(vec![format!(
             "expected exactly 1 `SourceHash( .. )` construction site, found {count}: {sites:?}"
         )])
+    }
+}
+
+// ============================================================================
+// M07 D9 / G-M07-1: the two M07 write doors. Every non-test `INSERT INTO private.evidence_objects` and
+// `INSERT INTO private.memory_records` in the workspace is ONE statement in ONE file, so a change to the
+// Evidence or Memory model edits an M07 file and no writer can skip what the door enforces (the digest-as-hex
+// binding, the PRIMARY `memory_evidence` link, the §6.1.3 subject hook).
+// ============================================================================
+
+/// `(INSERT statement text, the one file that may hold it)` per door (module design M07 §6 D9, gate G-M07-1).
+const M07_INSERT_DOORS: [(&str, &str); 2] = [
+    (
+        "INSERT INTO private.evidence_objects",
+        "crates/adapters/src/evidence_repo.rs",
+    ),
+    (
+        "INSERT INTO private.memory_records",
+        "crates/adapters/src/memory_repo.rs",
+    ),
+];
+
+/// Whether `disp` (repo-relative, `/`-separated) sits in a test tree, judged by path **structure** like the sibling
+/// [`count_outside_allowed`]: only `crates/<pkg>/tests`, `bins/<pkg>/tests` and `xtask/tests`. A bare `tests` path
+/// component is not enough — `crates/adapters/src/tests/writer.rs` and `crates/tests/src/lib.rs` are production code.
+fn m07_is_test_tree(disp: &str) -> bool {
+    let segments: Vec<&str> = disp.split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["crates" | "bins", _, "tests", ..] | ["xtask", "tests", ..]
+    )
+}
+
+/// Every workspace `.rs` file as production code: this file excluded (it quotes the needles), test trees excluded
+/// ([`m07_is_test_tree`]; integration tests seed rows with raw INSERTs), and each file cut at its trailing
+/// `#[cfg(test)] mod` ([`cfg_test_mod_offset`], the same prefix heuristic [`count_outside_allowed`] uses).
+///
+/// Not [`walk_workspace_rs`]: that blanks the test module by naive brace counting, which a `{` inside a string
+/// literal desyncs, and `xtask/src/e2e_seed.rs`'s test module is such a file — its fixture INSERTs would be counted.
+fn m07_production_sources(root: &Path) -> Vec<(String, String)> {
+    read_files(&walk_files(root, &["rs"]))
+        .into_iter()
+        .filter_map(|(path, source)| {
+            let disp = display(root, &path);
+            if disp == SELF_FILE || m07_is_test_tree(&disp) {
+                return None;
+            }
+            // ponytail: prefix cut at the first `#[cfg(test)] mod`, so production items declared after it are not
+            // scanned (rustfmt keeps test modules last and `count_outside_allowed` has the same ceiling), upgrade to
+            // span-parsing the test module if a production item ever follows one.
+            let production = match cfg_test_mod_offset(&source) {
+                Some(off) => source[..off].to_string(),
+                None => source,
+            };
+            Some((disp, production))
+        })
+        .collect()
+}
+
+/// The text a SQL string literal spells, for matching: comment lines dropped, `\`-newline continuations joined the way
+/// rustc joins them (the next line's leading whitespace is skipped), whitespace runs collapsed to one space, lowercased —
+/// so `insert  into private.memory_records` and a `\`-split `INSERT INTO \` + `private.memory_records` both match.
+fn m07_normalised(source: &str) -> String {
+    let mut text = String::with_capacity(source.len());
+    let mut continued = false;
+    for line in source.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let line = if continued { line.trim_start() } else { line };
+        match line.strip_suffix('\\') {
+            Some(head) => {
+                text.push_str(head);
+                continued = true;
+            }
+            None => {
+                text.push_str(line);
+                text.push(' ');
+                continued = false;
+            }
+        }
+    }
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// `needle` occurrences in each file's [`m07_normalised`] text (files with none are omitted).
+///
+/// ponytail: matches the spelled-out statement text, so a statement assembled with `format!` or from separate string
+/// pieces evades it, upgrade to statement parsing if that ever shows up.
+fn m07_statement_sites(files: &[(String, String)], needle: &str) -> Vec<(String, usize)> {
+    let needle = m07_normalised(needle);
+    files
+        .iter()
+        .filter_map(|(disp, source)| {
+            let n = m07_normalised(source).matches(needle.as_str()).count();
+            (n > 0).then(|| (disp.clone(), n))
+        })
+        .collect()
+}
+
+/// M07 D9 / G-M07-1: each door statement in [`M07_INSERT_DOORS`] appears `== 1` times in non-test code, in its home
+/// file; 0 is red (a typo'd needle or a deleted door must not read as "no duplicates"), so is a single copy anywhere
+/// else, and so is a statement that exists while its home file does not. `not_applicable` only when the statement
+/// appears nowhere and the home file does not exist yet, and it names that file (§57.1 第2条) — a failing door is
+/// never masked by the other door's `not_applicable`.
+fn m07_1_insert_doors(root: &Path) -> Verdict {
+    let files = m07_production_sources(root);
+    let mut problems = Vec::new();
+    let mut missing = Vec::new();
+    for (needle, home) in &M07_INSERT_DOORS {
+        let sites = m07_statement_sites(&files, needle);
+        let total: usize = sites.iter().map(|(_, n)| n).sum();
+        let home_exists = files.iter().any(|(disp, _)| disp == home);
+        if !home_exists && total == 0 {
+            missing.push(*home);
+            continue;
+        }
+        let sole = home_exists && total == 1 && sites.iter().all(|(disp, _)| disp == home);
+        if !sole {
+            let gone = if home_exists {
+                ""
+            } else {
+                " (the home file does not exist)"
+            };
+            problems.push(format!(
+                "M07 D9 / G-M07-1: expected exactly 1 `{needle}` in non-test code, in {home}{gone}; found {total}: {sites:?}"
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        Verdict::Fail(problems)
+    } else if !missing.is_empty() {
+        Verdict::NotApplicable(format!(
+            "missing object: M07 D9 write door file(s) not delivered yet: {}",
+            missing.join(", ")
+        ))
+    } else {
+        Verdict::Pass
     }
 }
 
@@ -5984,6 +6125,10 @@ pub fn run(_args: &[String]) -> i32 {
             "ADR-0061 D-A (no Box::leak in crates/telemetry or bins: metric labels stay closed &'static str)",
             adr0061_no_box_leak_labels(&root),
         ),
+        (
+            "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
+            m07_1_insert_doors(&root),
+        ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
 
@@ -8054,6 +8199,252 @@ async fn serving_version_in_txn() {}
         )
         .unwrap();
         assert!(matches!(g80_11_source_hash_unique(&tmp), Verdict::Fail(_)));
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M07 D9 / G-M07-1: one INSERT statement per door ------------------------------------
+
+    const M07_EVIDENCE_HOME: &str = "crates/adapters/src/evidence_repo.rs";
+    const M07_MEMORY_HOME: &str = "crates/adapters/src/memory_repo.rs";
+    const M07_EVIDENCE_DOOR: &str =
+        "fn door() { let _ = \"INSERT INTO private.evidence_objects (tenant_id) VALUES ($1)\"; }\n";
+    const M07_MEMORY_DOOR: &str =
+        "fn door() { let _ = \"INSERT INTO private.memory_records (tenant_id) VALUES ($1)\"; }\n";
+
+    fn m07_write(root: &Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    fn m07_fail_lines(root: &Path) -> Vec<String> {
+        match m07_1_insert_doors(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The tree as M07-1 leaves it: one statement per door, in its home file.
+    #[test]
+    fn m07_1_real_repo_passes() {
+        assert_eq!(m07_1_insert_doors(&real_root()), Verdict::Pass);
+    }
+
+    /// Green fixture, plus everything that must NOT count: a comment naming the statement, an integration-test
+    /// tree, `bins/*/tests` and `xtask/tests` trees, and a statement after a file's trailing `#[cfg(test)] mod`.
+    #[test]
+    fn m07_1_passes_with_one_statement_per_door_and_ignores_test_and_comment_text() {
+        let tmp = fresh_tmp("m07-1-green");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "// the single INSERT INTO private.memory_records lives in memory_repo\n\
+             fn f() {}\n\
+             #[cfg(test)]\n\
+             mod tests { fn t() { let _ = \"INSERT INTO private.memory_records (x) VALUES (1)\"; } }\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/adapters/tests/seed.rs",
+            "fn seed() { let _ = \"INSERT INTO private.evidence_objects (x) VALUES (1)\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "bins/worker/tests/seed.rs",
+            "fn seed() { let _ = \"INSERT INTO private.memory_records (x) VALUES (1)\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "xtask/tests/seed.rs",
+            "fn seed() { let _ = \"INSERT INTO private.evidence_objects (x) VALUES (1)\"; }\n",
+        );
+        assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing objects (§57.1 第2条): neither home file exists yet.
+    #[test]
+    fn m07_1_is_not_applicable_naming_both_missing_door_files() {
+        let tmp = fresh_tmp("m07-1-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m07_1_insert_doors(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains(M07_EVIDENCE_HOME), "{detail}");
+                assert!(detail.contains(M07_MEMORY_HOME), "{detail}");
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1): a second `INSERT INTO private.memory_records` in the Distill hop's file → 红, naming the file.
+    #[test]
+    fn m07_1_fails_on_a_duplicate_memory_insert_in_another_src_file() {
+        let tmp = fresh_tmp("m07-1-red-memory");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(&tmp, "crates/adapters/src/distill_repo.rs", M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("INSERT INTO private.memory_records"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("crates/adapters/src/distill_repo.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1): a second Evidence INSERT in a bin's `src/` → 红. The memory door's file is absent here, so this
+    /// also pins that a failing door is not masked by the other door's `not_applicable`.
+    #[test]
+    fn m07_1_fails_on_a_duplicate_evidence_insert_even_when_the_other_door_is_missing() {
+        let tmp = fresh_tmp("m07-1-red-evidence");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, "bins/worker/src/seed.rs", M07_EVIDENCE_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(
+            lines[0].contains("INSERT INTO private.evidence_objects"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("bins/worker/src/seed.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1): the home file exists but its statement is gone → 红 with 0 found, never "no duplicates, pass".
+    #[test]
+    fn m07_1_fails_when_the_home_file_exists_but_holds_no_statement() {
+        let tmp = fresh_tmp("m07-1-red-zero");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, "fn door() {}\n");
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("found 0"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1): exactly one statement, but outside the door's file (the old home) → 红.
+    #[test]
+    fn m07_1_fails_when_the_only_statement_sits_outside_the_home_file() {
+        let tmp = fresh_tmp("m07-1-red-moved");
+        m07_write(&tmp, M07_EVIDENCE_HOME, "fn door() {}\n");
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M07_EVIDENCE_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("found 1"), "{lines:?}");
+        assert!(
+            lines[0].contains("crates/adapters/src/remember.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W1): the home file is renamed away and the statement lives on in two stray files. A missing
+    /// home must not turn the scan into `not_applicable`: the statement exists, so it is 红 and names the missing home.
+    #[test]
+    fn m07_1_fails_naming_the_missing_home_when_the_statement_exists_elsewhere() {
+        let tmp = fresh_tmp("m07-1-red-renamed-home");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/evidence_store.rs",
+            M07_EVIDENCE_DOOR,
+        );
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(M07_EVIDENCE_HOME), "{lines:?}");
+        assert!(lines[0].contains("does not exist"), "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W1): even ONE statement elsewhere with the home file gone is 红, not `not_applicable`.
+    #[test]
+    fn m07_1_fails_when_the_only_statement_exists_and_the_home_file_is_missing() {
+        let tmp = fresh_tmp("m07-1-red-home-missing");
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("does not exist"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W2): a `tests` directory INSIDE a crate's `src/` is production code, not a test tree.
+    #[test]
+    fn m07_1_counts_a_statement_in_a_src_tests_directory() {
+        let tmp = fresh_tmp("m07-1-red-src-tests-dir");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(&tmp, "crates/adapters/src/tests/writer.rs", M07_MEMORY_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(
+            lines[0].contains("crates/adapters/src/tests/writer.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W2): a crate that is itself called `tests` (`crates/tests/src/lib.rs`) is production code.
+    #[test]
+    fn m07_1_counts_a_statement_in_a_crate_named_tests() {
+        let tmp = fresh_tmp("m07-1-red-tests-crate");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(&tmp, "crates/tests/src/lib.rs", M07_EVIDENCE_DOOR);
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("crates/tests/src/lib.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W3): a stray copy spelled in lowercase is still the statement.
+    #[test]
+    fn m07_1_counts_a_lowercase_statement() {
+        let tmp = fresh_tmp("m07-1-red-lowercase");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "fn f() { let _ = \"insert into private.memory_records (a) values ($1)\"; }\n",
+        );
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W3): doubled spaces between the keywords do not hide the statement.
+    #[test]
+    fn m07_1_counts_a_statement_with_extra_whitespace() {
+        let tmp = fresh_tmp("m07-1-red-whitespace");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "fn f() { let _ = \"INSERT   INTO  private.memory_records (a) VALUES ($1)\"; }\n",
+        );
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M07-1, review W3): a `\`-newline continuation inside the string (rustc joins the lines) is the statement.
+    #[test]
+    fn m07_1_counts_a_backslash_continued_statement() {
+        let tmp = fresh_tmp("m07-1-red-continuation");
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "fn f() { let _ = \"INSERT INTO \\\n        private.memory_records (a) VALUES ($1)\"; }\n",
+        );
+        let lines = m07_fail_lines(&tmp);
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 

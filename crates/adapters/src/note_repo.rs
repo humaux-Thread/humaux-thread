@@ -1,8 +1,8 @@
 //! `adapters::note_repo` — the verbatim note lane's write half: the identity contract and the one authorised Memory of
 //!   `memory.note_put`, written inside the caller's Evidence transaction (ADR-0067 D-A/D-B/D-C/D-E).
-//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects, private.identity_note_materializations] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::distill_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects, private.identity_note_materializations] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
 //! Called-by: [adapters::operation_receipt, adapters::remember, gateway::guard, gateway::mcp_application, tests]
-//! Invariants: [no SQL here commits; the Memory is written only through distill_repo::insert_memory (the workspace's single
+//! Invariants: [no SQL here commits; the Memory is written only through memory_repo::insert_memory_in_txn (the workspace's single
 //!   memory INSERT); the contract row is written after the Memory and before the EVIDENCE_ACCEPTED outbox row so the 0235
 //!   enqueue trigger skips distill; the authority decision precedes every write; a replacement supersedes exactly the
 //!   CAS-checked head in one guarded UPDATE and moves the head row in the same transaction (ADR-0067 D-J)]
@@ -21,7 +21,7 @@ use humaux_domain::note::{
 };
 use sqlx::types::Uuid;
 
-use crate::distill_repo::{self, LoadedEvidence, NewMemory};
+use crate::memory_repo::{self, LoadedEvidence, NewMemory};
 use crate::remember::{RememberCommand, RememberError};
 
 /// One note as the gateway edge validated it (ADR-0067 D-C/D-D/D-E).
@@ -66,7 +66,7 @@ fn memory_content(note: &NoteIntake) -> serde_json::Value {
     })
 }
 
-/// Writes the note's Memory (through the workspace's single `insert_memory`, PRIMARY `memory_evidence` link included) and
+/// Writes the note's Memory (through the workspace's single `insert_memory_in_txn`, PRIMARY `memory_evidence` link included) and
 /// its identity-contract row, in the caller's transaction. `class` is [`authorize`]'s grant. Returns the new `memory_id`.
 /// ADR-0067 D-J steps 3-6: a [`NoteLineage::Create`] also writes the note's head row; a [`NoteLineage::Replace`] then
 /// supersedes the old head and moves the head row to the new version (0 rows on either = `CONFLICT`, rolled back).
@@ -95,7 +95,7 @@ pub(crate) async fn materialize_in_txn(
         payload: cmd.event_payload.clone(),
         rls_user_id: cmd.authorization_user_id.unwrap_or_else(Uuid::nil),
     };
-    let memory_id = distill_repo::insert_memory(
+    let memory_id = memory_repo::insert_memory_in_txn(
         txn,
         cmd.tenant_id,
         &loaded,
@@ -195,7 +195,7 @@ pub(crate) async fn output_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consolidate_repo::authority_class_to_db_str;
+    use crate::memory_repo::authority_class_to_db_str;
     use humaux_domain::note::requested_authority_wire;
 
     /// §78.2: the wire spelling of `requested_authority` is `private.memory_records.authority_class` verbatim — the
