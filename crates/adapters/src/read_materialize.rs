@@ -333,7 +333,7 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
         r#"
         SELECT m.memory_id
         FROM private.memory_records AS m
-        WHERE m.tenant_id = $1
+        WHERE $1::uuid IS NOT NULL
           AND m.memory_id = ANY($2)
           -- ADR-0067 D-J2 (Q3/ADR-0024 D-C for the archive mode): one bound lifecycle selection.
           AND {lifecycle}
