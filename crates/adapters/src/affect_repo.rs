@@ -2,7 +2,7 @@
 //!   onto `private.memory_affects` ([`annotate`]) and the ONE set-based read ([`AFFECTS_FOR_MEMORIES_SQL`] /
 //!   [`affects_for_memories_in_txn`]) every reader shares — the PG hydrate re-check (`read_materialize`), the
 //!   projection worker's payload build, and `memory.get` / `memory.enumerate` / the recall rerank.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::subject_repo, application::affect, domain::affect, domain::authority, domain::error, domain::identity, domain::subject, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, domain::affect, domain::authority, domain::error, domain::identity, domain::subject, projection::stream]
 //! Called-by: [adapters::distill_reasoner, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, private-worker::distill, tests]
 //! Invariants: [affect rows are INSERT-only through the one row issuer insert_rows (declared rows via insert_in_txn,
 //!   inferred DISTILL rows via insert_inferred_in_txn) and never decayed on write; the one read lets an EXPLICIT row
@@ -16,8 +16,8 @@
 //! (`memory.annotate_affect` on its own transaction, `memory.correct` inside `correct_atomically`,
 //! `remember.put` inside `remember_in_txn` onto the 0157 `evidence_affects` carrier), inferred rows
 //! through [`insert_inferred_in_txn`] (the distill hop's write transaction, ADR-0058 D-P; that
-//! transaction's outbox DONE flip is the projection ticket) — and, for an annotated live memory, ends with one `MEMORY_LIFECYCLE` ticket on the memory's home stream (ADR-0057 D-M; the §60 issuers `remember`
-//! owns, verbatim — the same ticket `memory.supersede`/`restore`/`archive` issue) so the worker
+//! transaction's outbox DONE flip is the projection ticket) — and, for an annotated live memory, ends with one `MEMORY_LIFECYCLE` ticket on the memory's home stream (ADR-0057 D-M; the §60 issuer
+//! `stream_repo::issue_ticket_in_txn`, verbatim — the same ticket `memory.supersede`/`restore`/`archive` issue) so the worker
 //! re-projects the SAME deterministic point with the fresh affect payload. Decay is never
 //! written: [`observed`] derives `effective_intensity(now)` from the raw row at read time.
 //!
@@ -44,7 +44,8 @@ use sqlx::types::time::OffsetDateTime;
 
 use crate::confirm_token_repo;
 use crate::postgres::RuntimeDbPool;
-use crate::remember::{self, RememberError};
+use crate::remember;
+use crate::stream_repo;
 use crate::subject_repo;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -94,22 +95,6 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
             _ => ErrorCode::Internal,
         },
         _ => ErrorCode::DependencyUnavailable,
-    }
-}
-
-fn remember_error(error: RememberError) -> ErrorCode {
-    match error {
-        RememberError::Db(error) => db_error(error),
-        RememberError::ConsistencyTokenExpiryNotFuture | RememberError::BatchExhausted => {
-            ErrorCode::Conflict
-        }
-        RememberError::Subject(code) | RememberError::Affect(code) | RememberError::Note(code) => {
-            code
-        }
-        RememberError::ReasoningDomainUnresolved | RememberError::TokenKeysUnset => {
-            ErrorCode::DependencyUnavailable
-        }
-        RememberError::EvidenceClassOutsideSet { .. } => ErrorCode::Internal,
     }
 }
 
@@ -499,22 +484,18 @@ pub async fn annotate(
     // ADR-0057 D-M (W3): on the memory's home stream, not the request's — a W2-routed ticket
     // would write a duplicate point into W2's family that no later W1 retire ever reaches.
     let stream = crate::memory_governance_repo::home_stream(&mut txn, stream, evidence_id).await?;
-    let commit_seq = remember::next_commit_seq(&mut txn)
-        .await
-        .map_err(remember_error)?;
-    let stream_seq = remember::issue_stream_log_row(&mut txn, &stream, commit_seq)
-        .await
-        .map_err(remember_error)?;
-    remember::insert_outbox(
-        &mut txn,
-        tenant_id,
+    let stream_repo::TicketIssued {
         commit_seq,
         stream_seq,
-        remember::MEMORY_LIFECYCLE,
+    } = stream_repo::issue_ticket_in_txn(
+        &mut txn,
+        &stream,
         evidence_id,
+        remember::MEMORY_LIFECYCLE,
+        None,
     )
     .await
-    .map_err(remember_error)?;
+    .map_err(db_error)?;
     txn.commit().await.map_err(db_error)?;
     Ok(AnnotateDone {
         memory_id: memory_id.0,
@@ -713,16 +694,6 @@ pub fn parse_mood(value: &Value) -> Result<Option<MoodPoint>, ErrorCode> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
-    #[test]
-    fn evidence_class_outside_the_set_maps_to_internal() {
-        let error = RememberError::EvidenceClassOutsideSet {
-            column: "data_class",
-            value: "x".to_owned(),
-        };
-        assert_eq!(remember_error(error), ErrorCode::Internal);
-    }
 
     #[test]
     fn parse_affects_accepts_closed_values_and_fails_closed_on_range() {

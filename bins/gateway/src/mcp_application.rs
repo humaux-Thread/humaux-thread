@@ -343,7 +343,7 @@ impl GatewayMcpApplication {
                     // the read routes' single derivation point — principal tenant + the
                     // membership-narrowed requested workspace + the process family. Pure, no
                     // PG round trip; the pair's checkpoint row is created idempotently by the
-                    // first write (`issue_stream_log_row`).
+                    // first write (`stream_repo::issue_ticket_in_txn`).
                     let (_, stream) =
                         bootstrap.request_stream(request.authorization().tenant_id(), workspace);
                     remember::command(

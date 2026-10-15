@@ -4,7 +4,7 @@
 //!   public.syntheses, public.synthesis_inputs, staging.sanitized_public_candidates] w=[ops.outbox, public.claims,
 //!   public.provenance_edges, public.source_closure, staging.contribution_release_sources,
 //!   staging.contribution_releases] x=[staging.assert_active_release_rights, staging.lock_contribution_release]];
-//!   env=[]; modules=[adapters::postgres, adapters::remember, domain::error, domain::ids, domain::public]
+//!   env=[]; modules=[adapters::postgres, adapters::stream_repo, domain::error, domain::ids, domain::public]
 //! Called-by: [tests]
 //! Invariants: [private releases are written only on role_private_worker and public promotion only on
 //!   role_public_worker (§12/§13); there is no raw-pool entry point; tenant or visibility failures are
@@ -27,7 +27,7 @@ use sqlx::{Row, types::Uuid};
 
 use crate::{
     postgres::{PrivateWorkerDbPool, PublicWorkerDbPool},
-    remember,
+    stream_repo,
 };
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -146,7 +146,7 @@ pub async fn create_release(
         .map_err(db_error)?;
     }
 
-    let commit_seq = remember::next_commit_seq(&mut txn)
+    let commit_seq = stream_repo::next_commit_seq(&mut txn)
         .await
         .map_err(|_| ErrorCode::Internal)?;
     sqlx::query(
@@ -210,7 +210,7 @@ pub async fn revoke_release(
         txn.commit().await.map_err(db_error)?;
         return Ok(false);
     }
-    let commit_seq = remember::next_commit_seq(&mut txn)
+    let commit_seq = stream_repo::next_commit_seq(&mut txn)
         .await
         .map_err(|_| ErrorCode::Internal)?;
     let anonymous = sqlx::query(

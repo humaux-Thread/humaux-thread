@@ -1,6 +1,6 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
@@ -66,6 +66,7 @@ use crate::{
     remember::{self, RememberCommand, RememberError},
     request_guard_repo::{self, AuditTenant},
     retrieve::{self, TokenClaims},
+    stream_repo,
 };
 
 const OP: DestructiveOp = DestructiveOp::MemorySupersede;
@@ -370,33 +371,25 @@ pub(crate) async fn home_stream(
 
 /// §7/§15 projection consequence: one `MEMORY_LIFECYCLE` ticket (stream_log ISSUED row +
 /// outbox row bound to the target's PRIMARY Evidence) on the target's home stream
-/// ([`home_stream`]), via the same §60 writers `remember` uses. Returns `(stream_seq,
+/// ([`home_stream`]), via [`stream_repo::issue_ticket_in_txn`] — the door `remember` uses. Returns `(stream_seq,
 /// commit_seq, stream)` — the stream the ticket landed on, which a consistency token must name.
 pub(crate) async fn issue_lifecycle_ticket(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    auth: &AuthorizationScope,
     stream: &StreamKey,
     target: MemoryId,
 ) -> Result<(i64, i64, StreamKey), ErrorCode> {
     let evidence_id = ticket_evidence(txn, target).await?;
     let stream = home_stream(txn, stream, evidence_id).await?;
-    let commit_seq = remember::next_commit_seq(txn)
-        .await
-        .map_err(remember_error)?;
-    let stream_seq = remember::issue_stream_log_row(txn, &stream, commit_seq)
-        .await
-        .map_err(remember_error)?;
-    remember::insert_outbox(
+    let issued = stream_repo::issue_ticket_in_txn(
         txn,
-        auth.tenant_id().0,
-        commit_seq,
-        stream_seq,
-        remember::MEMORY_LIFECYCLE,
+        &stream,
         evidence_id,
+        remember::MEMORY_LIFECYCLE,
+        None,
     )
     .await
-    .map_err(remember_error)?;
-    Ok((stream_seq, commit_seq, stream))
+    .map_err(db_error)?;
+    Ok((issued.stream_seq, issued.commit_seq, stream))
 }
 
 /// ADR-0067 D-J / ADR-0057 D-B / ADR-0020: the lifecycle side of a `memory.note_put` replacement, for the version
@@ -413,7 +406,7 @@ pub(crate) async fn retire_superseded_note_in_txn(
     replacement: Uuid,
     request_fingerprint: &str,
 ) -> Result<(), ErrorCode> {
-    let (stream_seq, commit_seq, _) = issue_lifecycle_ticket(txn, auth, stream, superseded).await?;
+    let (stream_seq, commit_seq, _) = issue_lifecycle_ticket(txn, stream, superseded).await?;
     let event_id = append_lifecycle_event(
         txn,
         auth,
@@ -538,7 +531,7 @@ pub async fn supersede_atomically(
     // The MEMORY_LIFECYCLE ticket and the append run before the arbiter UPDATE; a 0-row
     // UPDATE (already superseded / lost the concurrent race) rolls both back with the txn.
     let (stream_seq, commit_seq, _) =
-        issue_lifecycle_ticket(&mut txn, auth, &request.stream, request.target).await?;
+        issue_lifecycle_ticket(&mut txn, &request.stream, request.target).await?;
     let event_id = append_lifecycle_event(
         &mut txn,
         auth,
@@ -894,7 +887,7 @@ pub async fn restore_atomically(
     // New ticket (new stream seq) + RESTORE event before the arbiter UPDATE; a 0-row UPDATE
     // rolls both back.
     let (stream_seq, commit_seq, ticket_stream) =
-        issue_lifecycle_ticket(&mut txn, auth, &request.stream, request.target).await?;
+        issue_lifecycle_ticket(&mut txn, &request.stream, request.target).await?;
     let event_id = append_lifecycle_event(
         &mut txn,
         auth,
@@ -948,7 +941,7 @@ pub async fn restore_atomically(
         let successor = head.successor_id.ok_or(ErrorCode::Internal)?;
         // ADR-0057 D-B (W3): M2's deactivation is a status change — its E2 ticket retires M2's
         // point (the E1 ticket above resolves E1's memories only and never sees M2).
-        issue_lifecycle_ticket(&mut txn, auth, &request.stream, MemoryId(successor)).await?;
+        issue_lifecycle_ticket(&mut txn, &request.stream, MemoryId(successor)).await?;
         let deactivated: Option<Uuid> = sqlx::query_scalar(
             "UPDATE private.memory_records \
                 SET status = 'superseded', superseded_by = $2, superseded_at = clock_timestamp() \
@@ -1230,7 +1223,7 @@ pub async fn archive_or_unarchive_atomically(
     // New ticket (new stream seq) + lifecycle event before the arbiter UPDATE; a 0-row UPDATE
     // (a concurrent racer flipped the flag first) rolls both back.
     let (stream_seq, commit_seq, _) =
-        issue_lifecycle_ticket(&mut txn, auth, &request.stream, request.target).await?;
+        issue_lifecycle_ticket(&mut txn, &request.stream, request.target).await?;
     let (lifecycle_op, reason, undoes) = match op {
         DestructiveOp::MemoryArchive => (
             LifecycleOp::Archive,
@@ -1716,22 +1709,18 @@ pub async fn correct_atomically(
 
     // One MEMORY_LIFECYCLE ticket bound to E2 (NOT EVIDENCE_ACCEPTED — no distill round trip;
     // D-C: M2 is materialized directly below, projection resolves it via memory_evidence(E2)).
-    let commit_seq = remember::next_commit_seq(&mut txn)
-        .await
-        .map_err(remember_error)?;
-    let stream_seq = remember::issue_stream_log_row(&mut txn, &home, commit_seq)
-        .await
-        .map_err(remember_error)?;
-    remember::insert_outbox(
-        &mut txn,
-        auth.tenant_id().0,
+    let stream_repo::TicketIssued {
         commit_seq,
         stream_seq,
-        remember::MEMORY_LIFECYCLE,
+    } = stream_repo::issue_ticket_in_txn(
+        &mut txn,
+        &home,
         evidence_id,
+        remember::MEMORY_LIFECYCLE,
+        None,
     )
     .await
-    .map_err(remember_error)?;
+    .map_err(db_error)?;
 
     // M2: materialize the new version through the distill version-insert (memory_records +
     // PRIMARY memory_evidence(E2)). Authority via OriginBoundAuthorityPolicy for
@@ -1802,7 +1791,7 @@ pub async fn correct_atomically(
 
     // ADR-0049 / ADR-0057 D-B: the E1 ticket retires M1's point (M1 goes dead below; the E2
     // ticket above resolves E2's memories only). A 0-row UPDATE rolls it back with E2/M2.
-    issue_lifecycle_ticket(&mut txn, auth, &home, request.target).await?;
+    issue_lifecycle_ticket(&mut txn, &home, request.target).await?;
 
     // Sole arbiter (mirrors supersede): PostgreSQL re-evaluates status='active' under the row
     // lock. 0 rows (already superseded / lost the race) = Conflict, rolling E2/M2 back.
