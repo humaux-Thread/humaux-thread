@@ -6,7 +6,7 @@
 //!   services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.data_disclosure_sources,
 //!   ops.data_disclosures, private.evidence_objects], PostgreSQL(role_maintenance), PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::postgres, domain::dataclass, domain::egress,
-//!   domain::ids, humaux-testkit]
+//!   domain::ids, adapters::tests::support::truncate_probe, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [reserve writes the ledger row and its sources before the call and finalize records the outcome; no
 //!   DSN, unreachable DB or migration missing is a visible SKIP]
@@ -28,6 +28,10 @@ use humaux_testkit::{
 use postgres::error::SqlState;
 use postgres::{Client, NoTls};
 use sqlx::types::Uuid;
+
+#[path = "support/truncate_probe.rs"]
+mod truncate_probe;
+use truncate_probe::truncate_rejection;
 
 fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
     // libpq-standard `options=-c role=X` (URL-encoded). The older `options[role]=X` form
@@ -635,54 +639,131 @@ fn guard_trigger_rejects_second_deletion_requested_at_write() {
     );
 }
 
+/// Upgrades this session to the exclusive side of `DISCLOSURE_LEDGER_ADVISORY_LOCK` before a
+/// TRUNCATE: drop the fixture's shared hold first — asking for exclusive while holding shared
+/// in the same session blocks on itself.
+fn take_exclusive_ledger_lock(admin: &mut Client) {
+    admin
+        .execute(
+            "SELECT pg_advisory_unlock_shared($1)",
+            &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
+        )
+        .expect("release shared advisory lock");
+    admin
+        .execute(
+            "SELECT pg_advisory_lock($1)",
+            &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
+        )
+        .expect("take exclusive advisory lock before TRUNCATE");
+}
+
 /// §7.4/§77 append-only: TRUNCATE must be rejected on both tables (0047 originally only
 /// installed `FOR EACH ROW` triggers, which TRUNCATE never fires — closed by migrations/0057).
-/// Runs inside an explicit, never-committed transaction: even if the guard regressed and
-/// TRUNCATE actually succeeded, the rollback on drop still discards it rather than truncating
-/// the shared dev-DB table for real.
 #[test]
 fn guard_trigger_rejects_truncate() {
     run_db_fixture::<DisclosureFixture, _>("guard_trigger_rejects_truncate", |mut handle| {
         let _ = seed_finalized_disclosure(&mut handle);
-
-        // 升级为排他：先放掉 fixture 取的共享锁，再等所有并发读者放手。
-        // 顺序不能反——同一 session 持共享时申请排他会自己阻塞自己。
-        handle
-            .admin
-            .execute(
-                "SELECT pg_advisory_unlock_shared($1)",
-                &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
-            )
-            .expect("release shared advisory lock");
-        handle
-            .admin
-            .execute(
-                "SELECT pg_advisory_lock($1)",
-                &[&DISCLOSURE_LEDGER_ADVISORY_LOCK],
-            )
-            .expect("take exclusive advisory lock before TRUNCATE");
-
-        let mut txn = handle.admin.transaction().expect("begin txn");
-        let err = txn
-            .execute("TRUNCATE ops.data_disclosures CASCADE", &[])
-            .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)");
-        assert_eq!(
-            err.code(),
-            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
-            "expected insufficient_privilege, got: {err:?}"
-        );
-        drop(txn);
-
-        let mut txn = handle.admin.transaction().expect("begin txn");
-        let err = txn
-            .execute("TRUNCATE ops.data_disclosure_sources", &[])
-            .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)");
-        assert_eq!(
-            err.code(),
-            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
-            "expected insufficient_privilege, got: {err:?}"
-        );
+        take_exclusive_ledger_lock(&mut handle.admin);
+        for sql in [
+            "TRUNCATE ops.data_disclosures CASCADE",
+            "TRUNCATE ops.data_disclosure_sources",
+        ] {
+            let err = truncate_rejection(&mut handle.admin, sql);
+            assert_guard_rejection(sql, &err);
+        }
     });
+}
+
+/// 42501 from the §7.4 guard itself (both RAISEs say "append-only"), not some other privilege error.
+fn assert_guard_rejection(context: &str, err: &postgres::Error) {
+    assert_eq!(
+        err.code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+        "{context}: expected insufficient_privilege, got: {err:?}"
+    );
+    assert!(
+        format!("{err:?}").contains("append-only"),
+        "{context}: the rejection must come from the §7.4 append-only guard: {err:?}"
+    );
+}
+
+/// The probe's own session (`pid = $1`) is queued for ACCESS EXCLUSIVE on the child, so it already
+/// holds the parent; another binary's TRUNCATE … CASCADE queued there must not satisfy the wait.
+const PROBE_QUEUED_ON_CHILD: &str = "SELECT EXISTS (SELECT 1 FROM pg_locks \
+     WHERE relation = 'ops.data_disclosure_sources'::regclass \
+       AND mode = 'AccessExclusiveLock' AND NOT granted AND pid = $1)";
+
+/// Replays run 38683479316's cycle (§79): a second session holds the child (ROW EXCLUSIVE, as an
+/// FK insert does), waits until the probe holds the parent and queues for the child, sleeps
+/// `writer_delay`, then asks for the parent (ROW SHARE, as the FK check does). PostgreSQL runs
+/// deadlock detection once per wait, `deadlock_timeout` (1 s) after it starts: asking at once lets
+/// the probe's check (it waited first) find the cycle; asking after > 1 s leaves the cycle to the
+/// writer's own check. The probe must get the guard's rejection and the writer must commit.
+fn replay_child_then_parent_writer(name: &str, writer_delay: Duration) {
+    run_db_fixture::<DisclosureFixture, _>(name, |mut handle| {
+        take_exclusive_ledger_lock(&mut handle.admin);
+        let probe_pid: i32 = handle
+            .admin
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("probe pid")
+            .get(0);
+        let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so it is set");
+        let (child_held, child_held_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || -> Result<(), postgres::Error> {
+            // dep: PostgreSQL(any) — the concurrent child-then-parent writer session
+            let mut other = Client::connect(&dsn, NoTls)?;
+            let mut txn = other.transaction()?;
+            txn.batch_execute("LOCK TABLE ops.data_disclosure_sources IN ROW EXCLUSIVE MODE")?;
+            child_held.send(()).expect("the probe is listening");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !txn
+                .query_one(PROBE_QUEUED_ON_CHILD, &[&probe_pid])?
+                .get::<_, bool>(0)
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the probe never queued for the child"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(writer_delay);
+            txn.batch_execute("LOCK TABLE ops.data_disclosures IN ROW SHARE MODE")?;
+            txn.commit()
+        });
+        if child_held_rx.recv().is_err() {
+            panic!(
+                "the writer failed before holding the child: {:?}",
+                writer.join()
+            );
+        }
+        let err = truncate_rejection(&mut handle.admin, "TRUNCATE ops.data_disclosures CASCADE");
+        assert_guard_rejection(&format!("writer delay {writer_delay:?}"), &err);
+        writer.join().expect("writer thread").unwrap_or_else(|e| {
+            panic!(
+                "writer delay {writer_delay:?}: the concurrent writer was made the victim: {e:?}"
+            )
+        });
+    });
+}
+
+/// Writer asks for the parent at once: on a probe that waits without bound, the probe's own
+/// deadlock check fires first and the probe dies with 40P01 (the original flake).
+#[test]
+fn truncate_probe_survives_an_immediate_child_then_parent_writer() {
+    replay_child_then_parent_writer(
+        "truncate_probe_survives_an_immediate_child_then_parent_writer",
+        Duration::ZERO,
+    );
+}
+
+/// Writer asks for the parent after the probe has waited > 1 s: the probe's single deadlock check
+/// already found no cycle, so the writer's check fires and the other test would be the victim.
+#[test]
+fn a_late_child_then_parent_writer_is_never_the_deadlock_victim() {
+    replay_child_then_parent_writer(
+        "a_late_child_then_parent_writer_is_never_the_deadlock_victim",
+        Duration::from_millis(1_200),
+    );
 }
 
 /// §79.3 cross-tenant A/B: tenant B must not be able to finalize tenant A's disclosure, and
