@@ -6,7 +6,7 @@
 //!   services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.data_disclosure_sources,
 //!   ops.data_disclosures, private.evidence_objects], PostgreSQL(role_maintenance), PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::postgres, domain::dataclass, domain::egress,
-//!   domain::ids, humaux-testkit]
+//!   domain::ids, adapters::tests::support::truncate_probe, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [reserve writes the ledger row and its sources before the call and finalize records the outcome; no
 //!   DSN, unreachable DB or migration missing is a visible SKIP]
@@ -28,6 +28,10 @@ use humaux_testkit::{
 use postgres::error::SqlState;
 use postgres::{Client, NoTls};
 use sqlx::types::Uuid;
+
+#[path = "support/truncate_probe.rs"]
+mod truncate_probe;
+use truncate_probe::truncate_rejection;
 
 fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
     // libpq-standard `options=-c role=X` (URL-encoded). The older `options[role]=X` form
@@ -653,29 +657,6 @@ fn take_exclusive_ledger_lock(admin: &mut Client) {
         .expect("take exclusive advisory lock before TRUNCATE");
 }
 
-/// Runs a TRUNCATE the guard must reject inside a never-committed transaction and returns its
-/// error: even if the guard regressed and TRUNCATE succeeded, the rollback on drop discards it.
-/// TRUNCATE … CASCADE takes the parent before the referencing tables, the reverse of an FK
-/// insert, so it can close a lock cycle with another session. `lock_timeout` below
-/// `deadlock_timeout` (1 s default) makes this probe drop its locks first — it never waits long
-/// enough to make the other session the deadlock victim — and it tries again.
-// ponytail: retry loop because every test binary shares one database; once M24-7a gives each
-// binary its own, no concurrent writer exists and a single attempt suffices.
-fn truncate_rejection(admin: &mut Client, sql: &str) -> postgres::Error {
-    for _ in 0..100 {
-        let mut txn = admin.transaction().expect("begin txn");
-        txn.batch_execute("SET LOCAL lock_timeout = '200ms'")
-            .expect("set lock_timeout");
-        let err = txn
-            .execute(sql, &[])
-            .expect_err("TRUNCATE must be rejected (§7.4/§77 append-only)");
-        if err.code() != Some(&SqlState::LOCK_NOT_AVAILABLE) {
-            return err;
-        }
-    }
-    panic!("{sql}: lost the lock to concurrent sessions 100 times in a row");
-}
-
 /// §7.4/§77 append-only: TRUNCATE must be rejected on both tables (0047 originally only
 /// installed `FOR EACH ROW` triggers, which TRUNCATE never fires — closed by migrations/0057).
 #[test]
@@ -688,53 +669,91 @@ fn guard_trigger_rejects_truncate() {
             "TRUNCATE ops.data_disclosure_sources",
         ] {
             let err = truncate_rejection(&mut handle.admin, sql);
-            assert_eq!(
-                err.code(),
-                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
-                "{sql}: expected insufficient_privilege, got: {err:?}"
-            );
+            assert_guard_rejection(sql, &err);
         }
     });
 }
 
-/// Run 38683479316 (40P01): `TRUNCATE ops.data_disclosures CASCADE` locks the parent, then each
-/// referencing table; another test binary's insert into a referencing table holds the child
-/// (ROW EXCLUSIVE) and then asks for the parent (ROW SHARE, its FK check). The advisory lock
-/// above only fences this binary. Replayed deterministically with a second session: the probe
-/// must still see the guard's rejection, and the other session must never be the victim.
-#[test]
-fn truncate_probe_yields_to_a_child_then_parent_writer() {
-    run_db_fixture::<DisclosureFixture, _>(
-        "truncate_probe_yields_to_a_child_then_parent_writer",
-        |mut handle| {
-            take_exclusive_ledger_lock(&mut handle.admin);
-            let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so it is set");
-            let (child_held, child_held_rx) = std::sync::mpsc::channel();
-            let writer = std::thread::spawn(move || -> Result<(), postgres::Error> {
-                // dep: PostgreSQL(any) — the concurrent child-then-parent writer session
-                let mut other = Client::connect(&dsn, NoTls)?;
-                let mut txn = other.transaction()?;
-                txn.batch_execute("LOCK TABLE ops.data_disclosure_sources IN ROW EXCLUSIVE MODE")?;
-                child_held.send(()).expect("the probe is listening");
-                // By now the probe holds the parent and waits for this child.
-                std::thread::sleep(Duration::from_millis(300));
-                txn.batch_execute("LOCK TABLE ops.data_disclosures IN ROW SHARE MODE")?;
-                std::thread::sleep(Duration::from_millis(100));
-                txn.commit()
-            });
-            child_held_rx.recv().expect("the writer holds the child");
-            let err =
-                truncate_rejection(&mut handle.admin, "TRUNCATE ops.data_disclosures CASCADE");
-            assert_eq!(
-                err.code(),
-                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
-                "expected insufficient_privilege, got: {err:?}"
+/// 42501 from the §7.4 guard itself (both RAISEs say "append-only"), not some other privilege error.
+fn assert_guard_rejection(context: &str, err: &postgres::Error) {
+    assert_eq!(
+        err.code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+        "{context}: expected insufficient_privilege, got: {err:?}"
+    );
+    assert!(
+        format!("{err:?}").contains("append-only"),
+        "{context}: the rejection must come from the §7.4 append-only guard: {err:?}"
+    );
+}
+
+/// The probe is queued for ACCESS EXCLUSIVE on the child, so it already holds the parent.
+const PROBE_QUEUED_ON_CHILD: &str = "SELECT EXISTS (SELECT 1 FROM pg_locks \
+     WHERE relation = 'ops.data_disclosure_sources'::regclass \
+       AND mode = 'AccessExclusiveLock' AND NOT granted)";
+
+/// Replays run 38683479316's cycle (§79): a second session holds the child (ROW EXCLUSIVE, as an
+/// FK insert does), waits until the probe holds the parent and queues for the child, sleeps
+/// `writer_delay`, then asks for the parent (ROW SHARE, as the FK check does). PostgreSQL runs
+/// deadlock detection once per wait, `deadlock_timeout` (1 s) after it starts: asking at once lets
+/// the probe's check (it waited first) find the cycle; asking after > 1 s leaves the cycle to the
+/// writer's own check. The probe must get the guard's rejection and the writer must commit.
+fn replay_child_then_parent_writer(name: &str, writer_delay: Duration) {
+    run_db_fixture::<DisclosureFixture, _>(name, |mut handle| {
+        take_exclusive_ledger_lock(&mut handle.admin);
+        let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so it is set");
+        let (child_held, child_held_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || -> Result<(), postgres::Error> {
+            // dep: PostgreSQL(any) — the concurrent child-then-parent writer session
+            let mut other = Client::connect(&dsn, NoTls)?;
+            let mut txn = other.transaction()?;
+            txn.batch_execute("LOCK TABLE ops.data_disclosure_sources IN ROW EXCLUSIVE MODE")?;
+            child_held.send(()).expect("the probe is listening");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !txn.query_one(PROBE_QUEUED_ON_CHILD, &[])?.get::<_, bool>(0) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the probe never queued for the child"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(writer_delay);
+            txn.batch_execute("LOCK TABLE ops.data_disclosures IN ROW SHARE MODE")?;
+            txn.commit()
+        });
+        if child_held_rx.recv().is_err() {
+            panic!(
+                "the writer failed before holding the child: {:?}",
+                writer.join()
             );
-            writer
-                .join()
-                .expect("writer thread")
-                .expect("the concurrent writer must never be the deadlock victim");
-        },
+        }
+        let err = truncate_rejection(&mut handle.admin, "TRUNCATE ops.data_disclosures CASCADE");
+        assert_guard_rejection(&format!("writer delay {writer_delay:?}"), &err);
+        writer.join().expect("writer thread").unwrap_or_else(|e| {
+            panic!(
+                "writer delay {writer_delay:?}: the concurrent writer was made the victim: {e:?}"
+            )
+        });
+    });
+}
+
+/// Writer asks for the parent at once: on a probe that waits without bound, the probe's own
+/// deadlock check fires first and the probe dies with 40P01 (the original flake).
+#[test]
+fn truncate_probe_survives_an_immediate_child_then_parent_writer() {
+    replay_child_then_parent_writer(
+        "truncate_probe_survives_an_immediate_child_then_parent_writer",
+        Duration::ZERO,
+    );
+}
+
+/// Writer asks for the parent after the probe has waited > 1 s: the probe's single deadlock check
+/// already found no cycle, so the writer's check fires and the other test would be the victim.
+#[test]
+fn a_late_child_then_parent_writer_is_never_the_deadlock_victim() {
+    replay_child_then_parent_writer(
+        "a_late_child_then_parent_writer_is_never_the_deadlock_victim",
+        Duration::from_millis(1_200),
     );
 }
 

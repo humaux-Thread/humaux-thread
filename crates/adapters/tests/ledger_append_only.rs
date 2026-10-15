@@ -1,6 +1,7 @@
 //! `adapters::tests::ledger_append_only` — §75.2 / §19.1 append-only：两个账本的守卫在 UPDATE / DELETE / TRUNCATE 三条路径上都 必须拒绝。
 //! Depends-on: crates=[humaux-testkit, postgres, uuid]; services=[PostgreSQL(any) w=[control.credit_ledger,
-//!   control.tenants, ops.model_call_ledger]]; env=[HUMAUX_TEST_PG_DSN]; modules=[humaux-testkit]
+//!   control.tenants, ops.model_call_ledger]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::tests::support::truncate_probe,
+//!   humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [UPDATE, DELETE and TRUNCATE on control.credit_ledger and ops.model_call_ledger must all be refused,
 //!   TRUNCATE included (0101's statement trigger); an isolation setup failure is a fixture error, not a pass]
@@ -30,6 +31,10 @@
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use uuid::Uuid;
+
+#[path = "support/truncate_probe.rs"]
+mod truncate_probe;
+use truncate_probe::truncate_rejection;
 
 struct Handle {
     admin: Client,
@@ -173,22 +178,16 @@ fn credit_ledger_rejects_update_delete_and_truncate() {
             // in a foreign key constraint」拒绝（control.referral_rewards 引用了它），守卫
             // 触发器根本不会 fire，断言就变成在测 FK 而不是在测 §75.2。
             //
-            // ponytail: 因此本条会短暂持有 credit_ledger + referral_rewards 两张表的
-            // AccessExclusiveLock。目前全仓没有第二个测试从库里读这两张表，构不成死锁环，
-            // 所以不设 advisory lock（只有一个参与者的锁是空操作）。**若将来新增了读这两张表
-            // 的 DB 测试，必须让它取共享 advisory lock 与本条互斥**——照
-            // `disclosure_ledger.rs` + `testkit::DISCLOSURE_LEDGER_ADVISORY_LOCK` 的形状做，
-            // 那个洞是实测踩出来的（40P01）。
-            let mut txn = h.admin.transaction().expect("begin txn");
-            let err = txn
-                .execute("TRUNCATE control.credit_ledger CASCADE", &[])
-                .expect_err("§75.2: 整表清空必须被拒（0101 之前这里是成功的）");
+            // 因此本条会短暂持有 credit_ledger + referral_rewards 的 AccessExclusiveLock；探针走
+            // `truncate_rejection`（support/truncate_probe.rs）：每次尝试的锁持有不超过 deadlock_timeout，
+            // 并发会话永远不会成为死锁牺牲者（run 38683479316 的 40P01 就是这一形状）。
+            // §75.2: 整表清空必须被拒（0101 之前这里是成功的）。
+            let err = truncate_rejection(&mut h.admin, "TRUNCATE control.credit_ledger CASCADE");
             assert_eq!(
                 err.code().map(|c| c.code()),
                 Some("42501"),
                 "expected insufficient_privilege, got: {err:?}"
             );
-            drop(txn);
         },
     );
 }
@@ -223,15 +222,14 @@ fn model_call_ledger_rejects_delete_and_truncate() {
         // 这里只打 TRUNCATE 与空集 DELETE 的**语句级**行为：插一条合法的
         // model_call_ledger 行需要 provider_pricing_versions 等一串前置，那些已由
         // `model_call_ledger.rs` 覆盖；本条要证的是 0101 补上的那条腿。
-        let mut txn = h.admin.transaction().expect("begin txn");
         // `CASCADE` 不是为了真的级联清空，而是为了让 TRUNCATE **走到** 0101 的守卫：
         // PostgreSQL 先做 `heap_truncate_check_FKs`，后跑 BEFORE TRUNCATE 触发器。自从
         // `ops.data_disclosures` 加了指向本表的外键，裸 TRUNCATE 会先撞 FK 报 0A000，
         // 守卫一次都执行不到——表面仍然"失败"，但被验证的已经不是 §19.1 那道防线了。
         // 这正是本文件下面那条断言（"不是别的什么把它顺手挡住了"）要防的形态。
-        let err = txn
-            .execute("TRUNCATE ops.model_call_ledger CASCADE", &[])
-            .expect_err("§19.1: 整表清空必须被拒（0101 之前这里是成功的）");
+        // 级联面包含 ops.data_disclosures 及其子表——别的测试二进制正在写的表，所以走同一个探针。
+        // §19.1: 整表清空必须被拒（0101 之前这里是成功的）。
+        let err = truncate_rejection(&mut h.admin, "TRUNCATE ops.model_call_ledger CASCADE");
         assert_eq!(
             err.code().map(|c| c.code()),
             Some("42501"),
@@ -241,6 +239,5 @@ fn model_call_ledger_rejects_delete_and_truncate() {
             format!("{err:?}").contains("append-only"),
             "错误必须来自 §19.1 的 append-only 守卫本身，而不是别的什么把它顺手挡住了: {err:?}"
         );
-        drop(txn);
     });
 }
