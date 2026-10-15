@@ -42,50 +42,49 @@ pub struct CacheConfig {
     pub enabled: bool,
 }
 
+/// Byte accounting, one critical section so reservation and release never interleave.
+#[derive(Default)]
+struct Accounts {
+    per_tenant: HashMap<TenantId, u64>,
+    total: u64,
+}
+
 /// Shared between the cache handle and moka's eviction listener.
 struct State {
     name: CacheName,
-    tenants: Mutex<HashMap<TenantId, u64>>,
-    total: AtomicU64,
+    accounts: Mutex<Accounts>,
     in_flight: AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // The guarded data is a plain map of counters, valid after any panic, so a poisoned lock is still usable.
+    // The guarded data is plain counters, valid after any panic, so a poisoned lock is still usable.
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl State {
     /// Charges `bytes` to `tenant` unless that takes it over `cap`; the check and the charge are one critical section.
     fn try_reserve(&self, tenant: TenantId, bytes: u64, cap: u64) -> bool {
-        let mut tenants = lock(&self.tenants);
-        let used = tenants.entry(tenant).or_insert(0);
+        let mut accounts = lock(&self.accounts);
+        let used = accounts.per_tenant.entry(tenant).or_insert(0);
         if used.saturating_add(bytes) > cap {
             return false;
         }
         *used += bytes;
-        drop(tenants);
-        let total = self.total.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        set_cache_bytes(self.name, total);
+        accounts.total = accounts.total.saturating_add(bytes);
+        set_cache_bytes(self.name, accounts.total);
         true
     }
 
     fn release(&self, tenant: TenantId, bytes: u64) {
-        let mut tenants = lock(&self.tenants);
-        if let Some(used) = tenants.get_mut(&tenant) {
+        let mut accounts = lock(&self.accounts);
+        if let Some(used) = accounts.per_tenant.get_mut(&tenant) {
             *used = used.saturating_sub(bytes);
             if *used == 0 {
-                tenants.remove(&tenant);
+                accounts.per_tenant.remove(&tenant);
             }
         }
-        drop(tenants);
-        let prev = self
-            .total
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |t| {
-                Some(t.saturating_sub(bytes))
-            })
-            .unwrap_or(0);
-        set_cache_bytes(self.name, prev.saturating_sub(bytes));
+        accounts.total = accounts.total.saturating_sub(bytes);
+        set_cache_bytes(self.name, accounts.total);
     }
 }
 
@@ -137,8 +136,7 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
     pub fn new(name: CacheName, config: CacheConfig) -> Self {
         let state = Arc::new(State {
             name,
-            tenants: Mutex::new(HashMap::new()),
-            total: AtomicU64::new(0),
+            accounts: Mutex::new(Accounts::default()),
             in_flight: AtomicU64::new(0),
         });
         let cache = (config.enabled && config.capacity_bytes > 0).then(|| {
