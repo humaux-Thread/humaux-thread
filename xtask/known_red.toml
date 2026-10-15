@@ -267,13 +267,3 @@ reason = "due since Phase 1; no mutation harness (cargo-mutants nightly and PR s
 id = "retrieval benchmark"
 owner = "M11"
 reason = "due since Phase 6; no retrieval benchmark corpus, embedding index or per-change report runner"
-
-[[due_items]]
-id = "tenant isolation"
-owner = "M08-3"
-reason = "due since Phase 1; no gate is tied to this name (rls-check covers table policies); the cross-tenant canary G-M08-3 lands in card M08-3"
-
-[[due_items]]
-id = "secret isolation"
-owner = "M05"
-reason = "due since Phase 4; no gate or test is tied to this name; M05 (trust domains, egress, keys) owns workload-secret isolation (cf. G11-R1 negative sentinel 3: a consolidation worker holding a BYOK decrypt client must be red); no M05 card exists yet"
