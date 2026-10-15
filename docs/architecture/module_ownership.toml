@@ -43,6 +43,8 @@ humaux-gateway = "M26"
 humaux-retrieval-worker = "M10"
 humaux-private-worker = "M15"
 humaux-consolidation-worker = "M15"
+# ponytail: a row of the private repository only; the open-source export has no cloud package, so it is dropped
+# at the split (ADR-0074 "Split checklist", card M24-14).
 humaux-public-worker = "M20"
 humaux-maintenance = "M21"
 humaux-admin = "M22"

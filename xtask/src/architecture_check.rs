@@ -867,8 +867,14 @@ fn dependency_rule_check(root: &Path) -> Verdict {
 /// Crate -> home-module rows G-M01-1 compares the workspace against (M01 D1, ADR-0074 D-B).
 const MODULE_OWNERSHIP_FILE: &str = "docs/architecture/module_ownership.toml";
 
+/// Edition value of the open-source crates (ADR-0073 D-A).
+const EDITION_CORE: &str = "core";
+
+/// Edition value of the cloud-only crates (ADR-0073 D-A).
+const EDITION_CLOUD: &str = "cloud";
+
 /// The closed vocabulary of `[package.metadata.humaux] edition` (ADR-0073 D-A, ADR-0074 D-A).
-const EDITIONS: [&str; 2] = ["core", "cloud"];
+const EDITIONS: [&str; 2] = [EDITION_CORE, EDITION_CLOUD];
 
 /// Highest module id the ownership rows may name (M01 design note: M01..M28).
 const MODULE_ID_MAX: u8 = 28;
@@ -891,6 +897,11 @@ fn metadata_packages(metadata_json: &str) -> Result<Vec<serde_json::Value>, Stri
     }
 }
 
+/// `name` of one metadata package.
+fn package_name(pkg: &serde_json::Value) -> Option<&str> {
+    pkg.get("name")?.as_str()
+}
+
 /// `[package.metadata.humaux] edition` of one metadata package, when it is a string.
 fn declared_edition(pkg: &serde_json::Value) -> Option<&str> {
     pkg.pointer("/metadata/humaux/edition")?.as_str()
@@ -908,7 +919,7 @@ pub fn workspace_members_from(metadata_json: &str, ownership_toml: &str) -> Verd
     let mut problems = Vec::new();
     let mut members = BTreeSet::new();
     for pkg in &packages {
-        let Some(name) = pkg.get("name").and_then(|n| n.as_str()) else {
+        let Some(name) = package_name(pkg) else {
             problems.push("cargo metadata lists a package without a `name`".to_string());
             continue;
         };
@@ -963,13 +974,19 @@ pub fn workspace_members_from(metadata_json: &str, ownership_toml: &str) -> Verd
 }
 
 /// G-M01-2 pure comparator (ADR-0073 D-B; M01 design §4): no `edition = "core"` package may depend on an
-/// `edition = "cloud"` package through a normal, dev or build dependency, optional or not — cloud may depend on
-/// core. Direct edges of every core package suffice: a transitive core -> cloud path has a first core -> X edge
-/// where X is cloud or X is core with its own offending edge (induction over the member graph), and
-/// `cargo metadata --no-deps` lists every declared edge, target-specific and feature-gated ones included. A
-/// package whose edition is missing or unknown is skipped here — G-M01-1 reports it. `NotApplicable` while no
+/// `edition = "cloud"` package through a normal, dev or build dependency — optional, renamed or
+/// target-specific or not; cloud may depend on core. Direct edges of every core package suffice by induction
+/// over the member graph: a transitive core -> cloud path starts with a core -> X edge, X cloud or X core with
+/// its own offending edge. `cargo metadata --no-deps` lists every declared edge (the `name` field is the
+/// package name even when the dependency is renamed). Fail-closed on shape: a core package without a
+/// `dependencies` array or with a nameless dependency, and a core path dependency that is not a workspace
+/// member (the induction needs a member-closed graph), are violations, never skips. `NotApplicable` while no
 /// package is cloud (the expected state in the open-source repository after the split, ADR-0073 D-D).
 /// Injected-fault record: ADR-0074.
+// ponytail: crate-granular — cloud-to-be files inside core crates are invisible here (the shrink-only file
+// ledger of card M01-5 tracks them); packages with a missing or unknown edition are skipped and rely on G-M01-1
+// being green in the same run; member-closure of the graph rests on the non-member path-dependency violation
+// below (upgrade: file-level ledger for the first, one full `cargo metadata` for the rest).
 pub fn core_cloud_edges_from(metadata_json: &str) -> Verdict {
     let packages = match metadata_packages(metadata_json) {
         Ok(p) => p,
@@ -977,40 +994,21 @@ pub fn core_cloud_edges_from(metadata_json: &str) -> Verdict {
     };
     let cloud: BTreeSet<&str> = packages
         .iter()
-        .filter(|p| declared_edition(p) == Some("cloud"))
-        .filter_map(|p| p.get("name")?.as_str())
+        .filter(|p| declared_edition(p) == Some(EDITION_CLOUD))
+        .filter_map(package_name)
         .collect();
     if cloud.is_empty() {
-        return Verdict::NotApplicable("package with edition = \"cloud\"".to_string());
+        return Verdict::NotApplicable(format!("package with edition = \"{EDITION_CLOUD}\""));
     }
+    let members: BTreeSet<&str> = packages.iter().filter_map(package_name).collect();
     let mut violations = Vec::new();
     for pkg in &packages {
-        let (Some(name), Some("core")) = (
-            pkg.get("name").and_then(|n| n.as_str()),
-            declared_edition(pkg),
-        ) else {
+        let Some(name) = package_name(pkg) else {
+            violations.push("cargo metadata lists a package without a `name`".to_string());
             continue;
         };
-        for dep in pkg
-            .get("dependencies")
-            .and_then(|d| d.as_array())
-            .into_iter()
-            .flatten()
-        {
-            let Some(dep_name) = dep.get("name").and_then(|n| n.as_str()) else {
-                continue;
-            };
-            if cloud.contains(dep_name) {
-                let kind = dep.get("kind").and_then(|k| k.as_str()).unwrap_or("normal");
-                let optional = if dep.get("optional").and_then(|o| o.as_bool()) == Some(true) {
-                    ", optional"
-                } else {
-                    ""
-                };
-                violations.push(format!(
-                    "core package `{name}` depends on cloud package `{dep_name}` ({kind} dependency{optional}; ADR-0073 D-B: cloud may depend on core, never the reverse)"
-                ));
-            }
+        if declared_edition(pkg) == Some(EDITION_CORE) {
+            violations.extend(core_package_edge_violations(name, pkg, &cloud, &members));
         }
     }
     if violations.is_empty() {
@@ -1018,6 +1016,52 @@ pub fn core_cloud_edges_from(metadata_json: &str) -> Verdict {
     } else {
         Verdict::Fail(violations)
     }
+}
+
+/// G-M01-2 violation lines of one core package: edges to `cloud` packages, path dependencies outside
+/// `members`, and a malformed dependency list.
+fn core_package_edge_violations(
+    name: &str,
+    pkg: &serde_json::Value,
+    cloud: &BTreeSet<&str>,
+    members: &BTreeSet<&str>,
+) -> Vec<String> {
+    let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_array()) else {
+        return vec![format!(
+            "core package `{name}` has no `dependencies` array in cargo metadata (a missing list cannot prove the absence of a cloud edge)"
+        )];
+    };
+    let mut out = Vec::new();
+    for dep in deps {
+        let Some(dep_name) = dep.get("name").and_then(|n| n.as_str()) else {
+            out.push(format!(
+                "core package `{name}` lists a dependency without a `name`"
+            ));
+            continue;
+        };
+        if dep.get("path").is_some_and(|p| !p.is_null()) && !members.contains(dep_name) {
+            out.push(format!(
+                "core package `{name}` has a path dependency on `{dep_name}`, which is not a workspace member (G-M01-2 needs a member-closed graph)"
+            ));
+        }
+        if cloud.contains(dep_name) {
+            let kind = dep.get("kind").and_then(|k| k.as_str()).unwrap_or("normal");
+            let mut qualifiers = String::new();
+            if dep.get("optional").and_then(|o| o.as_bool()) == Some(true) {
+                qualifiers.push_str(", optional");
+            }
+            if let Some(alias) = dep.get("rename").and_then(|r| r.as_str()) {
+                qualifiers.push_str(&format!(", renamed `{alias}`"));
+            }
+            if let Some(target) = dep.get("target").and_then(|t| t.as_str()) {
+                qualifiers.push_str(&format!(", target `{target}`"));
+            }
+            out.push(format!(
+                "core package `{name}` depends on cloud package `{dep_name}` ({kind} dependency{qualifiers}; ADR-0073 D-B: cloud may depend on core, never the reverse)"
+            ));
+        }
+    }
+    out
 }
 
 /// G-M01-1 over the real workspace.
@@ -7799,6 +7843,113 @@ mod tests {
         assert!(fail_lines(core_cloud_edges_from("{}")).contains("no `packages` array"));
     }
 
+    /// 注错 (G-M01-2): a target-specific dev dependency (`[target.'cfg(unix)'.dev-dependencies]`) is still an edge.
+    #[test]
+    fn g_m01_2_fails_on_a_target_specific_core_to_cloud_dev_dependency() {
+        let targeted = serde_json::json!({"name": "c", "kind": "dev", "optional": false, "target": "cfg(unix)"});
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![targeted]),
+            ed_pkg("c", Some("cloud"), vec![]),
+        ]);
+        let out = fail_lines(core_cloud_edges_from(&doc));
+        assert!(
+            out.contains("`a` depends on cloud package `c` (dev dependency, target `cfg(unix)`;"),
+            "{out}"
+        );
+    }
+
+    /// 注错 (G-M01-2): `pw = { package = "c", .. }` — metadata keeps the package name in `name` and the alias in
+    /// `rename`, so a renamed dependency is caught under the real package name.
+    #[test]
+    fn g_m01_2_fails_on_a_renamed_core_to_cloud_dependency() {
+        let renamed =
+            serde_json::json!({"name": "c", "kind": null, "optional": false, "rename": "pw"});
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![renamed]),
+            ed_pkg("c", Some("cloud"), vec![]),
+        ]);
+        let out = fail_lines(core_cloud_edges_from(&doc));
+        assert!(
+            out.contains("`a` depends on cloud package `c` (normal dependency, renamed `pw`;"),
+            "{out}"
+        );
+    }
+
+    /// Fail-closed shape: a core package whose `dependencies` array is absent cannot prove the absence of a
+    /// cloud edge, and neither can a nameless dependency entry.
+    #[test]
+    fn g_m01_2_fails_closed_on_a_missing_dependencies_array_or_nameless_dependency() {
+        let no_deps = serde_json::json!({"name": "a", "metadata": {"humaux": {"edition": "core"}}});
+        let nameless = ed_pkg("b", Some("core"), vec![serde_json::json!({"kind": null})]);
+        let doc = ed_doc(&[no_deps, nameless, ed_pkg("c", Some("cloud"), vec![])]);
+        let out = fail_lines(core_cloud_edges_from(&doc));
+        assert!(
+            out.contains("core package `a` has no `dependencies` array"),
+            "{out}"
+        );
+        assert!(
+            out.contains("core package `b` lists a dependency without a `name`"),
+            "{out}"
+        );
+    }
+
+    /// Member-closed graph: a core path dependency on a package that is not a workspace member is red; a path
+    /// dependency on a member and a registry dependency (no `path`) are fine.
+    #[test]
+    fn g_m01_2_fails_on_a_core_path_dependency_outside_the_workspace() {
+        let outside =
+            serde_json::json!({"name": "x", "kind": null, "optional": false, "path": "/w/x"});
+        let member =
+            serde_json::json!({"name": "b", "kind": null, "optional": false, "path": "/w/b"});
+        let registry = ed_dep("serde", None);
+        let doc = ed_doc(&[
+            ed_pkg("a", Some("core"), vec![outside, member, registry]),
+            ed_pkg("b", Some("core"), vec![]),
+            ed_pkg("c", Some("cloud"), vec![]),
+        ]);
+        let out = fail_lines(core_cloud_edges_from(&doc));
+        assert!(
+            out.contains(
+                "core package `a` has a path dependency on `x`, which is not a workspace member"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.lines().count(), 1, "{out}");
+    }
+
+    #[test]
+    fn is_module_id_accepts_m01_to_m28_only() {
+        for ok in ["M01", "M09", "M28"] {
+            assert!(is_module_id(ok), "{ok}");
+        }
+        for bad in ["M00", "M29", "M1", "M100", "m01", "X01", "M+1", "M0a", ""] {
+            assert!(!is_module_id(bad), "{bad}");
+        }
+    }
+
+    /// Non-comment occurrences of `head` + `tail` in this file's own source. The needle is passed in two halves
+    /// so that this test's source does not contain it and cannot count itself.
+    fn own_source_count(head: &str, tail: &str) -> usize {
+        let needle = format!("{head}{tail}");
+        std::fs::read_to_string(real_root().join(SELF_FILE))
+            .expect("read architecture_check.rs")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(&needle))
+            .count()
+    }
+
+    /// `run()` must list both edition gates: a deleted or commented-out call tuple leaves a gate that never runs
+    /// and reads as green (the 恒真闸 shape §57.1 exists to prevent). Counted `== 1`, not `>= 1`.
+    #[test]
+    fn run_wires_each_m01_edition_gate_exactly_once() {
+        assert_eq!(own_source_count("m01_1_workspace_", "members(&root),"), 1);
+        assert_eq!(own_source_count("m01_2_core_cloud_", "edges(&root),"), 1);
+    }
+
+    // ponytail: pins `humaux-public-worker` as this private repository's one cloud member. The open-source export
+    // (card M24-14) has no cloud package: there this test and the `humaux-public-worker` row of
+    // module_ownership.toml go stale and are dropped at the split (ADR-0074 "Split checklist").
     /// The real workspace has a cloud member (`humaux-public-worker`), so this must be `Pass`, not
     /// `not_applicable`: an edition flip that empties the cloud set must not read as green.
     #[test]

@@ -26,9 +26,19 @@ of the manifests that the existing `cargo metadata` reading in `xtask architectu
 - **D-D G-M01-2 (core never depends on cloud).** Same sub-check family: no `core` package has a normal, dev or build
   dependency, optional or not, on a `cloud` package. Direct edges of core packages are sufficient (induction over
   the member graph: a transitive path starts with a core -> X edge, X cloud or X core with its own offending edge).
-  Packages with a missing or unknown edition are skipped here because G-M01-1 reports them. With no cloud package
-  the sub-check prints `not_applicable` naming `package with edition = "cloud"` — the expected state of the
-  open-source repository after the split, which keeps this gate.
+  Packages with a missing or unknown edition are skipped here because G-M01-1 reports them. The gate fails closed
+  on shape: a core package without a `dependencies` array, a nameless dependency, and a core path dependency on a
+  package that is not a workspace member (the induction needs a member-closed graph) are violations. Renamed
+  (`pw = { package = "humaux-public-worker" }`) and target-specific (`[target.'cfg(unix)'.dev-dependencies]`) edges
+  are caught under the real package name. With no cloud package the sub-check prints `not_applicable` naming
+  `package with edition = "cloud"` — the expected state of the open-source repository after the split, which keeps
+  this gate.
+- **D-D2 Granularity.** G-M01-2 is crate-granular. Cloud-to-be code that still sits inside core crates —
+  `humaux-adapters` (`contribution_*`, `public_*`, `distill_*`, `consolidation_reasoner`), `humaux-application`
+  (`contribute`, `contribution_execution`, `public_evolve`, `consolidate`), `humaux-domain` (`public`,
+  `consolidate`), and the `private-worker` / `consolidation-worker` binaries — is invisible to it. It is tracked by
+  a shrink-only file-level ledger delivered with card M01-5 (file -> module map plus layer exceptions); this ADR
+  does not build it.
 - **D-E Where.** Both live in `xtask/src/architecture_check.rs` next to the §78.3 comparator and share its one
   `cargo metadata` spawn helper; pure comparators take the JSON text so unit tests inject fixtures.
 
@@ -38,14 +48,25 @@ of the manifests that the existing `cargo metadata` reading in `xtask architectu
 - Deciding by directory name: silent when a crate moves.
 - A workspace default of `core`: a new cloud-bound crate would be core by omission.
 
+## Split checklist (card M24-14)
+The open-source export has no cloud package, so two objects of this card go stale there and are dropped at the
+split: the `humaux-public-worker` row of `module_ownership.toml` (G-M01-1 compares rows with the member set), and
+the xtask test `g_m01_2_real_repo_passes_with_a_cloud_member_present`. G-M01-2 itself stays and prints
+`not_applicable` there.
+
 ## Red records
 Each gate has an injected-fault record on a throwaway branch; run ids are in the card's PR description.
 - G-M01-1: delete the `edition` line of one member (`ci/red-m01-1a`) -> the sub-check fails naming that package.
 - G-M01-2: a `[dev-dependencies]` entry from `humaux-telemetry` to `humaux-public-worker` (`ci/red-m01-1b`) ->
   the sub-check fails naming the edge.
+- G-M01-2, renamed and target-specific edge: `[target.'cfg(unix)'.dev-dependencies]` with
+  `pw = { package = "humaux-public-worker", .. }` in `humaux-telemetry` (`ci/red-m01-1c`) -> the sub-check fails
+  naming the package, the kind, the alias and the target.
 - Unit fixtures (`xtask`, `architecture_check::tests`): missing edition, unknown edition, member missing from the
-  ownership file, extra row, bad module id, core -> cloud normal / dev / build / optional edges, cloud -> core
-  allowed, no-cloud `not_applicable`.
+  ownership file, extra row, module-id bounds (`M00` / `M29` rejected, `M01` / `M28` accepted), core -> cloud
+  normal / dev / build / optional / target-specific / renamed edges, cloud -> core allowed, a missing
+  `dependencies` array and a non-member path dependency (both fail closed), no-cloud `not_applicable`, and a
+  source-count test that `run()` lists each gate exactly once.
 
 ## Consequences
 - A new crate lands with its edition and its `[crates]` row in the same PR; a core crate that needs cloud
