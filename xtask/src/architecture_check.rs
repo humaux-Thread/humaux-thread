@@ -31,7 +31,7 @@
 //! ([`strip_cfg_test_module`]), both documented
 //! at their definitions below.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -2059,6 +2059,144 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
 }
 
 // ============================================================================
+// M08 D1 / G-M08-2 "one home": the final read gate has one home. `can_read(` is the visibility judge (§6.1.1); the
+// all-backing-evidence closure around it (§8.6) lives in `crates/adapters/src/read_gate.rs`, so a read op that calls
+// `can_read(` anywhere else is judging visibility itself and can drift from the closure (a Memory with an unreadable
+// backing Evidence row slipping through). The number of `can_read` tokens per file is pinned with `==`.
+// ============================================================================
+
+/// `(file, count, why)`: the declared sites G-M08-2 pins, each with the exact number of bare `can_read` tokens its
+/// non-test code holds ([`can_read_tokens`]: the import counts, so a file that imports and calls once is `2`). Compared
+/// per file with `==`, so a file added or dropped, one more use in a declared file, and one fewer are all red.
+/// Adapters and bins non-test code only (`domain` defines `can_read`, `projection` mirrors it for Qdrant filters under
+/// G-M08-7).
+///
+/// ponytail: the four files below `read_gate.rs` judge visibility themselves instead of calling
+/// `read_gate::readable_memory_ids`, upgrade by card M08-7 (coord task 1ce18be1-6af3-4eed-8930-a34789fe12ed), which
+/// routes them through the gate and shrinks this const, `contribution_entry_repo.rs` first since it re-implements the
+/// Memory-plus-backing-Evidence closure for contribution sources.
+const M08_CAN_READ_SITES: [(&str, usize, &str); 5] = [
+    (
+        "crates/adapters/src/read_gate.rs",
+        3,
+        "the gate: the import and the two calls of `readable_memory_ids`, which judge the Memory and every backing Evidence row (§6.1.1, §8.6)",
+    ),
+    (
+        "crates/adapters/src/read_materialize.rs",
+        2,
+        "`load_overlay`: re-judges just-written Evidence rows of the RYW overlay, no Memory is involved (§15.5); not yet routed through the gate (M08-7)",
+    ),
+    (
+        "crates/adapters/src/contribution_entry_repo.rs",
+        2,
+        "`visible`: judges a contribution source's Memory and its backing Evidence rows itself; not yet routed through the gate (M08-7)",
+    ),
+    (
+        "crates/adapters/src/operation_receipt.rs",
+        2,
+        "`replay`: re-judges the prior Evidence row before reissuing a consistency token; not yet routed through the gate (M08-7)",
+    ),
+    (
+        "crates/adapters/src/continuity_read.rs",
+        2,
+        "`validate_evidence`: re-judges the Evidence rows behind a continuity fact; not yet routed through the gate (M08-7)",
+    ),
+];
+
+/// The identifier G-M08-2 counts. Not `can_read(`: an alias (`use ...::can_read as cr; cr(..)`), a function pointer
+/// (`let g = identity::can_read; g(..)`), an argument (`helper(can_read, v)`, `judge!(can_read, v)`) and `can_read (`
+/// all use the function without that exact spelling.
+const CAN_READ: &str = "can_read";
+
+/// Whether `disp` (repo-relative, `/`-separated) is production code G-M08-2 scans: `crates/adapters/src/**` and
+/// `bins/<bin>/src/**`. Test trees are already excluded by [`door_production_sources`].
+fn can_read_scan_scope(disp: &str) -> bool {
+    let segments: Vec<&str> = disp.split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["crates", "adapters", "src", ..] | ["bins", _, "src", ..]
+    )
+}
+
+/// How many times `source`'s code names `can_read`: block comments blanked ([`strip_block_comments`]) and every line
+/// cut at its `//` comment ([`code_before_line_comment`], so `///` and `//!` lines are empty), then the identifier
+/// `can_read` with a non-identifier byte (or the line edge) on both sides. A call, an import (with or without `as`),
+/// a function pointer, an argument and `can_read (` all count; `cannot_read`, `my_can_read` and `can_read_all` are
+/// other identifiers.
+///
+/// ponytail: textual, so `can_read` inside a string literal counts (a false red, never a false green) and a wrapper
+/// that calls it under another name is judged by its own file, upgrade to a syn-level call-graph check if either ever
+/// shows up.
+fn can_read_tokens(source: &str) -> usize {
+    strip_block_comments(source)
+        .lines()
+        .map(|line| {
+            let code = code_before_line_comment(line);
+            let bytes = code.as_bytes();
+            code.match_indices(CAN_READ)
+                .filter(|(at, _)| {
+                    (*at == 0 || !is_ident_byte(bytes[*at - 1]))
+                        && !bytes
+                            .get(*at + CAN_READ.len())
+                            .is_some_and(|b| is_ident_byte(*b))
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// M08 D1 / G-M08-2: for every file in [`can_read_scan_scope`] the number of `can_read` tokens ([`can_read_tokens`])
+/// equals its [`M08_CAN_READ_SITES`] count, and a file with tokens that is not declared is red. Red lines name the file
+/// and, for a declared one, both the found and the expected count: "G-M08-2: can_read( call outside the read gate"
+/// for an undeclared file or an extra use, and "... expected N" for a use that is gone or a file that does not exist.
+/// `not_applicable` only when `crates/adapters/src` itself does not exist, and it names that directory (§57.1 第2条).
+fn m08_2_can_read_one_home(root: &Path) -> Verdict {
+    if !root.join("crates/adapters/src").is_dir() {
+        return Verdict::NotApplicable(
+            "missing object: crates/adapters/src (the read gate's crate) not delivered yet"
+                .to_string(),
+        );
+    }
+    let found: BTreeMap<String, usize> = door_production_sources(root)
+        .into_iter()
+        .filter(|(disp, _)| can_read_scan_scope(disp))
+        .map(|(disp, source)| (disp, can_read_tokens(&source)))
+        .filter(|(_, tokens)| *tokens > 0)
+        .collect();
+    let mut problems = Vec::new();
+    for (file, tokens) in &found {
+        if !M08_CAN_READ_SITES
+            .iter()
+            .any(|(site, _, _)| *site == file.as_str())
+        {
+            problems.push(format!(
+                "G-M08-2: can_read( call outside the read gate: {file} holds {tokens} `can_read` token(s) and is not a declared site \
+                 (route the read through read_gate::readable_memory_ids, or declare the file in M08_CAN_READ_SITES with its count and reason)"
+            ));
+        }
+    }
+    for (file, expected, _) in M08_CAN_READ_SITES {
+        let actual = found.get(file).copied().unwrap_or(0);
+        if actual > expected {
+            problems.push(format!(
+                "G-M08-2: can_read( call outside the read gate: {file} holds {actual} `can_read` tokens, expected {expected} \
+                 (an extra use in a declared site; route it through read_gate::readable_memory_ids, or raise the count in M08_CAN_READ_SITES with its reason)"
+            ));
+        } else if actual < expected {
+            problems.push(format!(
+                "G-M08-2: {file} holds {actual} `can_read` tokens, expected {expected} \
+                 (a declared use is gone, or the file does not exist; lower the count in M08_CAN_READ_SITES, or drop the file once it is empty)"
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+// ============================================================================
 // §23.1② / §22.5: `LedgerCounts` field set is exactly 6 — same shape as §37.2's "12 列"
 // check. Guards the frozen invariant that the `visible` numerator can never be folded back
 // into the ledger struct (adding a 7th `visible: u64` field would let G23-2's two injections
@@ -3934,24 +4072,120 @@ fn provider_plane_external_call_sites(source: &str) -> usize {
 
 /// Blanks every `/* ... */` block-comment span in `source` (bytes replaced with spaces,
 /// newlines preserved so line numbers are unaffected — same discipline
-/// [`strip_cfg_test_module`] uses for its own brace-matched span). An unterminated `/*` blanks
-/// to the end of the string rather than panicking or looping.
+/// [`strip_cfg_test_module`] uses for its own brace-matched span). Block comments nest, as in Rust, and an
+/// unterminated `/*` blanks to the end of the string rather than panicking or looping.
+///
+/// A `/*` opens a comment only where the lexer would see one: not inside a `//` comment (`/// see migrations/*.sql`),
+/// a string literal (`b"/*"`), a raw string or a char literal. A naive `find("/*")` read all of those as comment
+/// starts and blanked the code after them, up to the next `*/` or the end of the file (G-M08-2 review W2: 6 adapters
+/// and bins files, `bins/maintenance/src/migrate.rs` lost 496 of its 691 lines). Everything outside block comments
+/// is copied unchanged, line comments and string contents included: [`code_before_line_comment`] is the line step.
+///
+/// ponytail: a lexer-lite, not a parser (no macro-body or `#[doc = "..."]` awareness), upgrade to `proc_macro2`
+/// tokenizing if a file ever mis-blanks.
+// ponytail: C-string literals (`c"..."`, `cr#"..."#`) are not recognised (`cr#"..."#` is read as a plain identifier
+// then a plain string, so a `"` inside it ends it early) and `code_before_line_comment` is not escape-aware, upgrade by
+// sharing this lexer with that function.
 fn strip_block_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let starts_token = |at: usize| at == 0 || !is_ident_byte(bytes[at - 1]);
     let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-    while let Some(start) = rest.find("/*") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
-        let end = tail.find("*/").map(|e| e + 2).unwrap_or(tail.len());
-        out.extend(
-            tail[..end]
-                .chars()
-                .map(|c| if c == '\n' { '\n' } else { ' ' }),
-        );
-        rest = &tail[end..];
+    let (mut i, mut copied) = (0usize, 0usize);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                out.push_str(&source[copied..i]);
+                let end = block_comment_end(bytes, i);
+                out.extend(
+                    source[i..end]
+                        .chars()
+                        .map(|c| if c == '\n' { '\n' } else { ' ' }),
+                );
+                (i, copied) = (end, end);
+            }
+            b'"' => i = string_end(bytes, i + 1),
+            b'r' if starts_token(i) || (bytes[i - 1] == b'b' && starts_token(i - 1)) => {
+                i = raw_string_end(bytes, i).unwrap_or(i + 1);
+            }
+            b'\'' => i = char_literal_end(source, i),
+            _ => i += 1,
+        }
     }
-    out.push_str(rest);
+    out.push_str(&source[copied..]);
     out
+}
+
+/// Exclusive end of the block comment opening at `start` (`bytes[start..]` begins with `/*`); `bytes.len()` when it
+/// is never closed. `/*/` does not close itself.
+fn block_comment_end(bytes: &[u8], start: usize) -> usize {
+    let (mut depth, mut i) = (0usize, start);
+    while i < bytes.len() {
+        match (bytes[i], bytes.get(i + 1)) {
+            (b'/', Some(b'*')) => {
+                depth += 1;
+                i += 2;
+            }
+            (b'*', Some(b'/')) => {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// Index just past the `"` that closes the string whose body starts at `from` (a backslash skips the byte after it);
+/// `bytes.len()` when it is never closed.
+fn string_end(bytes: &[u8], from: usize) -> usize {
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// Index just past the raw string (`r"..."`, `r#"..."#`, also behind a `b`) whose `r` is at `r_at`, or `None` when
+/// that `r` is not the start of one (`r#type`, a bare identifier).
+fn raw_string_end(bytes: &[u8], r_at: usize) -> Option<usize> {
+    let hashes = bytes[r_at + 1..].iter().take_while(|b| **b == b'#').count();
+    let body = r_at + 1 + hashes;
+    if bytes.get(body) != Some(&b'"') {
+        return None;
+    }
+    let closes = |at: usize| {
+        bytes[at + 1..]
+            .iter()
+            .take(hashes)
+            .filter(|b| **b == b'#')
+            .count()
+            == hashes
+    };
+    let close = (body + 1..bytes.len()).find(|&at| bytes[at] == b'"' && closes(at));
+    Some(close.map_or(bytes.len(), |at| at + 1 + hashes))
+}
+
+/// Index just past the char literal (`'x'`, `'\n'`, `'"'`) opening at `at`, or `at + 1` for a lifetime or label.
+fn char_literal_end(source: &str, at: usize) -> usize {
+    let mut chars = source[at + 1..].chars();
+    match (chars.next(), chars.next()) {
+        (Some('\\'), escaped) => {
+            let after = at + 2 + escaped.map_or(0, char::len_utf8);
+            source[after..].find('\'').map_or(at + 1, |n| after + n + 1)
+        }
+        (Some(c), Some('\'')) => at + 1 + c.len_utf8() + 1,
+        _ => at + 1,
+    }
 }
 
 /// The prefix of `line` up to (excluding) its first `//` that is not inside a `"..."` string
@@ -6458,6 +6692,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "M09 D1 / G-M09-1 (stream_log INSERT and commit_seq nextval: one statement each, in stream_repo.rs, non-test code)",
             m09_1_ticket_doors(&root),
+        ),
+        (
+            "M08 D1 / G-M08-2 (can_read( call sites in adapters and bins non-test code == the declared read-gate set)",
+            m08_2_can_read_one_home(&root),
         ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
@@ -9293,6 +9531,427 @@ async fn serving_version_in_txn() {}
         assert_eq!(m09_1_ticket_doors(&tmp), Verdict::Pass);
         assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M08 D1 / G-M08-2: per-file `can_read` token counts == the declared read-gate sites --------
+
+    const M08_CALL: &str = "fn f() { let _ = can_read(auth, &visibility); }\n";
+    const M08_GATE: &str = "crates/adapters/src/read_gate.rs";
+    const M08_OVERLAY: &str = "crates/adapters/src/read_materialize.rs";
+    const M08_CONTINUITY: &str = "crates/adapters/src/continuity_read.rs";
+    const M08_RECEIPT: &str = "crates/adapters/src/operation_receipt.rs";
+
+    /// A file body holding exactly `n` bare `can_read` tokens.
+    fn m08_uses(n: usize) -> String {
+        M08_CALL.repeat(n)
+    }
+
+    /// The declared count of one site.
+    fn m08_count(file: &str) -> usize {
+        M08_CAN_READ_SITES
+            .iter()
+            .find(|(site, _, _)| *site == file)
+            .unwrap_or_else(|| panic!("{file} is not a declared site"))
+            .1
+    }
+
+    /// The tree as M08-1 leaves it: every declared file holds exactly its declared count, and nothing else does.
+    fn m08_declared_tree(label: &str) -> PathBuf {
+        let tmp = fresh_tmp(label);
+        for (file, count, _) in M08_CAN_READ_SITES {
+            m07_write(&tmp, file, &m08_uses(count));
+        }
+        tmp
+    }
+
+    fn m08_fail_lines(root: &Path) -> Vec<String> {
+        match m08_2_can_read_one_home(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The declared tree plus one undeclared adapters file with `body`: red, one line, naming that file.
+    fn m08_undeclared_use_is_red(label: &str, body: &str) {
+        let tmp = m08_declared_tree(label);
+        m07_write(&tmp, "crates/adapters/src/grep_repo.rs", body);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("G-M08-2: can_read( call outside the read gate"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("crates/adapters/src/grep_repo.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The real tree: every file holding a `can_read` token has exactly its declared count.
+    #[test]
+    fn m08_2_real_repo_passes() {
+        assert_eq!(m08_2_can_read_one_home(&real_root()), Verdict::Pass);
+    }
+
+    /// The gate file is always in its own declared set, every entry states a count and a reason, and every site
+    /// that is not the gate names the card that routes it through the gate.
+    #[test]
+    fn m08_2_declared_sites_name_the_gate_a_count_and_the_upgrade_card() {
+        assert_eq!(M08_CAN_READ_SITES[0].0, M08_GATE);
+        for (file, count, why) in M08_CAN_READ_SITES {
+            assert!(count > 0, "{file}");
+            assert!(!why.is_empty(), "{file}");
+            assert!(file == M08_GATE || why.contains("M08-7"), "{file}: {why}");
+        }
+    }
+
+    /// `run()` must list the gate: a deleted or commented-out call tuple leaves a gate that never runs and reads as
+    /// green (the 恒真闸 shape §57.1 exists to prevent). Counted `== 1`, not `>= 1`.
+    #[test]
+    fn run_wires_the_m08_one_home_gate_exactly_once() {
+        assert_eq!(own_source_count("m08_2_can_read_one_", "home(&root),"), 1);
+    }
+
+    /// Green fixture, plus everything that must NOT count: comments of every kind, other identifiers that merely
+    /// contain the name (`cannot_read(` as code, `my_can_read(`, `can_read_all(`), a use after the file's trailing
+    /// `#[cfg(test)] mod`, integration-test trees, and production code outside adapters and bins (`domain` defines
+    /// `can_read`, `projection` mirrors it).
+    #[test]
+    fn m08_2_passes_on_the_declared_counts_and_ignores_comments_tests_and_other_crates() {
+        let tmp = m08_declared_tree("m08-2-green");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "// can_read(a, &b) lives in the read gate\n\
+             /// can_read(a, &b) in a doc comment\n\
+             //! can_read(a, &b) in an inner doc comment\n\
+             fn f() { let n = 1; // can_read(a, &b) trailing\n\
+             }\n\
+             /* can_read(a, &b) in a block comment */\n\
+             fn g() { let _ = cannot_read(a, &b); let _ = my_can_read(a, &b); }\n\
+             fn h() { let _ = can_read_all(a, &b); let _ = a.can_readable(&b); }\n\
+             #[cfg(test)]\n\
+             mod tests { fn t() { let _ = can_read(a, &b); } }\n",
+        );
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", M08_CALL);
+        m07_write(&tmp, "bins/gateway/tests/seed.rs", M08_CALL);
+        m07_write(&tmp, "crates/domain/src/identity.rs", M08_CALL);
+        m07_write(&tmp, "crates/projection/src/sparse.rs", M08_CALL);
+        m07_write(&tmp, "xtask/src/other.rs", M08_CALL);
+        assert_eq!(m08_2_can_read_one_home(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing object (§57.1 第2条): there is no adapters crate to scan.
+    #[test]
+    fn m08_2_is_not_applicable_naming_the_missing_adapters_src() {
+        let tmp = fresh_tmp("m08-2-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m08_2_can_read_one_home(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains("crates/adapters/src"), "{detail}");
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a `can_read(` call in `context_repo.rs`, the file the closure moved out of → 红, naming it.
+    #[test]
+    fn m08_2_fails_on_a_call_in_context_repo() {
+        let tmp = m08_declared_tree("m08-2-red-context-repo");
+        m07_write(&tmp, "crates/adapters/src/context_repo.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("G-M08-2: can_read( call outside the read gate"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("crates/adapters/src/context_repo.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a call in a bin's `src/` is outside the gate too.
+    #[test]
+    fn m08_2_fails_on_a_call_in_a_bin() {
+        let tmp = m08_declared_tree("m08-2-red-bin");
+        m07_write(&tmp, "bins/gateway/src/memory.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("bins/gateway/src/memory.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a `tests` directory INSIDE `src/` is production code, not a test tree.
+    #[test]
+    fn m08_2_counts_a_call_in_a_src_tests_directory() {
+        let tmp = m08_declared_tree("m08-2-red-src-tests-dir");
+        m07_write(&tmp, "crates/adapters/src/tests/helper.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert!(
+            lines[0].contains("crates/adapters/src/tests/helper.rs"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2): a path-qualified call (`identity::can_read(..)`) is a use.
+    #[test]
+    fn m08_2_counts_a_path_qualified_call() {
+        m08_undeclared_use_is_red(
+            "m08-2-red-qualified",
+            "fn f() { let _ = humaux_domain::identity::can_read(a, &b); }\n",
+        );
+    }
+
+    /// 注错 (G-M08-2, review W1): one MORE use in a declared file is red, naming the file and both counts. A gate that
+    /// only pinned the file set stayed green here.
+    #[test]
+    fn m08_2_fails_on_an_extra_use_in_a_declared_site() {
+        let tmp = m08_declared_tree("m08-2-red-extra");
+        let expected = m08_count(M08_OVERLAY);
+        m07_write(&tmp, M08_OVERLAY, &m08_uses(expected + 1));
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(M08_OVERLAY), "{lines:?}");
+        assert!(
+            lines[0].contains(&format!("holds {} `can_read` tokens", expected + 1)),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains(&format!("expected {expected}")),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("G-M08-2: can_read( call outside the read gate"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2, review W1): one FEWER use in a declared file is red too (`==`, never `<=`), naming both counts,
+    /// so a count shrinks only by an edit to the const. Covers the gate file and an outside site.
+    #[test]
+    fn m08_2_fails_when_a_declared_site_loses_a_use() {
+        for file in [M08_GATE, M08_CONTINUITY] {
+            let tmp = m08_declared_tree("m08-2-red-fewer");
+            let expected = m08_count(file);
+            m07_write(&tmp, file, &m08_uses(expected - 1));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(
+                lines[0].contains(&format!("holds {} `can_read` tokens", expected - 1)),
+                "{lines:?}"
+            );
+            assert!(
+                lines[0].contains(&format!("expected {expected}")),
+                "{lines:?}"
+            );
+            assert!(!lines[0].contains("outside the read gate"), "{lines:?}");
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// 注错 (G-M08-2): a declared file that was renamed away is red, not a skip: the old name holds 0 of its expected
+    /// count and the new name is an undeclared site.
+    #[test]
+    fn m08_2_fails_when_a_declared_site_does_not_exist() {
+        let tmp = m08_declared_tree("m08-2-red-missing");
+        fs::remove_file(tmp.join(M08_RECEIPT)).unwrap();
+        m07_write(&tmp, "crates/adapters/src/operation_receipts.rs", M08_CALL);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("outside the read gate")
+                && l.contains("operation_receipts.rs")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "{M08_RECEIPT} holds 0 `can_read` tokens, expected"
+            ))),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2, review W2): `use ...::can_read as cr; cr(..)` never spells `can_read(`, but the import names it.
+    #[test]
+    fn m08_2_counts_an_aliased_import() {
+        m08_undeclared_use_is_red(
+            "m08-2-red-alias",
+            "use humaux_domain::identity::can_read as cr;\nfn f() { let _ = cr(a, &b); }\n",
+        );
+    }
+
+    /// 注错 (G-M08-2, review W2): the alias import raises the count of a DECLARED site as well.
+    #[test]
+    fn m08_2_counts_an_aliased_import_in_a_declared_site() {
+        let tmp = m08_declared_tree("m08-2-red-alias-declared");
+        let expected = m08_count(M08_RECEIPT);
+        m07_write(
+            &tmp,
+            M08_RECEIPT,
+            &format!(
+                "{}use humaux_domain::identity::can_read as cr;\nfn g() {{ let _ = cr(a, &b); }}\n",
+                m08_uses(expected)
+            ),
+        );
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(M08_RECEIPT), "{lines:?}");
+        assert!(
+            lines[0].contains(&format!("expected {expected}")),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M08-2, review W2): a function pointer (`let g = identity::can_read; g(..)`) has no `(` after the name.
+    #[test]
+    fn m08_2_counts_a_function_pointer() {
+        m08_undeclared_use_is_red(
+            "m08-2-red-fn-pointer",
+            "fn f() { let g = humaux_domain::identity::can_read; let _ = g(a, &b); }\n",
+        );
+    }
+
+    /// 注错 (G-M08-2, review W2): passing the function as an argument.
+    #[test]
+    fn m08_2_counts_the_name_passed_as_an_argument() {
+        m08_undeclared_use_is_red("m08-2-red-argument", "fn f() { helper(can_read, v); }\n");
+    }
+
+    /// 注错 (G-M08-2, review W2): a macro that forwards the name as an `$f:ident` argument.
+    #[test]
+    fn m08_2_counts_the_name_passed_to_a_macro() {
+        m08_undeclared_use_is_red(
+            "m08-2-red-macro",
+            "macro_rules! judge { ($f:ident, $a:expr) => { $f($a) }; }\nfn f() { judge!(can_read, 1); }\n",
+        );
+    }
+
+    /// 注错 (G-M08-2, review W2): `can_read (` with a space is still a call.
+    #[test]
+    fn m08_2_counts_a_call_with_a_space_before_the_paren() {
+        m08_undeclared_use_is_red("m08-2-red-space", "fn f() { let _ = can_read (a, &b); }\n");
+    }
+
+    /// 注错 (G-M08-2, review W2): a `/*` inside a `//` doc comment (`migrations/*.sql`) is not a block comment, so the
+    /// call after it is still seen. The naive helper blanked everything up to the next `*/` or the end of the file.
+    #[test]
+    fn m08_2_sees_a_call_after_a_slash_star_in_a_line_comment() {
+        m08_undeclared_use_is_red(
+            "m08-2-red-doc-slash-star",
+            "/// every `migrations/*.sql` file\nfn f() { let _ = can_read(a, &b); }\n",
+        );
+    }
+
+    /// 注错 (G-M08-2, review W2): a `/*` inside a byte string (`bins/maintenance/src/migration_manifest.rs:158`) is not
+    /// a block comment either.
+    #[test]
+    fn m08_2_sees_a_call_after_a_slash_star_in_a_string_literal() {
+        m08_undeclared_use_is_red(
+            "m08-2-red-string-slash-star",
+            "fn f(b: &[u8]) -> bool { b.starts_with(b\"/*\") }\nfn g() { let _ = can_read(a, &b); }\n",
+        );
+    }
+
+    /// `strip_block_comments` outside the gate: the squeezed text is what survives.
+    fn squeezed(source: &str) -> String {
+        strip_block_comments(source)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// A block comment is blanked to spaces with its newlines kept, so line numbers and byte columns survive.
+    #[test]
+    fn strip_block_comments_blanks_a_comment_and_keeps_the_layout() {
+        let source = "a /* x\ny */ b";
+        let out = strip_block_comments(source);
+        assert_eq!(out.len(), source.len());
+        assert_eq!(out.lines().count(), 2);
+        assert_eq!(squeezed(source), "a b");
+    }
+
+    /// Rust block comments nest; an unterminated one runs to the end.
+    #[test]
+    fn strip_block_comments_nests_and_blanks_an_unterminated_comment_to_the_end() {
+        assert_eq!(squeezed("a /* o /* i */ still */ b"), "a b");
+        assert_eq!(squeezed("a /*/ b */ c"), "a c");
+        assert_eq!(squeezed("a /* never closed\nb"), "a");
+    }
+
+    /// A `/*` inside a line comment, a string, a byte string, a raw string or a char literal opens nothing.
+    #[test]
+    fn strip_block_comments_ignores_a_slash_star_that_is_not_a_comment_start() {
+        for source in [
+            "// see tests/*.rs\nfn f() {}\n",
+            "/// see migrations/*.sql\nfn f() {}\n",
+            "let a = \"/*\"; let b = 1;",
+            "let a = b\"/*\"; let b = 1;",
+            "let a = r#\"/* \"quoted\" */\"#; let b = 1;",
+            "let a = br\"/*\"; let b = 1;",
+            // The `/*` sits after an inner `"#` that does not close a two-hash raw string, so only hash counting and
+            // the hash-aware close keep it inside the string.
+            "r##\"x\"# /* y */ z\"##",
+            "br#\"a\"b /* c\"#",
+            "let a = '/'; let s = \"*/\"; let b = 1;",
+            "let a = \"escaped \\\" /* still a string\"; let b = 1;",
+            "let a = \"é/*\"; let b = 1;",
+        ] {
+            assert_eq!(strip_block_comments(source), source, "{source}");
+        }
+    }
+
+    /// A real block comment after those is still blanked, and a `'"'` char literal does not open a string.
+    #[test]
+    fn strip_block_comments_still_blanks_a_comment_after_a_literal() {
+        assert_eq!(
+            squeezed("let a = \"/*\"; /* x */ let b = 1;"),
+            "let a = \"/*\"; let b = 1;"
+        );
+        assert_eq!(
+            squeezed("let q = '\"'; /* x */ let z = 1;"),
+            "let q = '\"'; let z = 1;"
+        );
+        assert_eq!(
+            squeezed("let q = '\\''; /* x */ let z = 1;"),
+            "let q = '\\''; let z = 1;"
+        );
+        // The escape arm of the char literal: `'\"'` must not open a string.
+        assert_eq!(
+            squeezed("let q = '\\\"'; /* x */ let z = 1;"),
+            "let q = '\\\"'; let z = 1;"
+        );
+        // `'a` followed by a comma is a lifetime: lexed as a char literal it would swallow the comment's start.
+        assert_eq!(squeezed("fn f<'a, /* c */ 'b>() {}"), "fn f<'a, 'b>() {}");
+        assert_eq!(
+            squeezed("fn f<'a>(x: &'a str) { /* c */ let y = 1; }"),
+            "fn f<'a>(x: &'a str) { let y = 1; }"
+        );
+        assert_eq!(
+            squeezed("let a = r#\"x\"#; /* c */ let b = 1;"),
+            "let a = r#\"x\"#; let b = 1;"
+        );
+        assert_eq!(
+            squeezed("let r = 1; /* c */ let b = r;"),
+            "let r = 1; let b = r;"
+        );
+    }
+
+    /// The other user of the helper, the provider-plane call-site counter, now sees code after a `/*` in a doc comment.
+    #[test]
+    fn count_code_line_hits_sees_code_after_a_slash_star_in_a_doc_comment() {
+        let source =
+            "/// every `migrations/*.sql` file\nfn f() { self.transport.call(&permit); }\n";
+        assert_eq!(count_code_line_hits(source, ".call("), 1);
     }
 
     // -- widened scan domain: bins/ / evals/ now genuinely inside the four workspace-wide

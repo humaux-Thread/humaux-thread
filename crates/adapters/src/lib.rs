@@ -57,6 +57,7 @@ pub mod public_provenance;
 pub mod public_repo;
 pub mod qdrant;
 pub mod quota_repo;
+pub mod read_gate;
 pub mod read_materialize;
 pub mod reasoning_route_admission;
 pub mod reasoning_route_onboarding;

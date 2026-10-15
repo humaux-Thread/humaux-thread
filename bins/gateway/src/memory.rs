@@ -2,7 +2,7 @@
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
 //!   sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
 //!   adapters::distill_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
-//!   adapters::read_materialize,
+//!   adapters::read_gate, adapters::read_materialize,
 //!   adapters::subject_repo, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::context,
 //!   gateway::guard,
@@ -15,11 +15,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use humaux_adapters::{
     affect_repo::{self, AffectInput, AffectRow, AnnotateDone},
-    context_repo::{
-        self, BindingWriteOutcome, BindingWriteRequest, EnumerationCensus, MaterializedMemory,
-        MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter,
-        materialize_memory_enumeration_filtered, materialize_memory_get_target,
-    },
+    context_repo::{self, BindingWriteOutcome, BindingWriteRequest, EnumerationCensus},
     distill_repo::{
         self, ConfirmOutcome, ConfirmRequest, PendingCandidate, RejectOutcome, RejectRequest,
     },
@@ -29,6 +25,10 @@ use humaux_adapters::{
         RestoreResult, SupersedeOutcome, SupersedeRequest,
     },
     postgres::RuntimeDbPool,
+    read_gate::{
+        MaterializedMemory, MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter,
+        materialize_memory_enumeration_filtered, materialize_memory_get_target,
+    },
     read_materialize::{Lifecycle, MaterializedItem, MemoryHistory},
     subject_repo,
 };
