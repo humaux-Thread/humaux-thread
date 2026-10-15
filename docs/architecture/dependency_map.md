@@ -83,6 +83,7 @@
 | `infra-cell::permit` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -123,6 +124,7 @@
 | `xtask::e2e_seed` | r=[control.audit_event_identity, control.audit_events, control.memberships, control.quota_windows, control.workspace_memberships, control.workspaces, ops.jobs, ops.model_call_identity, ops.schema_migrations, private.event_identity, public.c36_vanishing] w=[control.credentials, control.operation_receipts, control.private_reasoning_domains, control.processor_models, control.provider_accounts, control.provider_endpoints, control.reasoning_credential_bindings, control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates, control.reasoning_route_policies, control.retrieval_provider_admission_limits, control.tenants, control.usage_reservations, control.user_emails, control.users, ops.model_call_ledger, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, ops.selection_snapshot_items, ops.selection_snapshots, private.conversations, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, private.messages] x=[control.onboard_tenant, control.resolve_user_reasoning_admission] | [CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN] | [PostgreSQL(any), PostgreSQL(role_maintenance)] |
 | `xtask::gate_registry` | r=[ops.column_vitality] w=[] x=[] | [CARGO_MANIFEST_DIR] | [PostgreSQL(any)] |
 | `xtask::gate_truth` | r=[] w=[] x=[] | [CARGO_MANIFEST_DIR] | [fs(chain log)] |
+| `xtask::known_red` | r=[] w=[] x=[] | [CARGO_MANIFEST_DIR] | [] |
 | `xtask::load` | r=[control.rate_buckets, control.workspaces] w=[] x=[] | [] | [PostgreSQL(any), HTTP(gateway), subprocess(docker), subprocess(sh), subprocess(sysctl)] |
 | `xtask::main` | r=[] w=[] x=[] | [CARGO_BIN_NAME, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME] | [] |
 | `xtask::mechanism_registry` | r=[ops.mechanism_observations] w=[] x=[] | [CARGO_MANIFEST_DIR, HUMAUX_ADMIN_PG_DSN] | [PostgreSQL(role_admin)] |
@@ -265,6 +267,7 @@
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
 | `infra-cell::uds` | r=[] w=[] x=[] | [] | [UDS(serve), UDS(retrieval-worker), UDS(private-worker)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -374,6 +377,7 @@
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
 | `infra-cell::uds` | r=[] w=[] x=[] | [] | [UDS(serve), UDS(retrieval-worker), UDS(private-worker)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -481,6 +485,7 @@
 | `infra-cell::permit` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -607,6 +612,7 @@
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
 | `infra-cell::uds` | r=[] w=[] x=[] | [] | [UDS(serve), UDS(retrieval-worker), UDS(private-worker)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -1423,7 +1429,7 @@
 | humaux-retrieval-worker | `uuid` | normal | UUID ids (v7) and parsing | [retrieval-worker::main, retrieval-worker::rpc, retrieval-worker::tests::rpc_readyz, tests] |
 | humaux-retrieval-worker | `humaux-testkit` | dev | the §79.2 three-state skip contract (skip_or_fail) | [retrieval-worker::tests::exit_codes, retrieval-worker::tests::ops_listener, retrieval-worker::tests::rpc_readyz, retrieval-worker::tests::same_uid_boot, tests] |
 | humaux-retrieval-worker | `postgres` | dev | owner-DSN fixtures on the throwaway database (create, revoke, terminate, drop) | [retrieval-worker::tests::rpc_readyz, tests] |
-| xtask | `toml` | normal | parse migration manifests and dep-map header lists | [xtask::architecture_check, xtask::dep_map, xtask::r4_fault_manifest] |
+| xtask | `toml` | normal | parse migration manifests and dep-map header lists | [xtask::architecture_check, xtask::dep_map, xtask::known_red, xtask::r4_fault_manifest] |
 | xtask | `humaux-contracts` | normal | reuse the typed features.toml parser instead of a second one | [xtask::config_check, xtask::mechanism_registry] |
 | xtask | `humaux-adapters` | normal | reuse the real Postgres/Qdrant repo adapters instead of re-typing SQL/wire calls | [tests, xtask::e2e_onboard, xtask::e2e_seed, xtask::load, xtask::mechanism_registry] |
 | xtask | `tokio` | normal | async runtime for the ops subcommands that call async adapters | [tests, xtask::e2e_seed, xtask::mechanism_registry, xtask::soak] |
