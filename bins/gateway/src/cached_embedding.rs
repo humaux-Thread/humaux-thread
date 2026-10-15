@@ -120,6 +120,8 @@ impl RetrievalEmbeddingPort for CachedEmbeddingPort {
         &self,
         input: RetrievalEmbeddingInput<'_>,
     ) -> Result<RetrievalEmbeddingOutcome, ErrorCode> {
+        // RED G-M12-6: bypass the decorator.
+        return self.inner.embed_query(input).await;
         let scope = input.authorization;
         // §20.0 / M12 D4: the exact bytes the worker embeds, no case or whitespace folding.
         let input_sha256: [u8; 32] = Sha256::digest(input.query.as_bytes()).into();
