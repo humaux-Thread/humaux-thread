@@ -187,30 +187,36 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
         let leader_outcome: Mutex<Option<Result<V, E>>> = Mutex::new(None);
         let ran = AtomicBool::new(false);
         let flight = InFlight::enter(&self.state);
-        let got = cache
-            .try_get_with(key, async {
-                ran.store(true, Ordering::Relaxed);
-                let compute = lock(&own).take();
-                let Some(compute) = compute else {
-                    return Err(NotCached);
-                };
-                match compute.await {
+        let init = async {
+            ran.store(true, Ordering::Relaxed);
+            let compute = lock(&own).take();
+            let Some(compute) = compute else {
+                return Err(NotCached);
+            };
+            match compute.await {
+                Ok(v)
+                    if self
+                        .state
+                        .try_reserve(tenant, key_bytes + v.value_bytes() as u64, cap) =>
+                {
                     Ok(v)
-                        if self.state.try_reserve(
-                            tenant,
-                            key_bytes + v.value_bytes() as u64,
-                            cap,
-                        ) =>
-                    {
-                        Ok(v)
-                    }
-                    other => {
-                        *lock(&leader_outcome) = Some(other);
-                        Err(NotCached)
-                    }
                 }
-            })
-            .await;
+                other => {
+                    *lock(&leader_outcome) = Some(other);
+                    Err(NotCached)
+                }
+            }
+        };
+        let got: Result<V, Arc<NotCached>> = match cache.get(&key).await {
+            Some(v) => Ok(v),
+            None => match init.await {
+                Ok(v) => {
+                    cache.insert(key, v.clone()).await;
+                    Ok(v)
+                }
+                Err(e) => Err(Arc::new(e)),
+            },
+        };
         drop(flight);
         match got {
             Ok(v) => {
