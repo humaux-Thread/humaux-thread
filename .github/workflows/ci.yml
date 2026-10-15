@@ -293,26 +293,31 @@ jobs:
 
       # M24-2 / G-M24-2: every commit a PR or push adds is scanned with the pinned gitleaks 8.30.1 the setup action
       # installs (HUMAUX_TEST_GITLEAKS_BIN) and .gitleaks.toml (default rules; the deliberate fake vectors allowlisted by
-      # exact path + rule). The repository is PUBLIC, so the log must never carry a secret: --redact is unconditional,
-      # there is no -v, and only RuleID / File:Line / short SHA are printed from the JSON report (the report file stays
-      # on the runner). Range = the contract-impact base above..HEAD (PR base; previous head on a push; merge base with
-      # main on a branch's first push); the full-depth checkout provides it. An empty range is not_applicable (§57.1).
+      # rule + exact path + exact value). The bypass channels are closed: --ignore-gitleaks-allow (an inline
+      # `gitleaks:allow` comment silences nothing, as in the product's own seal, ADR-0068) and a .gitleaksignore file
+      # fails the step; .gitleaks.toml edits are reviewed like code. The repository is PUBLIC, so the log must never carry
+      # a secret: --redact is unconditional, there is no -v, and only RuleID / File:Line / short SHA are printed from the
+      # JSON report (the report file stays on the runner). Range = the contract-impact base above..HEAD (PR base; previous
+      # head on a push; merge base with main on a branch's first push); the full-depth checkout provides it. An empty range
+      # is not_applicable (§57.1). This workflow runs on PRs and on pushes to main and ci/** only; a push to any other
+      # branch (exp/*, card/*) is scanned by .github/workflows/secret-scan.yml with the same command: keep the two in step.
       - name: gitleaks secret scan (G-M24-2)
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
+          test ! -e .gitleaksignore || { echo "::error::.gitleaksignore is not allowed: exempt a fixture in .gitleaks.toml (rule + path + value), reviewed like code"; exit 1; }
           range="${CONTRACT_IMPACT_BASE:?the contract-impact base step did not run}..HEAD"
-          n="$(git rev-list --count "$range")"
+          n="$(git rev-list --count --no-merges "$range")"
           if [ "$n" -eq 0 ]; then
             echo "not_applicable (missing object: no commits in $range)"
             exit 0
           fi
           report="$RUNNER_TEMP/gitleaks.json"
           rc=0
-          "$HUMAUX_TEST_GITLEAKS_BIN" git --no-banner --redact --config .gitleaks.toml \
+          "$HUMAUX_TEST_GITLEAKS_BIN" git --no-banner --no-color --redact --ignore-gitleaks-allow --config .gitleaks.toml \
             --log-opts "$range" --report-format json --report-path "$report" . || rc=$?
-          echo "gitleaks exit=$rc over $n commit(s) in $range"
+          echo "gitleaks exit=$rc; $n non-merge commit(s) expected in $range (gitleaks logs the count it scanned above)"
           if [ "$rc" -ne 0 ] && [ -s "$report" ]; then
             jq -r '.[] | "FINDING \(.RuleID) \(.File):\(.StartLine) commit \(.Commit[0:12])"' "$report" || true
           fi

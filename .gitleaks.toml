@@ -1,18 +1,22 @@
-# Secret-scan config for the `gitleaks secret scan` step of ci.yml (M24-2, gate G-M24-2; module design M24 D2).
-# The repository is PUBLIC: the ruleset is gitleaks' own default, and the only exemptions are the deliberate FAKE
-# vectors below, each by exact file path AND the one rule that fires there (found by the one-time full-history scan
-# of M24-2: 12 findings in 9 files, all synthetic test vectors or false positives, no live secret). Never exempt a
-# rule globally, never by a broad regex or a directory: a new fixture file adds one line here, in review.
-# ponytail: a path entry also hides a real secret of the SAME rule added to that file later, tighten to
-# path + value regex (condition = "AND") if a fixture file keeps growing.
+# Secret-scan config for the `gitleaks secret scan` step of ci.yml and for .github/workflows/secret-scan.yml
+# (M24-2, gate G-M24-2; module design M24 D2). Default ruleset; the only exemptions are the deliberate FAKE vectors
+# below. Changes to THIS file are reviewed like code: a PR can exempt its own finding by editing it, and the scan reads
+# the PR's copy. Never exempt a rule globally, by a directory or by a broad regex: a new fixture file adds an entry.
+# Every entry is as narrow as its finding allows: rule (targetRules) AND exact path AND, for the tokens, the exact
+# synthetic value (written with one character in brackets, so this file does not match the rule it exempts), so a
+# different token added to the same file still fires. Commit-scoped entries cover history only.
+# ponytail: the private-key entry is path + rule only (multi-line value), tighten it if that fixture grows.
 title = "humaux-thread gitleaks config"
 
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Synthetic GitHub-shaped token vectors (FAKE_GITHUB_TOKEN consts, CRED_FAKE in the rehearsal) that prove the scanners refuse them"
+description = "The one synthetic GitHub-shaped token (FAKE_GITHUB_TOKEN consts, CRED_FAKE in the rehearsal) that proves the scanners refuse it"
+condition = "AND"
 targetRules = ["github-pat"]
+regexTarget = "secret"
+regexes = ['''^ghp_RkqFzVpLwNyHtBvDgX[s]WuCePjMoTnAiSyEkl$''']
 paths = [
   '''^bins/gateway/tests/mcp_gateway\.rs$''',
   '''^bins/gateway/tests/query_embedding_rpc\.rs$''',
@@ -28,14 +32,23 @@ targetRules = ["private-key"]
 paths = ['''^crates/adapters/tests/projection_worker\.rs$''']
 
 [[allowlists]]
-description = "Slack-shaped payload that the contribution pipeline failure test must refuse"
+description = "The one Slack-shaped payload the contribution pipeline failure test must refuse"
+condition = "AND"
 targetRules = ["slack-bot-token"]
+regexTarget = "secret"
+regexes = ['''^xoxb-12345678[9]012-123456789012-abcdefghijklmnopqrstuvwx$''']
 paths = ['''^crates/adapters/tests/contribution_pipeline\.rs$''']
 
 [[allowlists]]
-description = "generic-api-key false positives: the devlocal_<role> test login password and an ADR sentence quoting a const name"
+description = "generic-api-key false positive, history only: the devlocal_<role> test login password (b65c88d)"
+condition = "AND"
 targetRules = ["generic-api-key"]
-paths = [
-  '''^crates/adapters/tests/project_continuity_read_0137_acceptance\.rs$''',
-  '''^docs/adr/0056-retrieval-egress-seal-secrets-only\.md$''',
-]
+commits = ["b65c88d3486e9c78a5f04a0883ce0f4b5af026b5"]
+paths = ['''^crates/adapters/tests/project_continuity_read_0137_acceptance\.rs$''']
+
+[[allowlists]]
+description = "generic-api-key false positive, history only: an ADR sentence quoting a const name (2c8eba7)"
+condition = "AND"
+targetRules = ["generic-api-key"]
+commits = ["2c8eba79b3845fccc03803f54a32f458a35ce778"]
+paths = ['''^docs/adr/0056-retrieval-egress-seal-secrets-only\.md$''']
