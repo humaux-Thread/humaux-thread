@@ -199,15 +199,14 @@ impl From<reqwest::Error> for HttpExternalCallError {
 // loopback http through HTTP_PROXY in cleartext; both are test-only shapes today, upgrade path:
 // allow loopback http only under cfg(test) once no integration test needs it.
 pub(crate) fn endpoint_scheme_is_allowed(endpoint: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(endpoint) else {
-        return false;
-    };
-    match url.scheme() {
-        // a parsed https URL always has a non-empty host (special scheme)
-        "https" => true,
-        "http" => matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")),
-        _ => false,
+    if let Some(rest) = endpoint.strip_prefix("https://") {
+        return !rest.is_empty();
     }
+    if let Some(rest) = endpoint.strip_prefix("http://") {
+        let host = rest.split(['/', ':', '?']).next().unwrap_or("");
+        return matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]");
+    }
+    false
 }
 
 /// §78.1: named, overridable knobs — not literals buried inside `Client::builder()` — for the
