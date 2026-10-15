@@ -590,7 +590,8 @@ jobs:
 
   # G-M24-3 SAST (§80 "SAST", M24 D3): CodeQL for Rust in build-mode none — it reads the source without compiling,
   # so no services, no cargo, and it runs beside the cargo jobs instead of after them. Results also land in the
-  # repository's code-scanning tab; CodeQL's upload never fails a run, so the last step decides.
+  # repository's code-scanning tab. Findings never fail the analyze step (only an upload/processing error does), so
+  # the last step decides.
   # Threshold = level error OR security severity >= 7.0 (high/critical). Measured on this card (run 38681752387):
   # every Rust security query ships at level `warning` — an error-only threshold could never go red, while a
   # planted cleartext password log was reported at `high`. Test code (tests/ trees, testkit, xtask, experiments)
@@ -616,14 +617,18 @@ jobs:
       CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v4
+      # Pinned by commit: the diff-informed knob and the pr-diff-range path below are the action's internals.
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           languages: rust
           build-mode: none
           tools: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.2/codeql-bundle-linux64.tar.gz
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: /language:rust
+          # A fork PR's token cannot write security events (the upload would 403 and fail the step); the gate below
+          # still judges the local SARIF.
+          upload: ${{ github.event.pull_request.head.repo.fork && 'never' || 'always' }}
           output: ${{ runner.temp }}/sarif
       - name: findings match the SAST ledger
         # A result's level falls back to its rule's defaultConfiguration (SARIF §3.27.10); CodeQL keeps the rules
@@ -637,7 +642,7 @@ jobs:
           files = glob.glob(sys.argv[1] + "/*.sarif")
           if not files:
               sys.exit("G-M24-3: no SARIF produced")
-          seen, total = collections.Counter(), 0
+          seen, total, unresolved = collections.Counter(), 0, set()
           for path in files:
               for run in json.load(open(path))["runs"]:
                   rules = {rule["id"]: rule for comp in [run["tool"]["driver"], *run["tool"].get("extensions", [])]
@@ -645,12 +650,16 @@ jobs:
                   for r in run.get("results", []):
                       total += 1
                       rid = r.get("ruleId") or r.get("rule", {}).get("id")
+                      if rid not in rules:
+                          unresolved.add(rid)  # no rule = no severity: never let it pass as ungated
                       rule = rules.get(rid, {})
                       level = r.get("level") or rule.get("defaultConfiguration", {}).get("level", "warning")
                       sev = float(rule.get("properties", {}).get("security-severity", 0))
                       uri = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
                       if (level == "error" or sev >= 7.0) and not any(t in "/" + uri for t in TEST):
                           seen[(rid, uri)] += 1
+          if unresolved:
+              sys.exit(f"G-M24-3: results whose rule is not in the SARIF: {sorted(map(str, unresolved))}")
           rows = tomllib.load(open(sys.argv[2], "rb")).get("finding", [])
           ledger, red = {}, []
           for row in rows:

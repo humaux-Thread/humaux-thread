@@ -4,6 +4,8 @@
 # shrink — §80.1.1 shrink-only), or when a row has no owner/reason. verdict: T = inside #[cfg(test)], FP = false
 # positive (reason says why), REAL = a genuine finding parked with its owning module card (none today).
 # Baseline: CodeQL bundle 2.27.2, commit f51b618, triaged by reading each sink back to its source (2026-10-15).
+# ponytail: counted per (rule, path), so in a file that already has T rows a test finding removed and a product
+# finding added in one PR cancel out; upgrade = key rows by SARIF partialFingerprints once line churn is measured.
 
 [[finding]]
 rule = "rust/cleartext-logging"
@@ -155,7 +157,7 @@ path = "crates/infra-egress/src/raw.rs"
 count = 1
 verdict = "FP"
 owner = "M05"
-reason = "scheme_allowed gate (L132) dominates the sink and prod URLs also pass validate_custom_endpoint (https only, no userinfo); nit: the test-only loopback-http branch accepts http://localhost:80@evil.com."
+reason = "the scheme check (L132) dominates the sink; production URLs also pass validate_custom_endpoint (https only, no userinfo). The loopback-http branch is compiled into production; its userinfo bypass is fixed by PR #42."
 
 [[finding]]
 rule = "rust/non-https-url"
