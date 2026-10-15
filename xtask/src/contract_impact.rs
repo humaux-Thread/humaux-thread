@@ -224,7 +224,7 @@ fn resolve_block_locations(spec_text: &str) -> BTreeMap<&'static str, Vec<Locati
     );
     {
         // G-M24-5: the registry's code-side half (PROCESSES, NOT_YET_PRODUCED, ABSENT_UNTIL_FIRST_RUN)
-        // lives in the checker source, so editing it is a registry change too (§80.2 D7/D8).
+        // lives in the checker source, so editing it is a registry change too (§80.2; ADR-0061 D-H, ADR-0063 D-K).
         let mut v = vec![Location::WholeFile(METRICS_REGISTRY_SRC_PATH)];
         if let Some((s, e)) = section_range(spec_text, "## 41.2 注册表（全集）", |l| {
             l.starts_with("## ")
@@ -335,7 +335,7 @@ const UNASSIGNED_OWNER: &str = "none registered (add it to default_checker_kind)
 
 /// §80.3 impact-map 里出现的 checker id -> CI 里「跑了它」的那个 xtask 子命令。
 ///
-/// "Ran" means the `cargo xtask <sub>` line is in a non-comment line of ci.yml
+/// "Ran" means a blocking, unconditional one-line `run: cargo xtask <sub>` step in ci.yml
 /// ([`executed_xtask_subcommands`]); several checkers share one subcommand when their verdict
 /// lives inside it (G80-3/40/43 and G-M01-1 inside `architecture-check`), which is cheaper
 /// than an `--only <id>` filter: this gate needs "ran", not "ran alone" (M24 D5).
@@ -453,31 +453,75 @@ fn parse_unified_hunks(diff_text: &str) -> BTreeSet<usize> {
     lines_touched
 }
 
-/// 扫 ci.yml 里每处 `cargo xtask <subcommand>` 出现，取出 subcommand 词——不解析 YAML
-/// 结构（stdlib 够用），因为本闸只关心「这个子命令有没有被跑」，不关心它挂在哪个 job 名下。
-/// 注释行与 `name:` 行只是在谈论命令而不是执行它，不算「跑了」（否则删掉 step、留下注释
-/// 仍判绿）。
-// ponytail: a `continue-on-error` step or a line inside a multi-line `run: |` still counts as ran;
-// parse steps (serde_yaml) if a mandatory checker ever needs to be proven blocking.
+/// Step item prefix in ci.yml: every job here lists its steps at six spaces.
+const STEP_ITEM_PREFIX: &str = "      - ";
+/// The only `if:` a counted step may carry (an absent `if:` is also fine).
+const ALWAYS_RUN_IF: &str = "${{ !cancelled() }}";
+/// Shell syntax that makes a one-line `run:` able to swallow or bypass the xtask exit code.
+const SHELL_ESCAPES: [&str; 4] = ["|", ";", "&&", "#"];
+
+/// One `cargo xtask <sub>` per step: ci.yml steps -> subcommands whose failure fails the job.
+///
+/// A step counts only when its block (from one `      - ` item to the next, ending at a dedent)
+/// has a single-line `run: cargo xtask <sub>` with no `|`, `||`, `;`, `&&` or `#` after it, no
+/// `continue-on-error:`, and no `if:` other than `${{ !cancelled() }}`. Comments, `name:` lines,
+/// multi-line `run: |` blocks (the metrics warm-up step) and steps that can be skipped or can
+/// fail silently are talk, not a gate, so deleting the real step cannot hide behind them
+/// (G-M24-5, review of PR #48).
+// ponytail: line-based scan, not a YAML parse (anchors, flow maps, 6-space indent assumed); a
+// real parser (serde_yaml) if ci.yml ever outgrows this shape. Every mapped checker's step is
+// pinned against the real ci.yml by a test.
 fn executed_xtask_subcommands(ci_text: &str) -> BTreeSet<String> {
-    const MARKER: &str = "cargo xtask ";
     let mut out = BTreeSet::new();
+    let mut flush = |block: &[&str]| {
+        if let Some(sub) = counted_xtask_subcommand(block) {
+            out.insert(sub);
+        }
+    };
+    let mut block: Vec<&str> = Vec::new();
     for line in ci_text.lines() {
-        let t = line.trim_start().trim_start_matches("- ");
-        if t.starts_with('#') || t.starts_with("name:") {
+        if line.trim().is_empty() {
             continue;
         }
-        let mut rest = line;
-        while let Some(idx) = rest.find(MARKER) {
-            let after = &rest[idx + MARKER.len()..];
-            let tok: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
-            rest = &after[tok.len()..];
-            if !tok.is_empty() {
-                out.insert(tok);
-            }
+        let indent = line.len() - line.trim_start().len();
+        if line.starts_with(STEP_ITEM_PREFIX) {
+            flush(&block);
+            block.clear();
+            block.push(line);
+        } else if indent < STEP_ITEM_PREFIX.len() {
+            flush(&block);
+            block.clear();
+        } else if !line.trim_start().starts_with('#') {
+            block.push(line);
         }
     }
+    flush(&block);
     out
+}
+
+/// The subcommand of one step block if the step qualifies (see [`executed_xtask_subcommands`]).
+fn counted_xtask_subcommand(block: &[&str]) -> Option<String> {
+    let mut sub = None;
+    for line in block {
+        let t = line.trim_start();
+        let t = t.strip_prefix("- ").unwrap_or(t);
+        if t.starts_with("continue-on-error:") {
+            return None;
+        }
+        if let Some(cond) = t.strip_prefix("if:")
+            && cond.trim() != ALWAYS_RUN_IF
+        {
+            return None;
+        }
+        if let Some(cmd) = t
+            .strip_prefix("run: ")
+            .and_then(|c| c.strip_prefix("cargo xtask "))
+            && !SHELL_ESCAPES.iter().any(|e| cmd.contains(e))
+        {
+            sub = cmd.split_whitespace().next().map(str::to_string);
+        }
+    }
+    sub
 }
 
 /// §80.3 步骤 1-4 的核心：对每个 impact-map 行判断 block 是否变了，变了就逐 checker 求状态。
@@ -702,6 +746,12 @@ continuity authority body
 
 ## 25.4 boundary
 
+## 80.1 架构闸登记表（本章冻结）
+
+gate registry body
+
+## 80.2 boundary
+
 ## 80.3 contract-impact-check
 
 机器识别以下 10 个承重块：
@@ -875,7 +925,7 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
         let changed_lines: BTreeSet<usize> = [db_range].into();
 
         // Use the real dispatch: an invented test-only mapping hid the production gap.
-        let ci_only_g80_26 = "run: cargo xtask rls-check\n";
+        let ci_only_g80_26 = "      - run: cargo xtask rls-check\n";
         let red = evaluate_closure(
             &map,
             &locations,
@@ -899,7 +949,8 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
             CheckerStatus::Pass
         );
 
-        let ci_both = "run: cargo xtask rls-check\nrun: cargo xtask architecture-check\n";
+        let ci_both =
+            "      - run: cargo xtask rls-check\n      - run: cargo xtask architecture-check\n";
         let green = evaluate_closure(
             &map,
             &locations,
@@ -914,7 +965,7 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
             &locations,
             &changed_files,
             &changed_lines,
-            &executed_xtask_subcommands("run: cargo xtask architecture-check\n"),
+            &executed_xtask_subcommands("      - run: cargo xtask architecture-check\n"),
             default_checker_kind,
         );
         assert!(matches!(
@@ -1073,11 +1124,47 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
             "{red:?}"
         );
         // A comment or a step name that merely mentions the command is not the step.
-        let talked_about = "# cargo xtask metrics-registry\n- name: cargo xtask metrics-registry\n";
-        assert!(matches!(g80_6(talked_about), CheckerStatus::Fail(_)));
+        let talked_about =
+            "      # cargo xtask metrics-registry\n      - name: cargo xtask metrics-registry\n";
+        assert_eq!(g80_6(talked_about), red);
 
         let green = g80_6("      - run: cargo xtask metrics-registry\n");
         assert_eq!(green, CheckerStatus::Pass);
+    }
+
+    /// The same gate for a spec-side block: GATE_REGISTRY demands G80-23 and G80-24 (`gate-registry`).
+    #[test]
+    fn gate_registry_change_without_the_step_is_red_then_green() {
+        let map = parse_impact_map(VALID_FIXTURE);
+        let locations = resolve_block_locations(VALID_FIXTURE);
+        let Location::SpecRange(line, _) = locations["GATE_REGISTRY"][0] else {
+            panic!("GATE_REGISTRY must be a spec range");
+        };
+        let verdict = |ci: &str, checker: &str| {
+            evaluate_closure(
+                &map,
+                &locations,
+                &[SPEC_PATH.to_string()].into(),
+                &[line].into(),
+                &executed_xtask_subcommands(ci),
+                default_checker_kind,
+            )
+            .into_iter()
+            .find(|(b, c, _)| b == "GATE_REGISTRY" && c == checker)
+            .unwrap()
+            .2
+        };
+        for checker in ["G80-23", "G80-24"] {
+            let red = verdict("      - run: cargo xtask config-check\n", checker);
+            assert!(
+                matches!(&red, CheckerStatus::Fail(d) if d.contains(checker) && d.contains("gate-registry")),
+                "{checker}: {red:?}"
+            );
+            assert_eq!(
+                verdict("      - run: cargo xtask gate-registry\n", checker),
+                CheckerStatus::Pass
+            );
+        }
     }
 
     /// An untouched checker source and an untouched spec table demand nothing.
@@ -1123,12 +1210,94 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
         assert_eq!(parse_unified_hunks(diff), [4usize].into());
     }
 
+    fn subs(ci: &str) -> Vec<String> {
+        executed_xtask_subcommands(ci).into_iter().collect()
+    }
+
     #[test]
-    fn executed_xtask_subcommands_scans_regardless_of_yaml_shape() {
-        let text = "steps:\n  - name: x\n    run: cargo xtask mechanism-registry\n  - run: |\n      cargo xtask config-check\n";
-        let found = executed_xtask_subcommands(text);
-        assert!(found.contains("mechanism-registry"));
-        assert!(found.contains("config-check"));
+    fn a_plain_run_step_counts() {
+        let text = "jobs:\n  lint:\n    steps:\n      - name: x\n        if: ${{ !cancelled() }}\n        run: cargo xtask mechanism-registry\n      - run: cargo xtask config-check --flag\n";
+        assert_eq!(subs(text), ["config-check", "mechanism-registry"]);
+    }
+
+    /// Review of PR #48 (a): the warm-up block stays, the real step is gone -> G80-6 must be red.
+    #[test]
+    fn warm_up_block_without_the_real_step_does_not_count() {
+        let ci = real_ci_yml();
+        let mut lines: Vec<&str> = ci.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| *l == "      - name: cargo xtask metrics-registry")
+            .expect("the real metrics-registry step is in ci.yml");
+        let len = lines[at..].iter().position(|l| l.is_empty()).unwrap();
+        assert!(lines[at..at + len].contains(&"        run: cargo xtask metrics-registry"));
+        let without = [&lines[..at], &lines[at + len..]].concat().join("\n");
+        assert!(
+            without.contains("cargo xtask metrics-registry > /dev/null"),
+            "the warm-up step must still be there for this test to mean anything"
+        );
+        let executed = executed_xtask_subcommands(&without);
+        assert!(!executed.contains("metrics-registry"));
+        assert!(matches!(
+            evaluate_checker("G80-6", &executed, default_checker_kind),
+            CheckerStatus::Fail(d) if d.contains("G80-6")
+        ));
+    }
+
+    /// Review of PR #48 (a), minimal form: a multi-line `run: |` block never counts.
+    #[test]
+    fn multi_line_run_block_with_continue_on_error_does_not_count() {
+        let text = "      - name: warm\n        continue-on-error: true\n        run: |\n          cargo xtask metrics-registry > /dev/null 2>&1\n";
+        assert!(subs(text).is_empty());
+        let no_flag =
+            "      - name: warm\n        run: |\n          cargo xtask metrics-registry\n";
+        assert!(subs(no_flag).is_empty());
+    }
+
+    /// Review of PR #48 (b): the exit code is swallowed or bypassed.
+    #[test]
+    fn shell_escapes_after_the_command_do_not_count() {
+        for tail in [
+            " || true",
+            " | tee log",
+            "; echo ok",
+            " && echo ok",
+            " > /dev/null # ignored",
+        ] {
+            let text = format!("      - run: cargo xtask metrics-registry{tail}\n");
+            assert!(subs(&text).is_empty(), "{tail}");
+        }
+        // (d) a trailing comment alone
+        assert!(subs("      - run: cargo xtask metrics-registry # was here\n").is_empty());
+    }
+
+    /// Review of PR #48 (c): a step that can be skipped, or that cannot fail the job.
+    #[test]
+    fn skippable_or_non_blocking_steps_do_not_count() {
+        for extra in [
+            "        if: false\n",
+            "        if: ${{ github.event_name == 'push' }}\n",
+            "        continue-on-error: true\n",
+        ] {
+            let text =
+                format!("      - name: s\n{extra}        run: cargo xtask metrics-registry\n");
+            assert!(subs(&text).is_empty(), "{extra}");
+        }
+        let ok = "      - name: s\n        if: ${{ !cancelled() }}\n        run: cargo xtask metrics-registry\n";
+        assert_eq!(subs(ok), ["metrics-registry"]);
+    }
+
+    /// A job-level `if:` or `continue-on-error:` after the last step must not leak into that step.
+    #[test]
+    fn a_dedent_ends_the_step_block() {
+        let text = "    steps:\n      - run: cargo xtask known-red\n  next-job:\n    if: false\n    continue-on-error: true\n";
+        assert_eq!(subs(text), ["known-red"]);
+    }
+
+    #[test]
+    fn comment_lines_between_steps_are_ignored() {
+        let text = "      - run: cargo xtask known-red\n      # continue-on-error: true\n      # cargo xtask rls-check\n";
+        assert_eq!(subs(text), ["known-red"]);
     }
 
     #[test]
