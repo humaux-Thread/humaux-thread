@@ -1265,9 +1265,9 @@ mod tests {
         });
     }
 
-    /// ADR-0065 D-A / F19 (W-1, L13): the dropped statement's connection stays checked out (`return_to_pool`
-    /// pings, which waits for its ReadyForQuery) until statement_timeout ends it. Fault: the statement_timeout
-    /// option removed ⇒ the slot is still held at +1300 ms ⇒ red.
+    /// §1.7 / ADR-0065 D-A / F19 (W-1, L13): the dropped statement's connection stays checked out (`return_to_pool`
+    /// pings, which waits for its ReadyForQuery) until statement_timeout ends it, and the freed slot serves again.
+    /// Fault: the statement_timeout option removed ⇒ the slot is still held at +3500 ms ⇒ red.
     #[test]
     fn a_dropped_query_holds_its_pool_slot_until_statement_timeout() {
         let Some(db) = C38Db::create("slot") else {
@@ -1296,14 +1296,27 @@ mod tests {
                 "F19: the only slot must still be held by the draining statement, got {:?}",
                 held.map(|r| r.map(|_| "a connection"))
             );
-            tokio::time::sleep_until(dropped_at + Duration::from_millis(1300)).await;
-            // The release ping reads the 57014 and closes the connection (sqlx-core 0.8.6 pool/connection.rs:314), so
-            // the freed slot shows as size 0; an acquire here would time a fresh connect, not the release.
+            // §1.7: the release ping reads the 57014 and closes the connection (sqlx-core 0.8.6
+            // `Floating::return_to_pool`), so the freed slot shows as size 0 before any reconnect. Polled, not
+            // sampled once: a starved runner may run the release task late. +3500 ms stays below pg_sleep(5)'s own end.
+            let deadline = dropped_at + Duration::from_millis(3500);
+            let mut size = pool.0.size();
+            while size != 0 && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                size = pool.0.size();
+            }
             assert_eq!(
-                pool.0.size(),
-                0,
-                "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +1300 ms"
+                size, 0,
+                "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +3500 ms (last size)"
             );
+            // Size 0 alone could hide a lost permit; a fresh connection in the freed slot proves capacity is back.
+            let reused = pool.0.acquire().await;
+            assert!(
+                reused.is_ok(),
+                "ADR-0065 D-A: the freed slot must serve a new acquire, got {:?}",
+                reused.map(|_| "a connection")
+            );
+            drop(reused);
             pool.0.close().await;
         });
     }
