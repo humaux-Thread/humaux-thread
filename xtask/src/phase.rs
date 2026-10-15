@@ -29,26 +29,40 @@ pub const PHASE_FILE: &str = "PHASE";
 /// CLI 覆盖**保留**是刻意的：它让「假设我们在相位 N」的 what-if 检查（例如提前看下一相位
 /// 会红哪些）不需要改文件。但它不再是默认路径——不传参数时读的是真源，不是 0。
 ///
+/// 写了 `--phase` 却给不出整数（缺值、`--phase --release`、`--phase=x`）⇒ usage + exit 2，
+/// 不退回真源：静默忽略坏值会让一个本想看 what-if 的调用悄悄按另一个相位判绿（fail-open）。
+///
 /// # Panics
 /// `PHASE` 文件缺失或不是整数时直接退出：该文件随仓库提交，缺了等于树坏了。静默退回
 /// 任何默认值都会重演「默认 0 豁免一切」或它的反面。
 #[must_use]
 pub fn current_phase(args: &[String]) -> u32 {
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        if a == "--phase" {
-            if let Some(v) = it.next()
-                && let Ok(n) = v.parse()
-            {
-                return n;
-            }
-        } else if let Some(v) = a.strip_prefix("--phase=")
-            && let Ok(n) = v.parse()
-        {
-            return n;
+    match parse_phase_override(args) {
+        Ok(Some(n)) => n,
+        Ok(None) => read_phase_file(&locate_phase_file()),
+        Err(bad) => {
+            eprintln!("usage: --phase <N> (N: unsigned integer), got `{bad}`");
+            std::process::exit(2);
         }
     }
-    read_phase_file(&locate_phase_file())
+}
+
+/// `Ok(Some(n))` for a valid `--phase n`/`--phase=n`, `Ok(None)` when absent, `Err(raw)` for a
+/// present but unparsable value (`raw` is the offending token, or empty when the value is missing).
+fn parse_phase_override(args: &[String]) -> Result<Option<u32>, String> {
+    let mut found = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let raw = if a == "--phase" {
+            it.next().map_or("", String::as_str)
+        } else if let Some(v) = a.strip_prefix("--phase=") {
+            v
+        } else {
+            continue;
+        };
+        found = Some(raw.parse().map_err(|_| raw.to_string())?);
+    }
+    Ok(found)
 }
 
 /// 定位 `PHASE`：优先 cwd（`cargo xtask` 从仓库根跑），退回 `CARGO_MANIFEST_DIR/..`
@@ -172,6 +186,28 @@ mod tests {
     fn cli_override_wins_over_the_file() {
         assert_eq!(current_phase(&["--phase".into(), "3".into()]), 3);
         assert_eq!(current_phase(&["--phase=12".into()]), 12);
+    }
+
+    /// 注错：坏的 `--phase` 值必须是 Err（调用方 usage + exit 2），而不是被忽略后读真源。
+    #[test]
+    fn a_bad_phase_value_is_an_error_not_ignored() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_phase_override(&args(&["--phase", "3"])), Ok(Some(3)));
+        assert_eq!(parse_phase_override(&args(&["--phase=12"])), Ok(Some(12)));
+        assert_eq!(parse_phase_override(&args(&["--other"])), Ok(None));
+        assert_eq!(
+            parse_phase_override(&args(&["--phase", "--release"])),
+            Err("--release".to_string())
+        );
+        assert_eq!(parse_phase_override(&args(&["--phase=x"])), Err("x".into()));
+        assert_eq!(
+            parse_phase_override(&args(&["--phase"])),
+            Err(String::new())
+        );
+        assert_eq!(
+            parse_phase_override(&args(&["--phase", "-1"])),
+            Err("-1".into())
+        );
     }
 
     /// 不传参数时读真源——**不再默认 0**。真仓的 PHASE 当前是 7；这条断言同时钉住
