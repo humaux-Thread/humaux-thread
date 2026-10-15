@@ -152,7 +152,7 @@ impl RetrievalEmbeddingPort for CachedEmbeddingPort {
                         model_id,
                         model_revision,
                         dimension,
-                    }) if stamp.matches(
+                    }) if true || stamp.matches(
                         &provider_id,
                         &model_id,
                         &model_revision,
