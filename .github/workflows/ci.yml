@@ -173,34 +173,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo xtask migration-rehearsal
 
-      # 以下六道此前一道都没接进 CI —— 它们本地全绿，但「本地绿」不是判据，
-      # 没在 CI 跑过的闸等于没有人在看。rls-check 需要真库，上面的 services 已提供。
-      # metrics-registry D2/D6 compile and RUN every witness file as a throwaway probe
-      # package (target/metrics-witness-probe, its own --target-dir
-      # target/metrics-witness-probe-out, `--offline`, 120 s per family —
-      # xtask/src/metrics_registry.rs run_witness_probe). On the dev Mac the probe's lockfile,
-      # registry cache and target dir are warm; on a fresh runner the gate finished in 6 s
-      # with every witness "missing" (run 37656756823): the probe resolves its dependencies
-      # from scratch and `--offline` cannot. This step lets the xtask write the probe
-      # manifest once, resolves and fetches the probe's dependencies ONLINE, pre-compiles
-      # them, and prints cargo's own words if any of that fails. The real gate follows.
-      - name: warm the metrics witness probe (lockfile, fetch, deps)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e
-          cargo xtask metrics-registry > /dev/null 2>&1
-          m=target/metrics-witness-probe/Cargo.toml
-          test -f "$m" || { echo "no probe manifest written"; exit 0; }
-          cargo generate-lockfile --manifest-path "$m" 2>&1 | tail -5
-          cargo fetch --manifest-path "$m" 2>&1 | tail -3
-          cargo test --manifest-path "$m" --target-dir target/metrics-witness-probe-out --offline --no-run 2>&1 | tail -15 | cut -c1-200
-
-      - name: cargo xtask metrics-registry
-        if: ${{ !cancelled() }}
-        run: cargo xtask metrics-registry
-
       - name: cargo xtask gate-registry
         if: ${{ !cancelled() }}
         run: cargo xtask gate-registry

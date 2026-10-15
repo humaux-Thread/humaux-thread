@@ -10,6 +10,7 @@
 //! `--strict` also counts not_applicable. D7 runs `cargo run -p humaux-<process> -- --metrics-families`
 //! for the six process keys in [`PROCESSES`] (`maintenance-serve` adds `--serve`, ADR-0062 D-S); D8 scans `deploy/prometheus/*.rules.yml`.
 //!
+// red-m24-5: G-M24-5 injection (comment only)
 //! xtask `metrics-registry` — G80-6 `metrics-registry-check`：Registry(R) / Code(C) /
 //! Witness(W) 三方证伪（§80.2 全文）。R 解析 §41.2 注册表；C 静态扫 `crates/**/src/**/*.rs`
 //! 的发射点；W 枚举 `crates/testkit/tests/metrics/<family>.rs`（文件名从 family 确定性派生，
