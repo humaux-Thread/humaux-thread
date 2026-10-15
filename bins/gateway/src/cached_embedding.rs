@@ -4,8 +4,9 @@
 //!   services=[]; env=[]; modules=[application::retrieval_embedding_port, cache::bounded, cache::key, domain::error,
 //!   telemetry::cache]
 //! Called-by: [gateway::bootstrap, tests]
-//! Invariants: [the key namespace comes from the trusted `AuthorizationScope` only: tenant + user, or tenant alone for a
-//!   service principal with no user (M12 D3); only an `Embedded` whose stamp equals the configured generation stamp is
+//! Invariants: [the key namespace comes from the trusted `AuthorizationScope` only: tenant + user (M12 D3); a call the
+//!   inner client would refuse (no user, or a workspace outside the scope's allowed set) goes straight to the inner
+//!   port and is never served from or written to the cache; only an `Embedded` whose stamp equals the configured generation stamp is
 //!   cached, everything else passes through uncached (M12 D4, G-M12-7); an inner `Err`, `Skipped` or `Unavailable` is
 //!   returned unchanged and never cached (§51.3); sizes and TTL come from the config registry (§78.1)]
 //! Spec: Baseline §51; §67.2; §78.1; ADR-0012; ADR-0076
@@ -121,24 +122,24 @@ impl RetrievalEmbeddingPort for CachedEmbeddingPort {
         input: RetrievalEmbeddingInput<'_>,
     ) -> Result<RetrievalEmbeddingOutcome, ErrorCode> {
         let scope = input.authorization;
+        // ADR-0012 §2: the inner client refuses a scope without a user (Unauthorized) or a workspace outside the
+        // allowed set (Forbidden). The cache must not answer what the inner port would refuse, whatever the caller
+        // narrowed, so such a call is delegated uncached. A service-principal namespace
+        // (`EmbeddingQueryKey::for_service_principal`) is for a port that admits one.
+        let user = match scope.user_id() {
+            Some(user) if scope.allowed_workspace_ids().contains(&input.workspace_id) => user,
+            _ => return self.inner.embed_query(input).await,
+        };
         // §20.0 / M12 D4: the exact bytes the worker embeds, no case or whitespace folding.
         let input_sha256: [u8; 32] = Sha256::digest(input.query.as_bytes()).into();
         // M12 D3: the namespace is read off the trusted scope, never off a caller-supplied field.
-        let key = match scope.user_id() {
-            Some(user) => EmbeddingQueryKey::for_user(
-                scope.tenant_id(),
-                user,
-                self.generation_fingerprint,
-                input.dimension,
-                input_sha256,
-            ),
-            None => EmbeddingQueryKey::for_service_principal(
-                scope.tenant_id(),
-                self.generation_fingerprint,
-                input.dimension,
-                input_sha256,
-            ),
-        };
+        let key = EmbeddingQueryKey::for_user(
+            scope.tenant_id(),
+            user,
+            self.generation_fingerprint,
+            input.dimension,
+            input_sha256,
+        );
         let (inner, stamp) = (self.inner.as_ref(), &self.stamp);
         // The `Err` arm carries the inner result unchanged: the cache stores only the `Ok` vector (§51.3).
         let got = self

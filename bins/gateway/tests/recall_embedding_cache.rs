@@ -19,7 +19,9 @@
 //! dials the worker: a hit writes none. It drives the port `recall.search` calls, not the Qdrant / PostgreSQL stages
 //! behind it, which the cache does not touch. Fault: bypass the decorator (call the inner port directly) ⇒ the second
 //! identical call registers a second row ⇒ red. G-M12-7 uses an in-process port stub. Fault: insert regardless of
-//! the stamp ⇒ the second call after a foreign stamp is a hit ⇒ red.
+//! the stamp ⇒ the second call after a foreign stamp is a hit ⇒ red. The W2 tests pin that the cache never answers
+//! a call the inner client refuses. Fault: drop the guard in front of the cache lookup ⇒ a hit is served for a workspace
+//! outside the scope, and a service principal's call is cached ⇒ red.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -192,13 +194,17 @@ fn cache_config() -> CacheConfig {
     }
 }
 
-fn user_scope(tenant: TenantId, workspace_id: WorkspaceId) -> AuthorizationScope {
+fn scope(tenant: TenantId, user: Option<UserId>, workspace_id: WorkspaceId) -> AuthorizationScope {
     AuthorizationScope::new(
         tenant,
         PrincipalId::new(),
-        Some(UserId::new()),
+        user,
         BoundedSet::new([workspace_id]).expect("bounded workspace set"),
     )
+}
+
+fn user_scope(tenant: TenantId, workspace_id: WorkspaceId) -> AuthorizationScope {
+    scope(tenant, Some(UserId::new()), workspace_id)
 }
 
 fn deadline_unix_ms() -> i64 {
@@ -219,6 +225,18 @@ async fn recall_embed(
     workspace_id: WorkspaceId,
     query: &str,
 ) -> RetrievalEmbeddingOutcome {
+    embed(port, scope, workspace_id, query)
+        .await
+        .expect("typed outcome")
+}
+
+/// [`recall_embed`] without unwrapping the port's `ErrorCode`.
+async fn embed(
+    port: &dyn RetrievalEmbeddingPort,
+    scope: &AuthorizationScope,
+    workspace_id: WorkspaceId,
+    query: &str,
+) -> Result<RetrievalEmbeddingOutcome, ErrorCode> {
     let request_id = Uuid::now_v7();
     let profile_fingerprint = format!("sha256:{}", "a".repeat(64));
     port.embed_query(RetrievalEmbeddingInput {
@@ -233,7 +251,6 @@ async fn recall_embed(
         deadline_unix_ms: deadline_unix_ms(),
     })
     .await
-    .expect("typed outcome")
 }
 
 /// The outcome's variant only: failure messages never print a vector, a stamp or anything of the caller's scope.
@@ -265,10 +282,8 @@ async fn registered_calls(pool: &sqlx::PgPool, tenant: TenantId) -> i64 {
     n
 }
 
-/// G-M12-6: two identical recalls by one user register one RPC call, not two, and get the same vector; the same
-/// text from another user of the same tenant is its own namespace (M12 D3) and registers one more.
-#[tokio::test]
-async fn identical_recall_by_one_user_registers_one_call_and_another_user_one_more() {
+/// The decorator over the real client and worker, and a `role_gateway` pool to count registrations with.
+async fn real_port() -> (CachedEmbeddingPort, sqlx::PgPool) {
     let socket_path = spawn_worker(own_uid().await).await;
     // dep: PostgreSQL(role_gateway) — the gateway's registration pool behind the real client
     let gateway_pool = RuntimeDbPool::connect(&required("HUMAUX_GATEWAY_PG_DSN"))
@@ -286,6 +301,14 @@ async fn identical_recall_by_one_user_registers_one_call_and_another_user_one_mo
     let count_pool = sqlx::PgPool::connect(&required("HUMAUX_GATEWAY_PG_DSN"))
         .await
         .expect("role_gateway count pool");
+    (port, count_pool)
+}
+
+/// G-M12-6: two identical recalls by one user register one RPC call, not two, and get the same vector; the same
+/// text from another user of the same tenant is its own namespace (M12 D3) and registers one more.
+#[tokio::test]
+async fn identical_recall_by_one_user_registers_one_call_and_another_user_one_more() {
+    let (port, count_pool) = real_port().await;
 
     let tenant = TenantId::new();
     let workspace_id = WorkspaceId::new();
@@ -388,5 +411,79 @@ async fn incompatible_stamp_not_cached() {
     assert!(
         got == [outcome.clone(), outcome],
         "a hit returns the stored outcome"
+    );
+}
+
+/// W2: an entry alice populated in workspace A is not served to alice's scope once A is outside its allowed set; the
+/// inner client's Forbidden comes back and no registration is written. A service principal (no user) gets the inner
+/// Unauthorized. The recall caller narrows the workspace first today; this pins that the cache does not rely on it.
+#[tokio::test]
+async fn cache_never_answers_a_call_the_inner_client_refuses() {
+    let (port, count_pool) = real_port().await;
+    let tenant = TenantId::new();
+    let (workspace_a, workspace_b) = (WorkspaceId::new(), WorkspaceId::new());
+    let alice = UserId::new();
+    let query = "what did the access review decide?";
+
+    let populated = recall_embed(
+        &port,
+        &scope(tenant, Some(alice), workspace_a),
+        workspace_a,
+        query,
+    )
+    .await;
+    assert!(
+        matches!(populated, RetrievalEmbeddingOutcome::Embedded { .. }),
+        "the populating recall embeds through the worker, got {}",
+        kind(&populated)
+    );
+    assert_eq!(registered_calls(&count_pool, tenant).await, 1);
+
+    let outside = embed(
+        &port,
+        &scope(tenant, Some(alice), workspace_b),
+        workspace_a,
+        query,
+    )
+    .await;
+    assert!(
+        outside == Err(ErrorCode::Forbidden),
+        "W2: a workspace outside the scope's allowed set must get the inner Forbidden, never a cached vector"
+    );
+    let service = embed(&port, &scope(tenant, None, workspace_a), workspace_a, query).await;
+    assert!(
+        service == Err(ErrorCode::Unauthorized),
+        "W2: a scope without a user must get the inner Unauthorized"
+    );
+    assert_eq!(
+        registered_calls(&count_pool, tenant).await,
+        1,
+        "refused calls register nothing"
+    );
+}
+
+/// W2: a service principal's call reaches the inner port every time, even one that answers it, so it is never cached.
+#[tokio::test]
+async fn service_principal_call_is_never_cached() {
+    let stub = Arc::new(StubPort {
+        outcome: RetrievalEmbeddingOutcome::Embedded {
+            vector: vec![0.5; DIMENSION as usize],
+            provider_id: PROVIDER_ID.to_owned(),
+            model_id: MODEL_ID.to_owned(),
+            model_revision: MODEL_REVISION.to_owned(),
+            dimension: DIMENSION,
+        },
+        calls: AtomicUsize::new(0),
+    });
+    let port = CachedEmbeddingPort::new(stub.clone(), stamp(), cache_config());
+    let workspace_id = WorkspaceId::new();
+    let service = scope(TenantId::new(), None, workspace_id);
+    for _ in 0..2 {
+        recall_embed(&port, &service, workspace_id, "service principal query").await;
+    }
+    assert_eq!(
+        stub.calls.load(Ordering::SeqCst),
+        2,
+        "W2: a scope without a user must bypass the cache"
     );
 }
