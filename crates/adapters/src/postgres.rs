@@ -1292,7 +1292,31 @@ mod tests {
                 held.map(|_| "a connection")
             );
             tokio::time::sleep_until(dropped_at + Duration::from_millis(1300)).await;
+            eprintln!(
+                "red-pool-flake-a: at +1300 ms size={} idle={}",
+                pool.0.size(),
+                pool.0.num_idle()
+            );
+            // Injected fault: a new backend takes RowExclusiveLock on its database at startup; an uncommitted RENAME
+            // holds AccessExclusiveLock, so the fresh connect this acquire needs stalls past the 200 ms acquire_timeout.
+            let blocker = open(&with_db(&db.admin_dsn, "postgres"), None)
+                .await
+                .expect("blocker pool");
+            let mut tx = blocker.begin().await.expect("blocker begin");
+            let rename = format!("ALTER DATABASE {0} RENAME TO {0}_blk", db.name);
+            sqlx::query(&rename)
+                .execute(&mut *tx)
+                .await
+                .expect("rename under lock");
+            let started = tokio::time::Instant::now();
             let freed = pool.0.acquire().await;
+            eprintln!(
+                "red-pool-flake-a: acquire returned after {:?}: {:?}",
+                started.elapsed(),
+                freed.as_ref().map(|_| "a connection")
+            );
+            tx.rollback().await.expect("blocker rollback");
+            blocker.close().await;
             assert!(
                 freed.is_ok(),
                 "ADR-0065 D-A: statement_timeout (1000 ms) must have released the slot by +1300 ms, got {:?}",
