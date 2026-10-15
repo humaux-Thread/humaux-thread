@@ -3,8 +3,8 @@
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, ops.selection_snapshots, private.evidence_objects,
 //!   private.memory_evidence, private.note_heads, projection.stream_log] w=[private.memory_records]]; env=[];
-//!   modules=[adapters::confirm_token_repo, adapters::context_repo, adapters::forget_repo, adapters::note_repo,
-//!   adapters::operation_receipt, adapters::read_materialize, adapters::remember, adapters::tests::support::governance_ops,
+//!   modules=[adapters::confirm_token_repo, adapters::forget_repo, adapters::note_repo,
+//!   adapters::operation_receipt, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
 //!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::selection, domain::subject,
 //!   humaux-testkit, projection::serving, projection::stream]
@@ -26,16 +26,16 @@ use std::time::{Duration, SystemTime};
 
 use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
-    context_repo::{
-        MaterializedMemory, MaterializedMemoryPage, MemoryEnumerationParams, MemoryGetTarget,
-        NoteEnumerationFilter, materialize_memory_enumeration_filtered,
-        materialize_memory_get_target,
-    },
     forget_repo,
     note_repo::NoteIntake,
     operation_receipt::{
         self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION, NoteReplaceOutcome,
         NoteReplaceRequest,
+    },
+    read_gate::{
+        MaterializedMemory, MaterializedMemoryPage, MemoryEnumerationParams, MemoryGetTarget,
+        NoteEnumerationFilter, materialize_memory_enumeration_filtered,
+        materialize_memory_get_target,
     },
     read_materialize::{Lifecycle, MaterializedItem, materialize_final_bodies},
     remember::RememberCommand,

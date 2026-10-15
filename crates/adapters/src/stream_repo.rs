@@ -13,7 +13,7 @@
 //!   projection::stream, retrieval::completeness]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::context_repo,
 //!   adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo,
-//!   adapters::memory_governance_repo, adapters::projection_worker, adapters::remember, adapters::retrieve,
+//!   adapters::memory_governance_repo, adapters::projection_worker, adapters::read_gate, adapters::remember, adapters::retrieve,
 //!   adapters::serving_repo, maintenance::drill, maintenance::serve, retrieval-worker::main, tests,
 //!   maintenance::projection_serve]
 //! Invariants: [every function except next_commit_seq / issue_ticket_in_txn (which run on the caller's tenant-scoped

@@ -2,7 +2,7 @@
 //!   `classify()` sole constructors (§22.4 / §22.5 / §59).
 //! Depends-on: crates=[humaux-domain, humaux-telemetry, serde]; services=[];
 //!   env=[]; modules=[domain::context, domain::ledger, retrieval::envelope, retrieval::planner, retrieval::request, telemetry::metrics]
-//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::retrieve, adapters::serving_repo, adapters::stream_repo, gateway::context, gateway::memory, gateway::recall, gateway::status, retrieval::envelope, retrieval::signals, tests]
+//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::read_gate, adapters::retrieve, adapters::serving_repo, adapters::stream_repo, gateway::context, gateway::memory, gateway::recall, gateway::status, retrieval::envelope, retrieval::signals, tests]
 //! Invariants: [ledger::close is the sole LedgerClosure constructor; A1 counts tickets, A2's PostgreSQL side
 //!   (ProjectionReads) counts memory points (ADR-0057 D-A); classify has six inputs and LedgerClosure::lagging
 //!   is the only projection-lag comparison (ADR-0057 D-D/D-E); record_final_classification holds the one increment of

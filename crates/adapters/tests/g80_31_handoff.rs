@@ -7,7 +7,7 @@
 //!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
 //!   PostgreSQL(owner),
 //!   PostgreSQL(role_gateway)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo,
-//!   adapters::postgres, adapters::read_materialize, application::continuity, domain::authority, domain::context,
+//!   adapters::postgres, adapters::read_gate, adapters::read_materialize, application::continuity, domain::authority, domain::context,
 //!   domain::error, domain::identity, domain::ids, humaux-testkit, projection::serving, projection::stream,
 //!   retrieval::compiler, retrieval::handoff]
 //! Called-by: [cargo-test]
@@ -33,10 +33,13 @@
 //! needs_verification 空 **永远是红**，与 NA 零重合（ADR-0006）。
 
 use humaux_adapters::context_repo::{
-    ContextReadAdapter, MaterializedContext, MaterializedMemory, MemoryEnumerationParams,
-    assemble_materialized, materialize_memory_enumeration, materialize_memory_get,
+    ContextReadAdapter, MaterializedContext, assemble_materialized,
 };
 use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::read_gate::{
+    MaterializedMemory, MemoryEnumerationParams, materialize_memory_enumeration,
+    materialize_memory_get,
+};
 use humaux_adapters::read_materialize::MaterializedItem;
 use humaux_application::continuity::assemble_handoff;
 use humaux_domain::authority::MemoryId;
@@ -463,7 +466,7 @@ async fn one_enumerated(
     family: &StreamFamily,
     cursor: Option<&str>,
     page_size: u16,
-) -> Result<humaux_adapters::context_repo::MaterializedMemoryPage, ErrorCode> {
+) -> Result<humaux_adapters::read_gate::MaterializedMemoryPage, ErrorCode> {
     capped_enumerated(dsn, authorization, scope, family, cursor, page_size, 1000).await
 }
 
@@ -477,7 +480,7 @@ async fn capped_enumerated(
     cursor: Option<&str>,
     page_size: u16,
     manifest_cap: usize,
-) -> Result<humaux_adapters::context_repo::MaterializedMemoryPage, ErrorCode> {
+) -> Result<humaux_adapters::read_gate::MaterializedMemoryPage, ErrorCode> {
     // dep: PostgreSQL(role_gateway) — RuntimeDbPool under test, the runtime role's real pool.
     // dep: PostgreSQL(role_gateway) — opens the role-scoped connection for `one_enumerated`
     let pool = RuntimeDbPool::connect(dsn).await.expect("pool");
@@ -1350,7 +1353,7 @@ fn workspace_enumeration(tenant: Uuid) -> (AuthorizationScope, Scope, StreamFami
     (authorization, scope, family)
 }
 
-fn page_ids(page: &humaux_adapters::context_repo::MaterializedMemoryPage) -> Vec<Uuid> {
+fn page_ids(page: &humaux_adapters::read_gate::MaterializedMemoryPage) -> Vec<Uuid> {
     page.memory
         .bodies
         .items

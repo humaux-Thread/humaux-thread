@@ -4,10 +4,10 @@
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects,
 //!   private.evidence_subjects, private.identity_note_materializations, private.memory_evidence,
 //!   private.memory_records, private.memory_subjects, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
-//!   adapters::context_repo, adapters::postgres, adapters::retrieve, application::affect, domain::affect,
+//!   adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, application::affect, domain::affect,
 //!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
 //!   projection::serving, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::read_gate, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
 //!   [`Lifecycle`] and always run [`Lifecycle::CURRENT`] (ADR-0067 D-J2)]
@@ -31,8 +31,9 @@ use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
 use crate::affect_repo;
-use crate::context_repo::{readable_memory_ids, set_authorization_local, visibility_from_row};
+use crate::context_repo::{set_authorization_local, visibility_from_row};
 use crate::postgres::RuntimeDbPool;
+use crate::read_gate::readable_memory_ids;
 use crate::retrieve::{OverlayCandidate, ProcessingState};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -959,7 +960,7 @@ pub struct MemoryHistory {
     pub memory_id: Uuid,
     /// `"active"` or `"superseded"`: the only two states the final gate admits with history.
     pub status: &'static str,
-    /// The successor, present only when the caller may read it (`context_repo::readable_memory_ids`).
+    /// The successor, present only when the caller may read it (`read_gate::readable_memory_ids`).
     pub superseded_by: Option<Uuid>,
     /// Where the version came from.
     pub provenance: MemoryProvenance,

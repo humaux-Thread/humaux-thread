@@ -1,6 +1,6 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
@@ -12,7 +12,7 @@
 //!
 //! One `role_gateway` transaction, in this order, every step rolling the whole thing back:
 //! reserve BMO -> consume the confirm token ([`crate::confirm_token_repo::consume_in_txn`],
-//! same transaction by construction) -> visibility of both rows (`context_repo::readable_memory_ids`,
+//! same transaction by construction) -> visibility of both rows (`read_gate::readable_memory_ids`,
 //! the workspace's own `can_read` judge) -> successor rule (`application::supersede::check_pair`)
 //! -> `UPDATE private.memory_records SET status='superseded', superseded_by, superseded_at
 //! WHERE status='active'` (G59-4 holds on the new row; 0 rows = Conflict). That WHERE clause
@@ -59,10 +59,10 @@ use uuid::Uuid;
 use crate::{
     affect_repo::{self, AffectInput, AffectParent},
     confirm_token_repo::{self, ConfirmationClaim},
-    context_repo,
     memory_repo::{self, LoadedEvidence, NewMemory},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
+    read_gate,
     remember::{self, RememberCommand, RememberError},
     request_guard_repo::{self, AuditTenant},
     retrieve::{self, TokenClaims},
@@ -275,7 +275,7 @@ async fn successor_status(
     successor: MemoryId,
 ) -> Result<AuthorityStatus, ErrorCode> {
     let ids = [target.0, successor.0];
-    let readable = context_repo::readable_memory_ids(txn, auth, &ids).await?;
+    let readable = read_gate::readable_memory_ids(txn, auth, &ids).await?;
     if !ids.iter().all(|id| readable.contains(id)) {
         return Err(ErrorCode::NotFound);
     }
@@ -704,7 +704,7 @@ async fn head_state(
     auth: &AuthorizationScope,
     target: MemoryId,
 ) -> Result<HeadState, ErrorCode> {
-    let readable = context_repo::readable_memory_ids(txn, auth, &[target.0]).await?;
+    let readable = read_gate::readable_memory_ids(txn, auth, &[target.0]).await?;
     if !readable.contains(&target.0) {
         return Err(ErrorCode::NotFound);
     }
@@ -1097,7 +1097,7 @@ async fn archive_state(
     auth: &AuthorizationScope,
     target: MemoryId,
 ) -> Result<(bool, Option<Uuid>), ErrorCode> {
-    let readable = context_repo::readable_memory_ids(txn, auth, &[target.0]).await?;
+    let readable = read_gate::readable_memory_ids(txn, auth, &[target.0]).await?;
     if !readable.contains(&target.0) {
         return Err(ErrorCode::NotFound);
     }
@@ -1469,7 +1469,7 @@ async fn correction_source(
     auth: &AuthorizationScope,
     target: MemoryId,
 ) -> Result<CorrectionSource, ErrorCode> {
-    let readable = context_repo::readable_memory_ids(txn, auth, &[target.0]).await?;
+    let readable = read_gate::readable_memory_ids(txn, auth, &[target.0]).await?;
     if !readable.contains(&target.0) {
         return Err(ErrorCode::NotFound);
     }
