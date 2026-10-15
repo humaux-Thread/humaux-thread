@@ -143,7 +143,7 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
             let listener_state = Arc::clone(&state);
             moka::future::Cache::builder()
                 .max_capacity(config.capacity_bytes)
-                .weigher(|k: &K, v: &V| u32::try_from(weight(k, v)).unwrap_or(u32::MAX))
+                .weigher(|_k: &K, _v: &V| 1_u32)
                 .time_to_live(config.ttl)
                 .eviction_listener(move |k: Arc<K>, v: V, cause: RemovalCause| {
                     listener_state.release(k.tenant(), weight(k.as_ref(), &v));
