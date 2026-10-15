@@ -1,6 +1,6 @@
 //! `infra-egress::raw` — Layer 1A 的原始 HTTPS POST 出口，给 **BYOK 域**（§11）用。
 //! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(provider)]; env=[];
-//!   modules=[humaux-infra-network, infra-egress::resolver, infra-network::http]
+//!   modules=[humaux-infra-network, infra-egress::http, infra-egress::resolver, infra-network::http]
 //! Called-by: [adapters::byok]
 //! Invariants: [the BYOK-domain raw HTTPS POST: it injects no Authorization and classifies no status (both belong to
 //!   adapters::byok); non-HTTPS endpoints and oversize bodies are RawSendErrors; dialing goes through the checked
