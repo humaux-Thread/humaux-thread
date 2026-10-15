@@ -1,0 +1,7 @@
+# RED RECORD ONLY (M08-3 inject-red b2). Never merge.
+migration_id = "0246_red_m08_3b2"
+class = "EXPAND_CONTRACT"
+precheck = "select (select relrowsecurity from pg_class where oid = to_regclass('coord.tasks')) as precheck_ok"
+postcheck = "select not (select relrowsecurity from pg_class where oid = to_regclass('coord.tasks')) as postcheck_ok"
+rollback_or_forward_fix = "forward-fix only: ALTER TABLE coord.tasks ENABLE ROW LEVEL SECURITY; ALTER TABLE coord.tasks FORCE ROW LEVEL SECURITY."
+backup_restore_requirement = "none: throwaway CI database."

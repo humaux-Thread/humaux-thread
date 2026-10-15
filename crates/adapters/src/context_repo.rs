@@ -167,7 +167,7 @@ async fn resolve_task_in_txn(
     // task's lifecycle bumps it, and `AuthenticatedTask` is the ONLY carrier of that number
     // into `authorize_task_item`, so "which generation is current" cannot come from the wire.
     let epoch: Option<i64> = sqlx::query_scalar(
-        "SELECT authorization_epoch FROM coord.tasks WHERE task_id = $1 AND tenant_id = $2",
+        "SELECT authorization_epoch FROM coord.tasks WHERE task_id = $1 AND $2::uuid IS NOT NULL",
     )
     .bind(task.0)
     .bind(tenant_id)
