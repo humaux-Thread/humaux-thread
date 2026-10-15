@@ -1,6 +1,6 @@
 //! `xtask::dod_check` — G80-33 DoD verifier closure + G80-17.D2 BootstrapDeferredSpec key-set equality.
 //! Depends-on: crates=[]; services=[subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::phase]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::known_red, xtask::main]
 //! Invariants: [reads gate criteria files as data only, never links humaux-testkit as a dependency]
 //! Spec: Baseline §69; §1.14; §1.14.1
 //!
@@ -904,26 +904,25 @@ fn report(results: &[GateResult]) -> i32 {
 
 /// Runs the full §69/§1.14 DoD verifier closure check (G80-33 + G80-17.D1/D2/D3).
 pub fn run(args: &[String]) -> i32 {
-    let phase = parse_phase_flag(args);
-
-    let text = match fs::read_to_string(SPEC_PATH) {
-        Ok(t) => t,
+    match verdicts(parse_phase_flag(args)) {
+        Ok(results) => report(&results),
         Err(e) => {
-            eprintln!("dod-check: fail — cannot read spec at {SPEC_PATH}: {e}");
-            return 1;
+            eprintln!("dod-check: fail — {e}");
+            1
         }
-    };
-    let registry_text = match fs::read_to_string(TESTKIT_DOD_PATH) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("dod-check: fail — cannot read registry at {TESTKIT_DOD_PATH}: {e}");
-            return 1;
-        }
-    };
+    }
+}
 
+/// [`run`] without the printing, sorted by gate name: the verdict per DoD id (and per G80-17 sub-check) that
+/// `known-red` ledgers. Executes every registered verifier, exactly as `dod-check` does.
+pub fn verdicts(phase: u32) -> Result<Vec<GateResult>, String> {
+    let text = fs::read_to_string(SPEC_PATH)
+        .map_err(|e| format!("cannot read spec at {SPEC_PATH}: {e}"))?;
+    let registry_text = fs::read_to_string(TESTKIT_DOD_PATH)
+        .map_err(|e| format!("cannot read registry at {TESTKIT_DOD_PATH}: {e}"))?;
     let mut results = check_all(&text, &registry_text, phase);
     results.sort_by(|a, b| a.gate.cmp(&b.gate));
-    report(&results)
+    Ok(results)
 }
 
 /// Pure function form of [`run`] (spec text + registry text + phase in, results out) — the

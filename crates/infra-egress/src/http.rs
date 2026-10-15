@@ -4,7 +4,7 @@
 //!   env=[HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET,
 //!   HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE]; modules=[contracts::config_registry,
 //!   domain::egress, domain::error, humaux-infra-network, infra-egress::resolver, infra-network::http]
-//! Called-by: [retrieval-provider::adapters]
+//! Called-by: [infra-egress::raw, retrieval-provider::adapters]
 //! Invariants: [the only holder of a reqwest client for external destinations (built via infra-network, never
 //!   Client::new here); non-HTTPS endpoints are refused; provider HTTP statuses map to typed ErrorCodes (401
 //!   Unauthorized, 429 RateLimited, 5xx Transient)]
@@ -172,7 +172,7 @@ impl fmt::Display for HttpExternalCallError {
         match self {
             Self::Client(e) => write!(f, "client build failed: {e}"),
             Self::InsecureEndpoint => f.write_str(
-                "endpoint must be https://, or http://127.0.0.1|localhost for local testing",
+                "endpoint must be https://, or http://127.0.0.1|localhost|[::1] for local testing",
             ),
         }
     }
@@ -192,16 +192,22 @@ impl From<reqwest::Error> for HttpExternalCallError {
 /// *all* traffic, proxy included, through this same header). `https://` is always allowed;
 /// plain `http://` is allowed only to loopback (`127.0.0.1`/`localhost`/`::1`), so this
 /// crate's own `TcpListener`-backed tests keep working without opening a hole for any real
-/// destination.
-fn endpoint_scheme_is_allowed(endpoint: &str) -> bool {
-    if let Some(rest) = endpoint.strip_prefix("https://") {
-        return !rest.is_empty();
+/// destination. The host is the one `reqwest::Url` parses — the parser the client dials with —
+/// so userinfo (`http://localhost:80@evil.example/`) cannot make a remote host look like
+/// loopback. `crate::raw` (BYOK domain) uses this same check.
+// ponytail: `localhost` is trusted by name (system resolver) and `trust_env_proxy` would route
+// loopback http through HTTP_PROXY in cleartext; both are test-only shapes today, upgrade path:
+// allow loopback http only under cfg(test) once no integration test needs it.
+pub(crate) fn endpoint_scheme_is_allowed(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    match url.scheme() {
+        // a parsed https URL always has a non-empty host (special scheme)
+        "https" => true,
+        "http" => matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")),
+        _ => false,
     }
-    if let Some(rest) = endpoint.strip_prefix("http://") {
-        let host = rest.split(['/', ':', '?']).next().unwrap_or("");
-        return matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]");
-    }
-    false
 }
 
 /// §78.1: named, overridable knobs — not literals buried inside `Client::builder()` — for the
@@ -650,6 +656,45 @@ mod tests {
             result,
             Err(HttpExternalCallError::InsecureEndpoint)
         ));
+    }
+
+    /// §7.4: the loopback exception must judge the host the client will actually dial. A host
+    /// cut at the first `/`, `:` or `?` read `http://localhost:80@evil.example/` as loopback
+    /// while the URL's real host is `evil.example` (`localhost:80` is userinfo) — this
+    /// transport's platform credential would have gone there in cleartext. The `\@` and `#@`
+    /// shapes pin the dialing parser: a hand-rolled split on the last `@` refuses the first
+    /// two but would read `localhost` here.
+    #[test]
+    fn a_remote_host_never_passes_as_loopback() {
+        for refused in [
+            "http://localhost:80@evil.example/",
+            "http://127.0.0.1@evil.example/x",
+            "http://evil.example\\@localhost/",
+            "http://evil.example#@localhost/",
+            "http://localhost.evil.example/x",
+            "http://attacker.example/x",
+            "http://127.0.0.2/x",
+            "ftp://localhost/x",
+            "https://",
+            "not a url",
+        ] {
+            assert!(!endpoint_scheme_is_allowed(refused), "{refused}");
+        }
+    }
+
+    /// The forms that must keep working: https anywhere, and http to loopback by name, IPv4 or
+    /// IPv6 (`[::1]` never matched before — the host cut at the first `:` left `[`).
+    #[test]
+    fn https_and_loopback_http_are_allowed() {
+        for allowed in [
+            "https://dashscope.aliyuncs.com/v1/embeddings",
+            "http://127.0.0.1:9999/x",
+            "http://localhost:9999/x",
+            "http://localhost/x",
+            "http://[::1]:9999/x",
+        ] {
+            assert!(endpoint_scheme_is_allowed(allowed), "{allowed}");
+        }
     }
 
     #[test]

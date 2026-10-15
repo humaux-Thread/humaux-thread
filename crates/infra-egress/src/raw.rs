@@ -1,6 +1,6 @@
 //! `infra-egress::raw` — Layer 1A 的原始 HTTPS POST 出口，给 **BYOK 域**（§11）用。
 //! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(provider)]; env=[];
-//!   modules=[humaux-infra-network, infra-egress::resolver, infra-network::http]
+//!   modules=[humaux-infra-network, infra-egress::http, infra-egress::resolver, infra-network::http]
 //! Called-by: [adapters::byok]
 //! Invariants: [the BYOK-domain raw HTTPS POST: it injects no Authorization and classifies no status (both belong to
 //!   adapters::byok); non-HTTPS endpoints and oversize bodies are RawSendErrors; dialing goes through the checked
@@ -129,7 +129,7 @@ impl RawHttpPost {
         body: Vec<u8>,
         max_response_bytes: usize,
     ) -> Result<RawOutcome, RawSendError> {
-        if !scheme_allowed(url) {
+        if !crate::http::endpoint_scheme_is_allowed(url) {
             return Err(RawSendError::NonHttpsEndpoint);
         }
         let mut req = self
@@ -188,38 +188,10 @@ fn classify_transport_error(e: reqwest::Error) -> RawSendError {
     }
 }
 
-/// 与 [`crate::http`] 的 `endpoint_scheme_is_allowed` 同判据：`https://` 恒许，
-/// `http://` 仅 loopback（本 crate 自己的 TcpListener 测试要用）。
-fn scheme_allowed(endpoint: &str) -> bool {
-    if let Some(rest) = endpoint.strip_prefix("https://") {
-        return !rest.is_empty();
-    }
-    if let Some(rest) = endpoint.strip_prefix("http://") {
-        let host = rest.split(['/', ':', '?']).next().unwrap_or("");
-        return matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]");
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::resolver::SystemCheckedResolve;
-
-    /// scheme 判据与 crate::http 同型：https 恒许、http 仅 loopback。
-    #[test]
-    fn scheme_gate_matches_the_layer_1a_rule() {
-        assert!(scheme_allowed(
-            "https://api.minimaxi.com/v1/chat/completions"
-        ));
-        assert!(scheme_allowed("http://127.0.0.1:9999/x"));
-        assert!(scheme_allowed("http://localhost:9999/x"));
-        assert!(!scheme_allowed(
-            "http://api.minimaxi.com/v1/chat/completions"
-        ));
-        assert!(!scheme_allowed("ftp://api.minimaxi.com/x"));
-        assert!(!scheme_allowed("https://"));
-    }
 
     /// 非法 scheme 在建连之前就拒——不依赖网络。
     #[tokio::test]
@@ -230,6 +202,20 @@ mod tests {
             .send("http://api.minimaxi.com/v1/x", &[], vec![], 1024)
             .await
             .expect_err("非 loopback 的 http 必须拒");
+        assert!(matches!(err, RawSendError::NonHttpsEndpoint));
+    }
+
+    /// §7.4: userinfo must not dress a remote host up as loopback — the BYOK key would travel
+    /// in cleartext to `evil.example`. Refused before any connection, by the same check as
+    /// `crate::http`.
+    #[tokio::test]
+    async fn userinfo_cannot_pass_a_remote_host_off_as_loopback() {
+        let raw = RawHttpPost::new(Duration::from_secs(1), Arc::new(SystemCheckedResolve))
+            .expect("client");
+        let err = raw
+            .send("http://localhost:80@evil.example/v1/x", &[], vec![], 1024)
+            .await
+            .expect_err("the real host is evil.example");
         assert!(matches!(err, RawSendError::NonHttpsEndpoint));
     }
 

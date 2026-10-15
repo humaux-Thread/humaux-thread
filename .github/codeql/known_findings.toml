@@ -1,0 +1,168 @@
+# G-M24-3 SAST ledger (§80 "SAST", M24-3): every CodeQL Rust finding in non-test code at security severity
+# high/critical (or level error) that is accepted today, keyed by (rule, path) with an exact count. The sast job in
+# ci.yml is red when a (rule, path) pair is missing here, when its count rises (a new finding) or falls (the row must
+# shrink — §80.1.1 shrink-only), or when a row has no owner/reason. verdict: T = inside #[cfg(test)], FP = false
+# positive (reason says why), REAL = a genuine finding parked with its owning module card (none today).
+# Baseline: CodeQL bundle 2.27.2, commit f51b618, triaged by reading each sink back to its source (2026-10-15).
+# ponytail: counted per (rule, path), so in a file that already has T rows a test finding removed and a product
+# finding added in one PR cancel out; upgrade = key rows by SARIF partialFingerprints once line churn is measured.
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "bins/gateway/src/recall.rs"
+count = 2
+verdict = "FP"
+owner = "M11"
+reason = "eprintln prints request_id UUID, numeric dimensions and a closed worker failure code (ErrorCode::as_str or fixed tags); never query text or vector elements."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "bins/maintenance/src/member.rs"
+count = 1
+verdict = "FP"
+owner = "M21"
+reason = "Prints domain code or sqlx 0.8.6 message-only Display (no DSN, no row DETAIL); --step-up-auth/--actor values never enter any error string."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "bins/private-worker/src/lib.rs"
+count = 1
+verdict = "FP"
+owner = "M15"
+reason = "Logs tenant and model_call UUIDs, the bool credential_rejected and observation UUIDs; flagged on the name credential_rejected, no key material."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "bins/private-worker/src/main.rs"
+count = 1
+verdict = "FP"
+owner = "M15"
+reason = "Line is credential ref UUID + env var NAME + 8-hex prefix of the vendor-account-ref hash (check_secret_groups); the secret value and its sha256 are never printed."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "bins/private-worker/src/route_providers.rs"
+count = 2
+verdict = "T"
+owner = "M15"
+reason = "assert! messages inside #[cfg(test)] mod tests (L468+), fn shared_secret_requires_one_vendor_account; prod twin is check_secret_groups."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "crates/adapters/src/contribution_reasoner.rs"
+count = 1
+verdict = "FP"
+owner = "M20"
+reason = "provider_failure_line emits static error class, latency, model_call_id and route ids (provider/model/profile/binding); never provider message, endpoint_ref or credential."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "crates/adapters/src/retrieve.rs"
+count = 1
+verdict = "FP"
+owner = "M11"
+reason = "Logs the Qdrant point UUID resolved by the registry; the fn parameter consistency_token (name match) is not among the format args."
+
+[[finding]]
+rule = "rust/cleartext-logging"
+path = "crates/infra-cell/src/uds.rs"
+count = 3
+verdict = "FP"
+owner = "M05"
+reason = "Logs numeric peer uid (SO_PEERCRED) and expected uid, an OS id not a credential; flagged on peer_cred naming."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/contribution_execution_repo.rs"
+count = 1
+verdict = "FP"
+owner = "M20"
+reason = "SET LOCAL humaux.tenant_id = typed Uuid: the RLS tenant GUC, a public identifier, injection-safe by type."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/disclosure.rs"
+count = 1
+verdict = "FP"
+owner = "M19"
+reason = "SET LOCAL humaux.tenant_id = typed Uuid: the RLS tenant GUC, a public identifier, injection-safe by type."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/exact_census.rs"
+count = 1
+verdict = "FP"
+owner = "M13"
+reason = "Read-only census SELECT binding tenant/workspace/stream/ids; SECRET_LINKED is a SQL filter fragment (data_class = SECRET_MATERIAL), no secret value is stored."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/forget_repo.rs"
+count = 1
+verdict = "FP"
+owner = "M19"
+reason = "SET LOCAL humaux.tenant_id = typed Uuid: the RLS tenant GUC, a public identifier, injection-safe by type."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/model_call_ledger.rs"
+count = 1
+verdict = "FP"
+owner = "M04"
+reason = "SET LOCAL humaux.tenant_id = typed Uuid: the RLS tenant GUC, a public identifier, injection-safe by type."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/public_repo.rs"
+count = 1
+verdict = "FP"
+owner = "M20"
+reason = "SET LOCAL humaux.user_id = typed Uuid: the RLS user GUC, an identifier not a secret, injection-safe by type."
+
+[[finding]]
+rule = "rust/cleartext-storage-database"
+path = "crates/adapters/src/role_hygiene.rs"
+count = 1
+verdict = "FP"
+owner = "M08"
+reason = "Executes ALTER/CREATE ROLE carrying a client-side SCRAM-SHA-256 verifier (fresh random salt), never the plaintext password; module invariant plus unit test pin it."
+
+[[finding]]
+rule = "rust/hard-coded-cryptographic-value"
+path = "crates/adapters/src/role_hygiene.rs"
+count = 1
+verdict = "T"
+owner = "M08"
+reason = "Public RFC 7677 test vector (password pencil) in #[cfg(test)] mod tests (L601+), fn verifier_matches_rfc7677_salted_password."
+
+[[finding]]
+rule = "rust/hard-coded-cryptographic-value"
+path = "crates/application/src/auth.rs"
+count = 2
+verdict = "T"
+owner = "M02"
+reason = "TEST_PEPPER const and a different-pepper literal, both inside #[cfg(test)] mod tests (L812 to EOF); fn code_hash_does_not_verify_under_a_different_pepper at 1320."
+
+[[finding]]
+rule = "rust/hard-coded-cryptographic-value"
+path = "crates/protocol/src/edge.rs"
+count = 6
+verdict = "T"
+owner = "M02"
+reason = "Literal server-side-pepper in #[cfg(test)] mod tests (L597 to EOF): valid_key_passes, wrong_key_is_rejected, revoked_key_is_rejected, expired_by_timestamp..., cidr_binding..., log_fingerprint_never_contains_secret_material."
+
+[[finding]]
+rule = "rust/non-https-url"
+path = "crates/infra-egress/src/raw.rs"
+count = 1
+verdict = "FP"
+owner = "M05"
+reason = "the scheme check (L132) dominates the sink; production URLs also pass validate_custom_endpoint (https only, no userinfo). The loopback-http branch is compiled into production; its userinfo bypass is fixed by PR #42."
+
+[[finding]]
+rule = "rust/non-https-url"
+path = "crates/infra-egress/src/resolver.rs"
+count = 1
+verdict = "T"
+owner = "M05"
+reason = "http://nowhere.test:9 literal in #[cfg(test)] mod tests (L225-465), fn zero_addresses_is_a_refusal."

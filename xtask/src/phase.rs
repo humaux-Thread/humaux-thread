@@ -1,6 +1,6 @@
 //! `xtask::phase` — single source of truth for the repo's current delivery Phase (PHASE file).
 //! Depends-on: crates=[]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[]
-//! Called-by: [xtask::benchset_declaration, xtask::dod_check, xtask::main]
+//! Called-by: [xtask::benchset_declaration, xtask::dod_check, xtask::known_red, xtask::main]
 //! Invariants: [PHASE file is the only input; no subcommand may default an unset --phase to 0]
 //! Spec: Baseline §1.14; §69
 //!
