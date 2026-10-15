@@ -1,6 +1,6 @@
 //! `xtask::benchset_declaration` — G80-16 benchset-declaration-check: §69 benchmark set-denominator declaration table shape.
 //! Depends-on: crates=[]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::phase]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::known_red, xtask::main]
 //! Invariants: [missing any of the 7 §55.3 fields ⇒ NOT_DECLARED; an owning phase past due while still NOT_DECLARED ⇒ fail]
 //! Spec: Baseline §69; §55
 //!
@@ -626,34 +626,66 @@ pub fn evaluate(
     }
 }
 
-pub fn run(args: &[String]) -> i32 {
-    let current_phase = parse_phase_arg(args);
-    let spec_md = match fs::read_to_string(SPEC_PATH) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("benchset-declaration: fail — cannot read {SPEC_PATH}: {e}");
-            return 1;
-        }
-    };
+/// One repo-wide evaluation, flattened to text for the `known-red` ledger (which attributes it to sets).
+pub struct RepoEval {
+    /// `set_id` of every row of the §69 declaration table, in table order.
+    pub set_ids: Vec<String>,
+    /// Violation texts; each concerning one set begins `<set_id>: `, the rest concern the table as a whole.
+    pub violations: Vec<String>,
+    /// `<set_id> (owner phase=N)` for the sets that are not yet due.
+    pub na_list: Vec<String>,
+}
 
+/// Reads the spec and evaluates every declaration row at `current_phase`; `run` prints the result and `known-red`
+/// attributes it to sets, so the two cannot drift. `Err` = the spec is unreadable; `Ok(None)` = it has no
+/// declaration table (reported as `not_applicable` naming that heading, §57.1 rule 2).
+pub fn evaluate_repo(current_phase: u32) -> Result<Option<RepoEval>, String> {
+    let spec_md =
+        fs::read_to_string(SPEC_PATH).map_err(|e| format!("cannot read {SPEC_PATH}: {e}"))?;
     let table = parse_declaration_table(&spec_md);
     if table.is_empty() {
-        eprintln!(
-            "benchset-declaration: not_applicable (missing object: heading `{TABLE_HEADING}` not found in {SPEC_PATH})"
-        );
-        return 0;
+        return Ok(None);
     }
-
     let EvalResult {
         violations,
         na_list,
     } = evaluate(&spec_md, &table, current_phase, Some(Path::new(".")));
+    Ok(Some(RepoEval {
+        set_ids: table
+            .iter()
+            .filter_map(|row| row.first())
+            .map(|s| strip_backticks(s))
+            .collect(),
+        violations: violations.into_iter().map(|v| v.0).collect(),
+        na_list,
+    }))
+}
+
+pub fn run(args: &[String]) -> i32 {
+    let current_phase = parse_phase_arg(args);
+    let RepoEval {
+        violations,
+        na_list,
+        ..
+    } = match evaluate_repo(current_phase) {
+        Err(e) => {
+            eprintln!("benchset-declaration: fail — {e}");
+            return 1;
+        }
+        Ok(None) => {
+            eprintln!(
+                "benchset-declaration: not_applicable (missing object: heading `{TABLE_HEADING}` not found in {SPEC_PATH})"
+            );
+            return 0;
+        }
+        Ok(Some(eval)) => eval,
+    };
 
     // 三态单一状态行（§57.1）：有 violation ⇒ 只 fail（na_list 作附注打印，不当第二个状态）；
     // 无 violation 且 na_list 非空 ⇒ 只 not_applicable 并点名缺失对象；两者皆无 ⇒ pass。
     if !violations.is_empty() {
         for v in &violations {
-            eprintln!("benchset-declaration: fail — {}", v.0);
+            eprintln!("benchset-declaration: fail — {v}");
         }
         if !na_list.is_empty() {
             eprintln!(
