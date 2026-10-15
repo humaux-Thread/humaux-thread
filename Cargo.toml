@@ -7,8 +7,8 @@ members = ["crates/*", "bins/*", "xtask"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-# No licence is declared while the cloud-to-be code lives here (owner ruling 2026-10-15): the Apache-2.0 LICENSE
-# lands in the open-source repository at the split (M24-14). Nothing here is published to a registry.
+# ADR-0073 D-C: no licence is declared while cloud-to-be code lives here; the Apache-2.0 LICENSE lands in the
+# open-source repository at the split (M24-14). Nothing here is published to a registry.
 publish = false
 # ADR-0050 D-G: declared MSRV (§70). Enforced pin is rust-toolchain.toml; every member declares
 # `rust-version.workspace = true` (ADR-0051 D-L, closed the ADR-0050 open item).
