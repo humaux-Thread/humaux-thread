@@ -16,6 +16,9 @@ humaux-fail-closed-macro = "M01"
 # shared: degrade/direction are M01's, metrics/health/dr/admission are M22's.
 humaux-telemetry = "M22"
 
+# M12 cache layer (§51, §67.2): the in-process bounded cache; an L1 leaf.
+humaux-cache = "M12"
+
 # M05 trust domains and egress layers 0, 1A, 1B; the secret scanner is M05's.
 humaux-infra-network = "M05"
 humaux-infra-egress = "M05"

@@ -4,7 +4,7 @@
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
 //!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
 //!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
-//!   telemetry::admission, telemetry::degrade, telemetry::dr, telemetry::health, tests]
+//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
 //! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B
@@ -372,6 +372,36 @@ pub mod families {
         "1 while a WAL archive failure is latched (until a later VERIFIED full) or archiving fails now, else 0.",
         Kind::Gauge,
         &[],
+    );
+
+    // §41.2: §51 cache layer — emitted by `telemetry::cache` (M12).
+    /// `cache_requests_total{cache,result}`.
+    pub const CACHE_REQUESTS_TOTAL: Family = f(
+        "cache_requests_total",
+        "Cache lookups, by cache and result (hit, miss, bypass, error).",
+        Kind::Counter,
+        &["cache", "result"],
+    );
+    /// `cache_evictions_total{cache,cause}`.
+    pub const CACHE_EVICTIONS_TOTAL: Family = f(
+        "cache_evictions_total",
+        "Cache entries removed, by cache and removal cause.",
+        Kind::Counter,
+        &["cache", "cause"],
+    );
+    /// `cache_bytes{cache}`.
+    pub const CACHE_BYTES: Family = f(
+        "cache_bytes",
+        "Weighted bytes currently accounted to a cache.",
+        Kind::Gauge,
+        &["cache"],
+    );
+    /// `cache_singleflight_waiters{cache}`.
+    pub const CACHE_SINGLEFLIGHT_WAITERS: Family = f(
+        "cache_singleflight_waiters",
+        "Callers currently inside a cache's single-flight section.",
+        Kind::Gauge,
+        &["cache"],
     );
 }
 
