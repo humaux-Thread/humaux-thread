@@ -8,7 +8,7 @@
 //!   staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources,
 //!   staging.contribution_releases, staging.sanitized_public_candidates] x=[ops.lock_contribution_inputs,
 //!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres,
-//!   adapters::reasoning_route_admission, adapters::remember, application::consolidate, application::contribute,
+//!   adapters::reasoning_route_admission, adapters::stream_repo, application::consolidate, application::contribute,
 //!   domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::public]
 //! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, tests]
 //! Invariants: [provider/scanner work runs outside the short input lock; every durable step re-checks policy,
@@ -52,7 +52,7 @@ use crate::{
     reasoning_route_admission::{
         ReasoningAdmissionError, ReasoningAdmissionLocator, resolve_user_reasoning_admission,
     },
-    remember,
+    stream_repo,
 };
 
 type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
@@ -835,7 +835,7 @@ impl ContributionCandidatePort for ContributionEntryRepo<'_> {
         } else {
             None
         };
-        let seq = remember::next_commit_seq(&mut txn)
+        let seq = stream_repo::next_commit_seq(&mut txn)
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
         if let Some((anonymous_source_id, envelope_sha256)) = anonymous_dispatch {

@@ -1,13 +1,14 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[control.private_reasoning_domains, ops.commit_seq_seq] w=[ops.outbox, private.events,
-//!   private.ingest_tickets, projection.stream_checkpoints, projection.stream_log]];
+//!   r=[control.private_reasoning_domains] w=[private.events, private.ingest_tickets]];
 //!   env=[]; modules=[adapters::affect_repo, adapters::evidence_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
-//!   adapters::subject_repo, domain::affect, domain::error, domain::evidence, domain::ids, domain::subject,
-//!   projection::stream]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
+//!   adapters::stream_repo, adapters::subject_repo, domain::affect, domain::error, domain::evidence, domain::ids,
+//!   domain::subject, projection::stream]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
-//!   UPDATEd (no INSERT grant); an exhausted batch or non-future token expiry is a RememberError and nothing commits]
+//!   UPDATEd (no INSERT grant); the stream ticket and its outbox row come only from stream_repo::issue_ticket_in_txn
+//!   (M09 D1), after the Evidence and note writes; an exhausted batch or non-future token expiry is a RememberError
+//!   and nothing commits]
 //! Spec: Baseline §34.2; §60.1; §60; §34.1
 //!
 //! [`remember`] is `role_gateway`'s single write path for Evidence acceptance. It runs against
@@ -19,9 +20,10 @@
 //! outbox_batch_remember.rs`'s G23-1c fault injection exists to prove is load-bearing.
 //!
 //! Steps, in one transaction, verbatim to §60's pseudocode:
-//! `next_commit_seq` -> `create_evidence_object` -> `insert_event_subtype` -> `redeem_ticket`
+//! `stream_repo::next_commit_seq` -> `create_evidence_object` -> `insert_event_subtype` -> `redeem_ticket`
 //! (skipped when `cmd.batch_id` is `None`, §34.1 "不带 batch_id 的调用方行为一字不变") ->
-//! `issue_stream_log_row` -> `insert_outbox` -> sign `consistency_token`.
+//! `stream_repo::issue_ticket_in_txn` (stream_log row + outbox row, handed the sequence value taken first) ->
+//! sign `consistency_token`.
 
 use sqlx::Row;
 use sqlx::types::Uuid;
@@ -39,6 +41,7 @@ use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
 use crate::retrieve::{self, TokenClaims};
+use crate::stream_repo;
 
 /// DB-layer failure plus the one domain-shaped terminal case this module can produce
 /// (§34.1 `BATCH_EXHAUSTED`). Adapter-local, not `humaux_domain::error::ErrorCode` itself —
@@ -251,18 +254,6 @@ async fn resolve_reasoning_domain(
     .ok_or(RememberError::ReasoningDomainUnresolved)
 }
 
-/// §15.1: `next_commit_seq` — the sole caller of `ops.commit_seq_seq`
-/// (`migrations/0043_commit_sequence.sql`). "仅审计总序，不参与完整性判定" (§15) — nothing
-/// downstream may branch on this value's magnitude, only carry it through to `stream_log` /
-/// `outbox` for audit/cross-stream reconciliation.
-pub(crate) async fn next_commit_seq(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<i64, RememberError> {
-    Ok(sqlx::query_scalar("SELECT nextval('ops.commit_seq_seq')")
-        .fetch_one(&mut **txn)
-        .await?)
-}
-
 /// A `data_class` / `visibility_class` string outside the CHECK sets: the typed door cannot express it, so it is refused
 /// before the INSERT as [`RememberError::EvidenceClassOutsideSet`], and nothing is written.
 fn unknown_evidence_literal(column: &'static str, value: &str) -> RememberError {
@@ -377,80 +368,6 @@ async fn redeem_ticket(
     Ok(RedeemedTicket { ordinal, remaining })
 }
 
-/// `issue_stream_log_row` — §15.1 verbatim: atomically bumps `stream_checkpoints.
-/// issued_highwater` (creating the checkpoint row on first use — `role_gateway`'s `INSERT`
-/// grant on that table is scoped to exactly its six PK columns, §60.1's grant table, so this
-/// bootstrap `INSERT` never touches `issued_highwater` itself; the `UPDATE` right after is what
-/// actually increments it, matching the column-scoped `UPDATE(issued_highwater)` grant) and
-/// inserts the matching `stream_log` row in the same transaction as the `commit_seq` it
-/// carries — the six stream-identity columns plus `stream_seq`/`commit_seq`, verbatim to
-/// §60's pseudocode. **Does not** carry `evidence_id`: `migrations/0045_stream_log_evidence_id
-/// .sql` briefly added that column, but `migrations/0046_stream_log_evidence_id_via_outbox.sql`
-/// (same wave, T3.8) dropped it again in favor of joining `stream_log` to `ops.outbox` on
-/// `(tenant_id, commit_seq)` — 0046's own comment names this function as the reason: T3.1/T3.2
-/// owns §60's pseudocode field list and must not add a column to it for a different task's
-/// read path.
-pub(crate) async fn issue_stream_log_row(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    key: &StreamKey,
-    commit_seq: i64,
-) -> Result<i64, RememberError> {
-    sqlx::query(
-        "INSERT INTO projection.stream_checkpoints \
-           (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
-         ON CONFLICT (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version) \
-         DO NOTHING",
-    )
-    .bind(key.tenant_id.0)
-    .bind(&key.scope_kind)
-    .bind(key.scope_id)
-    .bind(&key.domain)
-    .bind(&key.projection_kind)
-    .bind(&key.projection_version)
-    .execute(&mut **txn)
-    .await?;
-
-    let stream_seq: i64 = sqlx::query_scalar(
-        "UPDATE projection.stream_checkpoints \
-            SET issued_highwater = issued_highwater + 1 \
-          WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
-            AND projection_kind = $5 AND projection_version = $6 \
-          RETURNING issued_highwater",
-    )
-    .bind(key.tenant_id.0)
-    .bind(&key.scope_kind)
-    .bind(key.scope_id)
-    .bind(&key.domain)
-    .bind(&key.projection_kind)
-    .bind(&key.projection_version)
-    .fetch_one(&mut **txn)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO projection.stream_log \
-           (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
-            stream_seq, commit_seq) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(key.tenant_id.0)
-    .bind(&key.scope_kind)
-    .bind(key.scope_id)
-    .bind(&key.domain)
-    .bind(&key.projection_kind)
-    .bind(&key.projection_version)
-    .bind(stream_seq)
-    .bind(commit_seq)
-    .execute(&mut **txn)
-    .await?;
-
-    Ok(stream_seq)
-}
-
-/// `insert_outbox` — §14's transactional-outbox row, same transaction as the Evidence write it
-/// announces (§14 "DB write -> INSERT outbox_event -> COMMIT"; `ops.outbox` is this schema's
-/// canonical name for what §14/§60's prose calls `outbox_event`, per `migrations/
-/// 0008_ops_core.sql`'s table comment).
 /// §14/§15.1: `role_consolidation_worker`'s own private-Evidence-shaped outbox event for a
 /// published `private.memory_rollups` row (§78.2: pinned here, not reused from
 /// `EVIDENCE_ACCEPTED`, so a reader can tell "a rollup published" from "an Evidence was
@@ -463,28 +380,6 @@ pub(crate) const MEMORY_PUBLISHED: &str = "MEMORY_PUBLISHED";
 // ponytail: unused until an undo/retraction write path exists; add its call site then.
 #[allow(dead_code)]
 pub(crate) const MEMORY_LIFECYCLE: &str = "MEMORY_LIFECYCLE";
-
-pub(crate) async fn insert_outbox(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: Uuid,
-    commit_seq: i64,
-    stream_seq: i64,
-    event_type: &str,
-    evidence_id: Uuid,
-) -> Result<(), RememberError> {
-    sqlx::query(
-        "INSERT INTO ops.outbox (tenant_id, commit_seq, stream_seq, event_type, evidence_id) \
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(tenant_id)
-    .bind(commit_seq)
-    .bind(stream_seq)
-    .bind(event_type)
-    .bind(evidence_id)
-    .execute(&mut **txn)
-    .await?;
-    Ok(())
-}
 
 /// The uncommitted outcome of [`remember_in_txn`]. The receipt/orchestrator caller receives
 /// only facts emitted by the successful SQL writes, then decides when to commit its larger
@@ -589,7 +484,7 @@ pub async fn remember_in_txn_with(
         .await
         .map_err(RememberError::Affect)?;
 
-    let commit_seq = next_commit_seq(txn).await?;
+    let commit_seq = stream_repo::next_commit_seq(txn).await?;
     let evidence_id = create_evidence_object(txn, &cmd).await?;
     insert_event_subtype(txn, evidence_id, &cmd).await?;
     // The declaration rides on the Evidence in this same transaction (the memory is born later
@@ -626,16 +521,15 @@ pub async fn remember_in_txn_with(
         _ => None,
     };
 
-    let stream_seq = issue_stream_log_row(txn, &key, commit_seq).await?;
-    insert_outbox(
+    let stream_seq = stream_repo::issue_ticket_in_txn(
         txn,
-        cmd.tenant_id,
-        commit_seq,
-        stream_seq,
-        "EVIDENCE_ACCEPTED",
+        &key,
         evidence_id,
+        "EVIDENCE_ACCEPTED",
+        Some(commit_seq),
     )
-    .await?;
+    .await?
+    .stream_seq;
 
     // Sign at the actual issuance point, after every potentially blocking write. If a lock
     // wait consumed the deadline, returning here drops `txn` and rolls every write back.

@@ -1600,14 +1600,18 @@ fn g80_11_source_hash_unique(root: &Path) -> Verdict {
 }
 
 // ============================================================================
-// M07 D9 / G-M07-1: the two M07 write doors. Every non-test `INSERT INTO private.evidence_objects` and
-// `INSERT INTO private.memory_records` in the workspace is ONE statement in ONE file, so a change to the
-// Evidence or Memory model edits an M07 file and no writer can skip what the door enforces (the digest-as-hex
-// binding, the PRIMARY `memory_evidence` link, the §6.1.3 subject hook).
+// Sole-INSERT doors (M07 D9 / G-M07-1, M09 D1 / G-M09-1). A door statement is ONE statement in ONE file in
+// non-test code, so a change to the model behind it edits that module and no writer can skip what the door enforces.
+// M07: the Evidence and Memory INSERTs (the digest-as-hex binding, the PRIMARY `memory_evidence` link, the §6.1.3
+// subject hook). M09: the `stream_log` INSERT and the `commit_seq` allocation (the §60 statement order, the outbox row
+// that closes A1 for the Evidence it announces).
 // ============================================================================
 
-/// `(INSERT statement text, the one file that may hold it)` per door (module design M07 §6 D9, gate G-M07-1).
-const M07_INSERT_DOORS: [(&str, &str); 2] = [
+/// `(statement text, the one file that may hold it)`.
+type DoorStatement = (&'static str, &'static str);
+
+/// Door statements of M07 D9 (module design M07 §6, gate G-M07-1).
+const M07_INSERT_DOORS: [DoorStatement; 2] = [
     (
         "INSERT INTO private.evidence_objects",
         "crates/adapters/src/evidence_repo.rs",
@@ -1618,10 +1622,31 @@ const M07_INSERT_DOORS: [(&str, &str); 2] = [
     ),
 ];
 
+/// Door statements of M09 D1 (module design M09 §6, gate G-M09-1). The needle is the call, not the whole `SELECT`, so
+/// `DEFAULT nextval(..)`-style spellings count too.
+const M09_TICKET_DOORS: [DoorStatement; 2] = [
+    (
+        "INSERT INTO projection.stream_log",
+        "crates/adapters/src/stream_repo.rs",
+    ),
+    (
+        "nextval('ops.commit_seq_seq')",
+        "crates/adapters/src/stream_repo.rs",
+    ),
+];
+
+/// Files that spell a M09 door statement but are not product write paths: `xtask`'s onboarding e2e seeds one ISSUED
+/// `stream_log` row as the DB owner to stage a fault scenario (no `role_gateway` transaction, no outbox row — that is
+/// the scenario). Exact paths, never a directory: a new fixture is a visible edit here.
+///
+/// ponytail: the exempt file is not scanned for a second door statement, upgrade to scanning it against an expected
+/// count if the e2e harness ever grows more raw `stream_log` writes.
+const M09_TICKET_DOOR_FIXTURES: [&str; 1] = ["xtask/src/e2e_onboard.rs"];
+
 /// Whether `disp` (repo-relative, `/`-separated) sits in a test tree, judged by path **structure** like the sibling
 /// [`count_outside_allowed`]: only `crates/<pkg>/tests`, `bins/<pkg>/tests` and `xtask/tests`. A bare `tests` path
 /// component is not enough — `crates/adapters/src/tests/writer.rs` and `crates/tests/src/lib.rs` are production code.
-fn m07_is_test_tree(disp: &str) -> bool {
+fn door_is_test_tree(disp: &str) -> bool {
     let segments: Vec<&str> = disp.split('/').collect();
     matches!(
         segments.as_slice(),
@@ -1629,18 +1654,18 @@ fn m07_is_test_tree(disp: &str) -> bool {
     )
 }
 
-/// Every workspace `.rs` file as production code: this file excluded (it quotes the needles), test trees excluded
-/// ([`m07_is_test_tree`]; integration tests seed rows with raw INSERTs), and each file cut at its trailing
-/// `#[cfg(test)] mod` ([`cfg_test_mod_offset`], the same prefix heuristic [`count_outside_allowed`] uses).
+/// Every workspace `.rs` file as production code: this file excluded (it quotes the needles), `exempt` paths excluded,
+/// test trees excluded ([`door_is_test_tree`]; integration tests seed rows with raw INSERTs), and each file cut at its
+/// trailing `#[cfg(test)] mod` ([`cfg_test_mod_offset`], the same prefix heuristic [`count_outside_allowed`] uses).
 ///
 /// Not [`walk_workspace_rs`]: that blanks the test module by naive brace counting, which a `{` inside a string
 /// literal desyncs, and `xtask/src/e2e_seed.rs`'s test module is such a file — its fixture INSERTs would be counted.
-fn m07_production_sources(root: &Path) -> Vec<(String, String)> {
+fn door_production_sources(root: &Path, exempt: &[&str]) -> Vec<(String, String)> {
     read_files(&walk_files(root, &["rs"]))
         .into_iter()
         .filter_map(|(path, source)| {
             let disp = display(root, &path);
-            if disp == SELF_FILE || m07_is_test_tree(&disp) {
+            if disp == SELF_FILE || exempt.contains(&disp.as_str()) || door_is_test_tree(&disp) {
                 return None;
             }
             // ponytail: prefix cut at the first `#[cfg(test)] mod`, so production items declared after it are not
@@ -1658,7 +1683,7 @@ fn m07_production_sources(root: &Path) -> Vec<(String, String)> {
 /// The text a SQL string literal spells, for matching: comment lines dropped, `\`-newline continuations joined the way
 /// rustc joins them (the next line's leading whitespace is skipped), whitespace runs collapsed to one space, lowercased —
 /// so `insert  into private.memory_records` and a `\`-split `INSERT INTO \` + `private.memory_records` both match.
-fn m07_normalised(source: &str) -> String {
+fn door_normalised(source: &str) -> String {
     let mut text = String::with_capacity(source.len());
     let mut continued = false;
     for line in source.lines() {
@@ -1684,36 +1709,44 @@ fn m07_normalised(source: &str) -> String {
         .to_lowercase()
 }
 
-/// `needle` occurrences in each file's [`m07_normalised`] text (files with none are omitted).
+/// `needle` occurrences in each file's [`door_normalised`] text (files with none are omitted).
 ///
 /// ponytail: matches the spelled-out statement text, so a statement assembled with `format!` or from separate string
 /// pieces evades it, upgrade to statement parsing if that ever shows up.
-fn m07_statement_sites(files: &[(String, String)], needle: &str) -> Vec<(String, usize)> {
-    let needle = m07_normalised(needle);
+fn door_statement_sites(files: &[(String, String)], needle: &str) -> Vec<(String, usize)> {
+    let needle = door_normalised(needle);
     files
         .iter()
         .filter_map(|(disp, source)| {
-            let n = m07_normalised(source).matches(needle.as_str()).count();
+            let n = door_normalised(source).matches(needle.as_str()).count();
             (n > 0).then(|| (disp.clone(), n))
         })
         .collect()
 }
 
-/// M07 D9 / G-M07-1: each door statement in [`M07_INSERT_DOORS`] appears `== 1` times in non-test code, in its home
-/// file; 0 is red (a typo'd needle or a deleted door must not read as "no duplicates"), so is a single copy anywhere
-/// else, and so is a statement that exists while its home file does not. `not_applicable` only when the statement
-/// appears nowhere and the home file does not exist yet, and it names that file (§57.1 第2条) — a failing door is
-/// never masked by the other door's `not_applicable`.
-fn m07_1_insert_doors(root: &Path) -> Verdict {
-    let files = m07_production_sources(root);
+/// Sole-door check: each statement in `doors` appears `== 1` times in non-test code, in its home file; 0 is red (a
+/// typo'd needle or a deleted door must not read as "no duplicates"), so is a single copy anywhere else, and so is a
+/// statement that exists while its home file does not. `not_applicable` only when the statement appears nowhere and the
+/// home file does not exist yet, and it names that file (§57.1 第2条) — a failing door is never masked by another door's
+/// `not_applicable`. `gate` prefixes every red line; `door_kind` names the doors in the `not_applicable` line.
+fn sole_door_statements(
+    root: &Path,
+    gate: &str,
+    door_kind: &str,
+    doors: &[DoorStatement],
+    exempt: &[&str],
+) -> Verdict {
+    let files = door_production_sources(root, exempt);
     let mut problems = Vec::new();
-    let mut missing = Vec::new();
-    for (needle, home) in &M07_INSERT_DOORS {
-        let sites = m07_statement_sites(&files, needle);
+    let mut missing: Vec<&str> = Vec::new();
+    for (needle, home) in doors {
+        let sites = door_statement_sites(&files, needle);
         let total: usize = sites.iter().map(|(_, n)| n).sum();
         let home_exists = files.iter().any(|(disp, _)| disp == home);
         if !home_exists && total == 0 {
-            missing.push(*home);
+            if !missing.contains(home) {
+                missing.push(*home);
+            }
             continue;
         }
         let sole = home_exists && total == 1 && sites.iter().all(|(disp, _)| disp == home);
@@ -1724,7 +1757,7 @@ fn m07_1_insert_doors(root: &Path) -> Verdict {
                 " (the home file does not exist)"
             };
             problems.push(format!(
-                "M07 D9 / G-M07-1: expected exactly 1 `{needle}` in non-test code, in {home}{gone}; found {total}: {sites:?}"
+                "{gate}: expected exactly 1 `{needle}` in non-test code, in {home}{gone}; found {total}: {sites:?}"
             ));
         }
     }
@@ -1732,12 +1765,35 @@ fn m07_1_insert_doors(root: &Path) -> Verdict {
         Verdict::Fail(problems)
     } else if !missing.is_empty() {
         Verdict::NotApplicable(format!(
-            "missing object: M07 D9 write door file(s) not delivered yet: {}",
+            "missing object: {door_kind} file(s) not delivered yet: {}",
             missing.join(", ")
         ))
     } else {
         Verdict::Pass
     }
+}
+
+/// M07 D9 / G-M07-1: the Evidence and Memory INSERT doors ([`M07_INSERT_DOORS`]).
+fn m07_1_insert_doors(root: &Path) -> Verdict {
+    sole_door_statements(
+        root,
+        "M07 D9 / G-M07-1",
+        "M07 D9 write door",
+        &M07_INSERT_DOORS,
+        &[],
+    )
+}
+
+/// M09 D1 / G-M09-1: the `stream_log` INSERT and the `commit_seq` allocation ([`M09_TICKET_DOORS`]), both in
+/// `stream_repo.rs`; the 注错 is a second `INSERT INTO projection.stream_log` in another module (`found 2`).
+fn m09_1_ticket_doors(root: &Path) -> Verdict {
+    sole_door_statements(
+        root,
+        "M09 D1 / G-M09-1",
+        "M09 D1 ticket door",
+        &M09_TICKET_DOORS,
+        &M09_TICKET_DOOR_FIXTURES,
+    )
 }
 
 // ============================================================================
@@ -6129,6 +6185,10 @@ pub fn run(_args: &[String]) -> i32 {
             "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
             m07_1_insert_doors(&root),
         ),
+        (
+            "M09 D1 / G-M09-1 (stream_log INSERT and commit_seq nextval: one statement each, in stream_repo.rs, non-test code)",
+            m09_1_ticket_doors(&root),
+        ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
 
@@ -8445,6 +8505,151 @@ async fn serving_version_in_txn() {}
         );
         let lines = m07_fail_lines(&tmp);
         assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M09 D1 / G-M09-1: one stream_log INSERT, one commit_seq nextval ---------------------
+
+    const M09_HOME: &str = "crates/adapters/src/stream_repo.rs";
+    const M09_FIXTURE: &str = "xtask/src/e2e_onboard.rs";
+    const M09_STREAM_LOG: &str =
+        "fn f() { let _ = \"INSERT INTO projection.stream_log (tenant_id) VALUES ($1)\"; }\n";
+    const M09_NEXTVAL: &str = "fn f() { let _ = \"SELECT nextval('ops.commit_seq_seq')\"; }\n";
+    /// The door file as M09-1 leaves it: both statements, once.
+    const M09_DOOR: &str = "fn door() { let _ = \"INSERT INTO projection.stream_log (tenant_id) VALUES ($1)\"; \
+         let _ = \"SELECT nextval('ops.commit_seq_seq')\"; }\n";
+
+    fn m09_fail_lines(root: &Path) -> Vec<String> {
+        match m09_1_ticket_doors(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The tree as M09-1 leaves it: the real repo is green, which includes the onboarding e2e fixture exemption.
+    #[test]
+    fn m09_1_real_repo_passes() {
+        assert_eq!(m09_1_ticket_doors(&real_root()), Verdict::Pass);
+    }
+
+    /// Green fixture, plus everything that must NOT count: a comment naming a statement, an integration-test tree, a
+    /// statement after a file's trailing `#[cfg(test)] mod`, and the named e2e fixture file.
+    #[test]
+    fn m09_1_passes_with_one_statement_each_and_ignores_test_comment_and_fixture_text() {
+        let tmp = fresh_tmp("m09-1-green");
+        m07_write(&tmp, M09_HOME, M09_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/distill_repo.rs",
+            "// the single INSERT INTO projection.stream_log lives in stream_repo\n\
+             fn f() {}\n\
+             #[cfg(test)]\n\
+             mod tests { fn t() { let _ = \"INSERT INTO projection.stream_log (x) VALUES (1)\"; } }\n",
+        );
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", M09_STREAM_LOG);
+        m07_write(&tmp, "bins/gateway/tests/seed.rs", M09_NEXTVAL);
+        m07_write(&tmp, M09_FIXTURE, M09_DOOR);
+        assert_eq!(m09_1_ticket_doors(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing object once (§57.1 第2条): both statements share one home file.
+    #[test]
+    fn m09_1_is_not_applicable_naming_the_missing_door_file_once() {
+        let tmp = fresh_tmp("m09-1-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m09_1_ticket_doors(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert_eq!(detail.matches(M09_HOME).count(), 1, "{detail}");
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M09-1): a second `INSERT INTO projection.stream_log` in the Distill hop's file → 红, `found 2`, naming it.
+    #[test]
+    fn m09_1_fails_on_a_duplicate_stream_log_insert_in_another_src_file() {
+        let tmp = fresh_tmp("m09-1-red-stream-log");
+        m07_write(&tmp, M09_HOME, M09_DOOR);
+        m07_write(&tmp, "crates/adapters/src/distill_repo.rs", M09_STREAM_LOG);
+        let lines = m09_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("G-M09-1"), "{lines:?}");
+        assert!(
+            lines[0].contains("INSERT INTO projection.stream_log"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains("distill_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M09-1): a second `commit_seq` allocation outside the door file → 红, naming it.
+    #[test]
+    fn m09_1_fails_on_a_second_commit_seq_nextval() {
+        let tmp = fresh_tmp("m09-1-red-nextval");
+        m07_write(&tmp, M09_HOME, M09_DOOR);
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M09_NEXTVAL);
+        let lines = m09_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("nextval('ops.commit_seq_seq')"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains("remember.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M09-1): the door file exists but lost a statement → 红 with `found 0`, never "no duplicates, pass".
+    #[test]
+    fn m09_1_fails_when_the_door_file_holds_no_nextval() {
+        let tmp = fresh_tmp("m09-1-red-zero");
+        m07_write(&tmp, M09_HOME, M09_STREAM_LOG);
+        let lines = m09_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("nextval('ops.commit_seq_seq')"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("found 0"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M09-1): the old home (`remember.rs`) keeps the only statement and the door file has none → 红.
+    #[test]
+    fn m09_1_fails_when_the_only_stream_log_insert_sits_outside_the_door_file() {
+        let tmp = fresh_tmp("m09-1-red-moved");
+        m07_write(&tmp, M09_HOME, M09_NEXTVAL);
+        m07_write(&tmp, "crates/adapters/src/remember.rs", M09_STREAM_LOG);
+        let lines = m09_fail_lines(&tmp);
+        assert!(lines[0].contains("found 1"), "{lines:?}");
+        assert!(lines[0].contains("remember.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M09-1): the fixture exemption is the one exact path, not a directory — a sibling file is production.
+    #[test]
+    fn m09_1_fixture_exemption_covers_only_the_named_file() {
+        let tmp = fresh_tmp("m09-1-red-sibling");
+        m07_write(&tmp, M09_HOME, M09_DOOR);
+        m07_write(&tmp, "xtask/src/e2e_other.rs", M09_STREAM_LOG);
+        let lines = m09_fail_lines(&tmp);
+        assert!(lines[0].contains("xtask/src/e2e_other.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The two gates share one scan but not their doors: an M07 statement in an M09 tree (and the reverse) is not
+    /// counted by the other gate.
+    #[test]
+    fn m09_1_and_m07_1_count_only_their_own_statements() {
+        let tmp = fresh_tmp("m09-1-isolated");
+        m07_write(&tmp, M09_HOME, M09_DOOR);
+        m07_write(&tmp, M07_EVIDENCE_HOME, M07_EVIDENCE_DOOR);
+        m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
+        assert_eq!(m09_1_ticket_doors(&tmp), Verdict::Pass);
+        assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
         fs::remove_dir_all(&tmp).ok();
     }
 
