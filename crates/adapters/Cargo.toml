@@ -20,6 +20,8 @@ workspace = true
 test-support = ["humaux-domain/test-support"]
 
 [dependencies]
+# red record for G-M01-3 (throwaway branch ci/red-m01-2): declared, unused
+reqwest = { version = "0.12", default-features = false }
 # §6.2.3 Typed DB Pool: sole encapsulation point is postgres.rs; runtime-tokio matches the
 # workspace's async runtime (tokio, dev-dependency below drives it in tests via
 # `tokio::runtime::Runtime::block_on`). No tls-* feature enabled — dev DB (§6.2.3 test
