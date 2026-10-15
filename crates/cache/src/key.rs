@@ -11,11 +11,17 @@ use std::sync::Arc;
 use humaux_domain::ids::{TenantId, UserId};
 
 /// A cache key. `tenant` is the namespace the per-tenant byte cap is charged to (M12 D5).
+///
+/// Contract (§51, M12 D3): an implementor's `Hash`/`Eq` must cover the tenant returned by `tenant`, so two tenants
+/// never share an entry; `key_bytes` should count heap data the key owns.
+// ponytail: the contract is per implementor and not enforced by the type system; a key whose Hash/Eq omits the
+// tenant still compiles. Upgrade = seal the trait or add a shared contract test every key type must pass.
 pub trait CacheKey: Hash + Eq + Send + Sync + 'static {
     /// The tenant this entry is charged to.
     fn tenant(&self) -> TenantId;
 
-    /// Bytes this key adds to an entry's weight.
+    /// Bytes this key adds to an entry's weight. The default is the inline size and ignores heap data, so a key that
+    /// owns heap data must override it.
     fn key_bytes(&self) -> usize {
         std::mem::size_of_val(self)
     }
@@ -48,20 +54,71 @@ pub enum EmbeddingMode {
 
 /// Key of the query-embedding cache (M12 D3/D4). Covers §51's version list through `generation_fingerprint`
 /// (provider, model, revision, dimension, preprocessing of the serving generation) and the exact input hash.
+///
+/// Fields are private and the only constructors name the principal kind, so a user request cannot be keyed into the
+/// tenant-wide (`None`) namespace by passing a missing user id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EmbeddingQueryKey {
-    /// Privacy namespace, part 1: two tenants never share an entry.
-    pub tenant_id: TenantId,
-    /// Privacy namespace, part 2: `None` only for tenant-scoped service principals.
-    pub user_id: Option<UserId>,
-    /// Embedding fingerprint of the serving generation being searched.
-    pub generation_fingerprint: [u8; 32],
-    /// Vector dimension requested.
-    pub dimension: u32,
-    /// Query or document embedding.
-    pub mode: EmbeddingMode,
-    /// SHA-256 of the exact bytes sent to the provider.
-    pub input_sha256: [u8; 32],
+    tenant_id: TenantId,
+    /// `None` only for tenant-scoped service principals.
+    user_id: Option<UserId>,
+    generation_fingerprint: [u8; 32],
+    dimension: u32,
+    mode: EmbeddingMode,
+    input_sha256: [u8; 32],
+}
+
+impl EmbeddingQueryKey {
+    /// Key for a query made on behalf of one user: entries are private to `(tenant, user)` (M12 D3).
+    pub fn for_user(
+        tenant_id: TenantId,
+        user_id: UserId,
+        generation_fingerprint: [u8; 32],
+        dimension: u32,
+        input_sha256: [u8; 32],
+    ) -> Self {
+        Self::new(
+            tenant_id,
+            Some(user_id),
+            generation_fingerprint,
+            dimension,
+            input_sha256,
+        )
+    }
+
+    /// Key for a tenant-scoped service principal, which has no user: entries are shared by that tenant's service
+    /// principals only, never with a user namespace or another tenant.
+    pub fn for_service_principal(
+        tenant_id: TenantId,
+        generation_fingerprint: [u8; 32],
+        dimension: u32,
+        input_sha256: [u8; 32],
+    ) -> Self {
+        Self::new(
+            tenant_id,
+            None,
+            generation_fingerprint,
+            dimension,
+            input_sha256,
+        )
+    }
+
+    fn new(
+        tenant_id: TenantId,
+        user_id: Option<UserId>,
+        generation_fingerprint: [u8; 32],
+        dimension: u32,
+        input_sha256: [u8; 32],
+    ) -> Self {
+        Self {
+            tenant_id,
+            user_id,
+            generation_fingerprint,
+            dimension,
+            mode: EmbeddingMode::Query,
+            input_sha256,
+        }
+    }
 }
 
 impl CacheKey for EmbeddingQueryKey {

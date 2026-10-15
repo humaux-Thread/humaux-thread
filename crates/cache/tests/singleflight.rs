@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use humaux_cache::{BoundedCache, CacheConfig, EmbeddingMode, EmbeddingQueryKey};
+use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::CacheName;
 
@@ -28,14 +28,7 @@ fn cache() -> Arc<Cache> {
 }
 
 fn key() -> EmbeddingQueryKey {
-    EmbeddingQueryKey {
-        tenant_id: TenantId::new(),
-        user_id: Some(UserId::new()),
-        generation_fingerprint: [1; 32],
-        dimension: 1024,
-        mode: EmbeddingMode::Query,
-        input_sha256: [2; 32],
-    }
+    EmbeddingQueryKey::for_user(TenantId::new(), UserId::new(), [1; 32], 1024, [2; 32])
 }
 
 /// 32 concurrent identical misses: exactly one compute, every caller gets the value.

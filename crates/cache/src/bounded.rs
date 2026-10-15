@@ -11,6 +11,10 @@
 //! interval, so a tenant just under its cap may be bypassed a little early; upgrade = per-tenant sub-caches if the
 //! B23 load test shows skew. A caller cancelled between the reservation and moka's insert leaks its reservation until
 //! restart (bounded by `per_tenant_bytes`).
+//! ponytail: moka re-runs a joined waiter's init after the leader is dropped, at most 200 times per call (its
+//! MAX_RETRIES), and then panics; leaders cancelled that many times in a row would panic a request, against §51.3's
+//! "continue" rule. Reaching it needs 200 consecutive cancelled leaders on one key; upgrade = wrap the call so
+//! exhaustion falls back to an uncached compute, or drop single-flight for that key.
 //! ponytail: when a leader's value is not admitted or its compute fails, joined waiters compute for themselves
 //! (no shared failure); upgrade = share the leader's `Result` if error storms show up in the B23 load test.
 
@@ -36,7 +40,7 @@ pub struct CacheConfig {
     pub capacity_bytes: u64,
     /// Weighted bytes one tenant may hold; a larger insert is skipped, never made room for (M12 D5).
     pub per_tenant_bytes: u64,
-    /// Time-to-live of an entry.
+    /// Time-to-live of an entry; passed to moka unchanged, so the config registry must bound it (§78.1).
     pub ttl: Duration,
     /// `false` makes the cache a pass-through.
     pub enabled: bool,

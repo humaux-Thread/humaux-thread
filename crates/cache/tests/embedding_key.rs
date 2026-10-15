@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use humaux_cache::{BoundedCache, CacheConfig, EmbeddingMode, EmbeddingQueryKey};
+use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::CacheName;
 
@@ -23,15 +23,15 @@ fn config() -> CacheConfig {
     }
 }
 
-fn base(tenant: TenantId, user: UserId) -> EmbeddingQueryKey {
-    EmbeddingQueryKey {
-        tenant_id: tenant,
-        user_id: Some(user),
-        generation_fingerprint: [1; 32],
-        dimension: 1024,
-        mode: EmbeddingMode::Query,
-        input_sha256: [2; 32],
-    }
+/// A user key built from the six inputs, so each test varies exactly one of them.
+fn user_key(
+    tenant: TenantId,
+    user: UserId,
+    fp: u8,
+    dimension: u32,
+    input: u8,
+) -> EmbeddingQueryKey {
+    EmbeddingQueryKey::for_user(tenant, user, [fp; 32], dimension, [input; 32])
 }
 
 async fn lookup(cache: &Cache, computes: &AtomicUsize, key: EmbeddingQueryKey) {
@@ -49,26 +49,21 @@ async fn lookup(cache: &Cache, computes: &AtomicUsize, key: EmbeddingQueryKey) {
 #[tokio::test]
 async fn every_field_change_is_a_distinct_key_and_a_miss() {
     let (tenant, user) = (TenantId::new(), UserId::new());
-    let original = base(tenant, user);
-    let mut variants = Vec::new();
-    let mut v = original.clone();
-    v.tenant_id = TenantId::new();
-    variants.push(("tenant_id", v));
-    let mut v = original.clone();
-    v.user_id = Some(UserId::new());
-    variants.push(("user_id changed", v));
-    let mut v = original.clone();
-    v.user_id = None;
-    variants.push(("user_id absent", v));
-    let mut v = original.clone();
-    v.generation_fingerprint = [9; 32];
-    variants.push(("generation_fingerprint", v));
-    let mut v = original.clone();
-    v.dimension = 768;
-    variants.push(("dimension", v));
-    let mut v = original.clone();
-    v.input_sha256 = [8; 32];
-    variants.push(("input_sha256", v));
+    let original = user_key(tenant, user, 1, 1024, 2);
+    let variants = vec![
+        ("tenant_id", user_key(TenantId::new(), user, 1, 1024, 2)),
+        (
+            "user_id changed",
+            user_key(tenant, UserId::new(), 1, 1024, 2),
+        ),
+        (
+            "user_id absent (service principal)",
+            EmbeddingQueryKey::for_service_principal(tenant, [1; 32], 1024, [2; 32]),
+        ),
+        ("generation_fingerprint", user_key(tenant, user, 9, 1024, 2)),
+        ("dimension", user_key(tenant, user, 1, 768, 2)),
+        ("input_sha256", user_key(tenant, user, 1, 1024, 8)),
+    ];
 
     let cache = Cache::new(CacheName::EmbedQuery, config());
     let computes = AtomicUsize::new(0);

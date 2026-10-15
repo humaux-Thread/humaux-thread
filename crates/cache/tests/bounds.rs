@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use humaux_cache::{BoundedCache, CacheConfig, CacheKey, EmbeddingMode, EmbeddingQueryKey};
+use humaux_cache::{BoundedCache, CacheConfig, CacheKey, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::{CacheName, CacheResult, cache_requests_total};
 
@@ -21,14 +21,7 @@ static COUNTERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn key(tenant: TenantId, user: UserId, n: u64) -> EmbeddingQueryKey {
     let mut input = [0_u8; 32];
     input[..8].copy_from_slice(&n.to_le_bytes());
-    EmbeddingQueryKey {
-        tenant_id: tenant,
-        user_id: Some(user),
-        generation_fingerprint: [1; 32],
-        dimension: 1024,
-        mode: EmbeddingMode::Query,
-        input_sha256: input,
-    }
+    EmbeddingQueryKey::for_user(tenant, user, [1; 32], 1024, input)
 }
 
 fn entry_weight(k: &EmbeddingQueryKey) -> u64 {

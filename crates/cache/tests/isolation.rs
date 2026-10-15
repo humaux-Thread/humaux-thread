@@ -9,7 +9,7 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use humaux_cache::{BoundedCache, CacheConfig, EmbeddingMode, EmbeddingQueryKey};
+use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::CacheName;
 
@@ -25,13 +25,9 @@ fn config() -> CacheConfig {
 }
 
 fn key(tenant: TenantId, user: Option<UserId>) -> EmbeddingQueryKey {
-    EmbeddingQueryKey {
-        tenant_id: tenant,
-        user_id: user,
-        generation_fingerprint: [1; 32],
-        dimension: 1024,
-        mode: EmbeddingMode::Query,
-        input_sha256: [2; 32],
+    match user {
+        Some(user) => EmbeddingQueryKey::for_user(tenant, user, [1; 32], 1024, [2; 32]),
+        None => EmbeddingQueryKey::for_service_principal(tenant, [1; 32], 1024, [2; 32]),
     }
 }
 
