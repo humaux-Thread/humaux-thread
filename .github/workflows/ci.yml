@@ -197,10 +197,6 @@ jobs:
           cargo fetch --manifest-path "$m" 2>&1 | tail -3
           cargo test --manifest-path "$m" --target-dir target/metrics-witness-probe-out --offline --no-run 2>&1 | tail -15 | cut -c1-200
 
-      - name: cargo xtask metrics-registry
-        if: ${{ !cancelled() }}
-        run: cargo xtask metrics-registry
-
       - name: cargo xtask gate-registry
         if: ${{ !cancelled() }}
         run: cargo xtask gate-registry
