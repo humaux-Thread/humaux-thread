@@ -80,7 +80,7 @@ pub(crate) async fn readable_memory_ids(
     }
     let memories = sqlx::query(
         "SELECT memory_id, visibility_class, visibility_user_id, visibility_workspace_id \
-         FROM private.memory_records WHERE tenant_id = $1 AND memory_id = ANY($2)",
+         FROM private.memory_records WHERE $1::uuid IS NOT NULL AND memory_id = ANY($2)",
     )
     .bind(authorization.tenant_id().0)
     .bind(candidate_ids)
@@ -101,7 +101,7 @@ pub(crate) async fn readable_memory_ids(
                 eo.visibility_user_id, eo.visibility_workspace_id \
          FROM private.memory_evidence me \
          LEFT JOIN private.evidence_objects eo \
-           ON eo.evidence_id = me.evidence_id AND eo.tenant_id = $1 \
+           ON eo.evidence_id = me.evidence_id AND $1::uuid IS NOT NULL \
          WHERE me.memory_id = ANY($2)",
     )
     .bind(authorization.tenant_id().0)
