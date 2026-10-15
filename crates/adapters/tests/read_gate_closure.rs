@@ -1,9 +1,8 @@
 //! `adapters::tests::read_gate_closure` — G-M08-1: the all-backing-evidence closure holds on every read op. A memory
 //!   with two backing Evidence rows, one of them unreadable to the caller, is absent from get, enumerate, grep, the
 //!   recall materializer, context and continuity, and no count or snippet of it leaks.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json,
-//!   sqlx]; services=[PostgreSQL(any) w=[control.memberships, control.users, control.workspace_memberships,
-//!   private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints]];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json,
+//!   sqlx]; services=[PostgreSQL(any) w=[private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints]];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo, adapters::grep_repo, adapters::read_gate,
 //!   adapters::read_materialize, adapters::tests::support::continuity_0137_fixture,
 //!   adapters::tests::support::operation_receipt_fixture, domain::authority, domain::context, domain::error,
@@ -16,7 +15,7 @@
 //!   fixtures never overlap in time (LOCK)]
 //! Spec: Baseline §6.1.1; §8.6; §6.1.3
 //!
-//! Fault this gate catches (module design M08 §8 G-M08-1): the closure's `LEFT JOIN private.evidence_objects` in
+//! Fault this gate catches (module design M08 section 8, G-M08-1): the closure's `LEFT JOIN private.evidence_objects` in
 //! `read_gate::readable_memory_ids` replaced by an `INNER JOIN` makes a hidden Evidence row vanish from the join, the
 //! memory then looks fully backed by its one visible row, and it reappears in every op here.
 
