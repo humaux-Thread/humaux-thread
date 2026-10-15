@@ -38,6 +38,17 @@
 use humaux_domain::ids::TenantId;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 const SCHEMA: &str = "test_auth_scope_rls";
 const ROLE: &str = "test_auth_scope_rls_role";
@@ -553,6 +564,126 @@ fn guc_setup_removed_on_a_reused_gateway_connection_returns_no_rows() {
     );
 }
 
+/// A byte-for-byte TCP tap between a one-connection `RuntimeDbPool` and PostgreSQL that can ask that same backend
+/// a question while the pool is idle. `RuntimeDbPool` hands no connection out of the crate, so this is the only way
+/// to read a session GUC on the backend the product's reads actually ran on.
+struct BackendTap {
+    port: u16,
+    backends: Arc<AtomicUsize>,
+    server: Arc<Mutex<Option<TcpStream>>>,
+    asking: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+}
+
+impl BackendTap {
+    /// Listens on loopback and relays to `upstream` (`host:port`) over plaintext.
+    fn start(upstream: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback tap");
+        let tap = Self {
+            port: listener.local_addr().expect("tap address").port(),
+            backends: Arc::new(AtomicUsize::new(0)),
+            server: Arc::new(Mutex::new(None)),
+            asking: Arc::new(Mutex::new(None)),
+        };
+        let (backends, slot, asking, upstream) = (
+            Arc::clone(&tap.backends),
+            Arc::clone(&tap.server),
+            Arc::clone(&tap.asking),
+            upstream.to_owned(),
+        );
+        thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                // dep: PostgreSQL(role_gateway) — the tap relays the pool's connection to the gateway login
+                let Ok(server) = TcpStream::connect(&upstream) else {
+                    continue;
+                };
+                backends.fetch_add(1, Ordering::SeqCst);
+                *slot.lock().unwrap() = Some(server.try_clone().expect("clone server half"));
+                let (mut from_client, mut to_server) = (
+                    client.try_clone().expect("clone client half"),
+                    server.try_clone().unwrap(),
+                );
+                thread::spawn(move || {
+                    let _ = std::io::copy(&mut from_client, &mut to_server);
+                });
+                let (mut from_server, mut to_client, asking) =
+                    (server, client, Arc::clone(&asking));
+                thread::spawn(move || {
+                    Self::relay_backend(&mut from_server, &mut to_client, &asking)
+                });
+            }
+        });
+        tap
+    }
+
+    /// Server to client. While a question is open the backend's bytes are parsed (first column of the first
+    /// `DataRow`, answered at `ReadyForQuery`) and withheld from the pool; otherwise they are forwarded untouched.
+    fn relay_backend(
+        from_server: &mut TcpStream,
+        to_client: &mut TcpStream,
+        asking: &Mutex<Option<mpsc::Sender<String>>>,
+    ) {
+        let (mut chunk, mut parsed, mut answer) =
+            ([0_u8; 8192], Vec::new(), String::from("NO ROW"));
+        while let Ok(read) = from_server.read(&mut chunk) {
+            if read == 0 {
+                return;
+            }
+            let mut slot = asking.lock().unwrap();
+            if slot.is_none() {
+                drop(slot);
+                if to_client.write_all(&chunk[..read]).is_err() {
+                    return;
+                }
+                continue;
+            }
+            parsed.extend_from_slice(&chunk[..read]);
+            while parsed.len() >= 5 {
+                let length = u32::from_be_bytes(parsed[1..5].try_into().unwrap()) as usize;
+                if parsed.len() < 1 + length {
+                    break;
+                }
+                let frame: Vec<u8> = parsed.drain(..1 + length).collect();
+                match frame[0] {
+                    b'D' => {
+                        let column = i32::from_be_bytes(frame[7..11].try_into().unwrap());
+                        answer = usize::try_from(column).map_or_else(
+                            |_| "NULL".to_owned(),
+                            |n| String::from_utf8_lossy(&frame[11..11 + n]).into_owned(),
+                        );
+                    }
+                    b'E' => answer = "ERROR".to_owned(),
+                    b'Z' => {
+                        let _ = slot.take().expect("open question").send(answer.clone());
+                        answer = String::from("NO ROW");
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// The tenant and user GUCs as the pooled backend itself sees them, joined with `|`.
+    fn context_gucs(&self) -> String {
+        let (reply, answer) = mpsc::channel();
+        *self.asking.lock().unwrap() = Some(reply);
+        let text = "SELECT coalesce(current_setting('humaux.tenant_id', true), '') || '|' || \
+                    coalesce(current_setting('humaux.user_id', true), '')\0";
+        let mut query = vec![b'Q'];
+        query.extend_from_slice(&u32::try_from(4 + text.len()).unwrap().to_be_bytes());
+        query.extend_from_slice(text.as_bytes());
+        self.server
+            .lock()
+            .unwrap()
+            .as_mut()
+            .expect("the pool opened a backend")
+            .write_all(&query)
+            .expect("ask the pooled backend");
+        answer
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the pooled backend answered")
+    }
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // one seeded tenant pair, three reads on one pooled backend
 fn one_connection_pool_never_carries_one_tenants_context_into_the_next_read() {
@@ -576,11 +707,20 @@ fn one_connection_pool_never_carries_one_tenants_context_into_the_next_read() {
                 .expect("owner seeds the family checkpoint");
             let memory = handle.seed_workspace_visible_context_record().memory_id;
             let application_name = format!("m08_guc_{}", handle.tenant_id.simple());
+            // The pool dials the tap, which relays to the validated gateway login (credential never logged).
+            let gateway_dsn = handle.gateway_dsn_for_process().to_owned();
+            let (credential, rest) = gateway_dsn.rsplit_once('@').expect("gateway DSN authority");
+            let (upstream, database) = rest.split_once('/').expect("gateway DSN database");
+            let tap = BackendTap::start(upstream);
+            let tapped = format!(
+                "{credential}@127.0.0.1:{}/{database}?sslmode=disable",
+                tap.port
+            );
             // dep: PostgreSQL(role_gateway) — a one-connection production pool: every read below reuses one backend
             let pool = handle
                 .rt
                 .block_on(RuntimeDbPool::connect_with(
-                    handle.gateway_dsn_for_process(),
+                    &tapped,
                     &PoolSettings {
                         max_connections: 1,
                         min_connections: 0,
@@ -663,6 +803,18 @@ fn one_connection_pool_never_carries_one_tenants_context_into_the_next_read() {
                 .expect("count pool sessions")
                 .get(0);
             assert_eq!(sessions, 1, "all three reads reused one backend");
+            assert_eq!(
+                tap.backends.load(Ordering::SeqCst),
+                1,
+                "through one connection"
+            );
+            // After the product's reads, on that very backend, no tenant or user context outlives its transaction:
+            // `SET LOCAL` / `set_config(.., true)` leave the placeholder (''), a session-level `SET` leaves the tenant.
+            assert_eq!(
+                tap.context_gucs(),
+                "|",
+                "the pooled backend carries no request context between requests"
+            );
         },
     );
 }

@@ -13,7 +13,7 @@
 //!   Evidence is unreadable and present once that Evidence becomes readable, so a pass cannot come from an op that
 //!   returns nothing; the continuity row is a separate world because that op reads continuity facets, and the two
 //!   fixtures never overlap in time (LOCK)]
-//! Spec: Baseline §6.1.1; §8.6; §6.1.3
+//! Spec: Baseline §6.1.1; §8.6; §6.1.3; §57.1
 //!
 //! Fault this gate catches (module design M08 section 8, G-M08-1): the closure's `LEFT JOIN private.evidence_objects` in
 //! `read_gate::readable_memory_ids` replaced by an `INNER JOIN` makes a hidden Evidence row vanish from the join, the
@@ -36,7 +36,7 @@ use humaux_domain::{
     ids::{Scope, TenantId, UserId, WorkspaceId},
 };
 use humaux_projection::{serving::StreamFamily, stream::StreamKey};
-use humaux_testkit::run_db_fixture;
+use humaux_testkit::{ExternalDep, run_db_fixture, skip_or_fail};
 use serde_json::{Value, json};
 use sqlx::types::Uuid;
 
@@ -448,13 +448,16 @@ fn goal(value: &Value) -> &Value {
 #[test]
 fn unreadable_backing_evidence_makes_the_continuity_source_stale_not_current() {
     let _lock = serial();
+    const NAME: &str = "unreadable_backing_evidence_makes_the_continuity_source_stale_not_current";
     let Some(dsn) = continuity_0137_fixture::required_dsn() else {
+        skip_or_fail(
+            NAME,
+            "not_applicable: HUMAUX_TEST_PG_DSN (isolated PostgreSQL for the continuity fixture, §57.1)",
+            ExternalDep::Postgres,
+        );
         return;
     };
-    let fixture = continuity_0137_fixture::Fixture::new(
-        dsn,
-        "unreadable_backing_evidence_makes_the_continuity_source_stale_not_current",
-    );
+    let fixture = continuity_0137_fixture::Fixture::new(dsn, NAME);
     let control = fixture.read().expect("control read");
     assert_eq!(goal(&control)["status"], "CURRENT", "control: {control}");
 
