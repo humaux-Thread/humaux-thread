@@ -1,0 +1,41 @@
+# Secret-scan config for the `gitleaks secret scan` step of ci.yml (M24-2, gate G-M24-2; module design M24 D2).
+# The repository is PUBLIC: the ruleset is gitleaks' own default, and the only exemptions are the deliberate FAKE
+# vectors below, each by exact file path AND the one rule that fires there (found by the one-time full-history scan
+# of M24-2: 12 findings in 9 files, all synthetic test vectors or false positives, no live secret). Never exempt a
+# rule globally, never by a broad regex or a directory: a new fixture file adds one line here, in review.
+# ponytail: a path entry also hides a real secret of the SAME rule added to that file later, tighten to
+# path + value regex (condition = "AND") if a fixture file keeps growing.
+title = "humaux-thread gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic GitHub-shaped token vectors (FAKE_GITHUB_TOKEN consts, CRED_FAKE in the rehearsal) that prove the scanners refuse them"
+targetRules = ["github-pat"]
+paths = [
+  '''^bins/gateway/tests/mcp_gateway\.rs$''',
+  '''^bins/gateway/tests/query_embedding_rpc\.rs$''',
+  '''^crates/adapters/tests/contribution_scan\.rs$''',
+  '''^crates/adapters/tests/projection_worker\.rs$''',
+  '''^crates/local-secret-scan/tests/seal_rules\.rs$''',
+  '''^docs/ops/rehearse\.sh$''',
+]
+
+[[allowlists]]
+description = "Synthetic PEM block (FAKE_PRIVATE_KEY, 'not a key') for the projection worker source-seal test"
+targetRules = ["private-key"]
+paths = ['''^crates/adapters/tests/projection_worker\.rs$''']
+
+[[allowlists]]
+description = "Slack-shaped payload that the contribution pipeline failure test must refuse"
+targetRules = ["slack-bot-token"]
+paths = ['''^crates/adapters/tests/contribution_pipeline\.rs$''']
+
+[[allowlists]]
+description = "generic-api-key false positives: the devlocal_<role> test login password and an ADR sentence quoting a const name"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^crates/adapters/tests/project_continuity_read_0137_acceptance\.rs$''',
+  '''^docs/adr/0056-retrieval-egress-seal-secrets-only\.md$''',
+]
