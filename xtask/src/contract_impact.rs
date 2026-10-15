@@ -457,19 +457,23 @@ fn parse_unified_hunks(diff_text: &str) -> BTreeSet<usize> {
 const STEP_ITEM_PREFIX: &str = "      - ";
 /// The only `if:` a counted step may carry (an absent `if:` is also fine).
 const ALWAYS_RUN_IF: &str = "${{ !cancelled() }}";
-/// Shell syntax that makes a one-line `run:` able to swallow or bypass the xtask exit code.
-const SHELL_ESCAPES: [&str; 4] = ["|", ";", "&&", "#"];
+/// Shell syntax that makes a one-line `run:` able to swallow or bypass the xtask exit code: pipes
+/// and `||`, `;`, `&` (backgrounding; also covers `&&` and `2>&1`), comments, and a `\` line
+/// continuation (the next line is then part of the command but never inspected).
+const SHELL_ESCAPES: [&str; 4] = ["|", ";", "&", "#"];
+const LINE_CONTINUATION: char = '\\';
 
 /// One `cargo xtask <sub>` per step: ci.yml steps -> subcommands whose failure fails the job.
 ///
 /// A step counts only when its block (from one `      - ` item to the next, ending at a dedent)
-/// has a single-line `run: cargo xtask <sub>` with no `|`, `||`, `;`, `&&` or `#` after it, no
+/// has a single-line `run: cargo xtask <sub>` with no `|`, `||`, `;`, `&`, `#` or trailing `\` after it, no
 /// `continue-on-error:`, and no `if:` other than `${{ !cancelled() }}`. Comments, `name:` lines,
 /// multi-line `run: |` blocks (the metrics warm-up step) and steps that can be skipped or can
 /// fail silently are talk, not a gate, so deleting the real step cannot hide behind them
 /// (G-M24-5, review of PR #48).
-// ponytail: line-based scan, not a YAML parse (anchors, flow maps, 6-space indent assumed); a
-// real parser (serde_yaml) if ci.yml ever outgrows this shape. Every mapped checker's step is
+// ponytail: line-based scan, not a YAML parse: anchors, flow maps and a 6-space step indent are
+// assumed, and job-level `if:` / `continue-on-error:` (on the gates job itself) are not inspected;
+// upgrade path = parse the jobs with a YAML crate (serde_yaml). Every mapped checker's step is
 // pinned against the real ci.yml by a test.
 fn executed_xtask_subcommands(ci_text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -517,6 +521,7 @@ fn counted_xtask_subcommand(block: &[&str]) -> Option<String> {
             .strip_prefix("run: ")
             .and_then(|c| c.strip_prefix("cargo xtask "))
             && !SHELL_ESCAPES.iter().any(|e| cmd.contains(e))
+            && !cmd.trim_end().ends_with(LINE_CONTINUATION)
         {
             sub = cmd.split_whitespace().next().map(str::to_string);
         }
@@ -598,6 +603,8 @@ fn parse_base_arg(args: &[String]) -> Option<String> {
     None
 }
 
+/// `cargo xtask contract-impact [--base <sha>]`: runs the block sentinel, then the change-closure over
+/// `git diff <base>`. Exit 0 green or not_applicable, 1 red (§80.3).
 pub fn run(args: &[String]) -> i32 {
     let spec_text = match fs::read_to_string(SPEC_PATH) {
         Ok(t) => t,
@@ -1262,13 +1269,33 @@ CONTINUITY_AUTHORITY | G80-46,mcp-contract-lock,continuity-authority-live
             " | tee log",
             "; echo ok",
             " && echo ok",
+            " &",
+            " > /dev/null 2>&1",
             " > /dev/null # ignored",
         ] {
             let text = format!("      - run: cargo xtask metrics-registry{tail}\n");
             assert!(subs(&text).is_empty(), "{tail}");
         }
-        // (d) a trailing comment alone
+        // a trailing comment alone
         assert!(subs("      - run: cargo xtask metrics-registry # was here\n").is_empty());
+    }
+
+    /// Delta review of PR #48 (W1): `\` continues the command on a line the scanner never reads,
+    /// so the step cannot be proven blocking and G80-6 stays reported as missing.
+    #[test]
+    fn a_line_continuation_hides_the_exit_code_and_does_not_count() {
+        for text in [
+            "      - run: cargo xtask metrics-registry \\\n          || true\n",
+            "      - run: cargo xtask metrics-registry\\\n          || true\n",
+            "      - run: cargo xtask metrics-registry &\n",
+        ] {
+            let executed = executed_xtask_subcommands(text);
+            assert!(!executed.contains("metrics-registry"), "{text}");
+            assert!(matches!(
+                evaluate_checker("G80-6", &executed, default_checker_kind),
+                CheckerStatus::Fail(d) if d.contains("G80-6")
+            ));
+        }
     }
 
     /// Review of PR #48 (c): a step that can be skipped, or that cannot fail the job.
