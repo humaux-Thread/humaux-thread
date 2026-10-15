@@ -4083,6 +4083,9 @@ fn provider_plane_external_call_sites(source: &str) -> usize {
 ///
 /// ponytail: a lexer-lite, not a parser (no macro-body or `#[doc = "..."]` awareness), upgrade to `proc_macro2`
 /// tokenizing if a file ever mis-blanks.
+// ponytail: C-string literals (`c"..."`, `cr#"..."#`) are not recognised (`cr#"..."#` is read as a plain identifier
+// then a plain string, so a `"` inside it ends it early) and `code_before_line_comment` is not escape-aware, upgrade by
+// sharing this lexer with that function.
 fn strip_block_comments(source: &str) -> String {
     let bytes = source.as_bytes();
     let starts_token = |at: usize| at == 0 || !is_ident_byte(bytes[at - 1]);
@@ -9895,6 +9898,10 @@ async fn serving_version_in_txn() {}
             "let a = b\"/*\"; let b = 1;",
             "let a = r#\"/* \"quoted\" */\"#; let b = 1;",
             "let a = br\"/*\"; let b = 1;",
+            // The `/*` sits after an inner `"#` that does not close a two-hash raw string, so only hash counting and
+            // the hash-aware close keep it inside the string.
+            "r##\"x\"# /* y */ z\"##",
+            "br#\"a\"b /* c\"#",
             "let a = '/'; let s = \"*/\"; let b = 1;",
             "let a = \"escaped \\\" /* still a string\"; let b = 1;",
             "let a = \"é/*\"; let b = 1;",
@@ -9918,6 +9925,13 @@ async fn serving_version_in_txn() {}
             squeezed("let q = '\\''; /* x */ let z = 1;"),
             "let q = '\\''; let z = 1;"
         );
+        // The escape arm of the char literal: `'\"'` must not open a string.
+        assert_eq!(
+            squeezed("let q = '\\\"'; /* x */ let z = 1;"),
+            "let q = '\\\"'; let z = 1;"
+        );
+        // `'a` followed by a comma is a lifetime: lexed as a char literal it would swallow the comment's start.
+        assert_eq!(squeezed("fn f<'a, /* c */ 'b>() {}"), "fn f<'a, 'b>() {}");
         assert_eq!(
             squeezed("fn f<'a>(x: &'a str) { /* c */ let y = 1; }"),
             "fn f<'a>(x: &'a str) { let y = 1; }"
