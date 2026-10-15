@@ -2,8 +2,9 @@
 //!   every read op, answer exactly as ids that exist nowhere do, and report totals of zero.
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.continuity_projects, private.evidence_objects,
-//!   private.memory_records, projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_QDRANT_PORT];
+//!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.memory_records,
+//!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
+//!   x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::postgres, adapters::quota_repo, adapters::tests::support::operation_receipt_fixture,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::context, domain::dataclass,
 //!   domain::error, domain::identity, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall,
@@ -17,7 +18,7 @@
 //!   control, so an op that returns nothing cannot pass]
 //! Spec: Baseline §6.1.1; §6.1.2; §6.2.3; DOD-023
 //!
-//! Fault this gate is built for (module design M08 §8 G-M08-3): a read SQL that stops binding the caller's tenant
+//! Fault this gate is built for (module design M08 section 8, G-M08-3): a read SQL that stops binding the caller's tenant
 //! answers a foreign id differently from an absent one. RLS stays behind every such predicate (defense in depth,
 //! migration 0012), so the fault is only visible where RLS is not in the path or is also absent.
 

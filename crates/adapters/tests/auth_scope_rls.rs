@@ -4,7 +4,7 @@
 //!   that crate).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, uuid];
 //!   services=[PostgreSQL(any) w=[control.workspace_memberships, private.evidence_objects, private.memory_evidence,
-//!   private.memory_records, projection.stream_checkpoints]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::credential_repo,
+//!   private.memory_records, projection.stream_checkpoints], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::credential_repo,
 //!   adapters::postgres, adapters::read_gate, adapters::read_materialize,
 //!   adapters::tests::support::operation_receipt_fixture, domain::authority, domain::error, domain::identity,
 //!   domain::ids, humaux-testkit, projection::serving]
@@ -554,6 +554,7 @@ fn guc_setup_removed_on_a_reused_gateway_connection_returns_no_rows() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one seeded tenant pair, three reads on one pooled backend
 fn one_connection_pool_never_carries_one_tenants_context_into_the_next_read() {
     run_db_fixture::<Fixture, _>(
         "one_connection_pool_never_carries_one_tenants_context_into_the_next_read",

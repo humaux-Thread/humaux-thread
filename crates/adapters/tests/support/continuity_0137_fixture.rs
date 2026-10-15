@@ -39,6 +39,7 @@ use uuid::Uuid;
 
 #[path = "continuity_0137_cleanup.rs"]
 mod continuity_0137_cleanup;
+#[allow(unused_imports)] // shared support: not every including test binary uses both names
 pub use continuity_0137_cleanup::{CleanupOwner, POLICY_DDL_LOCK_KEY};
 
 const NIL: Uuid = Uuid::nil();
