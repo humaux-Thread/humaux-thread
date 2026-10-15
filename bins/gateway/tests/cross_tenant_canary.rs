@@ -3,7 +3,7 @@
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.continuity_projects, private.evidence_objects,
-//!   private.memory_records, projection.stream_checkpoints], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_QDRANT_PORT];
+//!   private.memory_records, projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::postgres, adapters::quota_repo, adapters::tests::support::operation_receipt_fixture,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::context, domain::dataclass,
 //!   domain::error, domain::identity, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall,
@@ -471,6 +471,20 @@ fn seed_own(handle: &mut Handle) -> Own {
     }
 }
 
+/// Recall needs a tenant placement even when the family is unserved (it answers the B shape without dialling).
+fn seed_placement(handle: &mut Handle) {
+    handle
+        .admin
+        .execute(
+            "INSERT INTO projection.tenant_placements \
+               (tenant_id,projection_family,collection_name,shard_key,placement_class, \
+                point_count,bytes_estimate,promotion_state) \
+             VALUES ($1,'private_memory_v1','canary_never_dialled',NULL,'SHARED_FALLBACK',0,0,'STABLE')",
+            &[&handle.tenant_id],
+        )
+        .expect("owner seeds the tenant placement");
+}
+
 // ----------------------------------------------------------------------------------------------
 // Assertions
 // ----------------------------------------------------------------------------------------------
@@ -546,6 +560,7 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
         let foreign = seed_foreign(&mut foreign_handle);
         run_db_fixture::<Fixture, _>("cross_tenant_canary", |mut handle| {
             let own = seed_own(&mut handle);
+            seed_placement(&mut handle);
             let (app, embedding) = application(&handle);
             let absent_memory = Uuid::now_v7();
             let absent_workspace = Uuid::now_v7();
