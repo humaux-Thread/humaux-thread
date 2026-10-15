@@ -192,16 +192,18 @@ impl From<reqwest::Error> for HttpExternalCallError {
 /// *all* traffic, proxy included, through this same header). `https://` is always allowed;
 /// plain `http://` is allowed only to loopback (`127.0.0.1`/`localhost`/`::1`), so this
 /// crate's own `TcpListener`-backed tests keep working without opening a hole for any real
-/// destination.
-fn endpoint_scheme_is_allowed(endpoint: &str) -> bool {
-    if let Some(rest) = endpoint.strip_prefix("https://") {
-        return !rest.is_empty();
+/// destination. The host is the one `reqwest::Url` parses — the parser the client dials with —
+/// so userinfo (`http://localhost:80@evil.example/`) cannot make a remote host look like
+/// loopback. Also the BYOK domain's check (`crate::raw`): one rule, one home.
+pub(crate) fn endpoint_scheme_is_allowed(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => url.host_str().is_some(),
+        "http" => matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")),
+        _ => false,
     }
-    if let Some(rest) = endpoint.strip_prefix("http://") {
-        let host = rest.split(['/', ':', '?']).next().unwrap_or("");
-        return matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]");
-    }
-    false
 }
 
 /// §78.1: named, overridable knobs — not literals buried inside `Client::builder()` — for the
