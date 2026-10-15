@@ -1,11 +1,11 @@
 //! `cache::bounded` — `BoundedCache`: a moka-backed cache with byte weights, TTL, single-flight, a per-tenant byte
 //!   cap and the §51.3 failure rule.
-//! Depends-on: crates=[moka, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::key, telemetry::cache]
+//! Depends-on: crates=[moka, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::key, domain::ids, telemetry::cache]
 //! Called-by: [tests]
 //! Invariants: [concurrent identical misses run one compute (§51, M12 D7); an `Err` is never cached; an insert that
 //!   would take a tenant over `per_tenant_bytes` is skipped as `bypass` and evicts nobody (M12 D5); a disabled or
 //!   zero-capacity cache computes every call and reports `bypass`; every lookup is counted exactly once (§41.2)]
-//! Spec: Baseline §51; §51.3; §67.2; §41.2; §78.1
+//! Spec: Baseline §51; §67.2; §41.2; §78.1
 //!
 //! ponytail: per-tenant accounting is exact for admission (one mutex) but lags moka's eviction by its maintenance
 //! interval, so a tenant just under its cap may be bypassed a little early; upgrade = per-tenant sub-caches if the

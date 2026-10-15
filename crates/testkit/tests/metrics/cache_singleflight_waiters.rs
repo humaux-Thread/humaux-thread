@@ -5,7 +5,7 @@
 //! Called-by: []
 //! Invariants: [drives the family's one emit (`telemetry::cache::set_cache_singleflight_waiters`, called by `cache::bounded`) and asserts
 //!   the exact value read back and the rendered sample, never mere presence]
-//! Spec: Baseline §51; §41.2; §80.2; M12 design §2
+//! Spec: Baseline §51; §41.2; §80.2; M12 design §2; ADR-0061 D-A
 //!
 //! The gauge is seeded at 0 (ADR-0061 D-A), so presence proves nothing: this sets 7 and asserts it comes back
 //! and renders. Compiled and run standalone by `cargo xtask metrics-registry` (`run_witness_probe`).

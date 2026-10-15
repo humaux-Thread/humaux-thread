@@ -1,6 +1,6 @@
 //! `cache::tests::singleflight` — G-M12-4: identical concurrent misses run one compute (M12 D7).
-//! Depends-on: crates=[humaux-cache, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::bounded]
-//! Called-by: []
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Called-by: [cargo-test]
 //! Invariants: [32 concurrent identical misses run exactly one compute; a cancelled first waiter strands nobody]
 //! Spec: Baseline §51; M12 design §6 D7, §8 G-M12-4
 

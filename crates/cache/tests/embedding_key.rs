@@ -1,8 +1,8 @@
 //! `cache::tests::embedding_key` — G-M12-1: the query-embedding key is complete (DOD-059, §51).
-//! Depends-on: crates=[humaux-cache, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::key, cache::bounded]
-//! Called-by: []
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Called-by: [cargo-test]
 //! Invariants: [changing any one key field is a different key and a miss; an identical key is a hit]
-//! Spec: Baseline §51; §51.1; M12 design §8 G-M12-1
+//! Spec: Baseline §51; M12 design §8 G-M12-1
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};

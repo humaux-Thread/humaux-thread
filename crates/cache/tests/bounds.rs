@@ -1,6 +1,6 @@
 //! `cache::tests::bounds` — G-M12-5: the byte bound and the per-tenant cap (M12 D5).
-//! Depends-on: crates=[humaux-cache, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::bounded, cache::key, telemetry::cache]
-//! Called-by: []
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Called-by: [cargo-test]
 //! Invariants: [the weighted size never exceeds `capacity_bytes` and equals the bytes of the surviving entries; a
 //!   tenant at its cap is bypassed and evicts nobody else's entries]
 //! Spec: Baseline §51; §67.2; M12 design §6 D5, §8 G-M12-5

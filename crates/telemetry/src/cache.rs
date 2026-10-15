@@ -5,7 +5,7 @@
 //! Invariants: [each family has exactly one `.inc(` / `.set(` site (§41.2 R4); `cache`, `result` and `cause` are
 //!   closed enums so a tenant id or free text can never become a label (§41.2 R5); a cache fault is counted, never
 //!   raised (§51.3)]
-//! Spec: Baseline §51; §51.3; §41.2; §67.2
+//! Spec: Baseline §51; §41.2; §67.2
 //!
 //! The counters live here, not in `humaux-cache`, so the G80-6 witness (library crates only) drives the real emit and
 //! `cargo xtask metrics-registry` finds the one call site per family. Rendering is not wired into a process yet: the

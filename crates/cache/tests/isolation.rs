@@ -1,6 +1,6 @@
 //! `cache::tests::isolation` — G-M12-2: identical text in two tenants (or two users) is two entries (M12 D3).
-//! Depends-on: crates=[humaux-cache, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::key, cache::bounded]
-//! Called-by: []
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Called-by: [cargo-test]
 //! Invariants: [the privacy namespace (tenant, user) is part of every private key; a value computed for one namespace
 //!   is never returned to another]
 //! Spec: Baseline §51; M12 design §6 D3, §8 G-M12-2

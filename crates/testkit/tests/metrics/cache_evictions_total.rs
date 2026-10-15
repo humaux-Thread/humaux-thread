@@ -5,7 +5,7 @@
 //! Called-by: []
 //! Invariants: [drives the family's one emit (`telemetry::cache::count_cache_eviction`, called by `cache::bounded`'s
 //!   eviction listener) and asserts the exact per-cause delta and the rendered label set, never mere presence]
-//! Spec: Baseline §51; §67.2; §41.2; §80.2; M12 design §2
+//! Spec: Baseline §51; §67.2; §41.2; §80.2; M12 design §2; ADR-0061 D-A
 //!
 //! The encoder seeds every series at 0 (ADR-0061 D-A), so presence proves nothing: this asserts the increment.
 //! Compiled and run standalone by `cargo xtask metrics-registry` (`run_witness_probe`).

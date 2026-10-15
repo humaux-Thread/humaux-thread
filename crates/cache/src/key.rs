@@ -1,9 +1,9 @@
 //! `cache::key` — the cache key and value traits and the query-embedding key.
-//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::ids]
 //! Called-by: [cache::bounded, tests]
 //! Invariants: [`EmbeddingQueryKey` derives `Hash`/`Eq` over every field, so changing any one field is a different
 //!   key (§51, M12 D3/D4); the input hash covers the exact provider bytes with no case or whitespace folding]
-//! Spec: Baseline §51; §51.1; §20.0
+//! Spec: Baseline §51; §20.0
 
 use std::hash::Hash;
 use std::sync::Arc;

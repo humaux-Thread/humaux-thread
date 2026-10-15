@@ -1,6 +1,6 @@
 //! `cache::tests::failure` — G-M12-3: failure is a miss (§51.3, M12 D7).
-//! Depends-on: crates=[humaux-cache, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::bounded, telemetry::cache]
-//! Called-by: []
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Called-by: [cargo-test]
 //! Invariants: [a compute error is returned to its caller, counted as `result=error` and never cached; a disabled or
 //!   zero-capacity cache still serves every call]
 //! Spec: Baseline §51.3; §41.2; M12 design §6 D7, §8 G-M12-3

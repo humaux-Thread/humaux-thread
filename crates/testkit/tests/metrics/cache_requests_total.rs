@@ -5,7 +5,7 @@
 //! Called-by: []
 //! Invariants: [drives the family's one emit (`telemetry::cache::count_cache_request`, called by `cache::bounded` once
 //!   per lookup) and asserts the exact per-result delta and the rendered label set, never mere presence]
-//! Spec: Baseline §51; §51.3; §41.2; §80.2; M12 design §2
+//! Spec: Baseline §51; §41.2; §80.2; M12 design §2; ADR-0061 D-A
 //!
 //! The encoder seeds every series at 0 (ADR-0061 D-A), so presence proves nothing: this asserts the increment,
 //! including `result=error` (§51.3: a cache failure is a counted miss). Compiled and run standalone by
