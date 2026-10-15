@@ -82,6 +82,7 @@
 | `infra-cell::permit` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -263,6 +264,7 @@
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
 | `infra-cell::uds` | r=[] w=[] x=[] | [] | [UDS(serve), UDS(retrieval-worker), UDS(private-worker)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -371,6 +373,7 @@
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
 | `infra-cell::uds` | r=[] w=[] x=[] | [] | [UDS(serve), UDS(retrieval-worker), UDS(private-worker)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -477,6 +480,7 @@
 | `infra-cell::permit` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
@@ -602,6 +606,7 @@
 | `infra-cell::resource` | r=[] w=[] x=[] | [] | [] |
 | `infra-cell::transport` | r=[] w=[] x=[] | [] | [Qdrant(*)] |
 | `infra-cell::uds` | r=[] w=[] x=[] | [] | [UDS(serve), UDS(retrieval-worker), UDS(private-worker)] |
+| `infra-egress::http` | r=[] w=[] x=[] | [HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET, HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE] | [HTTP(loopback), HTTP(provider)] |
 | `infra-egress::raw` | r=[] w=[] x=[] | [] | [HTTP(provider)] |
 | `infra-egress::resolver` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
 | `infra-network::http` | r=[] w=[] x=[] | [] | [HTTP(loopback)] |
