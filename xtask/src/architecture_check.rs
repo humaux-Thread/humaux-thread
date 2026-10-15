@@ -1097,11 +1097,25 @@ struct BoundaryRule {
     allowed_in: &'static [&'static str],
     /// A `[dev-dependencies]` entry is "testing" (§78 sqlx line) and is not counted.
     dev_exempt: bool,
+    /// Also match `<dep>-*` (sqlx-core, sqlx-postgres, ...): a direct dependency on a sub-crate is the same access.
+    family: bool,
     why: &'static str,
 }
 
+impl BoundaryRule {
+    /// Whether the dependency named `name` falls under this row.
+    fn matches(&self, name: &str) -> bool {
+        name == self.dep
+            || (self.family
+                && name
+                    .strip_prefix(self.dep)
+                    .is_some_and(|rest| rest.starts_with('-')))
+    }
+}
+
 /// M01 D5 table. Matching is by package name (`dependencies[].name`), so a renamed dependency counts under its
-/// real name; target-specific and build dependencies count like normal ones, optional ones too.
+/// real name; target-specific and build dependencies count like normal ones, optional ones too. Ledger ids carry
+/// the dependency kind, so a ledgered dev edge never covers a normal edge of the same pair.
 // ponytail: crate-granular like G-M01-2 — a forbidden `use` inside an allowed crate is the file-level ledger of
 // M01-5; `qdrant-client` is not in Cargo.lock (Qdrant is reached over REST through humaux-infra-cell), the row is
 // the guard for the day a client crate is added.
@@ -1110,18 +1124,21 @@ const BOUNDARY_TABLE: &[BoundaryRule] = &[
         dep: "reqwest",
         allowed_in: &["humaux-infra-network"],
         dev_exempt: false,
+        family: false,
         why: "§78 / ADR-0003: Layer 0 is the only raw HTTP transport",
     },
     BoundaryRule {
         dep: "sqlx",
         allowed_in: &["humaux-adapters"],
         dev_exempt: true,
+        family: true,
         why: "§78: Postgres access lives in the postgres adapter (dev-dependencies are testing)",
     },
     BoundaryRule {
         dep: "qdrant-client",
         allowed_in: &["humaux-adapters", "humaux-projection"],
         dev_exempt: false,
+        family: false,
         why: "§78: the Qdrant client lives in the projection adapter",
     },
 ];
@@ -1142,7 +1159,8 @@ const L0_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// One G-M01-3 violation: `id` is the ledger key (`<package> -> <dependency>`).
+/// One G-M01-3 violation: `id` is the ledger key (`<package> -> <dependency> (<kind>)`, kind `normal`, `dev` or
+/// `build`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundaryViolation {
     /// `[[crate_boundary]]` row id that ledgers this violation.
@@ -1180,8 +1198,8 @@ fn boundary_violations_in(metadata_json: &str) -> Result<Vec<BoundaryViolation>,
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| format!("package `{name}` lists a dependency without a `name`"))?;
             let kind = dep.get("kind").and_then(|k| k.as_str()).unwrap_or("normal");
-            let id = format!("{name} -> {dep_name}");
-            for rule in BOUNDARY_TABLE.iter().filter(|r| r.dep == dep_name) {
+            let id = format!("{name} -> {dep_name} ({kind})");
+            for rule in BOUNDARY_TABLE.iter().filter(|r| r.matches(dep_name)) {
                 if !rule.allowed_in.contains(&name) && !(rule.dev_exempt && kind == "dev") {
                     out.push(BoundaryViolation {
                         id: id.clone(),
@@ -8493,12 +8511,14 @@ mod tests {
             None,
             vec![ed_dep("sqlx", None)],
         )]);
-        let ledgered = BTreeSet::from(["humaux-gateway -> sqlx".to_string()]);
+        let ledgered = BTreeSet::from(["humaux-gateway -> sqlx (normal)".to_string()]);
         let (verdict, notes) = crate_boundary_from(&doc, &ledgered);
         assert_eq!(verdict, Verdict::Pass);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(
-            notes[0].starts_with("known-red: ledgered [crate_boundary] humaux-gateway -> sqlx:"),
+            notes[0].starts_with(
+                "known-red: ledgered [crate_boundary] humaux-gateway -> sqlx (normal):"
+            ),
             "{notes:?}"
         );
         // the row covers that edge only
@@ -8640,15 +8660,111 @@ mod tests {
         );
     }
 
+    /// 注错 (G-M01-3, qdrant row): the client crate outside adapters/projection is red as a normal and as a dev
+    /// dependency (no exemption), in humaux-adapters and humaux-projection it is green.
+    #[test]
+    fn g_m01_3_fails_on_a_qdrant_client_outside_adapters_and_projection() {
+        let normal = bt_doc(vec![ed_pkg(
+            "humaux-gateway",
+            None,
+            vec![ed_dep("qdrant-client", None)],
+        )]);
+        assert_eq!(
+            fail_lines(crate_boundary_from(&normal, &no_ledger()).0),
+            "`humaux-gateway` declares `qdrant-client` (normal dependency) but only [\"humaux-adapters\", \"humaux-projection\"] may (§78: the Qdrant client lives in the projection adapter); not in xtask/known_red.toml [[crate_boundary]]"
+        );
+        let dev = bt_doc(vec![ed_pkg(
+            "humaux-gateway",
+            None,
+            vec![ed_dep("qdrant-client", Some("dev"))],
+        )]);
+        assert_eq!(
+            fail_lines(crate_boundary_from(&dev, &no_ledger()).0),
+            "`humaux-gateway` declares `qdrant-client` (dev dependency) but only [\"humaux-adapters\", \"humaux-projection\"] may (§78: the Qdrant client lives in the projection adapter); not in xtask/known_red.toml [[crate_boundary]]"
+        );
+        let allowed = bt_doc(vec![
+            ed_pkg(
+                "humaux-projection",
+                None,
+                vec![ed_dep("qdrant-client", None)],
+            ),
+            ed_pkg("humaux-adapters-y", None, vec![]),
+        ]);
+        assert_eq!(crate_boundary_from(&allowed, &no_ledger()).0, Verdict::Pass);
+    }
+
+    /// 注错 (G-M01-3, L0 rows): a workspace edge out of humaux-contracts, and out of humaux-fail-closed-macro, is
+    /// red on its own row.
+    #[test]
+    fn g_m01_3_fails_on_a_workspace_edge_from_contracts_or_the_macro_crate() {
+        let doc = |contracts: Vec<serde_json::Value>, mac: Vec<serde_json::Value>| {
+            ed_doc(&[
+                ed_pkg("humaux-domain", None, vec![]),
+                ed_pkg("humaux-contracts", None, contracts),
+                ed_pkg("humaux-fail-closed-macro", None, mac),
+                ed_pkg("humaux-telemetry", None, vec![]),
+                ed_pkg("humaux-adapters", None, vec![]),
+            ])
+        };
+        let contracts = doc(vec![ed_dep("humaux-adapters", None)], vec![]);
+        assert_eq!(
+            fail_lines(crate_boundary_from(&contracts, &no_ledger()).0),
+            "L0 package `humaux-contracts` depends on workspace package `humaux-adapters` (normal dependency) but may depend only on [] (M01 design §4); not in xtask/known_red.toml [[crate_boundary]]"
+        );
+        let mac = doc(vec![], vec![ed_dep("humaux-domain", Some("dev"))]);
+        assert_eq!(
+            fail_lines(crate_boundary_from(&mac, &no_ledger()).0),
+            "L0 package `humaux-fail-closed-macro` depends on workspace package `humaux-domain` (dev dependency) but may depend only on [] (M01 design §4); not in xtask/known_red.toml [[crate_boundary]]"
+        );
+    }
+
+    /// The ledger id carries the dependency kind: a ledgered dev edge does not silence a later normal edge of the
+    /// same pair.
+    #[test]
+    fn g_m01_3_ledgered_dev_edge_does_not_cover_a_normal_edge_of_the_same_pair() {
+        let doc = bt_doc(vec![ed_pkg(
+            "humaux-gateway",
+            None,
+            vec![ed_dep("reqwest", Some("dev")), ed_dep("reqwest", None)],
+        )]);
+        let ledgered = BTreeSet::from(["humaux-gateway -> reqwest (dev)".to_string()]);
+        let (verdict, notes) = crate_boundary_from(&doc, &ledgered);
+        let out = fail_lines(verdict);
+        assert!(out.contains("`reqwest` (normal dependency)"), "{out}");
+        assert!(!out.contains("(dev dependency)"), "{out}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("humaux-gateway -> reqwest (dev):"),
+            "{notes:?}"
+        );
+    }
+
+    /// 注错 (G-M01-3, sqlx family): a direct dependency on a `sqlx-*` sub-crate is the same access, dev exempt too.
+    #[test]
+    fn g_m01_3_catches_sqlx_sub_crates() {
+        let doc = bt_doc(vec![
+            ed_pkg("humaux-a", None, vec![ed_dep("sqlx-core", None)]),
+            ed_pkg("humaux-b", None, vec![ed_dep("sqlx-postgres", Some("dev"))]),
+            ed_pkg("humaux-c", None, vec![ed_dep("sqlxx", None)]),
+        ]);
+        let out = fail_lines(crate_boundary_from(&doc, &no_ledger()).0);
+        assert!(
+            out.contains("`humaux-a` declares `sqlx-core` (normal dependency)"),
+            "{out}"
+        );
+        assert!(!out.contains("humaux-b"), "{out}");
+        assert!(!out.contains("humaux-c"), "{out}");
+    }
+
     #[test]
     fn ledgered_boundary_ids_reads_the_section_and_rejects_bad_shapes() {
         assert_eq!(ledgered_boundary_ids("").unwrap(), BTreeSet::new());
         assert_eq!(
             ledgered_boundary_ids(
-                "[[dod]]\nid = \"d\"\n[[crate_boundary]]\nid = \"a -> sqlx\"\nowner = \"M23\"\n"
+                "[[dod]]\nid = \"d\"\n[[crate_boundary]]\nid = \"a -> sqlx (normal)\"\nowner = \"M23\"\n"
             )
             .unwrap(),
-            BTreeSet::from(["a -> sqlx".to_string()])
+            BTreeSet::from(["a -> sqlx (normal)".to_string()])
         );
         assert!(ledgered_boundary_ids("[crate_boundary]\nid = \"a\"\n").is_err());
         assert!(ledgered_boundary_ids("[[crate_boundary]]\nowner = \"M23\"\n").is_err());

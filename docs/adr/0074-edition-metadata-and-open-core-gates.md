@@ -76,7 +76,7 @@ Each gate has an injected-fault record on a throwaway branch; run ids are in the
 
 ## G-M01-3 crate boundary table (card M01-2, module design M01 D5)
 - **Table.** `BOUNDARY_TABLE` in `architecture_check.rs` generalises the §78.3 domain list: `reqwest` only in
-  `humaux-infra-network` (ADR-0003), `sqlx` only in `humaux-adapters`, a `qdrant-client` crate only in
+  `humaux-infra-network` (ADR-0003), `sqlx` (and its `sqlx-*` sub-crates) only in `humaux-adapters`, a `qdrant-client` crate only in
   `humaux-adapters` / `humaux-projection` (§78 boundary lints). A `[dev-dependencies]` entry of `sqlx` is "testing"
   and not counted; no other row has that exemption. `L0_WORKSPACE_DEPS` pins the L0 leaf rule of the M01 design
   (domain, contracts and the fail-closed macro depend on no workspace crate; telemetry only on those three). The
@@ -84,7 +84,8 @@ Each gate has an injected-fault record on a throwaway branch; run ids are in the
 - **Matching.** By package name from `cargo metadata --no-deps`, so renamed, target-specific, optional and build
   dependencies count. A malformed document (no packages, a missing L0 package, a package without `dependencies`,
   a nameless dependency) fails closed and cannot be ledgered.
-- **Ledger.** A violation is a `[[crate_boundary]]` row of `xtask/known_red.toml`, id `<package> -> <dependency>`,
+- **Ledger.** A violation is a `[[crate_boundary]]` row of `xtask/known_red.toml`, id `<package> -> <dependency> (<kind>)`
+  (kind `normal`, `dev` or `build`, so a ledgered dev edge never covers a normal edge of the same pair),
   owner a module card. G-M01-3 passes a ledgered violation but prints a `known-red: ledgered` line; an unledgered
   one fails. `known-red` evaluates the same violations as its `crate_boundary` section, so a row whose violation is
   gone is red and must be deleted. The ledger is empty today: the gateway `sqlx` moved to `[dev-dependencies]`

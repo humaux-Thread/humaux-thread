@@ -414,21 +414,26 @@ fn due_items(phase: u32) -> Vec<Item> {
         .collect()
 }
 
+/// M01 D5: one failing item per G-M01-3 violation `(id, detail)`; the id is `<package> -> <dependency> (<kind>)`.
+fn boundary_items(violations: Vec<(String, String)>) -> Vec<Item> {
+    violations
+        .into_iter()
+        .map(|(id, detail)| Item {
+            id,
+            status: Status::Fail,
+            detail,
+        })
+        .collect()
+}
+
 fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
     match section {
         "dod" => dod_items(phase),
         "benchset" => benchset_section(phase),
         "due_items" => Ok(due_items(phase)),
-        // M01 D5: one failing item per G-M01-3 violation, id `<package> -> <dependency>`.
-        "crate_boundary" => crate::architecture_check::crate_boundary_violations().map(|vs| {
-            vs.into_iter()
-                .map(|(id, detail)| Item {
-                    id,
-                    status: Status::Fail,
-                    detail,
-                })
-                .collect()
-        }),
+        "crate_boundary" => {
+            crate::architecture_check::crate_boundary_violations().map(boundary_items)
+        }
         other => Err(format!("no evaluator is wired for section `{other}`")),
     }
 }
@@ -1088,6 +1093,21 @@ mod tests {
         ] {
             assert_eq!(parse_args(&bad), None, "{bad:?}");
         }
+    }
+
+    /// Each G-M01-3 violation is a failing item, so an unledgered one goes red in `judge` and a ledgered one is listed.
+    #[test]
+    fn boundary_violations_become_failing_items() {
+        let items = boundary_items(vec![("a -> sqlx (normal)".into(), "why".into())]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "a -> sqlx (normal)");
+        assert_eq!(items[0].status, Status::Fail);
+        let red = judge("crate_boundary", &items, &[], false);
+        assert_eq!(red.reds.len(), 1, "{:?}", red.reds);
+        let rows = [row("a -> sqlx (normal)", "M23")];
+        let covered = judge("crate_boundary", &items, &rows, false);
+        assert!(covered.reds.is_empty(), "{:?}", covered.reds);
+        assert_eq!(covered.ledgered_lines.len(), 1);
     }
 
     /// The committed ledger is well formed: it parses clean and every row has a module-card owner and a reason.
