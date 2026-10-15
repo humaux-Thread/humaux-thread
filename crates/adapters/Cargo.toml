@@ -50,7 +50,7 @@ humaux-retrieval = { path = "../retrieval" }
 humaux-local-secret-scan = { path = "../local-secret-scan" }
 # §11.1 BYOK 域的生产 transport（byok.rs::EgressHttpTransport -> infra-egress raw 出口）。
 # G80-3 把 infra-network 的依赖方钉死为 {infra-egress, infra-cell}，adapters 只能间接触达。
-# why: BYOK egress transport (byok.rs); used-by: [adapters::byok]
+# why: BYOK egress transport (byok.rs) and its dialing URL parser (byok/ssrf.rs); used-by: [adapters::byok, adapters::byok::ssrf]
 humaux-infra-egress = { path = "../infra-egress" }
 # T4.8 `forget_repo.rs`: `DeletionStep`/`DeletionPlan` (§37) are pure types+logic that live in
 # humaux-application so they stay unit-testable without a database (§3/§78.3 — same

@@ -1,7 +1,7 @@
 //! `infra-egress::raw` — Layer 1A 的原始 HTTPS POST 出口，给 **BYOK 域**（§11）用。
 //! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(provider)]; env=[];
 //!   modules=[humaux-infra-network, infra-egress::resolver, infra-network::http]
-//! Called-by: [adapters::byok]
+//! Called-by: [adapters::byok, adapters::byok::ssrf]
 //! Invariants: [the BYOK-domain raw HTTPS POST: it injects no Authorization and classifies no status (both belong to
 //!   adapters::byok); non-HTTPS endpoints and oversize bodies are RawSendErrors; dialing goes through the checked
 //!   resolver]
@@ -168,6 +168,41 @@ impl RawHttpPost {
             body: out,
         })
     }
+}
+
+/// The authority [`RawHttpPost::send`] will dial for `endpoint`, in `std` types (the signature
+/// rule in this module's doc).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialAuthority {
+    /// Lowercase scheme.
+    pub scheme: String,
+    /// Domain (lowercase, IDNA-mapped) or canonical IP literal; IPv6 without brackets.
+    pub host: String,
+    /// Explicit port, else the scheme's default.
+    pub port: Option<u16>,
+    /// The URL carries a username or a password.
+    pub has_userinfo: bool,
+}
+
+/// §11.4: an SSRF check must judge the host the client connects to, so it parses with
+/// `reqwest::Url`, the parser `send` hands `endpoint` to. A hand-cut authority disagrees with
+/// WHATWG on `\`, tab/newline, percent-encoding and numeric IPv4 forms.
+///
+/// # Errors
+/// The parser's message when `endpoint` is not an absolute URL with a host.
+pub fn dial_authority(endpoint: &str) -> Result<DialAuthority, String> {
+    let url = reqwest::Url::parse(endpoint).map_err(|e| e.to_string())?;
+    let host = url.host_str().ok_or("URL has no host")?;
+    Ok(DialAuthority {
+        scheme: url.scheme().to_owned(),
+        host: host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
+            .to_owned(),
+        port: url.port_or_known_default(),
+        has_userinfo: !url.username().is_empty() || url.password().is_some(),
+    })
 }
 
 /// `reqwest::Error` -> [`RawSendError`]。ADR-0039：出网策略的拒绝先从错误链上捞回来
