@@ -4,7 +4,7 @@
 //!   services=[PostgreSQL(owner) r=[ops.selection_snapshot_items] w=[control.private_reasoning_domains,
 //!   control.tenants, control.workspaces, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.stream_checkpoints], PostgreSQL(role_gateway) r=[private.memory_records]];
-//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo, adapters::postgres,
+//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::read_gate,
 //!   adapters::tests::support::throwaway_db, domain::identity, domain::ids, humaux-testkit, projection::serving]
 //! Called-by: [cargo-test]
 //! Invariants: [the 50k seed and every manifest it mints live in humaux_thread_c35_enum_<pid>_<n>, dropped WITH
@@ -24,8 +24,8 @@
 
 use std::time::{Duration, Instant};
 
-use humaux_adapters::context_repo::{MemoryEnumerationParams, materialize_memory_enumeration};
 use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::read_gate::{MemoryEnumerationParams, materialize_memory_enumeration};
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{Scope, TenantId, WorkspaceId};
 use humaux_projection::serving::StreamFamily;

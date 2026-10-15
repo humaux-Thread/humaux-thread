@@ -259,28 +259,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo xtask phase-check
 
-      # ---------------------------------------------------------------------
-      # 还没接进来的两道，以及为什么 —— 写在这里是为了留痕，不是为了免责。
-      #
-      #   cargo xtask dod-check
-      #   cargo xtask benchset-declaration
-      #
-      # 相位真源已修（PHASE 文件 + xtask/src/phase.rs）：两道闸不传参数即按真实相位判，
-      # 「默认 0 豁免一切」已不存在。但按真实相位它们当前是红的：
-      #   · dod-check --phase 7  → 9 pass / 40 fail / 50 na，40 条全是
-      #     「no verifier registered」——§69 要求的 DoD→verifier→注错三段绑定，
-      #     94 条里只登记了 5 条（crates/testkit/src/dod.rs 模块注释自陈「Phase 0 only」）。
-      #   · benchset-declaration（PHASE=8 实跑）→ 5 个集合 owning phase 已到期仍
-      #     NOT_DECLARED（continuation_198_v2 / longmemeval_style / agent_workflow_outcome /
-      #     project_continuity / memory_security_lifecycle），缺的是**实测**数据，不能估。
-      #     exact_completeness 已于 2026-08-27 实测声明（evals/exact_completeness/ +
-      #     crates/adapters/tests/exact_completeness_eval.rs），从红名单摘除。
-      #
-      # 接的前提是先把缺口补上，而不是把相位调低到让它们变绿——那正是 §80.1.2
-      # 批评已退休 G80-21 时说的「调松定义」。补完这两块即在此处接上，并把相位值
-      # 从一处真源读取而不是写死在这个文件里。
-      # ---------------------------------------------------------------------
-
       # EmbarkStudios/cargo-deny-action runs an x86_64 binary in a container: "Exec format
       # error" on the arm64 runner (run 37656756823). The crate installs natively instead;
       # rust-cache keeps ~/.cargo/bin across runs. Blocking since M24-1 (the wildcard and licence
@@ -333,34 +311,16 @@ jobs:
           cargo install cargo-sbom --version 0.10.0 --locked
           cargo sbom --output-format=spdx_json_2_3 > sbom.spdx.json
 
-      # §57.1 第3条: 依赖运行时基础设施（vector store / mutation harness / live
-      # deploy target / image registry），Phase 0 尚无被测对象。按三态输出
-      # not_applicable 并点名缺失对象，不是注释掉这些步骤、也不是假装它们通过。
-      # §57.1 rule 2: the two gates the comment above explains are printed as tri-state
-      # lines naming the missing object, not left as prose.
-      - name: dod-check (not_applicable — verifiers unregistered)
+      # G-M24-4 (M24-4), §57.1 rule 2: `not_applicable` is only for an object that is not yet due, and it names that
+      # object; a gate that is due and red (dod-check G80-33, benchset-declaration G80-16, retrieval benchmark, mutation
+      # tests, deploy smoke, container scan) is a row in xtask/known_red.toml naming the module card that fixes it.
+      # A row whose item passes is red until deleted (§80.1.1 shape), an unlisted red fails here. dod-check executes the
+      # registered verifiers (cargo test), hence the step timeout. `--release` is the go-live rehearsal (§69): red for
+      # every row without deferred_past_go_live, and it lists each deferred row for owner sign-off.
+      - name: cargo xtask known-red (G-M24-4)
         if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: DoD verifiers — 94 DoD rows, 5 registered in crates/testkit/src/dod.rs; §69 three-way binding pending)"'
-
-      - name: benchset-declaration (not_applicable — benchsets undeclared)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: measured declarations for continuation_198_v2 / longmemeval_style / agent_workflow_outcome / project_continuity / memory_security_lifecycle)"'
-
-      - name: retrieval benchmark (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: retrieval benchmark corpus / embedding index — delivered Phase 6, §57.1 rule 3)"'
-
-      - name: mutation tests (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: mutation harness / testkit fault targets — delivered Phase 1, §57.1 rule 3)"'
-
-      - name: deploy smoke (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: live deploy target with /live /ready /status — delivered Phase 14, §57.1 rule 3)"'
-
-      - name: container scan (not_applicable — Phase 0)
-        if: ${{ !cancelled() }}
-        run: 'echo "not_applicable (missing object: container image to scan — delivered Phase 14, §57.1 rule 3)"'
+        timeout-minutes: 25
+        run: cargo xtask known-red
 
   test-a:
     name: cargo test (workspace)
@@ -397,8 +357,10 @@ jobs:
           set -uo pipefail
           rc=0
           # Quiet pass (alone, -j 1, after the parallel pass): g80_31_handoff asserts a quiet cluster between two
-          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows that parallel load
-          # squeezed (ci/m24-6-rep2 run 38644754111: a_success_at_the_end_of_the_http_window_is_kept_not_resent).
+          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows. The private E11
+          # scenario no longer needs it: its failures (also seen here under -j 1) were a claim race between its pass
+          # and its sweeper, not load, and the sweeper now starts only after the pass holds the lease. Whether these
+          # binaries can rejoin the parallel pass is a separate decision.
           cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not (binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e))' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-parallel.xml" 2>/dev/null || true
           cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -j 1 -E 'binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e)' || rc=1
@@ -588,24 +550,117 @@ jobs:
         timeout-minutes: 45
         run: cargo xtask serial-lane
 
+  # G-M24-3 SAST (§80 "SAST", M24 D3): CodeQL for Rust in build-mode none — it reads the source without compiling,
+  # so no services, no cargo, and it runs beside the cargo jobs instead of after them. Results also land in the
+  # repository's code-scanning tab. Findings never fail the analyze step (only an upload/processing error does), so
+  # the last step decides.
+  # Threshold = level error OR security severity >= 7.0 (high/critical). Measured on this card (run 38681752387):
+  # every Rust security query ships at level `warning` — an error-only threshold could never go red, while a
+  # planted cleartext password log was reported at `high`. Test code (tests/ trees, testkit, xtask, experiments)
+  # is out of scope; inline #[cfg(test)] modules cannot be path-filtered and sit in the ledger as verdict T.
+  # The accepted findings live in .github/codeql/known_findings.toml, exact count per (rule, path), shrink-only.
+  # The CodeQL bundle is pinned: a newer query pack must not turn main red without a PR that re-triages.
+  # Free while the repository is public. x64 runner: the CodeQL bundle's Linux build is x64.
+  # ponytail: whole-workspace scan on every push (~7 min measured, budget ≤ 15 min in parallel, M24 §7); if it
+  # outgrows that, PRs scan changed crates and the full scan moves to nightly (ADR-M24-a).
+  sast:
+    name: CodeQL (Rust)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      # On pull_request events codeql-action defaults to diff-informed queries: data-flow results only on the PR's
+      # changed lines (run 38683131940: 13 results vs 102 on a push of the same tree), so every ledger row of an
+      # untouched file read 0. The ledger is a whole-tree count, so the scan must be whole-tree on every event.
+      # The knob is codeql-action's feature-flag override (src/feature-flags.ts, v4.38.3); the gate step below
+      # turns red if a diff-range pack was built anyway, so a renamed knob cannot pass silently.
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned by commit: the diff-informed knob and the pr-diff-range path below are the action's internals.
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: rust
+          build-mode: none
+          tools: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.2/codeql-bundle-linux64.tar.gz
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: /language:rust
+          # A fork PR's token cannot write security events (the upload would 403 and fail the step); the gate below
+          # still judges the local SARIF.
+          upload: ${{ github.event.pull_request.head.repo.fork && 'never' || 'always' }}
+          output: ${{ runner.temp }}/sarif
+      - name: findings match the SAST ledger
+        # A result's level falls back to its rule's defaultConfiguration (SARIF §3.27.10); CodeQL keeps the rules
+        # and their `security-severity` in the query pack's extension, not the driver. No SARIF file = red.
+        run: |
+          python3 - "${{ runner.temp }}/sarif" .github/codeql/known_findings.toml "${{ runner.temp }}/pr-diff-range" <<'PY'
+          import collections, glob, json, os, sys, tomllib
+          TEST = ("/tests/", "/benches/", "/crates/testkit/", "/xtask/", "/experiments/")
+          if os.path.isdir(sys.argv[3]):
+              sys.exit("G-M24-3: diff-informed analysis ran (pr-diff-range pack exists); the ledger needs a whole-tree scan")
+          files = glob.glob(sys.argv[1] + "/*.sarif")
+          if not files:
+              sys.exit("G-M24-3: no SARIF produced")
+          seen, total, unresolved = collections.Counter(), 0, set()
+          for path in files:
+              for run in json.load(open(path))["runs"]:
+                  rules = {rule["id"]: rule for comp in [run["tool"]["driver"], *run["tool"].get("extensions", [])]
+                           for rule in comp.get("rules", [])}
+                  for r in run.get("results", []):
+                      total += 1
+                      rid = r.get("ruleId") or r.get("rule", {}).get("id")
+                      if rid not in rules:
+                          unresolved.add(rid)  # no rule = no severity: never let it pass as ungated
+                      rule = rules.get(rid, {})
+                      level = r.get("level") or rule.get("defaultConfiguration", {}).get("level", "warning")
+                      sev = float(rule.get("properties", {}).get("security-severity", 0))
+                      uri = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                      if (level == "error" or sev >= 7.0) and not any(t in "/" + uri for t in TEST):
+                          seen[(rid, uri)] += 1
+          if unresolved:
+              sys.exit(f"G-M24-3: results whose rule is not in the SARIF: {sorted(map(str, unresolved))}")
+          rows = tomllib.load(open(sys.argv[2], "rb")).get("finding", [])
+          ledger, red = {}, []
+          for row in rows:
+              key = (row.get("rule"), row.get("path"))
+              if key in ledger:
+                  red.append(f"duplicate ledger row {key}")
+              ledger[key] = row.get("count")
+              if row.get("verdict") not in ("T", "FP", "REAL") or not row.get("owner") or not row.get("reason"):
+                  red.append(f"ledger row {key} needs verdict T/FP/REAL, owner and reason")
+          for key in sorted(set(seen) | set(ledger)):
+              have, want = seen.get(key, 0), ledger.get(key, 0)
+              if have > want:
+                  red.append(f"new finding {key[0]} in {key[1]}: {have} found, {want} accepted")
+              elif have < want:
+                  red.append(f"ledger row {key[0]} {key[1]} accepts {want} but {have} found — shrink the row")
+          print(f"CodeQL results: {total}; gated (non-test, high+ or error): {sum(seen.values())}; ledger rows: {len(rows)}")
+          if red:
+              sys.exit("G-M24-3:\n" + "\n".join(red))
+          PY
+
   # The required check (branch protection names it): green only when every part above is green; a skipped or
   # cancelled part is red, never a quiet pass (§79.2).
   ci:
     name: fmt + check + clippy + test + gates
-    needs: [lint, test-a, test-b, serial-lane]
+    needs: [lint, test-a, test-b, serial-lane, sast]
     if: always()
-    # Pinned x64 image: this job only compares four results, and on the arm queue it waited ~5.5 min for a runner
+    # Pinned x64 image: this job only compares five results, and on the arm queue it waited ~5.5 min for a runner
     # after every part had finished (run 38351566010).
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: every part passed
         run: |
-          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }}'
+          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }} sast=${{ needs.sast.result }}'
           test '${{ needs.lint.result }}' = success
           test '${{ needs.test-a.result }}' = success
           test '${{ needs.test-b.result }}' = success
           test '${{ needs.serial-lane.result }}' = success
+          test '${{ needs.sast.result }}' = success
 
   # Real-provider tests (the local chain's distill_hop_live / distill_fairness_live /
   # distill_poison_live / two_provider_live / consolidation hop / dashscope_live_smoke).

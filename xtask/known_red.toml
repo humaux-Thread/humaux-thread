@@ -1,0 +1,269 @@
+# Known-red ledger (M24-4, G-M24-4; Baseline §57.1 rule 2, §80.1.1). Read by `cargo xtask known-red`.
+#
+# A gate that is due at the current PHASE and still red is a row here, owned by the module card that fixes it.
+# A row is forced out when its item passes (the gate goes red otherwise). Adding a row is a reviewed diff line
+# and must name its owner; every run prints `rows: N (deferred: M)` so growth shows in the log.
+# `deferred_past_go_live = "<why>"` marks a row that stays red at go-live on purpose; `--release` is red for
+# every row without it and lists every deferred row for owner sign-off.
+# Sections: [[dod]], [[benchset]], [[due_items]]; any other section or key is rejected.
+# Row keys: id (required), owner (module card, M<nn>[-<card>], required), reason (required), deferred_past_go_live.
+#
+# Initial population (2026-10-15, PHASE 9, from CI run 38682651185 of the known-red step). Owners use the module
+# numbering of docs/architecture/module_ownership.toml (`M<nn>`: the module that owns the capability; `M24-<n>`:
+# a card of the M24 design note). Reasons summarise the 2026-10-14 gate audit and say why the item is red today.
+# A `deferred_past_go_live` row for an item that is not yet due (not_applicable) pre-declares the deferral so the
+# go-live report lists it; once the item is due it covers the failure, once it passes the row must go.
+# E177 (DCO vs CLA) and E179 (OpenSSF) have no gate item yet, so they have no row; card M24-13 binds them.
+
+# --- dod -------------------------------------------------------------------
+
+[[dod]]
+id = "DOD-006"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; stream_seq ledger capability exists (migrations/0007, G80-4/25/28)"
+
+[[dod]]
+id = "DOD-007"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; ledger::close and classify sole sites exist (domain/src/ledger.rs, retrieval/src/completeness.rs)"
+
+[[dod]]
+id = "DOD-008"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; completeness block exists in retrieval/src/envelope.rs"
+
+[[dod]]
+id = "DOD-009"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; FreshnessClass exists in retrieval/src/completeness.rs"
+
+[[dod]]
+id = "DOD-011"
+owner = "M19"
+reason = "no verifier registered in crates/testkit/src/dod.rs; tombstone/purge has no production caller yet (card 43)"
+
+[[dod]]
+id = "DOD-013"
+owner = "M08"
+reason = "no verifier registered in crates/testkit/src/dod.rs; adapters/tests/retrieve_read_your_writes.rs exists"
+
+[[dod]]
+id = "DOD-014"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; adapters/tests/projection_lag.rs exists (ADR-0057)"
+
+[[dod]]
+id = "DOD-015"
+owner = "M24"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no evaluator, fixture or baseline_min for continuation_198_v2 (see the benchset row)"
+
+[[dod]]
+id = "DOD-016"
+owner = "M11"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no rerank stage yet, so rerank loss cannot be decomposed (card 52)"
+
+[[dod]]
+id = "DOD-018"
+owner = "M24"
+reason = "no verifier registered in crates/testkit/src/dod.rs; ProfileFingerprint exists but no benchmark runner uses it"
+
+[[dod]]
+id = "DOD-019"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; envelope completeness block and excluded counts exist"
+
+[[dod]]
+id = "DOD-021"
+owner = "M10"
+reason = "no verifier registered in crates/testkit/src/dod.rs; read-side refusal pending (card 37b)"
+
+[[dod]]
+id = "DOD-022"
+owner = "M11"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no rerank stage yet (card 52)"
+
+[[dod]]
+id = "DOD-037"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; pure logic only, no endpoint (card 55)"
+
+[[dod]]
+id = "DOD-038"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; hash_password and API-key rehash exist, no endpoint (card 55)"
+
+[[dod]]
+id = "DOD-039"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no endpoint to test enumeration end to end (card 55)"
+
+[[dod]]
+id = "DOD-040"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; session_still_valid exists, no browser session path (card 55)"
+
+[[dod]]
+id = "DOD-041"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (ADR-0033, security epoch), only the verifier is missing"
+
+[[dod]]
+id = "DOD-042"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; notification record separate from email delivery, partial (card 55)"
+
+[[dod]]
+id = "DOD-043"
+owner = "M26"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no OAuth/PKCE/CIMD code (card 50)"
+
+[[dod]]
+id = "DOD-044"
+owner = "M02"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (migrations 0037/0039), only the verifier is missing"
+
+[[dod]]
+id = "DOD-045"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; entitlement projector has no production caller (card 56)"
+
+[[dod]]
+id = "DOD-046"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no plan_versions table or PlanVersion type (card 56)"
+
+[[dod]]
+id = "DOD-047"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no billing inbox (card 56)"
+
+[[dod]]
+id = "DOD-048"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (adapters/tests/quota_and_rate.rs), only the verifier is missing"
+
+[[dod]]
+id = "DOD-049"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; referral/credit ledgers are not wired to a runtime flow (card 56)"
+
+[[dod]]
+id = "DOD-055"
+owner = "M24"
+reason = "verifier is an #[ignore] lane test needing the a:mechanism_fixture database (HUMAUX_MECHANISM_FIXTURE, role_admin DSNs): the serial-lane job provides it, the lint job does not, so G80-33 rule 5 cannot execute it here"
+
+[[dod]]
+id = "DOD-056"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (model_call_ledger, ADR-0042), only the verifier is missing"
+
+[[dod]]
+id = "DOD-057"
+owner = "M11"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no max_rerank_tokens config and no rerank stage (card 52)"
+
+[[dod]]
+id = "DOD-058"
+owner = "M11"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (retrieval-provider admission, provider_budget), only the verifier is missing"
+
+[[dod]]
+id = "DOD-059"
+owner = "M12"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no cache exists"
+
+[[dod]]
+id = "DOD-060"
+owner = "M04"
+reason = "no verifier registered in crates/testkit/src/dod.rs; only model-call cost is emitted to ops.tenant_cost_events"
+
+[[dod]]
+id = "DOD-073"
+owner = "M24-12"
+reason = "not yet due (Phase 14); mutation testing lands in M24-12"
+deferred_past_go_live = "E122: fuzz needs a nightly toolchain (conflicts with the 1.99.0 pin), DAST needs a staging target, provider chaos needs production traffic; only the mutation part is delivered before go-live"
+
+[[dod]]
+id = "DOD-081"
+owner = "M24"
+reason = "not yet due (Phase 14); needs a live target"
+deferred_past_go_live = "D315/A43: needs production traffic and the section 1.14.1 probe executor, which has no recorder for the ALWAYS mechanisms yet"
+
+[[dod]]
+id = "DOD-082"
+owner = "M24"
+reason = "not yet due (Phase 14); needs live Observation traffic"
+deferred_past_go_live = "D316: STALE-observation impact is only meaningful on a target with production traffic"
+
+[[dod]]
+id = "DOD-083"
+owner = "M24"
+reason = "not yet due (Phase 14); needs production observations"
+deferred_past_go_live = "D317: re-measurement batching needs production observations (first re-measurement due 2026-11-22)"
+
+[[dod]]
+id = "DOD-084"
+owner = "M24"
+reason = "not yet due (Phase 14); the G5 recovery gate reads a live target"
+deferred_past_go_live = "D318: needs a live target with production observations"
+
+[[dod]]
+id = "DOD-086"
+owner = "M24"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (G80-11, processing_runs_fingerprint_rerun.rs), only the verifier is missing"
+
+[[dod]]
+id = "DOD-087"
+owner = "M24-9"
+reason = "no verifier registered in crates/testkit/src/dod.rs; no CounterfactualExperimentManifest check yet (G80-35 lands in M24-9)"
+
+[[dod]]
+id = "DOD-091"
+owner = "M11"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (g20_2_no_hidden_generative_recall), only the verifier is missing"
+
+[[dod]]
+id = "DOD-092"
+owner = "M07"
+reason = "no verifier registered in crates/testkit/src/dod.rs; capability implemented (domain/src/grounding.rs), only the verifier is missing"
+
+[[dod]]
+id = "DOD-095"
+owner = "M14"
+reason = "no verifier registered in crates/testkit/src/dod.rs; W3 live verifier and independent mutation receipts are absent"
+
+
+# --- benchset --------------------------------------------------------------
+
+[[benchset]]
+id = "agent_workflow_outcome"
+owner = "M14"
+reason = "owning phase 8 passed; no measured declaration (fixed_denominator, decision_depth, resolution, spread_tol, measured_at, frozen_by)"
+
+[[benchset]]
+id = "continuation_198_v2"
+owner = "M11"
+reason = "owning phase 7 passed; state-layer resolution and a screened spread_tol are unmeasured, frozen_by missing"
+
+[[benchset]]
+id = "longmemeval_style"
+owner = "M11"
+reason = "owning phase 4 passed; no measured declaration and no evals/longmemeval_style manifest"
+
+[[benchset]]
+id = "project_continuity"
+owner = "M14"
+reason = "owning phase 8 passed; no measured declaration (W3 live verifier absent)"
+
+
+# --- due_items -------------------------------------------------------------
+
+[[due_items]]
+id = "mutation tests"
+owner = "M24-12"
+reason = "due since Phase 1; no mutation harness (cargo-mutants nightly and PR step land in M24-12)"
+
+[[due_items]]
+id = "retrieval benchmark"
+owner = "M11"
+reason = "due since Phase 6; no retrieval benchmark corpus, embedding index or per-change report runner"

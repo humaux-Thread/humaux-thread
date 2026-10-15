@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 # §46.1 manifest parsing (migration_rehearsal.rs) — no serde derive needed, toml::Value suffices.
-# why: parse migration manifests and dep-map header lists; used-by: [xtask::architecture_check, xtask::dep_map, xtask::r4_fault_manifest]
+# why: parse migration manifests and dep-map header lists; used-by: [xtask::architecture_check, xtask::dep_map, xtask::known_red, xtask::r4_fault_manifest]
 toml = "1"
 # §50.1 config-check.rs: reuses contracts::feature_registry parsing, no second parser.
 # why: reuse the typed features.toml parser instead of a second one; used-by: [xtask::config_check, xtask::mechanism_registry]
