@@ -776,9 +776,8 @@ pub struct OverlayCandidate {
 /// `array_agg DISTINCT` keeps the query's cardinality equal to the outer `stream_log` row count.
 ///
 /// `evidence_id` is recovered by joining `ops.outbox` on `(tenant_id, commit_seq)` — §60's
-/// `remember::issue_stream_log_row` (T3.2, a file this task does not own) never binds an
-/// `evidence_id` onto `stream_log` itself, but `remember::insert_outbox` writes exactly that
-/// triple in the same transaction. `commit_seq`, not `stream_seq`, is the join key: it is the
+/// `stream_repo::issue_ticket_in_txn` never binds an `evidence_id` onto `stream_log` itself,
+/// but its `ops.outbox` INSERT writes exactly that triple in the same transaction. `commit_seq`, not `stream_seq`, is the join key: it is the
 /// one column here that is genuinely global-unique (`ops.commit_seq_seq`, "全局审计总序"), so
 /// two different streams that both legitimately have a row at `stream_seq = 1` cannot
 /// cross-match the way a `(tenant_id, stream_seq)` join would let them. See migration

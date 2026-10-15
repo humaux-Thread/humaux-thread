@@ -1,7 +1,7 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
 //! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
@@ -52,6 +52,7 @@ use crate::{
     remember::{self, RememberCommand},
     request_guard_repo::{self, AuditTenant},
     retrieve::{self, TokenClaims},
+    stream_repo,
 };
 
 // `bins/private-worker` names these at `distill_repo::`; their definitions and the Memory INSERT live in `memory_repo`
@@ -1071,22 +1072,18 @@ pub async fn confirm_candidate_atomically(
 
     // One MEMORY_LIFECYCLE ticket bound to E2 (NOT EVIDENCE_ACCEPTED — M is materialized below;
     // projection resolves it via memory_evidence(E2)).
-    let commit_seq = remember::next_commit_seq(&mut txn)
-        .await
-        .map_err(remember_err)?;
-    let stream_seq = remember::issue_stream_log_row(&mut txn, &request.stream, commit_seq)
-        .await
-        .map_err(remember_err)?;
-    remember::insert_outbox(
-        &mut txn,
-        auth.tenant_id().0,
+    let stream_repo::TicketIssued {
         commit_seq,
         stream_seq,
-        remember::MEMORY_LIFECYCLE,
+    } = stream_repo::issue_ticket_in_txn(
+        &mut txn,
+        &request.stream,
         evidence_id,
+        remember::MEMORY_LIFECYCLE,
+        None,
     )
     .await
-    .map_err(remember_err)?;
+    .map_err(candidate_db_error)?;
 
     // M: materialize via OriginBoundAuthorityPolicy for the candidate's requested class under a
     // UserConfirmed basis (not inherited, not the source origin's lower ceiling).

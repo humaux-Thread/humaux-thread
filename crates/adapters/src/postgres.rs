@@ -1038,7 +1038,7 @@ mod tests {
 
     /// §6.2.3 G6-DB2 — `MaintenanceDbPool`: may `UPDATE projection.stream_log.state` (T3.4's
     /// `ISSUED -> LOST` sweep) but has no `INSERT` on it (§15.2 — only `role_gateway` mints
-    /// new `stream_log` rows, §60 `issue_stream_log_row`).
+    /// new `stream_log` rows, §60 `stream_repo::issue_ticket_in_txn`).
     #[test]
     fn g6_db2_maintenance_pool() {
         run_db_fixture::<AdminConn, _>("g6_db2_maintenance_pool", |(dsn, mut client)| {

@@ -322,7 +322,7 @@ const MATRIX: &[Cell] = &[
     ),
     // role_consolidation_worker (migration 0144): same column-scoped INSERT+UPDATE shape as
     // role_gateway's own bootstrap-then-increment issuer grant, for its own private_memory
-    // stream_checkpoints row (`remember::issue_stream_log_row`, shared not duplicated).
+    // stream_checkpoints row (`stream_repo::issue_ticket_in_txn`, shared not duplicated).
     cell!(
         "projection.stream_checkpoints",
         "role_consolidation_worker",

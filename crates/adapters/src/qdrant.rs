@@ -1690,7 +1690,7 @@ pub async fn upsert_fenced(
 
 /// ADR-0057 D-I: a point qualifies for a worker write when it carries no `source_stream_seq` or
 /// one `<=` the writer's ticket. Per-stream seqs are allocated under the checkpoint row lock
-/// (`remember::issue_stream_log_row`) and every ticket of a memory goes to its home stream
+/// (`stream_repo::issue_ticket_in_txn`) and every ticket of a memory goes to its home stream
 /// (ADR-0057 D-M), so a higher stored seq is always a later ticket of the same memory. `lte`, not
 /// `lt`: a retry of the same ticket re-applies idempotently.
 fn seq_fence(seq: i64) -> Value {

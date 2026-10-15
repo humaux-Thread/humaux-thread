@@ -1,32 +1,41 @@
 //! `adapters::stream_repo` — §15 `projection.stream_log` / `stream_checkpoints` SQL: T3.3's `advance_prefix`
-//!   (three/four independent reads + monotonic watermark write, both through [`RetrievalWorkerDbPool`]) and T3.4's
-//!   `ISSUED -> LOST` patrol (through [`MaintenanceDbPool`]).
+//!   (three/four independent reads + monotonic watermark write, both through [`RetrievalWorkerDbPool`]), T3.4's
+//!   `ISSUED -> LOST` patrol (through [`MaintenanceDbPool`]) and the sole private-evidence ticket door
+//!   [`issue_ticket_in_txn`] (on the caller's transaction, M09 D1).
 //! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, sqlx, tokio];
 //!   services=[PostgreSQL(any)
-//!   r=[ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets, projection.tenant_placements]
-//!   w=[projection.stream_checkpoints, projection.stream_log]
+//!   r=[ops.commit_seq_seq, ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets,
+//!   projection.tenant_placements] w=[ops.outbox, projection.stream_checkpoints, projection.stream_log]
 //!   x=[projection.retire_failed_ticket, projection.stream_point_ledger], PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker) x=[projection.claim_issued_tickets, projection.unplaced_issued_tickets]];
 //!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, domain::dataclass, domain::egress, domain::identity,
 //!   projection::stream, retrieval::completeness]
-//! Called-by: [adapters::context_repo, adapters::projection_worker, adapters::retrieve, adapters::serving_repo,
-//!   maintenance::drill, maintenance::serve, retrieval-worker::main, tests, maintenance::projection_serve]
-//! Invariants: [every function opens its own transaction and sets humaux.tenant_id before touching FORCE-RLS stream
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::context_repo,
+//!   adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo,
+//!   adapters::memory_governance_repo, adapters::projection_worker, adapters::remember, adapters::retrieve,
+//!   adapters::serving_repo, maintenance::drill, maintenance::serve, retrieval-worker::main, tests,
+//!   maintenance::projection_serve]
+//! Invariants: [every function except next_commit_seq / issue_ticket_in_txn (which run on the caller's tenant-scoped
+//!   transaction) opens its own transaction and sets humaux.tenant_id before touching FORCE-RLS stream
 //!   tables (otherwise it would silently see zero rows) — except the two ADR-0052 definer calls, which are the only
 //!   cross-tenant reads/claims of stream_log; every settle/retry/release write is fenced on (lease_owner, attempts), so
 //!   a worker whose lease was reclaimed writes 0 rows; consistency arithmetic lives in humaux_projection::stream;
 //!   A2's point reading and the projection-lag age are read in the ledger's snapshot (ADR-0057 D-L/D-D);
 //!   sweep_lost never takes a leased or backing-off ticket and moves at most its LIMIT per call (ADR-0062 D-L);
 //!   claim_run_tickets leases only the generation tickets of one rebuild run, never a generation-1 ticket
-//!   (ADR-0064 D-N(g))]
-//! Spec: Baseline §6.2.0; §11; §15.2; §23.1②; ADR-0052; ADR-0057; ADR-0062; ADR-0064
+//!   (ADR-0064 D-N(g)); issue_ticket_in_txn and next_commit_seq hold the workspace's only Rust-side `stream_log`
+//!   INSERT and `ops.commit_seq_seq` allocation (architecture-check G-M09-1; the SQL-side issuers in migrations are
+//!   outside it, ADR-0075 D-C), the ticket door runs on the caller's transaction in §60's statement order and never
+//!   commits]
+//! Spec: Baseline §6.2.0; §11; §15.1; §15.2; §23.1②; §60; ADR-0052; ADR-0057; ADR-0062; ADR-0064; ADR-0075
 //!
 //! The consistency arithmetic itself lives in
 //! `humaux_projection::stream` (no IO, unit-tested there); this module only fetches the
 //! numbers, calls it, and writes the result.
 //!
-//! Every function here opens its own transaction and issues `SET LOCAL humaux.tenant_id`
+//! Every function here except [`next_commit_seq`] / [`issue_ticket_in_txn`] (the caller's transaction, already
+//! tenant-scoped) opens its own transaction and issues `SET LOCAL humaux.tenant_id`
 //! before touching `projection.stream_log` / `stream_checkpoints` — both carry a `tenant_id`
 //! column and 0012's blanket policy `FORCE`s row-level security for every role in the §6.2.0
 //! frozen eight, including `role_retrieval_worker` and `role_maintenance` (neither is
@@ -141,6 +150,122 @@ async fn set_tenant_local(txn: &mut Txn<'_>, tenant_id: Uuid) -> Result<(), sqlx
         .execute(&mut **txn)
         .await?;
     Ok(())
+}
+
+/// §15.1: the workspace's sole Rust-side allocation of `ops.commit_seq_seq` (migration 0043), the global audit order. "仅审计总序，
+/// 不参与完整性判定" (§15): nothing downstream may branch on the magnitude, only carry it through to `stream_log` /
+/// `outbox`. [`issue_ticket_in_txn`] calls it; the public-release outbox writers (M20) take their `commit_seq` here too.
+pub(crate) async fn next_commit_seq(txn: &mut Txn<'_>) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT nextval('ops.commit_seq_seq')")
+        .fetch_one(&mut **txn)
+        .await
+}
+
+/// The two numbers one issued ticket carries: its place on the global audit order and in its stream (§15.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TicketIssued {
+    /// `ops.commit_seq_seq` value stamped on both the `stream_log` and the `outbox` row.
+    pub commit_seq: i64,
+    /// The dense per-stream ordinal ([`issue_ticket_in_txn`] bumped `issued_highwater` to it).
+    pub stream_seq: i64,
+}
+
+/// §15.1 / §60: the sole Rust-side door that issues a private-evidence stream ticket on the caller's transaction, in §60's
+/// statement order: `commit_seq` (unless the caller pre-allocated it), checkpoint bootstrap, `issued_highwater`
+/// bump, `stream_log` ISSUED row, `ops.outbox` row for `evidence_id`. Nothing here commits; an error leaves the
+/// rollback to the owning transaction. `role_gateway`'s `INSERT` grant on `stream_checkpoints` covers exactly the six
+/// key columns (§60.1), so the bootstrap never writes `issued_highwater`; the `UPDATE` right after is what bumps it.
+/// `stream_log` carries no `evidence_id` (0046 dropped it): `outbox` on `(tenant_id, commit_seq)` is the only
+/// evidence-to-ticket map. §14: the outbox row shares the transaction of the write it announces (`ops.outbox` is the
+/// schema's name for §14/§60's `outbox_event`), and its `tenant_id` is the key's.
+///
+/// `commit_seq: Some(n)` is for `remember`, which takes its sequence value as the first write of its transaction
+/// (§60 step 1) and issues the ticket last; the door honours it rather than reordering that transaction.
+// ponytail: the `Option` exists until M06-5 moves `remember`'s allocation next to the ticket, then the parameter goes.
+pub(crate) async fn issue_ticket_in_txn(
+    txn: &mut Txn<'_>,
+    key: &StreamKey,
+    evidence_id: Uuid,
+    event_type: &str,
+    commit_seq: Option<i64>,
+) -> Result<TicketIssued, sqlx::Error> {
+    let commit_seq = match commit_seq {
+        Some(preallocated) => preallocated,
+        None => next_commit_seq(txn).await?,
+    };
+
+    bind_key(
+        sqlx::query(
+            "INSERT INTO projection.stream_checkpoints \
+               (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version) \
+             DO NOTHING",
+        ),
+        key,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    let stream_seq: i64 = bind_key(
+        sqlx::query(&format!(
+            "UPDATE projection.stream_checkpoints \
+                SET issued_highwater = issued_highwater + 1 \
+              WHERE {KEY_WHERE} \
+          RETURNING issued_highwater"
+        )),
+        key,
+    )
+    .fetch_one(&mut **txn)
+    .await?
+    .try_get("issued_highwater")?;
+
+    bind_key(
+        sqlx::query(
+            "INSERT INTO projection.stream_log \
+               (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
+                stream_seq, commit_seq) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        ),
+        key,
+    )
+    .bind(stream_seq)
+    .bind(commit_seq)
+    .execute(&mut **txn)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO ops.outbox (tenant_id, commit_seq, stream_seq, event_type, evidence_id) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(key.tenant_id.0)
+    .bind(commit_seq)
+    .bind(stream_seq)
+    .bind(event_type)
+    .bind(evidence_id)
+    .execute(&mut **txn)
+    .await?;
+
+    Ok(TicketIssued {
+        commit_seq,
+        stream_seq,
+    })
+}
+
+/// Test seam: [`issue_ticket_in_txn`] for the integration tests in `tests/` (`pub(crate)` is invisible to them), as
+/// `(commit_seq, stream_seq)`. Compiled only with the `test-support` feature, which only this crate's own
+/// `[dev-dependencies]` self-reference turns on, so it never reaches a production build. The guard of the
+/// `commit_seq: Some(_)` branch is `outbox_batch_remember::m09_1_ticket_door_*` (ADR-0075 D-B).
+#[cfg(feature = "test-support")]
+pub async fn issue_ticket_in_txn_for_test(
+    txn: &mut Txn<'_>,
+    key: &StreamKey,
+    evidence_id: Uuid,
+    event_type: &str,
+    commit_seq: Option<i64>,
+) -> Result<(i64, i64), sqlx::Error> {
+    let issued = issue_ticket_in_txn(txn, key, evidence_id, event_type, commit_seq).await?;
+    Ok((issued.commit_seq, issued.stream_seq))
 }
 
 /// §15.4's independent reads, one round trip each, run inside an already-open (and already

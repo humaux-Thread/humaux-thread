@@ -1,5 +1,5 @@
 //! `adapters::consolidate_repo` — §11.6/§11.7 Private Memory Consolidation SQL, through [`ConsolidationDbPool`] only.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
 //! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, humaux-consolidation-worker, tests]
 //! Invariants: [input selection and materialization happen in ONE REPEATABLE READ READ WRITE transaction (§11.7), so
 //!   no concurrent insert can leak into a run; a lost lease is LostRace and an unknown source UnknownSource, never a
@@ -51,6 +51,7 @@ use humaux_projection::stream::StreamKey;
 use crate::memory_repo::authority_class_to_db_str;
 use crate::postgres::ConsolidationDbPool;
 use crate::remember;
+use crate::stream_repo;
 
 /// `private.memory_records.authority_class` / `private.memory_rollups.authority_class`'s text
 /// encoding, reversed. `AuthorityClass` carries no `from_db_str` of its own
@@ -148,21 +149,6 @@ impl std::fmt::Display for ConsolidateRepoError {
 }
 
 impl std::error::Error for ConsolidateRepoError {}
-
-/// `issue_stream_log_row`/`insert_outbox` (see `publish_rollup`'s call site below) only ever
-/// construct [`remember::RememberError::Db`] — the other two variants
-/// (`ConsistencyTokenExpiryNotFuture`/`BatchExhausted`) belong to `remember`'s own
-/// consistency-token/batch-ticket steps, neither of which this call site runs. The fallback
-/// arm exists only so this `impl` compiles without `unreachable!()` on a signature both
-/// functions merely happen to share, never because this path is expected to hit it.
-impl From<remember::RememberError> for ConsolidateRepoError {
-    fn from(e: remember::RememberError) -> Self {
-        match e {
-            remember::RememberError::Db(db) => Self::Db(db),
-            other => Self::Db(sqlx::Error::Protocol(other.to_string())),
-        }
-    }
-}
 
 async fn set_tenant_local(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -798,7 +784,7 @@ pub async fn publish_rollup(
     // `private.memory_records` rows the existing resolver can join to; §11.9 "rollup 是
     // navigation/context, never higher authority than source Memory") but re-signals the first
     // source memory's own PRIMARY evidence, through the one existing issuer function
-    // (`remember::issue_stream_log_row`/`insert_outbox`, not a second copy of that SQL).
+    // (`stream_repo::issue_ticket_in_txn`, not a second copy of that SQL).
     let evidence_id_for_ticket = source_authorities[0].evidence_id.0;
     let scope = match workspace_id {
         Some(w) => ("workspace".to_owned(), w),
@@ -824,16 +810,12 @@ pub async fn publish_rollup(
         crate::memory_governance_repo::home_stream(&mut txn, &run_key, evidence_id_for_ticket)
             .await
             .map_err(ConsolidateRepoError::HomeStream)?;
-    let ticket_commit_seq = remember::next_commit_seq(&mut txn).await?;
-    let ticket_stream_seq =
-        remember::issue_stream_log_row(&mut txn, &key, ticket_commit_seq).await?;
-    remember::insert_outbox(
+    stream_repo::issue_ticket_in_txn(
         &mut txn,
-        tenant_id,
-        ticket_commit_seq,
-        ticket_stream_seq,
-        remember::MEMORY_PUBLISHED,
+        &key,
         evidence_id_for_ticket,
+        remember::MEMORY_PUBLISHED,
+        None,
     )
     .await?;
 
