@@ -590,10 +590,16 @@ jobs:
 
   # G-M24-3 SAST (§80 "SAST", M24 D3): CodeQL for Rust in build-mode none — it reads the source without compiling,
   # so no services, no cargo, and it runs beside the cargo jobs instead of after them. Results also land in the
-  # repository's code-scanning tab; CodeQL's upload never fails a run, so the last step turns any error-severity
-  # result into red. Free while the repository is public. x64 runner: the CodeQL bundle's Linux build is x64.
-  # ponytail: whole-workspace scan on every push (budget ≤ 15 min in parallel, M24 §7); if it outgrows that, PRs
-  # scan changed crates and the full scan moves to nightly (ADR-M24-a).
+  # repository's code-scanning tab; CodeQL's upload never fails a run, so the last step decides.
+  # Threshold = level error OR security severity >= 7.0 (high/critical). Measured on this card (run 38681752387):
+  # every Rust security query ships at level `warning` — an error-only threshold could never go red, while a
+  # planted cleartext password log was reported at `high`. Test code (tests/ trees, testkit, xtask, experiments)
+  # is out of scope; inline #[cfg(test)] modules cannot be path-filtered and sit in the ledger as verdict T.
+  # The accepted findings live in .github/codeql/known_findings.toml, exact count per (rule, path), shrink-only.
+  # The CodeQL bundle is pinned: a newer query pack must not turn main red without a PR that re-triages.
+  # Free while the repository is public. x64 runner: the CodeQL bundle's Linux build is x64.
+  # ponytail: whole-workspace scan on every push (~7 min measured, budget ≤ 15 min in parallel, M24 §7); if it
+  # outgrows that, PRs scan changed crates and the full scan moves to nightly (ADR-M24-a).
   sast:
     name: CodeQL (Rust)
     runs-on: ubuntu-24.04
@@ -607,34 +613,53 @@ jobs:
         with:
           languages: rust
           build-mode: none
+          tools: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.2/codeql-bundle-linux64.tar.gz
       - uses: github/codeql-action/analyze@v4
         with:
           category: /language:rust
           output: ${{ runner.temp }}/sarif
-      - name: no error-severity result
-        # A result's level falls back to its rule's defaultConfiguration (SARIF §3.27.10); CodeQL keeps the
-        # rules in the query pack's extension, not the driver. No SARIF file = the scan did not run = red.
+      - name: findings match the SAST ledger
+        # A result's level falls back to its rule's defaultConfiguration (SARIF §3.27.10); CodeQL keeps the rules
+        # and their `security-severity` in the query pack's extension, not the driver. No SARIF file = red.
         run: |
-          python3 - "${{ runner.temp }}/sarif" <<'PY'
-          import glob, json, sys
+          python3 - "${{ runner.temp }}/sarif" .github/codeql/known_findings.toml <<'PY'
+          import collections, glob, json, sys, tomllib
+          TEST = ("/tests/", "/benches/", "/crates/testkit/", "/xtask/", "/experiments/")
           files = glob.glob(sys.argv[1] + "/*.sarif")
           if not files:
               sys.exit("G-M24-3: no SARIF produced")
-          errors, total = [], 0
+          seen, total = collections.Counter(), 0
           for path in files:
               for run in json.load(open(path))["runs"]:
-                  levels = {rule["id"]: rule.get("defaultConfiguration", {}).get("level", "warning")
-                            for comp in [run["tool"]["driver"], *run["tool"].get("extensions", [])]
-                            for rule in comp.get("rules", [])}
+                  rules = {rule["id"]: rule for comp in [run["tool"]["driver"], *run["tool"].get("extensions", [])]
+                           for rule in comp.get("rules", [])}
                   for r in run.get("results", []):
                       total += 1
-                      rule = r.get("ruleId") or r.get("rule", {}).get("id")
-                      if (r.get("level") or levels.get(rule, "warning")) == "error":
-                          loc = r["locations"][0]["physicalLocation"]
-                          errors.append(f'{rule} {loc["artifactLocation"]["uri"]}:{loc.get("region", {}).get("startLine")}')
-          print(f"CodeQL results: {total}, error severity: {len(errors)}")
-          if errors:
-              sys.exit("G-M24-3: error-severity CodeQL results:\n" + "\n".join(errors))
+                      rid = r.get("ruleId") or r.get("rule", {}).get("id")
+                      rule = rules.get(rid, {})
+                      level = r.get("level") or rule.get("defaultConfiguration", {}).get("level", "warning")
+                      sev = float(rule.get("properties", {}).get("security-severity", 0))
+                      uri = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                      if (level == "error" or sev >= 7.0) and not any(t in "/" + uri for t in TEST):
+                          seen[(rid, uri)] += 1
+          rows = tomllib.load(open(sys.argv[2], "rb")).get("finding", [])
+          ledger, red = {}, []
+          for row in rows:
+              key = (row.get("rule"), row.get("path"))
+              if key in ledger:
+                  red.append(f"duplicate ledger row {key}")
+              ledger[key] = row.get("count")
+              if row.get("verdict") not in ("T", "FP", "REAL") or not row.get("owner") or not row.get("reason"):
+                  red.append(f"ledger row {key} needs verdict T/FP/REAL, owner and reason")
+          for key in sorted(set(seen) | set(ledger)):
+              have, want = seen.get(key, 0), ledger.get(key, 0)
+              if have > want:
+                  red.append(f"new finding {key[0]} in {key[1]}: {have} found, {want} accepted")
+              elif have < want:
+                  red.append(f"ledger row {key[0]} {key[1]} accepts {want} but {have} found — shrink the row")
+          print(f"CodeQL results: {total}; gated (non-test, high+ or error): {sum(seen.values())}; ledger rows: {len(rows)}")
+          if red:
+              sys.exit("G-M24-3:\n" + "\n".join(red))
           PY
 
   # The required check (branch protection names it): green only when every part above is green; a skipped or
