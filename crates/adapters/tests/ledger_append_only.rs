@@ -188,6 +188,10 @@ fn credit_ledger_rejects_update_delete_and_truncate() {
                 Some("42501"),
                 "expected insufficient_privilege, got: {err:?}"
             );
+            assert!(
+                format!("{err:?}").contains("append-only"),
+                "错误必须来自 §75.2 的 append-only 守卫本身: {err:?}"
+            );
         },
     );
 }

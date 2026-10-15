@@ -687,10 +687,11 @@ fn assert_guard_rejection(context: &str, err: &postgres::Error) {
     );
 }
 
-/// The probe is queued for ACCESS EXCLUSIVE on the child, so it already holds the parent.
+/// The probe's own session (`pid = $1`) is queued for ACCESS EXCLUSIVE on the child, so it already
+/// holds the parent; another binary's TRUNCATE … CASCADE queued there must not satisfy the wait.
 const PROBE_QUEUED_ON_CHILD: &str = "SELECT EXISTS (SELECT 1 FROM pg_locks \
      WHERE relation = 'ops.data_disclosure_sources'::regclass \
-       AND mode = 'AccessExclusiveLock' AND NOT granted)";
+       AND mode = 'AccessExclusiveLock' AND NOT granted AND pid = $1)";
 
 /// Replays run 38683479316's cycle (§79): a second session holds the child (ROW EXCLUSIVE, as an
 /// FK insert does), waits until the probe holds the parent and queues for the child, sleeps
@@ -701,6 +702,11 @@ const PROBE_QUEUED_ON_CHILD: &str = "SELECT EXISTS (SELECT 1 FROM pg_locks \
 fn replay_child_then_parent_writer(name: &str, writer_delay: Duration) {
     run_db_fixture::<DisclosureFixture, _>(name, |mut handle| {
         take_exclusive_ledger_lock(&mut handle.admin);
+        let probe_pid: i32 = handle
+            .admin
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("probe pid")
+            .get(0);
         let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so it is set");
         let (child_held, child_held_rx) = std::sync::mpsc::channel();
         let writer = std::thread::spawn(move || -> Result<(), postgres::Error> {
@@ -710,7 +716,10 @@ fn replay_child_then_parent_writer(name: &str, writer_delay: Duration) {
             txn.batch_execute("LOCK TABLE ops.data_disclosure_sources IN ROW EXCLUSIVE MODE")?;
             child_held.send(()).expect("the probe is listening");
             let deadline = Instant::now() + Duration::from_secs(10);
-            while !txn.query_one(PROBE_QUEUED_ON_CHILD, &[])?.get::<_, bool>(0) {
+            while !txn
+                .query_one(PROBE_QUEUED_ON_CHILD, &[&probe_pid])?
+                .get::<_, bool>(0)
+            {
                 assert!(
                     Instant::now() < deadline,
                     "the probe never queued for the child"
