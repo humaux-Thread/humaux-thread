@@ -476,6 +476,7 @@ async fn atomically(
     // replay with another `task_run` carries another request fingerprint (the gateway hashes the raw arguments), which
     // `replay` refuses like any changed request. The same holds for a declared `project_id` (ADR-0078 D-D A1): a replay
     // never re-resolves it, so archiving the project after the commit does not turn the stored success into a refusal.
+    if let Some(project) = project { remember::resolve_declared_project_in_txn(&mut txn, &auth, project).await.map_err(db_error)?.ok_or(ErrorCode::InvalidInput)?; }
     if let Some(prior) = prior {
         let accepted = replay(&mut txn, &auth, &request, &prior).await?;
         let (memory_id, secret_material) = if note.is_some() {
