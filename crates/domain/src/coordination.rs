@@ -53,7 +53,7 @@ impl TaskState {
             Self::Blocked => "BLOCKED",
             Self::Completed => "COMPLETED",
             Self::Failed => "FAILED",
-            Self::Cancelled => "CANCELLED",
+            Self::Cancelled => "CANCELED",
         }
     }
 
