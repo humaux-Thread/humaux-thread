@@ -28,10 +28,16 @@ shape §53.4 forbids, with the rule-2 equality satisfied.
   - `lane_substituted.rs`: a temporal planner decision without `mode` through `dense_lane_substitution`, plus the §53.4
     negative control (an explicit `mode` moves nothing).
   All three still use `assert_fault_observed`, so the counter moves by exactly 1 and the wire form is checked as before.
-- **D-B What counts as a production emit site.** A non-comment `abstain(DegradeCode::V, ..)` or
-  `.also(DegradeCode::V)` in `crates/*/src` or `bins/*/src` (not the testkit), with every `#[cfg(test)]` item of the
-  file blanked. A variant that is only matched on, counted, listed in a slice or passed to another function is a
-  reader, not an emitter. Line breaks between `(` and the path are handled; comments are ignored.
+- **D-B What counts as a production emit site.** A call of `abstain` or `.also` / `::also` (the one list
+  `DEGRADE_EXIT_CALLEES`) in `crates/*/src` or `bins/*/src` (not the testkit), whose first argument is a path ending
+  in a variant name, with comments and string/char literals masked and every `#[cfg(test)]` item of the file blanked.
+  The path may be bare (`DegradeCode::V`), qualified (`humaux_telemetry::degrade::DegradeCode::V`), aliased
+  (`use DegradeCode as C; C::V`) or glob-imported (`V`), and the callee may carry a turbofish. A variant that is only
+  matched on, counted, listed in a slice or passed to another function is a reader, not an emitter. Line breaks
+  inside the call are handled.
+  *Fail closed (review W1).* An exit call whose first argument names no variant (a parameter, a local, an
+  expression) cannot be attributed, so it is red and names `file:line`, instead of letting the variant it emits read
+  as dormant. `crates/telemetry/src/degrade.rs` is exempt: `abstain(code, ..)` forwards its parameter by design.
 - **D-C The dormant ledger.** `crates/testkit/tests/fault/dormant.toml` has one `[[dormant]]` row (`variant`,
   `owner`, `reason`) for each variant with no production emit site, and that variant keeps its synthetic test (the
   direct `abstain()` call). Owners: `RerankModelMismatch`, `RerankProviderTimeout`, `EmbedProviderTimeout` -> M11;
@@ -45,11 +51,20 @@ shape §53.4 forbids, with the rule-2 equality satisfied.
   They stay in the frozen 11 and in the ledger under a provisional owner; the spec-maintenance ADR pass decides
   whether to retire both (which edits the §53.2 / §52.2 freeze, not this ADR) or to find an emitter.
 - **D-E G-M01-4.** `cargo xtask architecture-check` sub-check "M01 D4 / G-M01-4", next to rule 2 in
-  `xtask/src/architecture_check.rs`, red both ways: (a) a variant with an emit site whose fault test names `abstain`,
-  (b) a `dormant.toml` row for a variant that has one; plus (c) the unledgered dormant variant above. The pure
-  comparator (`real_path_from`) takes the variant list, the emit sites, the fault sources and the ledger text, so unit
-  tests inject each fault. It has no `not_applicable` leg: the ledger and the tests come from the same card, so
-  absence is a regression (§57.1 rule 2).
+  `xtask/src/architecture_check.rs`, red both ways: (a) a variant with an emit site whose fault test names a degrade
+  exit, (b) a `dormant.toml` row for a variant that has one; plus (c) the unledgered dormant variant above. The pure
+  comparator (`real_path_from`) takes the variant list, the emit sites, the unclassifiable exit calls, the fault
+  sources, the text of `fault_main.rs` and the ledger text, so unit tests inject each fault. It has no
+  `not_applicable` leg: the ledger and the tests come from the same card, so absence is a regression (§57.1 rule 2).
+- **D-F One predicate for both sides (review B1).** The emit-site scan and the fault-test bypass check read the same
+  `DEGRADE_EXIT_CALLEES` list (`abstain`, `also`) through the same finder, so an exit shape the scan recognises cannot
+  slip past the bypass check. A fault test is red when it mentions `abstain` anywhere in code (import, call, function
+  value) or calls `.also` / `::also`; the message names `file:line` and the callee. Before this, the bypass check
+  knew only the identifier `abstain`, and `Outcome::clean(..).also(DegradeCode::ProjectionLag)` kept G-M01-4 green.
+- **D-G Wiring (review W3).** Cargo discovers no file under `tests/fault/`; `crates/testkit/tests/fault_main.rs` pulls
+  each in with `#[path = "fault/<stem>.rs"] mod <stem>;`. G-M01-4 requires that adjacent pair, in code (not in a
+  comment, no `#[cfg]` between the two lines), for every fault file it reads. Deleting a `mod` line used to leave
+  `fault_main` green with the test silently gone.
 
 ## Rejected
 - Deleting the 8 dormant variants: §53.2 / §52.2 freeze the 11; the wire format and metric labels would churn twice.
@@ -59,12 +74,17 @@ shape §53.4 forbids, with the rule-2 equality satisfied.
 - A `[[dormant_degrade]]` section in `xtask/known_red.toml` (M01 design D4 / M24 D4 sketch): the card keeps the
   ledger beside the tests it governs and evaluates it inside architecture-check; the ratchet rules are the same and
   `known-red` can adopt the section later without changing the rows.
-- Resolving helper callees to find indirect emits: no such helper exists today (ceiling below).
+- Resolving helper callees to find indirect emits: no such helper exists today. An exit through a helper that takes
+  the code as a parameter is not missed any more, it is red (D-B fail closed).
 
 ## Ceilings (`ponytail:` in the code)
-- The scan is text, not a parse: an emit through a helper that takes the code as a parameter (or a
-  `let code = DegradeCode::V;`) is not seen, so that variant would read as dormant and need a reviewed row.
-- Brace matching ignores braces in strings and a `;` inside a gated item's signature.
+- The scan is text, not a parse (comments and literals are masked by a lexer-lite shared with
+  `strip_block_comments`): an exit callee renamed by `use .. as`, passed as a function value or reached through a
+  macro is not seen, and neither is a hand-built `Outcome { degradations: .. }`. The single construction point of
+  `abstain` (§53.1) keeps those shapes out of the tree; upgrade to resolving the callee if one appears.
+- A non-`DegradeCode` method that happens to be named `also` in production code reads as an unclassifiable exit and is
+  red; rename it.
+- `#[cfg(test)]` blanking matches braces after masking, so only a `;` inside a gated item's signature ends it early.
 - The owner check validates the shape, not that the card exists (same as `known-red`).
 
 ## Red records
@@ -74,11 +94,23 @@ failing lines are in the card's PR description.
 - r2: a `dormant.toml` row for `ProjectionLag` -> G-M01-4 red (same test).
 - r3: the production `.also(ProjectionLag)` removed from `build_projection_block` -> the `projection_lag` fault test
   is red, which proves the test is on the real path.
-- Unit fixtures (`xtask`, `architecture_check::tests`): a live variant whose test names `abstain`, a stale row, an
-  unledgered dormant variant, the green shapes, malformed ledgers, comment and identifier-boundary handling, emit
-  recognition across line breaks, readers/comments/prefix names skipped, every `#[cfg(test)]` item blanked, a scratch
-  tree that is green and then red for each of r1, r2 and the static half of r3, a positive control that the scanner
-  finds the three known emitters on the real tree, and a source-count test that `run()` lists the gate once.
+- Review round (PR #58), each on its own `red/m01-3-*` branch off the fix head:
+  - B1-also: `projection_lag.rs` builds an outcome with `.also(DegradeCode::ProjectionLag)` -> G-M01-4 red.
+  - W1: a qualified `abstain(humaux_telemetry::degrade::DegradeCode::EgressDenied, ..)` appended to `envelope.rs` ->
+    G-M01-4 red (the dormant row is stale); the old scan missed it.
+  - W2-loss / W2-lane: the `ProjectionInvisibleLoss` emit (`envelope.rs`, A2 branch of `projection_block_a2`) and the
+    `LaneSubstituted` emit (`dense_lane_substitution`) removed one at a time -> the matching real-path fault test is
+    red.
+  - W3: the `lane_substituted` `#[path]` / `mod` pair deleted from `fault_main.rs` -> G-M01-4 red.
+- Unit fixtures (`xtask`, `architecture_check::tests`): a live variant whose test names `abstain` and one that calls
+  `.also`, a stale row, an unledgered dormant variant, the green shapes, malformed ledgers, the exit predicate over
+  comments, strings and identifier boundaries, emit recognition across line breaks and for qualified, aliased,
+  glob-imported, turbofish and path-qualified calls, fail-closed exit calls (parameter, local, UFCS, expression) with the
+  `degrade.rs` exemption, exits quoted in strings, the literal masker, unwired fault files (absent, commented out,
+  `#[cfg]`-gated, wrong path), readers/comments/prefix names skipped, every `#[cfg(test)]` item blanked, scratch
+  trees that are green and then red for each of r1, r1b, r2, the static half of r3, W1 (qualified emit, parameter
+  code) and W3, a positive control that the scanner finds the three known emitters on the real tree with nothing
+  unclassified, and a source-count test that `run()` lists the gate once.
 
 ## Consequences
 - A card that adds an emit site for a dormant variant changes three things in the same PR: the emit, the fault test

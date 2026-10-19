@@ -19,6 +19,8 @@ use humaux_retrieval::envelope::build_projection_block;
 use humaux_telemetry::degrade::{DegradeCode, degrade_total_count};
 use humaux_testkit::{FaultObservation, assert_fault_observed};
 
+// ponytail: the 10 invisible points are an index-side reading, not 10 real Qdrant points deleted past
+// `retention::tombstone` (§53.4); that half needs the live index, upgrade path M13 G80-5.
 #[test]
 fn projection_invisible_loss_increments_counter_and_reports_both_forms() {
     // Nothing pending (so no lag verdict), A1 closed: 100 done == 100 expected.

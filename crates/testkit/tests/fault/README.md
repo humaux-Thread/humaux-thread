@@ -40,8 +40,8 @@ rerank_provider_timeout.rs     rerank provider 注入读超时
 变体分成两类，两个方向都会红：
 
 ```text
-有生产 emit 点     非测试代码里有 abstain(DegradeCode::X, ..) 或 .also(DegradeCode::X)
-                   → 本目录里的测试必须驱动发出它的生产函数，文件里不得出现 `abstain`
+有生产 emit 点     非测试代码里有 abstain(<路径>::X, ..) 或 .also(<路径>::X)（限定路径、别名、glob、turbofish 都算）
+                   → 本目录里的测试必须驱动发出它的生产函数，文件里不得出现 `abstain` 或 `.also`
                    （当前三个：projection_lag / projection_invisible_loss / lane_substituted，
                     经 retrieval::envelope 的 build_projection_block / dense_lane_substitution）
 无生产 emit 点     → 必须是 dormant.toml 的一行（variant + owner 卡 + reason），测试保留合成注入
@@ -49,4 +49,8 @@ rerank_provider_timeout.rs     rerank provider 注入读超时
 ```
 
 新增变体：先看它有没有生产 emit 点；没有就在 `dormant.toml` 加一行并写明哪张卡会加 emit 点。
+
+两条兜底（同一道闸）：生产代码里第一个参数不是变体路径的 `abstain(..)` / `.also(..)`（形参、局部变量、表达式）
+无法归属，直接红并指出 file:line；本目录里每个 `*.rs` 必须在 `tests/fault_main.rs` 有相邻的
+`#[path = "fault/<stem>.rs"] mod <stem>;`，否则 cargo 根本不编译它。
 
