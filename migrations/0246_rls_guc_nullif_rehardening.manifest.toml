@@ -1,0 +1,31 @@
+# §46.1 migration manifest. Card fix-rls-nullif / M08 D7 (§62, §48.2): every live policy that casts a humaux.* GUC
+# straight to uuid gets 0031's NULLIF(.., '') wrap back via ALTER POLICY (cmd, roles and permissiveness kept, every
+# other byte of the deparse unchanged). Catalog-only, policies only. §46 forward-fix, first free number after 0245.
+
+migration_id = "0246_rls_guc_nullif_rehardening"
+class = "REVERSIBLE"
+
+# Refuses a database with nothing to harden (the pattern is the body's `plain`, i.e. the deparsed plain cast).
+precheck = """
+select exists (select 1 from pg_policies
+                where qual ~ '\\(current_setting\\(''humaux\\.[^'']*''::text(, (true|false))?\\)\\)::uuid'
+                   or with_check ~ '\\(current_setting\\(''humaux\\.[^'']*''::text(, (true|false))?\\)\\)::uuid')
+ as precheck_ok
+"""
+
+# Fails on: any policy of any relation still casting a humaux.* GUC to uuid without NULLIF, or the §62 tenant
+# policies of private.memory_records / private.evidence_objects (the D7 tables) not carrying the NULLIF clause.
+postcheck = """
+select not exists (select 1 from pg_policies
+                    where qual ~ '\\(current_setting\\(''humaux\\.[^'']*''::text(, (true|false))?\\)\\)::uuid'
+                       or with_check ~ '\\(current_setting\\(''humaux\\.[^'']*''::text(, (true|false))?\\)\\)::uuid')
+ and (select count(*) = 2 from pg_policies
+       where schemaname = 'private'
+         and (tablename, policyname) in (('memory_records', 'memory_records_tenant_and_visibility'),
+                                         ('evidence_objects', 'evidence_objects_tenant_and_visibility'))
+         and strpos(qual, '(tenant_id = (NULLIF(current_setting(''humaux.tenant_id''::text, true), ''''::text))::uuid)') > 0)
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback (not advised: it restores the D7 22P02): for exactly the policies named by the '0246 hardened schema.table.policy' NOTICE lines of the run, ALTER POLICY with the deparsed qual / with_check where regexp_replace swaps `(NULLIF(current_setting(<args>), ''::text))::uuid` back to `(current_setting(<args>))::uuid`; policies that already had NULLIF before 0246 are not in that list and must keep it."
+backup_restore_requirement = "none: catalog-only (policy expressions), no row data touched"

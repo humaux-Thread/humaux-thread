@@ -422,10 +422,6 @@ enum Probe {
     Error(String),
 }
 
-/// SQLSTATE `invalid_text_representation`: `current_setting('humaux.tenant_id', true)::uuid` over the `''` a
-/// placeholder GUC keeps once a `SET LOCAL` transaction on this backend has ended (see the first test's comment).
-const INVALID_TEXT_REPRESENTATION: &str = "22P02";
-
 /// Runs `sql` (one `$1` uuid) in its own transaction on `gw`, with `context` = the production request shape
 /// (`SET LOCAL` tenant and user) or `None` = the mutant: the same statement with the GUC setup removed. Returns the
 /// outcome and the serving backend pid. One transaction per statement: an RLS error aborts its transaction.
@@ -508,18 +504,15 @@ fn guc_setup_removed_on_a_reused_gateway_connection_returns_no_rows() {
 
             // The mutant: the next request on the very same backend skips the GUC setup. SET LOCAL ended with the
             // previous transaction, so RLS has no tenant: it must admit nothing (§6.1 fail closed, never "the last
-            // tenant"). A placeholder GUC that a SET LOCAL has targeted reads back as '', so the policy's plain
-            // `::uuid` cast may refuse the statement (22P02) instead of filtering to zero rows: both return no row.
+            // tenant"). A placeholder GUC that a SET LOCAL has targeted reads back as '' here; since 0246 every
+            // policy wraps that read in NULLIF, so the statement filters to zero rows instead of raising 22P02 (D7).
             let (mutant, mutant_pid) = probe_all(&mut gw, None, &probes);
             assert_eq!(mutant_pid, pid, "the mutant ran on the reused connection");
-            eprintln!("M08-3 G-M08-4 observed mutant outcomes on a reused connection: {mutant:?}");
-            for (outcome, (sql, _)) in mutant.iter().zip(&probes) {
-                assert!(
-                    matches!(outcome, Probe::Rows(0))
-                        || *outcome == Probe::Error(INVALID_TEXT_REPRESENTATION.to_owned()),
-                    "no GUC setup must return no row ({sql}): {outcome:?}"
-                );
-            }
+            assert_eq!(
+                mutant,
+                vec![Probe::Rows(0); 3],
+                "no GUC setup on a reused connection reads zero rows, without an error"
+            );
             let guc: String = {
                 let mut txn = gw.transaction().expect("begin GUC probe");
                 let value = txn
@@ -653,7 +646,16 @@ impl BackendTap {
                             |n| String::from_utf8_lossy(&frame[11..11 + n]).into_owned(),
                         );
                     }
-                    b'E' => answer = "ERROR".to_owned(),
+                    // ErrorResponse: (field type byte, NUL-terminated value)* NUL; type 'C' is the SQLSTATE.
+                    b'E' => {
+                        answer = frame[5..]
+                            .split(|byte| *byte == 0)
+                            .find_map(|field| field.strip_prefix(b"C"))
+                            .map_or_else(
+                                || "ERROR".to_owned(),
+                                |code| format!("ERROR {}", String::from_utf8_lossy(code)),
+                            );
+                    }
                     b'Z' => {
                         let _ = slot.take().expect("open question").send(answer.clone());
                         answer = String::from("NO ROW");
@@ -666,10 +668,18 @@ impl BackendTap {
 
     /// The tenant and user GUCs as the pooled backend itself sees them, joined with `|`.
     fn context_gucs(&self) -> String {
+        self.ask(
+            "SELECT coalesce(current_setting('humaux.tenant_id', true), '') || '|' || \
+             coalesce(current_setting('humaux.user_id', true), '')",
+        )
+    }
+
+    /// One simple query on the pooled backend, no GUC setup of its own: the first column of the last `DataRow`,
+    /// `NO ROW`, `NULL`, or `ERROR <SQLSTATE>`.
+    fn ask(&self, sql: &str) -> String {
         let (reply, answer) = mpsc::channel();
         *self.asking.lock().unwrap() = Some(reply);
-        let text = "SELECT coalesce(current_setting('humaux.tenant_id', true), '') || '|' || \
-                    coalesce(current_setting('humaux.user_id', true), '')\0";
+        let text = format!("{sql}\0");
         let mut query = vec![b'Q'];
         query.extend_from_slice(&u32::try_from(4 + text.len()).unwrap().to_be_bytes());
         query.extend_from_slice(text.as_bytes());
@@ -707,7 +717,8 @@ fn one_connection_pool_never_carries_one_tenants_context_into_the_next_read() {
                     ],
                 )
                 .expect("owner seeds the family checkpoint");
-            let memory = handle.seed_workspace_visible_context_record().memory_id;
+            let record = handle.seed_workspace_visible_context_record();
+            let memory = record.memory_id;
             let application_name = format!("m08_guc_{}", handle.tenant_id.simple());
             // The pool dials the tap, which relays to the validated gateway login (credential never logged).
             let gateway_dsn = handle.gateway_dsn_for_process().to_owned();
@@ -817,6 +828,52 @@ fn one_connection_pool_never_carries_one_tenants_context_into_the_next_read() {
                 "|",
                 "the pooled backend carries no request context between requests"
             );
+
+            // M08 D7 (0246): the next statement on that backend, after the product's committed tenant transaction,
+            // runs with the GUC setup removed. The placeholder GUCs read '' there, so it must read zero rows; the
+            // plain `::uuid` cast in a policy raised 22P02 instead.
+            let pool_pid: i32 = handle
+                .admin
+                .query_one(
+                    "SELECT pid FROM pg_stat_activity WHERE application_name = $1",
+                    &[&application_name],
+                )
+                .expect("the pool's backend pid")
+                .get(0);
+            assert_eq!(
+                tap.ask("SELECT pg_backend_pid()"),
+                pool_pid.to_string(),
+                "the probe runs on the backend the product's transactions ran on"
+            );
+            let probes = [
+                ("private.memory_records", "memory_id", record.memory_id),
+                (
+                    "private.evidence_objects",
+                    "evidence_id",
+                    record.evidence_id,
+                ),
+            ];
+            for (table, column, id) in probes {
+                assert_eq!(
+                    tap.ask(&format!(
+                        "SELECT count(*) FROM {table} WHERE {column} = '{id}'"
+                    )),
+                    "0",
+                    "no GUC setup on a reused backend reads zero rows of {table}, without an error"
+                );
+            }
+            // Positive control on the same backend: under the request context the very rows are there.
+            let (tenant, user) = (handle.tenant_id, handle.user_id);
+            for (table, column, id) in probes {
+                assert_eq!(
+                    tap.ask(&format!(
+                        "BEGIN; SET LOCAL humaux.tenant_id = '{tenant}'; SET LOCAL humaux.user_id = '{user}'; \
+                         SELECT count(*) FROM {table} WHERE {column} = '{id}'; COMMIT"
+                    )),
+                    "1",
+                    "the owner context reads its row of {table} on the same backend"
+                );
+            }
         },
     );
 }
