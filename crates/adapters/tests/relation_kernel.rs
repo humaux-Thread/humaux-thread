@@ -1,11 +1,11 @@
 //! `adapters::tests::relation_kernel` — M29 T05 gates G-M29-1 (whitelist part), G-M29-2, G-M29-3, G-M29-4 for the
 //!   §6.1.4 relation kernel (migration 0249, ADR-0078 D-C), plus the adapter round trip.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
-//!   services=[PostgreSQL(owner) w=[coord.tasks, control.tenants, control.workspaces, private.continuity_projects,
-//!   private.project_subject_relations, private.project_task_relations, private.subject_relations, private.subjects]
-//!   x=[private.relation_triple_allowed, private.relation_valid_shape], PostgreSQL(role_gateway)];
+//!   services=[PostgreSQL(owner) r=[private.project_subject_relations, private.project_task_relations,
+//!   private.relation_valid_shape, private.subject_relations] w=[control.tenants, control.workspaces, coord.tasks,
+//!   private.continuity_projects, private.subjects] x=[private.relation_triple_allowed], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::relation_repo, domain::error, domain::identity, domain::relation,
-//!   domain::subject, humaux-testkit]
+//!   domain::subject, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [every gate compares the Rust closed set / rule with the live migration objects, never a copy; each
 //!   gate has one injected fault that turns it red (ADR-0078 gate table, §80.1)]
@@ -195,7 +195,9 @@ async fn gateway_txn(
     conn: &mut PgConnection,
     tenant: Uuid,
 ) -> sqlx::Transaction<'_, sqlx::Postgres> {
+    // dep: PostgreSQL(any) — pool/txn query execution
     let mut txn = conn.begin().await.unwrap();
+    // dep: PostgreSQL(role_gateway) — test switches PG role to exercise RLS
     sqlx::query("SET LOCAL ROLE role_gateway")
         .execute(&mut *txn)
         .await
@@ -579,6 +581,7 @@ fn g_m29_4_no_role_updates_or_deletes_revisions() {
                     .chain([("role_migration_owner", "23514")])
                 {
                     let mut sp = txn.transaction().unwrap();
+                    // dep: PostgreSQL(any) — test switches PG role to exercise RLS
                     sp.batch_execute(&format!(
                         "SET LOCAL ROLE {role}; SELECT set_config('humaux.tenant_id', '{tenant}', true)"
                     ))
@@ -750,6 +753,7 @@ fn relation_kernel_round_trip_through_the_adapter() {
                 ),
             ];
             for (name, edge, relation, expected, code) in refused {
+                // dep: PostgreSQL(any) — pool/txn query execution
                 let mut sp = txn.begin().await.unwrap();
                 let result = append_revision(
                     &mut sp,

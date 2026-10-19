@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[private.project_subject_relations, private.project_task_relations, private.subject_relations]
 //!   w=[private.project_subject_relations, private.project_task_relations, private.subject_relations]]; env=[];
-//!   modules=[domain::error, domain::identity, domain::relation]
+//!   modules=[domain::error, domain::relation]
 //! Called-by: [tests]
 //! Invariants: [one implementation for all pairs (the pair selects the table, nothing else differs); a write is
 //!   exactly one INSERT of revision = expected_revision + 1 in the caller's transaction; the tenant is the session's
@@ -47,6 +47,15 @@ pub struct RelationRevision {
     pub factual_evidence_ids: Vec<Uuid>,
     /// Authorisation evidence, kept apart from the factual evidence.
     pub authorization_evidence_id: Uuid,
+}
+
+/// The write target per pair, spelled as a full `INSERT INTO` phrase so the dep map witnesses the write.
+fn insert_into(pair: RelationPair) -> &'static str {
+    match pair {
+        RelationPair::ProjectTask => "INSERT INTO private.project_task_relations",
+        RelationPair::ProjectSubject => "INSERT INTO private.project_subject_relations",
+        RelationPair::SubjectSubject => "INSERT INTO private.subject_relations",
+    }
 }
 
 fn table(pair: RelationPair) -> &'static str {
@@ -97,7 +106,7 @@ pub async fn append_revision(
     let (starts, ends): (Vec<i64>, Vec<Option<i64>>) = valid.segments().iter().copied().unzip();
     // Exact µs -> timestamptz: whole seconds through to_timestamp, the remainder as an interval (no float rounding).
     let sql = format!(
-        "INSERT INTO {} (tenant_id, relation_id, revision, src_id, dst_id, relation_kind, valid, decided_by, \
+        "{} (tenant_id, relation_id, revision, src_id, dst_id, relation_kind, valid, decided_by, \
          proposed_by, factual_evidence_ids, authorization_evidence_id) \
          VALUES (NULLIF(current_setting('humaux.tenant_id', true), '')::uuid, $1, $2, $3, $4, $5, \
          (SELECT coalesce(range_agg(tstzrange( \
@@ -105,7 +114,7 @@ pub async fn append_revision(
             to_timestamp(e / 1000000) + (e % 1000000) * interval '1 microsecond', '[)')), '{{}}') \
             FROM unnest($6::bigint[], $7::bigint[]) AS v(s, e)), \
          $8, $9, $10, $11)",
-        table(edge.kind.pair())
+        insert_into(edge.kind.pair())
     );
     sqlx::query(&sql)
         .bind(relation_id.0)
