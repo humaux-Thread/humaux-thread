@@ -871,7 +871,7 @@ impl GatewayGuard {
             let request = AtomicRememberRequest {
                 request_id: context.request_id(),
                 idempotency_key,
-                request_fingerprint: hex::encode(Sha256::digest(raw_arguments.as_bytes())),
+                request_fingerprint: hex::encode(Sha256::digest(project.map_or(raw_arguments.to_owned(), |p| raw_arguments.replace(&p.0.to_string(), "")).as_bytes())),
                 workspace_id: admitted.request.workspace_id(),
                 reservation_ttl: self.settings.reservation_ttl,
                 replay_ttl: self.settings.replay_ttl,
