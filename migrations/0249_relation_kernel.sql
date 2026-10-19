@@ -35,7 +35,7 @@ ALTER TABLE coord.tasks
 CREATE FUNCTION private.relation_valid_shape(valid tstzmultirange) RETURNS boolean
 LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
 AS $$
-  SELECT coalesce(bool_and(lower_inc(r) AND NOT upper_inc(r)
+  SELECT coalesce(bool_and(lower_inc(r)
                            AND NOT lower_inf(r) AND isfinite(lower(r))
                            AND (upper_inf(r) OR isfinite(upper(r)))), true)
     FROM unnest(valid) AS r
