@@ -936,6 +936,7 @@ pub async fn confirm_candidate_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     request: ConfirmRequest,
+    attribution: &dyn memory_repo::MemoryAttribution,
 ) -> Result<ConfirmOutcome, ErrorCode> {
     validate_candidate_write(
         auth,
@@ -1136,6 +1137,7 @@ pub async fn confirm_candidate_atomically(
             note_kind: None,
             note_id: None,
         },
+        attribution,
     )
     .await
     .map_err(candidate_db_error)?;

@@ -1,7 +1,8 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.private_reasoning_domains] w=[private.events, private.evidence_task_runs, private.ingest_tickets]];
-//!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
+//!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres,
+//!   adapters::retrieve,
 //!   adapters::stream_repo, adapters::subject_repo, domain::affect, domain::error, domain::evidence, domain::ids,
 //!   domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
@@ -39,6 +40,7 @@ use humaux_projection::stream::StreamKey;
 use crate::affect_repo::{self, AffectInput, AffectParent};
 use crate::coord_repo::VerifiedTaskRun;
 use crate::evidence_repo::{self, NewEvidence, OccurredAt};
+use crate::memory_repo::MemoryAttribution;
 use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
 use crate::retrieve::{self, TokenClaims};
@@ -462,14 +464,15 @@ pub(crate) async fn insert_evidence_task_run_in_txn(
     .map(|_| ())
 }
 
-/// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some((note, lineage))` the same transaction also writes
+/// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some((note, lineage, attribution))` the same transaction also writes
 /// the identity contract, the one authorised Memory and (D-J) the note-head move (`note_repo::materialize_in_txn`) between
 /// the Evidence rows and the stream ticket; the 0235 triggers then see the contract when the `EVIDENCE_ACCEPTED` outbox row is inserted (no distill
-/// job; the row is born `DONE`, so the projection claim does not wait on it, 0176). `None` is `remember.put`, byte for byte.
+/// job; the row is born `DONE`, so the projection claim does not wait on it, 0176). `attribution` is the door's ADR-0078 port,
+/// passed with the note because only a note writes a Memory here. `None` is `remember.put`, byte for byte.
 pub async fn remember_in_txn_with(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mut cmd: RememberCommand,
-    note: Option<(&NoteIntake, NoteLineage)>,
+    note: Option<(&NoteIntake, NoteLineage, &dyn MemoryAttribution)>,
 ) -> Result<RememberPending, RememberError> {
     // This check is deliberately inside the reusable path, before its first write. The public
     // wrapper's fast check only avoids opening a transaction for an already-expired command.
@@ -488,7 +491,7 @@ pub async fn remember_in_txn_with(
 
     // ADR-0067 D-C: the authority decision is pure and precedes every write.
     let note_class = note
-        .map(|(note, _)| note_repo::authorize(note))
+        .map(|(note, _, _)| note_repo::authorize(note))
         .transpose()?;
 
     set_authorization_local(txn, cmd.tenant_id, cmd.authorization_user_id).await?;
@@ -541,9 +544,18 @@ pub async fn remember_in_txn_with(
 
     // ADR-0067 D-A/D-B: the contract row precedes the outbox row, so the 0235 enqueue trigger sees it.
     let memory_id = match (note, note_class) {
-        (Some((note, lineage)), Some(class)) => {
-            Some(note_repo::materialize_in_txn(txn, &cmd, evidence_id, note, lineage, class).await?)
-        }
+        (Some((note, lineage, attribution)), Some(class)) => Some(
+            note_repo::materialize_in_txn(
+                txn,
+                &cmd,
+                evidence_id,
+                note,
+                lineage,
+                class,
+                attribution,
+            )
+            .await?,
+        ),
         _ => None,
     };
 

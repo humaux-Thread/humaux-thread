@@ -2,7 +2,7 @@
 //!   `memory_governance_repo` ops (ADR-0057 D-J), for projection / completeness integration tests.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner)
 //!   w=[control.api_keys, control.confirm_tokens, control.memberships, control.quota_windows, control.tenants,
-//!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::confirm_token_repo,
+//!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::attribution_repo, adapters::confirm_token_repo,
 //!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::tests::support::token_keys, domain::audit, domain::authority,
 //!   domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   projection::stream]
@@ -338,5 +338,6 @@ pub fn correct(
             affects: Vec::new(),
             mood_half_life: None,
         },
+        &humaux_adapters::attribution_repo::AttributionLadder,
     ))
 }

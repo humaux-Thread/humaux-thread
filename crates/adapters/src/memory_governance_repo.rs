@@ -1524,6 +1524,7 @@ pub async fn correct_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     request: CorrectRequest,
+    attribution: &dyn memory_repo::MemoryAttribution,
 ) -> Result<CorrectDone, ErrorCode> {
     validate_correct(auth, &request)?;
     let idempotency_key = lifecycle_idempotency_key(&request.claim);
@@ -1766,6 +1767,7 @@ pub async fn correct_atomically(
             note_kind: None,
             note_id: None,
         },
+        attribution,
     )
     .await
     .map_err(db_error)?;

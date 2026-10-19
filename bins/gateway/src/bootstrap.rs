@@ -39,14 +39,14 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::postgres, adapters::quota_repo,
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, adapters::quota_repo,
 //!   adapters::retrieve, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
 //!   gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::metrics]
-//! Called-by: [gateway::main, tests]
+//! Called-by: [gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054
 //!
@@ -65,6 +65,7 @@ use std::{
 };
 
 use humaux_adapters::{
+    attribution_repo::AttributionLadder,
     postgres::{PoolSettings, RuntimeDbPool},
     quota_repo::RatePolicy,
     retrieve::{TokenKeys, install_token_keys},
@@ -117,6 +118,12 @@ const MAX_TASK_LEASE_TTL_SECONDS: u64 = 4_294_967_295;
 /// ADR-0065 D-B: the `application_name` of every gateway session — the process identity in `pg_stat_activity`
 /// (the name `/status` reports), not a tunable.
 const APPLICATION_NAME: &str = "humaux-gateway";
+
+/// ADR-0078 D-A / D-D: the gateway's one M29 attribution implementation. Every Memory door caller in this process
+/// (`memory.confirm`, `memory.correct`, `memory.note_put`) passes it to `memory_repo::insert_memory_in_txn`.
+// ponytail: a static rather than a GatewayGuard / GatewayMcpApplication constructor field, because the ladder is
+// stateless; make it a field once an implementation carries state (a pool, a config).
+pub static MEMORY_ATTRIBUTION: AttributionLadder = AttributionLadder;
 const PG_POOL_MAX_KEY: &str = "HUMAUX_GATEWAY_PG_POOL_MAX_CONNECTIONS";
 const PG_POOL_MIN_KEY: &str = "HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS";
 const PG_ACQUIRE_TIMEOUT_KEY: &str = "HUMAUX_GATEWAY_PG_ACQUIRE_TIMEOUT_MS";

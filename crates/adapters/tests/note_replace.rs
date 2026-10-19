@@ -5,7 +5,7 @@
 //!   control.usage_reservations, ops.jobs, ops.memory_lifecycle_events, ops.outbox,
 //!   private.identity_note_materializations, private.note_heads, projection.stream_log] w=[private.evidence_objects,
 //!   private.memory_evidence, private.memory_records]]; env=[];
-//!   modules=[adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
+//!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::remember, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
 //!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit,
@@ -179,6 +179,7 @@ fn create(handle: &Handle, editor: &Editor, body: &str, kind: NoteKind) -> Atomi
             &editor.auth,
             atomic_request(handle, editor, &key, "c".repeat(64), body),
             note,
+            &humaux_adapters::attribution_repo::AttributionLadder,
         ))
         .expect("note create commits")
 }
@@ -312,6 +313,7 @@ fn replace(
             request,
             note,
             replace,
+            &humaux_adapters::attribution_repo::AttributionLadder,
         ))
 }
 
@@ -339,7 +341,12 @@ fn spawn_replace(
         start.wait();
         let (request, note, replace) = parts;
         rt.block_on(operation_receipt::note_replace_atomically(
-            &pool, &auth, request, note, replace,
+            &pool,
+            &auth,
+            request,
+            note,
+            replace,
+            &humaux_adapters::attribution_repo::AttributionLadder,
         ))
     })
 }
@@ -1005,6 +1012,7 @@ fn g21_no_replacement_without_a_confirmation_of_exactly_this_intent() {
                         affects: Vec::new(),
                         mood_half_life: None,
                     },
+                    &humaux_adapters::attribution_repo::AttributionLadder,
                 ));
         assert!(
             matches!(refused, Err(ErrorCode::Conflict)),

@@ -3,7 +3,7 @@
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sha2, sqlx,
 //!   tokio]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.identity_note_materializations,
 //!   projection.stream_log] w=[private.memory_records, private.memory_subjects, private.subjects]]; env=[];
-//!   modules=[adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt,
+//!   modules=[adapters::attribution_repo, adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt,
 //!   adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving,
@@ -151,6 +151,7 @@ fn put(handle: &Handle, body: &str, kind: NoteKind) -> AtomicRememberResult {
             &handle.auth,
             request,
             note,
+            &humaux_adapters::attribution_repo::AttributionLadder,
         ))
         .expect("note commits")
 }
@@ -756,6 +757,7 @@ fn g14_history_never_reaches_revoked_expired_or_secret_and_hides_an_unreadable_s
                     &handle.auth,
                     request,
                     note,
+                    &humaux_adapters::attribution_repo::AttributionLadder,
                 ))
                 .expect("secret note commits"),
         );

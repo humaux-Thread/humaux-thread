@@ -8,6 +8,7 @@
 //! Domain 永不 import HTTP / SQLx / Qdrant / Provider SDK / ENV（§3 / §78.3）。
 
 pub mod affect;
+pub mod attribution;
 pub mod audit;
 pub mod authority;
 pub mod boundary;

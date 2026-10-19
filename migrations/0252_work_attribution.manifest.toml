@@ -1,0 +1,97 @@
+# §46.1 migration manifest. Card M29 T06a / ADR-0078 D-D (§6.1.4 work attribution): three new private tables
+# (evidence_projects, memory_projects, memory_project_revocations) with tenant-leg NO ACTION FKs, source_kind /
+# rule_id_ver / relation CHECKs, FORCE RLS in the 0154 form (NULLIF tenant clause AND the parent row's EXISTS), owner
+# role_migration_owner, an owner BEFORE UPDATE OR DELETE trigger on the two immutable tables, NAMED §6.2.2 grants
+# (gateway + private_worker: SELECT on all three, INSERT on memory_projects; SELECT on evidence_task_runs and
+# project_task_relations for private_worker; nobody UPDATE/DELETE). One new function. Existing objects (issue #92
+# items 4/5, design v0.2 §15.2): a partial UNIQUE index per 0249 relation table, and relation_revision_guard replaced
+# with a NULL-tenant 42501 first statement. No DML. §46 forward-fix (EXPAND_CONTRACT, number 0252).
+
+migration_id = "0252_work_attribution"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0249 / 0251 objects and the parent UNIQUEs the FKs need, or one that already has this
+# migration's objects.
+precheck = """
+select to_regclass('private.evidence_task_runs') is not null
+ and to_regprocedure('private.relation_revision_guard()') is not null
+ and exists (select 1 from pg_constraint where conname = 'continuity_projects_tenant_project_key'
+              and conrelid = to_regclass('private.continuity_projects') and contype = 'u')
+ and to_regclass('private.evidence_projects') is null
+ and to_regclass('private.memory_projects') is null
+ and to_regclass('private.memory_project_revocations') is null
+ and to_regprocedure('private.reject_memory_project_change()') is null
+ and to_regclass('private.project_task_relations_one_relation_per_edge') is null
+ and to_regclass('private.project_subject_relations_one_relation_per_edge') is null
+ and to_regclass('private.subject_relations_one_relation_per_edge') is null
+ as precheck_ok
+"""
+
+# Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause or the parent
+# EXISTS (USING and WITH CHECK), a PK of the wrong shape, an FK without the tenant leg or with a cascade, a missing named
+# CHECK or trigger, a missing or non-partial edge index, a guard that changed owner or became SECURITY DEFINER, or any
+# grant beyond the NAMED cells (column-level grants included). The CHECK value sets are reconciled with the Rust closed
+# sets by adapters::tests::memory_attribution (§78.2), not here.
+postcheck = """
+with c(name, parent, pk) as (values
+  ('evidence_projects', 'evidence_objects', array['tenant_id', 'evidence_id', 'project_id']),
+  ('memory_projects', 'memory_records', array['tenant_id', 'memory_id', 'project_id']),
+  ('memory_project_revocations', 'memory_records', array['tenant_id', 'memory_id', 'project_id'])),
+t as (select c.*, to_regclass('private.' || c.name) as oid from c),
+e(name) as (values ('project_task_relations'), ('project_subject_relations'), ('subject_relations'))
+select (select count(*) = 3 from t join pg_class k on k.oid = t.oid
+         where k.relrowsecurity and k.relforcerowsecurity and pg_get_userbyid(k.relowner) = 'role_migration_owner')
+ and (select count(*) = 3 from t join pg_policies p on p.schemaname = 'private' and p.tablename = t.name
+       where p.qual like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.with_check like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.qual like '%EXISTS%' || t.parent || '%'
+         and p.with_check like '%EXISTS%' || t.parent || '%')
+ and (select count(*) = 3 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'p'
+       where (select array_agg(a.attname::text order by u.i)
+                from unnest(k.conkey) with ordinality u(n, i)
+                join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.n) = t.pk)
+ and (select count(*) = 6 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f'
+       where k.conkey[1] = (select attnum from pg_attribute where attrelid = t.oid and attname = 'tenant_id')
+         and k.confdeltype = 'a' and k.confupdtype = 'a')
+ and (select count(*) = 6 from pg_constraint k
+       where k.contype = 'c' and k.conname in ('evidence_projects_source_kind_check', 'memory_projects_relation_check',
+         'memory_projects_source_kind_check', 'memory_projects_rule_id_ver_check',
+         'memory_project_revocations_revoked_by_format', 'memory_project_revocations_reason_present'))
+ and (select count(*) = 2 from pg_trigger g
+       where not g.tgisinternal and g.tgfoid = to_regprocedure('private.reject_memory_project_change()')
+         and g.tgtype & 24 = 24
+         and g.tgrelid in (to_regclass('private.memory_projects'), to_regclass('private.memory_project_revocations')))
+ and (select count(*) = 3 from e join pg_index i on i.indexrelid = to_regclass('private.' || e.name || '_one_relation_per_edge')
+       where i.indisunique and i.indpred is not null and i.indrelid = to_regclass('private.' || e.name)
+         and (select array_agg(a.attname::text order by u.i)
+                from unnest(i.indkey::int2[]) with ordinality u(n, i)
+                join pg_attribute a on a.attrelid = i.indrelid and a.attnum = u.n)
+             = array['tenant_id', 'src_id', 'dst_id', 'relation_kind'])
+ and (select count(*) = 2 from pg_proc p
+       where p.oid in (to_regprocedure('private.relation_revision_guard()'),
+                       to_regprocedure('private.reject_memory_project_change()'))
+         and not p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and (select bool_and(has_table_privilege(r.role, 'private.evidence_projects', 'SELECT')
+                      and has_table_privilege(r.role, 'private.memory_projects', 'SELECT')
+                      and has_table_privilege(r.role, 'private.memory_projects', 'INSERT')
+                      and has_table_privilege(r.role, 'private.memory_project_revocations', 'SELECT')
+                      and has_table_privilege(r.role, 'private.evidence_task_runs', 'SELECT')
+                      and has_table_privilege(r.role, 'private.project_task_relations', 'SELECT')
+                      and has_table_privilege(r.role, 'coord.task_runs', 'SELECT'))
+        from (values ('role_gateway'), ('role_private_worker')) r(role))
+ and not exists (select 1 from t cross join (values ('role_gateway'), ('role_private_worker'),
+                   ('role_consolidation_worker'), ('role_public_worker'), ('role_retrieval_worker'),
+                   ('role_batch_issuer'), ('role_maintenance'), ('role_admin')) r(role)
+                  where has_any_column_privilege(r.role, t.oid, 'UPDATE')
+                     or has_table_privilege(r.role, t.oid, 'DELETE') or has_table_privilege(r.role, t.oid, 'TRUNCATE')
+                     or (r.role not in ('role_gateway', 'role_private_worker')
+                         and has_any_column_privilege(r.role, t.oid, 'SELECT'))
+                     or ((r.role not in ('role_gateway', 'role_private_worker') or t.name <> 'memory_projects')
+                         and has_any_column_privilege(r.role, t.oid, 'INSERT')))
+ and not has_any_column_privilege('role_private_worker', 'private.evidence_task_runs', 'INSERT')
+ and not has_any_column_privilege('role_private_worker', 'private.project_task_relations', 'INSERT')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while the three new tables are empty: DROP TABLE private.memory_project_revocations, private.memory_projects, private.evidence_projects; DROP FUNCTION private.reject_memory_project_change(); DROP INDEX private.project_task_relations_one_relation_per_edge, private.project_subject_relations_one_relation_per_edge, private.subject_relations_one_relation_per_edge; REVOKE SELECT ON private.evidence_task_runs, private.project_task_relations FROM role_private_worker; re-run 0249's CREATE FUNCTION private.relation_revision_guard() body as CREATE OR REPLACE; and remove humaux_domain::attribution, humaux_adapters::attribution_repo, the door's attribution argument and the §6.2.2 columns in the same release. Forward-fix only once any memory_projects row exists: attribution history is immutable and is never discarded silently."
+backup_restore_requirement = "none: three new empty tables, one new function, three new partial UNIQUE indexes over existing relation tables (built in the migration transaction; a duplicate first revision aborts it), two new SELECT grants and one CREATE OR REPLACE of a trigger function that only adds a NULL-tenant refusal; no existing row is touched."

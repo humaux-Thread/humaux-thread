@@ -145,8 +145,9 @@ revoked.
 - When no rung holds, no row is written and the read path reports the memory as `unresolved` (REQ §3.4).
 - **Unknown declared project (gap ruling).** A declared `project_id` that is unknown in the tenant, or not visible to
   the caller, is `INVALID_INPUT` with zero writes, as for subject ids in §6.1.3.
-- **Rollups (gap ruling).** Rollups reach the door through `consolidate_repo` (`memory_repo.rs:4`) but have no rung
-  in the first slice, so a rollup is `unresolved` (N09 R3). A rollup rung needs a later ADR amendment.
+- **Rollups (gap ruling).** Rollups live in `private.memory_rollups`, outside the door, and stay unattributed in the
+  first slice (N09 R3); they are not Memories and have no `memory_projects` row. (`consolidate_repo` imports only
+  `authority_class_to_db_str` from `memory_repo`; it never calls the door.) A rollup rung needs a later ADR amendment.
 - Every formal row carries `rule_id_ver` and `decision_evidence_id`, so a falsified rule can be revoked in bulk.
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
@@ -260,7 +261,8 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
-and the relation-whitelist half of G-M29-1 (T05). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
+(T06a). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -289,8 +291,8 @@ and the failing lines are in the card's PR description.
     accepted.
   - r3: a red-only later migration widens the primary key with `recorded_at` -> G-M29-3 red: both concurrent writers
     of one `expected_revision` win.
-  - r4: a red-only later migration grants UPDATE on the relation tables to `role_gateway` -> G-M29-4 red: the UPDATE
-    reaches the trigger (23514) instead of failing on privilege (42501).
+  - r4: a red-only later migration grants UPDATE on `private.project_task_relations` to `role_gateway` -> G-M29-4 red:
+    the UPDATE reaches the trigger (23514) instead of failing on privilege (42501).
   - r3 and r4 are later migrations because 0249's own postcheck pins the key shape and the grants, so the same fault
     inside 0249 stops the migration before any test runs.
 

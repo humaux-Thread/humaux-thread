@@ -77,6 +77,7 @@ pub(crate) async fn materialize_in_txn(
     note: &NoteIntake,
     lineage: NoteLineage,
     class: AuthorityClass,
+    attribution: &dyn memory_repo::MemoryAttribution,
 ) -> Result<Uuid, RememberError> {
     let loaded = LoadedEvidence {
         evidence_id,
@@ -111,6 +112,7 @@ pub(crate) async fn materialize_in_txn(
                 NoteLineage::Replace { note_id, .. } => Some(note_id),
             },
         },
+        attribution,
     )
     .await?;
     sqlx::query(

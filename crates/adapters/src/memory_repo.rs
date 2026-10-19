@@ -1,18 +1,20 @@
 //! `adapters::memory_repo` — the sole `INSERT INTO private.memory_records` door (M07 D9, gate G-M07-1): one authorized Memory plus its PRIMARY
 //!   `memory_evidence` link, written in the caller's transaction.
-//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
-//! Called-by: [adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
+//! Called-by: [adapters::attribution_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::remember, tests]
 //! Invariants: [every non-test Memory INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
 //!   Memory row and its PRIMARY `memory_evidence` link are written together, because 0004's deferred `memory_records_requires_evidence` trigger
 //!   needs both by COMMIT; visibility is the Evidence's own three columns verbatim and a Memory's authority class is the caller's
 //!   `AuthorizedAuthority`, never the raw candidate class; the deterministic subject resolve hook runs here exactly once per Memory;
+//!   the attribution port runs here exactly once per Memory, after the subject hook, and is a required argument (ADR-0078 D-D,
+//!   xtask G-M29-5(a)); this module never imports its M29 implementation (no L3 -> L4 edge);
 //!   the statement runs inside the caller's transaction and never commits; this module imports no Distill-hop code, the hop imports it]
-//! Spec: Baseline §8.6; §6.1.3; §10.1; ADR-0016; ADR-0028; ADR-0067
+//! Spec: Baseline §8.6; §6.1.3; §6.1.4; §10.1; ADR-0016; ADR-0028; ADR-0067; ADR-0078
 //!
 //! [`insert_memory_in_txn`] writes one Memory (ADR-0016 D4 visibility copy, ADR-0067 D-J note lineage, ADR-0028 subject hook) from the two
 //! types it takes: [`NewMemory`] (what to write) and [`LoadedEvidence`] (the Evidence row it is grounded on and inherits visibility from).
 //! Callers are the Distill confirm path, the private worker's write leg (through `distill_repo`'s re-exports), `memory.correct` and
-//! `memory.note_put`.
+//! `memory.note_put`; each passes the [`MemoryAttribution`] its process's composition root built.
 
 use humaux_domain::authority::AuthorityClass;
 use humaux_domain::evidence::EvidenceOriginClass;
@@ -60,6 +62,25 @@ pub struct NewMemory<'a> {
     /// ADR-0067 D-J, with `note_kind` only: `None` = a fresh note, whose `note_id` is its own new `memory_id`;
     /// `Some(note_id)` = a new version of that note. A non-note Memory stores NULL whatever this says (0236 CHECK).
     pub note_id: Option<Uuid>,
+}
+
+/// ADR-0078 D-D (Q1 ruling): the attribution port M07 defines next to its Memory INSERT door. M29 implements it
+/// (`adapters::attribution_repo`) and composition roots supply the implementation, so M07 never depends on M29.
+/// [`insert_memory_in_txn`] takes it as a required argument and invokes it exactly once (xtask G-M29-5(a)).
+#[async_trait::async_trait]
+pub trait MemoryAttribution: Send + Sync {
+    /// §6.1.4: writes the formal `private.memory_projects` rows of `memory_id`, whose PRIMARY Evidence is
+    /// `evidence_id`, in the caller's transaction; when no rung holds it writes nothing (N09 R3).
+    ///
+    /// # Errors
+    /// Any `sqlx::Error`; the door returns it unchanged to its caller, which owns the transaction and its mapping.
+    async fn link_memory_projects(
+        &self,
+        txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        memory_id: Uuid,
+        evidence_id: Uuid,
+    ) -> Result<(), sqlx::Error>;
 }
 
 /// `private.memory_records.memory_type` CHECK literal of every [`MemoryType`] (write-side inverse of
@@ -111,13 +132,16 @@ pub(crate) const fn authority_class_to_db_str(class: AuthorityClass) -> &'static
 /// caller's; the hook adds rule 3 (Evidence declaration / correction predecessor) and
 /// byte-span mentions.
 ///
+/// §6.1.4 / ADR-0078 D-D: `attribution` (rungs A1 and A3) runs once, last, after the PRIMARY link and the subject hook.
+///
 /// # Errors
-/// Any `sqlx::Error` from the three statements; the caller owns the transaction and its mapping.
+/// Any `sqlx::Error` from these statements or from `attribution`; the caller owns the transaction and its mapping.
 pub async fn insert_memory_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: Uuid,
     evidence: &LoadedEvidence,
     memory: &NewMemory<'_>,
+    attribution: &dyn MemoryAttribution,
 ) -> Result<Uuid, sqlx::Error> {
     // ADR-0067 D-J: the id is drawn once (the column's own uuidv7()) so a fresh note's note_id can equal it in the same
     // statement; `$11` names the note a new version joins.
@@ -155,5 +179,8 @@ pub async fn insert_memory_in_txn(
     .execute(&mut **txn)
     .await?;
     crate::subject_repo::link_memory_in_txn(txn, tenant_id, memory_id, &[]).await?;
+    attribution
+        .link_memory_projects(txn, tenant_id, memory_id, evidence.evidence_id)
+        .await?;
     Ok(memory_id)
 }
