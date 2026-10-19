@@ -281,7 +281,7 @@ impl Validity {
         let mut segments = Vec::with_capacity(ranges.len());
         for range in ranges {
             let start = match range.0 {
-                Bound::Included(Timestamp::Micros(t)) if t >= PG_TIMESTAMPTZ_MIN_MICROS => t,
+                Bound::Included(Timestamp::Micros(t)) => t,
                 _ => return Err(ErrorCode::InvalidInput),
             };
             let end = match range.1 {
