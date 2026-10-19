@@ -1,0 +1,38 @@
+# §46.1 migration manifest. Card M29 T02 / ADR-0078 D-B: the closed SubjectKind set (private.subjects.kind CHECK, 0153)
+# gains BUSINESS, BRAND, PRODUCT and WEBSITE. The CHECK is replaced by its strict superset (NOT VALID, then VALIDATE);
+# no row, grant, policy or column changes. CHANNEL_ACCOUNT / PRODUCT_LINE are not added (E-C pending, Q2). §46
+# forward-fix (EXPAND_CONTRACT, first free number after 0246).
+
+migration_id = "0247_subject_kinds_business_brand_product_website"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without 0153's table or its kind CHECK, or one whose CHECK is not exactly the two-kind original
+# (two quoted literals = four single quotes in the deparse), i.e. one that already ran this migration.
+precheck = """
+select to_regclass('private.subjects') is not null
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('private.subjects') and co.contype = 'c'
+                and co.conname = 'subjects_kind_check'
+                and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 4
+                and pg_get_constraintdef(co.oid) like '%''PERSON''%'
+                and pg_get_constraintdef(co.oid) like '%''ORGANISATION''%')
+ as precheck_ok
+"""
+
+# Fails on: a missing, unvalidated or renamed kind CHECK, a CHECK that does not carry exactly the six domain wire
+# strings (six literals, each present), or a second CHECK on private.subjects that mentions kind.
+postcheck = """
+select exists (select 1 from pg_constraint co
+                where co.conrelid = to_regclass('private.subjects') and co.contype = 'c'
+                  and co.conname = 'subjects_kind_check' and co.convalidated
+                  and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 12
+                  and (select bool_and(pg_get_constraintdef(co.oid) like '%''' || v || '''%')
+                         from unnest(array['PERSON', 'ORGANISATION', 'BUSINESS', 'BRAND', 'PRODUCT', 'WEBSITE']) v))
+ and (select count(*) = 1 from pg_constraint co
+       where co.conrelid = to_regclass('private.subjects') and co.contype = 'c'
+         and pg_get_constraintdef(co.oid) like '%kind%')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while no private.subjects row has kind BUSINESS, BRAND, PRODUCT or WEBSITE: ALTER TABLE private.subjects DROP CONSTRAINT subjects_kind_check, ADD CONSTRAINT subjects_kind_check CHECK (kind IN ('PERSON', 'ORGANISATION')), restore the table COMMENT from 0153, and remove the four SubjectKind variants in the same release (the §78.2 contract test is red while only one side moves). The ADD fails with 23514 once a new-kind row exists: forward-fix only then, because re-kinding a subject changes what its memories are about and is never done silently."
+backup_restore_requirement = "none: one CHECK is replaced by its strict superset and the table comment is reworded; no row is rewritten (every existing PERSON / ORGANISATION row satisfies both)."

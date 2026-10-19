@@ -14,7 +14,7 @@
 //!
 //! | Rust                        | column                       | wire set              |
 //! |-----------------------------|------------------------------|-----------------------|
-//! | [`SubjectKind`]             | `private.subjects.kind`      | `PERSON`/`ORGANISATION`|
+//! | [`SubjectKind`]             | `private.subjects.kind`      | `PERSON`/`ORGANISATION`/`BUSINESS`/`BRAND`/`PRODUCT`/`WEBSITE` |
 //! | [`SubjectKeyKind`]          | `private.subject_keys.key_kind` | `CRM`              |
 //! | [`SubjectRole`]             | `private.subject_roles.role` | `CUSTOMER`            |
 //!
@@ -56,24 +56,49 @@ impl SubjectId {
 }
 
 /// The kind of subject a memory can be about (§6.1.3). Frozen closed set — no `Other`,
-/// no `#[non_exhaustive]`. Wire form = `private.subjects.kind`'s `text` CHECK.
+/// no `#[non_exhaustive]`. Wire form = `private.subjects.kind`'s `text` CHECK, widened
+/// expand-only by `migrations/0247_subject_kinds_business_brand_product_website.sql`.
+///
+/// ADR-0078 D-B adds the four work-attribution kinds below. `CHANNEL_ACCOUNT` and
+/// `PRODUCT_LINE` are deliberately absent: provisional kinds stay out of the set until
+/// experiment E-C accepts them, and a repository is never a subject (`control.repositories`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubjectKind {
     /// A natural person.
     Person,
     /// An organisation / company.
     Organisation,
+    /// A business: the commercial entity a brand is owned by (§6.1.3, ADR-0078 D-B).
+    Business,
+    /// A brand: owned by a business, it owns websites and products (§6.1.3, ADR-0078 D-B).
+    Brand,
+    /// A product; a product line is one product that other products are `PART_OF`
+    /// (§6.1.3, ADR-0078 D-B).
+    Product,
+    /// A website. The domain serving it is a locator, never the identity (§6.1.3, ADR-0078 D-B).
+    Website,
 }
 
 impl SubjectKind {
     /// All variants — derived list, the §78.2 contract-test and exhaustiveness surface.
-    pub const ALL: [SubjectKind; 2] = [SubjectKind::Person, SubjectKind::Organisation];
+    pub const ALL: [SubjectKind; 6] = [
+        SubjectKind::Person,
+        SubjectKind::Organisation,
+        SubjectKind::Business,
+        SubjectKind::Brand,
+        SubjectKind::Product,
+        SubjectKind::Website,
+    ];
 
     /// Wire string frozen on `private.subjects.kind`.
     pub fn as_str(self) -> &'static str {
         match self {
             SubjectKind::Person => "PERSON",
             SubjectKind::Organisation => "ORGANISATION",
+            SubjectKind::Business => "BUSINESS",
+            SubjectKind::Brand => "BRAND",
+            SubjectKind::Product => "PRODUCT",
+            SubjectKind::Website => "WEBSITE",
         }
     }
 
@@ -341,14 +366,22 @@ mod tests {
 
     #[test]
     fn kind_wire_round_trips_and_is_exhaustive() {
-        assert_eq!(SubjectKind::ALL.len(), 2);
+        assert_eq!(SubjectKind::ALL.len(), 6);
         for k in SubjectKind::ALL {
             assert_eq!(SubjectKind::parse(k.as_str()), Some(k));
         }
         assert_eq!(SubjectKind::Person.as_str(), "PERSON");
         assert_eq!(SubjectKind::Organisation.as_str(), "ORGANISATION");
+        assert_eq!(SubjectKind::Business.as_str(), "BUSINESS");
+        assert_eq!(SubjectKind::Brand.as_str(), "BRAND");
+        assert_eq!(SubjectKind::Product.as_str(), "PRODUCT");
+        assert_eq!(SubjectKind::Website.as_str(), "WEBSITE");
         assert_eq!(SubjectKind::parse("person"), None); // case-sensitive, fails closed
         assert_eq!(SubjectKind::parse("COMPANY"), None);
+        // ADR-0078 D-B: provisional kinds and the repository are not in the closed set.
+        for absent in ["CHANNEL_ACCOUNT", "PRODUCT_LINE", "REPOSITORY"] {
+            assert_eq!(SubjectKind::parse(absent), None, "{absent}");
+        }
     }
 
     #[test]
