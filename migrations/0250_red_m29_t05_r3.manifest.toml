@@ -1,0 +1,7 @@
+# §80.1 red record only (branch red/m29-t05-r3, never merged): G-M29-3 fault, PK widened past revision
+migration_id = "0250_red_m29_t05_r3"
+class = "FORWARD_ONLY"
+precheck = "select to_regclass('private.project_task_relations') is not null as precheck_ok"
+postcheck = "select true as postcheck_ok"
+rollback_or_forward_fix = "red record only; the branch is deleted after the run."
+backup_restore_requirement = "none: throwaway CI database."
