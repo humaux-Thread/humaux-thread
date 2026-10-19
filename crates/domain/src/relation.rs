@@ -1,6 +1,6 @@
 //! `domain::relation` — the §6.1.4 relation kernel's closed sets and validated values (ADR-0078 D-C, M29 T05).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error, domain::identity, domain::subject]
-//! Called-by: [adapters::relation_repo, tests]
+//! Called-by: [adapters::attribution_repo, adapters::relation_repo, tests]
 //! Invariants: [WHITELIST is the only Rust list of allowed (src_kind, relation_kind, dst_kind) triples and every
 //!   other relation set derives from it; a Validity always has the shape private.relation_valid_shape admits]
 //! Spec: Baseline §6.1.4; §78.2; ADR-0078 D-C

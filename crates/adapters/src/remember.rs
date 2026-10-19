@@ -544,17 +544,9 @@ pub async fn remember_in_txn_with(
 
     // ADR-0067 D-A/D-B: the contract row precedes the outbox row, so the 0235 enqueue trigger sees it.
     let memory_id = match (note, note_class) {
-        (Some((note, lineage, attribution)), Some(class)) => Some(
-            note_repo::materialize_in_txn(
-                txn,
-                &cmd,
-                evidence_id,
-                note,
-                lineage,
-                class,
-                attribution,
-            )
-            .await?,
+        (Some((note, lineage, port)), Some(class)) => Some(
+            note_repo::materialize_in_txn(txn, &cmd, evidence_id, note, lineage, class, port)
+                .await?,
         ),
         _ => None,
     };

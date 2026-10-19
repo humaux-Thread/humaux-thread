@@ -1,6 +1,6 @@
 //! `adapters::tests::memory_attribution` — M29 T06a (ADR-0078 D-D, §6.1.4): the ladder behind M07's attribution port
 //!   writes exactly the formal `memory_projects` rows that rungs A1 and A3 ground, and nothing when no rung holds.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
 //!   services=[PostgreSQL(owner) r=[private.memory_projects] w=[coord.task_runs,
 //!   private.continuity_projects, private.evidence_projects, private.evidence_task_runs,
 //!   private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
