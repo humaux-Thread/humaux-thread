@@ -34,7 +34,7 @@ const A1_DECLARED: &str = "INSERT INTO private.memory_projects \
      SELECT ep.tenant_id, $2, ep.project_id, 'ATTRIBUTED_TO', $4, $5, ep.evidence_id \
        FROM private.evidence_projects ep \
       WHERE ep.tenant_id = $1 AND ep.evidence_id = $3 \
-        AND ep.source_kind = $4";
+        ";
 
 /// A3 (ADR-0078 D-D): the attribution Evidence's verified task run (`evidence_task_runs`, T04c) names a task; every project
 /// whose current relation to that task (the highest revision per `relation_id`, §6.1.4 ①) is CONTAINS and valid at the
