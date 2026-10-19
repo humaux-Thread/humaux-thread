@@ -81,6 +81,8 @@ jobs:
       # REST port of the qdrant service above (tests default to 6333; stated here so
       # the service block and the tests cannot drift apart silently).
       HUMAUX_TEST_QDRANT_PORT: "6333"
+      # §57.1: the postgres service above is a per-run throwaway cluster, so cluster-wide role lifts (BYPASSRLS) are allowed.
+      HUMAUX_TEST_DISPOSABLE_CLUSTER: "1"
 
     steps:
       - name: name the postgres service like the dev container

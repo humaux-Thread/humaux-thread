@@ -546,8 +546,14 @@ jobs:
       # alter source guards outside the dedicated mutation database"). The lane runner
       # provisions each resource (per-run databases, the gitleaks fixture, humaux-admin)
       # and runs lane(a)/lane(b) serially after a warm-up; lane(c) is reported, not run.
+      # HUMAUX_TEST_DISPOSABLE_CLUSTER=1 declares that this job's postgres service is a throwaway cluster, which is
+      # what lets cross_tenant_canary's lane test lift role_gateway to BYPASSRLS (a cluster-wide attribute, §57.1).
+      # It is set on this step only, never on the job: a developer's `cargo test -- --ignored` or local
+      # `cargo xtask serial-lane` against a shared cluster must not reach that attribute.
       - name: cargo xtask serial-lane (the ignored tier)
         timeout-minutes: 45
+        env:
+          HUMAUX_TEST_DISPOSABLE_CLUSTER: "1"
         run: cargo xtask serial-lane
 
   # G-M24-3 SAST (§80 "SAST", M24 D3): CodeQL for Rust in build-mode none — it reads the source without compiling,
