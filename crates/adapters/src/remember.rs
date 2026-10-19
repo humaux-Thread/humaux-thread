@@ -1,15 +1,15 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[control.private_reasoning_domains] w=[private.events, private.ingest_tickets]];
-//!   env=[]; modules=[adapters::affect_repo, adapters::evidence_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
+//!   r=[control.private_reasoning_domains] w=[private.events, private.evidence_task_runs, private.ingest_tickets]];
+//!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::note_repo, adapters::postgres, adapters::retrieve,
 //!   adapters::stream_repo, adapters::subject_repo, domain::affect, domain::error, domain::evidence, domain::ids,
 //!   domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
 //!   UPDATEd (no INSERT grant); the stream ticket and its outbox row come only from stream_repo::issue_ticket_in_txn
 //!   (M09 D1), after the Evidence and note writes; an exhausted batch or non-future token expiry is a RememberError
-//!   and nothing commits]
-//! Spec: Baseline §34.2; §60.1; §60; §34.1
+//!   and nothing commits; private.evidence_task_runs is written only here, from a VerifiedTaskRun consumed by value]
+//! Spec: Baseline §34.2; §60.1; §60; §34.1; §30.2
 //!
 //! [`remember`] is `role_gateway`'s single write path for Evidence acceptance. It runs against
 //! [`RuntimeDbPool`] — never [`crate::batch::begin_batch`]'s [`crate::postgres::BatchIssuerDbPool`]
@@ -37,6 +37,7 @@ use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 
 use crate::affect_repo::{self, AffectInput, AffectParent};
+use crate::coord_repo::VerifiedTaskRun;
 use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
@@ -434,6 +435,31 @@ pub async fn remember_in_txn(
     cmd: RememberCommand,
 ) -> Result<RememberPending, RememberError> {
     remember_in_txn_with(txn, cmd, None).await
+}
+
+/// Design v0.2 §15 T04c: the one writer of `private.evidence_task_runs` (xtask G-T04c-3; 0251 grants
+/// INSERT to `role_gateway` only). `verified` is taken by value: it is the proof that
+/// [`crate::coord_repo::verify_task_run`] passed in this same transaction, which still holds the
+/// task row FOR SHARE, so the row records a lease that was live at this write (§30.2) and one
+/// verification backs one row. `evidence_id` is the Evidence this transaction just wrote; the
+/// tenant-leg FKs and the FORCE RLS policy refuse a run or an Evidence outside `tenant_id`.
+pub async fn insert_evidence_task_run_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: TenantId,
+    verified: VerifiedTaskRun,
+    evidence_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO private.evidence_task_runs (tenant_id, evidence_id, task_run_id, fencing_token) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(tenant_id.0)
+    .bind(evidence_id)
+    .bind(verified.task_run_id().0)
+    .bind(verified.fencing_token().0)
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
 }
 
 /// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some((note, lineage))` the same transaction also writes

@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[coord.task_runs, coord.tasks]]; env=[];
 //!   modules=[adapters::context_repo, adapters::postgres, domain::coordination, domain::error, domain::identity,
 //!   domain::ids]
-//! Called-by: [tests]
+//! Called-by: [adapters::operation_receipt, adapters::remember, tests]
 //! Invariants: [lease_owner is always AuthorizationScope::principal, never a caller-supplied value; every lease time
 //!   is read and compared on the DB clock (clock_timestamp()), never the application clock; claim, heartbeat,
 //!   complete and fail take the task row FOR UPDATE before judging the lease, so they serialize per task; a run passes
@@ -55,7 +55,10 @@ pub struct ClaimedTaskRun {
 
 /// Proof that [`verify_task_run`] passed inside the caller's transaction. Fields are private:
 /// that function is the only constructor, so holding one means the five §30.2 checks ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Neither `Copy` nor `Clone` (#86 items 5, 6): a consumer takes it by value, so one
+/// verification backs at most one write, and a value moved into a write cannot be replayed into
+/// another transaction from the same binding.
+#[derive(Debug, PartialEq, Eq)]
 pub struct VerifiedTaskRun {
     task_id: TaskId,
     task_run_id: TaskRunId,
@@ -320,6 +323,14 @@ async fn lock_and_verify(
 /// `fencing_token` equals both the run's token and the task's current `fencing_seq`. Holds the
 /// task row FOR SHARE until the caller's transaction ends, so no claim, heartbeat or close can
 /// interleave with the caller's writes.
+///
+/// # Deadlock warning
+///
+/// While the caller's transaction holds that FOR SHARE, the caller must not await a pool-level
+/// coord operation on the same task ([`claim`], [`heartbeat`], [`complete`], [`fail`]): each one
+/// opens its own connection and waits for FOR UPDATE on the row this transaction holds, while
+/// this transaction waits for the awaited call. PostgreSQL sees one blocked backend, not a cycle,
+/// so it never breaks this app-level deadlock (#86 item 6).
 pub async fn verify_task_run(
     txn: &mut Txn<'_>,
     scope: &AuthorizationScope,

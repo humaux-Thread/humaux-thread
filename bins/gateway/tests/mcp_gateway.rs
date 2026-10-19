@@ -14266,10 +14266,11 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
 // ADR-0067 card 40a: memory.note_put over the real MCP transport (G03, G07, G17, G18, G24, G25).
 // ===========================================================================================
 
-/// `contracts/mcp/remember.schema.json` as it was before card 40a (SHA-256 of the file at main 17c5895). G25: `remember.put`
-/// gains no field, branch or response key from the note lane.
-const REMEMBER_SCHEMA_SHA256_BEFORE_CARD_40: &str =
-    "a991fd180480d12a917a48e4ff67d9f5f1379b7a5f49ed7bc07b702f115ab27d";
+/// `contracts/mcp/remember.schema.json` without any note-lane change: the file as of M29 T04c, whose `task_run` field
+/// (design v0.2 §15) is the one change since card 40a's pin (main 17c5895). G25: `remember.put` gains no field, branch
+/// or response key from the note lane.
+const REMEMBER_SCHEMA_SHA256_WITHOUT_NOTE_LANE: &str =
+    "16dee278b84d623d5de31276b70057e3ca21e738652f73770c6c6ef41751ce6d";
 
 /// A `tools/call` for tool `memory` built from a hand-written arguments object, so a test controls the exact bytes of the
 /// JSON text (escapes survive; `json!` would normalise `a` to `a`).
@@ -14523,7 +14524,7 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
                     "{:x}",
                     Sha256::digest(include_bytes!("../../../contracts/mcp/remember.schema.json"))
                 ),
-                REMEMBER_SCHEMA_SHA256_BEFORE_CARD_40,
+                REMEMBER_SCHEMA_SHA256_WITHOUT_NOTE_LANE,
                 "G25: the remember.put input schema is byte-identical to main"
             );
 

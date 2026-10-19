@@ -1,12 +1,13 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
 //! Called-by: [gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
 //!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
-//!   (ADR-0067 D-J)]
-//! Spec: ADR-0067
+//!   (ADR-0067 D-J); a put naming a task run verifies it before any write and is refused whole when it fails, and
+//!   only a fresh (non-replayed) write verifies (design v0.2 §15 T04c)]
+//! Spec: ADR-0067; §30.2; §34.0.1
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
 
@@ -16,6 +17,7 @@ use humaux_domain::{
     audit::{AuditEvent, AuditEventId, McpAuditAction},
     authority::MemoryId,
     confirm::DestructiveOp,
+    coordination::{FencingToken, TaskRunId},
     dataclass::DataClass,
     error::ErrorCode,
     evidence::EvidenceOriginClass,
@@ -29,7 +31,7 @@ use uuid::Uuid;
 
 use crate::{
     confirm_token_repo::{self, ConfirmationClaim},
-    memory_governance_repo,
+    coord_repo, memory_governance_repo,
     note_repo::{self, NoteIntake, NoteLineage},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
@@ -239,7 +241,22 @@ pub async fn remember_atomically(
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    stored(atomically(pool, auth, request, None, None).await?)
+    remember_for_task_run_atomically(pool, auth, request, None).await
+}
+
+/// [`remember_atomically`] for a put that names the §30.2 task run it was written under (design v0.2 §15 T04c).
+/// `Some((task_run_id, fencing_token))` is verified with [`coord_repo::verify_task_run`] inside the receipt
+/// transaction, after its tenant GUCs are set and before the BMO reservation and the Evidence; a refusal is that
+/// verification's `ErrorCode` for the whole call, nothing written (no Evidence, carrier, BMO or receipt row). On a
+/// pass the Evidence is followed by its `private.evidence_task_runs` row in the same transaction. `None` is
+/// [`remember_atomically`].
+pub async fn remember_for_task_run_atomically(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    task_run: Option<(TaskRunId, FencingToken)>,
+) -> Result<AtomicRememberResult, ErrorCode> {
+    stored(atomically(pool, auth, request, None, None, task_run).await?)
 }
 
 /// ADR-0067 D-A: `memory.note_put` — [`remember_atomically`]'s receipt / replay / BMO / audit machinery, plus the identity
@@ -251,7 +268,7 @@ pub async fn note_put_atomically(
     request: AtomicRememberRequest,
     note: NoteIntake,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    stored(atomically(pool, auth, request, Some(note), None).await?)
+    stored(atomically(pool, auth, request, Some(note), None, None).await?)
 }
 
 /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: [`note_put_atomically`]'s transaction, with the
@@ -268,7 +285,7 @@ pub async fn note_replace_atomically(
     note: NoteIntake,
     replace: NoteReplaceRequest,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
-    atomically(pool, auth, request, Some(note), Some(replace)).await
+    atomically(pool, auth, request, Some(note), Some(replace), None).await
 }
 
 /// A create / `remember.put` can only end in `Stored`.
@@ -395,6 +412,7 @@ async fn atomically(
     mut request: AtomicRememberRequest,
     note: Option<NoteIntake>,
     replace: Option<NoteReplaceRequest>,
+    task_run: Option<(TaskRunId, FencingToken)>,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
     let operation = if note.is_some() {
         NOTE_OPERATION
@@ -402,6 +420,10 @@ async fn atomically(
         OPERATION
     };
     let auth = validate(auth, &request, operation)?;
+    // Design v0.2 §15 T04c: the task-run carrier is `remember.put`'s alone.
+    if task_run.is_some() && note.is_some() {
+        return Err(ErrorCode::InvalidInput);
+    }
     if let Some(replace) = &replace {
         validate_replace(&request, note.as_ref().ok_or(ErrorCode::Internal)?, replace)?;
     }
@@ -410,6 +432,11 @@ async fn atomically(
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
     let prior = lock_and_find_receipt(&mut txn, &auth, &request, operation).await?;
+    // §34.0.1: a committed key answers its stored outcome and never re-runs the write, so a replay does not re-verify
+    // a task run: the carrier row was written under a lease `verify_task_run` passed in that original transaction, and
+    // ADR-0078 T04 ("a write after lease expiry does not inherit") judges the write, not a later retry of its key. A
+    // replay with another `task_run` carries another request fingerprint (the gateway hashes the raw arguments), which
+    // `replay` refuses like any changed request.
     if let Some(prior) = prior {
         let accepted = replay(&mut txn, &auth, &request, &prior).await?;
         let (memory_id, secret_material) = if note.is_some() {
@@ -448,6 +475,15 @@ async fn atomically(
     {
         return Err(ErrorCode::InvalidInput);
     }
+    // Design v0.2 §15 T04c: verify after the receipt lookup set the tenant GUCs (the port reads coord.* under FORCE
+    // RLS) and before the reservation, so a refusal returns the port's ErrorCode with nothing written or metered and no
+    // receipt row: dropping `txn` rolls back. The FOR SHARE it takes on the task row lasts until COMMIT.
+    let verified = match task_run {
+        Some((task_run_id, fencing_token)) => {
+            Some(coord_repo::verify_task_run(&mut txn, &auth, task_run_id, fencing_token).await?)
+        }
+        None => None,
+    };
     // ADR-0067 D-J: the challenge writes nothing and costs no BMO; dropping `txn` releases the head lock.
     if replace
         .as_ref()
@@ -498,6 +534,16 @@ async fn atomically(
     )
     .await
     .map_err(remember_error)?;
+    if let Some(verified) = verified {
+        remember::insert_evidence_task_run_in_txn(
+            &mut txn,
+            auth.tenant_id(),
+            verified,
+            pending.accepted().evidence_id,
+        )
+        .await
+        .map_err(db_error)?;
+    }
     // ADR-0057 D-B: the superseded version's point is retired by a MEMORY_LIFECYCLE ticket on its home stream, as
     // `memory.correct` retires M1's; ADR-0020: with the SUPERSEDE event and head stamp `memory.supersede` writes.
     if let Some(replace) = &replace {
