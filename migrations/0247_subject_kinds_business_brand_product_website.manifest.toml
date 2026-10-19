@@ -25,9 +25,9 @@ postcheck = """
 select exists (select 1 from pg_constraint co
                 where co.conrelid = to_regclass('private.subjects') and co.contype = 'c'
                   and co.conname = 'subjects_kind_check' and co.convalidated
-                  and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 12
+                  and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 14
                   and (select bool_and(pg_get_constraintdef(co.oid) like '%''' || v || '''%')
-                         from unnest(array['PERSON', 'ORGANISATION', 'BUSINESS', 'BRAND', 'PRODUCT', 'WEBSITE']) v))
+                         from unnest(array['PERSON', 'ORGANISATION', 'BUSINESS', 'BRAND', 'PRODUCT', 'WEBSITE', 'CHANNEL_ACCOUNT']) v))
  and (select count(*) = 1 from pg_constraint co
        where co.conrelid = to_regclass('private.subjects') and co.contype = 'c'
          and pg_get_constraintdef(co.oid) like '%kind%')

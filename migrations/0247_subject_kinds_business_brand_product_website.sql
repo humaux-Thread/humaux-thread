@@ -16,7 +16,7 @@
 ALTER TABLE private.subjects
   DROP CONSTRAINT subjects_kind_check,
   ADD CONSTRAINT subjects_kind_check
-    CHECK (kind IN ('PERSON', 'ORGANISATION', 'BUSINESS', 'BRAND', 'PRODUCT', 'WEBSITE')) NOT VALID;
+    CHECK (kind IN ('PERSON', 'ORGANISATION', 'BUSINESS', 'BRAND', 'PRODUCT', 'WEBSITE', 'CHANNEL_ACCOUNT')) NOT VALID;
 ALTER TABLE private.subjects VALIDATE CONSTRAINT subjects_kind_check;
 
 COMMENT ON TABLE private.subjects IS
