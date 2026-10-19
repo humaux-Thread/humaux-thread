@@ -2,8 +2,8 @@
 //!   §6.1.4 relation kernel (migration 0249, ADR-0078 D-C), plus the adapter round trip.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
 //!   services=[PostgreSQL(owner) r=[private.project_subject_relations, private.project_task_relations,
-//!   private.relation_valid_shape, private.subject_relations] w=[control.tenants, control.workspaces, coord.tasks,
-//!   private.continuity_projects, private.subjects] x=[private.relation_triple_allowed], PostgreSQL(role_gateway)];
+//!   private.subject_relations] w=[control.tenants, control.workspaces, coord.tasks, private.continuity_projects,
+//!   private.subjects] x=[private.relation_triple_allowed, private.relation_valid_shape], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::relation_repo, domain::error, domain::identity, domain::relation,
 //!   domain::subject, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
@@ -413,7 +413,7 @@ fn g_m29_2_valid_shape_rust_and_db_agree() {
                 )
                 .unwrap()
                 .get(0);
-            assert_eq!(db, *admitted, "private.relation_valid_shape on {name}");
+            assert_eq!(db, *admitted, "relation_valid_shape on {name}");
             for (pair, edge) in &edges {
                 let table = Fx::table(*pair);
                 let mut sp = txn.transaction().unwrap();
