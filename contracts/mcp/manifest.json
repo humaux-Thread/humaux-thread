@@ -10,6 +10,6 @@
     {"name":"continuity","title":"Continuity","description":"Read project development continuity.","input_schema":"continuity.schema.json","output_schema":"continuity.output.schema.json"},
     {"name":"artifact","title":"Artifact","description":"Manage document and image assets.","input_schema":"artifact.schema.json"},
     {"name":"code","title":"Code","description":"Manage and query code knowledge.","input_schema":"code.schema.json"},
-    {"name":"coordinate","title":"Coordinate","description":"Coordinate tasks, leases, locks, and canvas state.","input_schema":"coordinate.schema.json"}
+    {"name":"coordinate","title":"Coordinate","description":"Coordinate tasks, leases, locks, and canvas state.","input_schema":"coordinate.schema.json","output_schema":"coordinate.output.schema.json"}
   ]
 }

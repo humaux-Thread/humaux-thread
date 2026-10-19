@@ -1,6 +1,6 @@
 //! `domain::coordination` — M18 task-run vocabulary: the §30.1 task state closed set and the §30.2 fencing token.
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::coord_repo, tests]
+//! Called-by: [adapters::coord_repo, gateway::mcp_application, tests]
 //! Invariants: [TaskState is the §30.1 seven-value closed set and its DB spelling equals the coord.tasks.state CHECK
 //!   (§78.2, adapters/tests/coord_task_run.rs); a FencingToken is only meaningful against the same task's current
 //!   coord.tasks.fencing_seq]

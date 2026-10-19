@@ -1,16 +1,18 @@
-//! `adapters::coord_repo` — M18 task-run lifecycle: submit, claim, heartbeat, complete, fail, and the
+//! `adapters::coord_repo` — M18 task-run lifecycle: submit, claim, heartbeat, complete, fail, `task_of_run`, and the
 //!   `verify_task_run` port (§30.1 state, §30.2 lease and fencing token).
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[coord.task_runs, coord.tasks]]; env=[];
 //!   modules=[adapters::context_repo, adapters::postgres, domain::coordination, domain::error, domain::identity,
 //!   domain::ids]
-//! Called-by: [tests]
+//! Called-by: [gateway::mcp_application, tests]
 //! Invariants: [lease_owner is always AuthorizationScope::principal, never a caller-supplied value; every lease time
 //!   is read and compared on the DB clock (clock_timestamp()), never the application clock; claim, heartbeat,
 //!   complete and fail take the task row FOR UPDATE before judging the lease, so they serialize per task; a run passes
 //!   verification only if it is open, its lease is unexpired, its owner is the caller and its token equals the task's
 //!   current fencing_seq; complete and fail bump coord.tasks.authorization_epoch by one (ADR-0046 D-C), claim and
-//!   heartbeat never touch it; every rejection is an existing ErrorCode variant]
-//! Spec: Baseline §30; §30.1; §30.2; §52; §62; §6.2.1; ADR-0046 D-C
+//!   heartbeat never touch it; complete and fail write the closed run's outcome_summary in the same statement that
+//!   finishes it; a run's task_id never changes, so [`task_of_run`] followed by a verified write cannot race;
+//!   every rejection is an existing ErrorCode variant]
+//! Spec: Baseline §30; §30.1; §30.2; §52; §62; §6.2.1; ADR-0046 D-C; ADR-0078 Q10
 //!
 //! Runs on [`RuntimeDbPool`] (`role_gateway`, which holds SELECT, INSERT, UPDATE on `coord.*`,
 //! §6.2.1). Each pool-level operation opens its own transaction with the scope's tenant GUCs
@@ -24,7 +26,7 @@
 //! - caller is not the run's `lease_owner`: [`ErrorCode::Forbidden`];
 //! - run finished, lease expired, stale token, task not claimable, or claim against an
 //!   unexpired lease: [`ErrorCode::Conflict`];
-//! - zero TTL or blank title: [`ErrorCode::InvalidInput`];
+//! - zero TTL, or a blank title, description or summary: [`ErrorCode::InvalidInput`];
 //! - PG failure: [`ErrorCode::DependencyUnavailable`]; an unknown `state` label: [`ErrorCode::Internal`].
 
 use std::time::Duration;
@@ -106,21 +108,25 @@ async fn begin(
     Ok(txn)
 }
 
-/// Inserts a task in `SUBMITTED` (§30.1) under the scope's tenant.
+/// Inserts a task in `SUBMITTED` (§30.1) under the scope's tenant, carrying the wire's `description`
+/// (ADR-0078 Q10).
 pub async fn submit(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
     title: &str,
+    description: &str,
 ) -> Result<TaskId, ErrorCode> {
-    if title.trim().is_empty() {
+    if title.trim().is_empty() || description.trim().is_empty() {
         return Err(ErrorCode::InvalidInput);
     }
     let mut txn = begin(pool, scope).await?;
     let task_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO coord.tasks (tenant_id, title, state) VALUES ($1, $2, $3) RETURNING task_id",
+        "INSERT INTO coord.tasks (tenant_id, title, description, state) VALUES ($1, $2, $3, $4) \
+         RETURNING task_id",
     )
     .bind(scope.tenant_id().0)
     .bind(title)
+    .bind(description)
     .bind(TaskState::Submitted.as_db_str())
     .fetch_one(&mut *txn)
     .await
@@ -236,31 +242,66 @@ pub async fn heartbeat(
     Ok(expires)
 }
 
-/// Closes a verified run, moves its task to `COMPLETED` and bumps its `authorization_epoch`.
+/// Closes a verified run recording `summary` as its outcome, moves its task to `COMPLETED` and bumps its
+/// `authorization_epoch`.
 pub async fn complete(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
     task_run_id: TaskRunId,
     fencing_token: FencingToken,
+    summary: &str,
 ) -> Result<(), ErrorCode> {
     close(
         pool,
         scope,
         task_run_id,
         fencing_token,
+        summary,
         TaskState::Completed,
     )
     .await
 }
 
-/// Closes a verified run, moves its task to `FAILED` and bumps its `authorization_epoch`.
+/// Closes a verified run recording `summary` as its outcome, moves its task to `FAILED` and bumps its
+/// `authorization_epoch`.
 pub async fn fail(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
     task_run_id: TaskRunId,
     fencing_token: FencingToken,
+    summary: &str,
 ) -> Result<(), ErrorCode> {
-    close(pool, scope, task_run_id, fencing_token, TaskState::Failed).await
+    close(
+        pool,
+        scope,
+        task_run_id,
+        fencing_token,
+        summary,
+        TaskState::Failed,
+    )
+    .await
+}
+
+/// The task a run belongs to, read under the scope's tenant; [`ErrorCode::NotFound`] if the run is absent or in another
+/// tenant. ADR-0078 Q10: the wire names `task_id` next to `task_run_id`, and the gateway refuses a pair that disagrees
+/// before it asks for any write. Sound without a lock because `task_runs.task_id` is never updated.
+pub async fn task_of_run(
+    pool: &RuntimeDbPool,
+    scope: &AuthorizationScope,
+    task_run_id: TaskRunId,
+) -> Result<TaskId, ErrorCode> {
+    let mut txn = begin(pool, scope).await?;
+    let task_id: Uuid = sqlx::query_scalar(
+        "SELECT task_id FROM coord.task_runs WHERE task_run_id = $1 AND tenant_id = $2",
+    )
+    .bind(task_run_id.0)
+    .bind(scope.tenant_id().0)
+    .fetch_optional(&mut *txn)
+    .await
+    .map_err(db)?
+    .ok_or(ErrorCode::NotFound)?;
+    txn.commit().await.map_err(db)?;
+    Ok(TaskId(task_id))
 }
 
 async fn close(
@@ -268,14 +309,20 @@ async fn close(
     scope: &AuthorizationScope,
     task_run_id: TaskRunId,
     fencing_token: FencingToken,
+    summary: &str,
     outcome: TaskState,
 ) -> Result<(), ErrorCode> {
+    if summary.trim().is_empty() {
+        return Err(ErrorCode::InvalidInput);
+    }
     let mut txn = begin(pool, scope).await?;
     let run = lock_and_verify(&mut txn, scope, task_run_id, fencing_token).await?;
     sqlx::query(
-        "UPDATE coord.task_runs SET finished_at = clock_timestamp() WHERE task_run_id = $1",
+        "UPDATE coord.task_runs SET finished_at = clock_timestamp(), outcome_summary = $2 \
+         WHERE task_run_id = $1",
     )
     .bind(task_run_id.0)
+    .bind(summary)
     .execute(&mut *txn)
     .await
     .map_err(db)?;

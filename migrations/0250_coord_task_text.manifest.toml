@@ -1,0 +1,39 @@
+# §46.1 migration manifest. Card M29 T04b (§30.2, ADR-0078 Q10): coord.tasks.description and
+# coord.task_runs.outcome_summary, both nullable text with a 1..8192 length CHECK equal to the coordinate contract.
+# Additive, no DML, no policy or grant change. §46 forward-fix; 0249 is reserved by card M29 T05.
+
+migration_id = "0250_coord_task_text"
+class = "FORWARD_ONLY"
+
+# Refuses a database without the 0248 lease columns, or one that already has any of this migration's objects.
+precheck = """
+select to_regclass('coord.tasks') is not null
+ and to_regclass('coord.task_runs') is not null
+ and exists (select 1 from pg_attribute
+              where attrelid = 'coord.tasks'::regclass and attname = 'fencing_seq' and not attisdropped)
+ and not exists (select 1 from pg_attribute
+                  where attrelid = 'coord.tasks'::regclass and attname = 'description' and not attisdropped)
+ and not exists (select 1 from pg_attribute
+                  where attrelid = 'coord.task_runs'::regclass and attname = 'outcome_summary' and not attisdropped)
+ as precheck_ok
+"""
+
+# Fails on: a missing or NOT NULL column, a missing length CHECK, or either table without ENABLE + FORCE RLS.
+postcheck = """
+select (select count(*) = 1 from pg_attribute
+         where attrelid = 'coord.tasks'::regclass and attname = 'description' and not attnotnull
+           and not attisdropped)
+ and (select count(*) = 1 from pg_attribute
+       where attrelid = 'coord.task_runs'::regclass and attname = 'outcome_summary' and not attnotnull
+         and not attisdropped)
+ and exists (select 1 from pg_constraint
+              where conrelid = 'coord.tasks'::regclass and conname = 'tasks_description_length')
+ and exists (select 1 from pg_constraint
+              where conrelid = 'coord.task_runs'::regclass and conname = 'task_runs_outcome_summary_length')
+ and (select bool_and(relrowsecurity and relforcerowsecurity) from pg_class
+       where oid in ('coord.tasks'::regclass, 'coord.task_runs'::regclass))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: once no build calls adapters::coord_repo with description / summary, ALTER TABLE coord.task_runs DROP COLUMN outcome_summary; ALTER TABLE coord.tasks DROP COLUMN description (this discards every task description and run summary written since)."
+backup_restore_requirement = "none: added nullable columns and CHECKs only; existing rows keep NULL, no row is updated or deleted."
