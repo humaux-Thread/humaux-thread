@@ -3518,31 +3518,35 @@ SELECT
  -- card 13) then re-pointed the WORKSPACE_SHARED arm from a control.memberships (tenant-membership)
  -- EXISTS to a control.workspace_memberships EXISTS matching the row's visibility_workspace_id —
  -- implementing what §6.1.1 already required. Each re-point moved the deparse: c77b3b83… (0012
- -- inline OR chain) -> e877f26c… (0153 visibility_allowed + tenant-membership arm) -> the value
- -- below (0163 visibility_allowed + workspace-membership arm). The migration-file integrity hash is
- -- unchanged; this policy-definition hash is intentionally new (a legal forward-fix, not drift —
- -- ADR-0035). USING == WITH CHECK, so both legs carry the same hash.
+ -- inline OR chain) -> e877f26c… (0153 visibility_allowed + tenant-membership arm) -> 54539243…
+ -- (0163 visibility_allowed + workspace-membership arm) -> the value below (0246 wraps the tenant
+ -- GUC read in NULLIF, M08 D7; nothing else in the deparse moved, 0246 asserts that).
+ -- The migration-file integrity hash is unchanged; this policy-definition hash is intentionally
+ -- new (a legal forward-fix, not drift — ADR-0035). USING == WITH CHECK, so both legs carry the
+ -- same hash.
  AND (SELECT polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
   AND encode(sha256(convert_to(pg_get_expr(polqual,polrelid),'UTF8')),'hex')
-   ='54539243bf3f9d39e8e08986a0721d8f8289d8f960ec7b98580794c57c488fe1'
+   ='14c65195680b53a90412999778a917ba40b9cca41fb05251a08511e1286a7e09'
   AND encode(sha256(convert_to(pg_get_expr(polwithcheck,polrelid),'UTF8')),'hex')
-   ='54539243bf3f9d39e8e08986a0721d8f8289d8f960ec7b98580794c57c488fe1'
+   ='14c65195680b53a90412999778a917ba40b9cca41fb05251a08511e1286a7e09'
  FROM pg_policy WHERE polrelid='private.evidence_objects'::regclass
    AND polname='evidence_objects_tenant_and_visibility')
  AND (SELECT count(*)=6 FROM pg_policy
   WHERE polrelid='private.evidence_objects'::regclass)
  -- 6 = 0012 legacy + four W1 owner policies + 0140's evidence_objects_retrieval_worker_read
- -- (0145 widened that policy's role list to the two consolidation roles; count unchanged)
+ -- (0145 widened that policy's role list to the two consolidation roles; count unchanged).
+ -- Owner-policy USING hashes are the 0246 deparses (GUC casts NULLIF-wrapped, M08 D7); 0136's were
+ -- a0094a5c… / c4c9a222…. The two WITH CHECK legs carry no uuid cast and kept 0136's hashes.
  AND (SELECT count(*)=4 FROM (VALUES
    ('continuity_evidence_owner_exact_allow','r',true,
-    'a0094a5c18098d94a48082666c19502cb123edafc20bff09abb46eae279e466c',NULL::text),
+    '03242e444be37e392e1f5a2073e83c97c6292755fa3e1929f17b985ccef0cbba',NULL::text),
    ('continuity_evidence_owner_exact_guard','r',false,
-    'c4c9a222db017fad89980cab140029fc8fa63c169d491652902e328ed5ae338d',NULL::text),
+    '6673dce966ae0ae976030b74a4b9954ce34bd57803bab26de23d14151689ba53',NULL::text),
    ('continuity_evidence_owner_lock_allow','w',true,
-    'a0094a5c18098d94a48082666c19502cb123edafc20bff09abb46eae279e466c',
+    '03242e444be37e392e1f5a2073e83c97c6292755fa3e1929f17b985ccef0cbba',
     'fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa'),
    ('continuity_evidence_owner_lock_guard','w',false,
-    'c4c9a222db017fad89980cab140029fc8fa63c169d491652902e328ed5ae338d',
+    '6673dce966ae0ae976030b74a4b9954ce34bd57803bab26de23d14151689ba53',
     '8d750b95910aa4cec8bc44aef62926b4c361e16a6850d659848de4a7b08b328a')
   ) expected(name,cmd,permissive,qual_sha,check_sha)
   JOIN pg_policy p ON p.polrelid='private.evidence_objects'::regclass
