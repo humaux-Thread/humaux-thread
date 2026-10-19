@@ -63,3 +63,8 @@ fn projection_lag_increments_counter_and_reports_both_forms() {
         completeness_degradations: &degradations_wire,
     });
 }
+
+#[test]
+fn bypass() {
+    let _ = humaux_telemetry::degrade::Outcome::clean(String::new()).also(DegradeCode::ProjectionLag);
+}
