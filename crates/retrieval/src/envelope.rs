@@ -3533,3 +3533,8 @@ mod a2_point_tests {
         assert!(!out.value.current, "open_gaps > 0");
     }
 }
+
+#[doc(hidden)]
+pub fn w1_param(c: humaux_telemetry::degrade::DegradeCode) {
+    let _ = humaux_telemetry::degrade::abstain(c, ());
+}
