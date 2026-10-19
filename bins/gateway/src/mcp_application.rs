@@ -2449,7 +2449,7 @@ struct RawRememberPutWire {
     visibility_class: Option<String>,
     data_class: Option<String>,
     event_kind: Option<String>,
-    task_run: Option<RawTaskRunWire>,
+    #[serde(rename = "task_run_x")] task_run: Option<RawTaskRunWire>,
 }
 
 /// `remember.schema.json` `task_run`: both fields required, nothing else, so a half pair is unrepresentable.
