@@ -62,7 +62,7 @@ use humaux_adapters::{
         DistillReply, distill_prompt_contract, offers_affects, parse_distill_output_detailed,
     },
     distill_repo::{
-        self, ClaimedEvidence, DbError, LoadedEvidence, NewMemory, OutboxSettle,
+        self, AttributionSource, ClaimedEvidence, DbError, LoadedEvidence, NewMemory, OutboxSettle,
         ProcessingRunStart, TakenOutbox,
     },
     jobs::{self, CallAdmission, DistillClaim, DistillFinish, DistillLease},
@@ -1613,7 +1613,7 @@ async fn write_txn(
                         confidence: candidate.confidence,
                         note_kind: None,
                         note_id: None,
-                        attribution_evidence_id: evidence.evidence_id,
+                        attribution: AttributionSource::Primary,
                     },
                     &MEMORY_ATTRIBUTION,
                 )

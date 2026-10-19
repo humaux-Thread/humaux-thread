@@ -38,7 +38,7 @@ use humaux_adapters::{
     attribution_repo::AttributionLadder,
     coord_repo::{self, ClaimedTaskRun},
     distill_repo::{self, ConfirmOutcome, ConfirmRequest},
-    memory_repo::{self, NewMemory},
+    memory_repo::{self, AttributionSource, NewMemory},
     operation_receipt::{self, AtomicRememberRequest},
     remember::RememberCommand,
 };
@@ -275,7 +275,7 @@ fn attribute(handle: &Handle, evidence: Uuid, seed: &[String]) -> Result<Vec<Row
                 confidence: 0.9,
                 note_kind: None,
                 note_id: None,
-                attribution_evidence_id: loaded.evidence_id,
+                attribution: AttributionSource::Primary,
             },
             &AttributionLadder,
         )

@@ -10,9 +10,10 @@
 //!   HTTP code (xtask G-N09-1)]
 //! Spec: Baseline §6.1.4; §78.2; ADR-0078
 //!
-//! Both rungs read the Memory's attribution Evidence ([`crate::memory_repo::NewMemory::attribution_evidence_id`]):
-//! the PRIMARY Evidence, or a confirmed candidate's source Evidence. They never copy its task-run carrier. An Evidence
-//! the caller cannot see under RLS grounds nothing, so the Memory stays unresolved.
+//! Both rungs read the Memory's attribution Evidence, which the door resolves from
+//! [`crate::memory_repo::AttributionSource`]: the PRIMARY Evidence, or a confirmed candidate's source Evidence. They
+//! never copy its task-run carrier. An Evidence the caller cannot see under RLS grounds nothing, so the Memory stays
+//! unresolved.
 //!
 //! Rollups are not Memories: they live in `private.memory_rollups`, never reach the door, and stay unattributed in the
 //! first slice. A3' (`correction@1`) is the M29 supersede trigger's (T06b), not this port's.

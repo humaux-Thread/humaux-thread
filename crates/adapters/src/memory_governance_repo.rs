@@ -59,7 +59,7 @@ use uuid::Uuid;
 use crate::{
     affect_repo::{self, AffectInput, AffectParent},
     confirm_token_repo::{self, ConfirmationClaim},
-    memory_repo::{self, LoadedEvidence, NewMemory},
+    memory_repo::{self, AttributionSource, LoadedEvidence, NewMemory},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
     read_gate,
@@ -1766,7 +1766,7 @@ pub async fn correct_atomically(
             confidence: 1.0,
             note_kind: None,
             note_id: None,
-            attribution_evidence_id: loaded.evidence_id,
+            attribution: AttributionSource::Primary,
         },
         attribution,
     )
