@@ -2842,27 +2842,22 @@ fn fetch_tenant_tables(
         .collect())
 }
 
-/// §62's tenant-equality clause, in the exact form `pg_policies.qual`/`with_check`
-/// deparses it — verified against migration 0012's literal SQL: PostgreSQL's ruleutils
-/// adds the `::text` disambiguation cast to `current_setting`'s string-literal argument
-/// (it's overloaded on arity) and wraps the comparison in parens. This is that canonical
-/// deparsed form, not the raw source SQL — matching against the raw source would silently
-/// never match anything live.
-const TENANT_CLAUSE: &str = "(tenant_id = (current_setting('humaux.tenant_id'::text, true))::uuid)";
-
-/// Migration 0031's hardened form of the same clause — the GUC read wrapped in
-/// `NULLIF(.., '')` so a reverted-`SET LOCAL` session (empty-string GUC placeholder,
-/// PG 18.6 observed) reads deterministically 0 rows instead of raising 22P02. Deparsed
-/// form verified live against `pg_policies.qual` after 0031. A policy matches if it
-/// carries either form: pre-0031 databases mid-migration keep the plain form, every
-/// fully-migrated database carries this one.
-const TENANT_CLAUSE_NULLIF: &str =
+/// §62's tenant-equality clause in the one form a fully migrated database carries, as `pg_policies.qual` /
+/// `with_check` deparse it: ruleutils adds the `::text` disambiguation cast to `current_setting`'s literal argument
+/// and parenthesizes the cast operand, so this is the deparsed form, not the source SQL (which would never match
+/// anything live). The GUC read is wrapped in `NULLIF(.., '')` (0031, restored by 0246 on every policy later
+/// migrations wrote with the plain cast): a placeholder GUC that a `SET LOCAL` once targeted reads '' on the reused
+/// backend, and the plain `(current_setting(..))::uuid` raises 22P02 there instead of reading zero rows (M08 D7). The
+/// plain form is not accepted; [`PLAIN_GUC_UUID_CAST`] names every policy still carrying it.
+const TENANT_CLAUSE: &str =
     "(tenant_id = (NULLIF(current_setting('humaux.tenant_id'::text, true), ''::text))::uuid)";
 
-/// Either accepted canonical tenant clause (see the two constants above).
-fn contains_tenant_clause(expr: &str) -> bool {
-    expr.contains(TENANT_CLAUSE) || expr.contains(TENANT_CLAUSE_NULLIF)
-}
+/// PostgreSQL regex over deparsed policy text: a `humaux.*` GUC read cast straight to uuid, the deparser's only
+/// spelling of it. The NULLIF form deparses `, ''::text)` between the call and the cast, so it never matches.
+/// Migration 0246's rewrite loop and its postcheck use the same pattern; a match on any policy of any relation is a
+/// [`check_rls_four_item`] failure named `schema.table.policy`.
+const PLAIN_GUC_UUID_CAST: &str =
+    r"\(current_setting\('humaux\.[^']*'::text(, (true|false))?\)\)::uuid";
 
 /// §48.2/§62's "matching tenant policy exists": a policy covering all four commands
 /// (`cmd = 'ALL'`) whose USING clause **and** WITH CHECK clause both literally contain
@@ -2887,13 +2882,16 @@ fn table_has_tenant_policy(
         let qual: Option<String> = row.get(1);
         let with_check: Option<String> = row.get(2);
         cmd == "ALL"
-            && qual.as_deref().is_some_and(contains_tenant_clause)
-            && with_check.as_deref().is_some_and(contains_tenant_clause)
+            && qual.as_deref().is_some_and(|q| q.contains(TENANT_CLAUSE))
+            && with_check
+                .as_deref()
+                .is_some_and(|c| c.contains(TENANT_CLAUSE))
     }))
 }
 
 /// §48.2/§62: for every table carrying `tenant_id`, assert RLS enabled + FORCE RLS +
-/// a `tenant_id`-referencing policy exists + no runtime role owns it. Missing the
+/// a `tenant_id`-referencing policy exists + no runtime role owns it; and, over every policy
+/// of every relation (M08 D7 / 0246), that none matches [`PLAIN_GUC_UUID_CAST`]. Missing the
 /// object entirely (no tenant-scoped table exists yet) ⇒ `not_applicable`.
 pub fn check_rls_four_item(client: &mut impl GenericClient) -> GateResult {
     let tables = match fetch_tenant_tables(client) {
@@ -2941,12 +2939,26 @@ pub fn check_rls_four_item(client: &mut impl GenericClient) -> GateResult {
             problems.push(format!("{full}: owned by runtime role {}", t.owner));
         }
     }
+    // Not only the tenant_id tables above: a link table's EXISTS casts the same GUC (private.memory_evidence).
+    match client.query(
+        "SELECT format('%s.%s.%s', schemaname, tablename, policyname) FROM pg_policies \
+         WHERE qual ~ $1 OR with_check ~ $1 ORDER BY 1",
+        &[&PLAIN_GUC_UUID_CAST],
+    ) {
+        Ok(rows) => problems.extend(rows.iter().map(|row| {
+            format!(
+                "{}: casts a humaux GUC to uuid without NULLIF (22P02 on a reused connection)",
+                row.get::<_, String>(0)
+            )
+        })),
+        Err(e) => problems.push(format!("query pg_policies for plain GUC casts failed: {e}")),
+    }
 
     if problems.is_empty() {
         pass(
             "RLS 四项",
             format!(
-                "{} tenant_id table(s): RLS+FORCE+policy+non-owner all hold",
+                "{} tenant_id table(s): RLS+FORCE+policy+non-owner all hold; no policy casts a humaux GUC without NULLIF",
                 tables.len()
             ),
         )
@@ -3506,31 +3518,35 @@ SELECT
  -- card 13) then re-pointed the WORKSPACE_SHARED arm from a control.memberships (tenant-membership)
  -- EXISTS to a control.workspace_memberships EXISTS matching the row's visibility_workspace_id —
  -- implementing what §6.1.1 already required. Each re-point moved the deparse: c77b3b83… (0012
- -- inline OR chain) -> e877f26c… (0153 visibility_allowed + tenant-membership arm) -> the value
- -- below (0163 visibility_allowed + workspace-membership arm). The migration-file integrity hash is
- -- unchanged; this policy-definition hash is intentionally new (a legal forward-fix, not drift —
- -- ADR-0035). USING == WITH CHECK, so both legs carry the same hash.
+ -- inline OR chain) -> e877f26c… (0153 visibility_allowed + tenant-membership arm) -> 54539243…
+ -- (0163 visibility_allowed + workspace-membership arm) -> the value below (0246 wraps the tenant
+ -- GUC read in NULLIF, M08 D7; nothing else in the deparse moved, 0246 asserts that).
+ -- The migration-file integrity hash is unchanged; this policy-definition hash is intentionally
+ -- new (a legal forward-fix, not drift — ADR-0035). USING == WITH CHECK, so both legs carry the
+ -- same hash.
  AND (SELECT polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
   AND encode(sha256(convert_to(pg_get_expr(polqual,polrelid),'UTF8')),'hex')
-   ='54539243bf3f9d39e8e08986a0721d8f8289d8f960ec7b98580794c57c488fe1'
+   ='14c65195680b53a90412999778a917ba40b9cca41fb05251a08511e1286a7e09'
   AND encode(sha256(convert_to(pg_get_expr(polwithcheck,polrelid),'UTF8')),'hex')
-   ='54539243bf3f9d39e8e08986a0721d8f8289d8f960ec7b98580794c57c488fe1'
+   ='14c65195680b53a90412999778a917ba40b9cca41fb05251a08511e1286a7e09'
  FROM pg_policy WHERE polrelid='private.evidence_objects'::regclass
    AND polname='evidence_objects_tenant_and_visibility')
  AND (SELECT count(*)=6 FROM pg_policy
   WHERE polrelid='private.evidence_objects'::regclass)
  -- 6 = 0012 legacy + four W1 owner policies + 0140's evidence_objects_retrieval_worker_read
- -- (0145 widened that policy's role list to the two consolidation roles; count unchanged)
+ -- (0145 widened that policy's role list to the two consolidation roles; count unchanged).
+ -- Owner-policy USING hashes are the 0246 deparses (GUC casts NULLIF-wrapped, M08 D7); 0136's were
+ -- a0094a5c… / c4c9a222…. The two WITH CHECK legs carry no uuid cast and kept 0136's hashes.
  AND (SELECT count(*)=4 FROM (VALUES
    ('continuity_evidence_owner_exact_allow','r',true,
-    'a0094a5c18098d94a48082666c19502cb123edafc20bff09abb46eae279e466c',NULL::text),
+    '03242e444be37e392e1f5a2073e83c97c6292755fa3e1929f17b985ccef0cbba',NULL::text),
    ('continuity_evidence_owner_exact_guard','r',false,
-    'c4c9a222db017fad89980cab140029fc8fa63c169d491652902e328ed5ae338d',NULL::text),
+    '6673dce966ae0ae976030b74a4b9954ce34bd57803bab26de23d14151689ba53',NULL::text),
    ('continuity_evidence_owner_lock_allow','w',true,
-    'a0094a5c18098d94a48082666c19502cb123edafc20bff09abb46eae279e466c',
+    '03242e444be37e392e1f5a2073e83c97c6292755fa3e1929f17b985ccef0cbba',
     'fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa'),
    ('continuity_evidence_owner_lock_guard','w',false,
-    'c4c9a222db017fad89980cab140029fc8fa63c169d491652902e328ed5ae338d',
+    '6673dce966ae0ae976030b74a4b9954ce34bd57803bab26de23d14151689ba53',
     '8d750b95910aa4cec8bc44aef62926b4c361e16a6850d659848de4a7b08b328a')
   ) expected(name,cmd,permissive,qual_sha,check_sha)
   JOIN pg_policy p ON p.polrelid='private.evidence_objects'::regclass
@@ -6171,8 +6187,9 @@ mod tests {
 
     /// §48.2 RLS 四项 注错, exercised against [`check_rls_four_item`] directly: a new
     /// `tenant_id` table with no policy turns the overall (all-tables) check red naming
-    /// it; adding `ENABLE`+`FORCE` RLS and the exact §62 template policy turns it green
-    /// again. Also proves [`table_has_tenant_policy`]'s tightened match accepts the real
+    /// it; `ENABLE`+`FORCE` RLS and the §62 template with the plain `::uuid` cast keep it red
+    /// naming the policy (M08 D7: only the NULLIF form is accepted); the NULLIF template turns
+    /// it green. Also proves [`table_has_tenant_policy`]'s tightened match accepts the real
     /// deparsed §62 clause (not just an ILIKE `%tenant_id%` substring).
     #[test]
     fn rls_four_item_fault_injection_red_to_green() {
@@ -6199,10 +6216,61 @@ mod tests {
                USING (tenant_id = current_setting('humaux.tenant_id', true)::uuid) \
                WITH CHECK (tenant_id = current_setting('humaux.tenant_id', true)::uuid)",
         )
-        .expect("apply §62 policy template");
+        .expect("apply the plain-cast §62 template");
+        let plain = check_rls_four_item(&mut txn);
+        assert_eq!(plain.status, GateStatus::Fail, "{}", plain.detail);
+        assert!(
+            plain
+                .detail
+                .contains("xtask_fx_rls.tenant_scoped.tenant_scoped_isolation: casts a humaux GUC"),
+            "{}",
+            plain.detail
+        );
 
+        txn.batch_execute(
+            "ALTER POLICY tenant_scoped_isolation ON xtask_fx_rls.tenant_scoped \
+               USING (tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid) \
+               WITH CHECK (tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid)",
+        )
+        .expect("apply the NULLIF §62 template");
         let after = check_rls_four_item(&mut txn);
         assert_eq!(after.status, GateStatus::Pass, "{}", after.detail);
+    }
+
+    /// M08 D7 / 0246, red→green on the plain-cast arm alone: the migrated catalog is clean; a
+    /// WITH CHECK-only `humaux.user_id` plain cast on a table with no `tenant_id` column (so the
+    /// per-table four items never look at it) turns [`check_rls_four_item`] red naming
+    /// `schema.table.policy`; the NULLIF form turns it green again.
+    #[test]
+    fn plain_guc_uuid_cast_on_any_policy_is_red_naming_it() {
+        txn_or_skip!(client, txn);
+        let clean = check_rls_four_item(&mut txn);
+        assert_eq!(clean.status, GateStatus::Pass, "{}", clean.detail);
+
+        txn.batch_execute(
+            "CREATE SCHEMA xtask_fx_guc; \
+             CREATE TABLE xtask_fx_guc.link (owner uuid); \
+             ALTER TABLE xtask_fx_guc.link ENABLE ROW LEVEL SECURITY; \
+             CREATE POLICY link_owner ON xtask_fx_guc.link FOR INSERT \
+               WITH CHECK (owner = current_setting('humaux.user_id', true)::uuid)",
+        )
+        .expect("fixture DDL");
+        let red = check_rls_four_item(&mut txn);
+        assert_eq!(red.status, GateStatus::Fail, "{}", red.detail);
+        assert!(
+            red.detail
+                .contains("xtask_fx_guc.link.link_owner: casts a humaux GUC"),
+            "{}",
+            red.detail
+        );
+
+        txn.batch_execute(
+            "ALTER POLICY link_owner ON xtask_fx_guc.link \
+               WITH CHECK (owner = NULLIF(current_setting('humaux.user_id', true), '')::uuid)",
+        )
+        .expect("harden the fixture policy");
+        let green = check_rls_four_item(&mut txn);
+        assert_eq!(green.status, GateStatus::Pass, "{}", green.detail);
     }
 
     /// §62's weak-USING vulnerability: `USING (true)` with a real `WITH CHECK` must
