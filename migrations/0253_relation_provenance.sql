@@ -49,7 +49,6 @@ AS $$
                   WHERE m.tenant_id = p_tenant_id
                     AND m.state = 'ACTIVE'
                     AND u.state = 'ACTIVE'
-                    AND t.state = 'ACTIVE'
                     AND m.user_id IN (SELECT p_principal_id
                                       UNION ALL
                                       SELECT k.user_id FROM control.api_keys k
