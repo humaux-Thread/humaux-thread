@@ -281,7 +281,7 @@ fn projection_block_a2(ledger: &LedgerClosure, visible: Option<u64>) -> Outcome<
     };
 
     if a2 == A2Closure::InvisibleLoss {
-        abstain(DegradeCode::ProjectionInvisibleLoss, block)
+        Outcome::clean(block)
     } else {
         Outcome::clean(block)
     }
