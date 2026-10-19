@@ -1,0 +1,52 @@
+# Dormant DegradeCode variants (M01 D4, G-M01-4; Baseline §53.4; ADR-0077).
+#
+# A variant with a production emit site -- `abstain(DegradeCode::X, ..)` or `.also(DegradeCode::X)` in non-test code
+# of crates/*/src or bins/*/src -- must have a fault test that drives that production function and never names
+# `abstain` itself. A variant with no such site yet keeps a synthetic fault test (it calls `abstain` directly) and is
+# listed here with the card that adds the site. `cargo xtask architecture-check` G-M01-4 is red both ways:
+#   - a live variant whose fault test names `abstain`;
+#   - a row for a variant that now has a production emit site (the row must be deleted: the ledger only shrinks);
+#   - a variant with no production emit site and no row (a new row is a reviewed diff line naming its owner).
+# Rows are never added to hide a live variant. Deleting a variant is not an option here: §53.2 / §52.2 freeze the 11.
+#
+# Row keys: variant (DegradeCode variant, PascalCase), owner (module card, M<nn> or M<nn>-<card>), reason (required).
+
+[[dormant]]
+variant = "RerankModelMismatch"
+owner = "M11"
+reason = "No rerank provider call exists (crates/retrieval/src/rerank.rs is a placeholder); the emit site and its real-path fault test arrive with the rerank lane (M11 card 52 / D4)."
+
+[[dormant]]
+variant = "RerankProviderTimeout"
+owner = "M11"
+reason = "Same as RerankModelMismatch: the registered injection (rerank provider read timeout, fallback ranking keeps items non-empty) needs the rerank lane (M11 card 52 / D4)."
+
+[[dormant]]
+variant = "EmbedProviderTimeout"
+owner = "M11"
+reason = "No production emit site yet; the embed provider fallback that emits it belongs to M11 (M01 design D4)."
+
+[[dormant]]
+variant = "EgressDenied"
+owner = "M05"
+reason = "No production emit site yet; the egress layers and the private-content disclosure guard that emit it belong to M05 (M01 design D4)."
+
+[[dormant]]
+variant = "GraphExpandCapped"
+owner = "M28"
+reason = "No production emit site yet; the graph expansion cap that emits it belongs to M28 (M01 design D4)."
+
+[[dormant]]
+variant = "CompletenessUnknown"
+owner = "M13"
+reason = "No production emit site yet; the degraded side of the §52.2 CannotEstablishCompleteness pair is emitted by the M13 completeness card (M01 design D4)."
+
+[[dormant]]
+variant = "StatePinMissing"
+owner = "M14"
+reason = "Provisional owner: `state_pin` appears nowhere in code or spec outside §53, so there is no emitter to schedule. Retirement candidate (ADR-0077): decide at the spec-maintenance ADR pass."
+
+[[dormant]]
+variant = "StatePinAmbiguous"
+owner = "M14"
+reason = "Provisional owner, as StatePinMissing. Retirement candidate (ADR-0077): decide at the spec-maintenance ADR pass."

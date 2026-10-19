@@ -2,7 +2,7 @@
 //! `testkit::tests::metrics::retrieval_completeness_total` — Metric Witness for
 //!   `retrieval_completeness_total{class,reason}` (§80.2 W-side; registry row §41.2; §22.5 sole-constructor gate,
 //!   §80.1 G80-6).
-//! Depends-on: crates=[]; services=[PostgreSQL(owner) r=[private.memory_records]]; env=[]; modules=[retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::predicate_registry, retrieval::request]
+//! Depends-on: crates=[humaux-retrieval]; services=[PostgreSQL(owner) r=[private.memory_records]]; env=[]; modules=[retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::predicate_registry, retrieval::request]
 //! Called-by: []
 //! Invariants: [reads private.memory_records to synthesize completeness fixtures; no fail-closed behaviour, test-only fixture]
 //! Spec: none

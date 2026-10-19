@@ -2,7 +2,7 @@
 //! `testkit::tests::metrics::humaux_retrieval_requests_total` — Metric Witness for
 //!   `humaux_retrieval_requests_total{intent,completeness_class}` (§80.2 W-side; registry row §41.2: §20 envelope
 //!   returns; §53.5 INV-1 denominator).
-//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::authority, retrieval::completeness, retrieval::envelope, retrieval::request]
+//! Depends-on: crates=[humaux-domain, humaux-retrieval]; services=[]; env=[]; modules=[domain::authority, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: []
 //! Invariants: []
 //! Spec: Baseline §41.2; §53.5; §80.2; ADR-0061 D-C

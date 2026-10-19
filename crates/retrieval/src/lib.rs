@@ -3,7 +3,7 @@
 //!   env=[]; modules=[]
 //! Called-by: [crate(humaux-adapters), crate(humaux-application), crate(humaux-gateway),
 //!   crate(humaux-local-secret-scan), crate(humaux-maintenance), crate(humaux-retrieval-provider),
-//!   crate(humaux-retrieval-worker)]
+//!   crate(humaux-retrieval-worker), crate(humaux-testkit)]
 //! Invariants: []
 //! Spec: §58; §3; §78.3
 //!

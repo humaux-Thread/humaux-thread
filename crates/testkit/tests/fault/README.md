@@ -33,3 +33,24 @@ rerank_provider_timeout.rs     rerank provider 注入读超时
 
 用 `humaux_testkit::assert_fault_observed`（见 `crates/testkit/src/lib.rs`）
 统一这两条断言，避免每个文件各写一套判定逻辑。
+
+## 真实路径或登记休眠（M01 D4 / G-M01-4，ADR-0077）
+
+"从未被触发过的 reason 不许合并"（§53.4）只有在测试走的是生产代码时才成立。`architecture-check` 的 G-M01-4 把
+变体分成两类，两个方向都会红：
+
+```text
+有生产 emit 点     非测试代码里有 abstain(<路径>::X, ..) 或 .also(<路径>::X)（限定路径、别名、glob、turbofish 都算）
+                   → 本目录里的测试必须驱动发出它的生产函数，文件里不得出现 `abstain` 或 `.also`
+                   （当前三个：projection_lag / projection_invisible_loss / lane_substituted，
+                    经 retrieval::envelope 的 build_projection_block / dense_lane_substitution）
+无生产 emit 点     → 必须是 dormant.toml 的一行（variant + owner 卡 + reason），测试保留合成注入
+                   （直接调用 abstain()）；该变体一旦有了 emit 点，这一行必须删掉，账本只减不增
+```
+
+新增变体：先看它有没有生产 emit 点；没有就在 `dormant.toml` 加一行并写明哪张卡会加 emit 点。
+
+两条兜底（同一道闸）：生产代码里第一个参数不是变体路径的 `abstain(..)` / `.also(..)`（形参、局部变量、表达式）
+无法归属，直接红并指出 file:line；本目录里每个 `*.rs` 必须在 `tests/fault_main.rs` 有相邻的
+`#[path = "fault/<stem>.rs"] mod <stem>;`，否则 cargo 根本不编译它。
+
