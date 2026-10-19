@@ -398,6 +398,8 @@ labelled "dev-host start value, A5 re-measure required" (R-10). `deploy/release/
 budget line but the parse-sandbox peak is some service's `mem_limit` and every `mem_limit`/`memswap_limit` reads a
 sizing key.
 
+Addendum (2026-10-19, M23/M24 gate): the rehearsal gateway ceiling is 564 MiB, not 256 (sum 3 908 MiB, not 3 600) — it must hold the M12 query-embedding cache `values/gateway.env` enables — and CI runs `cargo xtask deploy-env`: `values/*.env` against the generated examples (D-R (a), both directions) and every sizing profile's gateway ceiling against the cache.
+
 ### D-I — observability in prod.yml, one renderer (S6)
 
 Prometheus / Alertmanager / otel-collector moved into prod.yml with the card-34 pins, flags and 30 d retention, in

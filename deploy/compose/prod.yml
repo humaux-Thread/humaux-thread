@@ -363,10 +363,10 @@ services:
     volumes:
       - sock-retrieval:/run/humaux/sock-retrieval
     # M12 (Baseline §51, ADR-0076): this ceiling must hold the in-process query-embedding cache on top of the gateway's
-    # own working set: HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES (registry default 256 MiB) plus ~10% moka overhead, so
-    # HUMAUX_SIZE_GATEWAY_MEM >= working set + 282 MiB while the cache is on. The cache fills only with distinct queries.
-    # ponytail: at rehearsal size (sizing-rehearsal.env, 256 MiB) the cache default equals the whole container cap, so a
-    # rehearsal that fills the cache would OOM the gateway; the B23 load test sets the real M12 D5 sizes and this cap.
+    # own working set: HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES of values/gateway.env plus moka's overhead plus the
+    # working set, in every sizing-*.env, whenever values/gateway.env enables the cache. `cargo xtask deploy-env` (CI)
+    # pins that arithmetic and that the two limits below follow HUMAUX_SIZE_GATEWAY_MEM; its constants are the only copy. The cache fills only with distinct queries.
+    # ponytail: the working-set term is a start value; the B23 load test sets the real M12 D5 sizes and this cap.
     mem_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
     memswap_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
     cpus: ${HUMAUX_SIZE_GATEWAY_CPUS:?}
