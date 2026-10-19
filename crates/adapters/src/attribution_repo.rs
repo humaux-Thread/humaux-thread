@@ -22,6 +22,7 @@ use humaux_domain::relation::RelationKind;
 use sqlx::types::Uuid;
 
 use crate::memory_repo::MemoryAttribution;
+use crate::byok;
 
 /// The M29 attribution ladder (A1, then A3). Stateless: each composition root holds one and lends it to the door.
 #[derive(Debug, Clone, Copy)]
