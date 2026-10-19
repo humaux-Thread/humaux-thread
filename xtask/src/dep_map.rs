@@ -4612,6 +4612,40 @@ fn unknown_value_keys(examples: &[EnvFile], values: &[EnvFile]) -> Vec<String> {
     reasons
 }
 
+/// Compose 2.38 (the CI runner's) ignores `--no-env-resolution`: its `config` output is byte-identical with and
+/// without the flag, inlines every env_file into `environment:` and drops the `env_file` key (targeted run
+/// 39200887824), so [`deploy_check::compose_env_sources`] finds no process for such a service. A service without
+/// `env_file` belongs to each process whose non-empty values file its `environment:` carries whole.
+fn inlined_env_sources(doc: &serde_json::Value, values: &[EnvFile]) -> Vec<EnvFile> {
+    let services = doc.get("services").and_then(serde_json::Value::as_object);
+    let mut sources = Vec::new();
+    for (name, svc) in services.into_iter().flatten() {
+        let Some(env) = svc
+            .get("environment")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        if svc.get("env_file").is_some() {
+            continue;
+        }
+        for file in values.iter().filter(|f| !f.entries.is_empty()) {
+            if file.entries.iter().all(|(key, _)| env.contains_key(key)) {
+                sources.push(EnvFile {
+                    name: format!("compose/{name}:environment"),
+                    process: file.process.clone(),
+                    entries: env
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_owned()))
+                        .collect(),
+                    unreadable: Vec::new(),
+                });
+            }
+        }
+    }
+    sources
+}
+
 /// ADR-0066 D-R (a) as the node's `deploy-check --env` judges it: placement over values and secrets, then presence
 /// per example key and the foreign-secret rule, with the empty values of the secret fixture filled in. `doc` is the
 /// compose document (`docker compose config --format json --no-env-resolution`).
@@ -4623,7 +4657,8 @@ fn env_file_reasons(
 ) -> Vec<String> {
     let all: Vec<EnvFile> = values.iter().chain(&secrets).cloned().collect();
     let mut reasons = deploy_check::placement_reasons(&all);
-    let (compose, unreadable) = deploy_check::compose_env_sources(doc);
+    let (mut compose, unreadable) = deploy_check::compose_env_sources(doc);
+    compose.extend(inlined_env_sources(doc, values));
     reasons.extend(unreadable);
     for (_, value) in secrets.iter_mut().flat_map(|f| f.entries.iter_mut()) {
         if value.is_empty() {
@@ -6542,6 +6577,40 @@ mod tests {
         assert_eq!(
             env_file_reasons(&examples, &values, no_secret, &doc),
             vec!["key_missing:gateway:HUMAUX_GATEWAY_PG_DSN".to_owned()]
+        );
+    }
+
+    /// Compose 2.38 inlines env_files (no `env_file` key): the service is attributed by the values file it carries
+    /// whole, and a stranger service with a same-named key does not satisfy the process. Fault: drop
+    /// [`inlined_env_sources`] ⇒ the green case is red (CI run 39199098039); attribute by key name alone ⇒ the
+    /// stranger case is green.
+    #[test]
+    fn deploy_env_presence_reads_an_inlined_render() {
+        let (examples, values, secrets, _) = deploy_env_inputs();
+        let inlined = |gateway: serde_json::Value, other: serde_json::Value| {
+            json!({ "services": {
+                "gateway": { "image": "humaux-gateway:t", "environment": gateway },
+                "other": { "image": "humaux-ops:t", "environment": other } } })
+        };
+        let full = json!({ "HUMAUX_GATEWAY_LIMIT": "5", "HUMAUX_GATEWAY_PG_DSN": "", "HUMAUX_GATEWAY_CELL_ID": "c" });
+        assert_eq!(
+            env_file_reasons(
+                &examples,
+                &values,
+                secrets.clone(),
+                &inlined(full.clone(), json!({}))
+            ),
+            Vec::<String>::new()
+        );
+        let mut no_cell = full;
+        no_cell
+            .as_object_mut()
+            .expect("object")
+            .remove("HUMAUX_GATEWAY_CELL_ID");
+        let stranger = json!({ "HUMAUX_GATEWAY_CELL_ID": "c" });
+        assert_eq!(
+            env_file_reasons(&examples, &values, secrets, &inlined(no_cell, stranger)),
+            vec!["key_missing:gateway:HUMAUX_GATEWAY_CELL_ID".to_owned()]
         );
     }
 
