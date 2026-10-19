@@ -77,9 +77,6 @@ BEGIN
     IF pg_input_is_valid(substr(NEW.decided_by, 11), 'uuid') THEN
       v_principal := substr(NEW.decided_by, 11)::uuid;
     END IF;
-    IF NOT private.relation_principal_is_member(NEW.tenant_id, v_principal) THEN
-      RAISE EXCEPTION '%: decided_by is not a live member of this tenant', TG_TABLE_NAME USING ERRCODE = '23503';
-    END IF;
   END IF;
   IF TG_ARGV[0] = 'SUBJECT' THEN
     SELECT s.kind INTO v_src_kind FROM private.subjects s
