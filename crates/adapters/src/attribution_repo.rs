@@ -54,7 +54,7 @@ const A3_TASK_RUN: &str = "INSERT INTO private.memory_projects \
           ORDER BY ptr.relation_id, ptr.revision DESC) cur ON true \
       WHERE etr.tenant_id = $1 AND etr.evidence_id = $3 \
         AND cur.relation_kind = $6 \
-        AND e.occurred_at IS NOT NULL AND cur.valid @> e.occurred_at \
+        AND cur.valid @> COALESCE(e.occurred_at, clock_timestamp()) \
      ON CONFLICT (tenant_id, memory_id, project_id) DO NOTHING";
 
 #[async_trait::async_trait]
