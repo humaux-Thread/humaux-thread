@@ -55,7 +55,7 @@ const A3_TASK_RUN: &str = "INSERT INTO private.memory_projects \
       WHERE etr.tenant_id = $1 AND etr.evidence_id = $3 \
         AND cur.relation_kind = $6 \
         AND e.occurred_at IS NOT NULL AND cur.valid @> e.occurred_at \
-     ON CONFLICT (tenant_id, memory_id, project_id) DO NOTHING";
+     ";
 
 #[async_trait::async_trait]
 impl MemoryAttribution for AttributionLadder {
