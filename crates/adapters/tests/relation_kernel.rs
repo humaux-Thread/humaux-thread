@@ -7,7 +7,8 @@
 //!   private.subject_relations] w=[control.api_keys, control.memberships, control.private_reasoning_domains,
 //!   control.tenants, control.users, control.workspaces, coord.tasks, private.continuity_projects, private.events,
 //!   private.evidence_objects, private.subjects] x=[private.relation_principal_is_member,
-//!   private.relation_triple_allowed, private.relation_valid_shape], PostgreSQL(role_gateway)];
+//!   private.relation_triple_allowed, private.relation_valid_shape], PostgreSQL(role_gateway),
+//!   PostgreSQL(role_migration_owner)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::relation_repo, domain::error, domain::identity, domain::relation,
 //!   domain::subject, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
@@ -697,7 +698,7 @@ fn g_m29_4_no_role_updates_or_deletes_revisions() {
                 format!("DELETE FROM {table} WHERE tenant_id = '{tenant}'"),
             ] {
                 let mut sp = txn.transaction().unwrap();
-                // dep: PostgreSQL(any) — test switches PG role to exercise RLS
+                // dep: PostgreSQL(role_migration_owner) — the owner's UPDATE / DELETE must reach the trigger
                 sp.batch_execute(&format!(
                     "SET LOCAL ROLE role_migration_owner; SELECT set_config('humaux.tenant_id', '{tenant}', true)"
                 ))

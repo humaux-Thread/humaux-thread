@@ -2,9 +2,9 @@
 //!   writes exactly the formal `memory_projects` rows that rungs A1 and A3 ground on the Memory's attribution Evidence,
 //!   and nothing when no rung holds.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) r=[private.memory_projects] w=[coord.task_runs, private.continuity_projects,
-//!   private.distill_candidates, private.evidence_projects, private.evidence_task_runs, private.memory_projects,
-//!   private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
+//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_projects] w=[coord.task_runs,
+//!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
+//!   private.memory_projects, private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
 //!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
@@ -202,9 +202,9 @@ fn project(handle: &Handle, project: Uuid) -> String {
     )
 }
 
-/// One `project_task_relations` revision; `valid` is a multirange literal (`{}` retracts). `authorization` must be an
-/// Evidence of `tenant` (0253's FK): the test's put.
-#[allow(clippy::too_many_arguments)] // one argument per fixture column
+/// One `project_task_relations` revision; `valid` is a multirange literal (`{}` retracts). Its authorisation
+/// Evidence (0253's FK) is the tenant's lowest Evidence id: every caller seeds after a put, and the ordered pick keeps
+/// the fixture deterministic without widening every call site.
 fn relation(
     tenant: Uuid,
     relation: Uuid,
@@ -213,13 +213,13 @@ fn relation(
     task: TaskId,
     kind: RelationKind,
     valid: &str,
-    authorization: Uuid,
 ) -> String {
     format!(
         "INSERT INTO private.project_task_relations (tenant_id, relation_id, revision, src_id, dst_id, \
            relation_kind, valid, decided_by, factual_evidence_ids, authorization_evidence_id) \
          VALUES ('{tenant}', '{relation}', {revision}, '{project}', '{}', '{}', '{valid}', 'rule:fixture@1', \
-           '{{}}', '{authorization}')",
+           '{{}}', (SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = '{tenant}' \
+                    ORDER BY evidence_id LIMIT 1))",
         task.0,
         kind.as_str()
     )
@@ -374,36 +374,9 @@ fn g_t06a_a3_inherits_only_current_contains() {
             project(&handle, p1),
             project(&handle, p2),
             project(&handle, p3),
-            relation(
-                t,
-                r1,
-                1,
-                p1,
-                t1,
-                RelationKind::Contains,
-                CONTAINS_WINDOW,
-                inside,
-            ),
-            relation(
-                t,
-                r2,
-                1,
-                p2,
-                t1,
-                RelationKind::References,
-                OPEN_WINDOW,
-                inside,
-            ),
-            relation(
-                t,
-                r3,
-                1,
-                p3,
-                t2,
-                RelationKind::Contains,
-                CONTAINS_WINDOW,
-                inside,
-            ),
+            relation(t, r1, 1, p1, t1, RelationKind::Contains, CONTAINS_WINDOW),
+            relation(t, r2, 1, p2, t1, RelationKind::References, OPEN_WINDOW),
+            relation(t, r3, 1, p3, t2, RelationKind::Contains, CONTAINS_WINDOW),
         ];
         assert_eq!(
             attribute(&handle, inside, &seed),
@@ -421,16 +394,7 @@ fn g_t06a_a3_inherits_only_current_contains() {
             "occurred_at outside P1's CONTAINS window"
         );
         let mut retracted = seed.clone();
-        retracted.push(relation(
-            t,
-            r1,
-            2,
-            p1,
-            t1,
-            RelationKind::Contains,
-            "{}",
-            inside,
-        ));
+        retracted.push(relation(t, r1, 2, p1, t1, RelationKind::Contains, "{}"));
         assert_eq!(
             attribute(&handle, inside, &retracted),
             Ok(Vec::new()),
@@ -450,16 +414,7 @@ fn g_t06a_a3_inherits_only_current_contains() {
         );
         let now = [
             project(&handle, p1),
-            relation(
-                t,
-                r1,
-                1,
-                p1,
-                t1,
-                RelationKind::Contains,
-                OPEN_WINDOW,
-                inside,
-            ),
+            relation(t, r1, 1, p1, t1, RelationKind::Contains, OPEN_WINDOW),
         ];
         assert_eq!(
             attribute(&handle, timeless, &now),
@@ -520,7 +475,6 @@ fn g_n09_3_unknown_stays_unknown() {
                 t1,
                 RelationKind::Contains,
                 OPEN_WINDOW,
-                evidence,
             ),
             relation(
                 t,
@@ -530,7 +484,6 @@ fn g_n09_3_unknown_stays_unknown() {
                 t1,
                 RelationKind::Contains,
                 OPEN_WINDOW,
-                evidence,
             ),
         ];
         assert_eq!(attribute(&handle, evidence, &seed), Ok(Vec::new()));
@@ -553,16 +506,7 @@ fn g_t06a_confirm_reads_the_source_evidence() {
         let (p1, r1, t) = (Uuid::now_v7(), Uuid::now_v7(), handle.tenant_id);
         let seed = [
             project(&handle, p1),
-            relation(
-                t,
-                r1,
-                1,
-                p1,
-                t1,
-                RelationKind::Contains,
-                CONTAINS_WINDOW,
-                e1,
-            ),
+            relation(t, r1, 1, p1, t1, RelationKind::Contains, CONTAINS_WINDOW),
         ];
         for sql in &seed {
             handle

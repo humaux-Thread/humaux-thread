@@ -348,6 +348,26 @@ and the failing lines are in the card's PR description.
   - r17: `use crate::byok;` in `attribution_repo.rs` -> G-N09-1 red: the attribution code names a model module.
   - The `AttributionSource` change leaves the fault lines of r10-r14, r16 and r17 verbatim (each still applies once on
     `9bed6b7`), so those records stand without a re-run.
+- T06d (PR #100), branches `red/m29-t06d-r1..r7` and `r3a..r3e` off `b52d025`:
+  - r1: 0253's FK line dropped -> G-T06d-1 red: an `authorization_evidence_id` that is no Evidence is accepted.
+  - r2: the guard's factual check dropped -> G-T06d-2 red: a factual id that is no Evidence is accepted.
+  - r3: the guard's membership check dropped -> G-T06d-3 red: a user ACTIVE only in another tenant decides.
+  - r3a: the predicate's `m.tenant_id = p_tenant_id` as `true` -> G-T06d-3 red: the same decoy decides.
+  - r3b: `AND m.state = 'ACTIVE'` dropped -> G-T06d-3 red: a SUSPENDED member decides.
+  - r3c: `AND k.revoked_at IS NULL` dropped -> G-T06d-3 red: a revoked key decides.
+  - r3d: `AND k.tenant_id = p_tenant_id` dropped -> G-T06d-3 red: another tenant's key, bound to a member here,
+    decides.
+  - r3e: the session-tenant pin as `SELECT true` -> G-T06d-3 red: the predicate answers true for another tenant.
+  - r4: 0253's CHECK line dropped -> G-T06d-4 red: the authorisation Evidence is accepted among the factual ones.
+  - r5: a red-only line in 0253 grants UPDATE on `private.subject_relations` to `role_admin` -> G-M29-4 red: the
+    privilege is held (issue #92 item 1: the old behavioural check could not see it, because `role_admin` has no
+    USAGE on `private`).
+  - r6: `Validity::new`'s `t >= PG_TIMESTAMPTZ_MIN_MICROS` guard dropped -> #92 item 2 red: `Micros(i64::MIN)` is
+    admitted.
+  - r7: the guard compares `relation_kind` only -> #92 item 3 red: a revision that moves `src_id` is accepted.
+  - r2 and r3 each remove one whole statement (6 and 3 lines); the others change one line. All stay inside 0253 or
+    `Validity::new`, because 0253's postcheck leaves the FKs, the CHECKs, the guard body and the predicate body to
+    these tests.
 
 ## Cards and experiments
 
