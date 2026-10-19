@@ -124,7 +124,6 @@ DECLARE
 BEGIN
   FOREACH t IN ARRAY ARRAY['project_task_relations', 'project_subject_relations', 'subject_relations'] LOOP
     EXECUTE format('ALTER TABLE private.%1$I ADD CONSTRAINT %1$s_authorization_evidence_fkey FOREIGN KEY (tenant_id, authorization_evidence_id) REFERENCES private.evidence_objects (tenant_id, evidence_id)', t);
-    EXECUTE format('ALTER TABLE private.%1$I ADD CONSTRAINT %1$s_authorization_not_factual CHECK (NOT (authorization_evidence_id = ANY (factual_evidence_ids)))', t);
     -- The FK's referencing-side lookup path (as 0249 does for src / dst).
     EXECUTE format('CREATE INDEX %1$s_authorization_evidence_idx ON private.%1$I (tenant_id, authorization_evidence_id)', t);
   END LOOP;
