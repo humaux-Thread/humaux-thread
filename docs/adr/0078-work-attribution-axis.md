@@ -368,8 +368,24 @@ and the failing lines are in the card's PR description.
   - r2 and r3 each remove one whole statement (6 and 3 lines); the others change one line. All stay inside 0253 or
     `Validity::new`, because 0253's postcheck leaves the FKs, the CHECKs, the guard body and the predicate body to
     these tests.
-  - Later commits change only fixtures, a dep tag, headers and generated docs; every fault line still applies once on
-    the final head, so the records stand without a re-run.
+  - Later commits change fixtures, a dep tag, headers and generated docs, and the review fixes below add two
+    predicate legs and more decoys; every fault line above still applies once on the final head, so these records
+    stand without a re-run.
+- T06d review fixes (PR #100), branches `red/m29-t06d-r3f..r3h`, `r8` and `r9` off `5bfbc1a`:
+  - r3f: `AND u.state = 'ACTIVE'` dropped from the predicate -> G-T06d-3 red: a SUSPENDED user whose membership is
+    ACTIVE decides.
+  - r3g: `AND t.state = 'ACTIVE'` dropped -> G-T06d-3 red: an ACTIVE member of a SUSPENDED tenant decides.
+  - r3h: the key leg's `k.user_id` as `coalesce(k.user_id, m.user_id)` -> G-T06d-3 red: a machine key (no user)
+    decides as any live member.
+  - r8: a red-only later migration grants EXECUTE on `private.relation_principal_is_member` to `role_admin` ->
+    rls-check "§6.1.4 relation principal predicate" red, run through
+    `rls_check::tests::relation_principal_predicate_gate_holds_on_the_migrated_schema` (the same call `cargo xtask
+    rls-check` makes in the CI gates job, which `targeted.yml` cannot reach). It is a later migration because
+    0253's postcheck pins that EXECUTE list.
+  - r9: the guard's `pg_input_is_valid` test as `IF true` -> G-T06d-3 red: `principal:not-a-uuid` raises 22P02
+    (INTERNAL) instead of 23503.
+  - The INVITED / REMOVED members, the key bound to a SUSPENDED user and the key of a non-member are refused by legs
+    r3b, r3f and r3a already break; the factual Evidence the writer cannot see is refused by the check r2 drops.
 
 ## Cards and experiments
 
