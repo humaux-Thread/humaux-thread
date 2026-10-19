@@ -46,6 +46,7 @@ closed_set! {
         ExternalKey => "EXTERNAL_KEY",
         /// A3 / A3': inherited from an already-formal relation under a registered rule (N09 R1 ③).
         Inherited => "INHERITED",
+        #[doc = "red r4"] ModelExtracted => "MODEL_EXTRACTED",
     }
 }
 
