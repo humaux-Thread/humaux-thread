@@ -681,9 +681,7 @@ pub fn dense_lane_substitution(
     if explicit_mode || *decision == PlannerDecision::Class(QueryClass::Semantic) {
         return Vec::new();
     }
-    abstain(DegradeCode::LaneSubstituted, ())
-        .degradations
-        .into_vec()
+    Vec::new()
 }
 
 fn outcome_block_under<T>(
