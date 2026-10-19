@@ -12,6 +12,7 @@
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
 
+const _R4: &str = "INSERT INTO private.evidence_projects";
 use std::time::Duration;
 
 use humaux_domain::{
