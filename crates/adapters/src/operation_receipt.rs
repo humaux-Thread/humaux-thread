@@ -525,6 +525,9 @@ async fn atomically(
     };
     // ADR-0078 D-D A1 (§6.1.4, as §6.1.3 for subject ids): resolved at the same point, so an unknown, foreign, archived
     // or invisible project is one INVALID_INPUT with nothing written or metered and no receipt row.
+    // ponytail: the reader is STABLE and takes no row lock, so an archive can commit between this check and COMMIT and
+    //   leave one DECLARED row on an archived project (design v0.2 §15.6, low harm); upgrade = a VOLATILE reader with
+    //   `FOR SHARE` on the project row.
     let declared = match project {
         Some(project) => Some(
             remember::resolve_declared_project_in_txn(&mut txn, &auth, project)

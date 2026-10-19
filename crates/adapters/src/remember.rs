@@ -478,8 +478,9 @@ pub(crate) struct DeclaredProject(ProjectId);
 /// ADR-0078 D-D rung A1 (§6.1.4): resolves a `remember.put` `project_id` before the first write, as §6.1.3 resolves
 /// subject ids. `Ok(None)` is every refusal: 0254's `private.declared_project_visible` answers one `false` for an
 /// unknown, another tenant's, archived or not-visible project, so the caller returns one `INVALID_INPUT` and the
-/// response is no existence oracle. `auth` is the receipt transaction's route-narrowed scope; its workspace set is the
-/// input 0137's continuity reader receives. The transaction's `humaux.tenant_id` must already be `auth`'s tenant
+/// response is no existence oracle. `auth` is the receipt transaction's route-narrowed scope (ADR-0078 D-D route
+/// narrowing): a workspace-routed put passes that one workspace, so a project in another workspace the caller is
+/// authorized for is refused too. The transaction's `humaux.tenant_id` must already be `auth`'s tenant
 /// (the reader raises 42501 otherwise).
 pub(crate) async fn resolve_declared_project_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,

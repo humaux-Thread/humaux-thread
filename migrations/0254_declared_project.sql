@@ -7,7 +7,7 @@
 --     is ACTIVE and lives in a workspace the caller is authorized for". No runtime role can read
 --     private.continuity_projects (0136 grants nothing), so the reader is owner SECURITY DEFINER with
 --     search_path=pg_catalog and EXECUTE for role_gateway only, as 0137's read_continuity_project_storage_v1.
---     p_authorized_workspace_ids is the same input 0137 receives: the request's AuthorizationScope workspace set.
+--     p_authorized_workspace_ids is the request's route-narrowed AuthorizationScope workspace set (ADR-0078 D-D).
 --   ② unknown, another tenant's, archived and not-visible projects are all `false`, one answer, so the caller
 --     (adapters::remember::resolve_declared_project_in_txn) maps them to one INVALID_INPUT and the response is not an
 --     existence oracle. ARCHIVED is refused like 0136's publish and 0137's read, the two existing project doors.

@@ -145,6 +145,13 @@ revoked.
 - When no rung holds, no row is written and the read path reports the memory as `unresolved` (REQ §3.4).
 - **Unknown declared project (gap ruling).** A declared `project_id` that is unknown in the tenant, or not visible to
   the caller, is `INVALID_INPUT` with zero writes, as for subject ids in §6.1.3.
+- **Archived declared project (design v0.2 §15.6).** An ARCHIVED project is refused like an unknown one:
+  `INVALID_INPUT`, zero writes. An archived project takes no new attribution, and one code for both is no existence
+  oracle. A replay of a put committed before the archive still returns its stored success (§34.0.1).
+- **Route narrowing (design v0.2 §15.6).** A workspace-routed put may declare only a project in that workspace; a
+  tenant-routed put may declare a project in any workspace the caller is authorized for. An Evidence belongs to one
+  workspace, and attributing it to another workspace's project would link `memory_projects` across the workspace
+  boundary. The receipt transaction resolves the project against the route-narrowed `AuthorizationScope`.
 - **Rollups (gap ruling).** Rollups live in `private.memory_rollups`, outside the door, and stay unattributed in the
   first slice (N09 R3); they are not Memories and have no `memory_projects` row. (`consolidate_repo` imports only
   `authority_class_to_db_str` from `memory_repo`; it never calls the door.) A rollup rung needs a later ADR amendment.

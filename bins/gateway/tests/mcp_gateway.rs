@@ -14271,7 +14271,7 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
 /// (design v0.2 §15, T04c) and `project_id` field (ADR-0078 D-D A1, T06c) are the only changes since card 40a's pin
 /// (main 17c5895). G25: `remember.put` gains no field, branch or response key from the note lane.
 const REMEMBER_SCHEMA_SHA256_WITHOUT_NOTE_LANE: &str =
-    "08fe5a9ecc2c1a1cb484ad02557da1247adfa1f38b3a8c0937d2d1268a957587";
+    "4b540cde2d3a00cec8d09d4c8eaa803acbe7335d42ecaf4961fc8ffac918bd74";
 
 /// A `tools/call` for tool `memory` built from a hand-written arguments object, so a test controls the exact bytes of the
 /// JSON text (escapes survive; `json!` would normalise `a` to `a`).
@@ -14762,7 +14762,10 @@ fn t06c_project(admin: &mut postgres::Client, tenant: Uuid, workspace: Uuid, sta
 /// archived one are each `INVALID_INPUT` with no receipt, Evidence or `evidence_projects` row, and the key stays
 /// unused; (b) a visible project is `accepted` with exactly one `DECLARED` row naming that Evidence and project; (c)
 /// (b)'s key with another visible project is `CONFLICT`, nothing written; (d) (b)'s bytes replayed after the project
-/// is archived return the stored success (§34.0.1: a replay never re-resolves).
+/// is archived return the stored success (§34.0.1: a replay never re-resolves). The four refusals are byte-equal
+/// (no existence oracle), and (a') a workspace-routed put cannot declare a project of another workspace the caller is
+/// authorized for (design v0.2 §15.6 route narrowing). remember.put has no tenant route on the wire (an unbound PAT
+/// naming no workspace is refused before the door), so the tenant-route arm is not exercised here.
 #[test]
 #[allow(clippy::too_many_lines)] // one causal chain over one server: four refusals, accept, changed project, replay
 fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
@@ -14802,6 +14805,33 @@ fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
                         (unauthorized, "ACTIVE"),
                     ]
                     .map(|(ws, state)| t06c_project(&mut handle.admin, tenant, ws, state));
+                    // A second workspace the user is an ACTIVE member of, and an unbound PAT whose scope is both.
+                    let second = handle.seed_workspace();
+                    handle
+                        .admin
+                        .execute(
+                            "INSERT INTO control.workspace_memberships(tenant_id,workspace_id,user_id,role,state) \
+                             VALUES($1,$2,$3,'MEMBER','ACTIVE')",
+                            &[&tenant, &second, &handle.user_id],
+                        )
+                        .expect("owner seeds the second workspace membership");
+                    let second_project = t06c_project(&mut handle.admin, tenant, second, "ACTIVE");
+                    let unbound_prefix =
+                        format!("t06u{}", &Uuid::now_v7().simple().to_string()[..12]);
+                    let unbound_wire = format!("{unbound_prefix}.{}", "q".repeat(32));
+                    let unbound = handle.seed_synthetic_service_credential(
+                        SyntheticCredentialScopes::RememberWrite,
+                        &unbound_prefix,
+                        &unbound_wire,
+                        &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &unbound_wire),
+                    );
+                    handle
+                        .admin
+                        .execute(
+                            "UPDATE control.api_keys SET workspace_id=NULL WHERE api_key_id=$1",
+                            &[&unbound.api_key_id],
+                        )
+                        .expect("owner unbinds the second PAT");
                     let runtime_handle = handle.rt.handle().clone();
                     let runtime = runtime_handle
                         .block_on(handle.fresh_runtime())
@@ -14813,6 +14843,7 @@ fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
 
                 // (a) one INVALID_INPUT for all four, nothing written; the first key stays free for (b).
                 let key = format!("g-t06c-1-{}", Uuid::now_v7());
+                let mut errors = Vec::new();
                 for (n, (name, project)) in [
                     ("unknown", Uuid::now_v7()),
                     ("foreign tenant", foreign_project),
@@ -14827,7 +14858,24 @@ fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
                         raw_request(address, &headers, &t06c_put(10 + n as u64, &key, workspace, project)).await;
                     assert_protocol_invalid_input(status, &refused);
                     assert_eq!(t06c_counts(&mut handle), before, "{name}: no receipt, Evidence or evidence_projects row");
+                    errors.push((name, refused["error"].to_string()));
                 }
+                // No existence oracle: the four `error` objects are byte-equal, not only their code.
+                for (name, error) in &errors {
+                    assert_eq!(error, &errors[0].1, "{name} vs {}: one refusal for all four", errors[0].0);
+                }
+
+                // (a') route narrowing (design v0.2 §15.6): an unbound PAT authorized for `workspace` and `second`
+                // puts to `workspace` and declares `second`'s ACTIVE project: INVALID_INPUT, nothing written.
+                let before = t06c_counts(&mut handle);
+                let (status, narrowed) = raw_request(
+                    address,
+                    &tool_call_headers("remember", unbound.bearer.as_str()),
+                    &t06c_put(15, &format!("g-t06c-1-w2-{}", Uuid::now_v7()), workspace, second_project),
+                )
+                .await;
+                assert_protocol_invalid_input(status, &narrowed);
+                assert_eq!(t06c_counts(&mut handle), before, "another authorized workspace's project: nothing written");
 
                 // (b) a visible project, under the key (a) refused four times: exactly one DECLARED row.
                 let before = t06c_counts(&mut handle);
