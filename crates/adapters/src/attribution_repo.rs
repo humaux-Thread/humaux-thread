@@ -50,7 +50,7 @@ const A3_TASK_RUN: &str = "INSERT INTO private.memory_projects \
        JOIN LATERAL ( \
          SELECT DISTINCT ON (ptr.relation_id) ptr.src_id, ptr.relation_kind, ptr.valid \
            FROM private.project_task_relations ptr \
-          WHERE ptr.tenant_id = tr.tenant_id AND ptr.dst_id = tr.task_id \
+          WHERE ptr.tenant_id = tr.tenant_id \
           ORDER BY ptr.relation_id, ptr.revision DESC) cur ON true \
       WHERE etr.tenant_id = $1 AND etr.evidence_id = $3 \
         AND cur.relation_kind = $6 \
