@@ -1,7 +1,8 @@
 # ADR-0078 — Work attribution axis: module M29, relation kernel, attribution ladder and rule N09
 
 - Status: Accepted (2026-10-19). Card M29 T01 (docs only). Content authority: design v0.2 "objects, relations and
-  attribution (M29)", baseline `ea7b459`, which the owner delegated on 2026-10-19.
+  attribution (M29)", baseline `ea7b459`, which the owner delegated on 2026-10-19. Amended the same day with the
+  design owner's rulings on review questions Q1, Q2 and Q4 (D-A, D-B, D-D).
 - Relates to: Baseline §6.1.3 (Subject axis), §6.1.4 (this ADR's normative home), §25.3.1 (project continuity),
   §25.4 (`context_bindings`), §33.10 rule 9 (two-step confirm), §15 (`commit_seq`), §78.2, §78.6, §80.1;
   ADR-0018 (confirm-token gate), ADR-0020 (lifecycle log), ADR-0027 / ADR-0028 / ADR-0029 (Subject axis).
@@ -39,8 +40,11 @@ deterministic inheritance rules for task runs and capture contexts.
 ### D-A Module M29 and data ownership
 
 - New module **M29 "work attribution and relation registry"** at layer **L4** (the layering of module map v3 §2, where
-  L0 → L6 may only depend downward). Declared same-layer edge **M15 → M29**: Distill produces memories and calls the
-  attribution resolver.
+  L0 → L6 may only depend downward).
+- **Edges (Q1 ruling).** M29 → M07: M29 implements the attribution port that M07 defines next to the Memory INSERT
+  door (D-D). Composition roots → M29: the gateway and worker processes (L4 and above) construct the M29
+  implementation and hand it to callers of the door; the Distill worker's edge is the declared same-layer
+  **M15 → M29**. There is no L3 → L4 edge.
 - M29 owns the relation-kernel tables (D-C), `evidence_projects` / `memory_projects` / the revocation table (D-D), and,
   later, the candidate table, the vocabulary tables (D-H) and the workflow registry.
 - **Contract ownership of `private.continuity_projects` moves from M14 (L5) to M29.** M29 depends on the project
@@ -53,14 +57,17 @@ deterministic inheritance rules for task runs and capture contexts.
 
 ### D-B SubjectKind / SubjectKeyKind extension (authorised here, implemented by T02)
 
-- `SubjectKind` gains **`BUSINESS`, `BRAND`, `PRODUCT`, `WEBSITE`, `CHANNEL_ACCOUNT`**. `SubjectKeyKind` gains
-  **`DOMAIN`** and the other first-batch namespaces that T02 lands (for example a platform seller id as the key of a
-  `CHANNEL_ACCOUNT`). Both remain frozen closed sets, expand-only, reconciled DB ↔ Rust by contract test (§78.2).
-- A domain is a key of a `WEBSITE`, not an object: changing the domain does not change the website.
-- A product line is one `PRODUCT` that other `PRODUCT`s point at with `PART_OF`. **`PRODUCT_LINE` is not added**;
-  whether it needs its own kind is decided by experiment E-C.
-- **`CHANNEL_ACCOUNT` is provisional.** REQ §3.2 does not list it; it enters the first slice on the owner's delegation,
-  and whether it holds is decided by E-C. Whether `DOMAIN` is an exclusive identity key is also E-C.
+- `SubjectKind` gains **`BUSINESS`, `BRAND`, `PRODUCT`, `WEBSITE`** (T02). It remains a frozen closed set,
+  expand-only, reconciled DB ↔ Rust by contract test (§78.2).
+- **Provisional kinds wait for E-C (Q2 ruling).** `CHANNEL_ACCOUNT` (not listed in REQ §3.2) and `PRODUCT_LINE` do not
+  enter the closed set until experiment E-C accepts them. An accepted kind is added by a later ADR-amendment card; a
+  rejected kind needs no removal, because it was never added. Until then a product line is one `PRODUCT` that other
+  `PRODUCT`s point at with `PART_OF`.
+- **No new `SubjectKeyKind` in T02 (Q4 ruling).** `subject_keys` is `UNIQUE(tenant_id, key_kind, key_value)` (§6.1.3),
+  so every key kind is an exclusive identity key per tenant. A namespace becomes a `SubjectKeyKind` only after E-C
+  shows it is exclusive. Shared locators (a domain served by several sites, a path, a remote) are never
+  `SubjectKeyKind`s. Key namespaces arrive with A2 (deferred), not in T02.
+- A domain is never an object: changing the domain does not change the website.
 - Repository is **not** a `SubjectKind`. It keeps `control.repositories`; its exclusive key is
   `(provider, platform immutable id / node_id)`, with remote URL and path as locators only (GH-REPO, GH-RENAME). The
   Project —TARGETS→ Repository endpoint is deferred.
@@ -99,8 +106,11 @@ One SQL template and one Rust kernel serve every relation pair:
 | Table | First-slice whitelist |
 |---|---|
 | `project_task_relations` | Project —CONTAINS→ Task; Project —REFERENCES→ Task (only CONTAINS counts toward a project's workload) |
-| `project_subject_relations` | Project —TARGETS→ {WEBSITE, PRODUCT, CHANNEL_ACCOUNT, BRAND}; Project —SERVES→ {BUSINESS, BRAND} |
-| `subject_relations` | WEBSITE / CHANNEL_ACCOUNT / PRODUCT —OWNED_BY→ BRAND; BRAND —OWNED_BY→ BUSINESS; PRODUCT —PART_OF→ PRODUCT |
+| `project_subject_relations` | Project —TARGETS→ {WEBSITE, PRODUCT, BRAND}; Project —SERVES→ {BUSINESS, BRAND} |
+| `subject_relations` | WEBSITE / PRODUCT —OWNED_BY→ BRAND; BRAND —OWNED_BY→ BUSINESS; PRODUCT —PART_OF→ PRODUCT |
+
+Design v0.2 also lists `CHANNEL_ACCOUNT` in TARGETS and OWNED_BY. Those triples join the whitelist with the kind, in the
+same ADR-amendment card, if E-C accepts it (D-B).
 
 Deferred: Project → Project (PART_OF, DEPENDS_ON, REORGANIZED_INTO) with cycle detection under a tenant graph lock;
 workflow relations; repository relations.
@@ -130,10 +140,17 @@ revoked.
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
   from it. Dependent continuity outputs keep the existing `continuity_facet_memory_links` + sha check and read as
   damaged on mismatch.
-- **Single call site.** `link_memory_projects` is called in one place, next to the subject resolve hook, inside the
-  workspace's only Memory INSERT. At `ea7b459` that door is `adapters::memory_repo::insert_memory_in_txn`
-  (`crates/adapters/src/memory_repo.rs:1`, `:107`; M07 D9, G-M07-1), not `adapters::distill_repo::insert_memory` as
-  the design and §6.1.3 name it. See open question Q1 on the layer edge this implies.
+- **Single call site through an M07-owned port (Q1 ruling).** The workspace's only Memory INSERT is
+  `adapters::memory_repo::insert_memory_in_txn` (`crates/adapters/src/memory_repo.rs:1`, `:107`; M07 D9, G-M07-1).
+  Design v0.2 named it `adapters::distill_repo::insert_memory`. That door is an M07 (L3) file, so it cannot call M29
+  (L4) directly. Instead:
+  - M07 defines an attribution port next to the door (a `MemoryAttribution` trait or fn-pointer struct).
+  - `insert_memory_in_txn` takes the port as a **required** argument, never `Option` and never a default or no-op. It
+    invokes the port **exactly once**, in the caller's transaction, after the memory row is written.
+  - M29 implements the port (`link_memory_projects` behind it). Callers obtain the implementation from their
+    composition root (D-A).
+  - A no-op implementation in production code is forbidden. Tests use the real M29 implementation. T06 validates the
+    design.
 - Candidates (deferred): a separate table with `proposed_by=model@ver`, score and state; readable only through a
   candidate API and labelled when used; never counted. A candidate becomes formal only when an A1–A4 condition appears,
   or when the user confirms a concrete manifest (D-G), and only if it passes the independence test (N09 R5).
@@ -228,7 +245,7 @@ implements it; until then these ids are a plan, not registry entries.
 | G-M29-2 interval shape | `[]`, explicit infinity and an unbounded lower bound are rejected by the CHECK | drop the `upper_inc` test from the CHECK function |
 | G-M29-3 CAS | two connections writing with the same `expected_revision` concurrently: exactly one succeeds | drop the revision check |
 | G-M29-4 append-only | UPDATE / DELETE by any runtime role fails | grant UPDATE |
-| G-M29-5 single call site | `link_memory_projects` has exactly one call (`== 1`), inside the Memory INSERT door | add a second call |
+| G-M29-5 single call site | the attribution port is invoked exactly once, inside `memory_repo::insert_memory_in_txn` (`== 1`), and the door's signature requires it | (a) a second invocation; (b) making the port parameter `Option` / defaulted |
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
@@ -238,13 +255,14 @@ implements it; until then these ids are a plan, not registry entries.
 ## Cards and experiments
 
 - **T01** (docs): this ADR, Baseline §6.1.4 with N09, the `context_bindings` boundary sentence (§25.4).
-- **T02** (M07): `SubjectKind` / `SubjectKeyKind` expansion per D-B; migration, domain enum, contract test. Gate G-M29-1.
+- **T02** (M07): `SubjectKind` += `BUSINESS`, `BRAND`, `PRODUCT`, `WEBSITE`; no new `SubjectKeyKind` (D-B);
+  migration, domain enum, contract test. Gate G-M29-1.
 - **T03** (contract): `continuity_projects` contract ownership M14 → M29; contract and module registration only.
 - **T04** (M18 + M06): minimal task-run lifecycle (principal, lease, verification port) and the `evidence_task_runs`
   carrier; a write after lease expiry does not inherit.
 - **T05** (M29): relation kernel, SQL template + Rust kernel + the three pairs. Gates G-M29-2/3/4.
-- **T06** (M29 + M15): attribution tables and `link_memory_projects` with A1, A3, A3'; single call site. Gates
-  G-M29-5/6, G-N09-1/3.
+- **T06** (M29 + M15): attribution tables and `link_memory_projects` with A1, A3, A3' behind the M07 attribution port;
+  the door's required port argument and the composition-root wiring (D-D). Gates G-M29-5/6, G-N09-1/3.
 - **T07** (M29): first E2E on a synthetic fixture (website A, projects P1 / P2, shared task T1, same-name trap
   project, three messages, one correction, plus replay, revoked access and faults). Gates G-N09-3/4.
 - **E-A** precision per ladder rung (A1 / A3 / A3' × relation kind × source scope), binding correctness and
@@ -252,7 +270,8 @@ implements it; until then these ids are a plan, not registry entries.
   bound ≤ 0.5% [starting value] per cell with LTT multiplicity control.
 - **E-B** (deferred, with A5) paired comparison of candidate generators by exact conditional McNemar, reporting
   coverage beside precision.
-- **E-C** object-kind coverage on the owner's real portfolio: `PRODUCT_LINE`, `CHANNEL_ACCOUNT`, `DOMAIN` exclusivity,
+- **E-C** object-kind coverage on the owner's real portfolio: acceptance of `PRODUCT_LINE` and `CHANNEL_ACCOUNT`,
+  exclusivity of each candidate key namespace (`DOMAIN` first),
   the five workflow and six repository scenarios; κ reported only as human–model agreement, diagnostic only.
 - **E-D** models-off consistency, row-for-row and zero external calls (G-N09-4).
 - **E-F** vocabulary evolution gate (D-H).
@@ -281,19 +300,30 @@ implements it; until then these ids are a plan, not registry entries.
 - Calling a CP interval "exact" after an n/DEFF adjustment for correlated samples: replaced by one decision per
   cluster.
 
+## Review questions closed by ruling (design owner, 2026-10-19)
+
+- **Q1 Layer edge of the single call site.** The design asked T01 to check its edges against the repository instead of
+  inferring them. That check found the Memory INSERT door is M07's `memory_repo::insert_memory_in_txn` (L3), which
+  also serves `memory.confirm`, `memory.correct` and `memory.note_put`. A direct call from there to M29 would be an
+  L3 → L4 edge.
+  - **Ruling:** dependency inversion through an M07-owned port. The port is a required argument and is invoked exactly
+    once. M29 implements it, and composition roots supply it.
+  - **Edges:** M29 → M07 and composition roots → M29, with no L3 → L4 edge (D-A, D-D).
+  - **Gate:** G-M29-5 is restated to match.
+- **Q2 Provisional kinds under an expand-only set.**
+  - **Ruling:** provisional kinds do not enter the closed set until E-C accepts them. T02 adds only `BUSINESS`,
+    `BRAND`, `PRODUCT` and `WEBSITE`.
+  - `CHANNEL_ACCOUNT` and `PRODUCT_LINE` each wait for E-C. If E-C accepts one, a later ADR-amendment card adds it.
+    If E-C rejects one, nothing is removed, because nothing was added (D-B).
+- **Q4 Key kinds under `UNIQUE(tenant_id, key_kind, key_value)`.**
+  - **Ruling:** T02 adds no new `SubjectKeyKind`. `subject_keys` uniqueness makes every key kind an exclusive identity
+    key per tenant, so a namespace becomes a `SubjectKeyKind` only after E-C shows it is exclusive.
+  - Shared locators (a domain served by several sites, paths, remotes) are never `SubjectKeyKind`s.
+  - Key namespaces arrive with A2 (deferred), not in T02 (D-B).
+
 ## Open questions
 
-- **Q1 Layer edge of the single call site.** Design v0.2 puts `link_memory_projects` in the Memory INSERT door and
-  declares M15 → M29. At `ea7b459` the door is M07's `memory_repo::insert_memory_in_txn` (M07 is L3), and it also
-  serves `memory.confirm` / `memory.correct` / `memory.note_put`. A call from there is an L3 → L4 edge. The design
-  asks T01 to check direction against the repository rather than infer it; the measured result is this conflict.
-  It is not ruled here; T06 resolves it before code, and the dep-map check then confirms it.
-- **Q2 `CHANNEL_ACCOUNT` under expand-only.** T02 adds it to a closed set that only grows, while E-C decides whether it
-  holds. The design does not say what happens to the variant if E-C rejects it. Decided with E-C.
-- **Q3 `PRODUCT_LINE` as its own kind.** UNKNOWN; E-C.
-- **Q4 `DOMAIN` exclusivity.** UNKNOWN; E-C. Today `subject_keys` is `UNIQUE(tenant_id, key_kind, key_value)` (§6.1.3),
-  so `DOMAIN` keys landed by T02 are unique per tenant from the start; the design's shared-locator case (§9 of the
-  design) is not covered until E-C rules.
+- **Q3 `PRODUCT_LINE` as its own kind.** UNKNOWN; E-C, and it enters only under the Q2 ruling.
 - **Q5 Workflow identity.** Recommended: a light registry (WorkflowId → definition versions, each pinning a
   Procedure Memory revision; runs pin both). The table shape is an engineering ruling; E-C's five workflow scenarios
   test it.
