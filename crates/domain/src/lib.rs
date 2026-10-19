@@ -31,6 +31,7 @@ pub mod memory;
 pub mod note;
 pub mod policy;
 pub mod public;
+pub mod relation;
 pub mod selection;
 pub mod subject;
 pub mod temporal;

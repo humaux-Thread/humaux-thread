@@ -62,6 +62,7 @@ pub mod read_materialize;
 pub mod reasoning_route_admission;
 pub mod reasoning_route_onboarding;
 pub mod rebuild;
+pub mod relation_repo;
 pub mod remember;
 pub mod request_guard_repo;
 pub mod retrieval_embedding_rpc;

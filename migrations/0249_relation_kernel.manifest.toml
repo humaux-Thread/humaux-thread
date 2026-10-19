@@ -1,0 +1,81 @@
+# §46.1 migration manifest. Card M29 T05 / ADR-0078 D-C (§6.1.4 relation kernel): three new private revision tables
+# (project_task_relations, project_subject_relations, subject_relations) from one template: PK (tenant_id,
+# relation_id, revision), tenant-leg FKs, relation_kind CHECK, valid-shape CHECK, FORCE RLS + NULLIF tenant policy,
+# owner role_migration_owner, NAMED §6.2.2 grants (gateway SELECT+INSERT, maintenance SELECT, nobody UPDATE/DELETE),
+# a BEFORE INSERT guard (whitelist, contiguous revision, immutable edge) and a BEFORE UPDATE OR DELETE append-only
+# trigger. Four new functions. Existing objects: continuity_projects and coord.tasks each gain one UNIQUE (tenant_id,
+# id) whose columns already contain the primary key. No DML. §46 forward-fix (EXPAND_CONTRACT, first free number
+# after 0248).
+
+migration_id = "0249_relation_kernel"
+class = "EXPAND_CONTRACT"
+
+precheck = """
+select to_regclass('private.continuity_projects') is not null
+ and to_regclass('coord.tasks') is not null
+ and to_regclass('private.subjects') is not null
+ and to_regclass('private.project_task_relations') is null
+ and to_regclass('private.project_subject_relations') is null
+ and to_regclass('private.subject_relations') is null
+ and to_regprocedure('private.relation_valid_shape(tstzmultirange)') is null
+ and to_regprocedure('private.relation_triple_allowed(text,text,text)') is null
+ and to_regprocedure('private.relation_revision_guard()') is null
+ and to_regprocedure('private.reject_relation_revision_change()') is null
+ and not exists (select 1 from pg_constraint
+                  where conname in ('continuity_projects_tenant_project_key', 'tasks_tenant_task_key'))
+ as precheck_ok
+"""
+
+# Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause, a PK that is not
+# exactly (tenant_id, relation_id, revision), an FK without the tenant leg, a missing named CHECK or trigger, a
+# mutable CHECK function, or any UPDATE / DELETE grant / a non-gateway INSERT grant.
+postcheck = """
+with t(name) as (values ('project_task_relations'), ('project_subject_relations'), ('subject_relations')),
+c as (select t.name, to_regclass('private.' || t.name) as oid from t)
+select (select count(*) = 3 from c join pg_class k on k.oid = c.oid
+         where k.relrowsecurity and k.relforcerowsecurity and pg_get_userbyid(k.relowner) = 'role_migration_owner')
+ and (select count(*) = 3 from c join pg_policies p on p.schemaname = 'private' and p.tablename = c.name
+       where p.qual like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.with_check like '%NULLIF(current_setting(''humaux.tenant_id''%')
+ and (select count(*) = 3 from c join pg_constraint k on k.conrelid = c.oid and k.contype = 'p'
+       where (select array_agg(a.attname::text order by u.i)
+                from unnest(k.conkey) with ordinality u(n, i)
+                join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.n)
+             = array['tenant_id', 'relation_id', 'revision'])
+ and (select count(*) = 6 from c join pg_constraint k on k.conrelid = c.oid and k.contype = 'f'
+       where array_length(k.conkey, 1) = 2 and k.confdeltype = 'a')
+ and (select count(*) = 3 * 7 from c join pg_constraint k on k.conrelid = c.oid and k.contype = 'c'
+       where k.conname in (c.name || '_relation_id_v7', c.name || '_revision_positive',
+                           c.name || '_relation_kind_check', c.name || '_valid_shape',
+                           c.name || '_decided_by_format', c.name || '_proposed_by_format',
+                           c.name || '_factual_evidence_no_null'))
+ and (select count(*) = 6 from c join pg_trigger g on g.tgrelid = c.oid
+       where not g.tgisinternal and g.tgname in (c.name || '_guard', c.name || '_append_only'))
+ and (select bool_and(p.provolatile = 'i')
+        from pg_proc p where p.oid in (to_regprocedure('private.relation_valid_shape(tstzmultirange)'),
+                                       to_regprocedure('private.relation_triple_allowed(text,text,text)')))
+ and (select count(*) = 4 from pg_proc p
+       where p.oid in (to_regprocedure('private.relation_valid_shape(tstzmultirange)'),
+                       to_regprocedure('private.relation_triple_allowed(text,text,text)'),
+                       to_regprocedure('private.relation_revision_guard()'),
+                       to_regprocedure('private.reject_relation_revision_change()'))
+         and not p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and exists (select 1 from pg_constraint where conname = 'continuity_projects_tenant_project_key'
+              and conrelid = to_regclass('private.continuity_projects') and contype = 'u')
+ and exists (select 1 from pg_constraint where conname = 'tasks_tenant_task_key'
+              and conrelid = to_regclass('coord.tasks') and contype = 'u')
+ and (select bool_and(has_table_privilege('role_gateway', c.oid, 'SELECT')
+                      and has_table_privilege('role_gateway', c.oid, 'INSERT')
+                      and has_table_privilege('role_maintenance', c.oid, 'SELECT')
+                      and not has_table_privilege('role_maintenance', c.oid, 'INSERT')) from c)
+ and not exists (select 1 from c cross join (values ('role_gateway'), ('role_private_worker'),
+                   ('role_consolidation_worker'), ('role_public_worker'), ('role_retrieval_worker'),
+                   ('role_batch_issuer'), ('role_maintenance'), ('role_admin')) r(role)
+                  where has_table_privilege(r.role, c.oid, 'UPDATE') or has_table_privilege(r.role, c.oid, 'DELETE')
+                     or has_table_privilege(r.role, c.oid, 'TRUNCATE')
+                     or (r.role <> 'role_gateway' and has_table_privilege(r.role, c.oid, 'INSERT')))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while all three tables are empty: DROP TABLE private.subject_relations, private.project_subject_relations, private.project_task_relations; DROP FUNCTION private.relation_revision_guard(), private.reject_relation_revision_change(), private.relation_triple_allowed(text,text,text), private.relation_valid_shape(tstzmultirange); ALTER TABLE coord.tasks DROP CONSTRAINT tasks_tenant_task_key; ALTER TABLE private.continuity_projects DROP CONSTRAINT continuity_projects_tenant_project_key; and remove humaux_domain::relation / humaux_adapters::relation_repo and the three §6.2.2 columns in the same release. Forward-fix only once any revision row exists: relation history is append-only and is never discarded silently."
+backup_restore_requirement = "none: three new empty tables, four new functions, and two UNIQUE constraints over columns that already contain each table's primary key; no existing row, policy or grant is touched."

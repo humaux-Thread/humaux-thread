@@ -1567,6 +1567,35 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
         "role_maintenance",
         ["SELECT"]
     ),
+    // 0249 (ADR-0078 D-C, M29 T05) relation kernel: append-only revision tables. gateway is the one writer
+    // (CAS = INSERT of expected_revision + 1) and reads; maintenance reads. Nobody holds UPDATE/DELETE (the owner
+    // trigger rejects both). Every other non-owner role — (absence == no grant).
+    cell!(
+        "private.project_task_relations",
+        "role_gateway",
+        ["SELECT", "INSERT"]
+    ),
+    cell!(
+        "private.project_task_relations",
+        "role_maintenance",
+        ["SELECT"]
+    ),
+    cell!(
+        "private.project_subject_relations",
+        "role_gateway",
+        ["SELECT", "INSERT"]
+    ),
+    cell!(
+        "private.project_subject_relations",
+        "role_maintenance",
+        ["SELECT"]
+    ),
+    cell!(
+        "private.subject_relations",
+        "role_gateway",
+        ["SELECT", "INSERT"]
+    ),
+    cell!("private.subject_relations", "role_maintenance", ["SELECT"]),
 ];
 
 /// Named §6.2.2 tables whose non-owner cells are all deliberately empty. Their only public
