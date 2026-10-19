@@ -35,8 +35,8 @@ use humaux_adapters::relation_repo::{RelationRevision, append_revision, current_
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::PrincipalId;
 use humaux_domain::relation::{
-    DecidedBy, EndpointKind, ModelRef, RelationEdge, RelationId, RelationKind, RelationPair,
-    RuleRef, Timestamp, Validity, WHITELIST,
+    DecidedBy, EndpointKind, ModelRef, RawRange, RelationEdge, RelationId, RelationKind,
+    RelationPair, RuleRef, Timestamp, Validity, WHITELIST,
 };
 use humaux_domain::subject::SubjectKind;
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
