@@ -127,8 +127,13 @@ fn scope(tenant: Uuid) -> AuthorizationScope {
 }
 
 fn submit(h: &Handle, s: &AuthorizationScope) -> TaskId {
-    h.rt.block_on(coord_repo::submit(&h.gateway, s, "coord_task_run"))
-        .expect("submit")
+    h.rt.block_on(coord_repo::submit(
+        &h.gateway,
+        s,
+        "coord_task_run",
+        "coord_task_run description",
+    ))
+    .expect("submit")
 }
 
 fn claim(
@@ -155,7 +160,13 @@ fn complete(
     run: TaskRunId,
     token: FencingToken,
 ) -> Result<(), ErrorCode> {
-    h.rt.block_on(coord_repo::complete(&h.gateway, s, run, token))
+    h.rt.block_on(coord_repo::complete(
+        &h.gateway,
+        s,
+        run,
+        token,
+        "coord_task_run summary",
+    ))
 }
 
 fn fail(
@@ -164,7 +175,13 @@ fn fail(
     run: TaskRunId,
     token: FencingToken,
 ) -> Result<(), ErrorCode> {
-    h.rt.block_on(coord_repo::fail(&h.gateway, s, run, token))
+    h.rt.block_on(coord_repo::fail(
+        &h.gateway,
+        s,
+        run,
+        token,
+        "coord_task_run summary",
+    ))
 }
 
 /// `verify_task_run` inside a caller-owned transaction carrying the scope's tenant GUC.

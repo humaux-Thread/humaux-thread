@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoordinateResultV1",
+  "description": "Successful results of the five wired coordinate.task_* operations (ADR-0078 Q10): submit answers task_id; claim answers the run id, the fencing token every later heartbeat / complete / fail must present, and the DB-clock lease expiry; heartbeat answers the renewed expiry; complete and fail answer the task's terminal state. The other coordinate operations are declared-only and never answer a result.",
+  "type": "object",
+  "$defs": {
+    "TaskId": {"type": "string", "format": "uuid"},
+    "LeaseExpiresAt": {"type": "string", "format": "date-time"}
+  },
+  "oneOf": [
+    {
+      "title": "task_submit",
+      "type": "object",
+      "required": ["task_id"],
+      "properties": {"task_id": {"$ref": "#/$defs/TaskId"}},
+      "additionalProperties": false
+    },
+    {
+      "title": "task_claim",
+      "type": "object",
+      "required": ["task_run_id", "fencing_token", "lease_expires_at"],
+      "properties": {
+        "task_run_id": {"type": "string", "format": "uuid"},
+        "fencing_token": {"type": "integer", "minimum": 1},
+        "lease_expires_at": {"$ref": "#/$defs/LeaseExpiresAt"}
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "task_heartbeat",
+      "type": "object",
+      "required": ["lease_expires_at"],
+      "properties": {"lease_expires_at": {"$ref": "#/$defs/LeaseExpiresAt"}},
+      "additionalProperties": false
+    },
+    {
+      "title": "task_complete / task_fail",
+      "type": "object",
+      "required": ["task_id", "state"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/TaskId"},
+        "state": {"enum": ["COMPLETED", "FAILED"]}
+      },
+      "additionalProperties": false
+    }
+  ]
+}

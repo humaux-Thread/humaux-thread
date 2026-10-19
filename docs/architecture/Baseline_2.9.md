@@ -8981,15 +8981,21 @@ memory.reject
 memory.subject_register
 memory.subject_link_key
 memory.annotate_affect
+coordinate.task_submit
+coordinate.task_claim
+coordinate.task_heartbeat
+coordinate.task_complete
+coordinate.task_fail
 ```
 <!-- humaux:wired-operation-keys:end -->
 
-**declared-only（合约里有，这个交付点没有实现）**：整个 Tool 6 `artifact` / Tool 7 `code` /
-Tool 8 `coordinate`，加上 `remember` 的三个批次 action。调用它们的应答是
+**declared-only（合约里有，这个交付点没有实现）**：整个 Tool 6 `artifact` / Tool 7 `code`，
+Tool 8 `coordinate` 里除 `task_submit` / `task_claim` / `task_heartbeat` / `task_complete` / `task_fail`
+五个已接线 key（ADR-0078 Q10）以外的其余 8 个，加上 `remember` 的三个批次 action。调用它们的应答是
 `DEPENDENCY_UNAVAILABLE`（`bins/gateway/src/mcp_application.rs::reject_unsupported`，走
 `invoke` 的 `_ =>` 兜底臂），这是诚实的 fail closed，不是 bug。**见证**：
 `bins/gateway/tests/mcp_gateway.rs::assert_authenticated_transport_negatives` 对 `remember.begin_batch`
-钉住 `code = DEPENDENCY_UNAVAILABLE`、durable 计数不变、拒绝被审计；其余 27 个 declared-only key 走同一条
+钉住 `code = DEPENDENCY_UNAVAILABLE`、durable 计数不变、拒绝被审计；其余 24 个 declared-only key 走同一条
 `_ =>` 臂但**没有逐一见证**（同臂同码，不再逐个写测试）。两点限定：① `reject_unsupported` 里的作用域 /
 授权拒绝先于 `DEPENDENCY_UNAVAILABLE` 发生，先被拒的调用拿到的是那条拒绝码，不是 `DEPENDENCY_UNAVAILABLE`；
 ② 「一律」因此只对通过了前置检查的调用成立。同一臂也覆盖
@@ -9018,11 +9024,6 @@ code.status
 code.search
 code.impact
 code.symbol
-coordinate.task_submit
-coordinate.task_claim
-coordinate.task_heartbeat
-coordinate.task_complete
-coordinate.task_fail
 coordinate.task_block
 coordinate.task_resume
 coordinate.task_cancel

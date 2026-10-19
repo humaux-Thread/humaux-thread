@@ -14541,7 +14541,7 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
 
 /// A fresh task in the fixture tenant claimed by `owner`: `(task_run_id, fencing_token)`.
 async fn t04c_claimed(pool: &RuntimeDbPool, owner: &AuthorizationScope) -> (Uuid, i64) {
-    let task = coord_repo::submit(pool, owner, "g-t04c-4")
+    let task = coord_repo::submit(pool, owner, "g-t04c-4", "M29 T04c wire gate")
         .await
         .expect("submit");
     let run = coord_repo::claim(pool, owner, task, Duration::from_secs(300))
@@ -14581,6 +14581,7 @@ fn t04c_put(id: u64, key: &str, workspace: Uuid, task_run: (Uuid, i64)) -> Strin
 /// G-T04c-4: (a) a stale (re-claimed) run and an expired run are `CONFLICT` with no Evidence and no carrier row; (b) a
 /// live run writes exactly one carrier row naming the run and token sent; (c) (b)'s key with another run is `CONFLICT`.
 #[test]
+#[allow(clippy::too_many_lines)] // one causal chain over one server: stale, expired, live, same key with another run
 fn native_mcp_remember_put_task_run_is_verified_on_the_wire() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
         .lock()
