@@ -19,8 +19,6 @@ mod egress_denied;
 mod embed_provider_timeout;
 #[path = "fault/graph_expand_capped.rs"]
 mod graph_expand_capped;
-#[path = "fault/lane_substituted.rs"]
-mod lane_substituted;
 #[path = "fault/projection_invisible_loss.rs"]
 mod projection_invisible_loss;
 #[path = "fault/projection_lag.rs"]
