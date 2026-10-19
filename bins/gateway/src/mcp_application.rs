@@ -4,10 +4,10 @@
 //!   w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
 //!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
-//!   adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
+//!   adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::subject_repo,
 //!   domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity,
-//!   domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
+//!   domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
@@ -32,6 +32,7 @@ use humaux_adapters::{
     affect_repo,
     byok::json_has_nul,
     confirm_token_repo::ConfirmationClaim,
+    coord_repo,
     distill_repo::{ConfirmOutcome, RejectOutcome},
     memory_governance_repo::{self, ArchiveResult, RestoreResult},
     note_repo::NoteIntake,
@@ -48,10 +49,11 @@ use humaux_domain::{
     confirm::{ConfirmToken, DestructiveOp},
     context::BindingPurpose,
     continuity::ProjectId,
+    coordination::{FencingToken, TaskRunId, TaskState},
     dataclass::DataClass,
     error::ErrorCode,
     evidence::payload_sha256,
-    identity::VisibilityClass,
+    identity::{AuthorizationScope, VisibilityClass},
     ids::{TaskId, WorkspaceId},
     note::{
         NoteBody, NoteKind, authorize_note, note_title, parse_requested_authority,
@@ -109,7 +111,7 @@ use crate::{
 /// have had working dispatch arms since ADR-0025/ADR-0026, while this array still said 15 —
 /// nothing read it, so nothing noticed. The new gate also compares it against the `invoke`
 /// dispatch below, which is what makes that class of drift impossible to repeat.
-pub const SUPPORTED_OPERATION_KEYS: [&str; 22] = [
+pub const SUPPORTED_OPERATION_KEYS: [&str; 27] = [
     "remember.put",
     "memory.note_put",
     "recall.search",
@@ -132,6 +134,11 @@ pub const SUPPORTED_OPERATION_KEYS: [&str; 22] = [
     SubjectWriteOp::Register.operation_key(),
     SubjectWriteOp::LinkKey.operation_key(),
     AffectWriteOp::Annotate.operation_key(),
+    "coordinate.task_submit",
+    "coordinate.task_claim",
+    "coordinate.task_heartbeat",
+    "coordinate.task_complete",
+    "coordinate.task_fail",
 ];
 
 /// Bootstrap-owned, authenticated MCP dispatch.  It has no client-selected
@@ -158,6 +165,10 @@ pub struct GatewayMcpApplication {
     /// `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP`; §78.1, ADR-0062 D-K). `None` keeps `memory.enumerate` failing closed
     /// through `reject_unsupported`.
     enumeration: Option<(Duration, usize)>,
+    /// §30.2 / §78.1 lease the coordinate.task_claim / task_heartbeat routes grant
+    /// (`HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`). `None` keeps every `coordinate.task_*` route failing closed through
+    /// `reject_unsupported`.
+    task_lease_ttl: Option<Duration>,
     #[cfg(test)]
     trusted_continuity_scope: Option<humaux_domain::identity::AuthorizationScope>,
 }
@@ -183,9 +194,20 @@ impl GatewayMcpApplication {
             undo_window: None,
             mood_half_life: None,
             enumeration: None,
+            task_lease_ttl: None,
             #[cfg(test)]
             trusted_continuity_scope: None,
         }
+    }
+
+    /// Enables the `coordinate.task_*` routes with the bootstrap-owned lease TTL
+    /// (`HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`, §30.2, §78.1). A zero TTL is refused; the upper bound is the bootstrap's.
+    pub fn with_task_lease_ttl(mut self, ttl: Duration) -> Result<Self, ErrorCode> {
+        if ttl.is_zero() {
+            return Err(ErrorCode::InvalidInput);
+        }
+        self.task_lease_ttl = Some(ttl);
+        Ok(self)
     }
 
     /// Sets the §8.5.1 mood half-life (`HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS`, ADR-0030 D-B).
@@ -1256,6 +1278,75 @@ impl GatewayMcpApplication {
             .await
     }
 
+    /// ADR-0078 Q10 `coordinate.task_submit` / `task_claim` / `task_heartbeat` / `task_complete` / `task_fail`, through the
+    /// guard's admitted-write runner (no confirm gate: a task write deletes and supersedes nothing). The lease owner is
+    /// the authenticated principal inside `coord_repo`, never a wire field; `task_run_id` and `fencing_token` reach the
+    /// repository exactly as the client sent them, so §30.2's stale-writer judgement stays the repository's. A run that
+    /// does not belong to the named `task_id` is `NOT_FOUND` before any write. Wire shape errors are `INVALID_INPUT`
+    /// before admission.
+    // ponytail: task_submit has no idempotency key in the frozen contract, so a retry after a lost response creates a
+    // second task; add one to coordinate.schema.json (and coord.tasks) when a caller needs retry-safe submit.
+    async fn coordinate_task(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        raw_arguments: &str,
+        value: &Value,
+        op: TaskOp,
+    ) -> Result<ToolOutput, ErrorCode> {
+        let wire = TaskWire::parse(op, value)?;
+        let Some(lease_ttl) = self.task_lease_ttl else {
+            return self.reject_unsupported(context, operation, None).await;
+        };
+        let pool = self.runtime_pool.clone();
+        let catalog = self.catalog.clone();
+        self.guard
+            .run_local_write(
+                context,
+                operation,
+                None,
+                raw_arguments,
+                move |request| async move {
+                    let scope = request.authorization();
+                    let result = match wire {
+                        TaskWire::Submit { title, description } => {
+                            let task = coord_repo::submit(&pool, scope, &title, &description).await?;
+                            json!({"task_id": task.0})
+                        }
+                        TaskWire::Claim { task } => {
+                            let claimed = coord_repo::claim(&pool, scope, task, lease_ttl).await?;
+                            json!({
+                                "task_run_id": claimed.task_run_id.0,
+                                "fencing_token": claimed.fencing_token.0,
+                                "lease_expires_at": rfc3339(claimed.lease_expires_at)?,
+                            })
+                        }
+                        TaskWire::Heartbeat { run } => {
+                            run.belongs_to_task(&pool, scope).await?;
+                            let expires =
+                                coord_repo::heartbeat(&pool, scope, run.run, run.token, lease_ttl)
+                                    .await?;
+                            json!({"lease_expires_at": rfc3339(expires)?})
+                        }
+                        TaskWire::Complete { run, summary } => {
+                            run.belongs_to_task(&pool, scope).await?;
+                            coord_repo::complete(&pool, scope, run.run, run.token, &summary)
+                                .await?;
+                            json!({"task_id": run.task.0, "state": TaskState::Completed.as_db_str()})
+                        }
+                        TaskWire::Fail { run, summary } => {
+                            run.belongs_to_task(&pool, scope).await?;
+                            coord_repo::fail(&pool, scope, run.run, run.token, &summary).await?;
+                            json!({"task_id": run.task.0, "state": TaskState::Failed.as_db_str()})
+                        }
+                    };
+                    catalog.validate_output(ToolName::Coordinate, &result)?;
+                    output(result)
+                },
+            )
+            .await
+    }
+
     /// §36 `memory.supersede` through the shared §33.10 confirm gate (ADR-0018). The
     /// schema carries no `workspace_id`: the route is the credential's bound workspace, and the
     /// write stream is derived per request from it exactly like the reads and `remember.put`
@@ -2158,6 +2249,38 @@ impl McpApplication for GatewayMcpApplication {
                 self.continuity_get(context, &operation, &raw_arguments, &value)
                     .await
             }
+            "coordinate.task_submit" => {
+                self.coordinate_task(context, &operation, &raw_arguments, &value, TaskOp::Submit)
+                    .await
+            }
+            "coordinate.task_claim" => {
+                self.coordinate_task(context, &operation, &raw_arguments, &value, TaskOp::Claim)
+                    .await
+            }
+            "coordinate.task_heartbeat" => {
+                self.coordinate_task(
+                    context,
+                    &operation,
+                    &raw_arguments,
+                    &value,
+                    TaskOp::Heartbeat,
+                )
+                .await
+            }
+            "coordinate.task_complete" => {
+                self.coordinate_task(
+                    context,
+                    &operation,
+                    &raw_arguments,
+                    &value,
+                    TaskOp::Complete,
+                )
+                .await
+            }
+            "coordinate.task_fail" => {
+                self.coordinate_task(context, &operation, &raw_arguments, &value, TaskOp::Fail)
+                    .await
+            }
             key if key == DestructiveOp::MemorySupersede.operation_key() => {
                 self.memory_supersede(context, &operation, &raw_arguments, &value)
                     .await
@@ -2253,6 +2376,102 @@ impl McpApplication for GatewayMcpApplication {
             }
         }
     }
+}
+
+/// Which of the five wired `coordinate.task_*` operations [`GatewayMcpApplication::coordinate_task`] runs.
+#[derive(Clone, Copy)]
+enum TaskOp {
+    Submit,
+    Claim,
+    Heartbeat,
+    Complete,
+    Fail,
+}
+
+/// The three wire fields that name one lease holder's run (ADR-0078 Q10). The token is the client's, kept verbatim.
+struct RunRef {
+    task: TaskId,
+    run: TaskRunId,
+    token: FencingToken,
+}
+
+impl RunRef {
+    fn parse(value: &Value) -> Result<Self, ErrorCode> {
+        Ok(Self {
+            task: TaskId(wire_uuid(value, "task_id")?),
+            run: TaskRunId(wire_uuid(value, "task_run_id")?),
+            token: FencingToken(
+                value
+                    .get("fencing_token")
+                    .and_then(Value::as_i64)
+                    .filter(|token| *token >= 1)
+                    .ok_or(ErrorCode::InvalidInput)?,
+            ),
+        })
+    }
+
+    /// ADR-0078 Q10: `NOT_FOUND` unless `run` is a run of `task`. `coord.task_runs.task_id` never changes, so this read and
+    /// the verified write after it cannot disagree.
+    async fn belongs_to_task(
+        &self,
+        pool: &RuntimeDbPool,
+        scope: &AuthorizationScope,
+    ) -> Result<(), ErrorCode> {
+        if coord_repo::task_of_run(pool, scope, self.run).await? == self.task {
+            Ok(())
+        } else {
+            Err(ErrorCode::NotFound)
+        }
+    }
+}
+
+/// A `coordinate.task_*` call decoded from validated arguments.
+enum TaskWire {
+    Submit { title: String, description: String },
+    Claim { task: TaskId },
+    Heartbeat { run: RunRef },
+    Complete { run: RunRef, summary: String },
+    Fail { run: RunRef, summary: String },
+}
+
+impl TaskWire {
+    fn parse(op: TaskOp, value: &Value) -> Result<Self, ErrorCode> {
+        let text = |field: &str| -> Result<String, ErrorCode> {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or(ErrorCode::InvalidInput)
+        };
+        Ok(match op {
+            TaskOp::Submit => Self::Submit {
+                title: text("title")?,
+                description: text("description")?,
+            },
+            TaskOp::Claim => Self::Claim {
+                task: TaskId(wire_uuid(value, "task_id")?),
+            },
+            TaskOp::Heartbeat => Self::Heartbeat {
+                run: RunRef::parse(value)?,
+            },
+            TaskOp::Complete => Self::Complete {
+                run: RunRef::parse(value)?,
+                summary: text("summary")?,
+            },
+            TaskOp::Fail => Self::Fail {
+                run: RunRef::parse(value)?,
+                summary: text("summary")?,
+            },
+        })
+    }
+}
+
+fn wire_uuid(value: &Value, field: &str) -> Result<Uuid, ErrorCode> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .ok_or(ErrorCode::InvalidInput)
 }
 
 /// `memory.note_put`'s validated arguments (ADR-0067): the same raw-content binding as [`RememberPutWire`], plus the note's

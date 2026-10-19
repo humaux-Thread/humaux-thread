@@ -285,6 +285,9 @@ fn schema_source(name: &str) -> Option<&'static str> {
         "coordinate.schema.json" => Some(include_str!(
             "../../../contracts/mcp/coordinate.schema.json"
         )),
+        "coordinate.output.schema.json" => Some(include_str!(
+            "../../../contracts/mcp/coordinate.output.schema.json"
+        )),
         _ => None,
     }
 }
@@ -458,7 +461,7 @@ mod tests {
             .expect("ordinary put");
         assert_eq!(ordinary_put.meter_kind(), MeterKind::Ordinary);
         let heartbeat = catalog
-            .validate(ToolName::Coordinate, &json!({"action":"task_heartbeat","task_id":"018d32a7-0000-7000-8000-000000000003"}))
+            .validate(ToolName::Coordinate, &json!({"action":"task_heartbeat","task_id":"018d32a7-0000-7000-8000-000000000003","task_run_id":"018d32a7-0000-7000-8000-000000000004","fencing_token":1}))
             .expect("heartbeat");
         assert_eq!(heartbeat.meter_kind(), MeterKind::Zero);
         let release = catalog

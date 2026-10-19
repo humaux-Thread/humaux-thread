@@ -106,6 +106,14 @@ use crate::{
 const PREFIX: &str = "HUMAUX_GATEWAY_";
 const ENUMERATION_TTL_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS";
 const ENUMERATION_MANIFEST_CAP_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP";
+const TASK_LEASE_TTL_KEY: &str = "HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS";
+/// Largest accepted task-lease TTL, `u32::MAX` seconds (about 136 years). A technical bound, not a business limit:
+/// `adapters::coord_repo` adds the TTL to the DB clock through `make_interval(secs => double precision)` (§30.2), so
+/// the value must stay exact as an `f64`, its microseconds must fit the interval's `int64` field (4.3e15 here against
+/// 9.2e18) and `clock_timestamp() + ttl` must stay inside `timestamptz` (last year 294276; this bound lands near
+/// 2162). A larger value cannot be a lease anyone reclaims from a crashed owner. Zero is refused too: a lease that has
+/// already expired when it is granted.
+const MAX_TASK_LEASE_TTL_SECONDS: u64 = 4_294_967_295;
 /// ADR-0065 D-B: the `application_name` of every gateway session — the process identity in `pg_stat_activity`
 /// (the name `/status` reports), not a tunable.
 const APPLICATION_NAME: &str = "humaux-gateway";
@@ -216,6 +224,8 @@ pub struct GatewayBootstrap {
     metrics_addr: SocketAddr,
     /// ADR-0061 D-F `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`.
     readiness_refresh: Duration,
+    /// §30.2 / §78.1 `HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`: the lease `coordinate.task_claim` / `task_heartbeat` grant.
+    task_lease_ttl: Duration,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS`: one memory.enumerate manifest segment's lifetime.
     enumeration_ttl: Duration,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP`: the most ids one manifest segment stores.
@@ -386,7 +396,9 @@ impl GatewayBootstrap {
             )
         })?
         .with_enumeration(self.enumeration_ttl, self.enumeration_manifest_cap)
-        .map_err(|_| BootstrapError::new(ENUMERATION_TTL_KEY, "must be positive seconds"))?;
+        .map_err(|_| BootstrapError::new(ENUMERATION_TTL_KEY, "must be positive seconds"))?
+        .with_task_lease_ttl(self.task_lease_ttl)
+        .map_err(|_| BootstrapError::new(TASK_LEASE_TTL_KEY, "must be positive seconds"))?;
         let mut semantic = None;
         match self.semantic_recall {
             Some(config) => {
@@ -451,6 +463,7 @@ impl GatewayBootstrap {
             required(&effective, READINESS_REFRESH_KEY)?,
             READINESS_REFRESH_KEY,
         )?;
+        let task_lease_ttl = task_lease_ttl(required(&effective, TASK_LEASE_TTL_KEY)?)?;
         let enumeration_ttl = seconds(
             required(&effective, ENUMERATION_TTL_KEY)?,
             ENUMERATION_TTL_KEY,
@@ -479,6 +492,7 @@ impl GatewayBootstrap {
             token_keys,
             metrics_addr,
             readiness_refresh,
+            task_lease_ttl,
             enumeration_ttl,
             enumeration_manifest_cap,
             effective_config: effective_config_rows(&registry, &raw, &effective),
@@ -1127,14 +1141,9 @@ pub fn registry() -> Vec<ConfigEntry> {
             entry_with_default(&format!("{PREFIX}{suffix}"), type_name, false, default)
         }),
     );
-    // §30.2 / §78.1 (M29 T04a): the coord task-run lease length handed to adapters::coord_repo claim/heartbeat; the
-    // coordinate.task_* handlers that read it land with T04b. 300 s bounds how long a crashed owner keeps a task.
-    entries.push(entry_with_default(
-        "HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS",
-        "u64",
-        false,
-        "300",
-    ));
+    // §30.2 / §78.1 (M29 T04a/T04b): the coord task-run lease length `coordinate.task_claim` / `task_heartbeat` hand to
+    // adapters::coord_repo; `task_lease_ttl` bounds it at boot. 300 s bounds how long a crashed owner keeps a task.
+    entries.push(entry_with_default(TASK_LEASE_TTL_KEY, "u64", false, "300"));
     for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
         entries.push(entry(capacity_key, "i64", false));
         entries.push(entry(refill_key, "i64", false));
@@ -1232,6 +1241,16 @@ fn seconds(value: &str, key: &str) -> Result<Duration, BootstrapError> {
         .filter(|value| *value > 0)
         .map(Duration::from_secs)
         .ok_or_else(|| BootstrapError::new(key, "must be positive seconds"))
+}
+
+/// `1..=MAX_TASK_LEASE_TTL_SECONDS`; anything else refuses to boot naming the key (issue 86 item 7).
+fn task_lease_ttl(value: &str) -> Result<Duration, BootstrapError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|secs| (1..=MAX_TASK_LEASE_TTL_SECONDS).contains(secs))
+        .map(Duration::from_secs)
+        .ok_or_else(|| BootstrapError::new(TASK_LEASE_TTL_KEY, "must be 1..=4294967295 seconds"))
 }
 
 fn millis(value: &str, key: &str) -> Result<Duration, BootstrapError> {
@@ -1587,6 +1606,36 @@ mod tests {
             Ok(_) => panic!("configuration must be rejected"),
             Err(error) => error.key,
         }
+    }
+
+    /// G-T04b-4 (issue 86 item 7, §30.2): a zero or overflowing task-lease TTL refuses to boot naming the key; the
+    /// 300 s default and both ends of the range boot. Fault: the lower bound moved to 0, or the upper bound removed.
+    #[test]
+    fn task_lease_ttl_is_bounded_at_boot() {
+        let with = |value: &str| {
+            let mut values = raw();
+            values.insert(TASK_LEASE_TTL_KEY.into(), value.into());
+            values
+        };
+        assert_eq!(rejected_key(with("0")), TASK_LEASE_TTL_KEY, "zero lease");
+        assert_eq!(
+            rejected_key(with("4294967296")),
+            TASK_LEASE_TTL_KEY,
+            "one second past the bound"
+        );
+        for value in ["-1", "soon"] {
+            assert_eq!(rejected_key(with(value)), TASK_LEASE_TTL_KEY, "{value:?}");
+        }
+        for value in ["1", "4294967295"] {
+            assert!(
+                GatewayBootstrap::from_raw(with(value)).is_ok(),
+                "{value} boots"
+            );
+        }
+        let default = GatewayBootstrap::from_raw(raw())
+            .ok()
+            .expect("the full fixture boots");
+        assert_eq!(default.task_lease_ttl, Duration::from_secs(300));
     }
 
     /// Every card-38 key (ADR-0065; S3 and S4 append theirs to this one list).
