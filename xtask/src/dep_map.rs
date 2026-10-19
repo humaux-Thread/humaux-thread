@@ -1,9 +1,10 @@
 //! `xtask::dep_map` — `cargo xtask dep-map`: checks every module header, `// dep:` tag and Cargo `# why:` line against the code, and generates the three dependency maps plus the per-process env examples and the placeholder secret fixture (ADR-0066 D-T).
-//! Depends-on: crates=[humaux-maintenance, humaux-testkit, postgres, toml]; services=[PostgreSQL(owner) r=[ops.schema_migrations]];
-//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[maintenance::deploy_check, maintenance::rls_check]
+//! Depends-on: crates=[humaux-maintenance, humaux-testkit, postgres, serde_json, toml]; services=[PostgreSQL(owner) r=[ops.schema_migrations], subprocess(docker)];
+//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[humaux-testkit, maintenance::deploy_check, maintenance::rls_check]
 //! Called-by: [xtask::gate_truth, xtask::main]
 //! Invariants: [reads the repo and the catalog only — the catalog inside a READ ONLY transaction that is rolled
-//!   back; HUMAUX_TEST_PG_DSN unset or unreachable → exit 2 (db_objects.md cannot be checked, a skip is not a pass);
+//!   back (`deploy-env` also runs the client-side `docker compose config`, which resolves no secret); HUMAUX_TEST_PG_DSN
+//!   unset or unreachable → exit 2 (db_objects.md cannot be checked, a skip is not a pass);
 //!   generated docs are pure functions of the tree and the catalog (sorted, repo-relative, no timestamps); a
 //!   generated secret-fixture file never carries a value]
 //! Spec: Baseline §58; §6.2.2; §78; §79.2; ADR-0050; ADR-0051; ADR-0066 D-T
@@ -16,6 +17,13 @@
 //! contents blanked, line numbers kept) feeds header parsing, computed facts (crates, env
 //! literals, `schema.object` tokens, call sites, import edges) and the cross-checks. No parser
 //! dependency: `toml` validates Cargo, `postgres` reads the catalog.
+//!
+//! `cargo xtask deploy-env` (ADR-0066 D-R (a), D-T; §78.1) judges the committed `deploy/env/values/*.env` and
+//! `deploy/env/sizing-*.env` against the per-process key lists this module generates: a key a process reads that no
+//! values file, secret or prod.yml `environment:` declares, a values key no process reads, a gateway `mem_limit`
+//! that does not follow `HUMAUX_SIZE_GATEWAY_MEM`, and a gateway ceiling below what the query-embedding cache the
+//! gateway values file enables needs (Baseline §51, ADR-0076). It reuses
+//! the node gate's own functions (`maintenance::deploy_check`), never a second presence rule.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -4533,10 +4541,369 @@ pub fn run(args: &[String]) -> i32 {
     i32::from(!ok)
 }
 
+// ============================================================================
+// deploy-env: the committed values and sizing files against what the processes read
+// ============================================================================
+
+type EnvFile = deploy_check::EnvFile;
+
+/// ADR-0066 D-R (a): the bundle constants, one `<p>.env` per process; the key lists they are judged against are
+/// [`EXAMPLE_DIR`].
+const VALUES_DIR: &str = "deploy/env/values";
+/// ADR-0066 D-E: the `sizing-<profile>.env` files and the node example sit in this directory.
+const ENV_DIR: &str = "deploy/env";
+/// The compose document the node gates render.
+const COMPOSE_FILE: &str = "deploy/compose/prod.yml";
+/// Interpolation inputs of the compose render, as `deploy/prometheus/check-compose.sh` passes them: the A5 sizing and
+/// the node example, whose `HUMAUX_SECRETS_DIR` is [`SECRET_FIXTURE_DIR`] (so no secret file is ever read).
+const COMPOSE_ENV_FILES: [&str; 2] = ["deploy/env/sizing-a5.env", "deploy/env/node.env.example"];
+/// The profiles that bring in every service of prod.yml (`ops` one-shots, `rehearsal` probes).
+const COMPOSE_PROFILES: [&str; 2] = ["ops", "rehearsal"];
+/// Stands in for each empty value of the secret fixture. ADR-0066 D-J: the fixture is empty by design, and D-R (a)
+/// reads an empty secret as a broken node (`secret_empty`); the node judges real secrets, this gate judges names.
+const FIXTURE_PLACEHOLDER: &str = "placeholder";
+
+const GATEWAY_CACHE_ENABLED_KEY: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED";
+const GATEWAY_CACHE_BYTES_KEY: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES";
+const GATEWAY_MEM_KEY: &str = "HUMAUX_SIZE_GATEWAY_MEM";
+/// §78.1 exception (card-dictated, see the ponytail on [`GATEWAY_WORKING_SET_MIB`]): with it, the only copy of the
+/// gateway cache sizing arithmetic. The query-embedding cache lives inside the gateway process (Baseline §51,
+/// ADR-0076), so `HUMAUX_SIZE_GATEWAY_MEM` (MiB) must hold the configured cache bytes, moka's bookkeeping on top
+/// (110 %: the "~10% moka overhead" of the M12 D5 note that sat in prose at the gateway `mem_limit` of
+/// deploy/compose/prod.yml) and the gateway's own working set.
+const CACHE_OVERHEAD_PERCENT: u128 = 110;
+/// The gateway's working set outside the cache, MiB. ponytail: not measured. 282 is the card's number and the same
+/// figure as the cache term (256 MiB x 1.1 = 281.6, the prod.yml `mem_limit` comment / ADR-0076 note) reused as a
+/// guess for the working set; the B23 load test / A5 re-measure replaces it (ADR-0066 R-10).
+const GATEWAY_WORKING_SET_MIB: u128 = 282;
+/// Probe for `HUMAUX_SIZE_GATEWAY_MEM` in the compose render (set in the child's environment, which Compose reads before
+/// any `--env-file`): no profile carries it, so a gateway `mem_limit` that is a literal or follows another key renders
+/// differently.
+const GATEWAY_MEM_PROBE_MIB: u128 = 777;
+const MIB: u128 = 1 << 20;
+
+/// MiB the gateway ceiling must reach for a cache of `cache_bytes`: `ceil(bytes x 1.1 / MiB)` plus the working set.
+fn gateway_mem_floor_mib(cache_bytes: u64) -> u128 {
+    (u128::from(cache_bytes) * CACHE_OVERHEAD_PERCENT).div_ceil(100 * MIB) + GATEWAY_WORKING_SET_MIB
+}
+
+/// The value Compose hands the container: the last occurrence of `key`.
+fn last_value<'a>(file: &'a EnvFile, key: &str) -> Option<&'a str> {
+    file.entries
+        .iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+fn read_env(root: &Path, dir: &str, label: &str, suffix: &str) -> Result<Vec<EnvFile>, String> {
+    deploy_check::read_env_dir(&root.join(dir), label, suffix)
+}
+
+/// `values_file_unmatched:<file>` for a values file whose process has no generated example, and
+/// `values_key_unknown:<file>:<KEY>` for each key it declares that the example does not list: the example is the key
+/// list of what the process reads (ADR-0066 D-T), so such a key configures nothing.
+fn unknown_value_keys(examples: &[EnvFile], values: &[EnvFile]) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for file in values {
+        let Some(example) = examples.iter().find(|e| e.process == file.process) else {
+            reasons.push(format!("values_file_unmatched:{}", file.name));
+            continue;
+        };
+        for (key, _) in &file.entries {
+            if !example.entries.iter().any(|(k, _)| k == key) {
+                reasons.push(format!("values_key_unknown:{}:{key}", file.name));
+            }
+        }
+    }
+    reasons
+}
+
+/// Compose 2.38 (the CI runner's) ignores `--no-env-resolution`: its `config` output is byte-identical with and
+/// without the flag, inlines every env_file into `environment:` and drops the `env_file` key (targeted run
+/// 39200887824), so [`deploy_check::compose_env_sources`] finds no process for such a service. A service without
+/// `env_file` belongs to each process whose non-empty values file its `environment:` carries whole. The node's own
+/// rule (`compose_env_sources` skips an env_file ending `.secret.env`: a secret counts only from its `secret_home`
+/// file) is a private, path-based branch and an inlined render has no paths, so its effect is rebuilt here by key: a
+/// key that any secret file declares is not a compose source.
+fn inlined_env_sources(
+    doc: &serde_json::Value,
+    values: &[EnvFile],
+    secrets: &[EnvFile],
+) -> Vec<EnvFile> {
+    let in_a_secret_file = |key: &str| {
+        secrets
+            .iter()
+            .any(|f| f.entries.iter().any(|(k, _)| k == key))
+    };
+    let services = doc.get("services").and_then(serde_json::Value::as_object);
+    let mut sources = Vec::new();
+    for (name, svc) in services.into_iter().flatten() {
+        let Some(env) = svc
+            .get("environment")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        if svc.get("env_file").is_some() {
+            continue;
+        }
+        for file in values.iter().filter(|f| !f.entries.is_empty()) {
+            if file.entries.iter().all(|(key, _)| env.contains_key(key)) {
+                sources.push(EnvFile {
+                    name: format!("compose/{name}:environment"),
+                    process: file.process.clone(),
+                    entries: env
+                        .iter()
+                        .filter(|(k, _)| !in_a_secret_file(k))
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_owned()))
+                        .collect(),
+                    unreadable: Vec::new(),
+                });
+            }
+        }
+    }
+    sources
+}
+
+/// ADR-0066 D-R (a) as the node's `deploy-check --env` judges it: placement over values and secrets, then presence
+/// per example key and the foreign-secret rule, with the empty values of the secret fixture filled in. `doc` is the
+/// compose document (`docker compose config --format json --no-env-resolution`).
+fn env_file_reasons(
+    examples: &[EnvFile],
+    values: &[EnvFile],
+    mut secrets: Vec<EnvFile>,
+    doc: &serde_json::Value,
+) -> Vec<String> {
+    let all: Vec<EnvFile> = values.iter().chain(&secrets).cloned().collect();
+    let mut reasons = deploy_check::placement_reasons(&all);
+    let (mut compose, unreadable) = deploy_check::compose_env_sources(doc);
+    compose.extend(inlined_env_sources(doc, values, &secrets));
+    reasons.extend(unreadable);
+    for (_, value) in secrets.iter_mut().flat_map(|f| f.entries.iter_mut()) {
+        if value.is_empty() {
+            *value = FIXTURE_PLACEHOLDER.to_owned();
+        }
+    }
+    reasons.extend(deploy_check::presence_reasons(
+        examples, values, &secrets, &compose,
+    ));
+    reasons.extend(deploy_check::secret_key_foreign_reasons(examples, &secrets));
+    reasons
+}
+
+/// §57.1: the sizing leg is `pass` (`Reasons` empty), `fail` (`Reasons`) or `not_applicable`, which carries the whole
+/// line to print, naming the missing object.
+#[derive(Debug, PartialEq)]
+enum Sizing {
+    Reasons(Vec<String>),
+    NotApplicable(String),
+}
+
+/// `gateway_mem_below_cache:<profile file>:<KEY>=<mem> < <floor> MiB` for each sizing profile whose gateway ceiling
+/// cannot hold the query-embedding cache `values/gateway.env` enables; `not_applicable` when it disables the cache.
+/// The flag decides, not the generation stamp: filling the stamp is the owner's one-line decision and must not first
+/// need a sizing change.
+fn gateway_mem_reasons(values: &[EnvFile], profiles: &[EnvFile]) -> Sizing {
+    let Some(gateway) = values.iter().find(|f| f.process == "gateway") else {
+        return Sizing::Reasons(vec!["gateway_values_missing:values/gateway.env".to_owned()]);
+    };
+    let invalid = |key: &str| {
+        Sizing::Reasons(vec![format!(
+            "gateway_cache_key_invalid:{}:{key}",
+            gateway.name
+        )])
+    };
+    match last_value(gateway, GATEWAY_CACHE_ENABLED_KEY) {
+        Some("false") => {
+            return Sizing::NotApplicable(format!(
+                "deploy-env sizing: not_applicable — {GATEWAY_CACHE_ENABLED_KEY}=false in {ENV_DIR}/{}",
+                gateway.name
+            ));
+        }
+        Some("true") => {}
+        _ => return invalid(GATEWAY_CACHE_ENABLED_KEY),
+    }
+    let Some(bytes) = last_value(gateway, GATEWAY_CACHE_BYTES_KEY)
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|b| *b > 0)
+    else {
+        return invalid(GATEWAY_CACHE_BYTES_KEY);
+    };
+    if profiles.is_empty() {
+        return Sizing::Reasons(vec![format!(
+            "sizing_profiles_missing:{ENV_DIR}/sizing-*.env"
+        )]);
+    }
+    let floor = gateway_mem_floor_mib(bytes);
+    let mut reasons = Vec::new();
+    for profile in profiles {
+        match last_value(profile, GATEWAY_MEM_KEY).and_then(|v| v.parse::<u128>().ok()) {
+            Some(mem) if mem >= floor => {}
+            Some(mem) => reasons.push(format!(
+                "gateway_mem_below_cache:{}:{GATEWAY_MEM_KEY}={mem} < {floor} MiB (cache {bytes} B)",
+                profile.name
+            )),
+            None => reasons.push(format!(
+                "gateway_mem_unreadable:{}:{GATEWAY_MEM_KEY}",
+                profile.name
+            )),
+        }
+    }
+    Sizing::Reasons(reasons)
+}
+
+/// `gateway_mem_unwired:<field>:rendered <v> != <KEY>=<probe> MiB` for a gateway `mem_limit` / `memswap_limit` of the
+/// compose render that does not follow `HUMAUX_SIZE_GATEWAY_MEM`: the sizing profiles only bind the container through
+/// that interpolation (rendered with [`GATEWAY_MEM_PROBE_MIB`], in bytes).
+fn gateway_mem_wiring_reasons(doc: &serde_json::Value) -> Vec<String> {
+    let gateway = &doc["services"]["gateway"];
+    ["mem_limit", "memswap_limit"]
+        .into_iter()
+        .filter_map(|field| {
+            let rendered = &gateway[field];
+            let bytes = match rendered {
+                serde_json::Value::String(s) => s.parse::<u128>().ok(),
+                other => other.as_u64().map(u128::from),
+            };
+            (bytes != Some(GATEWAY_MEM_PROBE_MIB * MIB)).then(|| {
+                format!(
+                    "gateway_mem_unwired:{field}:rendered {rendered} != {GATEWAY_MEM_KEY}={GATEWAY_MEM_PROBE_MIB} MiB"
+                )
+            })
+        })
+        .collect()
+}
+
+/// `docker compose config` of prod.yml as the node gates render it; `Ok(None)` when docker is absent.
+fn compose_json(root: &Path) -> Result<Option<String>, String> {
+    // dep: subprocess(docker) — client-side `docker compose config` of prod.yml: env_file paths and `environment:` without values (ADR-0066 D-R)
+    let mut cmd = std::process::Command::new("docker");
+    cmd.arg("compose");
+    for file in COMPOSE_ENV_FILES {
+        cmd.arg("--env-file").arg(root.join(file));
+    }
+    cmd.arg("-f").arg(root.join(COMPOSE_FILE));
+    for profile in COMPOSE_PROFILES {
+        cmd.args(["--profile", profile]);
+    }
+    cmd.args(["config", "--format", "json", "--no-env-resolution"])
+        .env(GATEWAY_MEM_KEY, GATEWAY_MEM_PROBE_MIB.to_string())
+        .stdin(std::process::Stdio::null());
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("docker compose config: {e}")),
+    };
+    if !out.status.success() {
+        return Err(format!(
+            "docker compose config failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8(out.stdout)
+        .map(Some)
+        .map_err(|e| format!("docker compose config is not UTF-8: {e}"))
+}
+
+/// Gate (b): the values files against the generated example lists.
+fn unknown_keys_gate(root: &Path) -> Result<Vec<String>, String> {
+    let examples = read_env(root, EXAMPLE_DIR, "example", ".env")?;
+    if examples.is_empty() {
+        return Err(format!("{EXAMPLE_DIR}: no <process>.env file"));
+    }
+    let values = read_env(root, VALUES_DIR, "values", ".env")?;
+    Ok(unknown_value_keys(&examples, &values))
+}
+
+/// Gate (a): every example key is declared in a values file, the secret fixture or the compose document, and the
+/// gateway `mem_limit` of that document follows `HUMAUX_SIZE_GATEWAY_MEM`. `Ok(None)` when docker is absent (the
+/// caller names the missing object, §57.1).
+fn presence_gate(root: &Path) -> Result<Option<Vec<String>>, String> {
+    let canonical = root
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", root.display()))?;
+    let root = canonical.as_path();
+    let Some(json) = compose_json(root)? else {
+        return Ok(None);
+    };
+    let doc: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| format!("docker compose config is not JSON: {e}"))?;
+    if let Some(refusal) = deploy_check::resolved_env_input(&doc) {
+        return Err(refusal);
+    }
+    let examples = read_env(root, EXAMPLE_DIR, "example", ".env")?;
+    let values = read_env(root, VALUES_DIR, "values", ".env")?;
+    let secrets = read_env(root, SECRET_FIXTURE_DIR, "secrets", ".secret.env")?;
+    let mut reasons = env_file_reasons(&examples, &values, secrets, &doc);
+    reasons.extend(gateway_mem_wiring_reasons(&doc));
+    Ok(Some(reasons))
+}
+
+/// Gate (c): every sizing profile's gateway ceiling holds the cache the gateway values file enables.
+fn sizing_gate(root: &Path) -> Result<Sizing, String> {
+    let values = read_env(root, VALUES_DIR, "values", ".env")?;
+    let profiles: Vec<EnvFile> = read_env(root, ENV_DIR, "env", ".env")?
+        .into_iter()
+        .filter(|f| f.process.starts_with("sizing-"))
+        .collect();
+    Ok(gateway_mem_reasons(&values, &profiles))
+}
+
+/// `cargo xtask deploy-env`: one reason per line, names only. Exit 0 pass, 1 any reason or an unreadable input,
+/// 2 usage, or docker absent (presence `not_applicable`, naming the missing object; a run that declares docker, as
+/// ci.yml does, fails instead, `testkit::skip_or_fail`).
+pub fn run_deploy_env(args: &[String]) -> i32 {
+    if !args.is_empty() {
+        eprintln!("usage: cargo xtask deploy-env");
+        return 2;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = root.canonicalize().unwrap_or(root);
+    let unreadable = |e: String| {
+        eprintln!("deploy-env: error: {e}");
+        1
+    };
+    let mut reasons = match unknown_keys_gate(&root) {
+        Ok(found) => found,
+        Err(e) => return unreadable(e),
+    };
+    match sizing_gate(&root) {
+        Ok(Sizing::Reasons(found)) => reasons.extend(found),
+        Ok(Sizing::NotApplicable(line)) => println!("{line}"),
+        Err(e) => return unreadable(e),
+    }
+    let presence = match presence_gate(&root) {
+        Ok(found) => found,
+        Err(e) => return unreadable(e),
+    };
+    reasons.extend(presence.iter().flatten().cloned());
+    for reason in &reasons {
+        println!("deploy-env: {reason}");
+    }
+    println!("deploy-env: {} reasons", reasons.len());
+    if presence.is_none() {
+        humaux_testkit::skip_or_fail(
+            "deploy-env",
+            "missing object: docker (docker compose config of prod.yml); presence not checked",
+            humaux_testkit::ExternalDep::Docker,
+        );
+    }
+    if !reasons.is_empty() {
+        1
+    } else if presence.is_none() {
+        2
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use humaux_testkit::{ExternalDep, skip_or_fail};
+    use serde_json::json;
 
     const NODEP: &str = "crates=[]; services=[]; env=[]; modules=[]";
 
@@ -6214,6 +6581,341 @@ mod tests {
             .collect();
         assert!(bad.is_empty(), "{bad:?}");
         assert_eq!(an.fixtures.len(), 25, "trybuild fixtures excluded by path");
+    }
+
+    // ---- deploy-env: values files, secret fixture and the gateway cache ceiling -----------------
+
+    fn env_files(spec: &[(&str, &str, &str)]) -> Vec<EnvFile> {
+        spec.iter()
+            .map(|(name, process, text)| EnvFile::parse(name, process, text))
+            .collect()
+    }
+
+    /// `gateway` reads a bundle constant (values), a node key (prod.yml `environment:`) and a secret (the fixture,
+    /// empty as committed); `migrate.secret.env` carries the migrator DSN.
+    fn deploy_env_inputs() -> (Vec<EnvFile>, Vec<EnvFile>, Vec<EnvFile>, serde_json::Value) {
+        let examples = env_files(&[(
+            "example/gateway.env",
+            "gateway",
+            "HUMAUX_GATEWAY_CELL_ID=\nHUMAUX_GATEWAY_LIMIT=\nHUMAUX_GATEWAY_PG_DSN=\n",
+        )]);
+        let values = env_files(&[("values/gateway.env", "gateway", "HUMAUX_GATEWAY_LIMIT=5\n")]);
+        let secrets = env_files(&[
+            (
+                "secrets/gateway.secret.env",
+                "gateway",
+                "HUMAUX_GATEWAY_PG_DSN=\n",
+            ),
+            (
+                "secrets/migrate.secret.env",
+                "migrate",
+                "HUMAUX_MIGRATOR_PG_DSN=\n",
+            ),
+        ]);
+        let doc = json!({ "services": { "gateway": {
+            "image": "humaux-gateway:t",
+            "env_file": [{ "path": "/srv/x/deploy/env/values/gateway.env" }],
+            "environment": { "HUMAUX_GATEWAY_CELL_ID": "c" } } } });
+        (examples, values, secrets, doc)
+    }
+
+    /// (a): a key the process reads that no values file, secret or `environment:` declares is red, whichever of the
+    /// three should have; the empty secret fixture is not. Fault: judge the fixture's emptiness ⇒ the green case is
+    /// red; drop the values source ⇒ the LIMIT case is green; drop the compose source ⇒ the CELL_ID case is green.
+    #[test]
+    fn deploy_env_presence_reds_a_missing_key_and_ignores_the_empty_fixture() {
+        let (examples, values, secrets, doc) = deploy_env_inputs();
+        assert_eq!(
+            env_file_reasons(&examples, &values, secrets.clone(), &doc),
+            Vec::<String>::new()
+        );
+        let no_values = env_files(&[("values/gateway.env", "gateway", "")]);
+        assert_eq!(
+            env_file_reasons(&examples, &no_values, secrets.clone(), &doc),
+            vec!["key_missing:gateway:HUMAUX_GATEWAY_LIMIT".to_owned()]
+        );
+        let mut no_environment = doc.clone();
+        no_environment["services"]["gateway"]["environment"] = json!({});
+        assert_eq!(
+            env_file_reasons(&examples, &values, secrets.clone(), &no_environment),
+            vec!["key_missing:gateway:HUMAUX_GATEWAY_CELL_ID".to_owned()]
+        );
+        let no_secret = secrets[1..].to_vec();
+        assert_eq!(
+            env_file_reasons(&examples, &values, no_secret, &doc),
+            vec!["key_missing:gateway:HUMAUX_GATEWAY_PG_DSN".to_owned()]
+        );
+    }
+
+    /// Examples, values and secrets of two processes for the inlined-render tests: `other` reads a node key
+    /// (`HUMAUX_OTHER_NODE`) that only a compose `environment:` can supply.
+    fn inlined_inputs() -> (Vec<EnvFile>, Vec<EnvFile>, Vec<EnvFile>) {
+        let examples = env_files(&[
+            (
+                "example/gateway.env",
+                "gateway",
+                "HUMAUX_GATEWAY_LIMIT=\nHUMAUX_GATEWAY_CELL_ID=\n",
+            ),
+            (
+                "example/other.env",
+                "other",
+                "HUMAUX_OTHER_SHARD=\nHUMAUX_OTHER_LIMIT=\nHUMAUX_OTHER_NODE=\n",
+            ),
+        ]);
+        let values = env_files(&[
+            ("values/gateway.env", "gateway", "HUMAUX_GATEWAY_LIMIT=5\n"),
+            (
+                "values/other.env",
+                "other",
+                "HUMAUX_OTHER_SHARD=1\nHUMAUX_OTHER_LIMIT=2\n",
+            ),
+        ]);
+        let secrets = env_files(&[(
+            "secrets/migrate.secret.env",
+            "migrate",
+            "HUMAUX_MIGRATOR_PG_DSN=\n",
+        )]);
+        (examples, values, secrets)
+    }
+
+    /// Compose 2.38 inlines env_files (no `env_file` key): a service is attributed by the values file it carries WHOLE.
+    /// A stranger service that carries one real values key of `other` (not all of them) and the node key `other` is
+    /// missing must not supply it. Faults: drop [`inlined_env_sources`] ⇒ the green case is red (CI run 39199098039);
+    /// `.all(` → `.any(` in it ⇒ the stranger case is green.
+    #[test]
+    fn deploy_env_presence_reads_an_inlined_render() {
+        let (examples, values, secrets) = inlined_inputs();
+        let render = |other: serde_json::Value, stranger: serde_json::Value| {
+            json!({ "services": {
+                "gateway": { "environment": { "HUMAUX_GATEWAY_LIMIT": "5", "HUMAUX_GATEWAY_CELL_ID": "c" } },
+                "other": { "environment": other },
+                "stranger": { "environment": stranger } } })
+        };
+        let judge =
+            |doc: serde_json::Value| env_file_reasons(&examples, &values, secrets.clone(), &doc);
+        let other_full = json!({ "HUMAUX_OTHER_SHARD": "1", "HUMAUX_OTHER_LIMIT": "2", "HUMAUX_OTHER_NODE": "n" });
+        assert_eq!(judge(render(other_full, json!({}))), Vec::<String>::new());
+        let other_no_node = json!({ "HUMAUX_OTHER_SHARD": "1", "HUMAUX_OTHER_LIMIT": "2" });
+        let stranger = json!({ "HUMAUX_OTHER_SHARD": "1", "HUMAUX_OTHER_NODE": "n" });
+        assert_eq!(
+            judge(render(other_no_node, stranger)),
+            vec!["key_missing:other:HUMAUX_OTHER_NODE".to_owned()]
+        );
+    }
+
+    /// A secret declared in another service's secret file is not a compose source: `dr` inlines
+    /// `dr.secret.env`, which must not stand in for the key `maintenance.secret.env` lacks (the node skips every
+    /// `.secret.env` env_file). The key is a rotation twin so the `secret_empty` rule cannot catch it either. Fault:
+    /// drop the `in_a_secret_file` filter ⇒ no reason.
+    #[test]
+    fn deploy_env_presence_ignores_a_secret_another_service_inlines() {
+        const KEY: &str = "HUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS";
+        let examples = env_files(&[(
+            "example/maintenance.env",
+            "maintenance",
+            "HUMAUX_MAINTENANCE_LIMIT=\nHUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS=\n",
+        )]);
+        let values = env_files(&[(
+            "values/maintenance.env",
+            "maintenance",
+            "HUMAUX_MAINTENANCE_LIMIT=5\n",
+        )]);
+        let secrets = |maintenance: &str| {
+            env_files(&[
+                ("secrets/maintenance.secret.env", "maintenance", maintenance),
+                (
+                    "secrets/dr.secret.env",
+                    "dr",
+                    "HUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS=\n",
+                ),
+                (
+                    "secrets/migrate.secret.env",
+                    "migrate",
+                    "HUMAUX_MIGRATOR_PG_DSN=\n",
+                ),
+            ])
+        };
+        let doc = json!({ "services": {
+            "dr": { "environment": { "HUMAUX_MAINTENANCE_LIMIT": "5", "HUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS": "" } },
+            "maintenance-serve": { "environment": { "HUMAUX_MAINTENANCE_LIMIT": "5" } } } });
+        assert_eq!(
+            env_file_reasons(&examples, &values, secrets(&format!("{KEY}=\n")), &doc),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            env_file_reasons(&examples, &values, secrets(""), &doc),
+            vec![format!("key_missing:maintenance:{KEY}")]
+        );
+    }
+
+    /// (b): a values key the process's example does not list is red, and so is a values file with no example at
+    /// all. Fault: compare against the union of every example ⇒ `other`'s key in the gateway values file passes.
+    #[test]
+    fn deploy_env_unknown_value_key_is_red() {
+        let (examples, values, _, _) = deploy_env_inputs();
+        assert_eq!(unknown_value_keys(&examples, &values), Vec::<String>::new());
+        let stale = env_files(&[(
+            "values/gateway.env",
+            "gateway",
+            "HUMAUX_GATEWAY_LIMIT=5\nHUMAUX_GATEWAY_STALE=1\n",
+        )]);
+        assert_eq!(
+            unknown_value_keys(&examples, &stale),
+            vec!["values_key_unknown:values/gateway.env:HUMAUX_GATEWAY_STALE".to_owned()]
+        );
+        let (two, _, _) = inlined_inputs();
+        let strayed = env_files(&[(
+            "values/gateway.env",
+            "gateway",
+            "HUMAUX_GATEWAY_LIMIT=5\nHUMAUX_OTHER_SHARD=1\n",
+        )]);
+        assert_eq!(
+            unknown_value_keys(&two, &strayed),
+            vec!["values_key_unknown:values/gateway.env:HUMAUX_OTHER_SHARD".to_owned()]
+        );
+        let ghost = env_files(&[("values/ghost.env", "ghost", "")]);
+        assert_eq!(
+            unknown_value_keys(&examples, &ghost),
+            vec!["values_file_unmatched:values/ghost.env".to_owned()]
+        );
+    }
+
+    fn cache_values(enabled: &str, bytes: &str) -> Vec<EnvFile> {
+        let text =
+            format!("{GATEWAY_CACHE_ENABLED_KEY}={enabled}\n{GATEWAY_CACHE_BYTES_KEY}={bytes}\n");
+        env_files(&[("values/gateway.env", "gateway", text.as_str())])
+    }
+
+    fn gateway_profile(profile: &str, mem: &str) -> Vec<EnvFile> {
+        let text = format!("{GATEWAY_MEM_KEY}={mem}\n");
+        let file = format!("env/{profile}.env");
+        env_files(&[(file.as_str(), profile, text.as_str())])
+    }
+
+    /// The floor is the cache with moka's overhead rounded up to whole MiB, plus the working set; one MiB less is red,
+    /// a disabled cache is `not_applicable` naming the flag and the file (§57.1: never an empty pass), and an unreadable
+    /// flag, size or ceiling and an empty profile set are named rather than passed. Fault: round the cache down ⇒
+    /// floor − 1 is green; read the stamp instead of the flag ⇒ the committed values (blank stamp) skip the rule;
+    /// return empty for a disabled cache ⇒ the `not_applicable` assertion is red.
+    #[test]
+    fn gateway_ceiling_must_hold_the_embedding_cache() {
+        let bytes = 268_435_456;
+        let floor = gateway_mem_floor_mib(bytes);
+        assert_eq!(
+            floor,
+            282 + GATEWAY_WORKING_SET_MIB,
+            "256 MiB x 1.1 = 281.6, rounded up"
+        );
+        assert_eq!(gateway_mem_floor_mib(1), 1 + GATEWAY_WORKING_SET_MIB);
+        let red = |reason: String| Sizing::Reasons(vec![reason]);
+        let on = cache_values("true", "268435456");
+        let sized = |mem: &str| gateway_mem_reasons(&on, &gateway_profile("sizing-x", mem));
+        assert_eq!(sized(&floor.to_string()), Sizing::Reasons(Vec::new()));
+        assert_eq!(
+            sized(&(floor - 1).to_string()),
+            red(format!(
+                "gateway_mem_below_cache:env/sizing-x.env:{GATEWAY_MEM_KEY}={} < {floor} MiB (cache {bytes} B)",
+                floor - 1
+            ))
+        );
+        assert_eq!(
+            sized("lots"),
+            red(format!(
+                "gateway_mem_unreadable:env/sizing-x.env:{GATEWAY_MEM_KEY}"
+            ))
+        );
+        let off = cache_values("false", "268435456");
+        assert_eq!(
+            gateway_mem_reasons(&off, &gateway_profile("sizing-x", "1")),
+            Sizing::NotApplicable(format!(
+                "deploy-env sizing: not_applicable — {GATEWAY_CACHE_ENABLED_KEY}=false in deploy/env/values/gateway.env"
+            ))
+        );
+        let profile = gateway_profile("sizing-x", "9999");
+        let invalid = |key: &str| {
+            red(format!(
+                "gateway_cache_key_invalid:values/gateway.env:{key}"
+            ))
+        };
+        assert_eq!(
+            gateway_mem_reasons(&cache_values("maybe", "1"), &profile),
+            invalid(GATEWAY_CACHE_ENABLED_KEY)
+        );
+        assert_eq!(
+            gateway_mem_reasons(&cache_values("true", "0"), &profile),
+            invalid(GATEWAY_CACHE_BYTES_KEY)
+        );
+        assert_eq!(
+            gateway_mem_reasons(&on, &[]),
+            red(format!("sizing_profiles_missing:{ENV_DIR}/sizing-*.env"))
+        );
+        assert_eq!(
+            gateway_mem_reasons(&[], &profile),
+            red("gateway_values_missing:values/gateway.env".to_owned())
+        );
+    }
+
+    /// The gateway `mem_limit` and `memswap_limit` of the render must be the probe bytes: a literal (`256m`), another
+    /// key's number or a missing field is named. Fault: skip the check ⇒ prod.yml `mem_limit: 256m` stays green.
+    #[test]
+    fn gateway_mem_limit_must_follow_the_sizing_key() {
+        let probe = (GATEWAY_MEM_PROBE_MIB * MIB).to_string();
+        let render = |mem: &str, swap: &str| json!({ "services": { "gateway": { "mem_limit": mem, "memswap_limit": swap } } });
+        assert_eq!(
+            gateway_mem_wiring_reasons(&render(&probe, &probe)),
+            Vec::<String>::new()
+        );
+        let unwired = |field: &str, rendered: &str| {
+            format!(
+                "gateway_mem_unwired:{field}:rendered {rendered} != {GATEWAY_MEM_KEY}={GATEWAY_MEM_PROBE_MIB} MiB"
+            )
+        };
+        assert_eq!(
+            gateway_mem_wiring_reasons(&render("268435456", &probe)),
+            vec![unwired("mem_limit", "\"268435456\"")]
+        );
+        assert_eq!(
+            gateway_mem_wiring_reasons(&render(&probe, "1073741824")),
+            vec![unwired("memswap_limit", "\"1073741824\"")]
+        );
+        assert_eq!(
+            gateway_mem_wiring_reasons(&json!({ "services": {} })),
+            vec![
+                unwired("mem_limit", "null"),
+                unwired("memswap_limit", "null")
+            ]
+        );
+    }
+
+    /// The committed values files declare no key their process does not read (ADR-0066 D-R (a)).
+    #[test]
+    fn deploy_env_live_values_declare_only_keys_a_process_reads() {
+        let reasons = unknown_keys_gate(&repo_root()).expect("committed env files are readable");
+        assert!(reasons.is_empty(), "{reasons:#?}");
+    }
+
+    /// Every key a process reads is declared in its values file, the secret fixture or prod.yml `environment:`
+    /// (ADR-0066 D-R (a)), over the prod.yml `docker compose config` renders on a clean checkout.
+    #[test]
+    fn deploy_env_live_values_declare_every_key_a_process_reads() {
+        const TEST: &str = "deploy_env_live_values_declare_every_key_a_process_reads";
+        match presence_gate(&repo_root()).expect("prod.yml renders") {
+            None => skip_or_fail(
+                TEST,
+                "missing object: docker (docker compose config of prod.yml)",
+                ExternalDep::Docker,
+            ),
+            Some(reasons) => assert!(reasons.is_empty(), "{reasons:#?}"),
+        }
+    }
+
+    /// Every committed sizing profile's gateway ceiling holds the embedding cache the committed values enable.
+    #[test]
+    fn deploy_env_live_gateway_ceiling_holds_the_embedding_cache() {
+        match sizing_gate(&repo_root()).expect("committed env files are readable") {
+            Sizing::Reasons(reasons) => assert!(reasons.is_empty(), "{reasons:#?}"),
+            Sizing::NotApplicable(line) => println!("{line}"),
+        }
     }
 
     // ---- DB ------------------------------------------------------------------------------
