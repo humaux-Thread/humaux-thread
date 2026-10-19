@@ -324,6 +324,22 @@ and the failing lines are in the card's PR description.
   - r2 changes two lines (the parameter and the call's `.into().expect(..)`): `xtask` links `humaux-adapters`, so a
     one-line `Option` parameter fails to compile before the arm runs. r3, r8 and r9 stay inside 0252 because its
     postcheck deliberately leaves the CHECK values, the guard body and the index predicate to these tests.
+- T06a review fixes (PR #96), branches `red/m29-t06a-r10..r17` off `4a54d50`:
+  - r10: `AND ptr.dst_id = tr.task_id` dropped from A3 -> G-T06a-A3 red: P3, which CONTAINS another task, is
+    inherited too.
+  - r11: A1's `ep.evidence_id = $3` replaced by `$3::uuid IS NOT NULL` -> G-T06a-A1 red: P4, declared on another
+    Evidence, is attributed. `$3` stays referenced so the query still types.
+  - r12: A1's `AND ep.source_kind = $4` dropped -> G-T06a-A1 red: P5, an INHERITED row on this Evidence, comes back
+    as DECLARED.
+  - r13: A3's NULL guard as `cur.valid @> COALESCE(e.occurred_at, clock_timestamp())` -> G-T06a-A3 red: a put with
+    no `occurred_at` inherits under a currently valid CONTAINS (N09 R3).
+  - r14: `subject_relations_one_relation_per_edge` predicate `revision = 0` -> #92 item 5 red, now per pair:
+    `SubjectSubject` accepts a second `relation_id` for one edge.
+  - r15: the confirm path's `attribution_evidence_id` as E2 (`evidence_id`) -> G-T06a-confirm red: no row, since E2
+    carries no task run.
+  - r16: `ON CONFLICT (tenant_id, memory_id, project_id) DO NOTHING` dropped -> G-T06a-A3 red: A1 and A3 on one
+    project fail on `memory_projects_pkey` instead of keeping the A1 row.
+  - r17: `use crate::byok;` in `attribution_repo.rs` -> G-N09-1 red: the attribution code names a model module.
 
 ## Cards and experiments
 
