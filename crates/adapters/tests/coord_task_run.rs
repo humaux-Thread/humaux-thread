@@ -1,5 +1,5 @@
-//! `adapters::tests::coord_task_run` — M29 T04a gates G-T04a-1..4: §30.2 lease expiry, fencing token, lease owner, and
-//!   the §30.1 state closed set (§78.2), against a real Postgres.
+//! `adapters::tests::coord_task_run` — M29 T04a gates G-T04a-1..5: §30.2 lease expiry, fencing token, lease owner, the
+//!   §30.1 state closed set (§78.2) and the ADR-0046 epoch bump on close, against a real Postgres.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(any)
 //!   r=[coord.task_runs_one_open_lease_per_task] w=[control.tenants, coord.task_runs, coord.tasks],
 //!   PostgreSQL(role_gateway)];
@@ -9,7 +9,7 @@
 //! Invariants: [every test owns a throwaway control.tenants row and deletes its coord rows on drop; lease expiry is
 //!   moved on the DB clock by SQL, never by sleeping; every rejection case has a passing positive control in the same
 //!   test; no DSN or unreachable DB goes through the §79.2 three-state skip]
-//! Spec: Baseline §30.1; §30.2; §78.2; §79.2; §80.1
+//! Spec: Baseline §30.1; §30.2; §78.2; §79.2; §80.1; ADR-0046 D-C
 //!
 //! Runs on the real `coord.tasks` / `coord.task_runs` (migration 0248) through `role_gateway`, rows
 //! scoped to a tenant this file creates (the repo's DB-lane convention, as in `jobs_claim.rs`).
@@ -211,6 +211,16 @@ fn task_state(h: &mut Handle, task: TaskId) -> String {
         .get(0)
 }
 
+fn task_epoch(h: &mut Handle, task: TaskId) -> i64 {
+    h.admin
+        .query_one(
+            "SELECT authorization_epoch FROM coord.tasks WHERE task_id = $1",
+            &[&task.0],
+        )
+        .expect("task row")
+        .get(0)
+}
+
 /// G-T04a-1: a lease past `lease_expires_at` on the DB clock fails verification, heartbeat and
 /// close.
 #[test]
@@ -348,4 +358,41 @@ fn g_t04a_4_task_state_closed_set_matches_db() {
             "state defaults to SUBMITTED: {default}"
         );
     });
+}
+
+/// G-T04a-5 (ADR-0046 D-C, migration 0173 §3): complete and fail each bump `authorization_epoch` by
+/// exactly one, each on its own task; claim, heartbeat and re-claim leave it unchanged.
+#[test]
+fn g_t04a_5_terminal_close_bumps_authorization_epoch() {
+    run_db_fixture::<CoordFixture, _>(
+        "g_t04a_5_terminal_close_bumps_authorization_epoch",
+        |mut h| {
+            let a = scope(h.tenant_id);
+            for outcome in [TaskState::Completed, TaskState::Failed] {
+                let task = submit(&h, &a);
+                let before = task_epoch(&mut h, task);
+                let first = claim(&h, &a, task).expect("claim");
+                heartbeat(&h, &a, first.task_run_id, first.fencing_token).expect("heartbeat");
+                expire(&mut h, first.task_run_id);
+                let run = claim(&h, &a, task).expect("re-claim");
+                assert_eq!(
+                    task_epoch(&mut h, task),
+                    before,
+                    "claim, heartbeat and re-claim keep the epoch"
+                );
+                let closed = match outcome {
+                    TaskState::Completed => complete(&h, &a, run.task_run_id, run.fencing_token),
+                    _ => fail(&h, &a, run.task_run_id, run.fencing_token),
+                };
+                closed.expect("owner closes the run");
+                assert_eq!(
+                    task_epoch(&mut h, task),
+                    before + 1,
+                    "{} bumps the epoch by exactly one",
+                    outcome.as_db_str()
+                );
+                assert_eq!(task_state(&mut h, task), outcome.as_db_str());
+            }
+        },
+    );
 }

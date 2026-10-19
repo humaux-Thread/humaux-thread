@@ -8,8 +8,9 @@
 //!   is read and compared on the DB clock (clock_timestamp()), never the application clock; claim, heartbeat,
 //!   complete and fail take the task row FOR UPDATE before judging the lease, so they serialize per task; a run passes
 //!   verification only if it is open, its lease is unexpired, its owner is the caller and its token equals the task's
-//!   current fencing_seq; every rejection is an existing ErrorCode variant]
-//! Spec: Baseline §30; §30.1; §30.2; §52; §62; §6.2.1
+//!   current fencing_seq; complete and fail bump coord.tasks.authorization_epoch by one (ADR-0046 D-C), claim and
+//!   heartbeat never touch it; every rejection is an existing ErrorCode variant]
+//! Spec: Baseline §30; §30.1; §30.2; §52; §62; §6.2.1; ADR-0046 D-C
 //!
 //! Runs on [`RuntimeDbPool`] (`role_gateway`, which holds SELECT, INSERT, UPDATE on `coord.*`,
 //! §6.2.1). Each pool-level operation opens its own transaction with the scope's tenant GUCs
@@ -235,7 +236,7 @@ pub async fn heartbeat(
     Ok(expires)
 }
 
-/// Closes a verified run and moves its task to `COMPLETED`.
+/// Closes a verified run, moves its task to `COMPLETED` and bumps its `authorization_epoch`.
 pub async fn complete(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
@@ -252,7 +253,7 @@ pub async fn complete(
     .await
 }
 
-/// Closes a verified run and moves its task to `FAILED`.
+/// Closes a verified run, moves its task to `FAILED` and bumps its `authorization_epoch`.
 pub async fn fail(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
@@ -278,12 +279,19 @@ async fn close(
     .execute(&mut *txn)
     .await
     .map_err(db)?;
-    sqlx::query("UPDATE coord.tasks SET state = $2 WHERE task_id = $1")
-        .bind(run.task_id.0)
-        .bind(outcome.as_db_str())
-        .execute(&mut *txn)
-        .await
-        .map_err(db)?;
+    // ADR-0046 D-C / migration 0173 §3: closing a task invalidates every task-binding grant issued
+    // under its previous epoch, so a terminal transition bumps it. claim, re-claim and heartbeat do
+    // not: they change the executor, not the task's authority.
+    sqlx::query(
+        "UPDATE coord.tasks SET state = $2, \
+         authorization_epoch = authorization_epoch + 1 \
+         WHERE task_id = $1",
+    )
+    .bind(run.task_id.0)
+    .bind(outcome.as_db_str())
+    .execute(&mut *txn)
+    .await
+    .map_err(db)?;
     txn.commit().await.map_err(db)
 }
 
