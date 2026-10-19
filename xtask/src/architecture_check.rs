@@ -2836,6 +2836,28 @@ fn t04c_3_carrier_door(root: &Path) -> Verdict {
     )
 }
 
+/// Door statement of M29 T06c (ADR-0078 D-D rung A1, gate G-T06c-3): the declared-project carrier INSERT is one
+/// statement in non-test code, in `remember::insert_evidence_project_in_txn`. This arm pins only that statement;
+/// `pub(crate)` pins the function's callers to the adapters crate, its `DeclaredProject` argument (constructed only by
+/// `remember::resolve_declared_project_in_txn`) pins the resolution before it, and the §6.2.2 grants (rls_check:
+/// INSERT for `role_gateway` only) are the DB backstop.
+const T06C_DECLARED_DOOR: [DoorStatement; 1] = [(
+    "INSERT INTO private.evidence_projects",
+    "crates/adapters/src/remember.rs",
+)];
+
+/// M29 T06c / G-T06c-3: exactly one `INSERT INTO private.evidence_projects` in non-test code, in `remember.rs`
+/// ([`T06C_DECLARED_DOOR`]); the 注错 is a second copy in another module (`found 2`).
+fn t06c_door(root: &Path) -> Verdict {
+    sole_door_statements(
+        root,
+        "M29 T06c / G-T06c-3",
+        "M29 T06c declared-project carrier door",
+        &T06C_DECLARED_DOOR,
+        &[],
+    )
+}
+
 // ============================================================================
 // ADR-0078 D-D (Q1 ruling) / G-M29-5(a) and D-E / G-N09-1 (card M29 T06a): the Memory INSERT door invokes M07's
 // attribution port exactly once, through a required parameter, and the M29 write path of `memory_projects` names no
@@ -7668,6 +7690,10 @@ pub fn run(_args: &[String]) -> i32 {
             t04c_3_carrier_door(&root),
         ),
         (
+            "M29 T06c / G-T06c-3 (private.evidence_projects INSERT: one statement, in remember.rs, non-test code)",
+            t06c_door(&root),
+        ),
+        (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
             m29_5a_attribution_site(&root),
         ),
@@ -11570,6 +11596,52 @@ async fn serving_version_in_txn() {}
                 assert!(lines[0].contains("found 2"), "{lines:?}");
                 assert!(
                     lines[0].contains("crates/adapters/src/coord_repo.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 T06c / G-T06c-3: one INSERT INTO private.evidence_projects, in remember.rs ---------------------------------
+
+    const T06C_HOME: &str = "crates/adapters/src/remember.rs";
+    const T06C_DOOR: &str = "fn door() { let _ = \"INSERT INTO private.evidence_projects (tenant_id) VALUES ($1)\"; }\n";
+
+    /// The tree as T06c leaves it: one declared-project INSERT, in `remember.rs`.
+    #[test]
+    fn t06c_door_real_repo_passes() {
+        assert_eq!(t06c_door(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the missing home file (§57.1 第2条).
+    #[test]
+    fn t06c_door_is_not_applicable_naming_the_missing_door_file() {
+        let tmp = fresh_tmp("t06c-door-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match t06c_door(&tmp) {
+            Verdict::NotApplicable(detail) => assert!(detail.contains(T06C_HOME), "{detail}"),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-T06c-3): a second declared-project INSERT in another module → 红, `found 2`, naming that file; a
+    /// test-tree copy does not count.
+    #[test]
+    fn t06c_door_fails_on_a_second_insert_in_another_src_file() {
+        let tmp = fresh_tmp("t06c-door-red");
+        m07_write(&tmp, T06C_HOME, T06C_DOOR);
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", T06C_DOOR);
+        assert_eq!(t06c_door(&tmp), Verdict::Pass);
+        m07_write(&tmp, "crates/adapters/src/operation_receipt.rs", T06C_DOOR);
+        match t06c_door(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 2"), "{lines:?}");
+                assert!(
+                    lines[0].contains("crates/adapters/src/operation_receipt.rs"),
                     "{lines:?}"
                 );
             }

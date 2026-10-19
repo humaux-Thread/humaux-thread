@@ -1,13 +1,14 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
 //! Called-by: [gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
 //!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
 //!   (ADR-0067 D-J); a put naming a task run verifies it before any write and is refused whole when it fails, and
-//!   only a fresh (non-replayed) write verifies (design v0.2 §15 T04c)]
-//! Spec: ADR-0067; §30.2; §34.0.1
+//!   only a fresh (non-replayed) write verifies (design v0.2 §15 T04c); a put declaring a project resolves it before
+//!   any write and is one INVALID_INPUT when it is not visible, and only a fresh write resolves (ADR-0078 D-D A1)]
+//! Spec: ADR-0067; ADR-0078; §6.1.4; §30.2; §34.0.1
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
 
@@ -17,6 +18,7 @@ use humaux_domain::{
     audit::{AuditEvent, AuditEventId, McpAuditAction},
     authority::MemoryId,
     confirm::DestructiveOp,
+    continuity::ProjectId,
     coordination::{FencingToken, TaskRunId},
     dataclass::DataClass,
     error::ErrorCode,
@@ -242,24 +244,33 @@ pub async fn remember_atomically(
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    remember_for_task_run_atomically(pool, auth, request, None).await
+    remember_for_task_run_atomically(pool, auth, request, None, None).await
 }
 
-/// [`remember_atomically`] for a put that names the §30.2 task run it was written under (design v0.2 §15 T04c).
+/// [`remember_atomically`] for a put that names the §30.2 task run it was written under (design v0.2 §15 T04c)
+/// and/or the project it declares (ADR-0078 D-D rung A1, §6.1.4).
+///
 /// `Some((task_run_id, fencing_token))` is verified with [`coord_repo::verify_task_run`] inside the receipt
 /// transaction, after its tenant GUCs are set and before the BMO reservation and the Evidence; a refusal is that
 /// verification's `ErrorCode` for the whole call, nothing written (no Evidence, carrier, BMO or receipt row). On a
-/// pass the Evidence is followed by its `private.evidence_task_runs` row in the same transaction. `None` is
-/// [`remember_atomically`]. A replay is never re-verified (§34.0.1), so the caller's `request_fingerprint` must cover
-/// `task_run` (the gateway's SHA-256 of the raw arguments does); otherwise a replay naming another run returns the
-/// stored success.
+/// pass the Evidence is followed by its `private.evidence_task_runs` row in the same transaction.
+///
+/// `Some(project)` is resolved at the same point with `remember::resolve_declared_project_in_txn`: an unknown,
+/// another tenant's, archived or not-visible project is one `INVALID_INPUT` for the whole call, nothing written and
+/// the idempotency key left unused; a visible one is followed, after the Evidence, by exactly one `DECLARED`
+/// `private.evidence_projects` row in the same transaction.
+///
+/// `None, None` is [`remember_atomically`]. A replay is never re-verified nor re-resolved (§34.0.1), so the caller's
+/// `request_fingerprint` must cover `task_run` and `project` (the gateway's SHA-256 of the raw arguments does);
+/// otherwise a replay naming another run or project returns the stored success.
 pub async fn remember_for_task_run_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     task_run: Option<(TaskRunId, FencingToken)>,
+    project: Option<ProjectId>,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    stored(atomically(pool, auth, request, None, None, task_run).await?)
+    stored(atomically(pool, auth, request, None, None, task_run, project).await?)
 }
 
 /// ADR-0067 D-A: `memory.note_put` — [`remember_atomically`]'s receipt / replay / BMO / audit machinery, plus the identity
@@ -272,7 +283,18 @@ pub async fn note_put_atomically(
     note: NoteIntake,
     attribution: &dyn MemoryAttribution,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    stored(atomically(pool, auth, request, Some((note, attribution)), None, None).await?)
+    stored(
+        atomically(
+            pool,
+            auth,
+            request,
+            Some((note, attribution)),
+            None,
+            None,
+            None,
+        )
+        .await?,
+    )
 }
 
 /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: [`note_put_atomically`]'s transaction, with the
@@ -296,6 +318,7 @@ pub async fn note_replace_atomically(
         request,
         Some((note, attribution)),
         Some(replace),
+        None,
         None,
     )
     .await
@@ -426,6 +449,7 @@ async fn atomically(
     note: Option<(NoteIntake, &dyn MemoryAttribution)>,
     replace: Option<NoteReplaceRequest>,
     task_run: Option<(TaskRunId, FencingToken)>,
+    project: Option<ProjectId>,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
     let operation = if note.is_some() {
         NOTE_OPERATION
@@ -433,8 +457,8 @@ async fn atomically(
         OPERATION
     };
     let auth = validate(auth, &request, operation)?;
-    // Design v0.2 §15 T04c: the task-run carrier is `remember.put`'s alone.
-    if task_run.is_some() && note.is_some() {
+    // Design v0.2 §15 T04c / ADR-0078 D-D A1: the task-run and declared-project carriers are `remember.put`'s alone.
+    if (task_run.is_some() || project.is_some()) && note.is_some() {
         return Err(ErrorCode::InvalidInput);
     }
     if let Some(replace) = &replace {
@@ -450,7 +474,8 @@ async fn atomically(
     // a task run: the carrier row was written under a lease `verify_task_run` passed in that original transaction, and
     // ADR-0078 T04 ("a write after lease expiry does not inherit") judges the write, not a later retry of its key. A
     // replay with another `task_run` carries another request fingerprint (the gateway hashes the raw arguments), which
-    // `replay` refuses like any changed request.
+    // `replay` refuses like any changed request. The same holds for a declared `project_id` (ADR-0078 D-D A1): a replay
+    // never re-resolves it, so archiving the project after the commit does not turn the stored success into a refusal.
     if let Some(prior) = prior {
         let accepted = replay(&mut txn, &auth, &request, &prior).await?;
         let (memory_id, secret_material) = if note.is_some() {
@@ -496,6 +521,17 @@ async fn atomically(
         Some((task_run_id, fencing_token)) => {
             Some(coord_repo::verify_task_run(&mut txn, &auth, task_run_id, fencing_token).await?)
         }
+        None => None,
+    };
+    // ADR-0078 D-D A1 (§6.1.4, as §6.1.3 for subject ids): resolved at the same point, so an unknown, foreign, archived
+    // or invisible project is one INVALID_INPUT with nothing written or metered and no receipt row.
+    let declared = match project {
+        Some(project) => Some(
+            remember::resolve_declared_project_in_txn(&mut txn, &auth, project)
+                .await
+                .map_err(db_error)?
+                .ok_or(ErrorCode::InvalidInput)?,
+        ),
         None => None,
     };
     // ADR-0067 D-J: the challenge writes nothing and costs no BMO; dropping `txn` releases the head lock.
@@ -554,6 +590,16 @@ async fn atomically(
             &mut txn,
             auth.tenant_id(),
             verified,
+            pending.accepted().evidence_id,
+        )
+        .await
+        .map_err(db_error)?;
+    }
+    if let Some(declared) = declared {
+        remember::insert_evidence_project_in_txn(
+            &mut txn,
+            auth.tenant_id(),
+            declared,
             pending.accepted().evidence_id,
         )
         .await

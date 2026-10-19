@@ -274,7 +274,8 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
-(T06a). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+(T06a); the A1 entry's card gates G-T06c-1 (`project_id` on the wire), G-T06c-2 (end to end to `memory_projects`) and
+G-T06c-3 (one `evidence_projects` writer) (T06c). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 

@@ -8,8 +8,9 @@
 //!   public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys,
 //!   control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains,
 //!   control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events,
-//!   ops.outbox, ops.selection_snapshots, private.context_bindings, private.distill_candidates,
-//!   private.evidence_objects, private.evidence_task_runs, private.memory_affects, private.memory_consolidation_inputs,
+//!   ops.outbox, ops.selection_snapshots, private.context_bindings, private.continuity_projects,
+//!   private.distill_candidates, private.evidence_objects, private.evidence_projects, private.evidence_task_runs,
+//!   private.memory_affects, private.memory_consolidation_inputs,
 //!   private.memory_consolidation_runs, private.memory_evidence, private.memory_records,
 //!   private.memory_subject_presence, private.memory_subjects,
 //!   private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
@@ -14266,11 +14267,11 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
 // ADR-0067 card 40a: memory.note_put over the real MCP transport (G03, G07, G17, G18, G24, G25).
 // ===========================================================================================
 
-/// `contracts/mcp/remember.schema.json` without any note-lane change: the file as of M29 T04c, whose `task_run` field
-/// (design v0.2 §15) is the one change since card 40a's pin (main 17c5895). G25: `remember.put` gains no field, branch
-/// or response key from the note lane.
+/// `contracts/mcp/remember.schema.json` without any note-lane change: the file as of M29 T06c, whose `task_run` field
+/// (design v0.2 §15, T04c) and `project_id` field (ADR-0078 D-D A1, T06c) are the only changes since card 40a's pin
+/// (main 17c5895). G25: `remember.put` gains no field, branch or response key from the note lane.
 const REMEMBER_SCHEMA_SHA256_WITHOUT_NOTE_LANE: &str =
-    "16dee278b84d623d5de31276b70057e3ca21e738652f73770c6c6ef41751ce6d";
+    "08fe5a9ecc2c1a1cb484ad02557da1247adfa1f38b3a8c0937d2d1268a957587";
 
 /// A `tools/call` for tool `memory` built from a hand-written arguments object, so a test controls the exact bytes of the
 /// JSON text (escapes survive; `json!` would normalise `a` to `a`).
@@ -14708,6 +14709,192 @@ fn native_mcp_remember_put_task_run_is_verified_on_the_wire() {
             ))
             .expect("purge carrier and runs");
     });
+}
+
+// ===========================================================================================
+// M29 T06c G-T06c-1 (ADR-0078 D-D rung A1, §6.1.4): `remember.put`'s `project_id` over the real MCP transport. Every
+// refused project is a decoy one predicate of `private.declared_project_visible` alone excludes (the tenant leg is
+// G-T06c-2's, since a foreign project's workspace is never in the caller's set), so dropping it turns (a) red.
+// ===========================================================================================
+
+/// `(receipt rows, Evidence rows, evidence_projects rows)` of the fixture tenant, read by the owner connection.
+fn t06c_counts(handle: &mut Handle) -> (i64, i64, i64) {
+    tokio::task::block_in_place(|| {
+        let row = handle
+            .admin
+            .query_one(
+                "SELECT (SELECT count(*) FROM control.operation_receipts WHERE tenant_id = $1), \
+                        (SELECT count(*) FROM private.evidence_objects WHERE tenant_id = $1), \
+                        (SELECT count(*) FROM private.evidence_projects WHERE tenant_id = $1)",
+                &[&handle.tenant_id],
+            )
+            .expect("owner counts");
+        (row.get(0), row.get(1), row.get(2))
+    })
+}
+
+fn t06c_put(id: u64, key: &str, workspace: Uuid, project: Uuid) -> String {
+    rpc(
+        id,
+        "tools/call",
+        call_params(
+            "remember",
+            json!({"operation": "put", "content": format!("g-t06c-1 {key}"), "idempotency_key": key,
+                   "workspace_id": workspace, "project_id": project}),
+        ),
+    )
+}
+
+/// One owner-seeded `private.continuity_projects` row in `lifecycle_state` `state`.
+fn t06c_project(admin: &mut postgres::Client, tenant: Uuid, workspace: Uuid, state: &str) -> Uuid {
+    let project = Uuid::now_v7();
+    admin
+        .execute(
+            "INSERT INTO private.continuity_projects (project_id, tenant_id, workspace_id, title, lifecycle_state) \
+             VALUES ($1, $2, $3, 'g-t06c-1', $4)",
+            &[&project, &tenant, &workspace, &state],
+        )
+        .expect("owner seeds a project");
+    project
+}
+
+/// G-T06c-1: (a) an unknown project, another tenant's, one in a workspace the caller is not authorized for and an
+/// archived one are each `INVALID_INPUT` with no receipt, Evidence or `evidence_projects` row, and the key stays
+/// unused; (b) a visible project is `accepted` with exactly one `DECLARED` row naming that Evidence and project; (c)
+/// (b)'s key with another visible project is `CONFLICT`, nothing written; (d) (b)'s bytes replayed after the project
+/// is archived return the stored success (§34.0.1: a replay never re-resolves).
+#[test]
+#[allow(clippy::too_many_lines)] // one causal chain over one server: four refusals, accept, changed project, replay
+fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>(
+        "native_mcp_remember_put_declared_project_foreign",
+        |mut foreign| {
+            let foreign_project = t06c_project(
+                &mut foreign.admin,
+                foreign.tenant_id,
+                foreign.workspace_id,
+                "ACTIVE",
+            );
+            run_db_fixture::<Fixture, _>(
+                "native_mcp_remember_put_declared_project",
+                |mut handle| {
+                    handle.assert_gateway_login();
+                    assert_ne!(handle.tenant_id, foreign.tenant_id);
+                    let prefix = format!("t06c{}", &Uuid::now_v7().simple().to_string()[..12]);
+                    let wire = format!("{prefix}.{}", "p".repeat(32));
+                    let credential = handle.seed_synthetic_service_credential_and_window(
+                        SyntheticCredentialScopes::RememberWrite,
+                        &prefix,
+                        &wire,
+                        &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+                        16,
+                    );
+                    let (tenant, workspace) = (handle.tenant_id, handle.workspace_id);
+                    // Same tenant, a workspace the credential is neither bound to nor a member of.
+                    let unauthorized = handle.seed_workspace();
+                    let [visible, other_visible, archived, invisible] = [
+                        (workspace, "ACTIVE"),
+                        (workspace, "ACTIVE"),
+                        (workspace, "ARCHIVED"),
+                        (unauthorized, "ACTIVE"),
+                    ]
+                    .map(|(ws, state)| t06c_project(&mut handle.admin, tenant, ws, state));
+                    let runtime_handle = handle.rt.handle().clone();
+                    let runtime = runtime_handle
+                        .block_on(handle.fresh_runtime())
+                        .expect("t06c runtime");
+                    let app = application(&handle, runtime);
+                    runtime_handle.block_on(async {
+                let (address, server) = start(app).await;
+                let headers = tool_call_headers("remember", credential.bearer.as_str());
+
+                // (a) one INVALID_INPUT for all four, nothing written; the first key stays free for (b).
+                let key = format!("g-t06c-1-{}", Uuid::now_v7());
+                for (n, (name, project)) in [
+                    ("unknown", Uuid::now_v7()),
+                    ("foreign tenant", foreign_project),
+                    ("unauthorized workspace", invisible),
+                    ("archived", archived),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let before = t06c_counts(&mut handle);
+                    let (status, refused) =
+                        raw_request(address, &headers, &t06c_put(10 + n as u64, &key, workspace, project)).await;
+                    assert_protocol_invalid_input(status, &refused);
+                    assert_eq!(t06c_counts(&mut handle), before, "{name}: no receipt, Evidence or evidence_projects row");
+                }
+
+                // (b) a visible project, under the key (a) refused four times: exactly one DECLARED row.
+                let before = t06c_counts(&mut handle);
+                let accept = t06c_put(20, &key, workspace, visible);
+                let (status, accepted) = raw_request(address, &headers, &accept).await;
+                assert_eq!(status, 200, "{accepted}");
+                assert_eq!(accepted["result"]["structuredContent"]["status"], "accepted", "{accepted}");
+                assert_eq!(t06c_counts(&mut handle), (before.0 + 1, before.1 + 1, before.2 + 1));
+                let evidence_id = accepted["result"]["structuredContent"]["evidence_id"]
+                    .as_str()
+                    .expect("evidence_id")
+                    .to_owned();
+                let declared = tokio::task::block_in_place(|| {
+                    handle
+                        .admin
+                        .query(
+                            "SELECT evidence_id::text, project_id, source_kind FROM private.evidence_projects \
+                             WHERE tenant_id = $1",
+                            &[&handle.tenant_id],
+                        )
+                        .expect("read evidence_projects")
+                });
+                assert_eq!(declared.len(), 1);
+                assert_eq!(declared[0].get::<_, String>(0), evidence_id);
+                assert_eq!(declared[0].get::<_, Uuid>(1), visible);
+                assert_eq!(declared[0].get::<_, String>(2), "DECLARED");
+
+                // (c) the same key with another visible project is another request fingerprint: CONFLICT.
+                let before = t06c_counts(&mut handle);
+                let (status, changed) =
+                    raw_request(address, &headers, &t06c_put(21, &key, workspace, other_visible)).await;
+                assert_eq!(status, 200, "{changed}");
+                assert_tool_error(&changed, "CONFLICT");
+                assert_eq!(t06c_counts(&mut handle), before);
+
+                // (d) archive the project, then replay (b)'s bytes: the stored success, not a re-resolution.
+                tokio::task::block_in_place(|| {
+                    handle
+                        .admin
+                        .execute(
+                            "UPDATE private.continuity_projects SET lifecycle_state = 'ARCHIVED', \
+                               updated_at = clock_timestamp() WHERE project_id = $1",
+                            &[&visible],
+                        )
+                        .expect("archive the declared project")
+                });
+                let before = t06c_counts(&mut handle);
+                let (status, replayed) = raw_request(address, &headers, &accept).await;
+                assert_eq!(status, 200, "{replayed}");
+                assert_eq!(replayed["result"]["structuredContent"]["replayed"], true, "{replayed}");
+                assert_eq!(replayed["result"]["structuredContent"]["evidence_id"], evidence_id.as_str());
+                assert_eq!(t06c_counts(&mut handle), before);
+
+                stop_server(server).await.expect("server shutdown");
+            });
+                    // The fixture teardown does not know the carrier, whose FKs block its Evidence and project deletes.
+                    handle
+                        .admin
+                        .execute(
+                            "DELETE FROM private.evidence_projects WHERE tenant_id = $1",
+                            &[&handle.tenant_id],
+                        )
+                        .expect("purge evidence_projects");
+                },
+            );
+        },
+    );
 }
 
 /// (status, superseded_by, note_id) of one version, and the note's head — read back through the owner connection.

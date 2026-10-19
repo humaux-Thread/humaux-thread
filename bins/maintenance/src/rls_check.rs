@@ -1590,8 +1590,13 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
     // 0252 (ADR-0078 D-D, M29 T06a) work attribution. The door's port runs under gateway (memory.confirm /
     // memory.correct / memory.note_put) and private_worker (Distill): both read the Evidence carrier and the
     // revocations and insert memory_projects. Nobody holds UPDATE/DELETE (the owner trigger rejects both on the two
-    // immutable tables). Every other non-owner role — (absence == no grant).
-    cell!("private.evidence_projects", "role_gateway", ["SELECT"]),
+    // immutable tables). Every other non-owner role — (absence == no grant). 0254 (M29 T06c, rung A1): gateway also
+    // inserts the Evidence carrier, remember.put's receipt transaction being its one writer.
+    cell!(
+        "private.evidence_projects",
+        "role_gateway",
+        ["SELECT", "INSERT"]
+    ),
     cell!(
         "private.evidence_projects",
         "role_private_worker",
