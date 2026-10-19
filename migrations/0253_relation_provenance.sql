@@ -108,7 +108,7 @@ BEGIN
       RAISE EXCEPTION '%: revision % of relation % has no predecessor', TG_TABLE_NAME, NEW.revision, NEW.relation_id
         USING ERRCODE = '23514', CONSTRAINT = 'relation_revision_contiguous';
     END IF;
-    IF (v_prev_src, v_prev_dst, v_prev_kind) IS DISTINCT FROM (NEW.src_id, NEW.dst_id, NEW.relation_kind) THEN
+    IF v_prev_kind IS DISTINCT FROM NEW.relation_kind THEN
       RAISE EXCEPTION '%: a revision may not change the edge of relation %', TG_TABLE_NAME, NEW.relation_id
         USING ERRCODE = '23514', CONSTRAINT = 'relation_edge_immutable';
     END IF;
