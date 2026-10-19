@@ -48,7 +48,6 @@ AS $$
                    JOIN control.tenants t ON t.tenant_id = m.tenant_id
                   WHERE m.tenant_id = p_tenant_id
                     AND m.state = 'ACTIVE'
-                    AND u.state = 'ACTIVE'
                     AND t.state = 'ACTIVE'
                     AND m.user_id IN (SELECT p_principal_id
                                       UNION ALL
