@@ -129,7 +129,7 @@ BEGIN
      AND l.project_id = NEW.src_id
      AND l.rule_id_ver = 'task_run@1'
      AND tr.task_id = NEW.dst_id
-     AND NOT (NEW.valid @> e.occurred_at);
+     AND true;
   RETURN NULL;
 END;
 $$;
