@@ -28,7 +28,7 @@ select to_regclass('private.continuity_projects') is not null
 
 # Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause, a PK that is not
 # exactly (tenant_id, relation_id, revision), an FK without the tenant leg, a missing named CHECK or trigger, a
-# mutable CHECK function, or any UPDATE / DELETE grant / a non-gateway INSERT grant.
+# mutable CHECK function, or any UPDATE / DELETE grant / a non-gateway INSERT grant (column-level grants included).
 postcheck = """
 with t(name) as (values ('project_task_relations'), ('project_subject_relations'), ('subject_relations')),
 c as (select t.name, to_regclass('private.' || t.name) as oid from t)
@@ -71,9 +71,9 @@ select (select count(*) = 3 from c join pg_class k on k.oid = c.oid
  and not exists (select 1 from c cross join (values ('role_gateway'), ('role_private_worker'),
                    ('role_consolidation_worker'), ('role_public_worker'), ('role_retrieval_worker'),
                    ('role_batch_issuer'), ('role_maintenance'), ('role_admin')) r(role)
-                  where has_table_privilege(r.role, c.oid, 'UPDATE') or has_table_privilege(r.role, c.oid, 'DELETE')
-                     or has_table_privilege(r.role, c.oid, 'TRUNCATE')
-                     or (r.role <> 'role_gateway' and has_table_privilege(r.role, c.oid, 'INSERT')))
+                  where has_any_column_privilege(r.role, c.oid, 'UPDATE')
+                     or has_table_privilege(r.role, c.oid, 'DELETE') or has_table_privilege(r.role, c.oid, 'TRUNCATE')
+                     or (r.role <> 'role_gateway' and has_any_column_privilege(r.role, c.oid, 'INSERT')))
  as postcheck_ok
 """
 

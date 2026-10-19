@@ -28,7 +28,7 @@
 //! SKIP and return (a required-DB run turns a skip red).
 
 use std::collections::BTreeSet;
-use std::ops::Bound::{self, Excluded, Included, Unbounded};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::time::{Duration, Instant};
 
 use humaux_adapters::relation_repo::{RelationRevision, append_revision, current_revision};
@@ -309,11 +309,11 @@ fn sql_ts(t: Timestamp) -> String {
 }
 
 /// The PostgreSQL value of one case, built from the same `Bound`s the Rust side validates.
-fn sql_multirange(ranges: &[(Bound<Timestamp>, Bound<Timestamp>)]) -> String {
+fn sql_multirange(ranges: &[RawRange]) -> String {
     if ranges.is_empty() {
         return "'{}'::tstzmultirange".to_string();
     }
-    let range = |(lo, hi): &(Bound<Timestamp>, Bound<Timestamp>)| {
+    let range = |(lo, hi): &RawRange| {
         let (l, lf) = match lo {
             Included(t) => (sql_ts(*t), '['),
             Excluded(t) => (sql_ts(*t), '('),
@@ -335,11 +335,12 @@ fn sql_multirange(ranges: &[(Bound<Timestamp>, Bound<Timestamp>)]) -> String {
 /// G-M29-2 (§6.1.4 ④): one case table, judged by the Rust `Validity`, by `private.relation_valid_shape`, and by
 /// an INSERT into each of the three tables (the CHECK, `<table>_valid_shape`).
 #[test]
+#[allow(clippy::too_many_lines)] // one case table judged three ways
 fn g_m29_2_valid_shape_rust_and_db_agree() {
     run_db_fixture::<Fx, _>("g_m29_2_valid_shape_rust_and_db_agree", |mut fx| {
         use Timestamp::{Infinity, Micros, NegInfinity};
         let (t1, t2, t3, t4) = (T0, T0 + DAY, T0 + 2 * DAY, T0 + 3 * DAY);
-        let cases: Vec<(&str, Vec<(Bound<Timestamp>, Bound<Timestamp>)>, bool)> = vec![
+        let cases: Vec<(&str, Vec<RawRange>, bool)> = vec![
             ("retracted '{}'", vec![], true),
             (
                 "[t1,t2)",
@@ -449,6 +450,7 @@ fn g_m29_2_valid_shape_rust_and_db_agree() {
 /// gets `CONFLICT`. The first writer holds its uncommitted revision until the second is observed blocked on it
 /// (`pg_blocking_pids`), so the race is real, not sequential.
 #[test]
+#[allow(clippy::too_many_lines)] // one ordered two-connection race
 fn g_m29_3_concurrent_cas_exactly_one_wins() {
     run_db_fixture::<Fx, _>("g_m29_3_concurrent_cas_exactly_one_wins", |fx| {
         let rt = runtime();
@@ -598,6 +600,7 @@ fn g_m29_4_no_role_updates_or_deletes_revisions() {
 /// The adapter end to end under `role_gateway` + RLS: create, read back, retract, the two CAS refusals, an edge
 /// change, non-whitelisted triples and an unknown endpoint, each mapped to its §52 code.
 #[test]
+#[allow(clippy::too_many_lines)] // one transaction, every adapter outcome
 fn relation_kernel_round_trip_through_the_adapter() {
     run_db_fixture::<Fx, _>("relation_kernel_round_trip_through_the_adapter", |fx| {
         let rt = runtime();

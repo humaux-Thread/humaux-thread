@@ -247,6 +247,9 @@ pub enum Timestamp {
     Infinity,
 }
 
+/// One PostgreSQL range value as its (lower, upper) bounds: the unvalidated input of [`Validity::new`].
+pub type RawRange = (Bound<Timestamp>, Bound<Timestamp>);
+
 /// The `valid` multirange of a revision, validated (§6.1.4 ④): every segment is `[start, end)` with a finite
 /// start and a finite or omitted end. Empty = retracted (§6.1.4 ②). Segments are sorted and merged, which is the
 /// form PostgreSQL stores, so a value read back equals the value written.
@@ -268,7 +271,7 @@ impl Validity {
     /// exclusive, `±infinity`) or an upper bound that is inclusive or an explicit `±infinity` is `INVALID_INPUT`.
     /// A segment whose end is not after its start is also `INVALID_INPUT` (PostgreSQL rejects a reversed range
     /// and silently drops an empty one; neither carries meaning here).
-    pub fn new(ranges: &[(Bound<Timestamp>, Bound<Timestamp>)]) -> Result<Self, ErrorCode> {
+    pub fn new(ranges: &[RawRange]) -> Result<Self, ErrorCode> {
         let mut segments = Vec::with_capacity(ranges.len());
         for range in ranges {
             let start = match range.0 {
@@ -362,7 +365,7 @@ impl DecidedBy {
                 .map(DecidedBy::Rule);
         }
         let uuid = s.strip_prefix("principal:")?;
-        (uuid.len() == 36 && uuid == uuid.to_ascii_lowercase())
+        (uuid.len() == 36 && !uuid.bytes().any(|b| b.is_ascii_uppercase()))
             .then(|| Uuid::parse_str(uuid).ok())
             .flatten()
             .map(|u| DecidedBy::Principal(PrincipalId(u)))
@@ -435,7 +438,7 @@ mod tests {
     #[test]
     fn validity_normalizes_like_postgres() {
         use Bound::{Excluded, Included, Unbounded};
-        let at = |t| Timestamp::Micros(t);
+        let at = Timestamp::Micros;
         let v = Validity::new(&[
             (Included(at(30)), Excluded(at(40))),
             (Included(at(10)), Excluded(at(20))),

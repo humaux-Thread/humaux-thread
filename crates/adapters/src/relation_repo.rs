@@ -180,10 +180,10 @@ pub async fn current_revision(
         },
         valid: Validity::new(&ranges).map_err(|_| ErrorCode::Internal)?,
         decided_by: DecidedBy::parse(&decided_by).ok_or(ErrorCode::Internal)?,
-        proposed_by: match proposed_by {
-            Some(p) => Some(ModelRef::parse(&p).ok_or(ErrorCode::Internal)?),
-            None => None,
-        },
+        proposed_by: proposed_by
+            .as_deref()
+            .map(|p| ModelRef::parse(p).ok_or(ErrorCode::Internal))
+            .transpose()?,
         factual_evidence_ids: row.try_get("factual_evidence_ids").map_err(read)?,
         authorization_evidence_id: row.try_get("authorization_evidence_id").map_err(read)?,
     }))
