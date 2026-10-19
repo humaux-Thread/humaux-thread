@@ -112,7 +112,7 @@ CREATE TRIGGER memory_projects_on_supersede
 -- ④ G-M29-6: the one relation-correction revocation site. revoked_by takes decided_by verbatim (0252 gave both the
 -- same closed format).
 CREATE FUNCTION private.revoke_attributions_on_relation_correction() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog
 AS $$
 BEGIN
   IF NEW.tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN
