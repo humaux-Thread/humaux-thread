@@ -50,3 +50,8 @@ reason = "Provisional owner: `state_pin` appears nowhere in code or spec outside
 variant = "StatePinAmbiguous"
 owner = "M14"
 reason = "Provisional owner, as StatePinMissing. Retirement candidate (ADR-0077): decide at the spec-maintenance ADR pass."
+
+[[dormant]]
+variant = "ProjectionLag"
+owner = "M13"
+reason = "injected fault r2"
