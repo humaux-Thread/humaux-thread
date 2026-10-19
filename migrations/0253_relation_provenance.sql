@@ -130,3 +130,4 @@ BEGIN
   END LOOP;
 END
 $provenance$;
+GRANT UPDATE ON private.subject_relations TO role_admin;
