@@ -1,7 +1,8 @@
 //! `adapters::tests::coord_task_run` — M29 T04a gates G-T04a-1..4: §30.2 lease expiry, fencing token, lease owner, and
 //!   the §30.1 state closed set (§78.2), against a real Postgres.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(any)
-//!   r=[pg_constraint] w=[control.tenants, coord.task_runs, coord.tasks], PostgreSQL(role_gateway)];
+//!   r=[coord.task_runs_one_open_lease_per_task] w=[control.tenants, coord.task_runs, coord.tasks],
+//!   PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::coord_repo, adapters::postgres, domain::coordination,
 //!   domain::error, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
@@ -40,7 +41,7 @@ struct Handle {
     rt: tokio::runtime::Runtime,
     gateway: RuntimeDbPool,
     /// Plain `role_gateway` pool for caller-owned transactions around `verify_task_run`.
-    raw: sqlx::PgPool,
+    raw: sqlx::Pool<sqlx::Postgres>,
     admin: Client,
     tenant_id: Uuid,
 }
@@ -104,7 +105,7 @@ impl DbIntegrationFixture for CoordFixture {
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         let raw = rt
             // dep: PostgreSQL(role_gateway) — open a role-scoped PG connection/pool for this test
-            .block_on(sqlx::PgPool::connect(&gateway_dsn))
+            .block_on(sqlx::Pool::<sqlx::Postgres>::connect(&gateway_dsn))
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         Ok(Handle {
             rt,
@@ -174,6 +175,7 @@ fn verify(
     token: FencingToken,
 ) -> Result<VerifiedTaskRun, ErrorCode> {
     h.rt.block_on(async {
+        // dep: PostgreSQL(any) — transaction entry for the verify call
         let mut txn = h.raw.begin().await.expect("begin");
         sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
             .bind(s.tenant_id().0.to_string())

@@ -37,7 +37,7 @@
 //!   HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_PRODUCTION_ENABLED,
 //!   HUMAUX_GATEWAY_RETRIEVAL_PROFILE_QUERY_TRANSFORM, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
-//!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH,
+//!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
 //!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::postgres, adapters::quota_repo,
 //!   adapters::retrieve, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
@@ -1130,7 +1130,7 @@ pub fn registry() -> Vec<ConfigEntry> {
     // §30.2 / §78.1 (M29 T04a): the coord task-run lease length handed to adapters::coord_repo claim/heartbeat; the
     // coordinate.task_* handlers that read it land with T04b. 300 s bounds how long a crashed owner keeps a task.
     entries.push(entry_with_default(
-        &format!("{PREFIX}TASK_LEASE_TTL_SECONDS"),
+        "HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS",
         "u64",
         false,
         "300",

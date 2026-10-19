@@ -99,6 +99,7 @@ async fn begin(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
 ) -> Result<Txn<'static>, ErrorCode> {
+    // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await.map_err(db)?;
     set_authorization_local(&mut txn, scope).await?;
     Ok(txn)
