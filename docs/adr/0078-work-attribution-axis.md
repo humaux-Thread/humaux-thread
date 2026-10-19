@@ -375,6 +375,18 @@ and the failing lines are in the card's PR description.
   - **Edges:** an M29 trigger on M07's table is an M29 → M07 dependency, and there is no Rust edge.
   - **Rationale:** it follows the subject precedent, and it fires only when the correction actually becomes current.
   - **Gate:** G-M29-5 counts this site separately, as (b).
+- **Q10 `coordinate.task_*` wire format vs §30.2 (T04b pre-check).**
+  - **Finding:** the declared-only `contracts/mcp/coordinate.schema.json` addressed `task_heartbeat`, `task_complete` and
+    `task_fail` by `task_id` alone. §30.2 rejects a stale holder's write by its old token; with no token on the wire the
+    gateway would have to pick "the caller's open run", and a second session of the same principal could renew or close
+    the other session's run. `task_submit.description` and `task_complete` / `task_fail.summary` were required on the
+    wire but had no column.
+  - **Ruling:** `task_claim` returns `task_run_id`, `fencing_token` and `lease_expires_at`. `task_heartbeat`,
+    `task_complete` and `task_fail` require `task_run_id` and `fencing_token` next to `task_id`; a run that does not
+    belong to `task_id` is `NOT_FOUND`. `description` persists on `coord.tasks.description`, `summary` on
+    `coord.task_runs.outcome_summary` (nullable; rows written before 0250 have none). The five keys leave the
+    declared-only list in the same change.
+  - **Rationale:** the contract had no caller, so nothing breaks; §30.2 outranks a contract derived from it.
 
 ## Open questions
 

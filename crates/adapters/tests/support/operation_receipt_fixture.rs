@@ -4,7 +4,7 @@
 //!   services=[PostgreSQL(owner) w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
 //!   control.memberships, control.operation_receipts, control.private_reasoning_domains, control.quota_windows,
 //!   control.rate_buckets, control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
-//!   control.workspaces, coord.tasks, ops.jobs, ops.outbox, ops.selection_snapshot_items, ops.selection_snapshots,
+//!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.selection_snapshot_items, ops.selection_snapshots,
 //!   private.context_bindings, private.continuity_facet_evidence_links, private.continuity_facet_memory_links,
 //!   private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.events,
 //!   private.evidence_objects, private.memory_evidence, private.memory_records, projection.private_memory_points,
@@ -12,7 +12,7 @@
 //!   x=[control.check_operation_receipt], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres,
 //!   adapters::quota_repo, adapters::tests::support::token_keys, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::tests::auth_scope_rls, adapters::tests::evidence_task_runs, adapters::tests::membership_lifecycle, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::cross_tenant_canary, gateway::tests::mcp_gateway, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring]
+//! Called-by: [adapters::tests::auth_scope_rls, adapters::tests::evidence_task_runs, adapters::tests::membership_lifecycle, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_gateway, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring]
 //! Invariants: [test-only, included by #[path]; runtime writes are real role_gateway logins and the owner connection
 //!   only seeds/cleans the fixture tenant; an isolation setup failure is a fixture error]
 //! Spec: Baseline §25.4; §34.0.1; §79.2; ADR-0035
@@ -442,6 +442,8 @@ impl Drop for Handle {
                 // card 22b review fix: §25.4.A(7)'s TaskId is resolved against `coord.tasks`, so
                 // a fixture that binds anything to a task now owns rows in this table too, and
                 // its `tenant_id` FK blocks the tenant delete below.
+                // M29 T04b: the gateway coordinate gates leave `coord.task_runs` rows, whose FK blocks this delete.
+                "DELETE FROM coord.task_runs WHERE tenant_id=$1",
                 "DELETE FROM coord.tasks WHERE tenant_id=$1",
             ] {
                 txn.execute(statement, &[&self.tenant_id])?;
