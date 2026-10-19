@@ -78,6 +78,8 @@ cargo xtask serial-lane                 # audit + provision + warm up + run
 cargo xtask serial-lane --audit-only    # the cheap half: disposition audit only, no DB, no cargo
 ```
 
+A local `cargo xtask serial-lane` needs `HUMAUX_TEST_DISPOSABLE_CLUSTER=1` exported, and only on a throwaway cluster: `cross_tenant_canary`'s lane test lifts `role_gateway` to `BYPASSRLS` (cluster-wide) and otherwise fails closed under `HUMAUX_REQUIRE_DB` (§57.1); CI's serial-lane step sets it.
+
 `--audit-only` is a pre-flight, **not the gate**: it proves every ignore carries a disposition,
 not that any test ran. Both halves are wired, in this order, in `card23_extra_gates.env` and
 `card24_extra_gates.env`:
