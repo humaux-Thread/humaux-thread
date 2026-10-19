@@ -7,9 +7,9 @@
 //!   private.evidence_affects, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants,
 //!   public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys,
 //!   control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains,
-//!   control.tenants, control.workspace_memberships, control.workspaces, coord.tasks, ops.memory_lifecycle_events,
+//!   control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events,
 //!   ops.outbox, ops.selection_snapshots, private.context_bindings, private.distill_candidates,
-//!   private.evidence_objects, private.memory_affects, private.memory_consolidation_inputs,
+//!   private.evidence_objects, private.evidence_task_runs, private.memory_affects, private.memory_consolidation_inputs,
 //!   private.memory_consolidation_runs, private.memory_evidence, private.memory_records,
 //!   private.memory_subject_presence, private.memory_subjects,
 //!   private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
@@ -41,7 +41,7 @@
 //!   HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS, HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN,
 //!   HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo,
+//!   modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::coord_repo,
 //!   adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt,
 //!   adapters::postgres, adapters::read_materialize,
 //!   adapters::qdrant, adapters::quota_repo, adapters::remember, adapters::subject_repo,
@@ -74,7 +74,7 @@ use std::{
 };
 
 use humaux_adapters::{
-    forget_repo,
+    coord_repo, forget_repo,
     membership_repo::{
         self, AdminAction, MembershipOutcome, MembershipRepoError, MembershipRequest,
     },
@@ -14530,6 +14530,182 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
 
             stop_server(server).await.expect("server shutdown");
         });
+    });
+}
+
+// ===========================================================================================
+// M29 T04c G-T04c-4 (design v0.2 §15): `remember.put`'s `task_run` over the real MCP transport. G-T04c-1/-2 call the
+// adapter directly, so a wire field serde silently drops (no `deny_unknown_fields` on the put wire) would leave them
+// green while a stale-run put degraded to a plain write; this gate goes through `tools/call`.
+// ===========================================================================================
+
+/// A fresh task in the fixture tenant claimed by `owner`: `(task_run_id, fencing_token)`.
+async fn t04c_claimed(pool: &RuntimeDbPool, owner: &AuthorizationScope) -> (Uuid, i64) {
+    let task = coord_repo::submit(pool, owner, "g-t04c-4")
+        .await
+        .expect("submit");
+    let run = coord_repo::claim(pool, owner, task, Duration::from_secs(300))
+        .await
+        .expect("claim");
+    (run.task_run_id.0, run.fencing_token.0)
+}
+
+/// `(Evidence rows, carrier rows)` of the fixture tenant, read by the owner connection.
+fn t04c_counts(handle: &mut Handle) -> (i64, i64) {
+    tokio::task::block_in_place(|| {
+        let row = handle
+            .admin
+            .query_one(
+                "SELECT (SELECT count(*) FROM private.evidence_objects WHERE tenant_id = $1), \
+                        (SELECT count(*) FROM private.evidence_task_runs WHERE tenant_id = $1)",
+                &[&handle.tenant_id],
+            )
+            .expect("owner counts");
+        (row.get(0), row.get(1))
+    })
+}
+
+fn t04c_put(id: u64, key: &str, workspace: Uuid, task_run: (Uuid, i64)) -> String {
+    rpc(
+        id,
+        "tools/call",
+        call_params(
+            "remember",
+            json!({"operation": "put", "content": format!("g-t04c-4 {key}"), "idempotency_key": key,
+                   "workspace_id": workspace,
+                   "task_run": {"task_run_id": task_run.0, "fencing_token": task_run.1}}),
+        ),
+    )
+}
+
+/// G-T04c-4: (a) a stale (re-claimed) run and an expired run are `CONFLICT` with no Evidence and no carrier row; (b) a
+/// live run writes exactly one carrier row naming the run and token sent; (c) (b)'s key with another run is `CONFLICT`.
+#[test]
+fn native_mcp_remember_put_task_run_is_verified_on_the_wire() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>("native_mcp_remember_put_task_run", |mut handle| {
+        handle.assert_gateway_login();
+        let prefix = format!("t04c{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "t".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWrite,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            16,
+        );
+        let runtime_handle = handle.rt.handle().clone();
+        let runtime = runtime_handle
+            .block_on(handle.fresh_runtime())
+            .expect("t04c runtime");
+        let coord = runtime_handle
+            .block_on(handle.fresh_runtime())
+            .expect("t04c coord pool");
+        let app = application(&handle, runtime);
+        // §30.2 lease_owner is the authenticated principal; a PAT's principal is its api_key_id (gateway::auth).
+        let owner = AuthorizationScope::new(
+            TenantId(handle.tenant_id),
+            PrincipalId(credential.api_key_id),
+            None,
+            BoundedSet::new([WorkspaceId(handle.workspace_id)]).expect("one workspace"),
+        );
+        runtime_handle.block_on(async {
+            let (address, server) = start(app).await;
+            let headers = tool_call_headers("remember", credential.bearer.as_str());
+            let workspace = handle.workspace_id;
+
+            // (a) stale: run1 expires on the DB clock, a re-claim opens run2; run1 with its token is stale.
+            let (run1, token1) = t04c_claimed(&coord, &owner).await;
+            let expire = |handle: &mut Handle, run: Uuid| {
+                tokio::task::block_in_place(|| {
+                    handle
+                        .admin
+                        .execute(
+                            "UPDATE coord.task_runs \
+                             SET lease_expires_at = clock_timestamp() - interval '1 second' \
+                             WHERE task_run_id = $1",
+                            &[&run],
+                        )
+                        .expect("expire lease")
+                })
+            };
+            assert_eq!(expire(&mut handle, run1), 1);
+            let task1: Uuid = tokio::task::block_in_place(|| {
+                handle
+                    .admin
+                    .query_one("SELECT task_id FROM coord.task_runs WHERE task_run_id = $1", &[&run1])
+                    .expect("task of run1")
+                    .get(0)
+            });
+            coord_repo::claim(&coord, &owner, TaskId(task1), Duration::from_secs(300))
+                .await
+                .expect("re-claim");
+            // (a) expired: run3's lease is past on the DB clock.
+            let (run3, token3) = t04c_claimed(&coord, &owner).await;
+            assert_eq!(expire(&mut handle, run3), 1);
+            for (n, (name, run)) in [("stale", (run1, token1)), ("expired", (run3, token3))]
+                .into_iter()
+                .enumerate()
+            {
+                let before = t04c_counts(&mut handle);
+                let key = format!("g-t04c-4-{name}-{}", Uuid::now_v7());
+                let (status, refused) =
+                    raw_request(address, &headers, &t04c_put(10 + n as u64, &key, workspace, run)).await;
+                assert_eq!(status, 200, "{name}: {refused}");
+                assert_tool_error(&refused, "CONFLICT");
+                assert_eq!(t04c_counts(&mut handle), before, "{name}: no Evidence, no carrier row");
+            }
+
+            // (b) a live run: exactly one carrier row naming the run and token sent.
+            let live = t04c_claimed(&coord, &owner).await;
+            let key = format!("g-t04c-4-live-{}", Uuid::now_v7());
+            let before = t04c_counts(&mut handle);
+            let (status, accepted) =
+                raw_request(address, &headers, &t04c_put(20, &key, workspace, live)).await;
+            assert_eq!(status, 200, "{accepted}");
+            assert_eq!(accepted["result"]["structuredContent"]["status"], "accepted", "{accepted}");
+            assert_eq!(t04c_counts(&mut handle), (before.0 + 1, before.1 + 1));
+            let evidence_id = accepted["result"]["structuredContent"]["evidence_id"]
+                .as_str()
+                .expect("evidence_id")
+                .to_owned();
+            let carrier = tokio::task::block_in_place(|| {
+                handle
+                    .admin
+                    .query(
+                        "SELECT task_run_id, fencing_token, evidence_id::text FROM private.evidence_task_runs \
+                         WHERE tenant_id = $1",
+                        &[&handle.tenant_id],
+                    )
+                    .expect("read carrier")
+            });
+            assert_eq!(carrier.len(), 1);
+            assert_eq!(carrier[0].get::<_, Uuid>(0), live.0);
+            assert_eq!(carrier[0].get::<_, i64>(1), live.1);
+            assert_eq!(carrier[0].get::<_, String>(2), evidence_id);
+
+            // (c) the same key naming another (live) run is another request fingerprint: CONFLICT, nothing written.
+            let other = t04c_claimed(&coord, &owner).await;
+            let before = t04c_counts(&mut handle);
+            let (status, changed) =
+                raw_request(address, &headers, &t04c_put(21, &key, workspace, other)).await;
+            assert_eq!(status, 200, "{changed}");
+            assert_tool_error(&changed, "CONFLICT");
+            assert_eq!(t04c_counts(&mut handle), before);
+
+            stop_server(server).await.expect("server shutdown");
+        });
+        // The fixture teardown knows neither the carrier nor coord.task_runs (both block its deletes).
+        handle
+            .admin
+            .batch_execute(&format!(
+                "DELETE FROM private.evidence_task_runs WHERE tenant_id = '{0}'; \
+                 DELETE FROM coord.task_runs WHERE tenant_id = '{0}';",
+                handle.tenant_id
+            ))
+            .expect("purge carrier and runs");
     });
 }
 

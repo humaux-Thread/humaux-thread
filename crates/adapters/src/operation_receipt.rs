@@ -249,7 +249,9 @@ pub async fn remember_atomically(
 /// transaction, after its tenant GUCs are set and before the BMO reservation and the Evidence; a refusal is that
 /// verification's `ErrorCode` for the whole call, nothing written (no Evidence, carrier, BMO or receipt row). On a
 /// pass the Evidence is followed by its `private.evidence_task_runs` row in the same transaction. `None` is
-/// [`remember_atomically`].
+/// [`remember_atomically`]. A replay is never re-verified (§34.0.1), so the caller's `request_fingerprint` must cover
+/// `task_run` (the gateway's SHA-256 of the raw arguments does); otherwise a replay naming another run returns the
+/// stored success.
 pub async fn remember_for_task_run_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,

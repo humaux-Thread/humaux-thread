@@ -437,13 +437,13 @@ pub async fn remember_in_txn(
     remember_in_txn_with(txn, cmd, None).await
 }
 
-/// Design v0.2 §15 T04c: the one writer of `private.evidence_task_runs` (xtask G-T04c-3; 0251 grants
-/// INSERT to `role_gateway` only). `verified` is taken by value: it is the proof that
+/// Design v0.2 §15 T04c: the one `INSERT INTO private.evidence_task_runs` statement (xtask G-T04c-3); `pub(crate)`
+/// keeps its callers inside this crate, and 0251 grants INSERT to `role_gateway` only. `verified` is taken by value: it is the proof that
 /// [`crate::coord_repo::verify_task_run`] passed in this same transaction, which still holds the
 /// task row FOR SHARE, so the row records a lease that was live at this write (§30.2) and one
 /// verification backs one row. `evidence_id` is the Evidence this transaction just wrote; the
 /// tenant-leg FKs and the FORCE RLS policy refuse a run or an Evidence outside `tenant_id`.
-pub async fn insert_evidence_task_run_in_txn(
+pub(crate) async fn insert_evidence_task_run_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: TenantId,
     verified: VerifiedTaskRun,

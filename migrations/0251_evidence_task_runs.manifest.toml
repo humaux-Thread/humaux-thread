@@ -1,7 +1,7 @@
 # §46.1 migration manifest. Card M29 T04c (§30.2, design v0.2 §15): one new private carrier table
 # private.evidence_task_runs (tenant_id, evidence_id, task_run_id, fencing_token, verified_at), PK (tenant_id,
 # evidence_id), tenant-leg FKs to private.evidence_objects and coord.task_runs (NO ACTION), fencing_token > 0 CHECK,
-# FORCE RLS + NULLIF tenant policy, owner role_migration_owner, NAMED §6.2.2 grants (gateway SELECT+INSERT, nobody
+# FORCE RLS + NULLIF tenant policy with the 0154/0157 parent-Evidence EXISTS, owner role_migration_owner, NAMED §6.2.2 grants (gateway SELECT+INSERT, nobody
 # else, nobody UPDATE/DELETE). Existing object: coord.task_runs gains one UNIQUE (tenant_id, task_run_id) whose columns
 # already contain the primary key. No DML. §46 forward-fix (EXPAND_CONTRACT, number 0251).
 
@@ -20,7 +20,8 @@ select to_regclass('coord.task_runs_one_open_lease_per_task') is not null
  as precheck_ok
 """
 
-# Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause, a PK that is not
+# Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause or without the
+# parent-Evidence EXISTS (USING and WITH CHECK), a PK that is not
 # exactly (tenant_id, evidence_id), an FK without the tenant leg or with a cascade, a missing CHECK, a missing UNIQUE
 # on coord.task_runs, or any grant beyond gateway SELECT + INSERT (column-level grants included).
 postcheck = """
@@ -30,7 +31,9 @@ select (select count(*) = 1 from c join pg_class k on k.oid = c.oid
  and (select count(*) = 1 from pg_policies p
        where p.schemaname = 'private' and p.tablename = 'evidence_task_runs'
          and p.qual like '%NULLIF(current_setting(''humaux.tenant_id''%'
-         and p.with_check like '%NULLIF(current_setting(''humaux.tenant_id''%')
+         and p.with_check like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.qual like '%EXISTS%evidence_objects%'
+         and p.with_check like '%EXISTS%evidence_objects%')
  and (select count(*) = 1 from c join pg_constraint k on k.conrelid = c.oid and k.contype = 'p'
        where (select array_agg(a.attname::text order by u.i)
                 from unnest(k.conkey) with ordinality u(n, i)

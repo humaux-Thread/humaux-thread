@@ -2815,9 +2815,10 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
     )
 }
 
-/// Door statement of M29 T04c (design v0.2 §15, gate G-T04c-3): the §30.2 Evidence → task-run carrier has one writer,
-/// `remember::insert_evidence_task_run_in_txn`, which only `remember.put`'s receipt transaction calls with a run it just
-/// verified. With the §6.2.2 grant matrix (rls_check: INSERT for `role_gateway` only) this pins the carrier to one path.
+/// Door statement of M29 T04c (design v0.2 §15, gate G-T04c-3): the §30.2 Evidence → task-run carrier INSERT is one
+/// statement in non-test code, in `remember::insert_evidence_task_run_in_txn`. This arm pins only that statement;
+/// `pub(crate)` pins the function's callers to the adapters crate, and the §6.2.2 grants (rls_check: INSERT for
+/// `role_gateway` only) are the DB backstop.
 const T04C_CARRIER_DOOR: [DoorStatement; 1] = [(
     "INSERT INTO private.evidence_task_runs",
     "crates/adapters/src/remember.rs",
