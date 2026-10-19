@@ -3,7 +3,7 @@
 //!   provider capability and the only INSERT on `memory_records`/`memory_evidence` (no RPC needed, contrast
 //!   ADR-0015's Consolidate hop). Dispatch is ADR-0058's: one `DERIVED_DISTILL` job = one Evidence, claimed through
 //!   the four provider slots, worked by at most IN_FLIGHT seats of one task.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-telemetry, serde_json, sha2, tokio, uuid]; services=[PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS]; modules=[adapters::affect_repo, adapters::byok, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ids, domain::memory, domain::policy, humaux-private-worker, projection::fingerprint, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-telemetry, serde_json, sha2, tokio, uuid]; services=[PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::byok, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ids, domain::memory, domain::policy, humaux-private-worker, projection::fingerprint, telemetry::metrics]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [a candidate over the §10.1 origin-bound ceiling is rejected, never downgraded; one job = one Evidence
 //!   and a job only takes its own Evidence's outbox row; at most IN_FLIGHT seats per process and four bound slots
@@ -52,6 +52,7 @@ use std::time::Duration;
 
 use humaux_adapters::{
     affect_repo,
+    attribution_repo::AttributionLadder,
     byok::ReasoningProviderError,
     contribution_reasoner::ContributionReasonerConfig,
     distill_reasoner::{
@@ -61,7 +62,7 @@ use humaux_adapters::{
         DistillReply, distill_prompt_contract, offers_affects, parse_distill_output_detailed,
     },
     distill_repo::{
-        self, ClaimedEvidence, DbError, LoadedEvidence, NewMemory, OutboxSettle,
+        self, AttributionSource, ClaimedEvidence, DbError, LoadedEvidence, NewMemory, OutboxSettle,
         ProcessingRunStart, TakenOutbox,
     },
     jobs::{self, CallAdmission, DistillClaim, DistillFinish, DistillLease},
@@ -381,6 +382,12 @@ fn payload_identity(payload: &Value) -> Option<(Uuid, Uuid)> {
 
 /// The static NOT_READY class for a tenant whose `(domain, PRIVATE_DISTILL_TEXT)` binding has not
 /// been admitted yet — the "onboarded before its route" case.
+/// ADR-0078 D-A: the Distill worker's declared M15 -> M29 edge. The one M29 attribution implementation of this
+/// process, passed to the Memory door for every distilled Memory.
+// ponytail: a static, because the ladder is stateless; thread it through DistillDispatchConfig once an implementation
+// carries state.
+static MEMORY_ATTRIBUTION: AttributionLadder = AttributionLadder;
+
 const NO_DISTILL_BINDING: &str = "no admitted PRIVATE_DISTILL_TEXT route binding";
 /// ADR-0058 D-D: the Evidence names another reasoning domain than its job.
 const DOMAIN_MISMATCH: &str = "DOMAIN_MISMATCH";
@@ -1606,7 +1613,9 @@ async fn write_txn(
                         confidence: candidate.confidence,
                         note_kind: None,
                         note_id: None,
+                        attribution: AttributionSource::Primary,
                     },
+                    &MEMORY_ATTRIBUTION,
                 )
                 .await?;
                 // ADR-0058 D-P: inferred affects ride the memory's own write (the one affect row

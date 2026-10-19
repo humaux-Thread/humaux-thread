@@ -1,5 +1,6 @@
 //! `adapters::tests::relation_kernel` — M29 T05 gates G-M29-1 (whitelist part), G-M29-2, G-M29-3, G-M29-4 for the
-//!   §6.1.4 relation kernel (migration 0249, ADR-0078 D-C), plus the adapter round trip.
+//!   §6.1.4 relation kernel (migration 0249, ADR-0078 D-C), plus the adapter round trip and the 0252 guard / edge
+//!   index (issue #92 items 4 and 5, M29 T06a).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
 //!   services=[PostgreSQL(owner) r=[private.project_subject_relations, private.project_task_relations,
 //!   private.subject_relations] w=[control.tenants, control.workspaces, coord.tasks, private.continuity_projects,
@@ -23,6 +24,8 @@
 //! | `g_m29_2_valid_shape_rust_and_db_agree` | G-M29-2 | drop `NOT upper_inc(r)` from `private.relation_valid_shape` |
 //! | `g_m29_3_concurrent_cas_exactly_one_wins` | G-M29-3 | widen the PK past `revision` |
 //! | `g_m29_4_no_role_updates_or_deletes_revisions` | G-M29-4 | `GRANT UPDATE` to a runtime role |
+//! | `null_tenant_append_is_forbidden` | #92 item 4 (M29 T06a) | drop 0252's NULL-tenant line from the guard |
+//! | `a_second_relation_id_for_one_edge_conflicts` | #92 item 5 (M29 T06a) | a predicate no revision matches on one table's edge index |
 //!
 //! Skip contract (`humaux_testkit`, §79.2): no DSN / unreachable / migration 0249 not applied each print a visible
 //! SKIP and return (a required-DB run turns a skip red).
@@ -792,6 +795,75 @@ fn relation_kernel_round_trip_through_the_adapter() {
                 "WEBSITE OWNED_BY BRAND"
             );
             txn.rollback().await.unwrap();
+        });
+    });
+}
+
+/// #92 item 4 (0252): without a tenant context the guard refuses an append FORBIDDEN (42501) before its predecessor
+/// lookup, which would otherwise find nothing and answer CONFLICT.
+#[test]
+fn null_tenant_append_is_forbidden() {
+    run_db_fixture::<Fx, _>("null_tenant_append_is_forbidden", |fx| {
+        let rt = runtime();
+        let (dsn, edge) = (fx.dsn.clone(), fx.edge(RelationPair::ProjectTask));
+        rt.block_on(async move {
+            // dep: PostgreSQL(any) — open a role-scoped PG connection/pool for this test
+            let mut conn = PgConnection::connect(&dsn).await.unwrap();
+            // dep: PostgreSQL(any) — pool/txn query execution
+            let mut txn = conn.begin().await.unwrap();
+            // dep: PostgreSQL(role_gateway) — test switches PG role to exercise RLS
+            sqlx::query("SET LOCAL ROLE role_gateway")
+                .execute(&mut *txn)
+                .await
+                .unwrap();
+            let appended = append_revision(
+                &mut txn,
+                &edge,
+                RelationId::new(),
+                1,
+                &window(T0, T0 + DAY),
+                &principal(),
+                None,
+                &[],
+                Uuid::now_v7(),
+            )
+            .await;
+            assert_eq!(appended, Err(ErrorCode::Forbidden));
+        });
+    });
+}
+
+/// #92 item 5 (0252): on each of the three tables, one (src, dst, kind) edge has one relation; a second `relation_id`
+/// for it is CONFLICT at its first revision.
+#[test]
+fn a_second_relation_id_for_one_edge_conflicts() {
+    run_db_fixture::<Fx, _>("a_second_relation_id_for_one_edge_conflicts", |fx| {
+        let rt = runtime();
+        let (dsn, tenant) = (fx.dsn.clone(), fx.tenant);
+        let edges = RelationPair::ALL.map(|pair| (pair, fx.edge(pair)));
+        rt.block_on(async move {
+            // dep: PostgreSQL(any) — open a role-scoped PG connection/pool for this test
+            let mut conn = PgConnection::connect(&dsn).await.unwrap();
+            let v = window(T0, T0 + DAY);
+            let auth = Uuid::now_v7();
+            for (pair, edge) in edges {
+                let mut txn = gateway_txn(&mut conn, tenant).await;
+                for expected in [Ok(1), Err(ErrorCode::Conflict)] {
+                    let appended = append_revision(
+                        &mut txn,
+                        &edge,
+                        RelationId::new(),
+                        0,
+                        &v,
+                        &principal(),
+                        None,
+                        &[],
+                        auth,
+                    )
+                    .await;
+                    assert_eq!(appended, expected, "{pair:?}");
+                }
+            }
         });
     });
 }

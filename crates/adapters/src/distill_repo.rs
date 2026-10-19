@@ -57,7 +57,9 @@ use crate::{
 
 // `bins/private-worker` names these at `distill_repo::`; their definitions and the Memory INSERT live in `memory_repo`
 // (M07 D9, gate G-M07-1).
-pub use crate::memory_repo::{LoadedEvidence, NewMemory, insert_memory_in_txn as insert_memory};
+pub use crate::memory_repo::{
+    AttributionSource, LoadedEvidence, NewMemory, insert_memory_in_txn as insert_memory,
+};
 
 /// The database error/transaction types the private-worker binary names without depending on
 /// `sqlx` itself (same "fewer capability-shaped names in a bin" reasoning as
@@ -936,6 +938,7 @@ pub async fn confirm_candidate_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     request: ConfirmRequest,
+    attribution: &dyn memory_repo::MemoryAttribution,
 ) -> Result<ConfirmOutcome, ErrorCode> {
     validate_candidate_write(
         auth,
@@ -1135,7 +1138,10 @@ pub async fn confirm_candidate_atomically(
             confidence: candidate.confidence,
             note_kind: None,
             note_id: None,
+            // ADR-0078 D-D: E2 is a confirmation; the work facts (task run, declared project) are on E1.
+            attribution: AttributionSource::CandidateSource(candidate.source_evidence_id),
         },
+        attribution,
     )
     .await
     .map_err(candidate_db_error)?;

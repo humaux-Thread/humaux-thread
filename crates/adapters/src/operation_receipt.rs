@@ -1,6 +1,6 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
 //! Called-by: [gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
@@ -32,6 +32,7 @@ use uuid::Uuid;
 use crate::{
     confirm_token_repo::{self, ConfirmationClaim},
     coord_repo, memory_governance_repo,
+    memory_repo::MemoryAttribution,
     note_repo::{self, NoteIntake, NoteLineage},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
@@ -269,8 +270,9 @@ pub async fn note_put_atomically(
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     note: NoteIntake,
+    attribution: &dyn MemoryAttribution,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    stored(atomically(pool, auth, request, Some(note), None, None).await?)
+    stored(atomically(pool, auth, request, Some((note, attribution)), None, None).await?)
 }
 
 /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: [`note_put_atomically`]'s transaction, with the
@@ -286,8 +288,17 @@ pub async fn note_replace_atomically(
     request: AtomicRememberRequest,
     note: NoteIntake,
     replace: NoteReplaceRequest,
+    attribution: &dyn MemoryAttribution,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
-    atomically(pool, auth, request, Some(note), Some(replace), None).await
+    atomically(
+        pool,
+        auth,
+        request,
+        Some((note, attribution)),
+        Some(replace),
+        None,
+    )
+    .await
 }
 
 /// A create / `remember.put` can only end in `Stored`.
@@ -412,7 +423,7 @@ async fn atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     mut request: AtomicRememberRequest,
-    note: Option<NoteIntake>,
+    note: Option<(NoteIntake, &dyn MemoryAttribution)>,
     replace: Option<NoteReplaceRequest>,
     task_run: Option<(TaskRunId, FencingToken)>,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
@@ -427,7 +438,8 @@ async fn atomically(
         return Err(ErrorCode::InvalidInput);
     }
     if let Some(replace) = &replace {
-        validate_replace(&request, note.as_ref().ok_or(ErrorCode::Internal)?, replace)?;
+        let (note, _) = note.as_ref().ok_or(ErrorCode::Internal)?;
+        validate_replace(&request, note, replace)?;
     }
     let replay_duration =
         time::Duration::try_from(request.replay_ttl).map_err(|_| ErrorCode::InvalidInput)?;
@@ -532,7 +544,8 @@ async fn atomically(
     let pending = remember::remember_in_txn_with(
         &mut txn,
         request.command,
-        note.as_ref().map(|note| (note, lineage)),
+        note.as_ref()
+            .map(|(note, attribution)| (note, lineage, *attribution)),
     )
     .await
     .map_err(remember_error)?;

@@ -7,7 +7,8 @@
 //!   adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::subject_repo,
 //!   domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity,
-//!   domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, gateway::context,
+//!   domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject,
+//!   gateway::bootstrap, gateway::context,
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
@@ -2641,6 +2642,7 @@ impl NoteReplaceLeg {
                 supersedes: self.supersedes,
                 claim,
             },
+            &crate::bootstrap::MEMORY_ATTRIBUTION,
         )
         .await
     }

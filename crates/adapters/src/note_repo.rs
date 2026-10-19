@@ -21,7 +21,7 @@ use humaux_domain::note::{
 };
 use sqlx::types::Uuid;
 
-use crate::memory_repo::{self, LoadedEvidence, NewMemory};
+use crate::memory_repo::{self, AttributionSource, LoadedEvidence, NewMemory};
 use crate::remember::{RememberCommand, RememberError};
 
 /// One note as the gateway edge validated it (ADR-0067 D-C/D-D/D-E).
@@ -77,6 +77,7 @@ pub(crate) async fn materialize_in_txn(
     note: &NoteIntake,
     lineage: NoteLineage,
     class: AuthorityClass,
+    attribution: &dyn memory_repo::MemoryAttribution,
 ) -> Result<Uuid, RememberError> {
     let loaded = LoadedEvidence {
         evidence_id,
@@ -110,7 +111,9 @@ pub(crate) async fn materialize_in_txn(
                 NoteLineage::Create => None,
                 NoteLineage::Replace { note_id, .. } => Some(note_id),
             },
+            attribution: AttributionSource::Primary,
         },
+        attribution,
     )
     .await?;
     sqlx::query(

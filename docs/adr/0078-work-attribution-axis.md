@@ -145,8 +145,21 @@ revoked.
 - When no rung holds, no row is written and the read path reports the memory as `unresolved` (REQ §3.4).
 - **Unknown declared project (gap ruling).** A declared `project_id` that is unknown in the tenant, or not visible to
   the caller, is `INVALID_INPUT` with zero writes, as for subject ids in §6.1.3.
-- **Rollups (gap ruling).** Rollups reach the door through `consolidate_repo` (`memory_repo.rs:4`) but have no rung
-  in the first slice, so a rollup is `unresolved` (N09 R3). A rollup rung needs a later ADR amendment.
+- **Rollups (gap ruling).** Rollups live in `private.memory_rollups`, outside the door, and stay unattributed in the
+  first slice (N09 R3); they are not Memories and have no `memory_projects` row. (`consolidate_repo` imports only
+  `authority_class_to_db_str` from `memory_repo`; it never calls the door.) A rollup rung needs a later ADR amendment.
+- **Attribution Evidence (gap ruling, design v0.2 §15.4).** A1 and A3 read the Memory's attribution Evidence, carried
+  as the required closed enum `NewMemory::attribution: AttributionSource` (`Primary` | `CandidateSource(id)`, no
+  default). The door resolves `Primary` to the PRIMARY Evidence it links itself, so no caller can pass a free id, and
+  every row's `decision_evidence_id` is that Evidence:
+  - by default it is the PRIMARY Evidence;
+  - for `memory.confirm` it is the candidate's `source_evidence_id` (E1), mirroring §6.1.3 rule 3a, which already takes
+    the subject declarations from E1. E2 is the confirmation itself, and the work facts (task run, declared project)
+    are on E1;
+  - E1's `evidence_task_runs` carrier is never copied onto E2: that would forge a verification and add a second
+    carrier writer (G-T04c-3). If E1 is invisible under the caller's RLS, the rows are simply absent (`unresolved`);
+  - notes stay `unresolved` in the first slice: a note cannot carry a task run (`operation_receipt.rs:437`), and
+    `memory.note_put` has no `project_id`.
 - Every formal row carries `rule_id_ver` and `decision_evidence_id`, so a falsified rule can be revoked in bulk.
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
@@ -260,7 +273,8 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
-and the relation-whitelist half of G-M29-1 (T05). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
+(T06a). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -289,10 +303,47 @@ and the failing lines are in the card's PR description.
     accepted.
   - r3: a red-only later migration widens the primary key with `recorded_at` -> G-M29-3 red: both concurrent writers
     of one `expected_revision` win.
-  - r4: a red-only later migration grants UPDATE on the relation tables to `role_gateway` -> G-M29-4 red: the UPDATE
-    reaches the trigger (23514) instead of failing on privilege (42501).
+  - r4: a red-only later migration grants UPDATE on `private.project_task_relations` to `role_gateway` -> G-M29-4 red:
+    the UPDATE reaches the trigger (23514) instead of failing on privilege (42501).
   - r3 and r4 are later migrations because 0249's own postcheck pins the key shape and the grants, so the same fault
     inside 0249 stops the migration before any test runs.
+- T06a (PR #96), branches `red/m29-t06a-r1..r9` off `cef110f`:
+  - r1: a second `attribution.link_memory_projects(..)` call in `insert_memory_in_txn` -> G-M29-5(a) red: found 2.
+  - r2: the door's port parameter as `impl Into<Option<&dyn MemoryAttribution>>` -> G-M29-5(a) red: the port
+    parameter is optional.
+  - r3: `'MODEL_GUESS'` added to `memory_projects_source_kind_check` -> G-M29-1 (`source_kind` half) red: the DB set
+    has a value `SourceKind::ALL` lacks.
+  - r4: a `ModelExtracted` variant in `SourceKind` -> G-N09-1 red: the set is no longer the frozen three.
+  - r5: `AND cur.valid @> e.occurred_at` dropped from A3 -> G-T06a-A3 red: an Evidence outside P1's CONTAINS window
+    still inherits P1.
+  - r6: A1's `WHERE false AND ...` -> G-T06a-A1 red: the declared project writes no row.
+  - r7: A1 reads the most recently related project instead of `evidence_projects` -> G-N09-3 red: an Evidence with no
+    ground is attributed to one of two same-title projects.
+  - r8: the guard's NULL-tenant line dropped -> #92 item 4 red: a NULL-tenant append is CONFLICT, not FORBIDDEN.
+  - r9: `project_task_relations_one_relation_per_edge` predicate `revision = 0` -> #92 item 5 red: a second
+    `relation_id` for one edge is accepted.
+  - r2 changes two lines (the parameter and the call's `.into().expect(..)`): `xtask` links `humaux-adapters`, so a
+    one-line `Option` parameter fails to compile before the arm runs. r3, r8 and r9 stay inside 0252 because its
+    postcheck deliberately leaves the CHECK values, the guard body and the index predicate to these tests.
+- T06a review fixes (PR #96), branches `red/m29-t06a-r10..r17` off `4a54d50`:
+  - r10: `AND ptr.dst_id = tr.task_id` dropped from A3 -> G-T06a-A3 red: P3, which CONTAINS another task, is
+    inherited too.
+  - r11: A1's `ep.evidence_id = $3` replaced by `$3::uuid IS NOT NULL` -> G-T06a-A1 red: P4, declared on another
+    Evidence, is attributed. `$3` stays referenced so the query still types.
+  - r12: A1's `AND ep.source_kind = $4` dropped -> G-T06a-A1 red: P5, an INHERITED row on this Evidence, comes back
+    as DECLARED.
+  - r13: A3's NULL guard as `cur.valid @> COALESCE(e.occurred_at, clock_timestamp())` -> G-T06a-A3 red: a put with
+    no `occurred_at` inherits under a currently valid CONTAINS (N09 R3).
+  - r14: `subject_relations_one_relation_per_edge` predicate `revision = 0` -> #92 item 5 red, now per pair:
+    `SubjectSubject` accepts a second `relation_id` for one edge.
+  - r15, re-cut as `red/m29-t06a-r15b` off `9bed6b7` after the closed `AttributionSource` replaced the free id (the
+    first cut passed E2's id through that field): confirm passes `AttributionSource::Primary` -> G-T06a-confirm red:
+    no row, since E2 carries no task run.
+  - r16: `ON CONFLICT (tenant_id, memory_id, project_id) DO NOTHING` dropped -> G-T06a-A3 red: A1 and A3 on one
+    project fail on `memory_projects_pkey` instead of keeping the A1 row.
+  - r17: `use crate::byok;` in `attribution_repo.rs` -> G-N09-1 red: the attribution code names a model module.
+  - The `AttributionSource` change leaves the fault lines of r10-r14, r16 and r17 verbatim (each still applies once on
+    `9bed6b7`), so those records stand without a re-run.
 
 ## Cards and experiments
 

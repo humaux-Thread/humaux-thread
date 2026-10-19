@@ -2,11 +2,11 @@
 //!   `memory_governance_repo` ops (ADR-0057 D-J), for projection / completeness integration tests.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner)
 //!   w=[control.api_keys, control.confirm_tokens, control.memberships, control.quota_windows, control.tenants,
-//!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::confirm_token_repo,
+//!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::attribution_repo, adapters::confirm_token_repo,
 //!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::tests::support::token_keys, domain::audit, domain::authority,
 //!   domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   projection::stream]
-//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
+//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
 //!   adapters::tests::projection_worker, adapters::tests::rebuild, adapters::tests::support::a2_fixture,
 //!   adapters::tests::switch_user_private, maintenance::tests::drill, maintenance::tests::measure]
 //! Invariants: [test-only, included by #[path]; the owner connection only seeds the principal the ops run as;
@@ -150,7 +150,7 @@ pub fn stream(tenant_id: Uuid, workspace_id: Uuid) -> StreamKey {
     )
 }
 
-fn audit(
+pub fn audit(
     auth: &AuthorizationScope,
     op: DestructiveOp,
     request_id: Uuid,
@@ -182,7 +182,7 @@ fn audit(
 }
 
 /// First leg: mints the confirm token for `(op, target, successor)` and returns its claim.
-fn confirm(
+pub fn confirm(
     rt: &tokio::runtime::Runtime,
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
@@ -216,7 +216,7 @@ fn confirm(
     }
 }
 
-fn fingerprint() -> String {
+pub fn fingerprint() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
@@ -338,5 +338,6 @@ pub fn correct(
             affects: Vec::new(),
             mood_half_life: None,
         },
+        &humaux_adapters::attribution_repo::AttributionLadder,
     ))
 }

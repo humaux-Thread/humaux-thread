@@ -4,8 +4,8 @@
 //!   adapters::distill_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
 //!   adapters::read_gate, adapters::read_materialize,
 //!   adapters::subject_repo, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
-//!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::context,
-//!   gateway::guard,
+//!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap,
+//!   gateway::context, gateway::guard,
 //!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory]
@@ -527,6 +527,7 @@ pub(crate) async fn correct(
             affects,
             mood_half_life,
         },
+        &crate::bootstrap::MEMORY_ATTRIBUTION,
     )
     .await
 }
@@ -561,6 +562,7 @@ pub(crate) async fn confirm(
             consistency_token_ttl,
             subjects,
         },
+        &crate::bootstrap::MEMORY_ATTRIBUTION,
     )
     .await
 }

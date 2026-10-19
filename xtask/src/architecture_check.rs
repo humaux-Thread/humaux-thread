@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_task_runs, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_task_runs, private.memory_evidence, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -2834,6 +2834,132 @@ fn t04c_3_carrier_door(root: &Path) -> Verdict {
         &T04C_CARRIER_DOOR,
         &[],
     )
+}
+
+// ============================================================================
+// ADR-0078 D-D (Q1 ruling) / G-M29-5(a) and D-E / G-N09-1 (card M29 T06a): the Memory INSERT door invokes M07's
+// attribution port exactly once, through a required parameter, and the M29 write path of `memory_projects` names no
+// model source.
+// ============================================================================
+
+/// The Memory INSERT door's file (M07) and the M29 attribution implementation's file.
+const M29_DOOR_HOME: &str = "crates/adapters/src/memory_repo.rs";
+const M29_LADDER_HOME: &str = "crates/adapters/src/attribution_repo.rs";
+
+/// G-M29-5(a) sites, each `== 1` in non-test code: the port method call, in the door's file; and the port's one
+/// implementation, M29's (a second one would be a production no-op or a rival ladder).
+const M29_5A_SITES: [DoorStatement; 2] = [
+    (".link_memory_projects(", M29_DOOR_HOME),
+    ("MemoryAttribution for", M29_LADDER_HOME),
+];
+
+/// ADR-0078 D-D / G-M29-5(a): [`M29_5A_SITES`] each `== 1` in its home file, and inside `fn insert_memory_in_txn` the
+/// port is a parameter whose type is not `Option<…>`, invoked after the PRIMARY `memory_evidence` INSERT and the
+/// subject hook. Case- and whitespace-tolerant ([`door_normalised`]); `not_applicable` names a missing home file.
+fn m29_5a_attribution_site(root: &Path) -> Verdict {
+    const GATE: &str = "ADR-0078 / G-M29-5(a)";
+    let sites = sole_door_statements(root, GATE, "M29 attribution port", &M29_5A_SITES, &[]);
+    if sites != Verdict::Pass {
+        return sites;
+    }
+    let text = door_normalised(&fs::read_to_string(root.join(M29_DOOR_HOME)).unwrap_or_default());
+    let Some(start) = text.find("fn insert_memory_in_txn(") else {
+        return Verdict::Fail(vec![format!(
+            "{GATE}: no `fn insert_memory_in_txn(` in {M29_DOOR_HOME}"
+        )]);
+    };
+    let door = &text[start..];
+    let door = &door[..door[1..].find(" fn ").map_or(door.len(), |i| i + 1)];
+    let params = &door[..door.find(")->").unwrap_or(door.len())];
+    let mut problems = Vec::new();
+    match params.find("memoryattribution") {
+        None => problems.push(format!(
+            "{GATE}: `insert_memory_in_txn` takes no `MemoryAttribution` parameter"
+        )),
+        Some(at) => {
+            let ty = &params[params[..at].rfind([',', '(']).map_or(0, |i| i + 1)..at];
+            if ty.contains("option<") {
+                problems.push(format!(
+                    "{GATE}: the port parameter is optional: `{}MemoryAttribution`",
+                    ty.trim()
+                ));
+            }
+        }
+    }
+    match door.find(".link_memory_projects(") {
+        None => problems.push(format!(
+            "{GATE}: the port is not invoked inside `insert_memory_in_txn`"
+        )),
+        Some(call) => {
+            let before = [
+                door.find("insert into private.memory_evidence"),
+                door.find("link_memory_in_txn("),
+            ];
+            if before.iter().any(|at| at.is_none_or(|at| at > call)) {
+                problems.push(format!(
+                    "{GATE}: the port runs before the PRIMARY memory_evidence link or the subject hook"
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// G-N09-1 scan targets: the M29 write path of `memory_projects` and the closed sets it binds.
+const N09_1_FILES: [&str; 2] = [M29_LADDER_HOME, "crates/domain/src/attribution.rs"];
+
+/// Provider, inference, embedding and HTTP crate / module names (lowercased, as [`door_normalised`] leaves them).
+///
+/// ponytail: substring match over the files' non-comment code, so an alias that hides every listed name evades it;
+/// the files are two small modules, so add a name here when a new provider-side module appears.
+const N09_1_MODEL_NAMES: [&str; 11] = [
+    "provider",
+    "inference",
+    "embedding",
+    "reasoner",
+    "byok",
+    "egress",
+    "qdrant",
+    "reqwest",
+    "infra_cell",
+    "model_call",
+    "distill",
+];
+
+/// ADR-0078 D-E / G-N09-1 (import half): no [`N09_1_MODEL_NAMES`] entry in the non-test, non-comment code of
+/// [`N09_1_FILES`] (N09 R2: model output never writes a formal attribution). The closed-set half is
+/// `domain::attribution`'s frozen-set test. `not_applicable` names a missing file.
+fn n09_1_no_model_source(root: &Path) -> Verdict {
+    const GATE: &str = "ADR-0078 / G-N09-1";
+    let mut problems = Vec::new();
+    let mut missing = Vec::new();
+    for file in N09_1_FILES {
+        let Ok(source) = fs::read_to_string(root.join(file)) else {
+            missing.push(file);
+            continue;
+        };
+        let production = cfg_test_mod_offset(&source).map_or(source.as_str(), |off| &source[..off]);
+        let text = door_normalised(production);
+        for name in N09_1_MODEL_NAMES {
+            if text.contains(name) {
+                problems.push(format!("{GATE}: {file} names `{name}` in code"));
+            }
+        }
+    }
+    if !problems.is_empty() {
+        Verdict::Fail(problems)
+    } else if !missing.is_empty() {
+        Verdict::NotApplicable(format!(
+            "missing object: G-N09-1 scan file(s) not delivered yet: {}",
+            missing.join(", ")
+        ))
+    } else {
+        Verdict::Pass
+    }
 }
 
 // ============================================================================
@@ -7542,6 +7668,14 @@ pub fn run(_args: &[String]) -> i32 {
             t04c_3_carrier_door(&root),
         ),
         (
+            "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
+            m29_5a_attribution_site(&root),
+        ),
+        (
+            "ADR-0078 / G-N09-1 (no provider / inference / embedding name in the memory_projects write path)",
+            n09_1_no_model_source(&root),
+        ),
+        (
             "M08 D1 / G-M08-2 (can_read( call sites in adapters and bins non-test code == the declared read-gate set)",
             m08_2_can_read_one_home(&root),
         ),
@@ -11438,6 +11572,102 @@ async fn serving_version_in_txn() {}
                     lines[0].contains("crates/adapters/src/coord_repo.rs"),
                     "{lines:?}"
                 );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- ADR-0078 / G-M29-5(a) and G-N09-1 (M29 T06a) ---------------------------------------------------------------
+
+    const M29_DOOR: &str = "pub async fn insert_memory_in_txn(\n    txn: &mut Txn<'_>,\n    attribution: &dyn MemoryAttribution,\n) -> Result<Uuid, Error> {\n    let _ = \"INSERT INTO private.memory_evidence (memory_id) VALUES ($1)\";\n    link_memory_in_txn(txn).await?;\n    attribution\n        .link_memory_projects(txn)\n        .await?;\n}\n";
+    const M29_LADDER: &str = "impl MemoryAttribution for AttributionLadder {}\n";
+    const M29_DOMAIN: &str = "pub enum SourceKind { Declared }\n";
+
+    /// The tree as T06a leaves it.
+    #[test]
+    fn m29_5a_real_repo_passes() {
+        assert_eq!(m29_5a_attribution_site(&real_root()), Verdict::Pass);
+    }
+
+    #[test]
+    fn n09_1_real_repo_passes() {
+        assert_eq!(n09_1_no_model_source(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the missing files (§57.1 第2条).
+    #[test]
+    fn m29_5a_and_n09_1_are_not_applicable_naming_the_missing_files() {
+        let tmp = fresh_tmp("m29-5a-na");
+        fs::create_dir_all(&tmp).unwrap();
+        for verdict in [m29_5a_attribution_site(&tmp), n09_1_no_model_source(&tmp)] {
+            match verdict {
+                Verdict::NotApplicable(detail) => {
+                    assert!(detail.contains(M29_LADDER_HOME), "{detail}")
+                }
+                other => panic!("expected NotApplicable, got {other:?}"),
+            }
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M29-5(a)): a second port call in another module (`found 2`), an `Option` port parameter, a call before
+    /// the subject hook, and a second implementation are each red; a test-tree copy does not count.
+    #[test]
+    fn m29_5a_fails_on_each_fault() {
+        let tmp = fresh_tmp("m29-5a-red");
+        let seed = |door: &str| {
+            fs::remove_dir_all(&tmp).ok();
+            m07_write(&tmp, M29_DOOR_HOME, door);
+            m07_write(&tmp, M29_LADDER_HOME, M29_LADDER);
+            m07_write(&tmp, "crates/adapters/tests/seed.rs", M29_DOOR);
+        };
+        seed(M29_DOOR);
+        assert_eq!(m29_5a_attribution_site(&tmp), Verdict::Pass);
+        let second = "fn f() { attribution.link_memory_projects(txn); }\n";
+        m07_write(&tmp, "crates/adapters/src/note_repo.rs", second);
+        let red = |verdict: Verdict, needle: &str| match verdict {
+            Verdict::Fail(lines) => assert!(lines.iter().any(|l| l.contains(needle)), "{lines:?}"),
+            other => panic!("expected Fail, got {other:?}"),
+        };
+        red(m29_5a_attribution_site(&tmp), "found 2");
+        seed(&M29_DOOR.replace("&dyn MemoryAttribution", "Option<&dyn MemoryAttribution>"));
+        red(m29_5a_attribution_site(&tmp), "optional");
+        seed(
+            &M29_DOOR
+                .replace("link_memory_in_txn(txn).await?;\n", "")
+                .replace("}\n", "    link_memory_in_txn(txn).await?;\n}\n"),
+        );
+        red(m29_5a_attribution_site(&tmp), "before");
+        seed(M29_DOOR);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/noop.rs",
+            "impl MemoryAttribution for Noop {}\n",
+        );
+        red(m29_5a_attribution_site(&tmp), "found 2");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-N09-1): a provider / embedding import in either file is red; the same name in a comment is not.
+    #[test]
+    fn n09_1_fails_on_a_model_import() {
+        let tmp = fresh_tmp("n09-1-red");
+        m07_write(
+            &tmp,
+            M29_LADDER_HOME,
+            &format!("// a provider is never consulted\n{M29_LADDER}"),
+        );
+        m07_write(&tmp, "crates/domain/src/attribution.rs", M29_DOMAIN);
+        assert_eq!(n09_1_no_model_source(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            M29_LADDER_HOME,
+            &format!("use crate::byok::complete_structured;\n{M29_LADDER}"),
+        );
+        match n09_1_no_model_source(&tmp) {
+            Verdict::Fail(lines) => {
+                assert!(lines.iter().any(|l| l.contains("`byok`")), "{lines:?}")
             }
             other => panic!("expected Fail, got {other:?}"),
         }

@@ -59,7 +59,7 @@ use uuid::Uuid;
 use crate::{
     affect_repo::{self, AffectInput, AffectParent},
     confirm_token_repo::{self, ConfirmationClaim},
-    memory_repo::{self, LoadedEvidence, NewMemory},
+    memory_repo::{self, AttributionSource, LoadedEvidence, NewMemory},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
     read_gate,
@@ -1524,6 +1524,7 @@ pub async fn correct_atomically(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     request: CorrectRequest,
+    attribution: &dyn memory_repo::MemoryAttribution,
 ) -> Result<CorrectDone, ErrorCode> {
     validate_correct(auth, &request)?;
     let idempotency_key = lifecycle_idempotency_key(&request.claim);
@@ -1765,7 +1766,9 @@ pub async fn correct_atomically(
             confidence: 1.0,
             note_kind: None,
             note_id: None,
+            attribution: AttributionSource::Primary,
         },
+        attribution,
     )
     .await
     .map_err(db_error)?;

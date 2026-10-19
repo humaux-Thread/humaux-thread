@@ -4,7 +4,7 @@
 //!   services=[PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
 //!   ops.distill_calls, ops.model_call_ledger, private.distill_candidates, private.events, private.evidence_objects,
 //!   private.identity_note_materializations, projection.stream_log] w=[ops.distill_tenant_scheduler, ops.jobs, ops.outbox,
-//!   private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::note_repo, adapters::operation_receipt,
+//!   private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::attribution_repo, adapters::note_repo, adapters::operation_receipt,
 //!   adapters::postgres, adapters::remember, adapters::tests::support::operation_receipt_fixture, domain::audit,
 //!   domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::note,
 //!   domain::subject, humaux-testkit]
@@ -144,6 +144,7 @@ fn put(
         &handle.auth,
         request,
         note,
+        &humaux_adapters::attribution_repo::AttributionLadder,
     ))
 }
 
@@ -641,6 +642,7 @@ fn g03_a_replay_reports_the_stored_data_class_not_the_current_default() {
                 &handle.auth,
                 request,
                 note,
+                &humaux_adapters::attribution_repo::AttributionLadder,
             ))
         };
         let first = attempt("SECRET_MATERIAL").expect("first commit");
@@ -934,7 +936,11 @@ fn g01_nothing_is_visible_or_stored_before_commit_and_the_memory_is_readable_aft
                     .block_on(RuntimeDbPool::connect(&actor_dsn))
                     .map_err(|e| e.to_string())?;
                 Ok(rt.block_on(operation_receipt::note_put_atomically(
-                    &pool, &auth, request, note,
+                    &pool,
+                    &auth,
+                    request,
+                    note,
+                    &humaux_adapters::attribution_repo::AttributionLadder,
                 )))
             })();
             let _ = done_tx.send(outcome);
