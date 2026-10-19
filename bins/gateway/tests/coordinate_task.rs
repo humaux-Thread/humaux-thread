@@ -1,7 +1,7 @@
 //! `gateway::tests::coordinate_task` — G-T04b-1..3 (M29 T04b): `coordinate.task_submit` / `task_claim` /
 //!   `task_heartbeat` / `task_complete` / `task_fail` through the real MCP surface against real PostgreSQL.
-//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-protocol,
-//!   humaux-testkit, postgres, serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner)
+//! Depends-on: crates=[axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit,
+//!   serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner)
 //!   r=[control.quota_windows, coord.task_runs, coord.tasks] w=[control.api_keys, coord.task_runs],
 //!   PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::quota_repo,
 //!   adapters::tests::support::operation_receipt_fixture, contracts::retrieval_config, domain::context,

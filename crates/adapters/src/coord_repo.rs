@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[coord.task_runs, coord.tasks]]; env=[];
 //!   modules=[adapters::context_repo, adapters::postgres, domain::coordination, domain::error, domain::identity,
 //!   domain::ids]
-//! Called-by: [tests]
+//! Called-by: [gateway::mcp_application, tests]
 //! Invariants: [lease_owner is always AuthorizationScope::principal, never a caller-supplied value; every lease time
 //!   is read and compared on the DB clock (clock_timestamp()), never the application clock; claim, heartbeat,
 //!   complete and fail take the task row FOR UPDATE before judging the lease, so they serialize per task; a run passes
