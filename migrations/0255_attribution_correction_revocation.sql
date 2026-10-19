@@ -127,7 +127,7 @@ BEGIN
     JOIN private.evidence_objects e ON e.tenant_id = l.tenant_id AND e.evidence_id = l.decision_evidence_id
    WHERE l.tenant_id = NEW.tenant_id
      AND l.project_id = NEW.src_id
-     AND l.rule_id_ver = 'task_run@1'
+     AND true
      AND tr.task_id = NEW.dst_id
      AND NOT (NEW.valid @> e.occurred_at);
   RETURN NULL;
