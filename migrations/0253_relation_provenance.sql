@@ -52,7 +52,7 @@ AS $$
                     AND t.state = 'ACTIVE'
                     AND m.user_id IN (SELECT p_principal_id
                                       UNION ALL
-                                      SELECT k.user_id FROM control.api_keys k
+                                      SELECT coalesce(k.user_id, m.user_id) FROM control.api_keys k
                                        WHERE k.api_key_id = p_principal_id
                                          AND k.tenant_id = p_tenant_id
                                          AND k.revoked_at IS NULL))
