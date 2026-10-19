@@ -310,6 +310,9 @@ async fn load_current_with_profile(
         }
     }
     let mut sources = Vec::with_capacity(keys.len());
+    // ponytail: this loop judges the Memory row and then each backing Evidence row itself, a copy of the §8.6 closure
+    // `read_gate::readable_memory_ids` owns, upgrade by routing the Memory case through `readable_memory_ids`
+    // (declared as such in `M08_VISIBILITY_READABLE_SITES`, xtask/src/architecture_check.rs).
     for (kind, id) in keys {
         let row = if kind == "e" {
             sqlx::query("SELECT payload_sha256 AS hash,visibility_class,visibility_user_id,visibility_workspace_id \

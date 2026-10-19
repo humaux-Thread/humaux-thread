@@ -24,9 +24,10 @@
 //! M08 D1 (module design "one gate, one home"): every read op passes the shared final gate before any body leaves
 //! PostgreSQL, and the closure it rests on lives in this file, so a change to the readability rule edits one module.
 //! `can_read` is named in this file only, inside [`visibility_readable`]; the `G-M08-2` sentinel in
-//! `xtask/src/architecture_check.rs` pins this file's `can_read` count with `==` and declares no other file, so a read
-//! op that judges visibility itself is red until it goes through [`readable_memory_ids`] (a Memory and its backing
-//! Evidence) or [`visibility_readable`] (a row its own SQL already fetched).
+//! `xtask/src/architecture_check.rs` pins this file's `can_read` count with `==` and, with the same `==` per file and a
+//! reason per row, every caller of [`visibility_readable`] outside it, so a read op that judges visibility itself is
+//! red until it goes through [`readable_memory_ids`] (a Memory and its backing Evidence) or is declared there as a
+//! row-level caller (a row its own SQL already fetched).
 //!
 //! The materializers here are the `memory.get` and `memory.enumerate` entry points. Census minting, the frozen
 //! census readout and the stream pipeline counts stay in [`crate::context_repo`] (§22.1, §23.3④, module M13); this
@@ -36,8 +37,8 @@
 // there, widened to `pub(crate)` for it: `canonical_scope`, `grounding_from_facts`, `body_ids`, `materialized_identity`,
 // `continuation_bound`, `mint_segment_in_txn`, `frozen_census_in_txn`, `FrozenCensus`, `EnumerationFilter` and its
 // fields; `context_repo` takes `readable_memory_ids` back) and with `read_materialize` (it takes the materialization
-// entry points; `read_materialize` takes `readable_memory_ids`). Both compile and dep-map accepts them, upgrade by
-// card M08-7, which makes `readable_memory_ids` a leaf module that neither side has to import around.
+// entry points; `read_materialize` takes `readable_memory_ids`). Both compile and dep-map accepts them, upgrade by a
+// future M08 card that makes `readable_memory_ids` a leaf module that neither side has to import around.
 
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
@@ -74,7 +75,8 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 /// and bins. A caller whose own SQL already fetched the Memory or Evidence row (the RYW overlay, a contribution source,
 /// a receipt replay, a continuity fact) judges that row's descriptor here and keeps its tenant filter, lifecycle,
 /// secret and subject guards in that SQL; `can_read` is only the visibility term. A Memory read goes through
-/// [`readable_memory_ids`], which adds the all-backing-evidence closure (§8.6).
+/// [`readable_memory_ids`], which adds the all-backing-evidence closure (§8.6); each caller outside this file is a
+/// declared row of `G-M08-2`, never an undeclared use.
 pub(crate) fn visibility_readable(
     authorization: &AuthorizationScope,
     visibility: &VisibilityDescriptor,
