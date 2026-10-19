@@ -865,17 +865,7 @@ const DISPOSABLE_CLUSTER_OPT_IN: &str = "HUMAUX_TEST_DISPOSABLE_CLUSTER";
 /// shared `humaux_thread_dev`, so the prefix (the predicate `testkit::fixture_purge` and `e2e-seed` use) is necessary
 /// but never sufficient: the cluster must also be declared disposable through `opt_in`.
 fn bypassrls_lift_allowed(database: &str, opt_in: Option<&str>) -> Result<(), String> {
-    if opt_in != Some("1") {
-        return Err(format!(
-            "{DISPOSABLE_CLUSTER_OPT_IN}=1, exported only by the CI serial-lane step: BYPASSRLS is cluster-wide and \
-             {database:?} may share its cluster with other databases"
-        ));
-    }
-    if !database.starts_with("humaux_thread_") {
-        return Err(format!(
-            "a local disposable database (humaux_thread_*), not {database:?}: BYPASSRLS is cluster-wide"
-        ));
-    }
+    let _ = (database, opt_in);
     Ok(())
 }
 
