@@ -153,7 +153,7 @@ CREATE UNIQUE INDEX project_task_relations_one_relation_per_edge
 CREATE UNIQUE INDEX project_subject_relations_one_relation_per_edge
   ON private.project_subject_relations (tenant_id, src_id, dst_id, relation_kind) WHERE revision = 1;
 CREATE UNIQUE INDEX subject_relations_one_relation_per_edge
-  ON private.subject_relations (tenant_id, src_id, dst_id, relation_kind) WHERE revision = 1;
+  ON private.subject_relations (tenant_id, src_id, dst_id, relation_kind) WHERE revision = 0;
 
 -- ⑥ #92 item 4: one new first statement; everything else is 0249's body. CREATE OR REPLACE keeps owner and ACL.
 CREATE OR REPLACE FUNCTION private.relation_revision_guard() RETURNS trigger
