@@ -149,7 +149,7 @@ GRANT SELECT         ON private.project_task_relations TO role_private_worker;
 
 -- ⑤ #92 item 5.
 CREATE UNIQUE INDEX project_task_relations_one_relation_per_edge
-  ON private.project_task_relations (tenant_id, src_id, dst_id, relation_kind) WHERE revision = 1;
+  ON private.project_task_relations (tenant_id, src_id, dst_id, relation_kind) WHERE revision = 0;
 CREATE UNIQUE INDEX project_subject_relations_one_relation_per_edge
   ON private.project_subject_relations (tenant_id, src_id, dst_id, relation_kind) WHERE revision = 1;
 CREATE UNIQUE INDEX subject_relations_one_relation_per_edge
