@@ -3,7 +3,7 @@
 //!   serde_json, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo,
 //!   adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::quota_repo, adapters::remember,
 //!   adapters::request_guard_repo, application::supersede, domain::affect, domain::audit, domain::confirm,
-//!   domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
+//!   domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
 //! Invariants: [transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
@@ -33,6 +33,7 @@ use humaux_domain::{
     affect::AffectWriteOp,
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction, SYSTEM_TENANT_ID},
     confirm::{ConfirmToken, DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
+    coordination::{FencingToken, TaskRunId},
     error::ErrorCode,
     identity::AuthorizationScope,
     ids::WorkspaceId,
@@ -775,12 +776,14 @@ impl GatewayGuard {
         result
     }
 
-    /// The one receipt transaction of `run_atomic_remember`: `remember.put`, or `memory.note_put` when `note` is `Some`.
+    /// The one receipt transaction of `run_atomic_remember`: `remember.put` (verifying `task_run` when `Some`, design
+    /// v0.2 §15 T04c), or `memory.note_put` when `note` is `Some`.
     async fn write_atomically(
         &self,
         authorization: &AuthorizationScope,
         request: AtomicRememberRequest,
         note: Option<NoteIntake>,
+        task_run: Option<(TaskRunId, FencingToken)>,
     ) -> Result<AtomicRememberResult, ErrorCode> {
         match note {
             Some(note) => {
@@ -788,7 +791,13 @@ impl GatewayGuard {
                     .await
             }
             None => {
-                operation_receipt::remember_atomically(&self.pool, authorization, request).await
+                operation_receipt::remember_for_task_run_atomically(
+                    &self.pool,
+                    authorization,
+                    request,
+                    task_run,
+                )
+                .await
             }
         }
     }
@@ -796,8 +805,9 @@ impl GatewayGuard {
     /// A local write, its BMO settlement and its success audit share one commit.
     /// An unknown commit outcome is resolved by replaying the same logical key.
     /// `note` is `Some` exactly for `memory.note_put` (ADR-0067 D-A): the same receipt transaction then also writes the
-    /// identity contract and the authorised Memory.
-    #[allow(clippy::too_many_arguments)] // admission context + the write's own five inputs; one call site per operation
+    /// identity contract and the authorised Memory. `task_run` may be `Some` only for `remember.put` (design v0.2 §15
+    /// T04c): the receipt transaction verifies it before any write and refuses the whole call when it fails.
+    #[allow(clippy::too_many_arguments)] // admission context + the write's own six inputs; one call site per operation
     pub(crate) async fn run_atomic_remember<F>(
         &self,
         context: &McpHttpContext,
@@ -806,6 +816,7 @@ impl GatewayGuard {
         raw_arguments: &str,
         idempotency_key: String,
         note: Option<NoteIntake>,
+        task_run: Option<(TaskRunId, FencingToken)>,
         prepare: F,
     ) -> Result<AtomicRememberResult, ErrorCode>
     where
@@ -814,8 +825,12 @@ impl GatewayGuard {
         let result = async {
             let admitted = self.admit(context, operation, requested_workspace).await?;
             let routed = matches!(
-                (operation.operation_key(), note.is_some()),
-                ("remember.put", false) | ("memory.note_put", true)
+                (
+                    operation.operation_key(),
+                    note.is_some(),
+                    task_run.is_some()
+                ),
+                ("remember.put", false, _) | ("memory.note_put", true, false)
             );
             if !routed || operation.meter_kind() != MeterKind::Ordinary {
                 return self
@@ -851,7 +866,7 @@ impl GatewayGuard {
             };
             let result = tokio::time::timeout(
                 self.settings.handler_timeout,
-                self.write_atomically(admitted.request.authorization(), request, note),
+                self.write_atomically(admitted.request.authorization(), request, note, task_run),
             )
             .await
             .unwrap_or(Err(ErrorCode::DependencyUnavailable));

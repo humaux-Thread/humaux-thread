@@ -356,6 +356,8 @@ impl GatewayMcpApplication {
                 raw_arguments,
                 wire.idempotency_key,
                 None,
+                // Design v0.2 §15 T04c: verified in the receipt transaction before any write; a refusal is the whole call.
+                wire.task_run,
                 move |request| {
                     // An unbound PAT naming no workspace has no route: nothing to write to.
                     let workspace = request
@@ -439,6 +441,7 @@ impl GatewayMcpApplication {
                 raw_arguments,
                 wire.idempotency_key,
                 Some(wire.note),
+                None,
                 move |request| {
                     if authorize_note(kind, requested).is_err() {
                         *refused_slot = true;
@@ -2652,6 +2655,8 @@ struct RememberPutWire {
     visibility_class: Option<VisibilityClass>,
     data_class: Option<DataClass>,
     event_kind: Option<RememberEventKind>,
+    /// Design v0.2 §15 T04c: the §30.2 run this put is written under, both halves or neither.
+    task_run: Option<(TaskRunId, FencingToken)>,
 }
 
 #[derive(Deserialize)]
@@ -2662,6 +2667,15 @@ struct RawRememberPutWire {
     visibility_class: Option<String>,
     data_class: Option<String>,
     event_kind: Option<String>,
+    task_run: Option<RawTaskRunWire>,
+}
+
+/// `remember.schema.json` `task_run`: both fields required, nothing else, so a half pair is unrepresentable.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTaskRunWire {
+    task_run_id: Uuid,
+    fencing_token: i64,
 }
 
 impl RememberPutWire {
@@ -2692,6 +2706,12 @@ impl RememberPutWire {
                 .as_deref()
                 .map(RememberEventKind::parse)
                 .transpose()?,
+            // §30.2: a token is a claimed `fencing_seq`, never below 1 (0248 CHECK); the schema's `minimum` says the same.
+            task_run: match raw.task_run {
+                Some(run) if run.fencing_token < 1 => return Err(ErrorCode::InvalidInput),
+                Some(run) => Some((TaskRunId(run.task_run_id), FencingToken(run.fencing_token))),
+                None => None,
+            },
         })
     }
 }

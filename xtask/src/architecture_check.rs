@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_task_runs, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -2812,6 +2812,27 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
         "M09 D1 ticket door",
         &M09_TICKET_DOORS,
         &M09_TICKET_DOOR_BOUNDED,
+    )
+}
+
+/// Door statement of M29 T04c (design v0.2 §15, gate G-T04c-3): the §30.2 Evidence → task-run carrier INSERT is one
+/// statement in non-test code, in `remember::insert_evidence_task_run_in_txn`. This arm pins only that statement;
+/// `pub(crate)` pins the function's callers to the adapters crate, and the §6.2.2 grants (rls_check: INSERT for
+/// `role_gateway` only) are the DB backstop.
+const T04C_CARRIER_DOOR: [DoorStatement; 1] = [(
+    "INSERT INTO private.evidence_task_runs",
+    "crates/adapters/src/remember.rs",
+)];
+
+/// M29 T04c / G-T04c-3: exactly one `INSERT INTO private.evidence_task_runs` in non-test code, in `remember.rs`
+/// ([`T04C_CARRIER_DOOR`]); the 注错 is a second copy in another module (`found 2`).
+fn t04c_3_carrier_door(root: &Path) -> Verdict {
+    sole_door_statements(
+        root,
+        "M29 T04c / G-T04c-3",
+        "M29 T04c task-run carrier door",
+        &T04C_CARRIER_DOOR,
+        &[],
     )
 }
 
@@ -7517,6 +7538,10 @@ pub fn run(_args: &[String]) -> i32 {
             m09_1_ticket_doors(&root),
         ),
         (
+            "M29 T04c / G-T04c-3 (private.evidence_task_runs INSERT: one statement, in remember.rs, non-test code)",
+            t04c_3_carrier_door(&root),
+        ),
+        (
             "M08 D1 / G-M08-2 (can_read( call sites in adapters and bins non-test code == the declared read-gate set)",
             m08_2_can_read_one_home(&root),
         ),
@@ -11370,6 +11395,52 @@ async fn serving_version_in_txn() {}
         m07_write(&tmp, M07_MEMORY_HOME, M07_MEMORY_DOOR);
         assert_eq!(m09_1_ticket_doors(&tmp), Verdict::Pass);
         assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 T04c / G-T04c-3: one INSERT INTO private.evidence_task_runs, in remember.rs ----------------
+
+    const T04C_HOME: &str = "crates/adapters/src/remember.rs";
+    const T04C_DOOR: &str = "fn door() { let _ = \"INSERT INTO private.evidence_task_runs (tenant_id) VALUES ($1)\"; }\n";
+
+    /// The tree as T04c leaves it: one carrier INSERT, in `remember.rs`.
+    #[test]
+    fn t04c_3_real_repo_passes() {
+        assert_eq!(t04c_3_carrier_door(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the missing home file (§57.1 第2条).
+    #[test]
+    fn t04c_3_is_not_applicable_naming_the_missing_door_file() {
+        let tmp = fresh_tmp("t04c-3-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match t04c_3_carrier_door(&tmp) {
+            Verdict::NotApplicable(detail) => assert!(detail.contains(T04C_HOME), "{detail}"),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-T04c-3): a second carrier INSERT in another module → 红, `found 2`, naming that file; a test-tree copy
+    /// does not count.
+    #[test]
+    fn t04c_3_fails_on_a_second_carrier_insert_in_another_src_file() {
+        let tmp = fresh_tmp("t04c-3-red");
+        m07_write(&tmp, T04C_HOME, T04C_DOOR);
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", T04C_DOOR);
+        assert_eq!(t04c_3_carrier_door(&tmp), Verdict::Pass);
+        m07_write(&tmp, "crates/adapters/src/coord_repo.rs", T04C_DOOR);
+        match t04c_3_carrier_door(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 2"), "{lines:?}");
+                assert!(
+                    lines[0].contains("crates/adapters/src/coord_repo.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 

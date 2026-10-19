@@ -1,0 +1,62 @@
+# §46.1 migration manifest. Card M29 T04c (§30.2, design v0.2 §15): one new private carrier table
+# private.evidence_task_runs (tenant_id, evidence_id, task_run_id, fencing_token, verified_at), PK (tenant_id,
+# evidence_id), tenant-leg FKs to private.evidence_objects and coord.task_runs (NO ACTION), fencing_token > 0 CHECK,
+# FORCE RLS + NULLIF tenant policy with the 0154/0157 parent-Evidence EXISTS, owner role_migration_owner, NAMED §6.2.2 grants (gateway SELECT+INSERT, nobody
+# else, nobody UPDATE/DELETE). Existing object: coord.task_runs gains one UNIQUE (tenant_id, task_run_id) whose columns
+# already contain the primary key. No DML. §46 forward-fix (EXPAND_CONTRACT, number 0251).
+
+migration_id = "0251_evidence_task_runs"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0248 lease columns or the 0104 evidence UNIQUE, or one that already has this
+# migration's objects.
+precheck = """
+select to_regclass('coord.task_runs_one_open_lease_per_task') is not null
+ and exists (select 1 from pg_constraint where conname = 'evidence_objects_tenant_id_unique'
+              and conrelid = to_regclass('private.evidence_objects') and contype = 'u')
+ and to_regclass('private.evidence_task_runs') is null
+ and not exists (select 1 from pg_constraint
+                  where conname = 'task_runs_tenant_run_key' and conrelid = to_regclass('coord.task_runs'))
+ as precheck_ok
+"""
+
+# Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause or without the
+# parent-Evidence EXISTS (USING and WITH CHECK), a PK that is not
+# exactly (tenant_id, evidence_id), an FK without the tenant leg or with a cascade, a missing CHECK, a missing UNIQUE
+# on coord.task_runs, or any grant beyond gateway SELECT + INSERT (column-level grants included).
+postcheck = """
+with c(oid) as (select to_regclass('private.evidence_task_runs'))
+select (select count(*) = 1 from c join pg_class k on k.oid = c.oid
+         where k.relrowsecurity and k.relforcerowsecurity and pg_get_userbyid(k.relowner) = 'role_migration_owner')
+ and (select count(*) = 1 from pg_policies p
+       where p.schemaname = 'private' and p.tablename = 'evidence_task_runs'
+         and p.qual like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.with_check like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.qual like '%EXISTS%evidence_objects%'
+         and p.with_check like '%EXISTS%evidence_objects%')
+ and (select count(*) = 1 from c join pg_constraint k on k.conrelid = c.oid and k.contype = 'p'
+       where (select array_agg(a.attname::text order by u.i)
+                from unnest(k.conkey) with ordinality u(n, i)
+                join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.n)
+             = array['tenant_id', 'evidence_id'])
+ and (select count(*) = 2 from c join pg_constraint k on k.conrelid = c.oid and k.contype = 'f'
+       where array_length(k.conkey, 1) = 2 and k.confdeltype = 'a' and k.confupdtype = 'a'
+         and k.confrelid in ('private.evidence_objects'::regclass, 'coord.task_runs'::regclass))
+ and exists (select 1 from c join pg_constraint k on k.conrelid = c.oid
+              where k.contype = 'c' and k.conname = 'evidence_task_runs_fencing_token_positive')
+ and exists (select 1 from pg_constraint where conname = 'task_runs_tenant_run_key'
+              and conrelid = to_regclass('coord.task_runs') and contype = 'u')
+ and (select has_table_privilege('role_gateway', c.oid, 'SELECT')
+             and has_table_privilege('role_gateway', c.oid, 'INSERT') from c)
+ and not exists (select 1 from c cross join (values ('role_gateway'), ('role_private_worker'),
+                   ('role_consolidation_worker'), ('role_public_worker'), ('role_retrieval_worker'),
+                   ('role_batch_issuer'), ('role_maintenance'), ('role_admin')) r(role)
+                  where has_any_column_privilege(r.role, c.oid, 'UPDATE')
+                     or has_table_privilege(r.role, c.oid, 'DELETE') or has_table_privilege(r.role, c.oid, 'TRUNCATE')
+                     or (r.role <> 'role_gateway' and has_any_column_privilege(r.role, c.oid, 'SELECT'))
+                     or (r.role <> 'role_gateway' and has_any_column_privilege(r.role, c.oid, 'INSERT')))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while the table is empty: DROP TABLE private.evidence_task_runs; ALTER TABLE coord.task_runs DROP CONSTRAINT task_runs_tenant_run_key; and remove remember.put's task_run field, adapters::remember::insert_evidence_task_run_in_txn and the §6.2.2 column in the same release. Forward-fix only once any carrier row exists: it is the A3 attribution source and is never discarded silently."
+backup_restore_requirement = "none: one new empty table and one UNIQUE constraint over columns that already contain coord.task_runs' primary key; no existing row, policy or grant is touched."
