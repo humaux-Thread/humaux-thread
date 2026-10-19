@@ -1,0 +1,7 @@
+# §80.1 red record only (branch red/m29-t06d-r8, never merged): an extra EXECUTE grantee on the 0253 predicate
+migration_id = "0254_red_m29_t06d_r8"
+class = "FORWARD_ONLY"
+precheck = "select to_regprocedure('private.relation_principal_is_member(uuid,uuid)') is not null as precheck_ok"
+postcheck = "select true as postcheck_ok"
+rollback_or_forward_fix = "red record only; the branch is deleted after the run."
+backup_restore_requirement = "none: throwaway CI database."
