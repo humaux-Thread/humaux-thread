@@ -1,5 +1,5 @@
 //! `maintenance::rls_check` — G80-26 (§48.2) runtime DB role invariant CI enumeration gate.
-//! Depends-on: crates=[postgres]; services=[PostgreSQL(any) r=[control.anonymous_claim_trust_authorities, control.anonymous_source_lineage, control.audit_event_identity, control.confirm_tokens, control.contribution_confirmations, control.credential_pepper_state, control.memberships, control.operation_receipts, control.partition_registry, control.processor_models, control.provider_accounts, control.provider_billing_accounts, control.provider_billing_instruments, control.provider_endpoints, control.public_moderator_grants, control.quota_windows, control.rate_buckets, control.reasoning_credential_bindings, control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates, control.reasoning_route_domain_receipts, control.reasoning_route_policies, control.reasoning_route_profile_receipts, control.retention_policies, control.usage_reservations, control.workspace_memberships, control.workspaces, ops.anonymous_public_revocations, ops.backup_receipts, ops.backup_sets, ops.c36_scratch, ops.claim_derived_work, ops.contribution_execution_job_links, ops.data_disclosures, ops.deletion_plan_steps, ops.distill_calls, ops.distill_tenant_scheduler, ops.email_delivery_events, ops.email_domains, ops.email_outbox, ops.email_provider_health, ops.email_suppressions, ops.jobs, ops.maintenance_receipts, ops.mechanism_e2e_runs, ops.mechanism_observations, ops.memory_lifecycle_events, ops.model_call_identity, ops.model_call_ledger, ops.outbox, ops.private_inference_rpc_calls, ops.provider_arbiters, ops.provider_slots, ops.public_anonymous_dispatches, ops.public_release_revocations, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, ops.restore_drills, ops.restore_witnesses, ops.retrieval_embedding_rpc_calls, ops.retrieval_provider_budget_allocations, ops.retrieval_provider_budget_reservations, ops.schema_migrations, ops.stage_runs, ops.stage_runs_default, ops.stage_runs_p209901, ops.wal_archive_failures, ops.xtask_fx_domain_owner, ops.xtask_fx_domain_table, private.any_fourth_relation, private.comment_only, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.contribution_execution_future_probe, private.contribution_execution_sources, private.contribution_executions, private.distill_candidates, private.event_identity, private.events, private.evidence_affects, private.evidence_objects, private.evidence_projects, private.evidence_subjects, private.evidence_task_runs, private.identity_note_materializations, private.lower, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_project_revocations, private.memory_projects, private.memory_records, private.memory_rollup_sources, private.memory_rollup_subjects, private.memory_rollups, private.memory_subject_mentions, private.memory_subject_presence, private.memory_subject_visibility_ok, private.memory_subjects, private.note_heads, private.project_subject_relations, private.project_task_relations, private.read_continuity_project_storage_v1, private.retrieval_query_sources, private.some_new_table, private.some_untracked_table, private.subject_keys, private.subject_relations, private.subject_roles, private.subjects, private.task_binding_grants, projection.card_profile_policies, projection.claim_issued_tickets, projection.embedding_fingerprints, projection.family_activations, projection.memory_vectors, projection.processing_gaps, projection.rebuild_runs, projection.rebuild_tickets, projection.retire_failed_ticket, projection.stream_checkpoints, projection.stream_log, projection.stream_point_ledger, projection.tenant_placements, projection.ticket_reissues, projection.unplaced_issued_tickets, public.anonymous_claim_trust_receipts, public.anonymous_source_authority_events, public.anonymous_source_lifecycle_events, public.claim_independence_attestations, public.claim_trust_evaluation_sources, public.claim_trust_evaluations, public.current_anonymous_source_objects, public.eligible_objects, public.poisoning_signals, staging.contribution_candidate_phase9_assessments, staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources, staging.contribution_releases, staging.sanitized_public_candidates] w=[control.partition_registry, ops.jobs, ops.outbox, private.ingest_tickets] x=[control.api_key_rehash, control.assert_write_scope, control.attest_reasoning_route_health, control.audit_event_identity_claim, control.audit_event_identity_release, control.bind_reasoning_domain, control.credential_pepper_epoch, control.credential_pepper_epoch_advance, control.credential_pepper_epoch_close, control.current_reasoning_route_binding, control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.maintenance_tenant_page, control.observe_reasoning_route_health, control.onboard_tenant, control.onboard_workspace, control.partition_adopt_leaf, control.partition_catalog_fingerprint, control.partition_create_month, control.partition_drop, control.partition_drop_check, control.partition_drop_statements, control.partition_parent, control.purge_idle_rate_buckets, control.reasoning_credential_accounts, control.reasoning_profile_capabilities, control.reasoning_profile_request_extras, control.reasoning_route_health_state, control.reasoning_route_status, control.register_reasoning_profile, control.reject_partition_key_update, control.renew_quota_period, control.resolve_user_reasoning_admission, control.retention_policy_approve, control.revoke_api_key, control.set_reasoning_profile_enabled, control.sweep_confirm_tokens, ops.admin_probe_snapshot, ops.admit_distill_budget, ops.auto_redrive_schema_failed, ops.begin_call, ops.c35_fault_definer_trigger, ops.c35_fault_invoker_delete, ops.c35_fault_outbox_door, ops.claim_derived_work, ops.claim_derived_work_v2, ops.contribution_reservation_authority_validate, ops.distill_scheduler_admit, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.health_snapshot, ops.model_call_identity_claim, ops.purge_expired_selection_snapshots, ops.purge_terminal_jobs, ops.renew_lease, ops.requeue_dead_distill, private.assert_contribution_prepared_route_shape, private.assert_current_contribution_reservation_authority, private.commit_contribution_candidate, private.complete_contribution_a_exact, private.complete_contribution_b_exact, private.compute_contribution_source_backing_closure_v1, private.contribution_execution_closure_seal_immutable, private.contribution_unregistered_fixture, private.enqueue_contribution_execution, private.event_identity_claim, private.event_identity_release, private.mark_contribution_reconciliation_required, private.memory_subject_visibility_ok, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.relation_principal_is_member, private.require_contribution_execution_lease, private.require_contribution_source_manifest, private.reserve_contribution_a, private.reserve_contribution_b, private.reserve_contribution_execution_call, private.settle_contribution_job_if_live, private.settle_contribution_terminal_job, private.visibility_allowed, projection.activate_empty_family, projection.claim_issued_tickets, projection.ensure_tenant_placement, projection.issue_rebuild_tickets, projection.rebuild_close, projection.rebuild_open, projection.reissue_unsettled_tickets, projection.retire_failed_ticket, projection.stream_checkpoints_workspace_write_gate, projection.stream_log_generation_never_lost, projection.stream_log_guard_state_transition, projection.stream_log_tombstone_follows_to_generation, projection.stream_point_ledger, projection.unplaced_issued_tickets, public.guard_evaluated_source_identity, public.public_receipt_matches, public.require_trust_root_seal, staging.require_phase9_exact_assessed_storage_binding], PostgreSQL(role_gateway)]; env=[CARGO_MANIFEST_DIR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_MIGRATOR_PG_DSN, HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[maintenance::migrate]
+//! Depends-on: crates=[postgres]; services=[PostgreSQL(any) r=[control.anonymous_claim_trust_authorities, control.anonymous_source_lineage, control.audit_event_identity, control.confirm_tokens, control.contribution_confirmations, control.credential_pepper_state, control.memberships, control.operation_receipts, control.partition_registry, control.processor_models, control.provider_accounts, control.provider_billing_accounts, control.provider_billing_instruments, control.provider_endpoints, control.public_moderator_grants, control.quota_windows, control.rate_buckets, control.reasoning_credential_bindings, control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates, control.reasoning_route_domain_receipts, control.reasoning_route_policies, control.reasoning_route_profile_receipts, control.retention_policies, control.usage_reservations, control.workspace_memberships, control.workspaces, ops.anonymous_public_revocations, ops.backup_receipts, ops.backup_sets, ops.c36_scratch, ops.claim_derived_work, ops.contribution_execution_job_links, ops.data_disclosures, ops.deletion_plan_steps, ops.distill_calls, ops.distill_tenant_scheduler, ops.email_delivery_events, ops.email_domains, ops.email_outbox, ops.email_provider_health, ops.email_suppressions, ops.jobs, ops.maintenance_receipts, ops.mechanism_e2e_runs, ops.mechanism_observations, ops.memory_lifecycle_events, ops.model_call_identity, ops.model_call_ledger, ops.outbox, ops.private_inference_rpc_calls, ops.provider_arbiters, ops.provider_slots, ops.public_anonymous_dispatches, ops.public_release_revocations, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, ops.restore_drills, ops.restore_witnesses, ops.retrieval_embedding_rpc_calls, ops.retrieval_provider_budget_allocations, ops.retrieval_provider_budget_reservations, ops.schema_migrations, ops.stage_runs, ops.stage_runs_default, ops.stage_runs_p209901, ops.wal_archive_failures, ops.xtask_fx_domain_owner, ops.xtask_fx_domain_table, private.any_fourth_relation, private.comment_only, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.contribution_execution_future_probe, private.contribution_execution_sources, private.contribution_executions, private.distill_candidates, private.event_identity, private.events, private.evidence_affects, private.evidence_objects, private.evidence_projects, private.evidence_subjects, private.evidence_task_runs, private.identity_note_materializations, private.lower, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_project_revocations, private.memory_projects, private.memory_projects_live, private.memory_records, private.memory_rollup_sources, private.memory_rollup_subjects, private.memory_rollups, private.memory_subject_mentions, private.memory_subject_presence, private.memory_subject_visibility_ok, private.memory_subjects, private.note_heads, private.project_subject_relations, private.project_task_relations, private.read_continuity_project_storage_v1, private.retrieval_query_sources, private.some_new_table, private.some_untracked_table, private.subject_keys, private.subject_relations, private.subject_roles, private.subjects, private.task_binding_grants, projection.card_profile_policies, projection.claim_issued_tickets, projection.embedding_fingerprints, projection.family_activations, projection.memory_vectors, projection.processing_gaps, projection.rebuild_runs, projection.rebuild_tickets, projection.retire_failed_ticket, projection.stream_checkpoints, projection.stream_log, projection.stream_point_ledger, projection.tenant_placements, projection.ticket_reissues, projection.unplaced_issued_tickets, public.anonymous_claim_trust_receipts, public.anonymous_source_authority_events, public.anonymous_source_lifecycle_events, public.claim_independence_attestations, public.claim_trust_evaluation_sources, public.claim_trust_evaluations, public.current_anonymous_source_objects, public.eligible_objects, public.poisoning_signals, staging.contribution_candidate_phase9_assessments, staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources, staging.contribution_releases, staging.sanitized_public_candidates] w=[control.partition_registry, ops.jobs, ops.outbox, private.ingest_tickets] x=[control.api_key_rehash, control.assert_write_scope, control.attest_reasoning_route_health, control.audit_event_identity_claim, control.audit_event_identity_release, control.bind_reasoning_domain, control.credential_pepper_epoch, control.credential_pepper_epoch_advance, control.credential_pepper_epoch_close, control.current_reasoning_route_binding, control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.maintenance_tenant_page, control.observe_reasoning_route_health, control.onboard_tenant, control.onboard_workspace, control.partition_adopt_leaf, control.partition_catalog_fingerprint, control.partition_create_month, control.partition_drop, control.partition_drop_check, control.partition_drop_statements, control.partition_parent, control.purge_idle_rate_buckets, control.reasoning_credential_accounts, control.reasoning_profile_capabilities, control.reasoning_profile_request_extras, control.reasoning_route_health_state, control.reasoning_route_status, control.register_reasoning_profile, control.reject_partition_key_update, control.renew_quota_period, control.resolve_user_reasoning_admission, control.retention_policy_approve, control.revoke_api_key, control.set_reasoning_profile_enabled, control.sweep_confirm_tokens, ops.admin_probe_snapshot, ops.admit_distill_budget, ops.auto_redrive_schema_failed, ops.begin_call, ops.c35_fault_definer_trigger, ops.c35_fault_invoker_delete, ops.c35_fault_outbox_door, ops.claim_derived_work, ops.claim_derived_work_v2, ops.contribution_reservation_authority_validate, ops.distill_scheduler_admit, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.health_snapshot, ops.model_call_identity_claim, ops.purge_expired_selection_snapshots, ops.purge_terminal_jobs, ops.renew_lease, ops.requeue_dead_distill, private.assert_contribution_prepared_route_shape, private.assert_current_contribution_reservation_authority, private.commit_contribution_candidate, private.complete_contribution_a_exact, private.complete_contribution_b_exact, private.compute_contribution_source_backing_closure_v1, private.contribution_execution_closure_seal_immutable, private.contribution_unregistered_fixture, private.enqueue_contribution_execution, private.event_identity_claim, private.event_identity_release, private.mark_contribution_reconciliation_required, private.memory_projects_on_supersede, private.memory_subject_visibility_ok, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.relation_principal_is_member, private.require_contribution_execution_lease, private.require_contribution_source_manifest, private.reserve_contribution_a, private.reserve_contribution_b, private.reserve_contribution_execution_call, private.revoke_attributions_on_relation_correction, private.revoke_inherited_attributions, private.settle_contribution_job_if_live, private.settle_contribution_terminal_job, private.visibility_allowed, projection.activate_empty_family, projection.claim_issued_tickets, projection.ensure_tenant_placement, projection.issue_rebuild_tickets, projection.rebuild_close, projection.rebuild_open, projection.reissue_unsettled_tickets, projection.retire_failed_ticket, projection.stream_checkpoints_workspace_write_gate, projection.stream_log_generation_never_lost, projection.stream_log_guard_state_transition, projection.stream_log_tombstone_follows_to_generation, projection.stream_point_ledger, projection.unplaced_issued_tickets, public.guard_evaluated_source_identity, public.public_receipt_matches, public.require_trust_root_seal, staging.require_phase9_exact_assessed_storage_binding], PostgreSQL(role_gateway)]; env=[CARGO_MANIFEST_DIR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_MIGRATOR_PG_DSN, HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[maintenance::migrate]
 //! Called-by: [maintenance::main, maintenance::migrate, xtask::dep_map, xtask::rls_check]
 //! Invariants: [any catalog cell that disagrees with §48.2 / §62 grants is fail, named by role and table]
 //! Spec: Baseline §48.2; §62; §6.2.0; §6.2.2; ADR-0061 D-D; ADR-0063 D-L; ADR-0066 D-Q
@@ -1617,6 +1617,10 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
         "role_private_worker",
         ["SELECT"]
     ),
+    // 0255 (ADR-0078 D-D, M29 T06b): the "exists and is not revoked" view. gateway alone UPDATEs
+    // memory_records.superseded_by, so it alone runs the A3' trigger with invoker rights; the two revocation definers
+    // read the view as its owner. Every other non-owner role — (absence == no grant).
+    cell!("private.memory_projects_live", "role_gateway", ["SELECT"]),
     // 0249 (ADR-0078 D-C, M29 T05) relation kernel: append-only revision tables. gateway is the one writer
     // (CAS = INSERT of expected_revision + 1) and reads; maintenance reads. Nobody holds UPDATE/DELETE (the owner
     // trigger rejects both). Every other non-owner role — (absence == no grant).
@@ -4004,6 +4008,160 @@ pub fn check_relation_principal_predicate(client: &mut impl GenericClient) -> Ga
     }
 }
 
+const A3P_FN: &str = "private.memory_projects_on_supersede()";
+/// (function, the one table whose trigger executes it).
+const REVOCATION_FNS: [(&str, &str); 2] = [
+    (
+        "private.revoke_attributions_on_relation_correction()",
+        "private.project_task_relations",
+    ),
+    (
+        "private.revoke_inherited_attributions()",
+        "private.memory_project_revocations",
+    ),
+];
+const LIVE_VIEW: &str = "private.memory_projects_live";
+/// 0255's session-tenant pin, verbatim (the 0253 lesson: owner rights never answer for another tenant).
+const SESSION_TENANT_PIN: &str = "IF NEW.tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN";
+
+/// The tables whose non-internal triggers execute `function`, sorted, each once per trigger.
+fn trigger_tables(
+    client: &mut impl GenericClient,
+    problems: &mut Vec<String>,
+    function: &str,
+) -> Vec<String> {
+    match client.query(
+        "SELECT g.tgrelid::regclass::text FROM pg_trigger g \
+         WHERE g.tgfoid = to_regprocedure($1) AND NOT g.tgisinternal ORDER BY 1",
+        &[&function],
+    ) {
+        Ok(rows) => rows.iter().map(|r| r.get(0)).collect(),
+        Err(error) => {
+            problems.push(format!("{function}: trigger probe failed: {error}"));
+            Vec::new()
+        }
+    }
+}
+
+/// §6.1.4 G-M29-5(b) (migration 0255, ADR-0078 D-D, M29 T06b): A3' has exactly one site. Exactly one trigger in the
+/// database executes `private.memory_projects_on_supersede()`, on `private.memory_records`; the function keeps
+/// invoker rights (§6.1.3 rule ③'s shape); and no other function body names `correction@1`. Missing ⇒
+/// `not_applicable`.
+pub fn check_correction_inheritance_site(client: &mut impl GenericClient) -> GateResult {
+    let check = "§6.1.4 A3' single site";
+    let invoker: Option<bool> = match client.query_opt(
+        "SELECT NOT p.prosecdef FROM pg_proc p WHERE p.oid = to_regprocedure($1)",
+        &[&A3P_FN],
+    ) {
+        Ok(row) => row.map(|r| r.get(0)),
+        Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+    };
+    let Some(invoker) = invoker else {
+        return not_applicable(check, format!("missing object: {A3P_FN}"));
+    };
+    let mut problems = Vec::new();
+    if !invoker {
+        problems.push(format!("{A3P_FN}: must keep invoker rights"));
+    }
+    let tables = trigger_tables(client, &mut problems, A3P_FN);
+    if tables != ["private.memory_records"] {
+        problems.push(format!(
+            "{A3P_FN}: expected exactly one trigger, on private.memory_records; found {} on {tables:?}",
+            tables.len()
+        ));
+    }
+    match client.query(
+        "SELECT p.oid::regprocedure::text FROM pg_proc p \
+         WHERE p.prosrc LIKE '%correction@1%' AND p.oid <> to_regprocedure($1) ORDER BY 1",
+        &[&A3P_FN],
+    ) {
+        Ok(rows) if rows.is_empty() => {}
+        Ok(rows) => problems.push(format!(
+            "other function bodies name correction@1: {:?}",
+            rows.iter()
+                .map(|r| r.get::<_, String>(0))
+                .collect::<Vec<_>>()
+        )),
+        Err(error) => problems.push(format!("correction@1 writer probe failed: {error}")),
+    }
+    if problems.is_empty() {
+        pass(
+            check,
+            "one trigger, on private.memory_records, executes the invoker A3' function; no other body names \
+             correction@1",
+        )
+    } else {
+        fail(check, problems.join("; "))
+    }
+}
+
+/// §6.1.4 G-M29-6 (migration 0255, ADR-0078 D-D, M29 T06b): each revocation function is owner SECURITY DEFINER with
+/// `search_path` pinned and no EXECUTE for PUBLIC or any non-owner role (a trigger function needs none to fire), its
+/// body carries the session-tenant pin and its 42501, and exactly one trigger executes it, on its table; the live
+/// view the functions read is `security_invoker`. Missing ⇒ `not_applicable` naming each missing object.
+pub fn check_attribution_revocation_definers(client: &mut impl GenericClient) -> GateResult {
+    let check = "§6.1.4 attribution revocation definers";
+    let mut missing = Vec::new();
+    for (function, _) in REVOCATION_FNS {
+        match client.query_one("SELECT to_regprocedure($1) IS NOT NULL", &[&function]) {
+            Ok(row) if row.get::<_, bool>(0) => {}
+            Ok(_) => missing.push(function),
+            Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+        }
+    }
+    match client.query_one("SELECT to_regclass($1) IS NOT NULL", &[&LIVE_VIEW]) {
+        Ok(row) if row.get::<_, bool>(0) => {}
+        Ok(_) => missing.push(LIVE_VIEW),
+        Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+    }
+    if !missing.is_empty() {
+        return not_applicable(check, format!("missing object: {}", missing.join(", ")));
+    }
+    let mut problems = Vec::new();
+    for (function, table) in REVOCATION_FNS {
+        check_owner_definer_function(client, &mut problems, function, &[]);
+        match client.query_one(
+            "SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure($1)",
+            &[&function],
+        ) {
+            Ok(row) => {
+                let body: String = row.get(0);
+                for needle in [SESSION_TENANT_PIN, "ERRCODE = '42501'"] {
+                    if !body.contains(needle) {
+                        problems.push(format!("{function}: body lacks {needle:?}"));
+                    }
+                }
+            }
+            Err(error) => problems.push(format!("{function}: body probe failed: {error}")),
+        }
+        let tables = trigger_tables(client, &mut problems, function);
+        if tables != [table] {
+            problems.push(format!(
+                "{function}: expected exactly one trigger, on {table}; found {} on {tables:?}",
+                tables.len()
+            ));
+        }
+    }
+    match client.query_one(
+        "SELECT 'security_invoker=true' = ANY (coalesce(c.reloptions, ARRAY[]::text[])) \
+         FROM pg_class c WHERE c.oid = to_regclass($1)",
+        &[&LIVE_VIEW],
+    ) {
+        Ok(row) if row.get::<_, bool>(0) => {}
+        Ok(_) => problems.push(format!("{LIVE_VIEW}: must be security_invoker")),
+        Err(error) => problems.push(format!("{LIVE_VIEW}: probe failed: {error}")),
+    }
+    if problems.is_empty() {
+        pass(
+            check,
+            "both revocation functions: owner SECURITY DEFINER, search_path pinned, no EXECUTE grant, PUBLIC \
+             revoked, session-tenant pin, one trigger each on its table; the live view is security_invoker",
+        )
+    } else {
+        fail(check, problems.join("; "))
+    }
+}
+
 /// Owner + definer + pinned `search_path` + the exact EXECUTE list, PUBLIC included.
 fn check_derived_claim_function(client: &mut impl GenericClient, problems: &mut Vec<String>) {
     check_owner_definer_function(client, problems, DERIVED_CLAIM_FN, DERIVED_CLAIM_EXECUTORS);
@@ -5410,6 +5568,8 @@ pub fn run(args: &[String]) -> i32 {
             results.push(check_subject_visibility_policy(&mut client));
             results.push(check_derived_work_dispatch_boundary(&mut client));
             results.push(check_relation_principal_predicate(&mut client));
+            results.push(check_correction_inheritance_site(&mut client));
+            results.push(check_attribution_revocation_definers(&mut client));
             results.push(check_ticket_retirement_boundary(&mut client));
             results.push(check_projection_claim_boundary(&mut client));
             results.push(check_onboarding_boundary(&mut client));
@@ -7169,6 +7329,24 @@ mod tests {
     fn relation_principal_predicate_gate_holds_on_the_migrated_schema() {
         txn_or_skip!(client, txn);
         let gate = check_relation_principal_predicate(&mut txn);
+        assert_eq!(gate.status, GateStatus::Pass, "{}", gate.detail);
+    }
+
+    /// The §6.1.4 A3' single-site gate (G-M29-5(b)) on the migrated schema, the call `cargo xtask rls-check` makes,
+    /// here so `targeted.yml` can run it (ADR-0078 T06b red record r2: a second trigger reds it).
+    #[test]
+    fn correction_inheritance_site_gate_holds_on_the_migrated_schema() {
+        txn_or_skip!(client, txn);
+        let gate = check_correction_inheritance_site(&mut txn);
+        assert_eq!(gate.status, GateStatus::Pass, "{}", gate.detail);
+    }
+
+    /// The §6.1.4 attribution revocation definers gate (G-M29-6) on the migrated schema, as above (ADR-0078 T06b red
+    /// record r10: an extra EXECUTE grantee reds it).
+    #[test]
+    fn attribution_revocation_definers_gate_holds_on_the_migrated_schema() {
+        txn_or_skip!(client, txn);
+        let gate = check_attribution_revocation_definers(&mut txn);
         assert_eq!(gate.status, GateStatus::Pass, "{}", gate.detail);
     }
 

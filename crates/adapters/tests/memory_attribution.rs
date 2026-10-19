@@ -1,14 +1,18 @@
 //! `adapters::tests::memory_attribution` — M29 T06a (ADR-0078 D-D, §6.1.4): the ladder behind M07's attribution port
 //!   writes exactly the formal `memory_projects` rows that rungs A1 and A3 ground on the Memory's attribution Evidence,
-//!   and nothing when no rung holds.
+//!   and nothing when no rung holds; M29 T06b (migration 0255): A3' copies a corrected memory's live rows to its
+//!   successor, and a project_task relation correction revokes its derived rows, down the inheritance chain, in its
+//!   own transaction.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_projects] w=[coord.task_runs,
-//!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
-//!   private.memory_projects, private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
+//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_project_revocations,
+//!   private.memory_projects] w=[coord.task_runs, private.continuity_projects, private.distill_candidates,
+//!   private.evidence_projects, private.evidence_task_runs, private.memory_project_revocations, private.memory_projects,
+//!   private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
-//!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
+//!   adapters::memory_repo, adapters::operation_receipt, adapters::relation_repo, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
-//!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::evidence, domain::ids,
+//!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence,
+//!   domain::identity, domain::ids,
 //!   domain::memory, domain::relation, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [Evidence enters through the real `remember.put` (the T04c path when it carries a run); the Memory
@@ -24,6 +28,11 @@
 //! | `g_t06a_a1_declared_project` | G-T06a-A1 | skip A1, or drop its Evidence or `source_kind` filter |
 //! | `g_n09_3_unknown_stays_unknown` | G-N09-3 | A1 takes the most recently related project |
 //! | `g_t06a_confirm_reads_the_source_evidence` | G-T06a-confirm | the confirm caller names E2 |
+//! | `g_m29_5b_correction_inherits_supersede_does_not` | G-M29-5(b) | drop the A3' trigger |
+//! | `g_m29_5b_correction_inherits_live_links_only` | G-M29-5(b), read path | the live view drops its `NOT EXISTS` |
+//! | `g_m29_6_relation_correction_revokes_in_its_transaction` | G-M29-6 | drop the trigger, the `occurred_at` test, the task match or the rule filter; the revocation as SECURITY INVOKER |
+//! | `g_m29_6_revocation_follows_the_inheritance_chain` | G-M29-6, transitive | drop the transitive trigger |
+//! | `revocation_definers_refuse_another_session_tenant` | definer tenant pin | neutralise the pin |
 //!
 //! called-by: `cargo test -p humaux-adapters --test memory_attribution`.
 
@@ -32,6 +41,7 @@
 #![allow(clippy::duplicate_mod)]
 
 use std::collections::BTreeSet;
+use std::ops::Bound::{Excluded, Included};
 use std::time::{Duration, SystemTime};
 
 use humaux_adapters::{
@@ -40,6 +50,7 @@ use humaux_adapters::{
     distill_repo::{self, ConfirmOutcome, ConfirmRequest},
     memory_repo::{self, AttributionSource, NewMemory},
     operation_receipt::{self, AtomicRememberRequest},
+    relation_repo,
     remember::RememberCommand,
 };
 use humaux_domain::{
@@ -47,10 +58,12 @@ use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
     authority::AuthorityClass,
     confirm::DestructiveOp,
+    error::ErrorCode,
     evidence::{EvidenceOriginClass, payload_sha256},
+    identity::PrincipalId,
     ids::{TaskId, TenantId, WorkspaceId},
     memory::MemoryType,
-    relation::RelationKind,
+    relation::{DecidedBy, RelationEdge, RelationId, RelationKind, Timestamp, Validity},
 };
 use humaux_testkit::run_db_fixture;
 use sqlx::types::{Uuid, time::OffsetDateTime};
@@ -245,49 +258,21 @@ fn attribute(handle: &Handle, evidence: Uuid, seed: &[String]) -> Result<Vec<Row
         let mut conn = PgConnection::connect(&dsn).await.expect("owner connection");
         // dep: PostgreSQL(any) — pool/txn query execution
         let mut txn = conn.begin().await.expect("begin");
+        // 0255's revocation definers refuse a row of any tenant but the session's, and a seed may append a revision.
+        sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
+            .bind(handle.tenant_id.to_string())
+            .execute(&mut *txn)
+            .await
+            .expect("session tenant");
         for sql in seed {
             sqlx::query(sql)
                 .execute(&mut *txn)
                 .await
                 .expect("owner seeds the attribution fixture");
         }
-        // dep: PostgreSQL(role_private_worker) — test switches PG role to exercise RLS
-        sqlx::query("SET LOCAL ROLE role_private_worker")
-            .execute(&mut *txn)
+        let memory = door(&mut txn, handle, evidence, None)
             .await
-            .expect("private worker role");
-        let loaded = distill_repo::load_evidence(
-            &mut txn,
-            handle.tenant_id,
-            handle.reasoning_domain_id,
-            handle.user_id,
-            evidence,
-        )
-        .await
-        .expect("load_evidence")
-        .expect("the put's Evidence");
-        let content = serde_json::json!({"fact": "memory-attribution fixture"});
-        let memory = memory_repo::insert_memory_in_txn(
-            &mut txn,
-            handle.tenant_id,
-            &loaded,
-            &NewMemory {
-                content: &content,
-                memory_type: MemoryType::Fact,
-                class: AuthorityClass::PrivateKnowledge,
-                confidence: 0.9,
-                note_kind: None,
-                note_id: None,
-                attribution: AttributionSource::Primary,
-            },
-            &AttributionLadder,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        sqlx::query("RESET ROLE")
-            .execute(&mut *txn)
-            .await
-            .expect("back to the owner");
+            .map_err(|e| e.to_string())?;
         let rows = sqlx::query_as::<_, Row>(
             "SELECT project_id, source_kind, rule_id_ver, decision_evidence_id \
                FROM private.memory_projects WHERE memory_id = $1 ORDER BY project_id",
@@ -301,6 +286,55 @@ fn attribute(handle: &Handle, evidence: Uuid, seed: &[String]) -> Result<Vec<Row
     })
 }
 
+/// The private worker's distill hop in `txn`: loads `evidence` and inserts one Memory through the door (attribution
+/// Evidence = that PRIMARY Evidence) with the real ladder, then returns to the owner. With `private_to`, the Memory is
+/// that user's `USER_PRIVATE` one while the Evidence keeps its own visibility: the shape `memory.confirm` writes for a
+/// `USER_PRIVATE` candidate distilled from a shared Evidence (design v0.2 §15.4).
+async fn door(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    handle: &Handle,
+    evidence: Uuid,
+    private_to: Option<Uuid>,
+) -> Result<Uuid, sqlx::Error> {
+    // dep: PostgreSQL(role_private_worker) — test switches PG role to exercise RLS
+    sqlx::query("SET LOCAL ROLE role_private_worker")
+        .execute(&mut **txn)
+        .await?;
+    let mut loaded = distill_repo::load_evidence(
+        txn,
+        handle.tenant_id,
+        handle.reasoning_domain_id,
+        handle.user_id,
+        evidence,
+    )
+    .await?
+    .expect("the put's Evidence");
+    if let Some(user) = private_to {
+        loaded.visibility_class = "USER_PRIVATE".into();
+        loaded.visibility_user_id = Some(user);
+        loaded.visibility_workspace_id = None;
+    }
+    let content = serde_json::json!({"fact": "memory-attribution fixture"});
+    let memory = memory_repo::insert_memory_in_txn(
+        txn,
+        handle.tenant_id,
+        &loaded,
+        &NewMemory {
+            content: &content,
+            memory_type: MemoryType::Fact,
+            class: AuthorityClass::PrivateKnowledge,
+            confidence: 0.9,
+            note_kind: None,
+            note_id: None,
+            attribution: AttributionSource::Primary,
+        },
+        &AttributionLadder,
+    )
+    .await?;
+    sqlx::query("RESET ROLE").execute(&mut **txn).await?;
+    Ok(memory)
+}
+
 /// The fixture's teardown knows neither the carrier, `coord.task_runs`, nor the append-only attribution and relation
 /// rows a committed test leaves (replica mode lets the owner past their append-only triggers).
 fn purge(handle: &mut Handle) {
@@ -309,6 +343,7 @@ fn purge(handle: &mut Handle) {
         .admin
         .batch_execute(&format!(
             "SET session_replication_role = replica; \
+             DELETE FROM private.memory_project_revocations WHERE tenant_id = '{t}'; \
              DELETE FROM private.memory_projects WHERE tenant_id = '{t}'; \
              DELETE FROM private.project_task_relations WHERE tenant_id = '{t}'; \
              SET session_replication_role = DEFAULT; \
@@ -584,4 +619,515 @@ fn g_t06a_confirm_reads_the_source_evidence() {
             "decided by E1, the candidate's source Evidence"
         );
     });
+}
+
+/// `(project_id, source_kind, rule_id_ver, decision_evidence_id, inherited_from_memory_id)` of one `memory_projects`
+/// row.
+type Link = (Uuid, String, String, Uuid, Option<Uuid>);
+/// `(memory_id, project_id, revoked_by, reason)` of one `memory_project_revocations` row.
+type Revocation = (Uuid, Uuid, String, String);
+
+/// 2026-01-05T00:00:00Z: inside the CONTAINS window, before the narrowed one.
+const EARLY: i64 = 1_767_571_200;
+/// 2026-01-25T00:00:00Z: inside both the CONTAINS window and the narrowed one.
+const LATE: i64 = 1_769_299_200;
+/// The narrowed CONTAINS window `[2026-01-20, 2026-02-01)`, in seconds.
+const NARROWED: (i64, i64) = (1_768_867_200, 1_769_904_000);
+
+fn link(project: Uuid, kind: SourceKind, rule: RuleId, evidence: Uuid, from: Option<Uuid>) -> Link {
+    let (project, kind, rule, evidence) = row(project, kind, rule, evidence);
+    (project, kind, rule, evidence, from)
+}
+
+/// One Memory of `evidence` through the real door, committed (see [`door`]).
+fn commit_memory(handle: &Handle, evidence: Uuid, private_to: Option<Uuid>) -> Uuid {
+    let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so the DSN is set");
+    handle.rt.block_on(async {
+        // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
+        let mut conn = PgConnection::connect(&dsn).await.expect("owner connection");
+        // dep: PostgreSQL(any) — pool/txn query execution
+        let mut txn = conn.begin().await.expect("begin");
+        let memory = door(&mut txn, handle, evidence, private_to)
+            .await
+            .expect("the door writes the Memory");
+        txn.commit().await.expect("commit");
+        memory
+    })
+}
+
+/// Every `memory_projects` row of `memory`, read as the owner, by project.
+fn links(handle: &mut Handle, memory: Uuid) -> Vec<Link> {
+    handle
+        .admin
+        .query(
+            "SELECT project_id, source_kind, rule_id_ver, decision_evidence_id, inherited_from_memory_id \
+               FROM private.memory_projects WHERE memory_id = $1 ORDER BY project_id",
+            &[&memory],
+        )
+        .expect("owner reads memory_projects")
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
+        .collect()
+}
+
+fn commit(handle: &mut Handle, seed: &[String]) {
+    for sql in seed {
+        handle
+            .admin
+            .batch_execute(sql)
+            .expect("owner commits the fixture");
+    }
+}
+
+/// `[start, end)` in seconds as a relation validity.
+fn window((start, end): (i64, i64)) -> Validity {
+    Validity::new(&[(
+        Included(Timestamp::Micros(start * 1_000_000)),
+        Excluded(Timestamp::Micros(end * 1_000_000)),
+    )])
+    .expect("fixture window")
+}
+
+/// The T06b world, committed: the governor (who corrects), task T1 with a claimed run, Evidence E1 put on that run
+/// at `INSIDE`, P1 CONTAINS T1 over `CONTAINS_WINDOW` (relation r1, revision 1) and P2 declared on E1.
+struct World {
+    governor: Governor,
+    t1: TaskId,
+    run: ClaimedTaskRun,
+    e1: Uuid,
+    p1: Uuid,
+    p2: Uuid,
+    r1: Uuid,
+}
+
+impl World {
+    fn new(handle: &mut Handle) -> Self {
+        // The governor's BMO window is the tenant's only one (quota_repo takes exactly one current window).
+        let governor = Governor::seed(&mut handle.admin, handle.tenant_id);
+        governor.join(&mut handle.admin, handle.workspace_id);
+        let t1 = task(handle);
+        let run = claim(handle, t1);
+        let e1 = put(handle, "t06b-e1", Some(INSIDE), Some(&run));
+        let [p1, p2, r1] = [(); 3].map(|()| Uuid::now_v7());
+        let seed = vec![
+            project(handle, p1),
+            project(handle, p2),
+            relation(
+                handle.tenant_id,
+                r1,
+                1,
+                p1,
+                t1,
+                RelationKind::Contains,
+                CONTAINS_WINDOW,
+            ),
+            declared(handle, e1, p2, SourceKind::Declared),
+        ];
+        commit(handle, &seed);
+        Self {
+            governor,
+            t1,
+            run,
+            e1,
+            p1,
+            p2,
+            r1,
+        }
+    }
+
+    /// `memory.correct` of `memory` by the governor; returns `(M2, E2)`.
+    fn correct(&self, handle: &Handle, memory: Uuid) -> (Uuid, Uuid) {
+        let done = governance_ops::correct(
+            &handle.rt,
+            &handle.runtime,
+            &self.governor.scope(handle.workspace_id),
+            &governance_ops::stream(handle.tenant_id, handle.workspace_id),
+            memory,
+            "t06b corrected",
+        )
+        .expect("memory.correct");
+        (done.new_memory_id.0, done.evidence_id)
+    }
+
+    /// The rows the governor's revision 2 of r1 revokes, as `(memory, P1, principal:<governor>, r1@2)`, sorted.
+    fn revoked(&self, memories: &[Uuid]) -> Vec<Revocation> {
+        let by = format!("principal:{}", self.governor.user_id);
+        let reason = format!("project_task_relations:{}@2", self.r1);
+        let mut rows: Vec<Revocation> = memories
+            .iter()
+            .map(|m| (*m, self.p1, by.clone(), reason.clone()))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// Revision 2 of r1 with `valid`, through `relation_repo::append_revision`, decided by the governor in a
+    /// `role_gateway` transaction with the visibility GUCs the caller installs (ADR-0078 T06d). Returns every
+    /// revocation of `tenants` as that transaction sees it before it ends, then commits or rolls back.
+    fn revise(
+        &self,
+        handle: &Handle,
+        valid: &Validity,
+        tenants: &[Uuid],
+        keep: bool,
+    ) -> Result<Vec<Revocation>, ErrorCode> {
+        let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so the DSN is set");
+        let by = self.governor.user_id;
+        handle.rt.block_on(async {
+            // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
+            let mut conn = PgConnection::connect(&dsn).await.expect("owner connection");
+            // dep: PostgreSQL(any) — pool/txn query execution
+            let mut txn = conn.begin().await.expect("begin");
+            // dep: PostgreSQL(role_gateway) — test switches PG role to exercise RLS
+            sqlx::query("SET LOCAL ROLE role_gateway")
+                .execute(&mut *txn)
+                .await
+                .expect("gateway role");
+            sqlx::query(
+                "SELECT set_config('humaux.tenant_id', $1, true), set_config('humaux.user_id', $2, true)",
+            )
+            .bind(handle.tenant_id.to_string())
+            .bind(by.to_string())
+            .execute(&mut *txn)
+            .await
+            .expect("session GUCs");
+            let edge = RelationEdge {
+                src_id: self.p1,
+                kind: RelationKind::Contains,
+                dst_id: self.t1.0,
+            };
+            relation_repo::append_revision(
+                &mut txn,
+                &edge,
+                RelationId(self.r1),
+                1,
+                valid,
+                &DecidedBy::Principal(PrincipalId(by)),
+                None,
+                &[],
+                self.e1,
+            )
+            .await?;
+            sqlx::query("RESET ROLE")
+                .execute(&mut *txn)
+                .await
+                .expect("back to the owner");
+            let seen = sqlx::query_as::<_, Revocation>(
+                "SELECT memory_id, project_id, revoked_by, reason FROM private.memory_project_revocations \
+                  WHERE tenant_id = ANY($1) ORDER BY memory_id",
+            )
+            .bind(tenants)
+            .fetch_all(&mut *txn)
+            .await
+            .expect("owner reads the revocations");
+            if keep {
+                txn.commit().await
+            } else {
+                txn.rollback().await
+            }
+            .expect("end the correcting transaction");
+            Ok(seen)
+        })
+    }
+
+    fn cleanup(handle: &mut Handle) {
+        purge(handle);
+        Governor::cleanup(&mut handle.admin, handle.tenant_id);
+    }
+}
+
+/// G-M29-5(b): `memory.correct` (through `correct_atomically`) of a memory with one A3 and one A1 row gives the
+/// successor both as INHERITED / correction@1, decided by the correction's Evidence and naming the predecessor; a
+/// `memory.supersede` of the same shape gives its successor nothing.
+#[test]
+fn g_m29_5b_correction_inherits_supersede_does_not() {
+    run_db_fixture::<Fixture, _>(
+        "g_m29_5b_correction_inherits_supersede_does_not",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let plain = put(&handle, "t06b-a3p-plain", Some(INSIDE), None);
+            let m1 = commit_memory(&handle, w.e1, None);
+            let ma = commit_memory(&handle, w.e1, None);
+            let mb = commit_memory(&handle, plain, None);
+            let before = links(&mut handle, m1);
+            let (m2, e2) = w.correct(&handle, m1);
+            let inherited = links(&mut handle, m2);
+            governance_ops::supersede(
+                &handle.rt,
+                &handle.runtime,
+                &w.governor.scope(handle.workspace_id),
+                &governance_ops::stream(handle.tenant_id, handle.workspace_id),
+                ma,
+                mb,
+            )
+            .expect("memory.supersede");
+            let superseded = links(&mut handle, mb);
+            World::cleanup(&mut handle);
+            assert_eq!(
+                before,
+                [
+                    link(w.p1, SourceKind::Inherited, RuleId::TaskRun1, w.e1, None),
+                    link(w.p2, SourceKind::Declared, RuleId::Declared1, w.e1, None),
+                ],
+                "M1: one A3 and one A1 row"
+            );
+            assert_eq!(
+                inherited,
+                [
+                    link(
+                        w.p1,
+                        SourceKind::Inherited,
+                        RuleId::Correction1,
+                        e2,
+                        Some(m1)
+                    ),
+                    link(
+                        w.p2,
+                        SourceKind::Inherited,
+                        RuleId::Correction1,
+                        e2,
+                        Some(m1)
+                    ),
+                ],
+                "M2 inherits both, decided by E2, naming M1"
+            );
+            assert!(
+                superseded.is_empty(),
+                "an explicit supersede inherits nothing: {superseded:?}"
+            );
+        },
+    );
+}
+
+/// G-M29-5(b), read path: a predecessor link revoked before the correction (P1, by retracting P1 CONTAINS T1) is not
+/// inherited; the live one (P2) is.
+#[test]
+fn g_m29_5b_correction_inherits_live_links_only() {
+    run_db_fixture::<Fixture, _>(
+        "g_m29_5b_correction_inherits_live_links_only",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let m1 = commit_memory(&handle, w.e1, None);
+            let revoked = w.revise(&handle, &Validity::retracted(), &[handle.tenant_id], true);
+            let (m2, e2) = w.correct(&handle, m1);
+            let inherited = links(&mut handle, m2);
+            World::cleanup(&mut handle);
+            assert_eq!(
+                revoked,
+                Ok(w.revoked(&[m1])),
+                "M1's P1 link is revoked first"
+            );
+            assert_eq!(
+                inherited,
+                [link(
+                    w.p2,
+                    SourceKind::Inherited,
+                    RuleId::Correction1,
+                    e2,
+                    Some(m1)
+                )],
+                "only the live P2 link is inherited"
+            );
+        },
+    );
+}
+
+/// G-M29-6: a CONTAINS correction of P1 → T1 revokes, inside its own transaction, every live task_run@1 row it
+/// derived whose Evidence leaves the new window, including one on another user's private memory, and nothing after a
+/// rollback. Decoys: a row whose Evidence stays inside the window, a row derived from T2, a DECLARED row for P1 on
+/// E1, and another tenant's row on the same project, Evidence and task. A retraction revokes every derived row.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture, its four decoys and three phases, read top to bottom
+fn g_m29_6_relation_correction_revokes_in_its_transaction() {
+    run_db_fixture::<Fixture, _>(
+        "g_m29_6_relation_correction_revokes_in_its_transaction",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let t2 = task(&handle);
+            let run2 = claim(&handle, t2);
+            let early = put(&handle, "t06b-g6-early", Some(EARLY), Some(&w.run));
+            let late = put(&handle, "t06b-g6-late", Some(LATE), Some(&w.run));
+            let via_t2 = put(&handle, "t06b-g6-t2", Some(INSIDE), Some(&run2));
+            let seed = vec![relation(
+                handle.tenant_id,
+                Uuid::now_v7(),
+                1,
+                w.p1,
+                t2,
+                RelationKind::Contains,
+                CONTAINS_WINDOW,
+            )];
+            commit(&mut handle, &seed);
+            let targets = [
+                commit_memory(&handle, w.e1, None),
+                commit_memory(&handle, early, None),
+                commit_memory(&handle, w.e1, Some(handle.user_id)),
+            ];
+            let inside = commit_memory(&handle, late, None);
+            let other_task = commit_memory(&handle, via_t2, None);
+            // Seeded after the targets, so only this Memory's A1 row wins over A3 on P1.
+            let seed = vec![declared(&handle, w.e1, w.p1, SourceKind::Declared)];
+            commit(&mut handle, &seed);
+            let declared_row = commit_memory(&handle, w.e1, None);
+            let other_tenant = Uuid::now_v7();
+            handle
+                .admin
+                .batch_execute(&format!(
+                    "SET session_replication_role = replica; \
+                     INSERT INTO private.memory_projects (tenant_id, memory_id, project_id, relation, source_kind, \
+                       rule_id_ver, decision_evidence_id) \
+                     VALUES ('{other_tenant}', '{}', '{}', 'ATTRIBUTED_TO', 'INHERITED', 'task_run@1', '{}'); \
+                     SET session_replication_role = DEFAULT;",
+                    Uuid::now_v7(),
+                    w.p1,
+                    w.e1
+                ))
+                .expect("owner plants another tenant's row");
+            let decoys = [inside, other_task, declared_row].map(|m| links(&mut handle, m));
+            let tenants = [handle.tenant_id, other_tenant];
+            let narrowed = w.revise(&handle, &window(NARROWED), &tenants, false);
+            let after_rollback: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM private.memory_project_revocations WHERE tenant_id = ANY($1)",
+                    &[&tenants.to_vec()],
+                )
+                .expect("owner counts revocations")
+                .get(0);
+            let retracted = w.revise(&handle, &Validity::retracted(), &tenants, false);
+            handle
+                .admin
+                .batch_execute(&format!(
+                    "SET session_replication_role = replica; \
+                     DELETE FROM private.memory_projects WHERE tenant_id = '{other_tenant}'; \
+                     SET session_replication_role = DEFAULT;"
+                ))
+                .expect("owner removes the planted row");
+            World::cleanup(&mut handle);
+            assert_eq!(
+                decoys,
+                [
+                    vec![link(
+                        w.p1,
+                        SourceKind::Inherited,
+                        RuleId::TaskRun1,
+                        late,
+                        None
+                    )],
+                    vec![link(
+                        w.p1,
+                        SourceKind::Inherited,
+                        RuleId::TaskRun1,
+                        via_t2,
+                        None
+                    )],
+                    vec![
+                        link(w.p1, SourceKind::Declared, RuleId::Declared1, w.e1, None),
+                        link(w.p2, SourceKind::Declared, RuleId::Declared1, w.e1, None),
+                    ],
+                ],
+                "the decoys hold the rows they decoy"
+            );
+            assert_eq!(
+                narrowed,
+                Ok(w.revoked(&targets)),
+                "before COMMIT: exactly the derived rows whose Evidence left the window, the private one included"
+            );
+            assert_eq!(
+                after_rollback, 0,
+                "a rolled-back correction leaves no revocation"
+            );
+            assert_eq!(
+                retracted,
+                Ok(w.revoked(&[targets[0], targets[1], targets[2], inside])),
+                "a retraction revokes every row the edge derived"
+            );
+        },
+    );
+}
+
+/// G-M29-6, transitive: correcting first (A3' copies the P1 link) and then retracting P1 CONTAINS T1 revokes the
+/// inherited rows as well, at both levels of a two-correction chain, with the same `revoked_by` and `reason`.
+#[test]
+fn g_m29_6_revocation_follows_the_inheritance_chain() {
+    run_db_fixture::<Fixture, _>(
+        "g_m29_6_revocation_follows_the_inheritance_chain",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let m1 = commit_memory(&handle, w.e1, None);
+            let (m2, e2) = w.correct(&handle, m1);
+            let (m3, e3) = w.correct(&handle, m2);
+            let chain = [m2, m3].map(|m| links(&mut handle, m).remove(0));
+            let revoked = w.revise(&handle, &Validity::retracted(), &[handle.tenant_id], false);
+            World::cleanup(&mut handle);
+            assert_eq!(
+                chain,
+                [
+                    link(
+                        w.p1,
+                        SourceKind::Inherited,
+                        RuleId::Correction1,
+                        e2,
+                        Some(m1)
+                    ),
+                    link(
+                        w.p1,
+                        SourceKind::Inherited,
+                        RuleId::Correction1,
+                        e3,
+                        Some(m2)
+                    ),
+                ],
+                "the chain M1 -> M2 -> M3 carries P1"
+            );
+            assert_eq!(
+                revoked,
+                Ok(w.revoked(&[m1, m2, m3])),
+                "the A3 row and both inherited levels are revoked"
+            );
+        },
+    );
+}
+
+/// The SQLSTATE `sql` fails with as the owner when the session tenant is a fresh uuid, or `None` when it succeeds.
+fn refusal_under_another_session_tenant(handle: &mut Handle, sql: &str) -> Option<String> {
+    let mut txn = handle.admin.transaction().expect("owner transaction");
+    let outcome = txn.batch_execute(&format!(
+        "SELECT set_config('humaux.tenant_id', '{}', true); {sql}",
+        Uuid::now_v7()
+    ));
+    drop(txn);
+    outcome
+        .err()
+        .and_then(|e| e.code().map(|c| c.code().to_owned()))
+}
+
+/// Both 0255 definers refuse a row whose tenant is not the session tenant (42501) before reading anything with the
+/// owner's rights: a relation correction and a revocation, each written by the owner (who passes the tables' RLS)
+/// under another session tenant.
+#[test]
+fn revocation_definers_refuse_another_session_tenant() {
+    run_db_fixture::<Fixture, _>(
+        "revocation_definers_refuse_another_session_tenant",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let m1 = commit_memory(&handle, w.e1, None);
+            let t = handle.tenant_id;
+            let probes = [
+                relation(t, w.r1, 2, w.p1, w.t1, RelationKind::Contains, "{}"),
+                format!(
+                    "INSERT INTO private.memory_project_revocations (tenant_id, memory_id, project_id, revoked_by, \
+                       reason) VALUES ('{t}', '{m1}', '{}', 'rule:fixture@1', 'pin probe')",
+                    w.p1
+                ),
+            ];
+            let refused = probes.map(|sql| refusal_under_another_session_tenant(&mut handle, &sql));
+            World::cleanup(&mut handle);
+            assert_eq!(
+                refused,
+                [Some("42501".to_owned()), Some("42501".to_owned())],
+                "relation correction, then revocation"
+            );
+        },
+    );
 }

@@ -1,0 +1,72 @@
+# §46.1 migration manifest. Card M29 T06b / ADR-0078 D-D (§6.1.4 work attribution, design v0.2 §15.7): one nullable
+# column private.memory_projects.inherited_from_memory_id with a self-referencing tenant-leg NO ACTION FK, a
+# correction@1-iff-ancestor CHECK and its lookup index; one security_invoker view private.memory_projects_live
+# (SELECT role_gateway only); one invoker trigger function on private.memory_records (A3') and two owner SECURITY
+# DEFINER trigger functions (relation-correction revocation on private.project_task_relations, transitive revocation
+# on private.memory_project_revocations), EXECUTE revoked from PUBLIC on all three, no EXECUTE grant. No grant on any
+# table changes. No DML. §46 forward-fix (EXPAND_CONTRACT, number 0255).
+
+migration_id = "0255_attribution_correction_revocation"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0252 attribution tables, or one that already has this migration's objects.
+precheck = """
+select to_regclass('private.memory_projects') is not null
+ and to_regclass('private.memory_project_revocations') is not null
+ and to_regclass('private.evidence_task_runs') is not null
+ and not exists (select 1 from pg_attribute where attrelid = to_regclass('private.memory_projects')
+                  and attname = 'inherited_from_memory_id' and not attisdropped)
+ and to_regclass('private.memory_projects_live') is null
+ and to_regprocedure('private.memory_projects_on_supersede()') is null
+ and to_regprocedure('private.revoke_attributions_on_relation_correction()') is null
+ and to_regprocedure('private.revoke_inherited_attributions()') is null
+ as precheck_ok
+"""
+
+# Fails on: a missing or non-uuid column, a missing FK / CHECK / index, an FK without the tenant leg or with a cascade,
+# a view that is missing or not security_invoker or readable by any non-owner role but role_gateway, a function that
+# is missing, not owned by role_migration_owner, without the pinned search_path, or executable by PUBLIC or any
+# non-owner role, or an A3' function that became SECURITY DEFINER. Like 0252's and 0253's, this postcheck leaves the
+# three triggers, the view body, the function bodies and the two functions' SECURITY DEFINER to
+# adapters::tests::memory_attribution and rls-check (G-M29-5(b), G-M29-6, ADR-0078 Red records), so each of those
+# faults reaches its gate instead of stopping the migration.
+postcheck = """
+with f(sig) as (values ('private.memory_projects_on_supersede()'),
+                       ('private.revoke_attributions_on_relation_correction()'),
+                       ('private.revoke_inherited_attributions()')),
+r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+                   ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
+select (select count(*) = 1 from pg_attribute
+         where attrelid = to_regclass('private.memory_projects') and attname = 'inherited_from_memory_id'
+           and atttypid = 'uuid'::regtype and not attnotnull and not attisdropped)
+ and (select count(*) = 1 from pg_constraint k
+       where k.conname = 'memory_projects_inherited_from_fkey' and k.contype = 'f'
+         and k.conrelid = to_regclass('private.memory_projects')
+         and k.confrelid = to_regclass('private.memory_projects')
+         and k.confdeltype = 'a' and k.confupdtype = 'a'
+         and k.conkey[1] = (select attnum from pg_attribute
+                             where attrelid = k.conrelid and attname = 'tenant_id'))
+ and (select count(*) = 1 from pg_constraint
+       where conname = 'memory_projects_inherited_from_iff_correction' and contype = 'c'
+         and conrelid = to_regclass('private.memory_projects'))
+ and to_regclass('private.memory_projects_inherited_from_idx') is not null
+ and (select count(*) = 1 from pg_class c
+       where c.oid = to_regclass('private.memory_projects_live') and c.relkind = 'v'
+         and pg_get_userbyid(c.relowner) = 'role_migration_owner'
+         and 'security_invoker=true' = any (coalesce(c.reloptions, array[]::text[])))
+ and not exists (select 1 from r
+                  where has_table_privilege(r.role, 'private.memory_projects_live', 'SELECT')
+                        is distinct from (r.role = 'role_gateway')
+                     or has_table_privilege(r.role, 'private.memory_projects_live', 'INSERT, UPDATE, DELETE, TRUNCATE'))
+ and not has_table_privilege('public', 'private.memory_projects_live', 'SELECT')
+ and (select count(*) = 3 from f join pg_proc p on p.oid = to_regprocedure(f.sig)
+       where pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and p.proconfig = array['search_path=pg_catalog'])
+ and not exists (select 1 from f where has_function_privilege('public', f.sig, 'EXECUTE'))
+ and not exists (select 1 from f cross join r where has_function_privilege(r.role, f.sig, 'EXECUTE'))
+ and (select not prosecdef from pg_proc where oid = to_regprocedure('private.memory_projects_on_supersede()'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while no correction@1 row and no revocation row exist: DROP TRIGGER memory_project_revocations_follow_inheritance ON private.memory_project_revocations, project_task_relations_revoke_attributions ON private.project_task_relations, memory_projects_on_supersede ON private.memory_records; DROP FUNCTION private.revoke_inherited_attributions(), private.revoke_attributions_on_relation_correction(), private.memory_projects_on_supersede(); DROP VIEW private.memory_projects_live; ALTER TABLE private.memory_projects DROP COLUMN inherited_from_memory_id (drops its FK, CHECK and index); and revert the §6.1.4 / §6.2.2 text, the rls-check gates and the tests in the same release. Forward-fix only once any correction@1 or revocation row exists: attribution history is immutable and is never discarded silently."
+backup_restore_requirement = "none: one nullable column (catalog-only, no rewrite) whose FK and CHECK validate existing rows (a violating row aborts the migration, nothing is rewritten), one index, one view and three trigger functions that act on new UPDATEs and INSERTs only; no existing row is touched."

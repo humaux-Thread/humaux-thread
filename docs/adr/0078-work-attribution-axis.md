@@ -130,6 +130,8 @@ ATTRIBUTED_TO, source_kind, rule_id_ver, decision_evidence_id)`, immutable per m
 of truth; `private.memory_project_revocations(tenant_id, memory_id, project_id, revoked_by, reason, recorded_at)`,
 append-only. Read paths accept a link only if it exists and is not
 revoked.
+Since T06b (migration 0255) that rule lives only in the `security_invoker` view `private.memory_projects_live`, and an
+A3' row names its predecessor in `memory_projects.inherited_from_memory_id` (design v0.2 §15.7).
 
 `source_kind` is a frozen closed set with **no model-derived variant** (as in §6.1.3):
 
@@ -274,7 +276,7 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
-(T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+(T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); G-M29-5(b) and G-M29-6 (T06b). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -386,6 +388,11 @@ and the failing lines are in the card's PR description.
     (INTERNAL) instead of 23503.
   - The INVITED / REMOVED members, the key bound to a SUSPENDED user and the key of a non-member are refused by legs
     r3b, r3f and r3a already break; the factual Evidence the writer cannot see is refused by the check r2 drops.
+
+## Consequences
+
+- The first wire reader of attributions reads `memory_projects_live`, and its card adds an xtask arm forbidding direct
+  reads of the table (design v0.2 §15.7).
 
 ## Cards and experiments
 
