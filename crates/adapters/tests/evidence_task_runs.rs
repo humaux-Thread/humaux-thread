@@ -1,8 +1,8 @@
 //! `adapters::tests::evidence_task_runs` — M29 T04c (design v0.2 §15, §30.2): `remember.put` with a task run verifies it
 //!   in the receipt transaction and writes the `private.evidence_task_runs` carrier, or is refused whole.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, time, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[control.quota_windows, control.usage_reservations, private.evidence_objects,
-//!   private.evidence_task_runs, private.memory_evidence, private.memory_records] w=[coord.task_runs]]; env=[];
+//!   private.memory_evidence, private.memory_records] w=[coord.task_runs, private.evidence_task_runs]]; env=[];
 //!   modules=[adapters::coord_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::coordination, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::subject, humaux-testkit]

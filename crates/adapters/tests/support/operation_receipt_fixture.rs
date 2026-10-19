@@ -12,7 +12,7 @@
 //!   x=[control.check_operation_receipt], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres,
 //!   adapters::quota_repo, adapters::tests::support::token_keys, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::tests::auth_scope_rls, adapters::tests::membership_lifecycle, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::cross_tenant_canary, gateway::tests::mcp_gateway, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring]
+//! Called-by: [adapters::tests::auth_scope_rls, adapters::tests::evidence_task_runs, adapters::tests::membership_lifecycle, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::cross_tenant_canary, gateway::tests::mcp_gateway, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring]
 //! Invariants: [test-only, included by #[path]; runtime writes are real role_gateway logins and the owner connection
 //!   only seeds/cleans the fixture tenant; an isolation setup failure is a fixture error]
 //! Spec: Baseline §25.4; §34.0.1; §79.2; ADR-0035
