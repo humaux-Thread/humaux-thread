@@ -40,7 +40,6 @@ AS $$
                                       UNION ALL
                                       SELECT k.user_id FROM control.api_keys k
                                        WHERE k.api_key_id = p_principal_id
-                                         AND k.tenant_id = p_tenant_id
                                          AND k.revoked_at IS NULL))
 $$;
 ALTER FUNCTION private.relation_principal_is_member(uuid, uuid) OWNER TO role_migration_owner;
