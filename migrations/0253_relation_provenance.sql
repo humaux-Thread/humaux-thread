@@ -65,12 +65,6 @@ DECLARE
   v_principal uuid;
 BEGIN
   IF NEW.tenant_id IS NULL THEN RAISE EXCEPTION '%: no tenant context', TG_TABLE_NAME USING ERRCODE = '42501'; END IF;
-  IF (SELECT count(*) FROM private.evidence_objects e
-       WHERE e.tenant_id = NEW.tenant_id AND e.evidence_id = ANY (NEW.factual_evidence_ids))
-     <> cardinality(NEW.factual_evidence_ids) THEN
-    RAISE EXCEPTION '%: factual evidence must be distinct Evidence visible in this tenant', TG_TABLE_NAME
-      USING ERRCODE = '23503';
-  END IF;
   -- The cast is its own statement, after pg_input_is_valid: a malformed uuid leaves v_principal NULL (refused below)
   -- instead of raising 22P02.
   IF NEW.decided_by LIKE 'principal:%' THEN
