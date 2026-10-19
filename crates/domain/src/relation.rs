@@ -247,6 +247,11 @@ pub enum Timestamp {
     Infinity,
 }
 
+/// PostgreSQL's earliest `timestamptz` (4713-11-24 00:00:00 UTC BC, Julian day 0) in µs since the Unix epoch. An
+/// earlier instant fails `to_timestamp` with 22008 (issue #92 item 2). Its latest (294277-01-01) lies past
+/// `i64::MAX` µs, so a segment start is the only bound to check.
+pub const PG_TIMESTAMPTZ_MIN_MICROS: i64 = -210_866_803_200_000_000;
+
 /// One PostgreSQL range value as its (lower, upper) bounds: the unvalidated input of [`Validity::new`].
 pub type RawRange = (Bound<Timestamp>, Bound<Timestamp>);
 
@@ -270,12 +275,13 @@ impl Validity {
     /// `private.relation_valid_shape`: a lower bound that is not an included finite instant (unbounded,
     /// exclusive, `±infinity`) or an upper bound that is inclusive or an explicit `±infinity` is `INVALID_INPUT`.
     /// A segment whose end is not after its start is also `INVALID_INPUT` (PostgreSQL rejects a reversed range
-    /// and silently drops an empty one; neither carries meaning here).
+    /// and silently drops an empty one; neither carries meaning here), and so is a start before
+    /// [`PG_TIMESTAMPTZ_MIN_MICROS`] (PostgreSQL cannot store it).
     pub fn new(ranges: &[RawRange]) -> Result<Self, ErrorCode> {
         let mut segments = Vec::with_capacity(ranges.len());
         for range in ranges {
             let start = match range.0 {
-                Bound::Included(Timestamp::Micros(t)) => t,
+                Bound::Included(Timestamp::Micros(t)) if t >= PG_TIMESTAMPTZ_MIN_MICROS => t,
                 _ => return Err(ErrorCode::InvalidInput),
             };
             let end = match range.1 {

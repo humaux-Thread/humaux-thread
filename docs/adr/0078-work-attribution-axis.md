@@ -274,7 +274,7 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
-(T06a). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+(T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -283,7 +283,11 @@ module gates there needs its own spec change.
 | G-M29-1 closed-set reconciliation | Rust enums of `SubjectKind`, `SubjectKeyKind` and `source_kind` == DB CHECKs; the relation whitelist == `private.relation_triple_allowed` over every kind × relation kind (§78.2) | add a kind or triple in the DB only |
 | G-M29-2 interval shape | `[]`, explicit infinity and an unbounded lower bound are rejected by the CHECK | drop the `upper_inc` test from the CHECK function |
 | G-M29-3 CAS | two connections writing with the same `expected_revision` concurrently: exactly one succeeds | drop the revision check |
-| G-M29-4 append-only | UPDATE / DELETE by any runtime role fails | grant UPDATE |
+| G-M29-4 append-only | no non-owner role holds UPDATE (any column) or DELETE on any relation table (`has_*_privilege`, as the manifest postchecks ask, issue #92 item 1); the owner's UPDATE / DELETE hit the trigger | grant UPDATE |
+| G-T06d-1 authorisation Evidence | on each relation table, an `authorization_evidence_id` that is no Evidence or another tenant's is `INVALID_INPUT`, no row | drop 0253's FK line |
+| G-T06d-2 factual Evidence | on each table, a factual id that is no Evidence, another tenant's, or repeated is `INVALID_INPUT`, no row | drop the guard's factual check |
+| G-T06d-3 principal membership | on each table, a `principal:` decider that is a user ACTIVE only elsewhere, a non-ACTIVE member, a revoked key or another tenant's key is `INVALID_INPUT`, no row; a malformed value is `INVALID_INPUT`; the predicate is false for a tenant other than the session's | drop the guard's membership check, or one predicate leg |
+| G-T06d-4 authorisation ∉ factual | the authorisation Evidence among the factual ones is `INVALID_INPUT`, no row | drop 0253's CHECK line |
 | G-M29-5 single attribution sites | two counts, both `== 1`: (a) the attribution port is invoked once, inside `memory_repo::insert_memory_in_txn`, with a required parameter (A1, A3); (b) exactly one A3' inheritance site, the M29 trigger on the supersede transition | (1) a second port invocation; (2) the port parameter made `Option` / defaulted; (3) a second A3' site, as a Rust call or another trigger; (4) the A3' trigger removed, so a fixture correction leaves the successor `unresolved` |
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
@@ -360,6 +364,10 @@ and the failing lines are in the card's PR description.
 - **T06** (M29 + M15): attribution tables; A1 and A3 in `link_memory_projects` behind the M07 attribution port, with
   the door's required port argument and the composition-root wiring; A3' in the M29 supersede trigger (D-D). Gates
   G-M29-5/6, G-N09-1/3.
+- **T06d** (M29): relation provenance integrity, migration 0253 (design v0.2 §15.2 / §15.5). Gates G-T06d-1..4,
+  G-M29-4 strengthened, issue #92 items 2 and 3. Workspace visibility of both endpoints stays the caller's
+  precondition of `append_revision` (`coord.tasks` has no workspace column). No runtime caller exists yet, so the
+  first card that wires one must test that the caller refuses an endpoint outside its authorised workspaces.
 - **T07** (M29): first E2E on a synthetic fixture (website A, projects P1 / P2, shared task T1, same-name trap
   project, three messages, one correction, plus replay, revoked access and faults). Gates G-N09-3/4.
 - **E-A** precision per ladder rung (A1 / A3 / A3' × relation kind × source scope), binding correctness and
