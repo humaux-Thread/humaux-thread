@@ -19,7 +19,7 @@ use humaux_domain::{
     dataclass::DataClass,
     error::ErrorCode,
     evidence::EvidenceOriginClass,
-    identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor},
+    identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor, can_read},
     ids::{UserId, WorkspaceId},
     note::replace_intent_sha256,
 };
@@ -33,7 +33,6 @@ use crate::{
     note_repo::{self, NoteIntake, NoteLineage},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
-    read_gate::visibility_readable,
     read_materialize,
     remember::{self, RememberAccepted, RememberCommand, RememberError},
     request_guard_repo::{self, AuditTenant},
@@ -713,7 +712,7 @@ async fn replay(
         workspace_id: field::<Option<Uuid>>(&evidence, "visibility_workspace_id")?.map(WorkspaceId),
     };
     if field::<Uuid>(&evidence, "tenant_id")? != auth.tenant_id().0
-        || !visibility_readable(auth, &visibility)
+        || !can_read(auth, &visibility)
     {
         return Err(ErrorCode::NotFound);
     }
