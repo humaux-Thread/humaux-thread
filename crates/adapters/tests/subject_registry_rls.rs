@@ -35,6 +35,10 @@
 //!     failure is byte-identical to a nonexistent id (no existence oracle through RI, which bypasses RLS).
 //!  7. `subject_keys_unique_per_tenant_never_globally` — the same (key_kind, key_value) twice in one
 //!     tenant is 23505; the same key under a second tenant succeeds.
+//!  8. `subject_kind_check_admits_every_domain_kind_and_refuses_the_rest` — `role_gateway` registers
+//!     one subject per `SubjectKind::ALL` wire string (migration 0247 widened the CHECK, ADR-0078 D-B),
+//!     while the provisional kinds (`CHANNEL_ACCOUNT`, `PRODUCT_LINE`), `REPOSITORY` and a lowercase
+//!     spelling stay a `subjects_kind_check` violation.
 //!
 //! Skip contract (`humaux_testkit`, §79.2): no DSN / unreachable / migration 0153 not applied each
 //! print a visible SKIP and return. Tests 2/3/6/7 run entirely inside one rolled-back transaction;
@@ -424,6 +428,46 @@ fn subject_checks_match_domain_enums() {
                 wire.len()
             );
         }
+    });
+}
+
+#[test]
+fn subject_kind_check_admits_every_domain_kind_and_refuses_the_rest() {
+    run_db_fixture::<SubjectFixture, _>("subject_kind_check_admits_domain_kinds", |mut handle| {
+        let tenant = TenantId::new().0;
+        let mut txn = handle.client.transaction().expect("begin");
+        txn.execute(
+            "INSERT INTO control.tenants (tenant_id, name) VALUES ($1, 'm29-t02-kinds')",
+            &[&tenant],
+        )
+        .expect("seed tenant");
+        txn.batch_execute(&format!(
+            // dep: PostgreSQL(role_gateway) — test switches PG role to exercise RLS
+            "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}';"
+        ))
+        .expect("gateway/tenant context");
+        const INSERT: &str = "INSERT INTO private.subjects (tenant_id, kind, display_name) \
+                              VALUES ($1, $2, 'kind probe')";
+        for kind in SubjectKind::ALL {
+            txn.execute(INSERT, &[&tenant, &kind.as_str()])
+                .unwrap_or_else(|e| panic!("{} must be admitted: {e}", kind.as_str()));
+        }
+        // §6.1.3 / ADR-0078 D-B: provisional kinds wait for E-C, a repository is never a subject.
+        for refused in ["CHANNEL_ACCOUNT", "PRODUCT_LINE", "REPOSITORY", "brand"] {
+            let mut sp = txn.savepoint("kind_probe").expect("savepoint");
+            let err = sp
+                .execute(INSERT, &[&tenant, &refused])
+                .expect_err(&format!("{refused} must not be an admitted kind"));
+            sp.rollback().expect("rollback savepoint");
+            let (code, constraint) = failure_signature(&err);
+            assert_eq!(code.as_ref(), Some(&SqlState::CHECK_VIOLATION), "{refused}");
+            assert_eq!(
+                constraint.as_deref(),
+                Some("subjects_kind_check"),
+                "{refused}"
+            );
+        }
+        txn.rollback().expect("rollback");
     });
 }
 

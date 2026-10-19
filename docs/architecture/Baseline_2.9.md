@@ -1120,7 +1120,7 @@ idf.corpus = USER_PRIVATE(current user)
 
 Visibility（§6.1.1）回答"谁能看见这条记忆"；Subject 轴回答一个正交的问题——"这条记忆**是关于谁的**"。二者不可互相替代：一条 `TENANT_SHARED` 的记忆可以是关于某个客户的，一条 `USER_PRIVATE` 的记忆也可以。没有 aboutness 轴，"我知道关于这个客户的什么"只能退化成对自由文本的语义猜测。
 
-- **Subject** = 一个记忆可以*关于*的实体。`SubjectKind` 是冻结闭集 `{Person, Organisation}`（无 `Other`）。落库为 `private.subjects`，tenant-scoped，`merged_into` 自引用支持去重/合并（NULL = 当前 head）。所有指向 subjects 的 FK（`subject_keys`、`subject_roles`、`merged_into`）都是带 tenant leg 的复合 FK `(tenant_id, subject_id)`（受约束冗余 `UNIQUE(tenant_id, subject_id)`，0104 同法）——RI 检查绕过 RLS，单列 FK 会成为跨租户存在性 oracle。
+- **Subject** = 一个记忆可以*关于*的实体。`SubjectKind` 是冻结闭集 `{Person, Organisation, Business, Brand, Product, Website}`（无 `Other`；后四个由 ADR-0078 D-B 增补，expand-only，provisional kind 等实验 E-C 接受后才入集）。落库为 `private.subjects`，tenant-scoped，`merged_into` 自引用支持去重/合并（NULL = 当前 head）。所有指向 subjects 的 FK（`subject_keys`、`subject_roles`、`merged_into`）都是带 tenant leg 的复合 FK `(tenant_id, subject_id)`（受约束冗余 `UNIQUE(tenant_id, subject_id)`，0104 同法）——RI 检查绕过 RLS，单列 FK 会成为跨租户存在性 oracle。
 - **SubjectKey** = 外部身份去重键（如 CRM id），落库为 `private.subject_keys`。**永不全局唯一**：唯一约束是 `UNIQUE(tenant_id, key_kind, key_value)`——同一个 CRM id 在两个 tenant 下是两条不同的 key。`key_kind` 是闭集 `{CRM}`（后续 card 扩展）。运行期直读收窄到 gateway/private_worker（注册）与 retrieval_worker/maintenance（只读）；card 8 的确定性 resolve 由 private worker 写入。
 - **SubjectRole** = 一个 subject 扮演的角色，落库为 `private.subject_roles`。**与 ScopeKind 正交**：`Customer` 是一个 subject *所是*的角色，不是记忆*归档于*的 scope。`SubjectRole` 是闭集 `{Customer}`。
 
