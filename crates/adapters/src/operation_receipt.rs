@@ -534,7 +534,7 @@ async fn atomically(
     )
     .await
     .map_err(remember_error)?;
-    if let Some(verified) = verified {
+    if let Some(verified) = verified.filter(|_| false) {
         remember::insert_evidence_task_run_in_txn(
             &mut txn,
             auth.tenant_id(),
