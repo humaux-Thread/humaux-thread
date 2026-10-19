@@ -2,7 +2,7 @@
 
 - Status: Accepted (2026-10-19). Card M29 T01 (docs only). Content authority: design v0.2 "objects, relations and
   attribution (M29)", baseline `ea7b459`, which the owner delegated on 2026-10-19. Amended the same day with the
-  design owner's rulings on review questions Q1, Q2 and Q4 (D-A, D-B, D-D).
+  design owner's rulings on review questions Q1, Q2, Q4 and Q9 (D-A, D-B, D-D) and two gap rulings (D-D).
 - Relates to: Baseline §6.1.3 (Subject axis), §6.1.4 (this ADR's normative home), §25.3.1 (project continuity),
   §25.4 (`context_bindings`), §33.10 rule 9 (two-step confirm), §15 (`commit_seq`), §78.2, §78.6, §80.1;
   ADR-0018 (confirm-token gate), ADR-0020 (lifecycle log), ADR-0027 / ADR-0028 / ADR-0029 (Subject axis).
@@ -45,6 +45,8 @@ deterministic inheritance rules for task runs and capture contexts.
   door (D-D). Composition roots → M29: the gateway and worker processes (L4 and above) construct the M29
   implementation and hand it to callers of the door; the Distill worker's edge is the declared same-layer
   **M15 → M29**. There is no L3 → L4 edge.
+  M29 → M07 also covers the A3' trigger that M29 owns on M07's `private.memory_records` (Q9 ruling, D-D). That edge
+  runs in the allowed direction and has no Rust counterpart.
 - M29 owns the relation-kernel tables (D-C), `evidence_projects` / `memory_projects` / the revocation table (D-D), and,
   later, the candidate table, the vocabulary tables (D-H) and the workflow registry.
 - **Contract ownership of `private.continuity_projects` moves from M14 (L5) to M29.** M29 depends on the project
@@ -57,8 +59,9 @@ deterministic inheritance rules for task runs and capture contexts.
 
 ### D-B SubjectKind / SubjectKeyKind extension (authorised here, implemented by T02)
 
-- `SubjectKind` gains **`BUSINESS`, `BRAND`, `PRODUCT`, `WEBSITE`** (T02). It remains a frozen closed set,
-  expand-only, reconciled DB ↔ Rust by contract test (§78.2).
+- `SubjectKind` gains **`Business`, `Brand`, `Product`, `Website`** (T02). Their DB CHECK values are the upper-case
+  forms `BUSINESS` / `BRAND` / `PRODUCT` / `WEBSITE`, as 0153 stores `PERSON` / `ORGANISATION`. It remains a frozen
+  closed set, expand-only, reconciled DB ↔ Rust by contract test (§78.2).
 - **Provisional kinds wait for E-C (Q2 ruling).** `CHANNEL_ACCOUNT` (not listed in REQ §3.2) and `PRODUCT_LINE` do not
   enter the closed set until experiment E-C accepts them. An accepted kind is added by a later ADR-amendment card; a
   rejected kind needs no removal, because it was never added. Until then a product line is one `PRODUCT` that other
@@ -120,38 +123,52 @@ workflow relations; repository relations.
 Tables, shaped like 0154: `private.evidence_projects(tenant_id, evidence_id, project_id, source_kind)` written with the
 Evidence in `remember.put`'s transaction; `private.memory_projects(tenant_id, memory_id, project_id, relation
 ATTRIBUTED_TO, source_kind, rule_id_ver, decision_evidence_id)`, immutable per memory version, the attribution source
-of truth; `private.memory_project_revocations(...)`, append-only. Read paths accept a link only if it exists and is not
+of truth; `private.memory_project_revocations(tenant_id, memory_id, project_id, revoked_by, reason, recorded_at)`,
+append-only. Read paths accept a link only if it exists and is not
 revoked.
 
 `source_kind` is a frozen closed set with **no model-derived variant** (as in §6.1.3):
 
 | Rung | `source_kind` (+ rule) | Deterministic condition | First slice |
 |---|---|---|---|
-| A1 | `DECLARED` | `project_id` on `remember.put`, resolved server-side: exists in the tenant and is visible to the caller | yes |
+| A1 | `DECLARED` | `project_id` on `remember.put`, resolved server-side: exists in the tenant and is visible to the caller; otherwise `INVALID_INPUT` with zero writes | yes |
 | A2 | `EXTERNAL_KEY` | exact match of a Subject key, then a unique project via `project_subject_relations` at the Evidence's occurrence time; more than one project → unknown | deferred (needs keys with validity) |
 | A3 | `INHERITED` + `task_run@1` | Evidence carries a verified `task_run_id` (`evidence_task_runs`); inherit every project with a CONTAINS relation valid at occurrence time | yes |
-| A3' | `INHERITED` + `correction@1` | a `USER_CORRECTION` version inherits the corrected predecessor's attribution (§6.1.3 rule 3) | yes |
+| A3' | `INHERITED` + `correction@1` | a `USER_CORRECTION` successor inherits the predecessor's current rows, in the M29 trigger at the supersede point (Q9 ruling) | yes |
 | A4 | `INHERITED` + `capture_context@1` | server-issued capture handle bound to exactly one project and one live task run, short TTL [starting value 30 min], no exact hit on another known key | deferred |
 | A5 | none (never written to `memory_projects`) | similarity, embeddings, Topic names, model inference | candidates only, deferred |
 
 - When no rung holds, no row is written and the read path reports the memory as `unresolved` (REQ §3.4).
+- **Unknown declared project (gap ruling).** A declared `project_id` that is unknown in the tenant, or not visible to
+  the caller, is `INVALID_INPUT` with zero writes, as for subject ids in §6.1.3.
+- **Rollups (gap ruling).** Rollups reach the door through `consolidate_repo` (`memory_repo.rs:4`) but have no rung
+  in the first slice, so a rollup is `unresolved` (N09 R3). A rollup rung needs a later ADR amendment.
 - Every formal row carries `rule_id_ver` and `decision_evidence_id`, so a falsified rule can be revoked in bulk.
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
   from it. Dependent continuity outputs keep the existing `continuity_facet_memory_links` + sha check and read as
   damaged on mismatch.
-- **Single call site through an M07-owned port (Q1 ruling).** The workspace's only Memory INSERT is
+- **A1 and A3: single call site through an M07-owned port (Q1 ruling).** The workspace's only Memory INSERT is
   `adapters::memory_repo::insert_memory_in_txn` (`crates/adapters/src/memory_repo.rs:1`, `:107`; M07 D9, G-M07-1).
   Design v0.2 names it by its re-export alias `adapters::distill_repo::insert_memory`
   (`crates/adapters/src/distill_repo.rs:60`). The function is defined in an M07 (L3) file, so it cannot call M29 (L4)
   directly. Instead:
   - M07 defines an attribution port next to the door (a `MemoryAttribution` trait or fn-pointer struct).
   - `insert_memory_in_txn` takes the port as a **required** argument, never `Option` and never a default or no-op. It
-    invokes the port **exactly once**, in the caller's transaction, after the memory row is written.
+    invokes the port **exactly once**, in the caller's transaction, after the memory row and its PRIMARY
+    `memory_evidence` link are written (the subject hook has the same constraint, `memory_repo.rs:107-111`).
   - M29 implements the port (`link_memory_projects` behind it). Callers obtain the implementation from their
     composition root (D-A).
   - A no-op implementation in production code is forbidden. Tests use the real M29 implementation. T06 validates the
     design.
+- **A3': one M29-owned trigger at the supersede point (Q9 ruling).** `correct_atomically` inserts the successor
+  through the door (`memory_governance_repo.rs:1756`). It sets `superseded_by` only later, in the arbiter UPDATE
+  (`:1800`), and `NewMemory` carries no predecessor (`memory_repo.rs:52-63`). A3' therefore cannot run at the door.
+  - It runs in a single M29-owned DB trigger on that UPDATE, mirroring §6.1.3 rule ③ (`0154_memory_subjects.sql:314-331`).
+  - For a `USER_CORRECTION` successor, the trigger copies the predecessor's current `memory_projects` rows (linked
+    and not revoked) to the successor as `INHERITED` + `correction@1`.
+  - It fires only when the correction becomes current. A correction the arbiter does not make current inherits
+    nothing.
 - Candidates (deferred): a separate table with `proposed_by=model@ver`, score and state; readable only through a
   candidate API and labelled when used; never counted. A candidate becomes formal only when an A1–A4 condition appears,
   or when the user confirms a concrete manifest (D-G), and only if it passes the independence test (N09 R5).
@@ -238,7 +255,9 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 ## Gates (planned; none exists yet)
 
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
-implements it; until then these ids are a plan, not registry entries.
+implements it; until then these ids are a plan, not registry entries. The first card that registers any G-M29-* or
+G-N09-* gate also adds its §80.1.2 id-family binding row and records the red run, as ADR-0077 does in its "Red
+records" section.
 
 | Gate | Criterion | Injected fault |
 |---|---|---|
@@ -246,7 +265,7 @@ implements it; until then these ids are a plan, not registry entries.
 | G-M29-2 interval shape | `[]`, explicit infinity and an unbounded lower bound are rejected by the CHECK | drop the `upper_inc` test from the CHECK function |
 | G-M29-3 CAS | two connections writing with the same `expected_revision` concurrently: exactly one succeeds | drop the revision check |
 | G-M29-4 append-only | UPDATE / DELETE by any runtime role fails | grant UPDATE |
-| G-M29-5 single call site | the attribution port is invoked exactly once, inside `memory_repo::insert_memory_in_txn` (`== 1`), and the door's signature requires it | (a) a second invocation; (b) making the port parameter `Option` / defaulted |
+| G-M29-5 single attribution sites | two counts, both `== 1`: (a) the attribution port is invoked once, inside `memory_repo::insert_memory_in_txn`, with a required parameter (A1, A3); (b) exactly one A3' inheritance site, the M29 trigger on the supersede transition | (1) a second port invocation; (2) the port parameter made `Option` / defaulted; (3) a second A3' site, as a Rust call or another trigger; (4) the A3' trigger removed, so a fixture correction leaves the successor `unresolved` |
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
@@ -256,14 +275,18 @@ implements it; until then these ids are a plan, not registry entries.
 ## Cards and experiments
 
 - **T01** (docs): this ADR, Baseline §6.1.4 with N09, the `context_bindings` boundary sentence (§25.4).
-- **T02** (M07): `SubjectKind` += `BUSINESS`, `BRAND`, `PRODUCT`, `WEBSITE`; no new `SubjectKeyKind` (D-B);
-  migration, domain enum, contract test. Gate G-M29-1.
+- **T02** (M07): `SubjectKind` += `Business`, `Brand`, `Product`, `Website`; no new `SubjectKeyKind` (D-B);
+  migration, domain enum, contract test, and an update to §6.1.3's frozen-set sentence. Gate G-M29-1.
 - **T03** (contract): `continuity_projects` contract ownership M14 → M29; contract and module registration only.
+  The first M29 ownership row needs two other changes:
+  - raise `MODULE_ID_MAX` (`xtask/src/architecture_check.rs:881` on main);
+  - update the fixtures that reject `M29` (`:8815`, `:8986`).
 - **T04** (M18 + M06): minimal task-run lifecycle (principal, lease, verification port) and the `evidence_task_runs`
   carrier; a write after lease expiry does not inherit.
 - **T05** (M29): relation kernel, SQL template + Rust kernel + the three pairs. Gates G-M29-2/3/4.
-- **T06** (M29 + M15): attribution tables and `link_memory_projects` with A1, A3, A3' behind the M07 attribution port;
-  the door's required port argument and the composition-root wiring (D-D). Gates G-M29-5/6, G-N09-1/3.
+- **T06** (M29 + M15): attribution tables; A1 and A3 in `link_memory_projects` behind the M07 attribution port, with
+  the door's required port argument and the composition-root wiring; A3' in the M29 supersede trigger (D-D). Gates
+  G-M29-5/6, G-N09-1/3.
 - **T07** (M29): first E2E on a synthetic fixture (website A, projects P1 / P2, shared task T1, same-name trap
   project, three messages, one correction, plus replay, revoked access and faults). Gates G-N09-3/4.
 - **E-A** precision per ladder rung (A1 / A3 / A3' × relation kind × source scope), binding correctness and
@@ -273,10 +296,11 @@ implements it; until then these ids are a plan, not registry entries.
   coverage beside precision.
 - **E-C** object-kind coverage on the owner's real portfolio: acceptance of `PRODUCT_LINE` and `CHANNEL_ACCOUNT`,
   exclusivity of each candidate key namespace (`DOMAIN` first),
-  the five workflow and six repository scenarios; κ reported only as human–model agreement, diagnostic only.
+  the five workflow and six repository scenarios; κ reported only as human–model agreement, diagnostic only. Exit
+  gate: owner-ruled classification coverage, and every key scenario passes. D-B's "E-C accepts" means passing this
+  gate.
 - **E-D** models-off consistency, row-for-row and zero external calls (G-N09-4).
 - **E-F** vocabulary evolution gate (D-H).
-- The design defines no E-E.
 
 ## Alternatives rejected
 
@@ -321,6 +345,14 @@ implements it; until then these ids are a plan, not registry entries.
     key per tenant, so a namespace becomes a `SubjectKeyKind` only after E-C shows it is exclusive.
   - Shared locators (a domain served by several sites, paths, remotes) are never `SubjectKeyKind`s.
   - Key namespaces arrive with A2 (deferred), not in T02 (D-B).
+- **Q9 A3' timing (review P1).**
+  - **Finding:** at the door, the successor has no predecessor yet; `superseded_by` is set later by the arbiter
+    UPDATE.
+  - **Ruling:** A3' runs in a single M29-owned DB trigger at the supersede point, mirroring §6.1.3 rule ③. It copies
+    the predecessor's current rows as `INHERITED` + `correction@1` (D-D).
+  - **Edges:** an M29 trigger on M07's table is an M29 → M07 dependency, and there is no Rust edge.
+  - **Rationale:** it follows the subject precedent, and it fires only when the correction actually becomes current.
+  - **Gate:** G-M29-5 counts this site separately, as (b).
 
 ## Open questions
 
@@ -341,7 +373,8 @@ implements it; until then these ids are a plan, not registry entries.
 
 ## References
 
-Verified 2026-10-19 (design v0.2 source register).
+Verified 2026-10-19 against the design v0.2 source register. Read depth follows the register's marks; an unmarked entry
+was read in the part the text relies on.
 
 - PG-CT — PostgreSQL 18, CREATE TABLE: https://www.postgresql.org/docs/18/sql-createtable.html
 - PG-RT — PostgreSQL 18, Range Types: https://www.postgresql.org/docs/18/rangetypes.html
@@ -351,25 +384,28 @@ Verified 2026-10-19 (design v0.2 source register).
   https://www.postgresql.org/docs/18/runtime-config-replication.html,
   https://www.postgresql.org/docs/18/functions-info.html
 - TM-KM — Kulkarni & Michels, Temporal features in SQL:2011, SIGMOD Record 41(3), 2012, doi:10.1145/2380776.2380786
+  (bibliography checked; full text not read)
 - MCP-MRTR — MCP 2026-07-28, Multi Round-Trip Requests:
   https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr
 - MCP-EL — MCP 2026-07-28, Elicitation: https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation
 - MCP-AUTH — MCP 2026-07-28, Authorization: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
 - MCP-OV — MCP 2026-07-28, Overview: https://modelcontextprotocol.io/specification/2026-07-28/basic/index
 - MCP-ROOTS — MCP 2026-07-28, Roots: https://modelcontextprotocol.io/specification/2026-07-28/client/roots
-- CC-HOOKS — Claude Code Docs, Hooks: https://code.claude.com/docs/en/hooks
+- CC-HOOKS — Claude Code Docs, Hooks: https://code.claude.com/docs/en/hooks (partial read: the first 100K characters)
 - ER-FS — Fellegi & Sunter, A Theory for Record Linkage, JASA 64(328), 1969, doi:10.1080/01621459.1969.10501049
+  (bibliography checked; full text not read)
 - ER-HZ — Hassanzadeh et al., Framework for evaluating clustering algorithms in duplicate detection, PVLDB 2(1), 2009:
-  https://www.vldb.org/pvldb/vol2/vldb09-1025.pdf
+  https://www.vldb.org/pvldb/vol2/vldb09-1025.pdf (§2.1.1 read)
 - ZEP — Rasmussen et al., Zep: A Temporal Knowledge Graph Architecture for Agent Memory, arXiv:2501.13956v1:
-  https://arxiv.org/html/2501.13956v1
-- ST-SC — Geifman & El-Yaniv, Selective Classification for Deep Neural Networks: https://arxiv.org/abs/1705.08500
-- ST-MN — McNemar, Psychometrika 12(2), 1947, doi:10.1007/BF02295996
-- ST-LTT — Angelopoulos et al., Learn then Test: https://arxiv.org/abs/2110.01052
-- SKOS — W3C Recommendation 2009-08-18: https://www.w3.org/TR/skos-reference/
+  https://arxiv.org/html/2501.13956v1 (§2.2.2–2.2.3 and the appendix prompts read)
+- ST-SC — Geifman & El-Yaniv, Selective Classification for Deep Neural Networks: https://arxiv.org/abs/1705.08500 (abstract checked)
+- ST-MN — McNemar, Psychometrika 12(2), 1947, doi:10.1007/BF02295996 (bibliography checked; full text not read)
+- ST-LTT — Angelopoulos et al., Learn then Test: https://arxiv.org/abs/2110.01052 (abstract checked)
+- SKOS — W3C Recommendation 2009-08-18: https://www.w3.org/TR/skos-reference/ (partial read: the latter part of the page
+  is unread)
 - EVO — Chong et al., EvoOntology, arXiv:2609.15779v1: https://arxiv.org/html/2609.15779v1
-- PROV-O — W3C Recommendation 2013-04-30: https://www.w3.org/TR/2013/REC-prov-o-20130430/
+- PROV-O — W3C Recommendation 2013-04-30: https://www.w3.org/TR/2013/REC-prov-o-20130430/ (term definitions read)
 - GH-RENAME — GitHub Docs, Renaming a repository:
   https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository
 - GH-REPO — GitHub REST API 2026-03-10, Repositories:
-  https://docs.github.com/en/rest/repos/repos?apiVersion=2026-03-10
+  https://docs.github.com/en/rest/repos/repos?apiVersion=2026-03-10 (response structure checked)
