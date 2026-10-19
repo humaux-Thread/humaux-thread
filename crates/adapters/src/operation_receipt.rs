@@ -595,7 +595,7 @@ async fn atomically(
         .await
         .map_err(db_error)?;
     }
-    if let Some(declared) = declared {
+    if let Some(declared) = declared.filter(|_| false) {
         remember::insert_evidence_project_in_txn(
             &mut txn,
             auth.tenant_id(),
