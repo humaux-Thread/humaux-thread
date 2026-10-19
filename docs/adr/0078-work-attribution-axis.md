@@ -367,6 +367,29 @@ and the failing lines are in the card's PR description.
     case cannot show it, since `control.workspaces.workspace_id` is globally unique and the workspace predicate alone
     already refuses another tenant's project there.
   - r1 and r5 stay inside 0254 because its postcheck deliberately leaves the reader's predicates to these tests.
+  - Base: `47967a8` differs from the final head only in docs, `.config/nextest.toml` and the review round's test /
+    `rls_check` additions below; none of the r1-r5 fault lines changed, so those records stand without a re-run.
+- T06c review fixes (PR #99, design v0.2 §15.6), branches `red/m29-t06c-r6..r10` off `f8e412e`:
+  - r6: `AND project.lifecycle_state = 'ACTIVE'` dropped from `private.declared_project_visible` -> G-T06c-1(a) red:
+    the archived project (response id 13) is accepted, 200 instead of 400 (`mcp_gateway.rs:10433`); and, folded in as
+    r11 (a dropped definition pin), the `rls_check` declared-project reader gate red: "definition lost
+    `project.lifecycle_state = 'ACTIVE'`" (`rls_check.rs:7187`).
+  - r7: `AND project.project_id = p_project_id` dropped -> G-T06c-1(a) red at the first case, the unknown project
+    (id 10): 403 `TENANT_BOUNDARY` instead of 400 (`mcp_gateway.rs:10433`). The EXISTS passes on a sibling visible
+    project and the unknown id reaches the `evidence_projects` INSERT, where the FK refuses it as 23503, a different
+    code from the other refusals, so the fault also breaks the no-oracle property. The exposure the predicate guards
+    is a same-tenant project in an unauthorized workspace or ARCHIVED, which passes both the reader and the FK; the
+    unauthorized-workspace (id 12) and archived (id 13) decoys come after id 10, and (a') after them, and each would be
+    accepted under this fault had id 10 not failed first.
+  - r8: the tenant pin's `IF p_tenant_id IS DISTINCT FROM ... THEN` replaced by `IF false THEN` -> G-T06c-1 reader leg
+    red: the wrong tenant argument returns instead of raising 42501 (`memory_attribution.rs:740`,
+    `g_t06c_1_reader_tenant_leg`).
+  - r9: one inserted line resolves the declared project before the replay branch of `operation_receipt::atomically`
+    -> G-T06c-1(d) red: the replay after archiving is refused instead of returning the stored success
+    (`mcp_gateway.rs:14927`).
+  - r10: a red-only migration `0255_red_m29_t06c_r10` grants EXECUTE on the reader to `role_admin` -> the `rls_check`
+    declared-project reader gate red: "role_admin: expected EXECUTE=false, actual true" (`rls_check.rs:7187`). It is a
+    later migration because 0254's own postcheck pins the EXECUTE list.
 
 ## Cards and experiments
 
