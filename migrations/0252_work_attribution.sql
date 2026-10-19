@@ -45,7 +45,7 @@ CREATE TABLE private.memory_projects (
   project_id           uuid NOT NULL,
   relation             text NOT NULL CONSTRAINT memory_projects_relation_check CHECK (relation = 'ATTRIBUTED_TO'),
   source_kind          text NOT NULL CONSTRAINT memory_projects_source_kind_check
-    CHECK (source_kind IN ('DECLARED', 'EXTERNAL_KEY', 'INHERITED')),
+    CHECK (source_kind IN ('DECLARED', 'EXTERNAL_KEY', 'INHERITED', 'MODEL_GUESS')),
   rule_id_ver          text NOT NULL CONSTRAINT memory_projects_rule_id_ver_check
     CHECK (rule_id_ver IN ('declared@1', 'task_run@1', 'correction@1')),
   decision_evidence_id uuid NOT NULL,
