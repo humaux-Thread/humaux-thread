@@ -1,0 +1,54 @@
+# §46.1 migration manifest. Card M29 T06d / ADR-0078 D-C (§6.1.4 relation kernel provenance, design v0.2 §15.2 /
+# §15.5): on each 0249 relation table a tenant-leg NO ACTION FK authorization_evidence_id -> private.evidence_objects,
+# an authorization-not-factual CHECK and the FK's lookup index; one new owner SECURITY DEFINER predicate
+# private.relation_principal_is_member(uuid, uuid) (EXECUTE role_gateway only); relation_revision_guard replaced with
+# a factual-evidence check and a principal-membership check after 0252's NULL-tenant line. No grant on any table
+# changes. No DML. §46 forward-fix (EXPAND_CONTRACT, number 0253).
+
+migration_id = "0253_relation_provenance"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0252 guard (NULL-tenant line) or the 0104 evidence UNIQUE the FKs need, or one that
+# already has this migration's objects.
+precheck = """
+select to_regprocedure('private.relation_revision_guard()') is not null
+ and (select prosrc like '%no tenant context%' from pg_proc
+       where oid = to_regprocedure('private.relation_revision_guard()'))
+ and exists (select 1 from pg_constraint where conname = 'evidence_objects_tenant_id_unique'
+              and conrelid = to_regclass('private.evidence_objects') and contype = 'u')
+ and to_regprocedure('private.relation_principal_is_member(uuid, uuid)') is null
+ and not exists (select 1 from pg_constraint
+                  where conname in ('project_task_relations_authorization_evidence_fkey',
+                                    'project_subject_relations_authorization_evidence_fkey',
+                                    'subject_relations_authorization_evidence_fkey'))
+ as precheck_ok
+"""
+
+# Fails on: a predicate that is missing, not owned by role_migration_owner, not SECURITY DEFINER STABLE with the pinned
+# search_path, executable by PUBLIC or by any non-owner role but role_gateway; a guard that changed owner or became
+# SECURITY DEFINER; a missing FK index. Like 0252's, this postcheck deliberately leaves the FKs, the CHECKs and the
+# guard body to adapters::tests::relation_kernel (G-T06d-1..4, ADR-0078 Red records), so each of those faults reaches
+# its gate instead of stopping the migration.
+postcheck = """
+with e(name) as (values ('project_task_relations'), ('project_subject_relations'), ('subject_relations'))
+select (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('private.relation_principal_is_member(uuid, uuid)')
+           and p.prosecdef and p.provolatile = 's' and p.proconfig = array['search_path=pg_catalog']
+           and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and not has_function_privilege('public', 'private.relation_principal_is_member(uuid, uuid)', 'EXECUTE')
+ and not exists (select 1 from (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+                   ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'),
+                   ('role_admin')) r(role)
+                  where has_function_privilege(r.role, 'private.relation_principal_is_member(uuid, uuid)', 'EXECUTE')
+                        is distinct from (r.role = 'role_gateway'))
+ and (select count(*) = 1 from pg_proc p
+       where p.oid = to_regprocedure('private.relation_revision_guard()')
+         and not p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and (select count(*) = 3 from e join pg_index i
+       on i.indexrelid = to_regclass('private.' || e.name || '_authorization_evidence_idx')
+       and i.indrelid = to_regclass('private.' || e.name))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: on each of the three relation tables DROP CONSTRAINT <t>_authorization_evidence_fkey, DROP CONSTRAINT <t>_authorization_not_factual, DROP INDEX private.<t>_authorization_evidence_idx; re-run 0252's CREATE FUNCTION private.relation_revision_guard() body as CREATE OR REPLACE; DROP FUNCTION private.relation_principal_is_member(uuid, uuid); and revert the append_revision precondition and the §6.1.4 / §6.2.2 text in the same release. Rows written meanwhile stay valid under 0252."
+backup_restore_requirement = "none: two constraints, one index per relation table and one new function; the FK and the CHECK validate existing rows (a violating row aborts the migration, nothing is rewritten), and the guard change applies to new INSERTs only."

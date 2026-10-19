@@ -2,9 +2,9 @@
 //!   writes exactly the formal `memory_projects` rows that rungs A1 and A3 ground on the Memory's attribution Evidence,
 //!   and nothing when no rung holds.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) r=[private.memory_projects] w=[coord.task_runs, private.continuity_projects,
-//!   private.distill_candidates, private.evidence_projects, private.evidence_task_runs, private.memory_projects,
-//!   private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
+//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_projects] w=[coord.task_runs,
+//!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
+//!   private.memory_projects, private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
 //!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
@@ -202,7 +202,9 @@ fn project(handle: &Handle, project: Uuid) -> String {
     )
 }
 
-/// One `project_task_relations` revision; `valid` is a multirange literal (`{}` retracts).
+/// One `project_task_relations` revision; `valid` is a multirange literal (`{}` retracts). Its authorisation
+/// Evidence (0253's FK) is the tenant's lowest Evidence id: every caller seeds after a put, and the ordered pick keeps
+/// the fixture deterministic without widening every call site.
 fn relation(
     tenant: Uuid,
     relation: Uuid,
@@ -216,7 +218,8 @@ fn relation(
         "INSERT INTO private.project_task_relations (tenant_id, relation_id, revision, src_id, dst_id, \
            relation_kind, valid, decided_by, factual_evidence_ids, authorization_evidence_id) \
          VALUES ('{tenant}', '{relation}', {revision}, '{project}', '{}', '{}', '{valid}', 'rule:fixture@1', \
-           '{{}}', '{relation}')",
+           '{{}}', (SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = '{tenant}' \
+                    ORDER BY evidence_id LIMIT 1))",
         task.0,
         kind.as_str()
     )
