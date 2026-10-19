@@ -142,7 +142,7 @@ BEGIN
    AND version.project_id=slot.project_id AND version.facet_kind=slot.facet_kind
    AND version.facet_version=slot.slot_version
    AND version.facet_version_id=slot.current_version_id
-  WHERE project.tenant_id=p_tenant_id AND project.project_id=p_project_id
+  WHERE project.project_id=p_project_id
     AND project.lifecycle_state='ACTIVE'
     AND project.workspace_id=ANY(p_authorized_workspace_ids)
     AND (p_requested_workspace_id IS NULL
