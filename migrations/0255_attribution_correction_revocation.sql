@@ -162,11 +162,6 @@ END;
 $$;
 ALTER FUNCTION private.revoke_inherited_attributions() OWNER TO role_migration_owner;
 REVOKE ALL ON FUNCTION private.revoke_inherited_attributions() FROM PUBLIC;
-CREATE TRIGGER memory_project_revocations_follow_inheritance
-  AFTER INSERT ON private.memory_project_revocations
-  FOR EACH ROW
-  EXECUTE FUNCTION private.revoke_inherited_attributions();
-
 COMMENT ON COLUMN private.memory_projects.inherited_from_memory_id IS
   '§6.1.4 A3'' ancestry (ADR-0078 D-D): the predecessor whose live row this correction@1 row copies; NULL on every other row. M29 T06b.';
 COMMENT ON VIEW private.memory_projects_live IS
