@@ -1248,7 +1248,7 @@ fn task_lease_ttl(value: &str) -> Result<Duration, BootstrapError> {
     value
         .parse::<u64>()
         .ok()
-        .filter(|secs| (1..=MAX_TASK_LEASE_TTL_SECONDS).contains(secs))
+        .filter(|secs| (0..=MAX_TASK_LEASE_TTL_SECONDS).contains(secs))
         .map(Duration::from_secs)
         .ok_or_else(|| BootstrapError::new(TASK_LEASE_TTL_KEY, "must be 1..=4294967295 seconds"))
 }
