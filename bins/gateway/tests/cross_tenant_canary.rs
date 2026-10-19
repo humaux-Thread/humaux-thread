@@ -4,7 +4,8 @@
 //!   humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.evidence_objects, private.memory_records,
 //!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
-//!   x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
+//!   x=[private.publish_continuity_facet, private.register_continuity_project]];
+//!   env=[HUMAUX_TEST_DISPOSABLE_CLUSTER, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, adapters::quota_repo,
 //!   adapters::read_gate, adapters::tests::support::operation_receipt_fixture, application::continuity,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
@@ -16,8 +17,9 @@
 //!   project that the caller's tenant then names; the caller is a real service credential of its own tenant through
 //!   one in-process gateway over loopback MCP; "identical" is a byte comparison of status and body after the probed
 //!   ids are masked, against a request naming ids that exist in no tenant; the caller's own data is the positive
-//!   control, so an op that returns nothing cannot pass; the lane test lifts role_gateway to BYPASSRLS and restores it
-//!   on drop, and without a superuser owner it is a visible not_applicable naming that object, never a pass]
+//!   control, so an op that returns nothing cannot pass; the lane test lifts role_gateway to BYPASSRLS only when the
+//!   disposable serial lane's explicit opt-in is set and restores it on drop, and without that opt-in or a superuser
+//!   owner it is a visible not_applicable naming the missing object, never a lift and never a pass]
 //! Spec: Baseline §6.1.1; §6.1.2; §6.2.3; §57.1; DOD-023
 //!
 //! Fault this gate is built for (module design M08 section 8, G-M08-3): a read SQL that stops binding the caller's tenant
@@ -51,7 +53,7 @@ use humaux_domain::{
     continuity::ProjectId,
     dataclass::DataClass,
     error::ErrorCode,
-    identity::VisibilityClass,
+    identity::{AuthorizationScope, BoundedSet, VisibilityClass},
     ids::{Scope, TaskId, TenantId, UserId, WorkspaceId},
 };
 use humaux_gateway::{
@@ -853,9 +855,34 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
     });
 }
 
+/// The explicit opt-in that declares the cluster throwaway. Only `ci.yml`'s serial-lane step exports it (its postgres
+/// service is created per job); `xtask::serial_lane` cannot, because it also runs on a developer's shared cluster.
+/// The value must be exactly `1`.
+const DISPOSABLE_CLUSTER_OPT_IN: &str = "HUMAUX_TEST_DISPOSABLE_CLUSTER";
+
+/// Whether `role_gateway` may be lifted to `BYPASSRLS` on `database`; `Err` names the missing object (§57.1).
+/// `BYPASSRLS` is a cluster-wide role attribute, and the `humaux_thread_` prefix alone also matches a developer's
+/// shared `humaux_thread_dev`, so the prefix (the predicate `testkit::fixture_purge` and `e2e-seed` use) is necessary
+/// but never sufficient: the cluster must also be declared disposable through `opt_in`.
+fn bypassrls_lift_allowed(database: &str, opt_in: Option<&str>) -> Result<(), String> {
+    if opt_in != Some("1") {
+        return Err(format!(
+            "{DISPOSABLE_CLUSTER_OPT_IN}=1, exported only by the CI serial-lane step: BYPASSRLS is cluster-wide and \
+             {database:?} may share its cluster with other databases"
+        ));
+    }
+    if !database.starts_with("humaux_thread_") {
+        return Err(format!(
+            "a local disposable database (humaux_thread_*), not {database:?}: BYPASSRLS is cluster-wide"
+        ));
+    }
+    Ok(())
+}
+
 /// Lifts `role_gateway` out of row-level security for the lifetime of the guard, so the product SQL below runs
 /// with only its own predicates in the path. `BYPASSRLS` is a role attribute, hence cluster-wide: the test is a
-/// `lane(a:disposable)` one, run alone by `cargo xtask serial-lane`, and the guard restores the attribute.
+/// `lane(a:disposable)` one that [`bypassrls_lift_allowed`] lets through only on a cluster declared throwaway, and
+/// the guard restores the attribute.
 struct RlsOutOfThePath {
     owner_dsn: String,
     /// `role_gateway`'s `rolbypassrls` before the test touched it.
@@ -863,9 +890,8 @@ struct RlsOutOfThePath {
 }
 
 impl RlsOutOfThePath {
-    /// `Err(reason)` names what is missing; nothing is changed unless the connected database is a local disposable one
-    /// (`humaux_thread_` prefix, the predicate `testkit::fixture_purge` and `e2e-seed` use), because the attribute is
-    /// cluster-wide.
+    /// `Err(reason)` names what is missing; nothing is changed unless [`bypassrls_lift_allowed`] agrees, because the
+    /// attribute is cluster-wide.
     fn lift(handle: &mut Handle) -> Result<Self, String> {
         // dep: PostgreSQL(owner) — database name and the role's current attribute
         let row = handle
@@ -877,11 +903,10 @@ impl RlsOutOfThePath {
             )
             .map_err(|e| format!("a readable pg_roles row for role_gateway ({e})"))?;
         let database: String = row.get(0);
-        if !database.starts_with("humaux_thread_") {
-            return Err(format!(
-                "a local disposable database (humaux_thread_*), not {database:?}: BYPASSRLS is cluster-wide"
-            ));
-        }
+        bypassrls_lift_allowed(
+            &database,
+            std::env::var(DISPOSABLE_CLUSTER_OPT_IN).ok().as_deref(),
+        )?;
         let prior: bool = row
             .try_get(1)
             .map_err(|_| "role_gateway in pg_roles".to_owned())?;
@@ -919,7 +944,38 @@ impl Drop for RlsOutOfThePath {
     }
 }
 
-/// G-M08-3, single-fault half: the same three foreign probes (memory id, task id, project id) straight through the
+/// The developer's shared database matches the `humaux_thread_` prefix, so only the opt-in keeps the lift off it.
+#[test]
+fn bypassrls_lift_is_refused_without_the_opt_in() {
+    for opt_in in [None, Some(""), Some("0"), Some("true"), Some("11")] {
+        let refusal = bypassrls_lift_allowed("humaux_thread_dev", opt_in)
+            .expect_err("the shared dev database must never be lifted without the opt-in");
+        assert!(
+            refusal.contains(DISPOSABLE_CLUSTER_OPT_IN),
+            "the refusal names the missing object (§57.1): {refusal}"
+        );
+    }
+    assert!(bypassrls_lift_allowed("humaux_thread_disposable_1790000000", None).is_err());
+}
+
+#[test]
+fn bypassrls_lift_is_allowed_on_a_disposable_database_with_the_opt_in() {
+    for database in ["humaux_thread_disposable_1790000000", "humaux_thread_ci"] {
+        assert_eq!(bypassrls_lift_allowed(database, Some("1")), Ok(()));
+    }
+}
+
+/// The opt-in declares the cluster disposable; it does not widen which database names qualify.
+#[test]
+fn bypassrls_lift_is_refused_on_a_foreign_database_even_with_the_opt_in() {
+    for database in ["postgres", "humaux", "prod_humaux_thread_x"] {
+        let refusal = bypassrls_lift_allowed(database, Some("1"))
+            .expect_err("a database outside humaux_thread_* is never lifted");
+        assert!(refusal.contains(database), "{refusal}");
+    }
+}
+
+/// G-M08-3, single-fault half: the foreign probes (memory id, task id, project id twice) straight through the
 /// product repo functions on a `role_gateway` pool that RLS no longer filters, so a dropped `tenant_id` predicate in
 /// one read SQL is the only thing left between the caller and the foreign row.
 ///
@@ -927,11 +983,15 @@ impl Drop for RlsOutOfThePath {
 /// (its only guard). The memory probe goes red only when every tenant predicate on the get path is dropped
 /// (`readable_memory_ids`' memory query and Evidence join, and the lifecycle query in `read_materialize`); dropping
 /// the lifecycle predicate alone stays green on purpose, because `readable_memory_ids` and `load_memories` bind the
-/// tenant independently (redundancy, not a gap). Known gap: the project probe has no inject-red record, its tenant
-/// binding lives in the `private.read_continuity_project_storage_v1` function behind a second post-check.
+/// tenant independently (redundancy, not a gap). The project path reads through the `SECURITY DEFINER` function
+/// `private.read_continuity_project_storage_v1`, whose owner `role_migration_owner` passes every continuity policy
+/// (`current_user='role_migration_owner'`), so lifting `role_gateway` changes nothing there and
+/// `project.tenant_id=p_tenant_id` is its only row-level tenant predicate. Dropping it leaves the plain project probe
+/// green, because `project.workspace_id=ANY(p_authorized_workspace_ids)` hides a foreign workspace by itself; only the
+/// widened-scope probe, whose authorized set names the foreign workspace, goes red.
 #[test]
 #[allow(clippy::too_many_lines)] // one seeded tenant pair, three probes against controls
-#[ignore = "lane(a:disposable) lifts role_gateway to BYPASSRLS, a cluster-wide attribute, so only a lane run alone on the cluster may do it"]
+#[ignore = "lane(a:disposable) lifts role_gateway to BYPASSRLS, a cluster-wide attribute, so it runs only where HUMAUX_TEST_DISPOSABLE_CLUSTER=1 declares the cluster throwaway (the CI serial-lane step sets it)"]
 fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
     const NAME: &str = "foreign_ids_are_not_found_with_row_level_security_out_of_the_path";
     run_db_fixture::<Fixture, _>(
@@ -1035,6 +1095,29 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
                         ))
                         .map(|_| ())
                 };
+                // §6.1.2 ANDs the tenant filter and the workspace term independently. The first project probe is hidden
+                // by the workspace term alone (`project.workspace_id=ANY(authorized)`: the foreign workspace is not in
+                // the caller's set), so it cannot tell whether `project.tenant_id=p_tenant_id` is still there. This
+                // scope hands the caller an authorized set that wrongly names the foreign workspace, which leaves that
+                // tenant predicate as the only thing between the caller and the foreign project.
+                let widened = AuthorizationScope::new(
+                    TenantId(handle.tenant_id),
+                    handle.auth.principal(),
+                    handle.auth.user_id(),
+                    BoundedSet::new([WorkspaceId(own.workspace), WorkspaceId(foreign.workspace)])
+                        .expect("two workspaces are within the bound"),
+                );
+                let continuity_widened = |id: Uuid| {
+                    handle
+                        .rt
+                        .block_on(project.read_snapshot(
+                            &widened,
+                            ProjectId(id),
+                            None,
+                            ContextBudget::new(2_048, 1_024).expect("trusted budget"),
+                        ))
+                        .map(|_| ())
+                };
 
                 // Positive controls: each path answers the caller's own data, so a NOT_FOUND cannot be a dead path.
                 assert_eq!(get(own.memory), Ok(()), "own memory");
@@ -1050,6 +1133,11 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
                     .get(0);
                 assert_eq!(frozen(Some(TaskId(own_task))), Ok(()), "own task");
                 assert_eq!(continuity(own.project), Ok(()), "own project");
+                assert_eq!(
+                    continuity_widened(own.project),
+                    Ok(()),
+                    "own project, widened scope"
+                );
 
                 // The canary: the foreign tenant's real ids answer as ids that exist nowhere do.
                 for (probe, foreign_answer, absent_answer) in [
@@ -1063,6 +1151,11 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
                         "project id",
                         continuity(foreign.project),
                         continuity(Uuid::now_v7()),
+                    ),
+                    (
+                        "project id, foreign workspace inside the authorized set",
+                        continuity_widened(foreign.project),
+                        continuity_widened(Uuid::now_v7()),
                     ),
                 ] {
                     assert_eq!(
