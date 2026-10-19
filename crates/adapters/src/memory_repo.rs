@@ -182,5 +182,6 @@ pub async fn insert_memory_in_txn(
     attribution
         .link_memory_projects(txn, tenant_id, memory_id, evidence.evidence_id)
         .await?;
+    attribution.link_memory_projects(txn, tenant_id, memory_id, evidence.evidence_id).await?;
     Ok(memory_id)
 }
