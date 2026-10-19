@@ -62,6 +62,10 @@ pub struct NewMemory<'a> {
     /// ADR-0067 D-J, with `note_kind` only: `None` = a fresh note, whose `note_id` is its own new `memory_id`;
     /// `Some(note_id)` = a new version of that note. A non-note Memory stores NULL whatever this says (0236 CHECK).
     pub note_id: Option<Uuid>,
+    /// ADR-0078 D-D (attribution Evidence): the Evidence the §6.1.4 ladder reads, and every row's
+    /// `decision_evidence_id`. The PRIMARY Evidence, except for `memory.confirm`, whose Memory reads the candidate's source
+    /// Evidence (§6.1.3 rule 3a's provenance). Required, so every caller names it.
+    pub attribution_evidence_id: Uuid,
 }
 
 /// ADR-0078 D-D (Q1 ruling): the attribution port M07 defines next to its Memory INSERT door. M29 implements it
@@ -69,8 +73,9 @@ pub struct NewMemory<'a> {
 /// [`insert_memory_in_txn`] takes it as a required argument and invokes it exactly once (xtask G-M29-5(a)).
 #[async_trait::async_trait]
 pub trait MemoryAttribution: Send + Sync {
-    /// §6.1.4: writes the formal `private.memory_projects` rows of `memory_id`, whose PRIMARY Evidence is
-    /// `evidence_id`, in the caller's transaction; when no rung holds it writes nothing (N09 R3).
+    /// §6.1.4: writes the formal `private.memory_projects` rows of `memory_id`, whose attribution Evidence
+    /// ([`NewMemory::attribution_evidence_id`]) is `evidence_id`, in the caller's transaction; when no rung holds, or the
+    /// Evidence is invisible under the caller's RLS, it writes nothing (N09 R3).
     ///
     /// # Errors
     /// Any `sqlx::Error`; the door returns it unchanged to its caller, which owns the transaction and its mapping.
@@ -180,7 +185,7 @@ pub async fn insert_memory_in_txn(
     .await?;
     crate::subject_repo::link_memory_in_txn(txn, tenant_id, memory_id, &[]).await?;
     attribution
-        .link_memory_projects(txn, tenant_id, memory_id, evidence.evidence_id)
+        .link_memory_projects(txn, tenant_id, memory_id, memory.attribution_evidence_id)
         .await?;
     Ok(memory_id)
 }

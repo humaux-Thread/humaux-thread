@@ -10,6 +10,10 @@
 //!   HTTP code (xtask G-N09-1)]
 //! Spec: Baseline §6.1.4; §78.2; ADR-0078
 //!
+//! Both rungs read the Memory's attribution Evidence ([`crate::memory_repo::NewMemory::attribution_evidence_id`]):
+//! the PRIMARY Evidence, or a confirmed candidate's source Evidence. They never copy its task-run carrier. An Evidence
+//! the caller cannot see under RLS grounds nothing, so the Memory stays unresolved.
+//!
 //! Rollups are not Memories: they live in `private.memory_rollups`, never reach the door, and stay unattributed in the
 //! first slice. A3' (`correction@1`) is the M29 supersede trigger's (T06b), not this port's.
 
@@ -23,7 +27,7 @@ use crate::memory_repo::MemoryAttribution;
 #[derive(Debug, Clone, Copy)]
 pub struct AttributionLadder;
 
-/// A1 (ADR-0078 D-D): every project the PRIMARY Evidence declares becomes a `DECLARED` / `declared@1` row whose
+/// A1 (ADR-0078 D-D): every project the attribution Evidence declares becomes a `DECLARED` / `declared@1` row whose
 /// decision Evidence is that Evidence.
 const A1_DECLARED: &str = "INSERT INTO private.memory_projects \
        (tenant_id, memory_id, project_id, relation, source_kind, rule_id_ver, decision_evidence_id) \
@@ -32,7 +36,7 @@ const A1_DECLARED: &str = "INSERT INTO private.memory_projects \
       WHERE ep.tenant_id = $1 AND ep.evidence_id = $3 \
         AND ep.source_kind = $4";
 
-/// A3 (ADR-0078 D-D): the PRIMARY Evidence's verified task run (`evidence_task_runs`, T04c) names a task; every project
+/// A3 (ADR-0078 D-D): the attribution Evidence's verified task run (`evidence_task_runs`, T04c) names a task; every project
 /// whose current relation to that task (the highest revision per `relation_id`, §6.1.4 ①) is CONTAINS and valid at the
 /// Evidence's `occurred_at` becomes an `INHERITED` / `task_run@1` row. REFERENCES never counts. N09 R3: an Evidence
 /// without `occurred_at` has no occurrence time to test, so A3 does not hold and nothing is written (unresolved). A
@@ -50,8 +54,7 @@ const A3_TASK_RUN: &str = "INSERT INTO private.memory_projects \
           ORDER BY ptr.relation_id, ptr.revision DESC) cur ON true \
       WHERE etr.tenant_id = $1 AND etr.evidence_id = $3 \
         AND cur.relation_kind = $6 \
-        AND e.occurred_at IS NOT NULL \
-        AND cur.valid @> e.occurred_at \
+        AND e.occurred_at IS NOT NULL AND cur.valid @> e.occurred_at \
      ON CONFLICT (tenant_id, memory_id, project_id) DO NOTHING";
 
 #[async_trait::async_trait]

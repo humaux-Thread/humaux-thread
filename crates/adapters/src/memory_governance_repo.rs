@@ -1766,6 +1766,7 @@ pub async fn correct_atomically(
             confidence: 1.0,
             note_kind: None,
             note_id: None,
+            attribution_evidence_id: loaded.evidence_id,
         },
         attribution,
     )

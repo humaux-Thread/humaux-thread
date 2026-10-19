@@ -28,7 +28,8 @@ select to_regclass('private.evidence_task_runs') is not null
 """
 
 # Fails on: a missing table, RLS not forced, wrong owner, a policy without the NULLIF tenant clause or the parent
-# EXISTS (USING and WITH CHECK), a PK of the wrong shape, an FK without the tenant leg or with a cascade, a missing named
+# EXISTS (USING and WITH CHECK), a PK of the wrong shape, an FK without the tenant leg or with a cascade (or any FK
+# beyond the six compliant ones), a missing named
 # CHECK or trigger, a missing or non-partial edge index, a guard that changed owner or became SECURITY DEFINER, or any
 # grant beyond the NAMED cells (column-level grants included). The CHECK value sets are reconciled with the Rust closed
 # sets by adapters::tests::memory_attribution (§78.2), not here.
@@ -53,6 +54,7 @@ select (select count(*) = 3 from t join pg_class k on k.oid = t.oid
  and (select count(*) = 6 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f'
        where k.conkey[1] = (select attnum from pg_attribute where attrelid = t.oid and attname = 'tenant_id')
          and k.confdeltype = 'a' and k.confupdtype = 'a')
+ and (select count(*) = 6 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f')
  and (select count(*) = 6 from pg_constraint k
        where k.contype = 'c' and k.conname in ('evidence_projects_source_kind_check', 'memory_projects_relation_check',
          'memory_projects_source_kind_check', 'memory_projects_rule_id_ver_check',

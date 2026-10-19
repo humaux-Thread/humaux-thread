@@ -1136,6 +1136,8 @@ pub async fn confirm_candidate_atomically(
             confidence: candidate.confidence,
             note_kind: None,
             note_id: None,
+            // ADR-0078 D-D: E2 is a confirmation; the work facts (task run, declared project) are on E1.
+            attribution_evidence_id: candidate.source_evidence_id,
         },
         attribution,
     )

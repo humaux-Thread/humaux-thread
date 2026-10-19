@@ -1613,6 +1613,7 @@ async fn write_txn(
                         confidence: candidate.confidence,
                         note_kind: None,
                         note_id: None,
+                        attribution_evidence_id: evidence.evidence_id,
                     },
                     &MEMORY_ATTRIBUTION,
                 )

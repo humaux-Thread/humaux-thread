@@ -111,6 +111,7 @@ pub(crate) async fn materialize_in_txn(
                 NoteLineage::Create => None,
                 NoteLineage::Replace { note_id, .. } => Some(note_id),
             },
+            attribution_evidence_id: loaded.evidence_id,
         },
         attribution,
     )

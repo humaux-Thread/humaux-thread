@@ -148,6 +148,17 @@ revoked.
 - **Rollups (gap ruling).** Rollups live in `private.memory_rollups`, outside the door, and stay unattributed in the
   first slice (N09 R3); they are not Memories and have no `memory_projects` row. (`consolidate_repo` imports only
   `authority_class_to_db_str` from `memory_repo`; it never calls the door.) A rollup rung needs a later ADR amendment.
+- **Attribution Evidence (gap ruling, design v0.2 §15.4).** A1 and A3 read the Memory's attribution Evidence, carried
+  as the required `NewMemory::attribution_evidence_id` that every door caller sets explicitly, and every row's
+  `decision_evidence_id` is that Evidence:
+  - by default it is the PRIMARY Evidence;
+  - for `memory.confirm` it is the candidate's `source_evidence_id` (E1), mirroring §6.1.3 rule 3a, which already takes
+    the subject declarations from E1. E2 is the confirmation itself, and the work facts (task run, declared project)
+    are on E1;
+  - E1's `evidence_task_runs` carrier is never copied onto E2: that would forge a verification and add a second
+    carrier writer (G-T04c-3). If E1 is invisible under the caller's RLS, the rows are simply absent (`unresolved`);
+  - notes stay `unresolved` in the first slice: a note cannot carry a task run (`operation_receipt.rs:437`), and
+    `memory.note_put` has no `project_id`.
 - Every formal row carries `rule_id_ver` and `decision_evidence_id`, so a falsified rule can be revoked in bulk.
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived

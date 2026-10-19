@@ -2916,7 +2916,7 @@ const N09_1_FILES: [&str; 2] = [M29_LADDER_HOME, "crates/domain/src/attribution.
 ///
 /// ponytail: substring match over the files' non-comment code, so an alias that hides every listed name evades it;
 /// the files are two small modules, so add a name here when a new provider-side module appears.
-const N09_1_MODEL_NAMES: [&str; 10] = [
+const N09_1_MODEL_NAMES: [&str; 11] = [
     "provider",
     "inference",
     "embedding",
@@ -2927,6 +2927,7 @@ const N09_1_MODEL_NAMES: [&str; 10] = [
     "reqwest",
     "infra_cell",
     "model_call",
+    "distill",
 ];
 
 /// ADR-0078 D-E / G-N09-1 (import half): no [`N09_1_MODEL_NAMES`] entry in the non-test, non-comment code of
