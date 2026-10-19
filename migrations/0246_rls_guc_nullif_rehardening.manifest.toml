@@ -27,5 +27,5 @@ select not exists (select 1 from pg_policies
  as postcheck_ok
 """
 
-rollback_or_forward_fix = "rollback (not advised: it restores the D7 22P02): for exactly the policies named by the '0246 hardened schema.table.policy' NOTICE lines of the run, ALTER POLICY with the deparsed qual / with_check where regexp_replace swaps `(NULLIF(current_setting(<args>), ''::text))::uuid` back to `(current_setting(<args>))::uuid`; policies that already had NULLIF before 0246 are not in that list and must keep it."
+rollback_or_forward_fix = "rollback (not advised: it restores the D7 22P02): for exactly the policies that 0246 changed — derive that set by applying 0001-0245 to a scratch database and listing pg_policies rows whose qual or with_check match the precheck pattern above (maintenance migrate does not capture the run's NOTICE lines) — ALTER POLICY with the deparsed qual / with_check where regexp_replace swaps `(NULLIF(current_setting(<args>), ''::text))::uuid` back to `(current_setting(<args>))::uuid`; policies that already had NULLIF before 0246 are not in that list and must keep it."
 backup_restore_requirement = "none: catalog-only (policy expressions), no row data touched"
