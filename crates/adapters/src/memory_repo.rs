@@ -141,7 +141,7 @@ pub async fn insert_memory_in_txn(
     tenant_id: Uuid,
     evidence: &LoadedEvidence,
     memory: &NewMemory<'_>,
-    attribution: &dyn MemoryAttribution,
+    attribution: impl Into<Option<&dyn MemoryAttribution>>,
 ) -> Result<Uuid, sqlx::Error> {
     // ADR-0067 D-J: the id is drawn once (the column's own uuidv7()) so a fresh note's note_id can equal it in the same
     // statement; `$11` names the note a new version joins.
@@ -179,7 +179,7 @@ pub async fn insert_memory_in_txn(
     .execute(&mut **txn)
     .await?;
     crate::subject_repo::link_memory_in_txn(txn, tenant_id, memory_id, &[]).await?;
-    attribution
+    attribution.into().expect("port")
         .link_memory_projects(txn, tenant_id, memory_id, evidence.evidence_id)
         .await?;
     Ok(memory_id)
