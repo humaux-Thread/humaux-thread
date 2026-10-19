@@ -142,8 +142,9 @@ revoked.
   damaged on mismatch.
 - **Single call site through an M07-owned port (Q1 ruling).** The workspace's only Memory INSERT is
   `adapters::memory_repo::insert_memory_in_txn` (`crates/adapters/src/memory_repo.rs:1`, `:107`; M07 D9, G-M07-1).
-  Design v0.2 named it `adapters::distill_repo::insert_memory`. That door is an M07 (L3) file, so it cannot call M29
-  (L4) directly. Instead:
+  Design v0.2 names it by its re-export alias `adapters::distill_repo::insert_memory`
+  (`crates/adapters/src/distill_repo.rs:60`). The function is defined in an M07 (L3) file, so it cannot call M29 (L4)
+  directly. Instead:
   - M07 defines an attribution port next to the door (a `MemoryAttribution` trait or fn-pointer struct).
   - `insert_memory_in_txn` takes the port as a **required** argument, never `Option` and never a default or no-op. It
     invokes the port **exactly once**, in the caller's transaction, after the memory row is written.

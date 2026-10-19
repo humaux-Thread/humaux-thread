@@ -15,7 +15,7 @@ in the same call; `enumerate` filters by note kind, status and time; `get` retur
 `superseded_by`. The code map of main 17c5895 found ten collisions with the R-40 ruling:
 
 1. `remember.put` returns `{evidence_id, processing_handle, consistency_token, status:"accepted"}`; Memory is made
-   later by the private worker's LLM distill (`distill_repo::insert_memory`), and §15.5 / §34 say put never returns a
+   later by the private worker's LLM distill (`memory_repo::insert_memory_in_txn`), and §15.5 / §34 say put never returns a
    `memory_id` (`accepted` ≠ a Memory exists).
 2. The 0164 trigger turns every `EVIDENCE_ACCEPTED` outbox row into a `DERIVED_DISTILL` job (4 provider slots,
    tenant scheduler, budget gate 0196, automation policy) — no event_kind filter.
@@ -43,7 +43,7 @@ head (D-J), the stream / outbox / projection events, and the locally signed cons
 Qdrant) follows the commit through the existing outbox and is reported as `indexing:"scheduled"`, never awaited.
 
 "Single write path" means one authority policy, one candidate type, one persistence function
-(`distill_repo::insert_memory` and its link invariants) and the same projection events — not one process. The
+(`memory_repo::insert_memory_in_txn` and its link invariants) and the same projection events — not one process. The
 gateway already inserts Memory for `memory.confirm` (ADR-0026) and `memory.correct`; `role_gateway` holds INSERT on
 `private.memory_records`. Nothing in the transaction leaves the PG session (no LLM, embedding, Qdrant or remote
 signer), so §34.0.1 holds unchanged.
