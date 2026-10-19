@@ -345,6 +345,21 @@ and the failing lines are in the card's PR description.
   - r17: `use crate::byok;` in `attribution_repo.rs` -> G-N09-1 red: the attribution code names a model module.
   - The `AttributionSource` change leaves the fault lines of r10-r14, r16 and r17 verbatim (each still applies once on
     `9bed6b7`), so those records stand without a re-run.
+- T06c (PR #99), branches `red/m29-t06c-r1..r5` off `47967a8`:
+  - r1: `private.declared_project_visible`'s `AND project.workspace_id = ANY(p_authorized_workspace_ids)` replaced by
+    `AND p_authorized_workspace_ids IS NOT NULL` -> G-T06c-1(a) red: a project in a workspace the caller is not
+    authorized for is accepted (HTTP 200, not 400).
+  - r2: the `evidence_projects` INSERT skipped (`declared.filter(|_| false)` in `operation_receipt::atomically`) ->
+    G-T06c-1(b) red: the accepted put leaves 0 `evidence_projects` rows; G-T06c-2 red too: no DECLARED row.
+  - r3: the request fingerprint hashes the arguments with the `project_id` text removed -> G-T06c-1(c) red: the same
+    key with another visible project replays the first success instead of CONFLICT.
+  - r4: a second `INSERT INTO private.evidence_projects` string in `operation_receipt.rs` production code -> G-T06c-3
+    red: found 2.
+  - r5: the reader's `WHERE project.tenant_id = p_tenant_id` replaced by `WHERE p_tenant_id IS NOT NULL` -> G-T06c-1
+    reader leg (`memory_attribution.rs`) red: another tenant's project, its workspace in the set, is `true`. The wire
+    case cannot show it, since `control.workspaces.workspace_id` is globally unique and the workspace predicate alone
+    already refuses another tenant's project there.
+  - r1 and r5 stay inside 0254 because its postcheck deliberately leaves the reader's predicates to these tests.
 
 ## Cards and experiments
 
