@@ -20,8 +20,9 @@
 //!
 //! `cargo xtask deploy-env` (ADR-0066 D-R (a), D-T; §78.1) judges the committed `deploy/env/values/*.env` and
 //! `deploy/env/sizing-*.env` against the per-process key lists this module generates: a key a process reads that no
-//! values file, secret or prod.yml `environment:` declares, a values key no process reads, and a gateway ceiling
-//! below what the query-embedding cache the gateway values file enables needs (Baseline §51, ADR-0076). It reuses
+//! values file, secret or prod.yml `environment:` declares, a values key no process reads, a gateway `mem_limit`
+//! that does not follow `HUMAUX_SIZE_GATEWAY_MEM`, and a gateway ceiling below what the query-embedding cache the
+//! gateway values file enables needs (Baseline §51, ADR-0076). It reuses
 //! the node gate's own functions (`maintenance::deploy_check`), never a second presence rule.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -4565,14 +4566,20 @@ const FIXTURE_PLACEHOLDER: &str = "placeholder";
 const GATEWAY_CACHE_ENABLED_KEY: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED";
 const GATEWAY_CACHE_BYTES_KEY: &str = "HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES";
 const GATEWAY_MEM_KEY: &str = "HUMAUX_SIZE_GATEWAY_MEM";
-/// §78.1: with [`GATEWAY_WORKING_SET_MIB`], the only copy of the gateway cache sizing arithmetic. The query-embedding
-/// cache lives inside the gateway process (Baseline §51, ADR-0076), so `HUMAUX_SIZE_GATEWAY_MEM` (MiB) must hold the
-/// configured cache bytes, moka's bookkeeping on top (110 %: the "~10% moka overhead" of the M12 D5 note that sat in
-/// prose at the gateway `mem_limit` of deploy/compose/prod.yml) and the gateway's own working set.
+/// §78.1 exception (card-dictated, see the ponytail on [`GATEWAY_WORKING_SET_MIB`]): with it, the only copy of the
+/// gateway cache sizing arithmetic. The query-embedding cache lives inside the gateway process (Baseline §51,
+/// ADR-0076), so `HUMAUX_SIZE_GATEWAY_MEM` (MiB) must hold the configured cache bytes, moka's bookkeeping on top
+/// (110 %: the "~10% moka overhead" of the M12 D5 note that sat in prose at the gateway `mem_limit` of
+/// deploy/compose/prod.yml) and the gateway's own working set.
 const CACHE_OVERHEAD_PERCENT: u128 = 110;
-/// The gateway's working set outside the cache, MiB. ponytail: a start value fixed with this gate (prod.yml named the
-/// term without a number); the B23 load test / A5 re-measure replaces it (ADR-0066 R-10).
+/// The gateway's working set outside the cache, MiB. ponytail: not measured. 282 is the card's number and the same
+/// figure as the cache term (256 MiB x 1.1 = 281.6, the prod.yml `mem_limit` comment / ADR-0076 note) reused as a
+/// guess for the working set; the B23 load test / A5 re-measure replaces it (ADR-0066 R-10).
 const GATEWAY_WORKING_SET_MIB: u128 = 282;
+/// Probe for `HUMAUX_SIZE_GATEWAY_MEM` in the compose render (set in the child's environment, which Compose reads before
+/// any `--env-file`): no profile carries it, so a gateway `mem_limit` that is a literal or follows another key renders
+/// differently.
+const GATEWAY_MEM_PROBE_MIB: u128 = 777;
 const MIB: u128 = 1 << 20;
 
 /// MiB the gateway ceiling must reach for a cache of `cache_bytes`: `ceil(bytes x 1.1 / MiB)` plus the working set.
@@ -4615,8 +4622,20 @@ fn unknown_value_keys(examples: &[EnvFile], values: &[EnvFile]) -> Vec<String> {
 /// Compose 2.38 (the CI runner's) ignores `--no-env-resolution`: its `config` output is byte-identical with and
 /// without the flag, inlines every env_file into `environment:` and drops the `env_file` key (targeted run
 /// 39200887824), so [`deploy_check::compose_env_sources`] finds no process for such a service. A service without
-/// `env_file` belongs to each process whose non-empty values file its `environment:` carries whole.
-fn inlined_env_sources(doc: &serde_json::Value, values: &[EnvFile]) -> Vec<EnvFile> {
+/// `env_file` belongs to each process whose non-empty values file its `environment:` carries whole. The node's own
+/// rule (`compose_env_sources` skips an env_file ending `.secret.env`: a secret counts only from its `secret_home`
+/// file) is a private, path-based branch and an inlined render has no paths, so its effect is rebuilt here by key: a
+/// key that any secret file declares is not a compose source.
+fn inlined_env_sources(
+    doc: &serde_json::Value,
+    values: &[EnvFile],
+    secrets: &[EnvFile],
+) -> Vec<EnvFile> {
+    let in_a_secret_file = |key: &str| {
+        secrets
+            .iter()
+            .any(|f| f.entries.iter().any(|(k, _)| k == key))
+    };
     let services = doc.get("services").and_then(serde_json::Value::as_object);
     let mut sources = Vec::new();
     for (name, svc) in services.into_iter().flatten() {
@@ -4636,6 +4655,7 @@ fn inlined_env_sources(doc: &serde_json::Value, values: &[EnvFile]) -> Vec<EnvFi
                     process: file.process.clone(),
                     entries: env
                         .iter()
+                        .filter(|(k, _)| !in_a_secret_file(k))
                         .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_owned()))
                         .collect(),
                     unreadable: Vec::new(),
@@ -4658,7 +4678,7 @@ fn env_file_reasons(
     let all: Vec<EnvFile> = values.iter().chain(&secrets).cloned().collect();
     let mut reasons = deploy_check::placement_reasons(&all);
     let (mut compose, unreadable) = deploy_check::compose_env_sources(doc);
-    compose.extend(inlined_env_sources(doc, values));
+    compose.extend(inlined_env_sources(doc, values, &secrets));
     reasons.extend(unreadable);
     for (_, value) in secrets.iter_mut().flat_map(|f| f.entries.iter_mut()) {
         if value.is_empty() {
@@ -4672,16 +4692,35 @@ fn env_file_reasons(
     reasons
 }
 
+/// §57.1: the sizing leg is `pass` (`Reasons` empty), `fail` (`Reasons`) or `not_applicable`, which carries the whole
+/// line to print, naming the missing object.
+#[derive(Debug, PartialEq)]
+enum Sizing {
+    Reasons(Vec<String>),
+    NotApplicable(String),
+}
+
 /// `gateway_mem_below_cache:<profile file>:<KEY>=<mem> < <floor> MiB` for each sizing profile whose gateway ceiling
-/// cannot hold the query-embedding cache `values/gateway.env` enables. The flag decides, not the generation stamp:
-/// filling the stamp is the owner's one-line decision and must not first need a sizing change.
-fn gateway_mem_reasons(values: &[EnvFile], profiles: &[EnvFile]) -> Vec<String> {
+/// cannot hold the query-embedding cache `values/gateway.env` enables; `not_applicable` when it disables the cache.
+/// The flag decides, not the generation stamp: filling the stamp is the owner's one-line decision and must not first
+/// need a sizing change.
+fn gateway_mem_reasons(values: &[EnvFile], profiles: &[EnvFile]) -> Sizing {
     let Some(gateway) = values.iter().find(|f| f.process == "gateway") else {
-        return vec!["gateway_values_missing:values/gateway.env".to_owned()];
+        return Sizing::Reasons(vec!["gateway_values_missing:values/gateway.env".to_owned()]);
     };
-    let invalid = |key: &str| vec![format!("gateway_cache_key_invalid:{}:{key}", gateway.name)];
+    let invalid = |key: &str| {
+        Sizing::Reasons(vec![format!(
+            "gateway_cache_key_invalid:{}:{key}",
+            gateway.name
+        )])
+    };
     match last_value(gateway, GATEWAY_CACHE_ENABLED_KEY) {
-        Some("false") => return Vec::new(),
+        Some("false") => {
+            return Sizing::NotApplicable(format!(
+                "deploy-env sizing: not_applicable — {GATEWAY_CACHE_ENABLED_KEY}=false in {ENV_DIR}/{}",
+                gateway.name
+            ));
+        }
         Some("true") => {}
         _ => return invalid(GATEWAY_CACHE_ENABLED_KEY),
     }
@@ -4692,7 +4731,9 @@ fn gateway_mem_reasons(values: &[EnvFile], profiles: &[EnvFile]) -> Vec<String> 
         return invalid(GATEWAY_CACHE_BYTES_KEY);
     };
     if profiles.is_empty() {
-        return vec![format!("sizing_profiles_missing:{ENV_DIR}/sizing-*.env")];
+        return Sizing::Reasons(vec![format!(
+            "sizing_profiles_missing:{ENV_DIR}/sizing-*.env"
+        )]);
     }
     let floor = gateway_mem_floor_mib(bytes);
     let mut reasons = Vec::new();
@@ -4709,7 +4750,29 @@ fn gateway_mem_reasons(values: &[EnvFile], profiles: &[EnvFile]) -> Vec<String> 
             )),
         }
     }
-    reasons
+    Sizing::Reasons(reasons)
+}
+
+/// `gateway_mem_unwired:<field>:rendered <v> != <KEY>=<probe> MiB` for a gateway `mem_limit` / `memswap_limit` of the
+/// compose render that does not follow `HUMAUX_SIZE_GATEWAY_MEM`: the sizing profiles only bind the container through
+/// that interpolation (rendered with [`GATEWAY_MEM_PROBE_MIB`], in bytes).
+fn gateway_mem_wiring_reasons(doc: &serde_json::Value) -> Vec<String> {
+    let gateway = &doc["services"]["gateway"];
+    ["mem_limit", "memswap_limit"]
+        .into_iter()
+        .filter_map(|field| {
+            let rendered = &gateway[field];
+            let bytes = match rendered {
+                serde_json::Value::String(s) => s.parse::<u128>().ok(),
+                other => other.as_u64().map(u128::from),
+            };
+            (bytes != Some(GATEWAY_MEM_PROBE_MIB * MIB)).then(|| {
+                format!(
+                    "gateway_mem_unwired:{field}:rendered {rendered} != {GATEWAY_MEM_KEY}={GATEWAY_MEM_PROBE_MIB} MiB"
+                )
+            })
+        })
+        .collect()
 }
 
 /// `docker compose config` of prod.yml as the node gates render it; `Ok(None)` when docker is absent.
@@ -4725,6 +4788,7 @@ fn compose_json(root: &Path) -> Result<Option<String>, String> {
         cmd.args(["--profile", profile]);
     }
     cmd.args(["config", "--format", "json", "--no-env-resolution"])
+        .env(GATEWAY_MEM_KEY, GATEWAY_MEM_PROBE_MIB.to_string())
         .stdin(std::process::Stdio::null());
     let out = match cmd.output() {
         Ok(out) => out,
@@ -4753,8 +4817,9 @@ fn unknown_keys_gate(root: &Path) -> Result<Vec<String>, String> {
     Ok(unknown_value_keys(&examples, &values))
 }
 
-/// Gate (a): every example key is declared in a values file, the secret fixture or the compose document. `Ok(None)`
-/// when docker is absent (the caller names the missing object, §57.1).
+/// Gate (a): every example key is declared in a values file, the secret fixture or the compose document, and the
+/// gateway `mem_limit` of that document follows `HUMAUX_SIZE_GATEWAY_MEM`. `Ok(None)` when docker is absent (the
+/// caller names the missing object, §57.1).
 fn presence_gate(root: &Path) -> Result<Option<Vec<String>>, String> {
     let canonical = root
         .canonicalize()
@@ -4771,11 +4836,13 @@ fn presence_gate(root: &Path) -> Result<Option<Vec<String>>, String> {
     let examples = read_env(root, EXAMPLE_DIR, "example", ".env")?;
     let values = read_env(root, VALUES_DIR, "values", ".env")?;
     let secrets = read_env(root, SECRET_FIXTURE_DIR, "secrets", ".secret.env")?;
-    Ok(Some(env_file_reasons(&examples, &values, secrets, &doc)))
+    let mut reasons = env_file_reasons(&examples, &values, secrets, &doc);
+    reasons.extend(gateway_mem_wiring_reasons(&doc));
+    Ok(Some(reasons))
 }
 
 /// Gate (c): every sizing profile's gateway ceiling holds the cache the gateway values file enables.
-fn sizing_gate(root: &Path) -> Result<Vec<String>, String> {
+fn sizing_gate(root: &Path) -> Result<Sizing, String> {
     let values = read_env(root, VALUES_DIR, "values", ".env")?;
     let profiles: Vec<EnvFile> = read_env(root, ENV_DIR, "env", ".env")?
         .into_iter()
@@ -4794,22 +4861,22 @@ pub fn run_deploy_env(args: &[String]) -> i32 {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let root = root.canonicalize().unwrap_or(root);
-    let mut reasons = Vec::new();
-    for gate in [unknown_keys_gate(&root), sizing_gate(&root)] {
-        match gate {
-            Ok(found) => reasons.extend(found),
-            Err(e) => {
-                eprintln!("deploy-env: error: {e}");
-                return 1;
-            }
-        }
+    let unreadable = |e: String| {
+        eprintln!("deploy-env: error: {e}");
+        1
+    };
+    let mut reasons = match unknown_keys_gate(&root) {
+        Ok(found) => found,
+        Err(e) => return unreadable(e),
+    };
+    match sizing_gate(&root) {
+        Ok(Sizing::Reasons(found)) => reasons.extend(found),
+        Ok(Sizing::NotApplicable(line)) => println!("{line}"),
+        Err(e) => return unreadable(e),
     }
     let presence = match presence_gate(&root) {
         Ok(found) => found,
-        Err(e) => {
-            eprintln!("deploy-env: error: {e}");
-            return 1;
-        }
+        Err(e) => return unreadable(e),
     };
     reasons.extend(presence.iter().flatten().cloned());
     for reason in &reasons {
@@ -6580,42 +6647,109 @@ mod tests {
         );
     }
 
-    /// Compose 2.38 inlines env_files (no `env_file` key): the service is attributed by the values file it carries
-    /// whole, and a stranger service with a same-named key does not satisfy the process. Fault: drop
-    /// [`inlined_env_sources`] ⇒ the green case is red (CI run 39199098039); attribute by key name alone ⇒ the
-    /// stranger case is green.
+    /// Examples, values and secrets of two processes for the inlined-render tests: `other` reads a node key
+    /// (`HUMAUX_OTHER_NODE`) that only a compose `environment:` can supply.
+    fn inlined_inputs() -> (Vec<EnvFile>, Vec<EnvFile>, Vec<EnvFile>) {
+        let examples = env_files(&[
+            (
+                "example/gateway.env",
+                "gateway",
+                "HUMAUX_GATEWAY_LIMIT=\nHUMAUX_GATEWAY_CELL_ID=\n",
+            ),
+            (
+                "example/other.env",
+                "other",
+                "HUMAUX_OTHER_SHARD=\nHUMAUX_OTHER_LIMIT=\nHUMAUX_OTHER_NODE=\n",
+            ),
+        ]);
+        let values = env_files(&[
+            ("values/gateway.env", "gateway", "HUMAUX_GATEWAY_LIMIT=5\n"),
+            (
+                "values/other.env",
+                "other",
+                "HUMAUX_OTHER_SHARD=1\nHUMAUX_OTHER_LIMIT=2\n",
+            ),
+        ]);
+        let secrets = env_files(&[(
+            "secrets/migrate.secret.env",
+            "migrate",
+            "HUMAUX_MIGRATOR_PG_DSN=\n",
+        )]);
+        (examples, values, secrets)
+    }
+
+    /// Compose 2.38 inlines env_files (no `env_file` key): a service is attributed by the values file it carries WHOLE.
+    /// A stranger service that carries one real values key of `other` (not all of them) and the node key `other` is
+    /// missing must not supply it. Faults: drop [`inlined_env_sources`] ⇒ the green case is red (CI run 39199098039);
+    /// `.all(` → `.any(` in it ⇒ the stranger case is green.
     #[test]
     fn deploy_env_presence_reads_an_inlined_render() {
-        let (examples, values, secrets, _) = deploy_env_inputs();
-        let inlined = |gateway: serde_json::Value, other: serde_json::Value| {
+        let (examples, values, secrets) = inlined_inputs();
+        let render = |other: serde_json::Value, stranger: serde_json::Value| {
             json!({ "services": {
-                "gateway": { "image": "humaux-gateway:t", "environment": gateway },
-                "other": { "image": "humaux-ops:t", "environment": other } } })
+                "gateway": { "environment": { "HUMAUX_GATEWAY_LIMIT": "5", "HUMAUX_GATEWAY_CELL_ID": "c" } },
+                "other": { "environment": other },
+                "stranger": { "environment": stranger } } })
         };
-        let full = json!({ "HUMAUX_GATEWAY_LIMIT": "5", "HUMAUX_GATEWAY_PG_DSN": "", "HUMAUX_GATEWAY_CELL_ID": "c" });
+        let judge =
+            |doc: serde_json::Value| env_file_reasons(&examples, &values, secrets.clone(), &doc);
+        let other_full = json!({ "HUMAUX_OTHER_SHARD": "1", "HUMAUX_OTHER_LIMIT": "2", "HUMAUX_OTHER_NODE": "n" });
+        assert_eq!(judge(render(other_full, json!({}))), Vec::<String>::new());
+        let other_no_node = json!({ "HUMAUX_OTHER_SHARD": "1", "HUMAUX_OTHER_LIMIT": "2" });
+        let stranger = json!({ "HUMAUX_OTHER_SHARD": "1", "HUMAUX_OTHER_NODE": "n" });
         assert_eq!(
-            env_file_reasons(
-                &examples,
-                &values,
-                secrets.clone(),
-                &inlined(full.clone(), json!({}))
-            ),
+            judge(render(other_no_node, stranger)),
+            vec!["key_missing:other:HUMAUX_OTHER_NODE".to_owned()]
+        );
+    }
+
+    /// A secret declared in another service's secret file is not a compose source: `dr` inlines
+    /// `dr.secret.env`, which must not stand in for the key `maintenance.secret.env` lacks (the node skips every
+    /// `.secret.env` env_file). The key is a rotation twin so the `secret_empty` rule cannot catch it either. Fault:
+    /// drop the `in_a_secret_file` filter ⇒ no reason.
+    #[test]
+    fn deploy_env_presence_ignores_a_secret_another_service_inlines() {
+        const KEY: &str = "HUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS";
+        let examples = env_files(&[(
+            "example/maintenance.env",
+            "maintenance",
+            "HUMAUX_MAINTENANCE_LIMIT=\nHUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS=\n",
+        )]);
+        let values = env_files(&[(
+            "values/maintenance.env",
+            "maintenance",
+            "HUMAUX_MAINTENANCE_LIMIT=5\n",
+        )]);
+        let secrets = |maintenance: &str| {
+            env_files(&[
+                ("secrets/maintenance.secret.env", "maintenance", maintenance),
+                (
+                    "secrets/dr.secret.env",
+                    "dr",
+                    "HUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS=\n",
+                ),
+                (
+                    "secrets/migrate.secret.env",
+                    "migrate",
+                    "HUMAUX_MIGRATOR_PG_DSN=\n",
+                ),
+            ])
+        };
+        let doc = json!({ "services": {
+            "dr": { "environment": { "HUMAUX_MAINTENANCE_LIMIT": "5", "HUMAUX_MAINTENANCE_TOKEN_KEY_PREVIOUS": "" } },
+            "maintenance-serve": { "environment": { "HUMAUX_MAINTENANCE_LIMIT": "5" } } } });
+        assert_eq!(
+            env_file_reasons(&examples, &values, secrets(&format!("{KEY}=\n")), &doc),
             Vec::<String>::new()
         );
-        let mut no_cell = full;
-        no_cell
-            .as_object_mut()
-            .expect("object")
-            .remove("HUMAUX_GATEWAY_CELL_ID");
-        let stranger = json!({ "HUMAUX_GATEWAY_CELL_ID": "c" });
         assert_eq!(
-            env_file_reasons(&examples, &values, secrets, &inlined(no_cell, stranger)),
-            vec!["key_missing:gateway:HUMAUX_GATEWAY_CELL_ID".to_owned()]
+            env_file_reasons(&examples, &values, secrets(""), &doc),
+            vec![format!("key_missing:maintenance:{KEY}")]
         );
     }
 
     /// (b): a values key the process's example does not list is red, and so is a values file with no example at
-    /// all. Fault: compare against the union of every example ⇒ the stale key of another process passes.
+    /// all. Fault: compare against the union of every example ⇒ `other`'s key in the gateway values file passes.
     #[test]
     fn deploy_env_unknown_value_key_is_red() {
         let (examples, values, _, _) = deploy_env_inputs();
@@ -6628,6 +6762,16 @@ mod tests {
         assert_eq!(
             unknown_value_keys(&examples, &stale),
             vec!["values_key_unknown:values/gateway.env:HUMAUX_GATEWAY_STALE".to_owned()]
+        );
+        let (two, _, _) = inlined_inputs();
+        let strayed = env_files(&[(
+            "values/gateway.env",
+            "gateway",
+            "HUMAUX_GATEWAY_LIMIT=5\nHUMAUX_OTHER_SHARD=1\n",
+        )]);
+        assert_eq!(
+            unknown_value_keys(&two, &strayed),
+            vec!["values_key_unknown:values/gateway.env:HUMAUX_OTHER_SHARD".to_owned()]
         );
         let ghost = env_files(&[("values/ghost.env", "ghost", "")]);
         assert_eq!(
@@ -6649,9 +6793,10 @@ mod tests {
     }
 
     /// The floor is the cache with moka's overhead rounded up to whole MiB, plus the working set; one MiB less is red,
-    /// a disabled cache asks for nothing, and an unreadable flag, size or ceiling and an empty profile set are named
-    /// rather than passed. Fault: round the cache down ⇒ floor − 1 is green; read the stamp instead of the flag ⇒
-    /// the committed values (blank stamp) skip the rule.
+    /// a disabled cache is `not_applicable` naming the flag and the file (§57.1: never an empty pass), and an unreadable
+    /// flag, size or ceiling and an empty profile set are named rather than passed. Fault: round the cache down ⇒
+    /// floor − 1 is green; read the stamp instead of the flag ⇒ the committed values (blank stamp) skip the rule;
+    /// return empty for a disabled cache ⇒ the `not_applicable` assertion is red.
     #[test]
     fn gateway_ceiling_must_hold_the_embedding_cache() {
         let bytes = 268_435_456;
@@ -6662,49 +6807,83 @@ mod tests {
             "256 MiB x 1.1 = 281.6, rounded up"
         );
         assert_eq!(gateway_mem_floor_mib(1), 1 + GATEWAY_WORKING_SET_MIB);
+        let red = |reason: String| Sizing::Reasons(vec![reason]);
         let on = cache_values("true", "268435456");
+        let sized = |mem: &str| gateway_mem_reasons(&on, &gateway_profile("sizing-x", mem));
+        assert_eq!(sized(&floor.to_string()), Sizing::Reasons(Vec::new()));
         assert_eq!(
-            gateway_mem_reasons(&on, &gateway_profile("sizing-x", &floor.to_string())),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            gateway_mem_reasons(&on, &gateway_profile("sizing-x", &(floor - 1).to_string())),
-            vec![format!(
+            sized(&(floor - 1).to_string()),
+            red(format!(
                 "gateway_mem_below_cache:env/sizing-x.env:{GATEWAY_MEM_KEY}={} < {floor} MiB (cache {bytes} B)",
                 floor - 1
-            )]
+            ))
+        );
+        assert_eq!(
+            sized("lots"),
+            red(format!(
+                "gateway_mem_unreadable:env/sizing-x.env:{GATEWAY_MEM_KEY}"
+            ))
         );
         let off = cache_values("false", "268435456");
-        assert!(gateway_mem_reasons(&off, &gateway_profile("sizing-x", "1")).is_empty());
-        let named = |reasons: Vec<String>| {
-            reasons
-                .first()
-                .map(|r| r.split(':').next().unwrap_or("").to_owned())
-        };
-        let profile = gateway_profile("sizing-x", "9999");
         assert_eq!(
-            named(gateway_mem_reasons(&cache_values("maybe", "1"), &profile)).as_deref(),
-            Some("gateway_cache_key_invalid")
-        );
-        assert_eq!(
-            named(gateway_mem_reasons(&cache_values("true", "0"), &profile)).as_deref(),
-            Some("gateway_cache_key_invalid")
-        );
-        assert_eq!(
-            named(gateway_mem_reasons(&on, &[])).as_deref(),
-            Some("sizing_profiles_missing")
-        );
-        assert_eq!(
-            named(gateway_mem_reasons(
-                &on,
-                &gateway_profile("sizing-x", "lots")
+            gateway_mem_reasons(&off, &gateway_profile("sizing-x", "1")),
+            Sizing::NotApplicable(format!(
+                "deploy-env sizing: not_applicable — {GATEWAY_CACHE_ENABLED_KEY}=false in deploy/env/values/gateway.env"
             ))
-            .as_deref(),
-            Some("gateway_mem_unreadable")
+        );
+        let profile = gateway_profile("sizing-x", "9999");
+        let invalid = |key: &str| {
+            red(format!(
+                "gateway_cache_key_invalid:values/gateway.env:{key}"
+            ))
+        };
+        assert_eq!(
+            gateway_mem_reasons(&cache_values("maybe", "1"), &profile),
+            invalid(GATEWAY_CACHE_ENABLED_KEY)
         );
         assert_eq!(
-            named(gateway_mem_reasons(&[], &profile)).as_deref(),
-            Some("gateway_values_missing")
+            gateway_mem_reasons(&cache_values("true", "0"), &profile),
+            invalid(GATEWAY_CACHE_BYTES_KEY)
+        );
+        assert_eq!(
+            gateway_mem_reasons(&on, &[]),
+            red(format!("sizing_profiles_missing:{ENV_DIR}/sizing-*.env"))
+        );
+        assert_eq!(
+            gateway_mem_reasons(&[], &profile),
+            red("gateway_values_missing:values/gateway.env".to_owned())
+        );
+    }
+
+    /// The gateway `mem_limit` and `memswap_limit` of the render must be the probe bytes: a literal (`256m`), another
+    /// key's number or a missing field is named. Fault: skip the check ⇒ prod.yml `mem_limit: 256m` stays green.
+    #[test]
+    fn gateway_mem_limit_must_follow_the_sizing_key() {
+        let probe = (GATEWAY_MEM_PROBE_MIB * MIB).to_string();
+        let render = |mem: &str, swap: &str| json!({ "services": { "gateway": { "mem_limit": mem, "memswap_limit": swap } } });
+        assert_eq!(
+            gateway_mem_wiring_reasons(&render(&probe, &probe)),
+            Vec::<String>::new()
+        );
+        let unwired = |field: &str, rendered: &str| {
+            format!(
+                "gateway_mem_unwired:{field}:rendered {rendered} != {GATEWAY_MEM_KEY}={GATEWAY_MEM_PROBE_MIB} MiB"
+            )
+        };
+        assert_eq!(
+            gateway_mem_wiring_reasons(&render("268435456", &probe)),
+            vec![unwired("mem_limit", "\"268435456\"")]
+        );
+        assert_eq!(
+            gateway_mem_wiring_reasons(&render(&probe, "1073741824")),
+            vec![unwired("memswap_limit", "\"1073741824\"")]
+        );
+        assert_eq!(
+            gateway_mem_wiring_reasons(&json!({ "services": {} })),
+            vec![
+                unwired("mem_limit", "null"),
+                unwired("memswap_limit", "null")
+            ]
         );
     }
 
@@ -6733,8 +6912,10 @@ mod tests {
     /// Every committed sizing profile's gateway ceiling holds the embedding cache the committed values enable.
     #[test]
     fn deploy_env_live_gateway_ceiling_holds_the_embedding_cache() {
-        let reasons = sizing_gate(&repo_root()).expect("committed env files are readable");
-        assert!(reasons.is_empty(), "{reasons:#?}");
+        match sizing_gate(&repo_root()).expect("committed env files are readable") {
+            Sizing::Reasons(reasons) => assert!(reasons.is_empty(), "{reasons:#?}"),
+            Sizing::NotApplicable(line) => println!("{line}"),
+        }
     }
 
     // ---- DB ------------------------------------------------------------------------------

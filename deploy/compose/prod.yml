@@ -365,7 +365,7 @@ services:
     # M12 (Baseline §51, ADR-0076): this ceiling must hold the in-process query-embedding cache on top of the gateway's
     # own working set: HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES of values/gateway.env plus moka's overhead plus the
     # working set, in every sizing-*.env, whenever values/gateway.env enables the cache. `cargo xtask deploy-env` (CI)
-    # pins that arithmetic; its constants are the only copy. The cache fills only with distinct queries.
+    # pins that arithmetic and that the two limits below follow HUMAUX_SIZE_GATEWAY_MEM; its constants are the only copy. The cache fills only with distinct queries.
     # ponytail: the working-set term is a start value; the B23 load test sets the real M12 D5 sizes and this cap.
     mem_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
     memswap_limit: ${HUMAUX_SIZE_GATEWAY_MEM:?}m
