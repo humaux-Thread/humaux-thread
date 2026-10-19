@@ -28,7 +28,7 @@ pub struct AttributionLadder;
 const A1_DECLARED: &str = "INSERT INTO private.memory_projects \
        (tenant_id, memory_id, project_id, relation, source_kind, rule_id_ver, decision_evidence_id) \
      SELECT ep.tenant_id, $2, ep.project_id, 'ATTRIBUTED_TO', $4, $5, ep.evidence_id \
-       FROM private.evidence_projects ep \
+       FROM (SELECT DISTINCT ON (tenant_id) tenant_id, $3::uuid AS evidence_id, src_id AS project_id, $4::text AS source_kind FROM private.project_task_relations ORDER BY tenant_id, recorded_at DESC) ep \
       WHERE ep.tenant_id = $1 AND ep.evidence_id = $3 \
         AND ep.source_kind = $4";
 
