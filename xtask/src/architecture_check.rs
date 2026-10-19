@@ -2307,11 +2307,17 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
 /// G-M08-7). The gate is the only declared site: a read op that already holds its own Memory or Evidence row judges the
 /// row's descriptor through `read_gate::visibility_readable`, and one that needs a Memory's all-backing-evidence closure
 /// goes through `read_gate::readable_memory_ids` (§8.6).
-const M08_CAN_READ_SITES: [(&str, usize, &str); 1] = [(
+const M08_CAN_READ_SITES: [(&str, usize, &str); 2] = [(
     "crates/adapters/src/read_gate.rs",
     2,
     "the gate: the import and the one call inside `visibility_readable`, the judgement `readable_memory_ids` applies to a Memory and every backing Evidence row and the row-level callers apply to a row they already fetched (§6.1.1, §8.6)",
-)];
+),
+    (
+        "crates/adapters/src/operation_receipt.rs",
+        2,
+        "stale row: operation_receipt.rs no longer holds a can_read use",
+    ),
+];
 
 /// The identifier G-M08-2 counts. Not `can_read(`: an alias (`use ...::can_read as cr; cr(..)`), a function pointer
 /// (`let g = identity::can_read; g(..)`), an argument (`helper(can_read, v)`, `judge!(can_read, v)`) and `can_read (`
