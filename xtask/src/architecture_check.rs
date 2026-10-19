@@ -2819,51 +2819,65 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
 // M08 D1 / G-M08-2 "one home": the final read gate has one home. `can_read(` is the visibility judge (§6.1.1); the
 // all-backing-evidence closure around it (§8.6) lives in `crates/adapters/src/read_gate.rs`, so a read op that calls
 // `can_read(` anywhere else is judging visibility itself and can drift from the closure (a Memory with an unreadable
-// backing Evidence row slipping through). The number of `can_read` tokens per file is pinned with `==`.
+// backing Evidence row slipping through). The gate's row-level door, `read_gate::visibility_readable`, is the same
+// judge one row at a time, so it is ratcheted the same way: the number of `can_read` tokens and the number of
+// `visibility_readable` tokens per file are each pinned with `==`, and a new caller of the door is a declared row with
+// a reason, never a pass by proxy.
 // ============================================================================
 
-/// `(file, count, why)`: the declared sites G-M08-2 pins, each with the exact number of bare `can_read` tokens its
-/// non-test code holds ([`can_read_tokens`]: the import counts, so a file that imports and calls once is `2`). Compared
-/// per file with `==`, so a file added or dropped, one more use in a declared file, and one fewer are all red.
-/// Adapters and bins non-test code only (`domain` defines `can_read`, `projection` mirrors it for Qdrant filters under
-/// G-M08-7).
+/// The read gate's own file: the one home of `can_read` and of the definition of `visibility_readable`.
+const M08_GATE_HOME: &str = "crates/adapters/src/read_gate.rs";
+
+/// `(file, count, why)`: the declared sites G-M08-2 pins for `can_read`, each with the exact number of bare `can_read`
+/// tokens its non-test code holds ([`identifier_tokens`]: the import counts, so a file that imports and calls once is
+/// `2`). Compared per file with `==`, so a file added or dropped, one more use in a declared file, and one fewer are
+/// all red. Adapters and bins non-test code only (`domain` defines `can_read`, `projection` mirrors it for Qdrant
+/// filters under G-M08-7). The gate is the only declared site; every other reader judges through
+/// [`M08_VISIBILITY_READABLE_SITES`] or `read_gate::readable_memory_ids` (§8.6).
+const M08_CAN_READ_SITES: [(&str, usize, &str); 1] = [(
+    M08_GATE_HOME,
+    2,
+    "the gate: the import and the one call inside `visibility_readable`, the judgement `readable_memory_ids` applies to a Memory and every backing Evidence row and the row-level callers apply to a row they already fetched (§6.1.1, §8.6)",
+)];
+
+/// `(file, count, why)`: the declared callers of `read_gate::visibility_readable` outside the gate, each with the exact
+/// number of bare `visibility_readable` tokens its non-test code holds (the import counts). Compared per file with `==`
+/// exactly like [`M08_CAN_READ_SITES`], so a fifth caller, one more use in a declared caller, and one fewer are all red.
+/// The gate file is exempt: it defines the door and applies it inside `readable_memory_ids`.
 ///
-/// ponytail: the four files below `read_gate.rs` judge visibility themselves instead of calling
-/// `read_gate::readable_memory_ids`, upgrade by card M08-7 (coord task 1ce18be1-6af3-4eed-8930-a34789fe12ed), which
-/// routes them through the gate and shrinks this const, `contribution_entry_repo.rs` first since it re-implements the
-/// Memory-plus-backing-Evidence closure for contribution sources.
-const M08_CAN_READ_SITES: [(&str, usize, &str); 5] = [
-    (
-        "crates/adapters/src/read_gate.rs",
-        3,
-        "the gate: the import and the two calls of `readable_memory_ids`, which judge the Memory and every backing Evidence row (§6.1.1, §8.6)",
-    ),
+/// ponytail: every row hands the door a row its own SQL already fetched, which `readable_memory_ids` cannot take
+/// because it reads its own rows; `contribution_entry_repo.rs` also hand-rolls the §8.6 closure (the Memory row, then
+/// each backing Evidence row), upgrade by routing its Memory case through `readable_memory_ids` and dropping the row.
+const M08_VISIBILITY_READABLE_SITES: [(&str, usize, &str); 4] = [
     (
         "crates/adapters/src/read_materialize.rs",
         2,
-        "`load_overlay`: re-judges just-written Evidence rows of the RYW overlay, no Memory is involved (§15.5); not yet routed through the gate (M08-7)",
+        "`load_overlay`: re-judges just-written Evidence rows of the RYW overlay; no Memory is involved, so `readable_memory_ids` has nothing to judge (§15.5)",
     ),
     (
         "crates/adapters/src/contribution_entry_repo.rs",
         2,
-        "`visible`: judges a contribution source's Memory and its backing Evidence rows itself; not yet routed through the gate (M08-7)",
+        "`visible`: judges a contribution source's Memory row and then each backing Evidence row itself, a hand-rolled copy of the §8.6 closure `readable_memory_ids` owns",
     ),
     (
         "crates/adapters/src/operation_receipt.rs",
         2,
-        "`replay`: re-judges the prior Evidence row before reissuing a consistency token; not yet routed through the gate (M08-7)",
+        "`replay`: re-judges the one prior Evidence row its stream-binding SQL fetched, before reissuing a consistency token",
     ),
     (
         "crates/adapters/src/continuity_read.rs",
         2,
-        "`validate_evidence`: re-judges the Evidence rows behind a continuity fact; not yet routed through the gate (M08-7)",
+        "`validate_evidence`: re-judges the Evidence rows behind a continuity fact, next to its hash, SECRET_MATERIAL and lifecycle checks",
     ),
 ];
 
-/// The identifier G-M08-2 counts. Not `can_read(`: an alias (`use ...::can_read as cr; cr(..)`), a function pointer
+/// The identifier G-M08-2 counts first. Not `can_read(`: an alias (`use ...::can_read as cr; cr(..)`), a function pointer
 /// (`let g = identity::can_read; g(..)`), an argument (`helper(can_read, v)`, `judge!(can_read, v)`) and `can_read (`
 /// all use the function without that exact spelling.
 const CAN_READ: &str = "can_read";
+
+/// The identifier of the gate's row-level door, counted the same way as [`CAN_READ`].
+const VISIBILITY_READABLE: &str = "visibility_readable";
 
 /// Whether `disp` (repo-relative, `/`-separated) is production code G-M08-2 scans: `crates/adapters/src/**` and
 /// `bins/<bin>/src/**`. Test trees are already excluded by [`door_production_sources`].
@@ -2875,26 +2889,26 @@ fn can_read_scan_scope(disp: &str) -> bool {
     )
 }
 
-/// How many times `source`'s code names `can_read`: block comments blanked ([`strip_block_comments`]) and every line
-/// cut at its `//` comment ([`code_before_line_comment`], so `///` and `//!` lines are empty), then the identifier
-/// `can_read` with a non-identifier byte (or the line edge) on both sides. A call, an import (with or without `as`),
-/// a function pointer, an argument and `can_read (` all count; `cannot_read`, `my_can_read` and `can_read_all` are
-/// other identifiers.
+/// How many times `source`'s code names the identifier `name`: block comments blanked ([`strip_block_comments`]) and
+/// every line cut at its `//` comment ([`code_before_line_comment`], so `///` and `//!` lines are empty), then `name`
+/// with a non-identifier byte (or the line edge) on both sides. A call, an import (with or without `as`), a function
+/// pointer, an argument and `name (` all count; `cannot_read`, `my_can_read` and `can_read_all` are other identifiers
+/// for `can_read`.
 ///
-/// ponytail: textual, so `can_read` inside a string literal counts (a false red, never a false green) and a wrapper
-/// that calls it under another name is judged by its own file, upgrade to a syn-level call-graph check if either ever
+/// ponytail: textual, so `name` inside a string literal counts (a false red, never a false green) and a wrapper that
+/// calls it under another name is judged by its own file, upgrade to a syn-level call-graph check if either ever
 /// shows up.
-fn can_read_tokens(source: &str) -> usize {
+fn identifier_tokens(source: &str, name: &str) -> usize {
     strip_block_comments(source)
         .lines()
         .map(|line| {
             let code = code_before_line_comment(line);
             let bytes = code.as_bytes();
-            code.match_indices(CAN_READ)
+            code.match_indices(name)
                 .filter(|(at, _)| {
                     (*at == 0 || !is_ident_byte(bytes[*at - 1]))
                         && !bytes
-                            .get(*at + CAN_READ.len())
+                            .get(*at + name.len())
                             .is_some_and(|b| is_ident_byte(*b))
                 })
                 .count()
@@ -2902,10 +2916,60 @@ fn can_read_tokens(source: &str) -> usize {
         .sum()
 }
 
-/// M08 D1 / G-M08-2: for every file in [`can_read_scan_scope`] the number of `can_read` tokens ([`can_read_tokens`])
-/// equals its [`M08_CAN_READ_SITES`] count, and a file with tokens that is not declared is red. Red lines name the file
-/// and, for a declared one, both the found and the expected count: "G-M08-2: can_read( call outside the read gate"
-/// for an undeclared file or an extra use, and "... expected N" for a use that is gone or a file that does not exist.
+/// One identifier G-M08-2 ratchets: its declared `sites`, the wording of its red lines, and whether the gate file is
+/// exempt from the pin.
+struct M08Pin {
+    token: &'static str,
+    headline: &'static str,
+    sites_const: &'static str,
+    route: &'static str,
+    sites: &'static [(&'static str, usize, &'static str)],
+    gate_exempt: bool,
+}
+
+/// Red lines of one [`M08Pin`] over the scanned `sources`: an undeclared file holding the token, a declared file with
+/// more tokens than its row, and a declared file with fewer (or gone).
+fn m08_2_pin_problems(sources: &[(String, String)], pin: &M08Pin) -> Vec<String> {
+    let found: BTreeMap<&str, usize> = sources
+        .iter()
+        .filter(|(disp, _)| !(pin.gate_exempt && disp == M08_GATE_HOME))
+        .map(|(disp, source)| (disp.as_str(), identifier_tokens(source, pin.token)))
+        .filter(|(_, tokens)| *tokens > 0)
+        .collect();
+    let (token, headline, sites_const, route) =
+        (pin.token, pin.headline, pin.sites_const, pin.route);
+    let mut problems = Vec::new();
+    for (file, tokens) in &found {
+        if !pin.sites.iter().any(|(site, _, _)| site == file) {
+            problems.push(format!(
+                "G-M08-2: {headline}: {file} holds {tokens} `{token}` token(s) and is not a declared site \
+                 ({route}, or declare the file in {sites_const} with its count and reason)"
+            ));
+        }
+    }
+    for (file, expected, _) in pin.sites {
+        let actual = found.get(file).copied().unwrap_or(0);
+        if actual > *expected {
+            problems.push(format!(
+                "G-M08-2: {headline}: {file} holds {actual} `{token}` tokens, expected {expected} \
+                 (an extra use in a declared site; {route}, or raise the count in {sites_const} with its reason)"
+            ));
+        } else if actual < *expected {
+            problems.push(format!(
+                "G-M08-2: {file} holds {actual} `{token}` tokens, expected {expected} \
+                 (a declared use is gone, or the file does not exist; lower the count in {sites_const}, or drop the file once it is empty)"
+            ));
+        }
+    }
+    problems
+}
+
+/// M08 D1 / G-M08-2: for every file in [`can_read_scan_scope`] the number of `can_read` tokens equals its
+/// [`M08_CAN_READ_SITES`] count and the number of `visibility_readable` tokens equals its
+/// [`M08_VISIBILITY_READABLE_SITES`] count (the gate file exempt from the second), and a file with tokens that is not
+/// declared is red. Red lines name the file and, for a declared one, both the found and the expected count:
+/// "G-M08-2: can_read( call outside the read gate" / "G-M08-2: visibility_readable use outside its declared sites" for
+/// an undeclared file or an extra use, and "... expected N" for a use that is gone or a file that does not exist.
 /// `not_applicable` only when `crates/adapters/src` itself does not exist, and it names that directory (§57.1 第2条).
 fn m08_2_can_read_one_home(root: &Path) -> Verdict {
     if !root.join("crates/adapters/src").is_dir() {
@@ -2914,38 +2978,32 @@ fn m08_2_can_read_one_home(root: &Path) -> Verdict {
                 .to_string(),
         );
     }
-    let found: BTreeMap<String, usize> = door_production_sources(root)
+    let sources: Vec<(String, String)> = door_production_sources(root)
         .into_iter()
         .filter(|(disp, _)| can_read_scan_scope(disp))
-        .map(|(disp, source)| (disp, can_read_tokens(&source)))
-        .filter(|(_, tokens)| *tokens > 0)
         .collect();
-    let mut problems = Vec::new();
-    for (file, tokens) in &found {
-        if !M08_CAN_READ_SITES
-            .iter()
-            .any(|(site, _, _)| *site == file.as_str())
-        {
-            problems.push(format!(
-                "G-M08-2: can_read( call outside the read gate: {file} holds {tokens} `can_read` token(s) and is not a declared site \
-                 (route the read through read_gate::readable_memory_ids, or declare the file in M08_CAN_READ_SITES with its count and reason)"
-            ));
-        }
-    }
-    for (file, expected, _) in M08_CAN_READ_SITES {
-        let actual = found.get(file).copied().unwrap_or(0);
-        if actual > expected {
-            problems.push(format!(
-                "G-M08-2: can_read( call outside the read gate: {file} holds {actual} `can_read` tokens, expected {expected} \
-                 (an extra use in a declared site; route it through read_gate::readable_memory_ids, or raise the count in M08_CAN_READ_SITES with its reason)"
-            ));
-        } else if actual < expected {
-            problems.push(format!(
-                "G-M08-2: {file} holds {actual} `can_read` tokens, expected {expected} \
-                 (a declared use is gone, or the file does not exist; lower the count in M08_CAN_READ_SITES, or drop the file once it is empty)"
-            ));
-        }
-    }
+    let pins = [
+        M08Pin {
+            token: CAN_READ,
+            headline: "can_read( call outside the read gate",
+            sites_const: "M08_CAN_READ_SITES",
+            route: "route the read through read_gate::readable_memory_ids or read_gate::visibility_readable",
+            sites: &M08_CAN_READ_SITES,
+            gate_exempt: false,
+        },
+        M08Pin {
+            token: VISIBILITY_READABLE,
+            headline: "visibility_readable use outside its declared sites",
+            sites_const: "M08_VISIBILITY_READABLE_SITES",
+            route: "route the read through read_gate::readable_memory_ids",
+            sites: &M08_VISIBILITY_READABLE_SITES,
+            gate_exempt: true,
+        },
+    ];
+    let problems: Vec<String> = pins
+        .iter()
+        .flat_map(|pin| m08_2_pin_problems(&sources, pin))
+        .collect();
     if problems.is_empty() {
         Verdict::Pass
     } else {
@@ -11315,17 +11373,20 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    // -- M08 D1 / G-M08-2: per-file `can_read` token counts == the declared read-gate sites --------
+    // -- M08 D1 / G-M08-2: per-file `can_read` and `visibility_readable` token counts == the declared sites ----
 
     const M08_CALL: &str = "fn f() { let _ = can_read(auth, &visibility); }\n";
-    const M08_GATE: &str = "crates/adapters/src/read_gate.rs";
-    const M08_OVERLAY: &str = "crates/adapters/src/read_materialize.rs";
-    const M08_CONTINUITY: &str = "crates/adapters/src/continuity_read.rs";
-    const M08_RECEIPT: &str = "crates/adapters/src/operation_receipt.rs";
+    const M08_DOOR_CALL: &str = "fn f() { let _ = visibility_readable(auth, &visibility); }\n";
+    const M08_GATE: &str = M08_GATE_HOME;
 
     /// A file body holding exactly `n` bare `can_read` tokens.
     fn m08_uses(n: usize) -> String {
         M08_CALL.repeat(n)
+    }
+
+    /// A file body holding exactly `n` bare `visibility_readable` tokens.
+    fn m08_door_uses(n: usize) -> String {
+        M08_DOOR_CALL.repeat(n)
     }
 
     /// The declared count of one site.
@@ -11337,11 +11398,24 @@ async fn serving_version_in_txn() {}
             .1
     }
 
-    /// The tree as M08-1 leaves it: every declared file holds exactly its declared count, and nothing else does.
+    /// The declared `visibility_readable` count of one row-level caller.
+    fn m08_door_count(file: &str) -> usize {
+        M08_VISIBILITY_READABLE_SITES
+            .iter()
+            .find(|(site, _, _)| *site == file)
+            .unwrap_or_else(|| panic!("{file} is not a declared caller"))
+            .1
+    }
+
+    /// The tree as the gate declares it: every declared file holds exactly its declared count of each token, and
+    /// nothing else does.
     fn m08_declared_tree(label: &str) -> PathBuf {
         let tmp = fresh_tmp(label);
         for (file, count, _) in M08_CAN_READ_SITES {
             m07_write(&tmp, file, &m08_uses(count));
+        }
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            m07_write(&tmp, file, &m08_door_uses(count));
         }
         tmp
     }
@@ -11370,22 +11444,174 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    /// The real tree: every file holding a `can_read` token has exactly its declared count.
+    /// The declared tree plus one undeclared file `path` holding `body`: red, one line, naming that file as an
+    /// undeclared `visibility_readable` site.
+    fn m08_undeclared_door_use_is_red(label: &str, path: &str, body: &str) {
+        let tmp = m08_declared_tree(label);
+        m07_write(&tmp, path, body);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{path}: {lines:?}");
+        assert!(
+            lines[0].contains("G-M08-2: visibility_readable use outside its declared sites"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains(path), "{lines:?}");
+        assert!(lines[0].contains("is not a declared site"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The real tree: every file holding a `can_read` or `visibility_readable` token has exactly its declared count.
     #[test]
     fn m08_2_real_repo_passes() {
         assert_eq!(m08_2_can_read_one_home(&real_root()), Verdict::Pass);
     }
 
-    /// The gate file is always in its own declared set, every entry states a count and a reason, and every site
-    /// that is not the gate names the card that routes it through the gate.
+    /// The ratchet: the gate is the only declared site, with a count and a reason. A second declared site is an edit
+    /// to this test as well as to the const, so an exception to "one home" cannot be added by the const alone.
     #[test]
-    fn m08_2_declared_sites_name_the_gate_a_count_and_the_upgrade_card() {
-        assert_eq!(M08_CAN_READ_SITES[0].0, M08_GATE);
+    fn m08_2_declares_the_gate_as_the_only_site() {
+        assert_eq!(M08_CAN_READ_SITES.len(), 1);
         for (file, count, why) in M08_CAN_READ_SITES {
+            assert_eq!(file, M08_GATE);
             assert!(count > 0, "{file}");
             assert!(!why.is_empty(), "{file}");
-            assert!(file == M08_GATE || why.contains("M08-7"), "{file}: {why}");
         }
+    }
+
+    /// The ratchet on the door: four row-level callers outside the gate, each with a count and a reason, and the gate
+    /// file is not one of them. A fifth is an edit to this test as well as to the const.
+    #[test]
+    fn m08_2_declares_the_four_row_level_callers_of_the_door() {
+        assert_eq!(M08_VISIBILITY_READABLE_SITES.len(), 4);
+        for (file, count, why) in M08_VISIBILITY_READABLE_SITES {
+            assert_ne!(file, M08_GATE);
+            assert!(count > 0, "{file}");
+            assert!(!why.is_empty(), "{file}");
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7): a `can_read` use back in a row-level caller is red, naming that file as an undeclared
+    /// `can_read` site; the caller's own `visibility_readable` count still holds.
+    #[test]
+    fn m08_2_fails_when_a_row_level_caller_names_can_read_again() {
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            let tmp = m08_declared_tree("m08-2-red-routed");
+            assert_eq!(m08_2_can_read_one_home(&tmp), Verdict::Pass, "{file}");
+            m07_write(&tmp, file, &format!("{}{M08_CALL}", m08_door_uses(count)));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{file}: {lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(lines[0].contains("is not a declared site"), "{lines:?}");
+            assert!(
+                lines[0].contains("G-M08-2: can_read( call outside the read gate"),
+                "{lines:?}"
+            );
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): a fifth file calling the gate's row-level door is red as an undeclared site.
+    /// The same shape written with `can_read` was red before the door existed; the door must not be a way around it.
+    #[test]
+    fn m08_2_fails_on_a_new_caller_of_the_row_level_door() {
+        m08_undeclared_door_use_is_red(
+            "m08-2-red-door-new-file",
+            "crates/adapters/src/new_read.rs",
+            "use crate::read_gate::visibility_readable;\n\
+             fn f(a: &AuthorizationScope, m: &VisibilityDescriptor) -> bool { visibility_readable(a, m) }\n",
+        );
+        m08_undeclared_door_use_is_red(
+            "m08-2-red-door-bin",
+            "bins/gateway/src/memory.rs",
+            M08_DOOR_CALL,
+        );
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): the door named without a call, an alias import and a function pointer are
+    /// uses too, exactly like the `can_read` shapes.
+    #[test]
+    fn m08_2_counts_the_door_under_every_spelling() {
+        for (label, body) in [
+            (
+                "m08-2-red-door-alias",
+                "use crate::read_gate::visibility_readable as vr;\nfn f() { let _ = vr(a, &b); }\n",
+            ),
+            (
+                "m08-2-red-door-pointer",
+                "fn f() { let g = read_gate::visibility_readable; let _ = g(a, &b); }\n",
+            ),
+            (
+                "m08-2-red-door-space",
+                "fn f() { let _ = visibility_readable (a, &b); }\n",
+            ),
+        ] {
+            m08_undeclared_door_use_is_red(label, "crates/adapters/src/grep_repo.rs", body);
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): one MORE use of the door in a declared caller is red, naming the file and
+    /// both counts.
+    #[test]
+    fn m08_2_fails_on_an_extra_use_of_the_door_in_a_declared_caller() {
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            let tmp = m08_declared_tree("m08-2-red-door-extra");
+            m07_write(&tmp, file, &m08_door_uses(count + 1));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{file}: {lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(
+                lines[0].contains("G-M08-2: visibility_readable use outside its declared sites"),
+                "{lines:?}"
+            );
+            assert!(
+                lines[0].contains(&format!("holds {} `visibility_readable` tokens", count + 1)),
+                "{lines:?}"
+            );
+            assert!(lines[0].contains(&format!("expected {count}")), "{lines:?}");
+            assert_eq!(m08_door_count(file), count);
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): one FEWER use of the door in a declared caller is red too (`==`, never
+    /// `<=`), so a caller leaves the const only by an edit to it.
+    #[test]
+    fn m08_2_fails_when_a_declared_caller_loses_a_use_of_the_door() {
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            let tmp = m08_declared_tree("m08-2-red-door-fewer");
+            m07_write(&tmp, file, &m08_door_uses(count - 1));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{file}: {lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(
+                lines[0].contains(&format!("holds {} `visibility_readable` tokens", count - 1)),
+                "{lines:?}"
+            );
+            assert!(lines[0].contains(&format!("expected {count}")), "{lines:?}");
+            assert!(
+                !lines[0].contains("outside its declared sites"),
+                "{lines:?}"
+            );
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// The gate file defines the door and applies it inside `readable_memory_ids`, so its own `visibility_readable`
+    /// tokens are not pinned (its `can_read` count still is).
+    #[test]
+    fn m08_2_does_not_pin_the_door_inside_the_gate_file() {
+        let tmp = m08_declared_tree("m08-2-door-in-gate");
+        m07_write(
+            &tmp,
+            M08_GATE,
+            &format!(
+                "{}fn visibility_readable() {{}}\n{}",
+                m08_uses(m08_count(M08_GATE)),
+                m08_door_uses(5)
+            ),
+        );
+        assert_eq!(m08_2_can_read_one_home(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// `run()` must list the gate: a deleted or commented-out call tuple leaves a gate that never runs and reads as
@@ -11413,8 +11639,10 @@ async fn serving_version_in_txn() {}
              /* can_read(a, &b) in a block comment */\n\
              fn g() { let _ = cannot_read(a, &b); let _ = my_can_read(a, &b); }\n\
              fn h() { let _ = can_read_all(a, &b); let _ = a.can_readable(&b); }\n\
+             /// visibility_readable(a, &b) in a doc comment\n\
+             fn i() { let _ = my_visibility_readable(a, &b); let _ = visibility_readable_all(a, &b); }\n\
              #[cfg(test)]\n\
-             mod tests { fn t() { let _ = can_read(a, &b); } }\n",
+             mod tests { fn t() { let _ = can_read(a, &b); let _ = visibility_readable(a, &b); } }\n",
         );
         m07_write(&tmp, "crates/adapters/tests/seed.rs", M08_CALL);
         m07_write(&tmp, "bins/gateway/tests/seed.rs", M08_CALL);
@@ -11495,11 +11723,11 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m08_2_fails_on_an_extra_use_in_a_declared_site() {
         let tmp = m08_declared_tree("m08-2-red-extra");
-        let expected = m08_count(M08_OVERLAY);
-        m07_write(&tmp, M08_OVERLAY, &m08_uses(expected + 1));
+        let expected = m08_count(M08_GATE);
+        m07_write(&tmp, M08_GATE, &m08_uses(expected + 1));
         let lines = m08_fail_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains(M08_OVERLAY), "{lines:?}");
+        assert!(lines[0].contains(M08_GATE), "{lines:?}");
         assert!(
             lines[0].contains(&format!("holds {} `can_read` tokens", expected + 1)),
             "{lines:?}"
@@ -11516,27 +11744,25 @@ async fn serving_version_in_txn() {}
     }
 
     /// 注错 (G-M08-2, review W1): one FEWER use in a declared file is red too (`==`, never `<=`), naming both counts,
-    /// so a count shrinks only by an edit to the const. Covers the gate file and an outside site.
+    /// so a count shrinks only by an edit to the const.
     #[test]
     fn m08_2_fails_when_a_declared_site_loses_a_use() {
-        for file in [M08_GATE, M08_CONTINUITY] {
-            let tmp = m08_declared_tree("m08-2-red-fewer");
-            let expected = m08_count(file);
-            m07_write(&tmp, file, &m08_uses(expected - 1));
-            let lines = m08_fail_lines(&tmp);
-            assert_eq!(lines.len(), 1, "{lines:?}");
-            assert!(lines[0].contains(file), "{lines:?}");
-            assert!(
-                lines[0].contains(&format!("holds {} `can_read` tokens", expected - 1)),
-                "{lines:?}"
-            );
-            assert!(
-                lines[0].contains(&format!("expected {expected}")),
-                "{lines:?}"
-            );
-            assert!(!lines[0].contains("outside the read gate"), "{lines:?}");
-            fs::remove_dir_all(&tmp).ok();
-        }
+        let tmp = m08_declared_tree("m08-2-red-fewer");
+        let expected = m08_count(M08_GATE);
+        m07_write(&tmp, M08_GATE, &m08_uses(expected - 1));
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(M08_GATE), "{lines:?}");
+        assert!(
+            lines[0].contains(&format!("holds {} `can_read` tokens", expected - 1)),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains(&format!("expected {expected}")),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("outside the read gate"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// 注错 (G-M08-2): a declared file that was renamed away is red, not a skip: the old name holds 0 of its expected
@@ -11544,19 +11770,20 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m08_2_fails_when_a_declared_site_does_not_exist() {
         let tmp = m08_declared_tree("m08-2-red-missing");
-        fs::remove_file(tmp.join(M08_RECEIPT)).unwrap();
-        m07_write(&tmp, "crates/adapters/src/operation_receipts.rs", M08_CALL);
+        fs::remove_file(tmp.join(M08_GATE)).unwrap();
+        m07_write(&tmp, "crates/adapters/src/read_gates.rs", M08_CALL);
         let lines = m08_fail_lines(&tmp);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(
-            lines.iter().any(|l| l.contains("outside the read gate")
-                && l.contains("operation_receipts.rs")),
+            lines
+                .iter()
+                .any(|l| l.contains("outside the read gate") && l.contains("read_gates.rs")),
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains(&format!(
-                "{M08_RECEIPT} holds 0 `can_read` tokens, expected"
-            ))),
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{M08_GATE} holds 0 `can_read` tokens, expected"))),
             "{lines:?}"
         );
         fs::remove_dir_all(&tmp).ok();
@@ -11575,10 +11802,10 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m08_2_counts_an_aliased_import_in_a_declared_site() {
         let tmp = m08_declared_tree("m08-2-red-alias-declared");
-        let expected = m08_count(M08_RECEIPT);
+        let expected = m08_count(M08_GATE);
         m07_write(
             &tmp,
-            M08_RECEIPT,
+            M08_GATE,
             &format!(
                 "{}use humaux_domain::identity::can_read as cr;\nfn g() {{ let _ = cr(a, &b); }}\n",
                 m08_uses(expected)
@@ -11586,7 +11813,7 @@ async fn serving_version_in_txn() {}
         );
         let lines = m08_fail_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains(M08_RECEIPT), "{lines:?}");
+        assert!(lines[0].contains(M08_GATE), "{lines:?}");
         assert!(
             lines[0].contains(&format!("expected {expected}")),
             "{lines:?}"
