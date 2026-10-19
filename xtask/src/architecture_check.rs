@@ -7,7 +7,8 @@
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
-//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074) and the crate boundary table G-M01-3 (M01 D5).
+//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5) and the real-path
+//! fault gate G-M01-4 (M01 D4, ADR-0077).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -1317,6 +1318,334 @@ pub fn crate_boundary_violations() -> Result<Vec<(String, String)>, String> {
         .into_iter()
         .map(|v| (v.id, v.detail))
         .collect())
+}
+
+// ============================================================================
+// M01 D4 — G-M01-4: a DegradeCode variant is proven on its real path, or declared dormant (§53.4)
+// ============================================================================
+
+/// The dormant ledger: DegradeCode variants with no production emit site yet, one `[[dormant]]` row each.
+const DORMANT_FILE: &str = "crates/testkit/tests/fault/dormant.toml";
+
+/// Keys a `[[dormant]]` row may carry; any other key is a typo that would silently weaken the rule.
+const DORMANT_ROW_KEYS: [&str; 3] = ["variant", "owner", "reason"];
+
+/// `source` with `/* */` and `//` comments blanked (line numbers kept), so prose that mentions a name never counts as code.
+fn code_without_comments(source: &str) -> String {
+    let no_block = strip_block_comments(source);
+    no_block
+        .lines()
+        .map(code_before_line_comment)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Blanks every `#[cfg(test)]` / `#[cfg(all(test, ..))]` item of `source`, newlines kept. An item ends at its `;` or at
+/// the `}` matching its first `{`. [`strip_cfg_test_module`] blanks one module per file; `degrade.rs` and `envelope.rs`
+/// each gate a `fn` before their gated `mod`s, so a test module that is not the first gated item must not read as
+/// production code here.
+// ponytail: brace matching ignores braces inside strings and chars (as `matching_brace_end` does) and a `;` inside a
+// gated item's signature (`-> [u8; 4]`) ends it early; upgrade to a token walk if a gated item ever needs either.
+fn blank_cfg_test_items(source: &str) -> String {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0usize;
+    while let Some(rel) = source[at..].find("#[cfg(") {
+        let idx = at + rel;
+        let attr = &source[idx..];
+        if !(attr.starts_with("#[cfg(test)]") || attr.starts_with("#[cfg(all(test,")) {
+            at = idx + "#[cfg(".len();
+            continue;
+        }
+        let end = match (attr.find(';'), attr.find('{')) {
+            (Some(s), Some(b)) if s < b => idx + s + 1,
+            (Some(s), None) => idx + s + 1,
+            (_, Some(b)) => matching_brace_end(source, idx + b).unwrap_or(source.len()),
+            (None, None) => source.len(),
+        };
+        spans.push((idx, end));
+        at = end;
+    }
+    let mut out = String::with_capacity(source.len());
+    let mut next = spans.iter().peekable();
+    for (i, c) in source.char_indices() {
+        while next.peek().is_some_and(|s| i >= s.1) {
+            next.next();
+        }
+        let gated = next.peek().is_some_and(|s| i >= s.0);
+        out.push(if gated && c != '\n' { ' ' } else { c });
+    }
+    out
+}
+
+/// Whether `path` (workspace-relative) is production source for the emit-site scan: `src/` of a crate or a bin,
+/// not the testkit (test infrastructure).
+fn is_degrade_scan_source(path: &str) -> bool {
+    (path.starts_with("crates/") || path.starts_with("bins/"))
+        && path.contains("/src/")
+        && !path.starts_with("crates/testkit/")
+}
+
+/// The `(workspace-relative path, source)` pairs of every production source file under `crates/` and `bins/`, sorted.
+fn degrade_scan_files(root: &Path) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = ["crates", "bins"]
+        .iter()
+        .flat_map(|d| read_files(&walk_files(&root.join(d), &["rs"])))
+        .map(|(p, s)| (display(root, &p), s))
+        .filter(|(p, _)| is_degrade_scan_source(p))
+        .collect();
+    files.sort();
+    files
+}
+
+/// Production emit sites of the `variants`: `variant -> "path:line"` of the first non-test, non-comment
+/// `abstain(DegradeCode::V, ..)` or `.also(DegradeCode::V)` in `files` (`(workspace-relative path, source)`).
+/// Only those two call shapes count: a `DegradeCode::V` that is matched on, counted, listed in a slice or handed to
+/// another function is a reader of the variant, not an emitter.
+// ponytail: an emit through a helper that takes the code as a parameter (`fn degrade(c: DegradeCode)`) or a
+// `let code = DegradeCode::V;` is not seen, so the variant reads as dormant and needs a reviewed row; upgrade to
+// resolving the callee if such a helper ever appears.
+pub fn degrade_emit_sites(
+    files: &[(String, String)],
+    variants: &[String],
+) -> BTreeMap<String, String> {
+    const PATH: &str = "DegradeCode::";
+    let mut sites = BTreeMap::new();
+    for (path, source) in files {
+        let code = blank_cfg_test_items(&code_without_comments(source));
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(PATH) {
+            let start = from + rel;
+            let name_at = start + PATH.len();
+            from = name_at;
+            if start > 0 && is_ident_byte(code.as_bytes()[start - 1]) {
+                continue;
+            }
+            let name_len = code[name_at..]
+                .bytes()
+                .take_while(|b| is_ident_byte(*b))
+                .count();
+            let name = &code[name_at..name_at + name_len];
+            if !variants.iter().any(|v| v == name) || sites.contains_key(name) {
+                continue;
+            }
+            let Some(callee) = code[..start].trim_end().strip_suffix('(') else {
+                continue;
+            };
+            let callee = callee.trim_end();
+            let ident_len = callee
+                .bytes()
+                .rev()
+                .take_while(|b| is_ident_byte(*b))
+                .count();
+            if matches!(&callee[callee.len() - ident_len..], "abstain" | "also") {
+                let line = code[..start].matches('\n').count() + 1;
+                sites.insert(name.to_string(), format!("{path}:{line}"));
+            }
+        }
+    }
+    sites
+}
+
+/// Whether a fault test's `source` names `abstain` in code: an import, a call or a function value all count, comments
+/// do not. A live variant's fault test must reach the exit through the production function, never name it.
+pub fn names_abstain(source: &str) -> bool {
+    count_identifier_hits(&code_without_comments(source), "abstain", true) > 0
+}
+
+/// One `[[dormant]]` row of [`DORMANT_FILE`].
+#[derive(Debug)]
+struct DormantRow {
+    variant: String,
+    owner: String,
+    reason: String,
+}
+
+/// `M<nn>` or `M<nn>-<card>`: the module card that adds the emit site.
+// ponytail: same shape check as `known_red::owner_ok` (private there); one shared helper once either file moves.
+fn card_owner_ok(owner: &str) -> bool {
+    let Some(rest) = owner.strip_prefix('M') else {
+        return false;
+    };
+    let (module, card) = match rest.split_once('-') {
+        Some((m, c)) => (m, Some(c)),
+        None => (rest, None),
+    };
+    module.len() == 2
+        && module.bytes().all(|b| b.is_ascii_digit())
+        && card.is_none_or(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// Parses [`DORMANT_FILE`]: the readable rows plus every structural problem (a typo is red, never ignored).
+fn parse_dormant(raw: &str) -> (Vec<DormantRow>, Vec<String>) {
+    let table = match raw.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                Vec::new(),
+                vec![format!("{DORMANT_FILE} is not valid TOML: {e}")],
+            );
+        }
+    };
+    let mut problems: Vec<String> = table
+        .keys()
+        .filter(|k| k.as_str() != "dormant")
+        .map(|k| {
+            format!("{DORMANT_FILE}: unknown top-level key `{k}` (only [[dormant]] rows are read)")
+        })
+        .collect();
+    let Some(value) = table.get("dormant") else {
+        return (Vec::new(), problems);
+    };
+    let Some(entries) = value.as_array() else {
+        problems.push(format!(
+            "{DORMANT_FILE}: `dormant` must be an array of tables, written [[dormant]]"
+        ));
+        return (Vec::new(), problems);
+    };
+    let mut rows = Vec::new();
+    for (n, entry) in entries.iter().enumerate() {
+        let tag = format!("{DORMANT_FILE} row #{}", n + 1);
+        let Some(t) = entry.as_table() else {
+            problems.push(format!("{tag}: not a table"));
+            continue;
+        };
+        for k in t.keys().filter(|k| !DORMANT_ROW_KEYS.contains(&k.as_str())) {
+            problems.push(format!(
+                "{tag}: unknown key `{k}` (known: {})",
+                DORMANT_ROW_KEYS.join(", ")
+            ));
+        }
+        let field = |k: &str| {
+            t.get(k)
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let row = DormantRow {
+            variant: field("variant"),
+            owner: field("owner"),
+            reason: field("reason"),
+        };
+        if row.variant.is_empty() {
+            problems.push(format!("{tag}: missing `variant`"));
+            continue;
+        }
+        if !card_owner_ok(&row.owner) {
+            problems.push(format!(
+                "{tag} ({}): owner `{}` is not a module card (expected M<nn> or M<nn>-<card>, e.g. M11)",
+                row.variant, row.owner
+            ));
+        }
+        if row.reason.is_empty() {
+            problems.push(format!("{tag} ({}): missing `reason`", row.variant));
+        }
+        rows.push(row);
+    }
+    (rows, problems)
+}
+
+/// G-M01-4 pure comparator (M01 D4, §53.4). Per variant of `variants`:
+/// - it has a production emit site (`emit_sites`) ⇒ its fault test (`fault_sources`, by variant name) must not name
+///   `abstain`, and [`DORMANT_FILE`] must not list it (a stale row is red: the ledger only shrinks);
+/// - it has none ⇒ it must be listed in `dormant_toml` with an owner card and a reason.
+///
+/// A row naming no variant, a duplicate row, an unknown key and a bad owner are red as well. The notes are the
+/// ledger lines for the log, so growth shows (the `rows: N` habit of `known-red`). No `not_applicable` leg: the
+/// ledger and the fault tests are delivered by the same card, so absence is a regression (§57.1 rule 2).
+/// Injected-fault record: ADR-0077 (red records).
+pub fn real_path_from(
+    variants: &[String],
+    emit_sites: &BTreeMap<String, String>,
+    fault_sources: &BTreeMap<String, String>,
+    dormant_toml: &str,
+) -> (Verdict, Vec<String>) {
+    let (rows, mut problems) = parse_dormant(dormant_toml);
+    let mut listed: BTreeSet<&str> = BTreeSet::new();
+    for row in &rows {
+        if !variants.contains(&row.variant) {
+            problems.push(format!(
+                "{DORMANT_FILE}: row `{}` names no DegradeCode variant",
+                row.variant
+            ));
+        } else if !listed.insert(row.variant.as_str()) {
+            problems.push(format!("{DORMANT_FILE}: `{}` is listed twice", row.variant));
+        }
+    }
+    for v in variants {
+        let is_listed = listed.contains(v.as_str());
+        let test_file = format!("crates/testkit/tests/fault/{}.rs", pascal_to_snake(v));
+        if let Some(site) = emit_sites.get(v) {
+            if is_listed {
+                problems.push(format!(
+                    "{v}: {DORMANT_FILE} still lists it, but it now has a production emit site ({site}); delete the row (the dormant ledger only shrinks)"
+                ));
+            }
+            if fault_sources
+                .get(v)
+                .is_some_and(|s| names_abstain(s.as_str()))
+            {
+                problems.push(format!(
+                    "{v}: production emit site {site}, but {test_file} names `abstain`; drive the production function that emits it (§53.4: a reason never triggered on its real path must not merge)"
+                ));
+            }
+        } else if !is_listed {
+            problems.push(format!(
+                "{v}: no production emit site (abstain(DegradeCode::{v}, ..) or .also(DegradeCode::{v}) in non-test code of crates/*/src or bins/*/src) and no [[dormant]] row in {DORMANT_FILE}; add the row naming the card that will emit it"
+            ));
+        }
+    }
+    let mut notes = vec![format!(
+        "G-M01-4: {} variant(s) driven through their production emit site; dormant rows: {}",
+        emit_sites.len(),
+        rows.len()
+    )];
+    notes.extend(rows.iter().map(|r| {
+        format!(
+            "G-M01-4: dormant {} (owner {}): {}",
+            r.variant, r.owner, r.reason
+        )
+    }));
+    let verdict = if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    };
+    (verdict, notes)
+}
+
+/// G-M01-4 over the real workspace.
+fn m01_4_real_path_or_dormant(root: &Path) -> Verdict {
+    let degrade_path = root.join("crates/telemetry/src/degrade.rs");
+    let Ok(degrade_src) = fs::read_to_string(&degrade_path) else {
+        return Verdict::Fail(vec![format!("cannot read {}", degrade_path.display())]);
+    };
+    let variants = parse_degrade_variant_names(&degrade_src);
+    if variants.is_empty() {
+        return Verdict::Fail(vec![
+            "no `degrade_code! {` block in crates/telemetry/src/degrade.rs; the variant list cannot be read".to_string(),
+        ]);
+    }
+    let dormant = match fs::read_to_string(root.join(DORMANT_FILE)) {
+        Ok(raw) => raw,
+        Err(e) => return Verdict::Fail(vec![format!("{DORMANT_FILE} unreadable: {e}")]),
+    };
+    let fault_sources: BTreeMap<String, String> = variants
+        .iter()
+        .filter_map(|v| {
+            let path = root.join(format!(
+                "crates/testkit/tests/fault/{}.rs",
+                pascal_to_snake(v)
+            ));
+            fs::read_to_string(path).ok().map(|s| (v.clone(), s))
+        })
+        .collect();
+    let sites = degrade_emit_sites(&degrade_scan_files(root), &variants);
+    let (verdict, notes) = real_path_from(&variants, &sites, &fault_sources, &dormant);
+    for note in notes {
+        println!("{note}");
+    }
+    verdict
 }
 
 // ============================================================================
@@ -6819,6 +7148,10 @@ pub fn run(_args: &[String]) -> i32 {
             m01_3_crate_boundary(&root),
         ),
         (
+            "M01 D4 / G-M01-4 (a DegradeCode variant with a production emit site is tested through it, not through abstain; the others are rows of tests/fault/dormant.toml)",
+            m01_4_real_path_or_dormant(&root),
+        ),
+        (
             "§78 boundary lint (no env::var outside config/bootstrap)",
             env_var_scan(&root),
         ),
@@ -8781,6 +9114,340 @@ mod tests {
     #[test]
     fn g_m01_3_real_repo_passes() {
         assert_eq!(m01_3_crate_boundary(&real_root()), Verdict::Pass);
+    }
+
+    // -- M01 D4 / G-M01-4: real path or declared dormant ----------------------------------
+
+    fn m01_4_names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn m01_4_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// A ledger with one valid row per variant.
+    fn m01_4_rows(variants: &[&str]) -> String {
+        variants
+            .iter()
+            .map(|v| {
+                format!("[[dormant]]\nvariant = \"{v}\"\nowner = \"M11\"\nreason = \"later\"\n")
+            })
+            .collect()
+    }
+
+    /// A fault test that reaches the exit itself, and one that goes through a production function.
+    const M01_4_SYNTHETIC: &str = "use humaux_telemetry::degrade::{DegradeCode, abstain};\n#[test]\nfn t() {\n    let _ = abstain(DegradeCode::Alpha, ());\n}\n";
+    const M01_4_REAL_PATH: &str = "use humaux_retrieval::envelope::build_projection_block;\n#[test]\nfn t() {\n    let _ = build_projection_block;\n}\n";
+
+    fn m01_4_sites(src: &str) -> BTreeMap<String, String> {
+        degrade_emit_sites(
+            &[("crates/x/src/a.rs".to_string(), src.to_string())],
+            &m01_4_names(&["Alpha", "Beta", "AlphaTwo"]),
+        )
+    }
+
+    #[test]
+    fn g_m01_4_real_repo_passes() {
+        assert_eq!(m01_4_real_path_or_dormant(&real_root()), Verdict::Pass);
+    }
+
+    /// Positive control: the scanner is not blind on the real tree. The three emitters the M01 design names must be
+    /// found (a subset check, so a later card that adds an emitter does not have to edit this test).
+    #[test]
+    fn g_m01_4_scanner_finds_the_three_known_emitters_on_the_real_tree() {
+        let root = real_root();
+        let degrade = fs::read_to_string(root.join("crates/telemetry/src/degrade.rs")).unwrap();
+        let variants = parse_degrade_variant_names(&degrade);
+        let sites = degrade_emit_sites(&degrade_scan_files(&root), &variants);
+        for v in [
+            "ProjectionLag",
+            "ProjectionInvisibleLoss",
+            "LaneSubstituted",
+        ] {
+            assert!(
+                sites
+                    .get(v)
+                    .is_some_and(|s| s.starts_with("crates/retrieval/src/envelope.rs:")),
+                "{v}: {sites:?}"
+            );
+        }
+    }
+
+    /// 注错 (G-M01-4 a): a live variant whose fault test names `abstain` → red naming the variant and the file.
+    #[test]
+    fn g_m01_4_live_variant_whose_test_names_abstain_is_red() {
+        let (verdict, _) = real_path_from(
+            &m01_4_names(&["Alpha", "Beta"]),
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_SYNTHETIC), ("Beta", M01_4_SYNTHETIC)]),
+            &m01_4_rows(&["Beta"]),
+        );
+        let out = fail_lines(verdict);
+        assert!(
+            out.contains("Alpha: production emit site crates/x/src/a.rs:3, but crates/testkit/tests/fault/alpha.rs names `abstain`"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("Beta"),
+            "a dormant variant keeps its synthetic test: {out}"
+        );
+    }
+
+    /// 注错 (G-M01-4 b): a dormant row for a variant that has an emit site → red, the row must go.
+    #[test]
+    fn g_m01_4_dormant_row_for_a_live_variant_is_red() {
+        let (verdict, _) = real_path_from(
+            &m01_4_names(&["Alpha"]),
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_REAL_PATH)]),
+            &m01_4_rows(&["Alpha"]),
+        );
+        let out = fail_lines(verdict);
+        assert!(
+            out.contains("Alpha: crates/testkit/tests/fault/dormant.toml still lists it"),
+            "{out}"
+        );
+        assert!(out.contains("delete the row"), "{out}");
+    }
+
+    /// 注错 (G-M01-4 c): no emit site and no row → red; the ledger cannot grow silently.
+    #[test]
+    fn g_m01_4_variant_without_emit_site_or_row_is_red() {
+        let (verdict, _) = real_path_from(
+            &m01_4_names(&["Alpha"]),
+            &BTreeMap::new(),
+            &m01_4_map(&[("Alpha", M01_4_SYNTHETIC)]),
+            "",
+        );
+        let out = fail_lines(verdict);
+        assert!(out.contains("Alpha: no production emit site"), "{out}");
+        assert!(out.contains("no [[dormant]] row"), "{out}");
+    }
+
+    #[test]
+    fn g_m01_4_green_shapes_pass_and_the_notes_show_the_ledger() {
+        let variants = m01_4_names(&["Alpha", "Beta"]);
+        let (verdict, notes) = real_path_from(
+            &variants,
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_REAL_PATH), ("Beta", M01_4_SYNTHETIC)]),
+            &m01_4_rows(&["Beta"]),
+        );
+        assert_eq!(verdict, Verdict::Pass);
+        assert!(
+            notes[0].contains(
+                "1 variant(s) driven through their production emit site; dormant rows: 1"
+            ),
+            "{notes:?}"
+        );
+        assert!(
+            notes[1].contains("dormant Beta (owner M11): later"),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn g_m01_4_malformed_ledgers_are_red() {
+        let variants = m01_4_names(&["Alpha"]);
+        let live = m01_4_map(&[("Alpha", "crates/x/src/a.rs:1")]);
+        let check =
+            |toml: &str| fail_lines(real_path_from(&variants, &live, &BTreeMap::new(), toml).0);
+        let row = |variant: &str, owner: &str, reason: &str| {
+            format!(
+                "[[dormant]]\nvariant = \"{variant}\"\nowner = \"{owner}\"\nreason = \"{reason}\"\n"
+            )
+        };
+        assert!(check(&row("Nope", "M11", "r")).contains("names no DegradeCode variant"));
+        let twice = format!("{0}{0}", row("Alpha", "M11", "r"));
+        assert!(check(&twice).contains("`Alpha` is listed twice"));
+        assert!(check(&row("Alpha", "team", "r")).contains("is not a module card"));
+        assert!(check(&row("Alpha", "M11", "")).contains("missing `reason`"));
+        assert!(
+            check(&format!("{}why = \"x\"\n", row("Alpha", "M11", "r")))
+                .contains("unknown key `why`")
+        );
+        assert!(check("[other]\nx = 1\n").contains("unknown top-level key `other`"));
+        assert!(check("[dormant]\nvariant = \"Alpha\"\n").contains("must be an array of tables"));
+        assert!(check("[[dormant").contains("not valid TOML"));
+    }
+
+    #[test]
+    fn g_m01_4_names_abstain_ignores_comments_and_longer_identifiers() {
+        let prose = "//! abstain() is never named here\n/* abstain(DegradeCode::Alpha) */\nfn t() { // abstain(x)\n}\n";
+        assert!(!names_abstain(prose));
+        assert!(!names_abstain("fn abstained() {}\nfn not_abstain_x() {}\n"));
+        assert!(names_abstain("use telemetry::degrade::abstain as raise;\n"));
+        assert!(names_abstain(M01_4_SYNTHETIC));
+        assert!(!names_abstain(M01_4_REAL_PATH));
+    }
+
+    #[test]
+    fn degrade_emit_sites_recognise_abstain_and_also_across_line_breaks() {
+        let src = [
+            "fn f() {",
+            "    abstain(DegradeCode::Alpha, ())",
+            "}",
+            "fn g(o: O) -> O {",
+            "    o",
+            "        .also(",
+            "            DegradeCode::Beta,",
+            "        )",
+            "}",
+        ]
+        .join("\n");
+        let sites = m01_4_sites(&src);
+        assert_eq!(sites["Alpha"], "crates/x/src/a.rs:2");
+        assert_eq!(sites["Beta"], "crates/x/src/a.rs:7");
+    }
+
+    #[test]
+    fn degrade_emit_sites_skip_readers_comments_and_prefix_names() {
+        let src = [
+            "// abstain(DegradeCode::Alpha, ())",
+            "fn f(c: DegradeCode) -> u64 {",
+            "    let n = degrade_total_count(DegradeCode::Alpha);",
+            "    match c { DegradeCode::Beta => 1, _ => 0 };",
+            "    let all = DegradeCode::ALL;",
+            "    abstain(DegradeCode::AlphaTwo, ());",
+            "    n",
+            "}",
+        ]
+        .join("\n");
+        let sites = m01_4_sites(&src);
+        assert_eq!(
+            sites.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["AlphaTwo"]
+        );
+    }
+
+    /// `degrade.rs` and `envelope.rs` gate a `fn` before their gated `mod`s, and `envelope.rs` has two test modules:
+    /// every gated item is test code, only the production `fn` between them is not.
+    #[test]
+    fn degrade_emit_sites_ignore_every_cfg_test_item() {
+        let src = [
+            "#[cfg(test)]",
+            "fn helper() { abstain(DegradeCode::Alpha, ()); }",
+            "fn prod() { abstain(DegradeCode::Beta, ()); }",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn a() { abstain(DegradeCode::AlphaTwo, ()); }",
+            "}",
+            "#[cfg(test)]",
+            "mod more {",
+            "    fn b() { abstain(DegradeCode::Alpha, ()); }",
+            "}",
+        ]
+        .join("\n");
+        let sites = m01_4_sites(&src);
+        assert_eq!(
+            sites.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Beta"]
+        );
+        assert_eq!(sites["Beta"], "crates/x/src/a.rs:3");
+    }
+
+    #[test]
+    fn blank_cfg_test_items_keeps_lines_and_production_code() {
+        let src = "fn a() {}\n#[cfg(test)]\nmod t {\n    fn x() {}\n}\nfn b() {}\n";
+        let out = blank_cfg_test_items(src);
+        assert_eq!(out.lines().count(), src.lines().count());
+        assert!(out.contains("fn a() {}") && out.contains("fn b() {}") && !out.contains("fn x"));
+        let not_test = "#[cfg(not(test))]\nfn p() {}\n";
+        assert_eq!(blank_cfg_test_items(not_test), not_test);
+    }
+
+    /// `run()` must list G-M01-4 exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_real_path_gate_exactly_once() {
+        assert_eq!(
+            own_source_count("m01_4_real_path_or_", "dormant(&root),"),
+            1
+        );
+    }
+
+    /// A scratch tree holding what G-M01-4 reads: the real `degrade.rs`, the real emitter `envelope.rs`, the real fault
+    /// tests and the real ledger. The gate runs over it through [`m01_4_real_path_or_dormant`], paths and all.
+    fn m01_4_tree(tag: &str) -> PathBuf {
+        let tmp =
+            std::env::temp_dir().join(format!("arch-check-m01-4-{tag}-{}", std::process::id()));
+        fs::remove_dir_all(&tmp).ok();
+        let fault = "crates/testkit/tests/fault";
+        let mut rels: Vec<String> = [
+            "crates/telemetry/src/degrade.rs",
+            "crates/retrieval/src/envelope.rs",
+            DORMANT_FILE,
+        ]
+        .iter()
+        .map(|r| (*r).to_string())
+        .collect();
+        for entry in fs::read_dir(real_root().join(fault)).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".rs") {
+                rels.push(format!("{fault}/{name}"));
+            }
+        }
+        for rel in rels {
+            let to = tmp.join(&rel);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(real_root().join(&rel), &to).unwrap();
+        }
+        tmp
+    }
+
+    #[test]
+    fn g_m01_4_scratch_tree_is_green_then_red_for_each_injected_fault() {
+        let tmp = m01_4_tree("faults");
+        assert_eq!(m01_4_real_path_or_dormant(&tmp), Verdict::Pass);
+
+        // r1: projection_lag.rs reaches the exit itself again.
+        let lag = tmp.join("crates/testkit/tests/fault/projection_lag.rs");
+        let clean_lag = fs::read_to_string(&lag).unwrap();
+        fs::write(
+            &lag,
+            format!("use humaux_telemetry::degrade::abstain;\n{clean_lag}"),
+        )
+        .unwrap();
+        let out = fail_lines(m01_4_real_path_or_dormant(&tmp));
+        assert!(
+            out.contains("ProjectionLag: production emit site crates/retrieval/src/envelope.rs:"),
+            "{out}"
+        );
+        assert!(out.contains("projection_lag.rs names `abstain`"), "{out}");
+        fs::write(&lag, &clean_lag).unwrap();
+
+        // r2: a dormant row for a variant that has an emit site.
+        let ledger = tmp.join(DORMANT_FILE);
+        let clean_ledger = fs::read_to_string(&ledger).unwrap();
+        let row = m01_4_rows(&["ProjectionLag"]);
+        fs::write(&ledger, format!("{clean_ledger}\n{row}")).unwrap();
+        let out = fail_lines(m01_4_real_path_or_dormant(&tmp));
+        assert!(
+            out.contains("ProjectionLag: crates/testkit/tests/fault/dormant.toml still lists it"),
+            "{out}"
+        );
+        fs::write(&ledger, &clean_ledger).unwrap();
+
+        // r3 (static half): the production emit is removed, so the variant is neither live nor listed.
+        let envelope = tmp.join("crates/retrieval/src/envelope.rs");
+        let clean_envelope = fs::read_to_string(&envelope).unwrap();
+        let emit = "out.also(DegradeCode::ProjectionLag)";
+        assert_eq!(
+            clean_envelope.matches(emit).count(),
+            1,
+            "the emit site moved: update this fixture"
+        );
+        fs::write(&envelope, clean_envelope.replace(emit, "out")).unwrap();
+        let out = fail_lines(m01_4_real_path_or_dormant(&tmp));
+        assert!(
+            out.contains("ProjectionLag: no production emit site"),
+            "{out}"
+        );
+
+        fs::remove_dir_all(&tmp).ok();
     }
 
     // -- §78 env::var boundary lint --------------------------------------------------------

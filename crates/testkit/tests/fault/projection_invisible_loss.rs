@@ -1,39 +1,58 @@
 //! `testkit::tests::fault::projection_invisible_loss` — §53.4 注错测试：`DegradeCode::ProjectionInvisibleLoss` 的一条注错记录（每个
 //!   reason 必须有一条测试，从未触发过的 reason 不许合并，§53.3 规则2 的三数相等 把这句话变成 CI 事实）。
-//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[]; modules=[humaux-testkit, telemetry::degrade]
+//! Depends-on: crates=[humaux-retrieval, humaux-telemetry]; services=[]; env=[]; modules=[humaux-testkit, retrieval::completeness, retrieval::envelope, telemetry::degrade]
 //! Called-by: [testkit::tests::fault_main]
-//! Invariants: [injects ProjectionInvisibleLoss through abstain(), the single emit point (§53.3 rule 2); the
-//!   registered real-Qdrant injection (delete 10 points) is not implemented here]
-//! Spec: Baseline §53.4; §23.4; §53.1; §53.3
+//! Invariants: [the loss verdict is produced by retrieval::envelope::build_projection_block (A2) from a real ledger::close closure; this file never names the exit point; the Qdrant-level injection of §23.4 G23-2 is M13's G80-5, not repeated here (M01 D4 / G-M01-4)]
+//! Spec: Baseline §53.4; §23.1; §23.4; §53.1; ADR-0057; ADR-0077
 //!
-//! §53.4 登记项（尚未按登记语义实现，见下方 ponytail 标注）：绕过
-//! `retention::tombstone` 直接从 Qdrant 删 10 个 point（= §23.4 G23-2 注入 1）；
-//! visible 100 → 90，done 恒 100，deleted 恒 0，A2 违反。
+//! §53.4 登记的注入读数：visible 100 → 90，done 恒 100，deleted 恒 0，A2 违反。
 //!
-//! `crates/adapters/src/qdrant.rs` 目前仍是 1 行占位模块（`T0.x 任务填充`），
-//! 没有真实的 Qdrant client / point 可删——§53.4 登记的注入方式（真删 10 个
-//! point、断言 visible/done/deleted 三个计数）在这个占位模块存在之前做不到。
-//! 本文件与其余 8 个通用变体一样，改为直接调用 `abstain()`（§53.1 全仓唯一
-//! 出口点）注错，这满足 §53.3 规则2「每个 reason 一条测试」的计数要求，
-//! 但**不满足** §53.4 对这条 reason 特别登记的注入方式——不得把这句头注释
-//! 读作「已实现登记语义」。
-//!
-// ponytail: 用 abstain() 直接注错代替真实 Qdrant 删点，待
-// `crates/adapters/src/qdrant.rs` 有真实 client 实现后，把本测试换成真正
-// 绕过 retention::tombstone 删 10 个 point + 断言 visible 100→90 / done 恒
-// 100 / deleted 恒 0。
+//! Real path, at the envelope level: the ledger side is the registered reading (100 expected, 100 done, 0 deleted,
+//! 100 settled points) and the index side reports 90 visible points, so A2 fails and `build_projection_block`
+//! degrades through its production loss branch. Deleting 10 real Qdrant points past `retention::tombstone` is the
+//! Qdrant-level half of the registration; it needs the live index and belongs to M13 (G80-5).
 
-use humaux_telemetry::degrade::{DegradeCode, abstain, degrade_total_count};
+use std::time::Duration;
+
+use humaux_retrieval::completeness::ledger::{self, LedgerReads, ProjectionReads};
+use humaux_retrieval::envelope::build_projection_block;
+use humaux_telemetry::degrade::{DegradeCode, degrade_total_count};
 use humaux_testkit::{FaultObservation, assert_fault_observed};
 
 #[test]
 fn projection_invisible_loss_increments_counter_and_reports_both_forms() {
-    let before = degrade_total_count(DegradeCode::ProjectionInvisibleLoss);
-    let outcome = abstain(
-        DegradeCode::ProjectionInvisibleLoss,
-        "visible-undercount-fallback".to_string(),
+    // Nothing pending (so no lag verdict), A1 closed: 100 done == 100 expected.
+    let stream = ledger::close(
+        LedgerReads {
+            expected: 100,
+            done: 100,
+            ..LedgerReads::default()
+        },
+        ProjectionReads {
+            points_expected: 100,
+            points_settled: 100,
+            ..ProjectionReads::default()
+        },
     );
+
+    let before = degrade_total_count(DegradeCode::ProjectionInvisibleLoss);
+    let outcome = build_projection_block(&stream, Some(90), Duration::from_secs(30));
     let after = degrade_total_count(DegradeCode::ProjectionInvisibleLoss);
+
+    // The registered readings survive into the block: done and deleted unchanged, visible down 10, A2 violated.
+    assert_eq!(
+        (
+            outcome.value.done,
+            outcome.value.deleted,
+            outcome.value.visible
+        ),
+        (100, 0, Some(90))
+    );
+    assert!(!outcome.value.current);
+    assert_eq!(
+        outcome.degradations.as_slice(),
+        &[DegradeCode::ProjectionInvisibleLoss]
+    );
 
     let degradations_wire: Vec<String> = outcome
         .degradations

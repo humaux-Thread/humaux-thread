@@ -1307,6 +1307,7 @@ name = "humaux-testkit"
 version = "0.1.0"
 dependencies = [
  "humaux-domain",
+ "humaux-retrieval",
  "humaux-telemetry",
  "proptest",
 ]
