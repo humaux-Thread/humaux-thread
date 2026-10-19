@@ -336,11 +336,14 @@ and the failing lines are in the card's PR description.
     no `occurred_at` inherits under a currently valid CONTAINS (N09 R3).
   - r14: `subject_relations_one_relation_per_edge` predicate `revision = 0` -> #92 item 5 red, now per pair:
     `SubjectSubject` accepts a second `relation_id` for one edge.
-  - r15: the confirm path's `attribution_evidence_id` as E2 (`evidence_id`) -> G-T06a-confirm red: no row, since E2
-    carries no task run.
+  - r15, re-cut as `red/m29-t06a-r15b` off `9bed6b7` after the closed `AttributionSource` replaced the free id (the
+    first cut passed E2's id through that field): confirm passes `AttributionSource::Primary` -> G-T06a-confirm red:
+    no row, since E2 carries no task run.
   - r16: `ON CONFLICT (tenant_id, memory_id, project_id) DO NOTHING` dropped -> G-T06a-A3 red: A1 and A3 on one
     project fail on `memory_projects_pkey` instead of keeping the A1 row.
   - r17: `use crate::byok;` in `attribution_repo.rs` -> G-N09-1 red: the attribution code names a model module.
+  - The `AttributionSource` change leaves the fault lines of r10-r14, r16 and r17 verbatim (each still applies once on
+    `9bed6b7`), so those records stand without a re-run.
 
 ## Cards and experiments
 
