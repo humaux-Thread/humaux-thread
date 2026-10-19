@@ -1,0 +1,7 @@
+# §80.1 red record only (branch red/m29-t06b-r2, never merged): an A3' second site: another trigger on memory_records executing the A3' function
+migration_id = "0256_red_m29_t06b_r2"
+class = "FORWARD_ONLY"
+precheck = "select to_regprocedure('private.memory_projects_on_supersede()') is not null as precheck_ok"
+postcheck = "select true as postcheck_ok"
+rollback_or_forward_fix = "red record only; the branch is deleted after the run."
+backup_restore_requirement = "none: throwaway CI database."
