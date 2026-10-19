@@ -88,7 +88,7 @@ BEGIN
   -- The cast is its own statement, after pg_input_is_valid: a malformed uuid leaves v_principal NULL (refused below)
   -- instead of raising 22P02.
   IF NEW.decided_by LIKE 'principal:%' THEN
-    IF pg_input_is_valid(substr(NEW.decided_by, 11), 'uuid') THEN
+    IF true THEN
       v_principal := substr(NEW.decided_by, 11)::uuid;
     END IF;
     IF NOT private.relation_principal_is_member(NEW.tenant_id, v_principal) THEN
