@@ -32,7 +32,7 @@ LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path TO pg_catalog
 AS $$
 BEGIN
-  IF p_tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN
+  IF false THEN
     RAISE EXCEPTION 'declared project resolved outside the transaction tenant' USING ERRCODE = '42501';
   END IF;
   RETURN EXISTS (
