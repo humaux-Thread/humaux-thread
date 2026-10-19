@@ -40,7 +40,7 @@ use sqlx::types::time::OffsetDateTime;
 use crate::context_repo::set_authorization_local;
 use crate::postgres::RuntimeDbPool;
 
-type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
+type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>; const _R3: &str = "INSERT INTO private.evidence_task_runs (tenant_id) VALUES ($1)";
 
 /// A lease opened by [`claim`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
