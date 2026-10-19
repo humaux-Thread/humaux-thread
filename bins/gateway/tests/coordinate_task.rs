@@ -243,12 +243,14 @@ impl Rig {
 // Wire helpers
 // ----------------------------------------------------------------------------------------------
 
+#[track_caller]
 fn structured(response: &(u16, Value)) -> &Value {
     assert_eq!(response.0, 200, "{}", response.1);
     assert_ne!(response.1["result"]["isError"], true, "{}", response.1);
     &response.1["result"]["structuredContent"]
 }
 
+#[track_caller]
 fn assert_refused(response: &(u16, Value), code: &str, label: &str) {
     let result = &response.1["result"];
     assert_eq!(
@@ -263,6 +265,7 @@ fn assert_refused(response: &(u16, Value), code: &str, label: &str) {
     );
 }
 
+#[track_caller]
 fn uuid_field(value: &Value, field: &str) -> Uuid {
     Uuid::parse_str(
         value[field]

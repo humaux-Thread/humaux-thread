@@ -1612,29 +1612,37 @@ mod tests {
     /// 300 s default and both ends of the range boot. Fault: the lower bound moved to 0, or the upper bound removed.
     #[test]
     fn task_lease_ttl_is_bounded_at_boot() {
-        let with = |value: &str| {
+        let refused_key = |value: &str| {
             let mut values = raw();
             values.insert(TASK_LEASE_TTL_KEY.into(), value.into());
-            values
+            GatewayBootstrap::from_raw(values)
+                .err()
+                .map(|error| error.key)
         };
-        assert_eq!(rejected_key(with("0")), TASK_LEASE_TTL_KEY, "zero lease");
         assert_eq!(
-            rejected_key(with("4294967296")),
-            TASK_LEASE_TTL_KEY,
+            refused_key("0").as_deref(),
+            Some(TASK_LEASE_TTL_KEY),
+            "zero lease"
+        );
+        assert_eq!(
+            refused_key("4294967296").as_deref(),
+            Some(TASK_LEASE_TTL_KEY),
             "one second past the bound"
         );
         for value in ["-1", "soon"] {
-            assert_eq!(rejected_key(with(value)), TASK_LEASE_TTL_KEY, "{value:?}");
-        }
-        for value in ["1", "4294967295"] {
-            assert!(
-                GatewayBootstrap::from_raw(with(value)).is_ok(),
-                "{value} boots"
+            assert_eq!(
+                refused_key(value).as_deref(),
+                Some(TASK_LEASE_TTL_KEY),
+                "{value:?}"
             );
         }
-        let default = GatewayBootstrap::from_raw(raw())
-            .ok()
-            .expect("the full fixture boots");
+        for value in ["1", "4294967295"] {
+            assert_eq!(refused_key(value), None, "{value} boots");
+        }
+        let default = match GatewayBootstrap::from_raw(raw()) {
+            Ok(boot) => boot,
+            Err(error) => panic!("the full fixture boots: {}", error.key),
+        };
         assert_eq!(default.task_lease_ttl, Duration::from_secs(300));
     }
 
