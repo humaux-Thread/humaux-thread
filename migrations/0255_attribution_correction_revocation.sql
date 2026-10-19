@@ -135,12 +135,6 @@ END;
 $$;
 ALTER FUNCTION private.revoke_attributions_on_relation_correction() OWNER TO role_migration_owner;
 REVOKE ALL ON FUNCTION private.revoke_attributions_on_relation_correction() FROM PUBLIC;
-CREATE TRIGGER project_task_relations_revoke_attributions
-  AFTER INSERT ON private.project_task_relations
-  FOR EACH ROW
-  WHEN (NEW.revision > 1 AND NEW.relation_kind = 'CONTAINS')
-  EXECUTE FUNCTION private.revoke_attributions_on_relation_correction();
-
 -- Transitive revocation: an inherited link loses its ground with its ancestor (PROV wasInvalidatedBy along
 -- wasDerivedFrom). Its own INSERT fires this trigger again, one level per correction in the chain; it ends because
 -- each (memory, project) is revoked at most once (the revocation PK, and the view hides a revoked row).
