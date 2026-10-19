@@ -478,7 +478,7 @@ async fn atomically(
     // Design v0.2 §15 T04c: verify after the receipt lookup set the tenant GUCs (the port reads coord.* under FORCE
     // RLS) and before the reservation, so a refusal returns the port's ErrorCode with nothing written or metered and no
     // receipt row: dropping `txn` rolls back. The FOR SHARE it takes on the task row lasts until COMMIT.
-    let verified = match task_run {
+    let verified = match None::<(TaskRunId, FencingToken)> {
         Some((task_run_id, fencing_token)) => {
             Some(coord_repo::verify_task_run(&mut txn, &auth, task_run_id, fencing_token).await?)
         }
