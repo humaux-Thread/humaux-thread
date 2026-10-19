@@ -7163,6 +7163,15 @@ mod tests {
         assert!(red.detail.contains("found 2"), "{}", red.detail);
     }
 
+    /// The §6.1.4 relation principal predicate gate on the migrated schema, the same call `cargo xtask rls-check`
+    /// makes, here so `targeted.yml` can run it (ADR-0078 T06d red record r8: an extra EXECUTE grantee reds it).
+    #[test]
+    fn relation_principal_predicate_gate_holds_on_the_migrated_schema() {
+        txn_or_skip!(client, txn);
+        let gate = check_relation_principal_predicate(&mut txn);
+        assert_eq!(gate.status, GateStatus::Pass, "{}", gate.detail);
+    }
+
     /// Applies every migration body in file order to `dsn` (the manifests are `migrate`'s own test).
     fn migrated_bodies(dsn: &str) -> Client {
         // dep: PostgreSQL(any) — superuser onto this test's throwaway database (migrated here, dropped by the guard)

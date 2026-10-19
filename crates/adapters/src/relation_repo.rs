@@ -69,7 +69,7 @@ fn table(pair: RelationPair) -> &'static str {
 
 /// §52 mapping for the kernel's statements. A lost race (PK) and a stale-ahead `expected_revision` are both
 /// `CONFLICT`: the caller re-reads the current revision. An unknown, invisible or foreign-tenant endpoint or
-/// Evidence (FK / guard, both 23503), a `principal:` decider without an ACTIVE membership here (guard, 23503), a
+/// Evidence (FK / guard, both 23503), a `principal:` decider that is no live member here (guard, 23503), a
 /// non-whitelisted triple, an edge change and an authorisation Evidence repeated among the factual ones (23514) are
 /// `INVALID_INPUT`, with no existence oracle between "missing" and "another tenant's".
 fn db_error(error: sqlx::Error) -> ErrorCode {
@@ -90,8 +90,8 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
 ///
 /// Migration 0253 (§6.1.4): `authorization_evidence_id` must be an Evidence of the session tenant;
 /// `factual_evidence_ids` must be distinct Evidence the caller can see there and must not contain it; a
-/// [`DecidedBy::Principal`] must resolve to a user with an ACTIVE membership in the tenant. Each violation is
-/// `INVALID_INPUT`.
+/// [`DecidedBy::Principal`] must resolve to an ACTIVE user with an ACTIVE membership in the tenant, the tenant
+/// itself ACTIVE (a machine key never decides). Each violation is `INVALID_INPUT`.
 ///
 /// Precondition (§6.1.4, design v0.2 §15.2): the caller has verified that both endpoints of `edge` are visible in
 /// its authorised workspaces before calling. This function checks tenant scope only (`coord.tasks` has no workspace

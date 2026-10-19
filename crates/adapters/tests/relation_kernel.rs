@@ -33,7 +33,7 @@
 //! | `a_second_relation_id_for_one_edge_conflicts` | #92 item 5 (M29 T06a) | a predicate no revision matches on one table's edge index |
 //! | `g_t06d_1_authorization_evidence_is_tenant_evidence` | G-T06d-1 | drop 0253's FK line |
 //! | `g_t06d_2_factual_evidence_is_distinct_visible_evidence` | G-T06d-2 | drop the guard's factual check |
-//! | `g_t06d_3_principal_decider_is_a_live_member` | G-T06d-3 | drop the guard's membership check, or one predicate leg |
+//! | `g_t06d_3_principal_decider_is_a_live_member` | G-T06d-3 | drop the guard's membership check, one predicate leg, or the cast guard |
 //! | `g_t06d_4_authorization_evidence_is_not_factual` | G-T06d-4 | drop 0253's CHECK line |
 //! | `out_of_range_timestamp_is_invalid_input` | #92 item 2 (M29 T06d) | drop `Validity::new`'s lower bound |
 //! | `relation_kernel_round_trip_through_the_adapter` | #92 item 3 (M29 T06d) | the guard compares `relation_kind` only |
@@ -164,28 +164,33 @@ fn seed_evidence(client: &mut Client, tenant: Uuid, n: i32) -> Result<Vec<Uuid>,
         .collect())
 }
 
-/// A new ACTIVE user with a `state` membership in `tenant`.
-fn seed_member(client: &mut Client, tenant: Uuid, state: &str) -> Result<Uuid, postgres::Error> {
+/// A new `user_state` user with a `state` membership in `tenant`.
+fn seed_member(
+    client: &mut Client,
+    tenant: Uuid,
+    user_state: &str,
+    state: &str,
+) -> Result<Uuid, postgres::Error> {
     Ok(client
         .query_one(
-            "WITH u AS (INSERT INTO control.users (state) VALUES ('ACTIVE') RETURNING user_id), \
+            "WITH u AS (INSERT INTO control.users (state) VALUES ($3) RETURNING user_id), \
                   m AS (INSERT INTO control.memberships (tenant_id, user_id, role, state) \
                         SELECT $1, user_id, 'MEMBER', $2 FROM u) \
              SELECT user_id FROM u",
-            &[&tenant, &state],
+            &[&tenant, &state, &user_state],
         )?
         .get(0))
 }
 
-/// A v1 PAT of `tenant` bound to `user` (the gateway `PrincipalId` is its `api_key_id`); `revoked` sets
-/// `revoked_at` and nothing else.
-fn seed_key(client: &mut Client, tenant: Uuid, user: Uuid, revoked: bool) -> Uuid {
+/// A v1 key of `tenant`: a PAT bound to `user` (the gateway `PrincipalId` is its `api_key_id`), or a machine key
+/// when `user` is `None` (0111: no user, no user epoch); `revoked` sets `revoked_at` and nothing else.
+fn seed_key(client: &mut Client, tenant: Uuid, user: Option<Uuid>, revoked: bool) -> Uuid {
     client
         .query_one(
             "INSERT INTO control.api_keys (tenant_id, prefix, key_hash, status, authorization_version, user_id, \
                tenant_security_epoch, user_security_epoch, revoked_at) \
-             VALUES ($1, md5(gen_random_uuid()::text), sha256('relation_kernel'::bytea), 'ACTIVE', 1, $2, 0, 0, \
-               CASE WHEN $3 THEN now() END) \
+             VALUES ($1, md5(gen_random_uuid()::text), sha256('relation_kernel'::bytea), 'ACTIVE', 1, $2::uuid, 0, \
+               CASE WHEN $2::uuid IS NOT NULL THEN 0 END, CASE WHEN $3 THEN now() END) \
              RETURNING api_key_id",
             &[&tenant, &user, &revoked],
         )
@@ -218,7 +223,7 @@ impl DbIntegrationFixture for Fx {
         let setup = |e: postgres::Error| DbFixtureSkipReason::IsolationSetupFailed(e.to_string());
         let tenant: Uuid = client
             .query_one(
-                "INSERT INTO control.tenants (name) VALUES ('e2e-fixture m29-t05 relation kernel') \
+                "INSERT INTO control.tenants (name, state) VALUES ('e2e-fixture m29-t05 relation kernel', 'ACTIVE') \
                  RETURNING tenant_id",
                 &[],
             )
@@ -259,10 +264,10 @@ impl DbIntegrationFixture for Fx {
             )
             .map_err(setup)?;
         let evidence = seed_evidence(&mut client, tenant, 3).map_err(setup)?;
-        let member = seed_member(&mut client, tenant, "ACTIVE").map_err(setup)?;
+        let member = seed_member(&mut client, tenant, "ACTIVE", "ACTIVE").map_err(setup)?;
         let other: Uuid = client
             .query_one(
-                "INSERT INTO control.tenants (name) VALUES ('e2e-fixture m29-t06d decoy tenant') \
+                "INSERT INTO control.tenants (name, state) VALUES ('e2e-fixture m29-t06d decoy tenant', 'ACTIVE') \
                  RETURNING tenant_id",
                 &[],
             )
@@ -1002,7 +1007,9 @@ fn a_second_relation_id_for_one_edge_conflicts() {
 }
 
 /// One append creating a fresh relation for `edge`, in a savepoint of `txn` that is rolled back: the adapter's result
-/// and how many rows of that relation the writer saw before the rollback (zero when the append failed).
+/// and, after a successful append, how many rows of that relation the writer saw before the rollback. A failed
+/// append is not counted (the aborted savepoint cannot be queried); its 0 restates PostgreSQL's statement atomicity
+/// and is not an observation.
 async fn try_create(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     edge: &RelationEdge,
@@ -1035,7 +1042,7 @@ async fn try_create(
 }
 
 /// G-T06d-1 (0253 ①): on each table, an `authorization_evidence_id` that is no Evidence, or another tenant's
-/// Evidence, is INVALID_INPUT with no row; this tenant's Evidence is accepted.
+/// Evidence, is INVALID_INPUT; this tenant's Evidence is accepted.
 #[test]
 fn g_t06d_1_authorization_evidence_is_tenant_evidence() {
     run_db_fixture::<Fx, _>("g_t06d_1_authorization_evidence_is_tenant_evidence", |fx| {
@@ -1070,13 +1077,29 @@ fn g_t06d_1_authorization_evidence_is_tenant_evidence() {
     });
 }
 
-/// G-T06d-2 (0253 ②): on each table, a factual id that is no Evidence, another tenant's Evidence or a repeated id
-/// is INVALID_INPUT with no row; distinct Evidence of this tenant is accepted.
+/// G-T06d-2 (0253 ②): on each table, a factual id that is no Evidence, another tenant's Evidence, this tenant's
+/// Evidence the writer cannot see (USER_PRIVATE, and the session carries no user) or a repeated id is INVALID_INPUT;
+/// distinct Evidence of this tenant is accepted.
 #[test]
 fn g_t06d_2_factual_evidence_is_distinct_visible_evidence() {
     run_db_fixture::<Fx, _>(
         "g_t06d_2_factual_evidence_is_distinct_visible_evidence",
-        |fx| {
+        |mut fx| {
+            let hidden: Uuid = fx
+                .client
+                .query_one(
+                    "WITH e AS (INSERT INTO private.evidence_objects (tenant_id, evidence_kind, payload_sha256, \
+                                  data_class, origin_class, visibility_class, visibility_user_id, reasoning_domain_id) \
+                                SELECT tenant_id, 'EVENT', sha256('relation_kernel hidden'::bytea), 'INTERNAL', \
+                                  'DirectUserInput', 'USER_PRIVATE', $2, reasoning_domain_id \
+                                  FROM private.evidence_objects WHERE evidence_id = $1 RETURNING evidence_id), \
+                          v AS (INSERT INTO private.events (event_id, event_kind, payload) \
+                                SELECT evidence_id, 'USER_MESSAGE', '{}'::jsonb FROM e) \
+                     SELECT evidence_id FROM e",
+                    &[&fx.evidence[0], &fx.member],
+                )
+                .unwrap()
+                .get(0);
             let rt = runtime();
             let (dsn, tenant, member) = (fx.dsn.clone(), fx.tenant, fx.member);
             let edges = RelationPair::ALL.map(|pair| (pair, fx.edge(pair)));
@@ -1103,6 +1126,11 @@ fn g_t06d_2_factual_evidence_is_distinct_visible_evidence() {
                             (Err(ErrorCode::InvalidInput), 0),
                         ),
                         (
+                            "this tenant's Evidence the writer cannot see",
+                            vec![e1, hidden],
+                            (Err(ErrorCode::InvalidInput), 0),
+                        ),
+                        (
                             "repeated Evidence",
                             vec![e1, e1],
                             (Err(ErrorCode::InvalidInput), 0),
@@ -1121,20 +1149,30 @@ fn g_t06d_2_factual_evidence_is_distinct_visible_evidence() {
 }
 
 /// G-T06d-3 (0253 ③, design v0.2 §15.5): on each table, a `principal:` decider is accepted only when it resolves to
-/// a user with an ACTIVE membership in this tenant: the member user itself and a live key of this tenant bound to
-/// it pass; a user ACTIVE only in another tenant, a SUSPENDED member, a revoked key and another tenant's key bound to
-/// the same member are INVALID_INPUT with no row, as is a malformed `principal:` value (not 22P02 / INTERNAL). The
-/// predicate also answers false for another tenant than the session's.
+/// a live member of this tenant (ACTIVE membership, ACTIVE user, ACTIVE tenant): the member user itself and a live
+/// key of this tenant bound to it pass. Refused as INVALID_INPUT: a user ACTIVE only in another tenant; an INVITED,
+/// SUSPENDED or REMOVED member; a SUSPENDED user whose membership is ACTIVE, and a live key bound to that user; a
+/// live key bound to a user who is no member here; a machine key (no user); a revoked key; another tenant's key bound
+/// to the member; the member once the tenant is SUSPENDED; and a malformed `principal:` value (not 22P02 /
+/// INTERNAL). The predicate also answers false for another tenant than the session's.
 #[test]
 #[allow(clippy::too_many_lines)] // one decoy per predicate leg, judged on three tables
 fn g_t06d_3_principal_decider_is_a_live_member() {
     run_db_fixture::<Fx, _>("g_t06d_3_principal_decider_is_a_live_member", |mut fx| {
         let (tenant, other, member) = (fx.tenant, fx.other, fx.member);
-        let elsewhere = seed_member(&mut fx.client, other, "ACTIVE").unwrap();
-        let suspended = seed_member(&mut fx.client, tenant, "SUSPENDED").unwrap();
-        let revoked_key = seed_key(&mut fx.client, tenant, member, true);
-        let foreign_key = seed_key(&mut fx.client, other, member, false);
-        let live_key = seed_key(&mut fx.client, tenant, member, false);
+        let c = &mut fx.client;
+        let elsewhere = seed_member(c, other, "ACTIVE", "ACTIVE").unwrap();
+        let invited = seed_member(c, tenant, "ACTIVE", "INVITED").unwrap();
+        let suspended = seed_member(c, tenant, "ACTIVE", "SUSPENDED").unwrap();
+        let removed = seed_member(c, tenant, "ACTIVE", "REMOVED").unwrap();
+        let suspended_user = seed_member(c, tenant, "SUSPENDED", "ACTIVE").unwrap();
+        let suspended_user_key = seed_key(c, tenant, Some(suspended_user), false);
+        let non_member_key = seed_key(c, tenant, Some(elsewhere), false);
+        let machine_key = seed_key(c, tenant, None, false);
+        let revoked_key = seed_key(c, tenant, Some(member), true);
+        let foreign_key = seed_key(c, other, Some(member), false);
+        let live_key = seed_key(c, tenant, Some(member), false);
+        let refused = (Err(ErrorCode::InvalidInput), 0);
         let rt = runtime();
         let (dsn, auth) = (fx.dsn.clone(), fx.evidence[0]);
         let edges = RelationPair::ALL.map(|pair| (pair, fx.edge(pair)));
@@ -1144,10 +1182,16 @@ fn g_t06d_3_principal_decider_is_a_live_member() {
             for (pair, edge) in edges {
                 let mut txn = gateway_txn(&mut conn, tenant).await;
                 for (name, principal_id, expected) in [
-                    ("user ACTIVE only in another tenant", elsewhere, (Err(ErrorCode::InvalidInput), 0)),
-                    ("SUSPENDED member", suspended, (Err(ErrorCode::InvalidInput), 0)),
-                    ("revoked key", revoked_key, (Err(ErrorCode::InvalidInput), 0)),
-                    ("another tenant's key", foreign_key, (Err(ErrorCode::InvalidInput), 0)),
+                    ("user ACTIVE only in another tenant", elsewhere, refused),
+                    ("INVITED member", invited, refused),
+                    ("SUSPENDED member", suspended, refused),
+                    ("REMOVED member", removed, refused),
+                    ("SUSPENDED user, ACTIVE membership", suspended_user, refused),
+                    ("live key of a SUSPENDED user", suspended_user_key, refused),
+                    ("live key of a user who is no member here", non_member_key, refused),
+                    ("machine key (no user)", machine_key, refused),
+                    ("revoked key", revoked_key, refused),
+                    ("another tenant's key", foreign_key, refused),
                     ("ACTIVE member", member, (Ok(1), 1)),
                     ("live key of an ACTIVE member", live_key, (Ok(1), 1)),
                 ] {
@@ -1196,12 +1240,32 @@ fn g_t06d_3_principal_decider_is_a_live_member() {
                 "(another tenant than the session's, the session tenant)"
             );
             txn.rollback().await.unwrap();
+            // Last, because it changes the fixture tenant: the same ACTIVE member once the tenant is SUSPENDED.
+            let set_state = "UPDATE control.tenants SET state = $2 WHERE tenant_id = $1";
+            sqlx::query(set_state)
+                .bind(tenant)
+                .bind("SUSPENDED")
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            for (pair, edge) in edges {
+                let mut txn = gateway_txn(&mut conn, tenant).await;
+                let got = try_create(&mut txn, &edge, &principal(member), &[], auth).await;
+                assert_eq!(got, refused, "{pair:?}: ACTIVE member of a SUSPENDED tenant");
+                txn.rollback().await.unwrap();
+            }
+            sqlx::query(set_state)
+                .bind(tenant)
+                .bind("ACTIVE")
+                .execute(&mut conn)
+                .await
+                .unwrap();
         });
     });
 }
 
 /// G-T06d-4 (0253 ④): on each table, the authorisation Evidence repeated among the factual Evidence is
-/// INVALID_INPUT with no row, although every id is a valid Evidence of this tenant.
+/// INVALID_INPUT, although every id is a valid Evidence of this tenant.
 #[test]
 fn g_t06d_4_authorization_evidence_is_not_factual() {
     run_db_fixture::<Fx, _>("g_t06d_4_authorization_evidence_is_not_factual", |fx| {
@@ -1248,6 +1312,17 @@ fn out_of_range_timestamp_is_invalid_input() {
             from(PG_TIMESTAMPTZ_MIN_MICROS - 1),
             Err(ErrorCode::InvalidInput),
             "1 µs before PostgreSQL's earliest timestamptz"
+        );
+        assert_eq!(
+            Validity::new(&[
+                (Included(Timestamp::Micros(T0)), Unbounded),
+                (
+                    Included(Timestamp::Micros(PG_TIMESTAMPTZ_MIN_MICROS - 1)),
+                    Unbounded
+                ),
+            ]),
+            Err(ErrorCode::InvalidInput),
+            "a second segment 1 µs before PostgreSQL's earliest timestamptz"
         );
         let earliest = from(PG_TIMESTAMPTZ_MIN_MICROS).unwrap();
         let rt = runtime();

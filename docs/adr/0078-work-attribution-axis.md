@@ -284,10 +284,10 @@ module gates there needs its own spec change.
 | G-M29-2 interval shape | `[]`, explicit infinity and an unbounded lower bound are rejected by the CHECK | drop the `upper_inc` test from the CHECK function |
 | G-M29-3 CAS | two connections writing with the same `expected_revision` concurrently: exactly one succeeds | drop the revision check |
 | G-M29-4 append-only | no non-owner role holds UPDATE (any column) or DELETE on any relation table (`has_*_privilege`, as the manifest postchecks ask, issue #92 item 1); the owner's UPDATE / DELETE hit the trigger | grant UPDATE |
-| G-T06d-1 authorisation Evidence | on each relation table, an `authorization_evidence_id` that is no Evidence or another tenant's is `INVALID_INPUT`, no row | drop 0253's FK line |
-| G-T06d-2 factual Evidence | on each table, a factual id that is no Evidence, another tenant's, or repeated is `INVALID_INPUT`, no row | drop the guard's factual check |
-| G-T06d-3 principal membership | on each table, a `principal:` decider that is a user ACTIVE only elsewhere, a non-ACTIVE member, a revoked key or another tenant's key is `INVALID_INPUT`, no row; a malformed value is `INVALID_INPUT`; the predicate is false for a tenant other than the session's | drop the guard's membership check, or one predicate leg |
-| G-T06d-4 authorisation ∉ factual | the authorisation Evidence among the factual ones is `INVALID_INPUT`, no row | drop 0253's CHECK line |
+| G-T06d-1 authorisation Evidence | on each relation table, an `authorization_evidence_id` that is no Evidence or another tenant's is `INVALID_INPUT` | drop 0253's FK line |
+| G-T06d-2 factual Evidence | on each table, a factual id that is no Evidence, another tenant's, this tenant's but invisible to the writer, or repeated is `INVALID_INPUT` | drop the guard's factual check |
+| G-T06d-3 principal membership | on each table, a `principal:` decider that is a user ACTIVE only elsewhere, an INVITED / SUSPENDED / REMOVED member, a SUSPENDED user (directly or through a live key), a key of a non-member, a machine key, a revoked key, another tenant's key, or a member of a SUSPENDED tenant is `INVALID_INPUT`; a malformed value is `INVALID_INPUT`, not 22P02; the predicate is false for a tenant other than the session's | drop the guard's membership check, one predicate leg, or the cast guard |
+| G-T06d-4 authorisation ∉ factual | the authorisation Evidence among the factual ones is `INVALID_INPUT` | drop 0253's CHECK line |
 | G-M29-5 single attribution sites | two counts, both `== 1`: (a) the attribution port is invoked once, inside `memory_repo::insert_memory_in_txn`, with a required parameter (A1, A3); (b) exactly one A3' inheritance site, the M29 trigger on the supersede transition | (1) a second port invocation; (2) the port parameter made `Option` / defaulted; (3) a second A3' site, as a Rust call or another trigger; (4) the A3' trigger removed, so a fixture correction leaves the successor `unresolved` |
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
@@ -389,7 +389,10 @@ and the failing lines are in the card's PR description.
 - **T06d** (M29): relation provenance integrity, migration 0253 (design v0.2 §15.2 / §15.5). Gates G-T06d-1..4,
   G-M29-4 strengthened, issue #92 items 2 and 3. Workspace visibility of both endpoints stays the caller's
   precondition of `append_revision` (`coord.tasks` has no workspace column). No runtime caller exists yet, so the
-  first card that wires one must test that the caller refuses an endpoint outside its authorised workspaces.
+  first card that wires one must test that the caller refuses an endpoint outside its authorised workspaces, and
+  that caller must install the visibility GUCs (`humaux.tenant_id` and `humaux.user_id`, which the 0163 policy's
+  USER_PRIVATE and WORKSPACE_SHARED arms read) before the append: the factual check runs under RLS, so without them a
+  legitimate USER_PRIVATE or WORKSPACE_SHARED factual id is refused.
 - **T07** (M29): first E2E on a synthetic fixture (website A, projects P1 / P2, shared task T1, same-name trap
   project, three messages, one correction, plus replay, revoked access and faults). Gates G-N09-3/4.
 - **E-A** precision per ladder rung (A1 / A3 / A3' × relation kind × source scope), binding correctness and

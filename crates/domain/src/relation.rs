@@ -247,9 +247,9 @@ pub enum Timestamp {
     Infinity,
 }
 
-/// PostgreSQL's earliest `timestamptz` (4713-11-24 00:00:00 UTC BC, Julian day 0) in µs since the Unix epoch. An
-/// earlier instant fails `to_timestamp` with 22008 (issue #92 item 2). Its latest (294277-01-01) lies past
-/// `i64::MAX` µs, so a segment start is the only bound to check.
+/// PostgreSQL's earliest `timestamptz`, 4714-11-24 00:00:00 BC UTC (proleptic Gregorian; PG Julian day 0), in µs
+/// since the Unix epoch. An earlier instant fails `to_timestamp` with 22008 (§6.1.4 ④, issue #92 item 2). Its latest
+/// (294277-01-01) lies past `i64::MAX` µs, so a segment start is the only bound to check.
 pub const PG_TIMESTAMPTZ_MIN_MICROS: i64 = -210_866_803_200_000_000;
 
 /// One PostgreSQL range value as its (lower, upper) bounds: the unvalidated input of [`Validity::new`].

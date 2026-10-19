@@ -9,33 +9,47 @@
 --   ② every factual_evidence_ids element is a distinct Evidence of the row's tenant: checked by the shared guard
 --     with invoker rights under RLS, so "exists" there means "visible to the writer". A missing, foreign-tenant,
 --     invisible or repeated id is 23503 (the FK's own code), which relation_repo maps to INVALID_INPUT.
---   ③ decided_by = 'principal:<uuid>' must resolve to a user with an ACTIVE control.memberships row in the row's
---     tenant: the uuid is that user (user session), or a key of this tenant that is not revoked and is bound to that
---     user (PAT; the gateway PrincipalId is the api_key_id). private.relation_principal_is_member answers it as an
---     owner SECURITY DEFINER (0137 / 0188 shape) so role_gateway needs no grant on control.*. Refusal is 23503.
---     'rule:' values are not checked here. Write time only: revisions are append-only, so a later revocation or
---     removal leaves earlier rows as they were.
+--   ③ decided_by = 'principal:<uuid>' must resolve to a live member of the row's tenant: an ACTIVE
+--     control.memberships row whose control.users row and control.tenants row are ACTIVE too (the
+--     contribution_entry_repo liveness rule, design v0.2 §15.5). The uuid is that user (user session), or a key of
+--     this tenant that is not revoked and is bound to that user (PAT; the gateway PrincipalId is the api_key_id); a
+--     machine key (user_id NULL) resolves to no user and never decides. private.relation_principal_is_member answers
+--     it as an owner SECURITY DEFINER (0137 / 0188 shape) so role_gateway needs no grant on control.*. Refusal is
+--     23503. 'rule:' values are not checked here.
 --   ④ authorization evidence is not also factual evidence: <pair>_authorization_not_factual CHECK.
 --   ⑤ workspace visibility of both endpoints is the caller's job before append_revision (coord.tasks has no
 --     workspace column); nothing here checks it.
 --   The guard keeps 0252's body byte for byte (NULL-tenant line first) and adds ② and ③ right after that line.
 --
--- Locks: each ADD CONSTRAINT ... FOREIGN KEY takes SHARE ROW EXCLUSIVE on its relation table and on
--- private.evidence_objects until COMMIT, which blocks Evidence INSERTs (remember.put) for the rest of this
--- migration's transaction; each ADD CONSTRAINT ... CHECK holds ACCESS EXCLUSIVE on its relation table while it
--- validates the existing rows; each CREATE INDEX holds SHARE on its relation table. The relation tables are small
--- (no runtime writer yet).
+-- ponytail: ② is a write-time check only; an Evidence later hidden or purged stays named in factual_evidence_ids
+--   (no per-element FK). Upgrade: a factual-evidence link table with a real composite FK.
+-- ponytail: ③ judges the decider's liveness at write time only; a member later revoked, removed or suspended leaves
+--   the earlier revisions as they were (append-only). Upgrade: a read-side liveness re-check for any consumer that
+--   needs "decided by a member who is live now".
+--
+-- Locks, all held until COMMIT: each ADD CONSTRAINT ... FOREIGN KEY takes SHARE ROW EXCLUSIVE on its relation table
+-- and on private.evidence_objects, which blocks Evidence INSERTs (remember.put) for the rest of this migration's
+-- transaction; each ADD CONSTRAINT ... CHECK takes ACCESS EXCLUSIVE on its relation table; each CREATE INDEX takes
+-- SHARE on its relation table. The relation tables are small (no runtime writer yet).
 
--- ③ (design v0.2 §15.5). Owner rights read control.memberships / control.api_keys through 0112's owner SELECT
--- policies, which admit every tenant, so the passed tenant must equal the session tenant (the 0186 header's 0176
+-- ③ (design v0.2 §15.5). Owner rights read control.memberships / control.api_keys / control.tenants through 0112's
+-- owner SELECT policies, which admit every tenant (control.users has no RLS), so the passed tenant must equal the session tenant (the 0186 header's 0176
 -- lesson): otherwise false, never a cross-tenant membership oracle.
+-- The key leg defines what a credential-id decider *means* (the key's user), not an access barrier: naming that
+-- member's user id passes as well, so refusing a key here never keeps its user out.
+-- ponytail: a key's liveness is revoked_at only; status and expires_at are not consulted. Upgrade: add them here
+--   once a key can be expired or non-ACTIVE while revoked_at stays NULL and still reach the gateway.
 CREATE FUNCTION private.relation_principal_is_member(p_tenant_id uuid, p_principal_id uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog
 AS $$
   SELECT coalesce(p_tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid, false)
      AND EXISTS (SELECT 1 FROM control.memberships m
+                   JOIN control.users u ON u.user_id = m.user_id
+                   JOIN control.tenants t ON t.tenant_id = m.tenant_id
                   WHERE m.tenant_id = p_tenant_id
                     AND m.state = 'ACTIVE'
+                    AND u.state = 'ACTIVE'
+                    AND t.state = 'ACTIVE'
                     AND m.user_id IN (SELECT p_principal_id
                                       UNION ALL
                                       SELECT k.user_id FROM control.api_keys k
@@ -48,7 +62,7 @@ REVOKE ALL ON FUNCTION private.relation_principal_is_member(uuid, uuid) FROM PUB
 -- The guard runs with the inserting role's rights; role_gateway is the one INSERT holder (§6.2.2).
 GRANT EXECUTE ON FUNCTION private.relation_principal_is_member(uuid, uuid) TO role_gateway;
 COMMENT ON FUNCTION private.relation_principal_is_member(uuid, uuid) IS
-  '§6.1.4 / design v0.2 §15.5: true iff p_tenant_id is the session tenant and p_principal_id (a user id, or a non-revoked api_key_id of that tenant) resolves to a user with an ACTIVE membership in it. Called by private.relation_revision_guard. M29 T06d.';
+  '§6.1.4 / design v0.2 §15.5: true iff p_tenant_id is the session tenant and p_principal_id (a user id, or a non-revoked api_key_id of that tenant) resolves to an ACTIVE user with an ACTIVE membership in it, the tenant being ACTIVE. Called by private.relation_revision_guard. M29 T06d.';
 
 -- ② and ③ after 0252's NULL-tenant line; one new variable; everything else is 0252's body. CREATE OR REPLACE keeps
 -- owner and ACL.
