@@ -7,7 +7,8 @@
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
-//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074) and the crate boundary table G-M01-3 (M01 D5).
+//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5) and the real-path
+//! fault gate G-M01-4 (M01 D4, ADR-0077).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -1320,6 +1321,527 @@ pub fn crate_boundary_violations() -> Result<Vec<(String, String)>, String> {
 }
 
 // ============================================================================
+// M01 D4 — G-M01-4: a DegradeCode variant is proven on its real path, or declared dormant (§53.4)
+// ============================================================================
+
+/// The dormant ledger: DegradeCode variants with no production emit site yet, one `[[dormant]]` row each.
+const DORMANT_FILE: &str = "crates/testkit/tests/fault/dormant.toml";
+
+/// The Cargo entry point that pulls `tests/fault/*.rs` into one test binary (§53.4).
+const FAULT_MAIN_FILE: &str = "crates/testkit/tests/fault_main.rs";
+
+/// Keys a `[[dormant]]` row may carry; any other key is a typo that would silently weaken the rule.
+const DORMANT_ROW_KEYS: [&str; 3] = ["variant", "owner", "reason"];
+
+/// `source` with `/* */` and `//` comments blanked (line numbers kept), so prose that mentions a name never counts as code.
+/// String literals stay as written: [`fault_main_wires`] reads the `#[path = ".."]` string.
+fn code_without_comments(source: &str) -> String {
+    let no_block = strip_block_comments(source);
+    no_block
+        .lines()
+        .map(code_before_line_comment)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `source` with each `(start, end)` byte span (sorted, disjoint) turned into spaces, newlines kept so line numbers
+/// survive.
+fn blank_spans(source: &str, spans: &[(usize, usize)]) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut next = spans.iter().peekable();
+    for (i, c) in source.char_indices() {
+        while next.peek().is_some_and(|s| i >= s.1) {
+            next.next();
+        }
+        let blanked = next.peek().is_some_and(|s| i >= s.0);
+        out.push(if blanked && c != '\n' { ' ' } else { c });
+    }
+    out
+}
+
+/// `source` with every comment and every string, raw-string and char literal blanked, newlines kept: prose and quoted
+/// text that mention an exit (`"abstain(DegradeCode::X, ..)"` in a metric help text) never read as code, and braces
+/// or parentheses inside a literal never unbalance the matching below.
+// ponytail: a lexer-lite shared with `strip_block_comments` (no macro-body awareness, C-string literals unread);
+// upgrade to `proc_macro2` tokenizing if a file ever mis-masks.
+fn mask_comments_and_literals(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let starts_token = |at: usize| at == 0 || !is_ident_byte(bytes[at - 1]);
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let end = match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                source[i..].find('\n').map_or(bytes.len(), |n| i + n)
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => block_comment_end(bytes, i),
+            b'"' => string_end(bytes, i + 1),
+            b'r' if starts_token(i) || (bytes[i - 1] == b'b' && starts_token(i - 1)) => {
+                raw_string_end(bytes, i).unwrap_or(i + 1)
+            }
+            b'\'' => char_literal_end(source, i),
+            _ => i + 1,
+        };
+        if end > i + 1 {
+            spans.push((i, end));
+        }
+        i = end.max(i + 1);
+    }
+    blank_spans(source, &spans)
+}
+
+/// Blanks every `#[cfg(test)]` / `#[cfg(all(test, ..))]` item of `source`, newlines kept. An item ends at its `;` or at
+/// the `}` matching its first `{`. [`strip_cfg_test_module`] blanks one module per file; `degrade.rs` and `envelope.rs`
+/// each gate a `fn` before their gated `mod`s, so a test module that is not the first gated item must not read as
+/// production code here.
+// ponytail: brace matching ignores braces inside strings and chars (as `matching_brace_end` does; the emit-site scan
+// feeds it [`mask_comments_and_literals`] output, which has none) and a `;` inside a gated item's signature
+// (`-> [u8; 4]`) ends it early; upgrade to a token walk if a gated item ever needs either.
+fn blank_cfg_test_items(source: &str) -> String {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0usize;
+    while let Some(rel) = source[at..].find("#[cfg(") {
+        let idx = at + rel;
+        let attr = &source[idx..];
+        if !(attr.starts_with("#[cfg(test)]") || attr.starts_with("#[cfg(all(test,")) {
+            at = idx + "#[cfg(".len();
+            continue;
+        }
+        let end = match (attr.find(';'), attr.find('{')) {
+            (Some(s), Some(b)) if s < b => idx + s + 1,
+            (Some(s), None) => idx + s + 1,
+            (_, Some(b)) => matching_brace_end(source, idx + b).unwrap_or(source.len()),
+            (None, None) => source.len(),
+        };
+        spans.push((idx, end));
+        at = end;
+    }
+    blank_spans(source, &spans)
+}
+
+/// Whether `path` (workspace-relative) is production source for the emit-site scan: `src/` of a crate or a bin,
+/// not the testkit (test infrastructure).
+fn is_degrade_scan_source(path: &str) -> bool {
+    (path.starts_with("crates/") || path.starts_with("bins/"))
+        && path.contains("/src/")
+        && !path.starts_with("crates/testkit/")
+}
+
+/// The `(workspace-relative path, source)` pairs of every production source file under `crates/` and `bins/`, sorted.
+fn degrade_scan_files(root: &Path) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = ["crates", "bins"]
+        .iter()
+        .flat_map(|d| read_files(&walk_files(&root.join(d), &["rs"])))
+        .map(|(p, s)| (display(root, &p), s))
+        .filter(|(p, _)| is_degrade_scan_source(p))
+        .collect();
+    files.sort();
+    files
+}
+
+/// The file that defines the degrade exit (§53.1). Its `abstain(code, ..)` forwards a parameter by design, so it is the
+/// one file the scan does not hold to "the first argument names a variant".
+const DEGRADE_HOME: &str = "crates/telemetry/src/degrade.rs";
+
+/// The callees through which a `DegradeCode` leaves a function fail-open (§53.1): `abstain(code, ..)` is the single
+/// exit and `Outcome::also(code)` forwards to it. The emit-site scan and the fault-test bypass check both read this
+/// one list, so a new exit shape is added in one place and both see it.
+const DEGRADE_EXIT_CALLEES: [&str; 2] = ["abstain", "also"];
+
+/// One mention of a [`DEGRADE_EXIT_CALLEES`] callee in masked code.
+struct ExitMention<'a> {
+    /// Which callee was named.
+    callee: &'static str,
+    /// Byte offset of the callee identifier.
+    at: usize,
+    /// The text between the call's parentheses; `None` when the callee is only named (an import, a function value).
+    args: Option<&'a str>,
+}
+
+/// Every mention of a [`DEGRADE_EXIT_CALLEES`] callee in `code` (already masked by [`mask_comments_and_literals`]),
+/// in source order. `abstain` counts wherever it is a whole identifier; `also` only as a method or an associated
+/// function (`.also` / `::also`), because a bare `also` is some local name.
+fn exit_mentions(code: &str) -> Vec<ExitMention<'_>> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
+    for callee in DEGRADE_EXIT_CALLEES {
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(callee) {
+            let at = from + rel;
+            from = at + callee.len();
+            let whole = (at == 0 || !is_ident_byte(bytes[at - 1]))
+                && bytes.get(from).is_none_or(|b| !is_ident_byte(*b));
+            let before = code[..at].trim_end();
+            let reached_by_path = before.ends_with('.') || before.ends_with("::");
+            if whole && (callee != "also" || reached_by_path) {
+                found.push(ExitMention {
+                    callee,
+                    at,
+                    args: call_args(code, from),
+                });
+            }
+        }
+    }
+    found.sort_by_key(|m| m.at);
+    found
+}
+
+/// Index just past the delimiter closing the one that opens at `open_at` (`bytes[open_at] == open`); `None` when it
+/// is never closed.
+fn balanced_end(bytes: &[u8], open_at: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, &b) in bytes.iter().enumerate().skip(open_at) {
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i + 1);
+            }
+        }
+    }
+    None
+}
+
+/// The text between the parentheses of the call whose callee identifier ends at `after` in `code`, looking past a
+/// turbofish (`abstain::<T>(..)`); `None` when no call follows.
+fn call_args(code: &str, after: usize) -> Option<&str> {
+    let bytes = code.as_bytes();
+    let skip_ws = |mut at: usize| {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    };
+    let mut at = skip_ws(after);
+    if code[at..].starts_with("::") {
+        at = skip_ws(at + 2);
+        if bytes.get(at) != Some(&b'<') {
+            return None;
+        }
+        at = skip_ws(balanced_end(bytes, at, b'<', b'>')?);
+    }
+    if bytes.get(at) != Some(&b'(') {
+        return None;
+    }
+    let end = balanced_end(bytes, at, b'(', b')')?;
+    Some(&code[at + 1..end - 1])
+}
+
+/// The first argument of a call, given the text between its parentheses: up to the first comma outside any bracket.
+fn first_argument(args: &str) -> &str {
+    let mut depth = 0i32;
+    for (i, b) in args.bytes().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => return &args[..i],
+            _ => {}
+        }
+    }
+    args
+}
+
+/// The variant that `arg` names by the last segment of a plain path: `DegradeCode::V`, a qualified
+/// `humaux_telemetry::degrade::DegradeCode::V`, an aliased `C::V` (`use DegradeCode as C`) or a glob-imported bare
+/// `V`. A parameter or local (`code`, lower-case, never a variant name), a call, a field access or a cast names none.
+fn named_variant<'v>(arg: &str, variants: &'v [String]) -> Option<&'v str> {
+    let path = arg.trim();
+    if path.is_empty()
+        || !path
+            .bytes()
+            .all(|b| is_ident_byte(b) || b == b':' || b.is_ascii_whitespace())
+    {
+        return None;
+    }
+    let last = path.rsplit("::").next()?.trim();
+    variants.iter().map(String::as_str).find(|v| *v == last)
+}
+
+/// Production emit sites of the `variants`, plus the exit calls the scan could not classify, over `files`
+/// (`(workspace-relative path, source)`).
+///
+/// The map is `variant -> "path:line"` of the first non-test, non-comment, non-string call of a
+/// [`DEGRADE_EXIT_CALLEES`] callee whose first argument is a path ending in that variant: `DegradeCode::V`, a
+/// qualified `a::b::DegradeCode::V`, an aliased `C::V` (`use DegradeCode as C`) or a glob-imported bare `V`, with or
+/// without a turbofish on the callee. A `DegradeCode::V` that is matched on, counted, listed in a slice or handed to
+/// another function is a reader of the variant, not an emitter.
+///
+/// The list holds one `path:line` problem per exit call whose first argument names no variant (a parameter, a local,
+/// an expression): the scan cannot tell what it emits, so it fails closed instead of letting that variant read as
+/// dormant (§53.4; M01-3 review W1). [`DEGRADE_HOME`] is exempt, its `abstain(code, ..)` forwards the parameter by
+/// design (§53.1).
+// ponytail: an exit callee renamed by `use .. as`, passed as a function value or reached through a macro is not seen,
+// and neither is a hand-built `Outcome { degradations: .. }`; the single construction point of `abstain` (§53.1,
+// CLAUDE.md) keeps those shapes out of the tree. Upgrade to resolving the callee if one ever appears.
+pub fn degrade_emit_sites(
+    files: &[(String, String)],
+    variants: &[String],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut sites = BTreeMap::new();
+    let mut unclassified = Vec::new();
+    for (path, source) in files {
+        let code = blank_cfg_test_items(&mask_comments_and_literals(source));
+        for m in exit_mentions(&code) {
+            let Some(args) = m.args else { continue };
+            let line = code[..m.at].matches('\n').count() + 1;
+            let first = first_argument(args);
+            if let Some(v) = named_variant(first, variants) {
+                sites
+                    .entry(v.to_string())
+                    .or_insert_with(|| format!("{path}:{line}"));
+            } else if path.as_str() != DEGRADE_HOME {
+                let shown = first.split_whitespace().collect::<Vec<_>>().join(" ");
+                unclassified.push(format!(
+                    "{path}:{line}: `{}(` is a degrade exit whose first argument `{shown}` names no DegradeCode variant, so G-M01-4 cannot tell which variant it emits (§53.4); pass `DegradeCode::<Variant>` at the call",
+                    m.callee
+                ));
+            }
+        }
+    }
+    (sites, unclassified)
+}
+
+/// The first mention of a degrade exit in a fault test's `source`, as `(line, callee)`: an import, a call or a function
+/// value of `abstain`, or an `.also` / `::also` call, in code (comments and string literals do not count). A live
+/// variant's fault test must reach the exit through the production function, never name it. The same
+/// [`DEGRADE_EXIT_CALLEES`] list drives the emit-site scan, so an exit shape the scan recognises cannot bypass this
+/// check (M01-3 review B1).
+pub fn degrade_exit_named(source: &str) -> Option<(usize, &'static str)> {
+    let code = mask_comments_and_literals(source);
+    exit_mentions(&code).first().map(|m| {
+        let line = code[..m.at].matches('\n').count() + 1;
+        (line, m.callee)
+    })
+}
+
+/// One `[[dormant]]` row of [`DORMANT_FILE`].
+#[derive(Debug)]
+struct DormantRow {
+    variant: String,
+    owner: String,
+    reason: String,
+}
+
+/// `M<nn>` or `M<nn>-<card>`: the module card that adds the emit site.
+// ponytail: same shape check as `known_red::owner_ok` (private there); one shared helper once either file moves.
+fn card_owner_ok(owner: &str) -> bool {
+    let Some(rest) = owner.strip_prefix('M') else {
+        return false;
+    };
+    let (module, card) = match rest.split_once('-') {
+        Some((m, c)) => (m, Some(c)),
+        None => (rest, None),
+    };
+    module.len() == 2
+        && module.bytes().all(|b| b.is_ascii_digit())
+        && card.is_none_or(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// Parses [`DORMANT_FILE`]: the readable rows plus every structural problem (a typo is red, never ignored).
+fn parse_dormant(raw: &str) -> (Vec<DormantRow>, Vec<String>) {
+    let table = match raw.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                Vec::new(),
+                vec![format!("{DORMANT_FILE} is not valid TOML: {e}")],
+            );
+        }
+    };
+    let mut problems: Vec<String> = table
+        .keys()
+        .filter(|k| k.as_str() != "dormant")
+        .map(|k| {
+            format!("{DORMANT_FILE}: unknown top-level key `{k}` (only [[dormant]] rows are read)")
+        })
+        .collect();
+    let Some(value) = table.get("dormant") else {
+        return (Vec::new(), problems);
+    };
+    let Some(entries) = value.as_array() else {
+        problems.push(format!(
+            "{DORMANT_FILE}: `dormant` must be an array of tables, written [[dormant]]"
+        ));
+        return (Vec::new(), problems);
+    };
+    let mut rows = Vec::new();
+    for (n, entry) in entries.iter().enumerate() {
+        let tag = format!("{DORMANT_FILE} row #{}", n + 1);
+        let Some(t) = entry.as_table() else {
+            problems.push(format!("{tag}: not a table"));
+            continue;
+        };
+        for k in t.keys().filter(|k| !DORMANT_ROW_KEYS.contains(&k.as_str())) {
+            problems.push(format!(
+                "{tag}: unknown key `{k}` (known: {})",
+                DORMANT_ROW_KEYS.join(", ")
+            ));
+        }
+        let field = |k: &str| {
+            t.get(k)
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let row = DormantRow {
+            variant: field("variant"),
+            owner: field("owner"),
+            reason: field("reason"),
+        };
+        if row.variant.is_empty() {
+            problems.push(format!("{tag}: missing `variant`"));
+            continue;
+        }
+        if !card_owner_ok(&row.owner) {
+            problems.push(format!(
+                "{tag} ({}): owner `{}` is not a module card (expected M<nn> or M<nn>-<card>, e.g. M11)",
+                row.variant, row.owner
+            ));
+        }
+        if row.reason.is_empty() {
+            problems.push(format!("{tag} ({}): missing `reason`", row.variant));
+        }
+        rows.push(row);
+    }
+    (rows, problems)
+}
+
+/// Whether `fault_main` (the source of [`FAULT_MAIN_FILE`]) pulls `fault/<stem>.rs` into the test binary. Cargo never
+/// discovers a file under `tests/fault/` by itself, so a fault test without its `#[path = ..] mod ..;` pair is never
+/// compiled, let alone run: the §53.4 injection record would exist on disk and prove nothing. The pair must sit in
+/// code (a commented-out line does not count) and be adjacent, so a `#[cfg(..)]` gate between them is red as well.
+fn fault_main_wires(fault_main: &str, stem: &str) -> bool {
+    let code = code_without_comments(fault_main);
+    let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.contains(&format!("#[path = \"fault/{stem}.rs\"] mod {stem};"))
+}
+
+/// G-M01-4 pure comparator (M01 D4, §53.4; tri-state per §57.1). Per variant of `variants`:
+/// - it has a fault file (`fault_sources`, by variant name) ⇒ [`FAULT_MAIN_FILE`] must wire it (`fault_main`);
+/// - it has a production emit site (`emit_sites`) ⇒ its fault test must not name a degrade exit
+///   ([`degrade_exit_named`]: `abstain` or `.also`), and [`DORMANT_FILE`] must not list it (a stale row is red: the
+///   ledger only shrinks);
+/// - it has none ⇒ it must be listed in `dormant_toml` with an owner card and a reason.
+///
+/// `unclassified` are the exit calls [`degrade_emit_sites`] could not attribute to a variant; each is red. A row naming
+/// no variant, a duplicate row, an unknown key and a bad owner are red as well. The notes are the ledger lines for the
+/// log, so growth shows (the `rows: N` habit of `known-red`). No `not_applicable` leg: the ledger and the fault tests
+/// are delivered by the same card, so absence is a regression (§57.1 rule 2).
+/// Injected-fault record: ADR-0077 (red records).
+pub fn real_path_from(
+    variants: &[String],
+    emit_sites: &BTreeMap<String, String>,
+    unclassified: &[String],
+    fault_sources: &BTreeMap<String, String>,
+    fault_main: &str,
+    dormant_toml: &str,
+) -> (Verdict, Vec<String>) {
+    let (rows, mut problems) = parse_dormant(dormant_toml);
+    problems.extend(unclassified.iter().cloned());
+    let mut listed: BTreeSet<&str> = BTreeSet::new();
+    for row in &rows {
+        if !variants.contains(&row.variant) {
+            problems.push(format!(
+                "{DORMANT_FILE}: row `{}` names no DegradeCode variant",
+                row.variant
+            ));
+        } else if !listed.insert(row.variant.as_str()) {
+            problems.push(format!("{DORMANT_FILE}: `{}` is listed twice", row.variant));
+        }
+    }
+    for v in variants {
+        let is_listed = listed.contains(v.as_str());
+        let stem = pascal_to_snake(v);
+        let test_file = format!("crates/testkit/tests/fault/{stem}.rs");
+        if fault_sources.contains_key(v) && !fault_main_wires(fault_main, &stem) {
+            problems.push(format!(
+                "{v}: {test_file} exists but {FAULT_MAIN_FILE} has no `#[path = \"fault/{stem}.rs\"] mod {stem};` pair, so cargo never compiles or runs it (§53.4)"
+            ));
+        }
+        if let Some(site) = emit_sites.get(v) {
+            if is_listed {
+                problems.push(format!(
+                    "{v}: {DORMANT_FILE} still lists it, but it now has a production emit site ({site}); delete the row (the dormant ledger only shrinks)"
+                ));
+            }
+            if let Some((line, callee)) = fault_sources.get(v).and_then(|s| degrade_exit_named(s)) {
+                problems.push(format!(
+                    "{v}: production emit site {site}, but {test_file}:{line} names the degrade exit `{callee}`; drive the production function that emits it (§53.4: a reason never triggered on its real path must not merge)"
+                ));
+            }
+        } else if !is_listed {
+            problems.push(format!(
+                "{v}: no production emit site (a call of `abstain(` or `.also(` whose first argument names {v}, in non-test code of crates/*/src or bins/*/src) and no [[dormant]] row in {DORMANT_FILE}; add the row naming the card that will emit it"
+            ));
+        }
+    }
+    let mut notes = vec![format!(
+        "G-M01-4: {} variant(s) driven through their production emit site; dormant rows: {}",
+        emit_sites.len(),
+        rows.len()
+    )];
+    notes.extend(rows.iter().map(|r| {
+        format!(
+            "G-M01-4: dormant {} (owner {}): {}",
+            r.variant, r.owner, r.reason
+        )
+    }));
+    let verdict = if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    };
+    (verdict, notes)
+}
+
+/// G-M01-4 over the real workspace.
+fn m01_4_real_path_or_dormant(root: &Path) -> Verdict {
+    let degrade_path = root.join(DEGRADE_HOME);
+    let Ok(degrade_src) = fs::read_to_string(&degrade_path) else {
+        return Verdict::Fail(vec![format!("cannot read {}", degrade_path.display())]);
+    };
+    let variants = parse_degrade_variant_names(&degrade_src);
+    if variants.is_empty() {
+        return Verdict::Fail(vec![format!(
+            "no `degrade_code! {{` block in {DEGRADE_HOME}; the variant list cannot be read"
+        )]);
+    }
+    let dormant = match fs::read_to_string(root.join(DORMANT_FILE)) {
+        Ok(raw) => raw,
+        Err(e) => return Verdict::Fail(vec![format!("{DORMANT_FILE} unreadable: {e}")]),
+    };
+    let fault_main = match fs::read_to_string(root.join(FAULT_MAIN_FILE)) {
+        Ok(raw) => raw,
+        Err(e) => return Verdict::Fail(vec![format!("{FAULT_MAIN_FILE} unreadable: {e}")]),
+    };
+    let fault_sources: BTreeMap<String, String> = variants
+        .iter()
+        .filter_map(|v| {
+            let path = root.join(format!(
+                "crates/testkit/tests/fault/{}.rs",
+                pascal_to_snake(v)
+            ));
+            fs::read_to_string(path).ok().map(|s| (v.clone(), s))
+        })
+        .collect();
+    let (sites, unclassified) = degrade_emit_sites(&degrade_scan_files(root), &variants);
+    let (verdict, notes) = real_path_from(
+        &variants,
+        &sites,
+        &unclassified,
+        &fault_sources,
+        &fault_main,
+        &dormant,
+    );
+    for note in notes {
+        println!("{note}");
+    }
+    verdict
+}
+
+// ============================================================================
 // §78 Boundary Lints: No env::var outside config/bootstrap
 // ============================================================================
 
@@ -2297,51 +2819,65 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
 // M08 D1 / G-M08-2 "one home": the final read gate has one home. `can_read(` is the visibility judge (§6.1.1); the
 // all-backing-evidence closure around it (§8.6) lives in `crates/adapters/src/read_gate.rs`, so a read op that calls
 // `can_read(` anywhere else is judging visibility itself and can drift from the closure (a Memory with an unreadable
-// backing Evidence row slipping through). The number of `can_read` tokens per file is pinned with `==`.
+// backing Evidence row slipping through). The gate's row-level door, `read_gate::visibility_readable`, is the same
+// judge one row at a time, so it is ratcheted the same way: the number of `can_read` tokens and the number of
+// `visibility_readable` tokens per file are each pinned with `==`, and a new caller of the door is a declared row with
+// a reason, never a pass by proxy.
 // ============================================================================
 
-/// `(file, count, why)`: the declared sites G-M08-2 pins, each with the exact number of bare `can_read` tokens its
-/// non-test code holds ([`can_read_tokens`]: the import counts, so a file that imports and calls once is `2`). Compared
-/// per file with `==`, so a file added or dropped, one more use in a declared file, and one fewer are all red.
-/// Adapters and bins non-test code only (`domain` defines `can_read`, `projection` mirrors it for Qdrant filters under
-/// G-M08-7).
+/// The read gate's own file: the one home of `can_read` and of the definition of `visibility_readable`.
+const M08_GATE_HOME: &str = "crates/adapters/src/read_gate.rs";
+
+/// `(file, count, why)`: the declared sites G-M08-2 pins for `can_read`, each with the exact number of bare `can_read`
+/// tokens its non-test code holds ([`identifier_tokens`]: the import counts, so a file that imports and calls once is
+/// `2`). Compared per file with `==`, so a file added or dropped, one more use in a declared file, and one fewer are
+/// all red. Adapters and bins non-test code only (`domain` defines `can_read`, `projection` mirrors it for Qdrant
+/// filters under G-M08-7). The gate is the only declared site; every other reader judges through
+/// [`M08_VISIBILITY_READABLE_SITES`] or `read_gate::readable_memory_ids` (§8.6).
+const M08_CAN_READ_SITES: [(&str, usize, &str); 1] = [(
+    M08_GATE_HOME,
+    2,
+    "the gate: the import and the one call inside `visibility_readable`, the judgement `readable_memory_ids` applies to a Memory and every backing Evidence row and the row-level callers apply to a row they already fetched (§6.1.1, §8.6)",
+)];
+
+/// `(file, count, why)`: the declared callers of `read_gate::visibility_readable` outside the gate, each with the exact
+/// number of bare `visibility_readable` tokens its non-test code holds (the import counts). Compared per file with `==`
+/// exactly like [`M08_CAN_READ_SITES`], so a fifth caller, one more use in a declared caller, and one fewer are all red.
+/// The gate file is exempt: it defines the door and applies it inside `readable_memory_ids`.
 ///
-/// ponytail: the four files below `read_gate.rs` judge visibility themselves instead of calling
-/// `read_gate::readable_memory_ids`, upgrade by card M08-7 (coord task 1ce18be1-6af3-4eed-8930-a34789fe12ed), which
-/// routes them through the gate and shrinks this const, `contribution_entry_repo.rs` first since it re-implements the
-/// Memory-plus-backing-Evidence closure for contribution sources.
-const M08_CAN_READ_SITES: [(&str, usize, &str); 5] = [
-    (
-        "crates/adapters/src/read_gate.rs",
-        3,
-        "the gate: the import and the two calls of `readable_memory_ids`, which judge the Memory and every backing Evidence row (§6.1.1, §8.6)",
-    ),
+/// ponytail: every row hands the door a row its own SQL already fetched, which `readable_memory_ids` cannot take
+/// because it reads its own rows; `contribution_entry_repo.rs` also hand-rolls the §8.6 closure (the Memory row, then
+/// each backing Evidence row), upgrade by routing its Memory case through `readable_memory_ids` and dropping the row.
+const M08_VISIBILITY_READABLE_SITES: [(&str, usize, &str); 4] = [
     (
         "crates/adapters/src/read_materialize.rs",
         2,
-        "`load_overlay`: re-judges just-written Evidence rows of the RYW overlay, no Memory is involved (§15.5); not yet routed through the gate (M08-7)",
+        "`load_overlay`: re-judges just-written Evidence rows of the RYW overlay; no Memory is involved, so `readable_memory_ids` has nothing to judge (§15.5)",
     ),
     (
         "crates/adapters/src/contribution_entry_repo.rs",
         2,
-        "`visible`: judges a contribution source's Memory and its backing Evidence rows itself; not yet routed through the gate (M08-7)",
+        "`visible`: judges a contribution source's Memory row and then each backing Evidence row itself, a hand-rolled copy of the §8.6 closure `readable_memory_ids` owns",
     ),
     (
         "crates/adapters/src/operation_receipt.rs",
         2,
-        "`replay`: re-judges the prior Evidence row before reissuing a consistency token; not yet routed through the gate (M08-7)",
+        "`replay`: re-judges the one prior Evidence row its stream-binding SQL fetched, before reissuing a consistency token",
     ),
     (
         "crates/adapters/src/continuity_read.rs",
         2,
-        "`validate_evidence`: re-judges the Evidence rows behind a continuity fact; not yet routed through the gate (M08-7)",
+        "`validate_evidence`: re-judges the Evidence rows behind a continuity fact, next to its hash, SECRET_MATERIAL and lifecycle checks",
     ),
 ];
 
-/// The identifier G-M08-2 counts. Not `can_read(`: an alias (`use ...::can_read as cr; cr(..)`), a function pointer
+/// The identifier G-M08-2 counts first. Not `can_read(`: an alias (`use ...::can_read as cr; cr(..)`), a function pointer
 /// (`let g = identity::can_read; g(..)`), an argument (`helper(can_read, v)`, `judge!(can_read, v)`) and `can_read (`
 /// all use the function without that exact spelling.
 const CAN_READ: &str = "can_read";
+
+/// The identifier of the gate's row-level door, counted the same way as [`CAN_READ`].
+const VISIBILITY_READABLE: &str = "visibility_readable";
 
 /// Whether `disp` (repo-relative, `/`-separated) is production code G-M08-2 scans: `crates/adapters/src/**` and
 /// `bins/<bin>/src/**`. Test trees are already excluded by [`door_production_sources`].
@@ -2353,26 +2889,26 @@ fn can_read_scan_scope(disp: &str) -> bool {
     )
 }
 
-/// How many times `source`'s code names `can_read`: block comments blanked ([`strip_block_comments`]) and every line
-/// cut at its `//` comment ([`code_before_line_comment`], so `///` and `//!` lines are empty), then the identifier
-/// `can_read` with a non-identifier byte (or the line edge) on both sides. A call, an import (with or without `as`),
-/// a function pointer, an argument and `can_read (` all count; `cannot_read`, `my_can_read` and `can_read_all` are
-/// other identifiers.
+/// How many times `source`'s code names the identifier `name`: block comments blanked ([`strip_block_comments`]) and
+/// every line cut at its `//` comment ([`code_before_line_comment`], so `///` and `//!` lines are empty), then `name`
+/// with a non-identifier byte (or the line edge) on both sides. A call, an import (with or without `as`), a function
+/// pointer, an argument and `name (` all count; `cannot_read`, `my_can_read` and `can_read_all` are other identifiers
+/// for `can_read`.
 ///
-/// ponytail: textual, so `can_read` inside a string literal counts (a false red, never a false green) and a wrapper
-/// that calls it under another name is judged by its own file, upgrade to a syn-level call-graph check if either ever
+/// ponytail: textual, so `name` inside a string literal counts (a false red, never a false green) and a wrapper that
+/// calls it under another name is judged by its own file, upgrade to a syn-level call-graph check if either ever
 /// shows up.
-fn can_read_tokens(source: &str) -> usize {
+fn identifier_tokens(source: &str, name: &str) -> usize {
     strip_block_comments(source)
         .lines()
         .map(|line| {
             let code = code_before_line_comment(line);
             let bytes = code.as_bytes();
-            code.match_indices(CAN_READ)
+            code.match_indices(name)
                 .filter(|(at, _)| {
                     (*at == 0 || !is_ident_byte(bytes[*at - 1]))
                         && !bytes
-                            .get(*at + CAN_READ.len())
+                            .get(*at + name.len())
                             .is_some_and(|b| is_ident_byte(*b))
                 })
                 .count()
@@ -2380,10 +2916,60 @@ fn can_read_tokens(source: &str) -> usize {
         .sum()
 }
 
-/// M08 D1 / G-M08-2: for every file in [`can_read_scan_scope`] the number of `can_read` tokens ([`can_read_tokens`])
-/// equals its [`M08_CAN_READ_SITES`] count, and a file with tokens that is not declared is red. Red lines name the file
-/// and, for a declared one, both the found and the expected count: "G-M08-2: can_read( call outside the read gate"
-/// for an undeclared file or an extra use, and "... expected N" for a use that is gone or a file that does not exist.
+/// One identifier G-M08-2 ratchets: its declared `sites`, the wording of its red lines, and whether the gate file is
+/// exempt from the pin.
+struct M08Pin {
+    token: &'static str,
+    headline: &'static str,
+    sites_const: &'static str,
+    route: &'static str,
+    sites: &'static [(&'static str, usize, &'static str)],
+    gate_exempt: bool,
+}
+
+/// Red lines of one [`M08Pin`] over the scanned `sources`: an undeclared file holding the token, a declared file with
+/// more tokens than its row, and a declared file with fewer (or gone).
+fn m08_2_pin_problems(sources: &[(String, String)], pin: &M08Pin) -> Vec<String> {
+    let found: BTreeMap<&str, usize> = sources
+        .iter()
+        .filter(|(disp, _)| !(pin.gate_exempt && disp == M08_GATE_HOME))
+        .map(|(disp, source)| (disp.as_str(), identifier_tokens(source, pin.token)))
+        .filter(|(_, tokens)| *tokens > 0)
+        .collect();
+    let (token, headline, sites_const, route) =
+        (pin.token, pin.headline, pin.sites_const, pin.route);
+    let mut problems = Vec::new();
+    for (file, tokens) in &found {
+        if !pin.sites.iter().any(|(site, _, _)| site == file) {
+            problems.push(format!(
+                "G-M08-2: {headline}: {file} holds {tokens} `{token}` token(s) and is not a declared site \
+                 ({route}, or declare the file in {sites_const} with its count and reason)"
+            ));
+        }
+    }
+    for (file, expected, _) in pin.sites {
+        let actual = found.get(file).copied().unwrap_or(0);
+        if actual > *expected {
+            problems.push(format!(
+                "G-M08-2: {headline}: {file} holds {actual} `{token}` tokens, expected {expected} \
+                 (an extra use in a declared site; {route}, or raise the count in {sites_const} with its reason)"
+            ));
+        } else if actual < *expected {
+            problems.push(format!(
+                "G-M08-2: {file} holds {actual} `{token}` tokens, expected {expected} \
+                 (a declared use is gone, or the file does not exist; lower the count in {sites_const}, or drop the file once it is empty)"
+            ));
+        }
+    }
+    problems
+}
+
+/// M08 D1 / G-M08-2: for every file in [`can_read_scan_scope`] the number of `can_read` tokens equals its
+/// [`M08_CAN_READ_SITES`] count and the number of `visibility_readable` tokens equals its
+/// [`M08_VISIBILITY_READABLE_SITES`] count (the gate file exempt from the second), and a file with tokens that is not
+/// declared is red. Red lines name the file and, for a declared one, both the found and the expected count:
+/// "G-M08-2: can_read( call outside the read gate" / "G-M08-2: visibility_readable use outside its declared sites" for
+/// an undeclared file or an extra use, and "... expected N" for a use that is gone or a file that does not exist.
 /// `not_applicable` only when `crates/adapters/src` itself does not exist, and it names that directory (§57.1 第2条).
 fn m08_2_can_read_one_home(root: &Path) -> Verdict {
     if !root.join("crates/adapters/src").is_dir() {
@@ -2392,38 +2978,32 @@ fn m08_2_can_read_one_home(root: &Path) -> Verdict {
                 .to_string(),
         );
     }
-    let found: BTreeMap<String, usize> = door_production_sources(root)
+    let sources: Vec<(String, String)> = door_production_sources(root)
         .into_iter()
         .filter(|(disp, _)| can_read_scan_scope(disp))
-        .map(|(disp, source)| (disp, can_read_tokens(&source)))
-        .filter(|(_, tokens)| *tokens > 0)
         .collect();
-    let mut problems = Vec::new();
-    for (file, tokens) in &found {
-        if !M08_CAN_READ_SITES
-            .iter()
-            .any(|(site, _, _)| *site == file.as_str())
-        {
-            problems.push(format!(
-                "G-M08-2: can_read( call outside the read gate: {file} holds {tokens} `can_read` token(s) and is not a declared site \
-                 (route the read through read_gate::readable_memory_ids, or declare the file in M08_CAN_READ_SITES with its count and reason)"
-            ));
-        }
-    }
-    for (file, expected, _) in M08_CAN_READ_SITES {
-        let actual = found.get(file).copied().unwrap_or(0);
-        if actual > expected {
-            problems.push(format!(
-                "G-M08-2: can_read( call outside the read gate: {file} holds {actual} `can_read` tokens, expected {expected} \
-                 (an extra use in a declared site; route it through read_gate::readable_memory_ids, or raise the count in M08_CAN_READ_SITES with its reason)"
-            ));
-        } else if actual < expected {
-            problems.push(format!(
-                "G-M08-2: {file} holds {actual} `can_read` tokens, expected {expected} \
-                 (a declared use is gone, or the file does not exist; lower the count in M08_CAN_READ_SITES, or drop the file once it is empty)"
-            ));
-        }
-    }
+    let pins = [
+        M08Pin {
+            token: CAN_READ,
+            headline: "can_read( call outside the read gate",
+            sites_const: "M08_CAN_READ_SITES",
+            route: "route the read through read_gate::readable_memory_ids or read_gate::visibility_readable",
+            sites: &M08_CAN_READ_SITES,
+            gate_exempt: false,
+        },
+        M08Pin {
+            token: VISIBILITY_READABLE,
+            headline: "visibility_readable use outside its declared sites",
+            sites_const: "M08_VISIBILITY_READABLE_SITES",
+            route: "route the read through read_gate::readable_memory_ids",
+            sites: &M08_VISIBILITY_READABLE_SITES,
+            gate_exempt: true,
+        },
+    ];
+    let problems: Vec<String> = pins
+        .iter()
+        .flat_map(|pin| m08_2_pin_problems(&sources, pin))
+        .collect();
     if problems.is_empty() {
         Verdict::Pass
     } else {
@@ -6819,6 +7399,10 @@ pub fn run(_args: &[String]) -> i32 {
             m01_3_crate_boundary(&root),
         ),
         (
+            "M01 D4 / G-M01-4 (a DegradeCode variant with a production emit site is tested through it, not through abstain; the others are rows of tests/fault/dormant.toml)",
+            m01_4_real_path_or_dormant(&root),
+        ),
+        (
             "§78 boundary lint (no env::var outside config/bootstrap)",
             env_var_scan(&root),
         ),
@@ -8783,6 +9367,674 @@ mod tests {
         assert_eq!(m01_3_crate_boundary(&real_root()), Verdict::Pass);
     }
 
+    // -- M01 D4 / G-M01-4: real path or declared dormant ----------------------------------
+
+    fn m01_4_names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn m01_4_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// A ledger with one valid row per variant.
+    fn m01_4_rows(variants: &[&str]) -> String {
+        variants
+            .iter()
+            .map(|v| {
+                format!("[[dormant]]\nvariant = \"{v}\"\nowner = \"M11\"\nreason = \"later\"\n")
+            })
+            .collect()
+    }
+
+    /// Fault tests that reach the exit themselves (through `abstain` and through `.also`), and one that goes through a
+    /// production function.
+    const M01_4_SYNTHETIC: &str = "use humaux_telemetry::degrade::{DegradeCode, abstain};\n#[test]\nfn t() {\n    let _ = abstain(DegradeCode::Alpha, ());\n}\n";
+    const M01_4_ALSO: &str = "use humaux_telemetry::degrade::{DegradeCode, Outcome};\n#[test]\nfn t() {\n    let _ = Outcome::clean(String::new())\n        .also(DegradeCode::Alpha);\n}\n";
+    const M01_4_REAL_PATH: &str = "use humaux_retrieval::envelope::build_projection_block;\n#[test]\nfn t() {\n    let _ = build_projection_block;\n}\n";
+
+    /// A `fault_main.rs` that wires both fixture fault files.
+    const M01_4_MAIN: &str =
+        "#[path = \"fault/alpha.rs\"]\nmod alpha;\n#[path = \"fault/beta.rs\"]\nmod beta;\n";
+
+    /// The scan over one synthetic production file.
+    fn m01_4_scan(src: &str) -> (BTreeMap<String, String>, Vec<String>) {
+        degrade_emit_sites(
+            &[("crates/x/src/a.rs".to_string(), src.to_string())],
+            &m01_4_names(&["Alpha", "Beta", "AlphaTwo"]),
+        )
+    }
+
+    fn m01_4_sites(src: &str) -> BTreeMap<String, String> {
+        m01_4_scan(src).0
+    }
+
+    /// The comparator with no unclassified exits and the fixture wiring.
+    fn m01_4_check(
+        variants: &[String],
+        sites: &BTreeMap<String, String>,
+        tests: &BTreeMap<String, String>,
+        toml: &str,
+    ) -> (Verdict, Vec<String>) {
+        real_path_from(variants, sites, &[], tests, M01_4_MAIN, toml)
+    }
+
+    #[test]
+    fn g_m01_4_real_repo_passes() {
+        assert_eq!(m01_4_real_path_or_dormant(&real_root()), Verdict::Pass);
+    }
+
+    /// Positive control: the scanner is not blind on the real tree. The three emitters the M01 design names must be
+    /// found (a subset check, so a later card that adds an emitter does not have to edit this test), and no exit call
+    /// on the real tree is unclassifiable.
+    #[test]
+    fn g_m01_4_scanner_finds_the_three_known_emitters_on_the_real_tree() {
+        let root = real_root();
+        let degrade = fs::read_to_string(root.join(DEGRADE_HOME)).unwrap();
+        let variants = parse_degrade_variant_names(&degrade);
+        let (sites, unclassified) = degrade_emit_sites(&degrade_scan_files(&root), &variants);
+        for v in [
+            "ProjectionLag",
+            "ProjectionInvisibleLoss",
+            "LaneSubstituted",
+        ] {
+            assert!(
+                sites
+                    .get(v)
+                    .is_some_and(|s| s.starts_with("crates/retrieval/src/envelope.rs:")),
+                "{v}: {sites:?}"
+            );
+        }
+        assert!(unclassified.is_empty(), "{unclassified:?}");
+    }
+
+    /// 注错 (G-M01-4 a): a live variant whose fault test names `abstain` → red naming the variant, file and line.
+    #[test]
+    fn g_m01_4_live_variant_whose_test_names_abstain_is_red() {
+        let (verdict, _) = m01_4_check(
+            &m01_4_names(&["Alpha", "Beta"]),
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_SYNTHETIC), ("Beta", M01_4_SYNTHETIC)]),
+            &m01_4_rows(&["Beta"]),
+        );
+        let out = fail_lines(verdict);
+        assert!(
+            out.contains("Alpha: production emit site crates/x/src/a.rs:3, but crates/testkit/tests/fault/alpha.rs:1 names the degrade exit `abstain`"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("Beta"),
+            "a dormant variant keeps its synthetic test: {out}"
+        );
+    }
+
+    /// 注错 (M01-3 review B1): a fault test that builds the outcome with `.also(DegradeCode::V)` reaches the exit
+    /// without writing `abstain`; the bypass check must refuse it as well.
+    #[test]
+    fn g_m01_4_live_variant_whose_test_calls_also_is_red() {
+        let (verdict, _) = m01_4_check(
+            &m01_4_names(&["Alpha"]),
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_ALSO)]),
+            "",
+        );
+        let out = fail_lines(verdict);
+        assert!(
+            out.contains("alpha.rs:5 names the degrade exit `also`"),
+            "{out}"
+        );
+    }
+
+    /// The bypass predicate and the emit-site scan read one callee list; comments, string literals and longer
+    /// identifiers are not mentions.
+    #[test]
+    fn g_m01_4_exit_predicate_catches_abstain_and_also_and_ignores_prose() {
+        let prose = "//! abstain() and .also(x) are never named here\n/* abstain(DegradeCode::Alpha) */\nfn t() { // abstain(x)\n    let s = \"abstain(.also(\";\n}\n";
+        assert_eq!(degrade_exit_named(prose), None);
+        let lookalikes =
+            "fn abstained() {}\nfn not_abstain_x() {}\nfn t(also: u8) { let _ = also; }\n";
+        assert_eq!(degrade_exit_named(lookalikes), None);
+        assert_eq!(
+            degrade_exit_named("use telemetry::degrade::abstain as raise;\n"),
+            Some((1, "abstain"))
+        );
+        assert_eq!(degrade_exit_named(M01_4_SYNTHETIC), Some((1, "abstain")));
+        assert_eq!(degrade_exit_named(M01_4_ALSO), Some((5, "also")));
+        assert_eq!(
+            degrade_exit_named("let f = Outcome::also;\n"),
+            Some((1, "also"))
+        );
+        assert_eq!(
+            degrade_exit_named("let _ = x\n    .also(DegradeCode::A);\n"),
+            Some((2, "also"))
+        );
+        assert_eq!(degrade_exit_named(M01_4_REAL_PATH), None);
+    }
+
+    /// 注错 (G-M01-4 b): a dormant row for a variant that has an emit site → red, the row must go.
+    #[test]
+    fn g_m01_4_dormant_row_for_a_live_variant_is_red() {
+        let (verdict, _) = m01_4_check(
+            &m01_4_names(&["Alpha"]),
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_REAL_PATH)]),
+            &m01_4_rows(&["Alpha"]),
+        );
+        let out = fail_lines(verdict);
+        assert!(
+            out.contains("Alpha: crates/testkit/tests/fault/dormant.toml still lists it"),
+            "{out}"
+        );
+        assert!(out.contains("delete the row"), "{out}");
+    }
+
+    /// 注错 (G-M01-4 c): no emit site and no row → red; the ledger cannot grow silently.
+    #[test]
+    fn g_m01_4_variant_without_emit_site_or_row_is_red() {
+        let (verdict, _) = m01_4_check(
+            &m01_4_names(&["Alpha"]),
+            &BTreeMap::new(),
+            &m01_4_map(&[("Alpha", M01_4_SYNTHETIC)]),
+            "",
+        );
+        let out = fail_lines(verdict);
+        assert!(out.contains("Alpha: no production emit site"), "{out}");
+        assert!(out.contains("no [[dormant]] row"), "{out}");
+    }
+
+    /// 注错 (M01-3 review W3): a fault file that `fault_main.rs` does not pull in is never compiled, so its injection
+    /// record proves nothing. A commented-out pair, a `#[cfg(..)]` between the two lines and a `#[path]` that points at
+    /// another file are all unwired.
+    #[test]
+    fn g_m01_4_fault_file_that_fault_main_does_not_wire_is_red() {
+        let variants = m01_4_names(&["Alpha", "Beta"]);
+        let tests = m01_4_map(&[("Alpha", M01_4_REAL_PATH), ("Beta", M01_4_SYNTHETIC)]);
+        let sites = m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]);
+        let rows = m01_4_rows(&["Beta"]);
+        let run = |main: &str| real_path_from(&variants, &sites, &[], &tests, main, &rows).0;
+        assert_eq!(run(M01_4_MAIN), Verdict::Pass);
+        let alpha = "#[path = \"fault/alpha.rs\"]\nmod alpha;\n";
+        let unwired = [
+            ("absent", alpha.to_string()),
+            (
+                "commented out",
+                format!("{alpha}// #[path = \"fault/beta.rs\"]\n// mod beta;\n"),
+            ),
+            (
+                "cfg-gated",
+                format!("{alpha}#[path = \"fault/beta.rs\"]\n#[cfg(any())]\nmod beta;\n"),
+            ),
+            (
+                "wrong path",
+                format!("{alpha}#[path = \"fault/alpha.rs\"]\nmod beta;\n"),
+            ),
+        ];
+        for (shape, main) in unwired {
+            let out = fail_lines(run(&main));
+            assert!(
+                out.contains("Beta: crates/testkit/tests/fault/beta.rs exists but crates/testkit/tests/fault_main.rs has no `#[path = \"fault/beta.rs\"] mod beta;` pair"),
+                "{shape}: {out}"
+            );
+            assert!(!out.contains("Alpha:"), "{shape}: {out}");
+        }
+    }
+
+    /// An exit call that [`degrade_emit_sites`] could not attribute is red on its own, whatever else is covered.
+    #[test]
+    fn g_m01_4_unclassified_exit_call_is_red_even_when_every_variant_is_covered() {
+        let line = "crates/x/src/a.rs:9: `abstain(` is a degrade exit whose first argument `c` names no DegradeCode variant".to_string();
+        let (verdict, _) = real_path_from(
+            &m01_4_names(&["Alpha"]),
+            &BTreeMap::new(),
+            std::slice::from_ref(&line),
+            &BTreeMap::new(),
+            "",
+            &m01_4_rows(&["Alpha"]),
+        );
+        assert!(fail_lines(verdict).contains("crates/x/src/a.rs:9"));
+    }
+
+    #[test]
+    fn g_m01_4_green_shapes_pass_and_the_notes_show_the_ledger() {
+        let variants = m01_4_names(&["Alpha", "Beta"]);
+        let (verdict, notes) = m01_4_check(
+            &variants,
+            &m01_4_map(&[("Alpha", "crates/x/src/a.rs:3")]),
+            &m01_4_map(&[("Alpha", M01_4_REAL_PATH), ("Beta", M01_4_SYNTHETIC)]),
+            &m01_4_rows(&["Beta"]),
+        );
+        assert_eq!(verdict, Verdict::Pass);
+        assert!(
+            notes[0].contains(
+                "1 variant(s) driven through their production emit site; dormant rows: 1"
+            ),
+            "{notes:?}"
+        );
+        assert!(
+            notes[1].contains("dormant Beta (owner M11): later"),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn g_m01_4_malformed_ledgers_are_red() {
+        let variants = m01_4_names(&["Alpha"]);
+        let live = m01_4_map(&[("Alpha", "crates/x/src/a.rs:1")]);
+        let check =
+            |toml: &str| fail_lines(m01_4_check(&variants, &live, &BTreeMap::new(), toml).0);
+        let row = |variant: &str, owner: &str, reason: &str| {
+            format!(
+                "[[dormant]]\nvariant = \"{variant}\"\nowner = \"{owner}\"\nreason = \"{reason}\"\n"
+            )
+        };
+        assert!(check(&row("Nope", "M11", "r")).contains("names no DegradeCode variant"));
+        let twice = format!("{0}{0}", row("Alpha", "M11", "r"));
+        assert!(check(&twice).contains("`Alpha` is listed twice"));
+        assert!(check(&row("Alpha", "team", "r")).contains("is not a module card"));
+        assert!(check(&row("Alpha", "M11", "")).contains("missing `reason`"));
+        assert!(
+            check(&format!("{}why = \"x\"\n", row("Alpha", "M11", "r")))
+                .contains("unknown key `why`")
+        );
+        assert!(check("[other]\nx = 1\n").contains("unknown top-level key `other`"));
+        assert!(check("[dormant]\nvariant = \"Alpha\"\n").contains("must be an array of tables"));
+        assert!(check("[[dormant").contains("not valid TOML"));
+    }
+
+    #[test]
+    fn degrade_emit_sites_recognise_abstain_and_also_across_line_breaks() {
+        let src = [
+            "fn f() {",
+            "    abstain(DegradeCode::Alpha, ())",
+            "}",
+            "fn g(o: O) -> O {",
+            "    o",
+            "        .also(",
+            "            DegradeCode::Beta,",
+            "        )",
+            "}",
+        ]
+        .join("\n");
+        let (sites, unclassified) = m01_4_scan(&src);
+        assert_eq!(sites["Alpha"], "crates/x/src/a.rs:2");
+        assert_eq!(sites["Beta"], "crates/x/src/a.rs:6");
+        assert!(unclassified.is_empty(), "{unclassified:?}");
+    }
+
+    /// M01-3 review W1: the shapes the old "text before `DegradeCode::` ends in `(`" test missed.
+    #[test]
+    fn degrade_emit_sites_see_qualified_aliased_glob_and_turbofish_calls() {
+        let cases = [
+            (
+                "qualified",
+                "fn f() { abstain(humaux_telemetry::degrade::DegradeCode::Alpha, ()); }",
+                "Alpha",
+            ),
+            (
+                "aliased",
+                "use humaux_telemetry::degrade::DegradeCode as C;\nfn f() { abstain(C::Beta, ()); }",
+                "Beta",
+            ),
+            (
+                "glob-imported",
+                "use humaux_telemetry::degrade::DegradeCode::*;\nfn f() { abstain(AlphaTwo, ()); }",
+                "AlphaTwo",
+            ),
+            (
+                "turbofish",
+                "fn f() { abstain::<()>(DegradeCode::Alpha, ()); }",
+                "Alpha",
+            ),
+            (
+                "nested turbofish",
+                "fn f() { abstain::< Vec<Vec<u8>> >(\n    DegradeCode::Beta,\n    Vec::new(),\n); }",
+                "Beta",
+            ),
+            (
+                "qualified method",
+                "fn f(o: O) -> O { o.also(humaux_telemetry::degrade::DegradeCode::Beta) }",
+                "Beta",
+            ),
+            (
+                "path-qualified callee",
+                "fn f() { humaux_telemetry::degrade::abstain(DegradeCode::Alpha, ()); }",
+                "Alpha",
+            ),
+        ];
+        for (shape, src, variant) in cases {
+            let (sites, unclassified) = m01_4_scan(src);
+            assert_eq!(
+                sites.keys().map(String::as_str).collect::<Vec<_>>(),
+                [variant],
+                "{shape}"
+            );
+            assert!(unclassified.is_empty(), "{shape}: {unclassified:?}");
+        }
+    }
+
+    /// M01-3 review W1: a call whose first argument names no variant cannot be attributed, so it is red (naming
+    /// file:line) instead of letting the variant it emits read as dormant. `degrade.rs` itself is exempt.
+    #[test]
+    fn degrade_emit_sites_fail_closed_on_an_exit_that_names_no_variant() {
+        let src = [
+            "fn a(c: DegradeCode) { abstain(c, ()); }",
+            "fn b() { let code = DegradeCode::Alpha; abstain(code, ()); }",
+            "fn c(o: O, k: DegradeCode) -> O { o.also(k) }",
+            "fn d(o: O) -> O { Outcome::also(o, DegradeCode::Beta) }",
+            "fn e() { abstain(pick(DegradeCode::Alpha), ()); }",
+        ]
+        .join("\n");
+        let (sites, unclassified) = m01_4_scan(&src);
+        assert!(sites.is_empty(), "{sites:?}");
+        assert_eq!(unclassified.len(), 5, "{unclassified:?}");
+        for line in 1..=5 {
+            let at = format!("crates/x/src/a.rs:{line}: ");
+            assert!(
+                unclassified.iter().any(|p| p.starts_with(&at)),
+                "line {line}: {unclassified:?}"
+            );
+        }
+        assert!(
+            unclassified[0].contains(
+                "`abstain(` is a degrade exit whose first argument `c` names no DegradeCode variant"
+            ),
+            "{unclassified:?}"
+        );
+        let home = degrade_emit_sites(
+            &[(
+                DEGRADE_HOME.to_string(),
+                "pub fn also(self, c: DegradeCode) -> Self { abstain(c, ()); self }".to_string(),
+            )],
+            &m01_4_names(&["Alpha"]),
+        );
+        assert_eq!(home, (BTreeMap::new(), Vec::new()));
+    }
+
+    /// An exit named inside a string or raw string (a metric help text, an assertion message) is not an exit, and a
+    /// local called `also` is not the method.
+    #[test]
+    fn degrade_emit_sites_ignore_exits_quoted_in_strings() {
+        let src = [
+            r#"const HELP: &str = "Fail-open exits through abstain(DegradeCode::Alpha, ()).";"#,
+            r##"const RAW: &str = r#"o.also(DegradeCode::Beta)"#;"##,
+            r#"const CH: char = '"'; const NEXT: &str = ".also(DegradeCode::AlphaTwo)";"#,
+            "fn f(also: u8) -> u8 { also + 1 }",
+        ]
+        .join("\n");
+        let (sites, unclassified) = m01_4_scan(&src);
+        assert!(sites.is_empty(), "{sites:?}");
+        assert!(unclassified.is_empty(), "{unclassified:?}");
+    }
+
+    #[test]
+    fn mask_comments_and_literals_keeps_the_layout_and_the_code() {
+        let src = "let a = \"x(\"; // y(\nlet b = '\"'; /* z( */ f(1);\nlet c = r#\"w(\"#;\n";
+        let out = mask_comments_and_literals(src);
+        assert_eq!(out.lines().count(), src.lines().count());
+        assert!(out.contains("let a =") && out.contains("f(1);") && out.contains("let c ="));
+        for quoted in ["x(", "y(", "z(", "w("] {
+            assert!(!out.contains(quoted), "{quoted}: {out}");
+        }
+    }
+
+    #[test]
+    fn degrade_emit_sites_skip_readers_comments_and_prefix_names() {
+        let src = [
+            "// abstain(DegradeCode::Alpha, ())",
+            "fn f(c: DegradeCode) -> u64 {",
+            "    let n = degrade_total_count(DegradeCode::Alpha);",
+            "    match c { DegradeCode::Beta => 1, _ => 0 };",
+            "    let all = DegradeCode::ALL;",
+            "    abstain(DegradeCode::AlphaTwo, ());",
+            "    n",
+            "}",
+        ]
+        .join("\n");
+        let (sites, unclassified) = m01_4_scan(&src);
+        assert_eq!(
+            sites.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["AlphaTwo"]
+        );
+        assert!(unclassified.is_empty(), "{unclassified:?}");
+    }
+
+    /// `degrade.rs` and `envelope.rs` gate a `fn` before their gated `mod`s, and `envelope.rs` has two test modules:
+    /// every gated item is test code, only the production `fn` between them is not.
+    #[test]
+    fn degrade_emit_sites_ignore_every_cfg_test_item() {
+        let src = [
+            "#[cfg(test)]",
+            "fn helper() { abstain(DegradeCode::Alpha, ()); }",
+            "fn prod() { abstain(DegradeCode::Beta, ()); }",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn a() { abstain(DegradeCode::AlphaTwo, ()); }",
+            "}",
+            "#[cfg(test)]",
+            "mod more {",
+            "    fn b() { abstain(DegradeCode::Alpha, ()); }",
+            "}",
+        ]
+        .join("\n");
+        let sites = m01_4_sites(&src);
+        assert_eq!(
+            sites.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Beta"]
+        );
+        assert_eq!(sites["Beta"], "crates/x/src/a.rs:3");
+    }
+
+    #[test]
+    fn blank_cfg_test_items_keeps_lines_and_production_code() {
+        let src = "fn a() {}\n#[cfg(test)]\nmod t {\n    fn x() {}\n}\nfn b() {}\n";
+        let out = blank_cfg_test_items(src);
+        assert_eq!(out.lines().count(), src.lines().count());
+        assert!(out.contains("fn a() {}") && out.contains("fn b() {}") && !out.contains("fn x"));
+        let not_test = "#[cfg(not(test))]\nfn p() {}\n";
+        assert_eq!(blank_cfg_test_items(not_test), not_test);
+    }
+
+    /// `run()` must list G-M01-4 exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_real_path_gate_exactly_once() {
+        assert_eq!(
+            own_source_count("m01_4_real_path_or_", "dormant(&root),"),
+            1
+        );
+    }
+
+    /// A scratch tree holding what G-M01-4 reads: the real `degrade.rs`, the real emitter `envelope.rs`, the real fault
+    /// tests, their `fault_main.rs` and the real ledger. The gate runs over it through [`m01_4_real_path_or_dormant`],
+    /// paths and all.
+    fn m01_4_tree(tag: &str) -> PathBuf {
+        let tmp =
+            std::env::temp_dir().join(format!("arch-check-m01-4-{tag}-{}", std::process::id()));
+        fs::remove_dir_all(&tmp).ok();
+        let fault = "crates/testkit/tests/fault";
+        let mut rels: Vec<String> = [
+            DEGRADE_HOME,
+            "crates/retrieval/src/envelope.rs",
+            DORMANT_FILE,
+            FAULT_MAIN_FILE,
+        ]
+        .iter()
+        .map(|r| (*r).to_string())
+        .collect();
+        for entry in fs::read_dir(real_root().join(fault)).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".rs") {
+                rels.push(format!("{fault}/{name}"));
+            }
+        }
+        for rel in rels {
+            let to = tmp.join(&rel);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(real_root().join(&rel), &to).unwrap();
+        }
+        tmp
+    }
+
+    /// Runs the gate over a fresh scratch tree, asserts it is green, applies `edit`, and returns the failure text.
+    fn m01_4_red(tag: &str, edit: impl FnOnce(&Path)) -> String {
+        let tmp = m01_4_tree(tag);
+        assert_eq!(
+            m01_4_real_path_or_dormant(&tmp),
+            Verdict::Pass,
+            "{tag}: the unedited tree must be green"
+        );
+        edit(&tmp);
+        let out = fail_lines(m01_4_real_path_or_dormant(&tmp));
+        fs::remove_dir_all(&tmp).ok();
+        out
+    }
+
+    /// Replaces the one occurrence of `from` in `tmp/rel` with `to`.
+    fn m01_4_replace(tmp: &Path, rel: &str, from: &str, to: &str) {
+        let path = tmp.join(rel);
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text.matches(from).count(),
+            1,
+            "{rel}: `{from}` moved: update this fixture"
+        );
+        fs::write(path, text.replace(from, to)).unwrap();
+    }
+
+    /// Appends `extra` to `tmp/rel`.
+    fn m01_4_append(tmp: &Path, rel: &str, extra: &str) {
+        let path = tmp.join(rel);
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str(extra);
+        fs::write(path, text).unwrap();
+    }
+
+    const M01_4_LAG_TEST: &str = "crates/testkit/tests/fault/projection_lag.rs";
+    const M01_4_ENVELOPE: &str = "crates/retrieval/src/envelope.rs";
+
+    /// r1: projection_lag.rs reaches the exit itself again.
+    #[test]
+    fn g_m01_4_scratch_tree_r1_fault_test_imports_abstain_is_red() {
+        let out = m01_4_red("r1", |tmp| {
+            let lag = fs::read_to_string(tmp.join(M01_4_LAG_TEST)).unwrap();
+            let edited = format!("use humaux_telemetry::degrade::abstain;\n{lag}");
+            fs::write(tmp.join(M01_4_LAG_TEST), edited).unwrap();
+        });
+        assert!(
+            out.contains("ProjectionLag: production emit site crates/retrieval/src/envelope.rs:"),
+            "{out}"
+        );
+        assert!(
+            out.contains("projection_lag.rs:1 names the degrade exit `abstain`"),
+            "{out}"
+        );
+    }
+
+    /// r1b (M01-3 review B1): projection_lag.rs reaches the exit through `.also` and never writes `abstain`.
+    #[test]
+    fn g_m01_4_scratch_tree_r1b_fault_test_calls_also_is_red() {
+        let out = m01_4_red("r1b", |tmp| {
+            m01_4_append(
+                tmp,
+                M01_4_LAG_TEST,
+                "\n#[test]\nfn bypass() {\n    let _ = humaux_telemetry::degrade::Outcome::clean(String::new()).also(DegradeCode::ProjectionLag);\n}\n",
+            );
+        });
+        assert!(
+            out.contains("ProjectionLag: production emit site crates/retrieval/src/envelope.rs:"),
+            "{out}"
+        );
+        assert!(
+            out.contains("projection_lag.rs:") && out.contains("names the degrade exit `also`"),
+            "{out}"
+        );
+    }
+
+    /// r2: a dormant row for a variant that has an emit site.
+    #[test]
+    fn g_m01_4_scratch_tree_r2_dormant_row_for_a_live_variant_is_red() {
+        let out = m01_4_red("r2", |tmp| {
+            m01_4_append(
+                tmp,
+                DORMANT_FILE,
+                &format!("\n{}", m01_4_rows(&["ProjectionLag"])),
+            );
+        });
+        assert!(
+            out.contains("ProjectionLag: crates/testkit/tests/fault/dormant.toml still lists it"),
+            "{out}"
+        );
+    }
+
+    /// r3 (static half): the production emit is removed, so the variant is neither live nor listed.
+    #[test]
+    fn g_m01_4_scratch_tree_r3_removed_emit_is_red() {
+        let out = m01_4_red("r3", |tmp| {
+            m01_4_replace(
+                tmp,
+                M01_4_ENVELOPE,
+                "out.also(DegradeCode::ProjectionLag)",
+                "out",
+            );
+        });
+        assert!(
+            out.contains("ProjectionLag: no production emit site"),
+            "{out}"
+        );
+    }
+
+    /// W1: a qualified-path production emit of a dormant variant used to be invisible to the scan.
+    #[test]
+    fn g_m01_4_scratch_tree_w1_qualified_emit_of_a_dormant_variant_is_red() {
+        let out = m01_4_red("w1", |tmp| {
+            m01_4_append(
+                tmp,
+                M01_4_ENVELOPE,
+                "\npub fn w1_probe() {\n    let _ = humaux_telemetry::degrade::abstain(humaux_telemetry::degrade::DegradeCode::EgressDenied, ());\n}\n",
+            );
+        });
+        assert!(
+            out.contains("EgressDenied: crates/testkit/tests/fault/dormant.toml still lists it, but it now has a production emit site (crates/retrieval/src/envelope.rs:"),
+            "{out}"
+        );
+    }
+
+    /// W1: an exit whose code is a parameter cannot be attributed, so it is red naming file:line.
+    #[test]
+    fn g_m01_4_scratch_tree_w1_exit_with_a_parameter_code_is_red() {
+        let out = m01_4_red("w1b", |tmp| {
+            m01_4_append(
+                tmp,
+                M01_4_ENVELOPE,
+                "\npub fn w1_param(c: humaux_telemetry::degrade::DegradeCode) {\n    let _ = humaux_telemetry::degrade::abstain(c, ());\n}\n",
+            );
+        });
+        assert!(
+            out.contains("crates/retrieval/src/envelope.rs:")
+                && out.contains("names no DegradeCode variant"),
+            "{out}"
+        );
+    }
+
+    /// W3: a fault file whose `mod` line is deleted from fault_main.rs is never compiled.
+    #[test]
+    fn g_m01_4_scratch_tree_w3_unwired_fault_file_is_red() {
+        let out = m01_4_red("w3", |tmp| {
+            m01_4_replace(
+                tmp,
+                FAULT_MAIN_FILE,
+                "#[path = \"fault/lane_substituted.rs\"]\nmod lane_substituted;\n",
+                "",
+            );
+        });
+        assert!(
+            out.contains("LaneSubstituted: crates/testkit/tests/fault/lane_substituted.rs exists but crates/testkit/tests/fault_main.rs has no"),
+            "{out}"
+        );
+    }
+
     // -- §78 env::var boundary lint --------------------------------------------------------
 
     #[test]
@@ -10121,17 +11373,20 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    // -- M08 D1 / G-M08-2: per-file `can_read` token counts == the declared read-gate sites --------
+    // -- M08 D1 / G-M08-2: per-file `can_read` and `visibility_readable` token counts == the declared sites ----
 
     const M08_CALL: &str = "fn f() { let _ = can_read(auth, &visibility); }\n";
-    const M08_GATE: &str = "crates/adapters/src/read_gate.rs";
-    const M08_OVERLAY: &str = "crates/adapters/src/read_materialize.rs";
-    const M08_CONTINUITY: &str = "crates/adapters/src/continuity_read.rs";
-    const M08_RECEIPT: &str = "crates/adapters/src/operation_receipt.rs";
+    const M08_DOOR_CALL: &str = "fn f() { let _ = visibility_readable(auth, &visibility); }\n";
+    const M08_GATE: &str = M08_GATE_HOME;
 
     /// A file body holding exactly `n` bare `can_read` tokens.
     fn m08_uses(n: usize) -> String {
         M08_CALL.repeat(n)
+    }
+
+    /// A file body holding exactly `n` bare `visibility_readable` tokens.
+    fn m08_door_uses(n: usize) -> String {
+        M08_DOOR_CALL.repeat(n)
     }
 
     /// The declared count of one site.
@@ -10143,11 +11398,24 @@ async fn serving_version_in_txn() {}
             .1
     }
 
-    /// The tree as M08-1 leaves it: every declared file holds exactly its declared count, and nothing else does.
+    /// The declared `visibility_readable` count of one row-level caller.
+    fn m08_door_count(file: &str) -> usize {
+        M08_VISIBILITY_READABLE_SITES
+            .iter()
+            .find(|(site, _, _)| *site == file)
+            .unwrap_or_else(|| panic!("{file} is not a declared caller"))
+            .1
+    }
+
+    /// The tree as the gate declares it: every declared file holds exactly its declared count of each token, and
+    /// nothing else does.
     fn m08_declared_tree(label: &str) -> PathBuf {
         let tmp = fresh_tmp(label);
         for (file, count, _) in M08_CAN_READ_SITES {
             m07_write(&tmp, file, &m08_uses(count));
+        }
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            m07_write(&tmp, file, &m08_door_uses(count));
         }
         tmp
     }
@@ -10176,22 +11444,174 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    /// The real tree: every file holding a `can_read` token has exactly its declared count.
+    /// The declared tree plus one undeclared file `path` holding `body`: red, one line, naming that file as an
+    /// undeclared `visibility_readable` site.
+    fn m08_undeclared_door_use_is_red(label: &str, path: &str, body: &str) {
+        let tmp = m08_declared_tree(label);
+        m07_write(&tmp, path, body);
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{path}: {lines:?}");
+        assert!(
+            lines[0].contains("G-M08-2: visibility_readable use outside its declared sites"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains(path), "{lines:?}");
+        assert!(lines[0].contains("is not a declared site"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The real tree: every file holding a `can_read` or `visibility_readable` token has exactly its declared count.
     #[test]
     fn m08_2_real_repo_passes() {
         assert_eq!(m08_2_can_read_one_home(&real_root()), Verdict::Pass);
     }
 
-    /// The gate file is always in its own declared set, every entry states a count and a reason, and every site
-    /// that is not the gate names the card that routes it through the gate.
+    /// The ratchet: the gate is the only declared site, with a count and a reason. A second declared site is an edit
+    /// to this test as well as to the const, so an exception to "one home" cannot be added by the const alone.
     #[test]
-    fn m08_2_declared_sites_name_the_gate_a_count_and_the_upgrade_card() {
-        assert_eq!(M08_CAN_READ_SITES[0].0, M08_GATE);
+    fn m08_2_declares_the_gate_as_the_only_site() {
+        assert_eq!(M08_CAN_READ_SITES.len(), 1);
         for (file, count, why) in M08_CAN_READ_SITES {
+            assert_eq!(file, M08_GATE);
             assert!(count > 0, "{file}");
             assert!(!why.is_empty(), "{file}");
-            assert!(file == M08_GATE || why.contains("M08-7"), "{file}: {why}");
         }
+    }
+
+    /// The ratchet on the door: four row-level callers outside the gate, each with a count and a reason, and the gate
+    /// file is not one of them. A fifth is an edit to this test as well as to the const.
+    #[test]
+    fn m08_2_declares_the_four_row_level_callers_of_the_door() {
+        assert_eq!(M08_VISIBILITY_READABLE_SITES.len(), 4);
+        for (file, count, why) in M08_VISIBILITY_READABLE_SITES {
+            assert_ne!(file, M08_GATE);
+            assert!(count > 0, "{file}");
+            assert!(!why.is_empty(), "{file}");
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7): a `can_read` use back in a row-level caller is red, naming that file as an undeclared
+    /// `can_read` site; the caller's own `visibility_readable` count still holds.
+    #[test]
+    fn m08_2_fails_when_a_row_level_caller_names_can_read_again() {
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            let tmp = m08_declared_tree("m08-2-red-routed");
+            assert_eq!(m08_2_can_read_one_home(&tmp), Verdict::Pass, "{file}");
+            m07_write(&tmp, file, &format!("{}{M08_CALL}", m08_door_uses(count)));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{file}: {lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(lines[0].contains("is not a declared site"), "{lines:?}");
+            assert!(
+                lines[0].contains("G-M08-2: can_read( call outside the read gate"),
+                "{lines:?}"
+            );
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): a fifth file calling the gate's row-level door is red as an undeclared site.
+    /// The same shape written with `can_read` was red before the door existed; the door must not be a way around it.
+    #[test]
+    fn m08_2_fails_on_a_new_caller_of_the_row_level_door() {
+        m08_undeclared_door_use_is_red(
+            "m08-2-red-door-new-file",
+            "crates/adapters/src/new_read.rs",
+            "use crate::read_gate::visibility_readable;\n\
+             fn f(a: &AuthorizationScope, m: &VisibilityDescriptor) -> bool { visibility_readable(a, m) }\n",
+        );
+        m08_undeclared_door_use_is_red(
+            "m08-2-red-door-bin",
+            "bins/gateway/src/memory.rs",
+            M08_DOOR_CALL,
+        );
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): the door named without a call, an alias import and a function pointer are
+    /// uses too, exactly like the `can_read` shapes.
+    #[test]
+    fn m08_2_counts_the_door_under_every_spelling() {
+        for (label, body) in [
+            (
+                "m08-2-red-door-alias",
+                "use crate::read_gate::visibility_readable as vr;\nfn f() { let _ = vr(a, &b); }\n",
+            ),
+            (
+                "m08-2-red-door-pointer",
+                "fn f() { let g = read_gate::visibility_readable; let _ = g(a, &b); }\n",
+            ),
+            (
+                "m08-2-red-door-space",
+                "fn f() { let _ = visibility_readable (a, &b); }\n",
+            ),
+        ] {
+            m08_undeclared_door_use_is_red(label, "crates/adapters/src/grep_repo.rs", body);
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): one MORE use of the door in a declared caller is red, naming the file and
+    /// both counts.
+    #[test]
+    fn m08_2_fails_on_an_extra_use_of_the_door_in_a_declared_caller() {
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            let tmp = m08_declared_tree("m08-2-red-door-extra");
+            m07_write(&tmp, file, &m08_door_uses(count + 1));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{file}: {lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(
+                lines[0].contains("G-M08-2: visibility_readable use outside its declared sites"),
+                "{lines:?}"
+            );
+            assert!(
+                lines[0].contains(&format!("holds {} `visibility_readable` tokens", count + 1)),
+                "{lines:?}"
+            );
+            assert!(lines[0].contains(&format!("expected {count}")), "{lines:?}");
+            assert_eq!(m08_door_count(file), count);
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// 注错 (G-M08-2, M08-7 review P1-a): one FEWER use of the door in a declared caller is red too (`==`, never
+    /// `<=`), so a caller leaves the const only by an edit to it.
+    #[test]
+    fn m08_2_fails_when_a_declared_caller_loses_a_use_of_the_door() {
+        for (file, count, _) in M08_VISIBILITY_READABLE_SITES {
+            let tmp = m08_declared_tree("m08-2-red-door-fewer");
+            m07_write(&tmp, file, &m08_door_uses(count - 1));
+            let lines = m08_fail_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{file}: {lines:?}");
+            assert!(lines[0].contains(file), "{lines:?}");
+            assert!(
+                lines[0].contains(&format!("holds {} `visibility_readable` tokens", count - 1)),
+                "{lines:?}"
+            );
+            assert!(lines[0].contains(&format!("expected {count}")), "{lines:?}");
+            assert!(
+                !lines[0].contains("outside its declared sites"),
+                "{lines:?}"
+            );
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// The gate file defines the door and applies it inside `readable_memory_ids`, so its own `visibility_readable`
+    /// tokens are not pinned (its `can_read` count still is).
+    #[test]
+    fn m08_2_does_not_pin_the_door_inside_the_gate_file() {
+        let tmp = m08_declared_tree("m08-2-door-in-gate");
+        m07_write(
+            &tmp,
+            M08_GATE,
+            &format!(
+                "{}fn visibility_readable() {{}}\n{}",
+                m08_uses(m08_count(M08_GATE)),
+                m08_door_uses(5)
+            ),
+        );
+        assert_eq!(m08_2_can_read_one_home(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// `run()` must list the gate: a deleted or commented-out call tuple leaves a gate that never runs and reads as
@@ -10219,8 +11639,10 @@ async fn serving_version_in_txn() {}
              /* can_read(a, &b) in a block comment */\n\
              fn g() { let _ = cannot_read(a, &b); let _ = my_can_read(a, &b); }\n\
              fn h() { let _ = can_read_all(a, &b); let _ = a.can_readable(&b); }\n\
+             /// visibility_readable(a, &b) in a doc comment\n\
+             fn i() { let _ = my_visibility_readable(a, &b); let _ = visibility_readable_all(a, &b); }\n\
              #[cfg(test)]\n\
-             mod tests { fn t() { let _ = can_read(a, &b); } }\n",
+             mod tests { fn t() { let _ = can_read(a, &b); let _ = visibility_readable(a, &b); } }\n",
         );
         m07_write(&tmp, "crates/adapters/tests/seed.rs", M08_CALL);
         m07_write(&tmp, "bins/gateway/tests/seed.rs", M08_CALL);
@@ -10301,11 +11723,11 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m08_2_fails_on_an_extra_use_in_a_declared_site() {
         let tmp = m08_declared_tree("m08-2-red-extra");
-        let expected = m08_count(M08_OVERLAY);
-        m07_write(&tmp, M08_OVERLAY, &m08_uses(expected + 1));
+        let expected = m08_count(M08_GATE);
+        m07_write(&tmp, M08_GATE, &m08_uses(expected + 1));
         let lines = m08_fail_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains(M08_OVERLAY), "{lines:?}");
+        assert!(lines[0].contains(M08_GATE), "{lines:?}");
         assert!(
             lines[0].contains(&format!("holds {} `can_read` tokens", expected + 1)),
             "{lines:?}"
@@ -10322,27 +11744,25 @@ async fn serving_version_in_txn() {}
     }
 
     /// 注错 (G-M08-2, review W1): one FEWER use in a declared file is red too (`==`, never `<=`), naming both counts,
-    /// so a count shrinks only by an edit to the const. Covers the gate file and an outside site.
+    /// so a count shrinks only by an edit to the const.
     #[test]
     fn m08_2_fails_when_a_declared_site_loses_a_use() {
-        for file in [M08_GATE, M08_CONTINUITY] {
-            let tmp = m08_declared_tree("m08-2-red-fewer");
-            let expected = m08_count(file);
-            m07_write(&tmp, file, &m08_uses(expected - 1));
-            let lines = m08_fail_lines(&tmp);
-            assert_eq!(lines.len(), 1, "{lines:?}");
-            assert!(lines[0].contains(file), "{lines:?}");
-            assert!(
-                lines[0].contains(&format!("holds {} `can_read` tokens", expected - 1)),
-                "{lines:?}"
-            );
-            assert!(
-                lines[0].contains(&format!("expected {expected}")),
-                "{lines:?}"
-            );
-            assert!(!lines[0].contains("outside the read gate"), "{lines:?}");
-            fs::remove_dir_all(&tmp).ok();
-        }
+        let tmp = m08_declared_tree("m08-2-red-fewer");
+        let expected = m08_count(M08_GATE);
+        m07_write(&tmp, M08_GATE, &m08_uses(expected - 1));
+        let lines = m08_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(M08_GATE), "{lines:?}");
+        assert!(
+            lines[0].contains(&format!("holds {} `can_read` tokens", expected - 1)),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains(&format!("expected {expected}")),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("outside the read gate"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// 注错 (G-M08-2): a declared file that was renamed away is red, not a skip: the old name holds 0 of its expected
@@ -10350,19 +11770,20 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m08_2_fails_when_a_declared_site_does_not_exist() {
         let tmp = m08_declared_tree("m08-2-red-missing");
-        fs::remove_file(tmp.join(M08_RECEIPT)).unwrap();
-        m07_write(&tmp, "crates/adapters/src/operation_receipts.rs", M08_CALL);
+        fs::remove_file(tmp.join(M08_GATE)).unwrap();
+        m07_write(&tmp, "crates/adapters/src/read_gates.rs", M08_CALL);
         let lines = m08_fail_lines(&tmp);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(
-            lines.iter().any(|l| l.contains("outside the read gate")
-                && l.contains("operation_receipts.rs")),
+            lines
+                .iter()
+                .any(|l| l.contains("outside the read gate") && l.contains("read_gates.rs")),
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains(&format!(
-                "{M08_RECEIPT} holds 0 `can_read` tokens, expected"
-            ))),
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{M08_GATE} holds 0 `can_read` tokens, expected"))),
             "{lines:?}"
         );
         fs::remove_dir_all(&tmp).ok();
@@ -10381,10 +11802,10 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m08_2_counts_an_aliased_import_in_a_declared_site() {
         let tmp = m08_declared_tree("m08-2-red-alias-declared");
-        let expected = m08_count(M08_RECEIPT);
+        let expected = m08_count(M08_GATE);
         m07_write(
             &tmp,
-            M08_RECEIPT,
+            M08_GATE,
             &format!(
                 "{}use humaux_domain::identity::can_read as cr;\nfn g() {{ let _ = cr(a, &b); }}\n",
                 m08_uses(expected)
@@ -10392,7 +11813,7 @@ async fn serving_version_in_txn() {}
         );
         let lines = m08_fail_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains(M08_RECEIPT), "{lines:?}");
+        assert!(lines[0].contains(M08_GATE), "{lines:?}");
         assert!(
             lines[0].contains(&format!("expected {expected}")),
             "{lines:?}"

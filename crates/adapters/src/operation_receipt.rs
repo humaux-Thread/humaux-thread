@@ -1,6 +1,6 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
 //! Called-by: [gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
@@ -19,7 +19,7 @@ use humaux_domain::{
     dataclass::DataClass,
     error::ErrorCode,
     evidence::EvidenceOriginClass,
-    identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor, can_read},
+    identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor},
     ids::{UserId, WorkspaceId},
     note::replace_intent_sha256,
 };
@@ -33,6 +33,7 @@ use crate::{
     note_repo::{self, NoteIntake, NoteLineage},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
+    read_gate::visibility_readable,
     read_materialize,
     remember::{self, RememberAccepted, RememberCommand, RememberError},
     request_guard_repo::{self, AuditTenant},
@@ -711,7 +712,8 @@ async fn replay(
         user_id: field::<Option<Uuid>>(&evidence, "visibility_user_id")?.map(UserId),
         workspace_id: field::<Option<Uuid>>(&evidence, "visibility_workspace_id")?.map(WorkspaceId),
     };
-    if field::<Uuid>(&evidence, "tenant_id")? != auth.tenant_id().0 || !can_read(auth, &visibility)
+    if field::<Uuid>(&evidence, "tenant_id")? != auth.tenant_id().0
+        || !visibility_readable(auth, &visibility)
     {
         return Err(ErrorCode::NotFound);
     }

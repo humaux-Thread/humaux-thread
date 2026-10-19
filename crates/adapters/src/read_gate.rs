@@ -6,7 +6,8 @@
 //!   adapters::read_materialize, adapters::selection_repo, adapters::stream_repo, domain::authority, domain::error,
 //!   domain::grounding, domain::identity, domain::ids, domain::note, domain::selection, projection::serving,
 //!   projection::stream, retrieval::completeness, retrieval::envelope]
-//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::memory_governance_repo,
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::contribution_entry_repo,
+//!   adapters::exact_census, adapters::memory_governance_repo, adapters::operation_receipt,
 //!   adapters::read_materialize, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [a Memory is readable only when all six conjuncts hold: (1) tenant, the Memory row and each Evidence
 //!   row are read under the caller's tenant_id and RLS (§6.1.1); (2) visibility, `identity::can_read` over the
@@ -22,9 +23,11 @@
 //!
 //! M08 D1 (module design "one gate, one home"): every read op passes the shared final gate before any body leaves
 //! PostgreSQL, and the closure it rests on lives in this file, so a change to the readability rule edits one module.
-//! `can_read(` is called from this file and from the few declared exceptions only; the `G-M08-2` sentinel in
-//! `xtask/src/architecture_check.rs` pins each file's `can_read` count with `==`, so a new read op that judges
-//! visibility itself is red until it is routed through [`readable_memory_ids`] or declared there.
+//! `can_read` is named in this file only, inside [`visibility_readable`]; the `G-M08-2` sentinel in
+//! `xtask/src/architecture_check.rs` pins this file's `can_read` count with `==` and, with the same `==` per file and a
+//! reason per row, every caller of [`visibility_readable`] outside it, so a read op that judges visibility itself is
+//! red until it goes through [`readable_memory_ids`] (a Memory and its backing Evidence) or is declared there as a
+//! row-level caller (a row its own SQL already fetched).
 //!
 //! The materializers here are the `memory.get` and `memory.enumerate` entry points. Census minting, the frozen
 //! census readout and the stream pipeline counts stay in [`crate::context_repo`] (§22.1, §23.3④, module M13); this
@@ -34,8 +37,8 @@
 // there, widened to `pub(crate)` for it: `canonical_scope`, `grounding_from_facts`, `body_ids`, `materialized_identity`,
 // `continuation_bound`, `mint_segment_in_txn`, `frozen_census_in_txn`, `FrozenCensus`, `EnumerationFilter` and its
 // fields; `context_repo` takes `readable_memory_ids` back) and with `read_materialize` (it takes the materialization
-// entry points; `read_materialize` takes `readable_memory_ids`). Both compile and dep-map accepts them, upgrade by
-// card M08-7, which makes `readable_memory_ids` a leaf module that neither side has to import around.
+// entry points; `read_materialize` takes `readable_memory_ids`). Both compile and dep-map accepts them, upgrade by a
+// future M08 card that makes `readable_memory_ids` a leaf module that neither side has to import around.
 
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
@@ -68,7 +71,20 @@ use crate::stream_repo::close_ledger_in_txn;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
-/// Runs `can_read` against real Memory and backing Evidence rows. A Memory without a backing
+/// Whether `authorization` may read an object that carries `visibility` (§6.1.1): the one `can_read` call in adapters
+/// and bins. A caller whose own SQL already fetched the Memory or Evidence row (the RYW overlay, a contribution source,
+/// a receipt replay, a continuity fact) judges that row's descriptor here and keeps its tenant filter, lifecycle,
+/// secret and subject guards in that SQL; `can_read` is only the visibility term. A Memory read goes through
+/// [`readable_memory_ids`], which adds the all-backing-evidence closure (§8.6); each caller outside this file is a
+/// declared row of `G-M08-2`, never an undeclared use.
+pub(crate) fn visibility_readable(
+    authorization: &AuthorizationScope,
+    visibility: &VisibilityDescriptor,
+) -> bool {
+    can_read(authorization, visibility)
+}
+
+/// Runs the visibility judgement against real Memory and backing Evidence rows. A Memory without a backing
 /// Evidence row, or with any Evidence row hidden by RLS, fails closed (§6.1.1/§8.6).
 pub(crate) async fn readable_memory_ids(
     txn: &mut Txn<'_>,
@@ -126,10 +142,10 @@ pub(crate) async fn readable_memory_ids(
         .into_iter()
         .filter_map(|(memory_id, descriptor)| {
             let evidence = evidence_by_memory.get(&memory_id)?;
-            (can_read(authorization, &descriptor)
+            (visibility_readable(authorization, &descriptor)
                 && !evidence.is_empty()
                 && evidence.iter().all(|descriptor| {
-                    descriptor.is_some_and(|value| can_read(authorization, &value))
+                    descriptor.is_some_and(|value| visibility_readable(authorization, &value))
                 }))
             .then_some(memory_id)
         })
