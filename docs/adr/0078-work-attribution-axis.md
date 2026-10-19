@@ -80,7 +80,7 @@ deterministic inheritance rules for task runs and capture contexts.
 One SQL template and one Rust kernel serve every relation pair:
 
 ```text
-<pair>_relation_revisions(
+<pair>_relations(
   tenant_id, relation_id, revision bigint,     -- PK (tenant_id, relation_id, revision)
   src_id, dst_id, relation_kind,               -- real composite FKs with a tenant leg (§6.1.3)
   valid tstzmultirange NOT NULL,               -- valid time; '{}' = retracted
@@ -91,16 +91,20 @@ One SQL template and one Rust kernel serve every relation pair:
   recorded_at timestamptz NOT NULL DEFAULT clock_timestamp())
 ```
 
-- **Append-only.** INSERT only; an owner trigger rejects UPDATE (same technique as 0156,
-  `0156_memory_affects.sql:94`). Current state = the highest revision per `relation_id`.
+- **Append-only.** INSERT only; an owner trigger rejects UPDATE and DELETE (same technique as 0156,
+  `0156_memory_affects.sql:94`; no foreign key cascades into these rows). Current state = the highest revision per
+  `relation_id`.
 - **Retraction** is a new revision whose `valid` is the empty multirange `'{}'`.
 - **CAS.** A write carries `expected_revision` and must insert `revision = expected_revision + 1`; the primary key
   rejects the loser of a race.
 - **Interval shape.** One shared IMMUTABLE SQL function, used in a CHECK, requires every range of `valid` to be `[)`,
   with a finite lower bound and an upper bound that is finite or omitted; explicit `±infinity` is rejected.
   `tstzrange` has no canonical form, so `[)` and `[]` would otherwise compare unequal (PG-RT).
-- **Whitelist.** The allowed `(src_kind, relation_kind, dst_kind)` triples are a Rust closed set; the DB mirrors them
-  in a CHECK reconciled by contract test (§78.2).
+- **Whitelist.** The allowed `(src_kind, relation_kind, dst_kind)` triples are a Rust closed set
+  (`domain::relation::WHITELIST`). The DB mirrors them in one IMMUTABLE function called from a BEFORE INSERT trigger,
+  not a CHECK: a CHECK sees only its own row, and an endpoint's kind lives on its `private.subjects` row. The contract
+  test (§78.2) evaluates that function over every endpoint kind × relation kind and compares the result with the Rust
+  set.
 - **No temporal unique key and no `btree_gist` in the first slice.** Revisions of one relation overlap in valid time
   by construction, and PostgreSQL forbids empty multiranges in a `WITHOUT OVERLAPS` column (PG-CT). `btree_gist`
   arrives with keys that carry a validity period, under its own ADR.

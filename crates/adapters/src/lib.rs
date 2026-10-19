@@ -24,6 +24,7 @@ pub mod contribution_execution_repo;
 pub mod contribution_reasoner;
 pub mod contribution_repo;
 pub mod contribution_scan;
+pub mod coord_repo;
 pub mod credential_repo;
 pub mod dashscope;
 pub mod disclosure;
