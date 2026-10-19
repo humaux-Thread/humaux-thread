@@ -368,6 +368,8 @@ and the failing lines are in the card's PR description.
   - r2 and r3 each remove one whole statement (6 and 3 lines); the others change one line. All stay inside 0253 or
     `Validity::new`, because 0253's postcheck leaves the FKs, the CHECKs, the guard body and the predicate body to
     these tests.
+  - Later commits change only fixtures, a dep tag, headers and generated docs; every fault line still applies once on
+    the final head, so the records stand without a re-run.
 
 ## Cards and experiments
 
