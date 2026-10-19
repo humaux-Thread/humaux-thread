@@ -335,7 +335,7 @@ async fn door(
     Ok(memory)
 }
 
-/// The fixture's teardown knows neither the carrier, `coord.task_runs`, nor the append-only attribution and relation
+/// The fixture's teardown knows neither the carriers, `coord.task_runs`, nor the append-only attribution and relation
 /// rows a committed test leaves (replica mode lets the owner past their append-only triggers).
 fn purge(handle: &mut Handle) {
     let t = handle.tenant_id;
@@ -347,6 +347,7 @@ fn purge(handle: &mut Handle) {
              DELETE FROM private.memory_projects WHERE tenant_id = '{t}'; \
              DELETE FROM private.project_task_relations WHERE tenant_id = '{t}'; \
              SET session_replication_role = DEFAULT; \
+             DELETE FROM private.evidence_projects WHERE tenant_id = '{t}'; \
              DELETE FROM private.evidence_task_runs WHERE tenant_id = '{t}'; \
              DELETE FROM coord.task_runs WHERE tenant_id = '{t}';"
         ))
