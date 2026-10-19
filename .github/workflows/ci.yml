@@ -252,6 +252,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # ADR-0066 D-R (a), §78.1: deploy/env/values/*.env declare exactly the keys their process reads (the generated
+      # deploy/env/example/*.env) minus the secret fixture and prod.yml `environment:`, and every sizing profile's gateway
+      # ceiling holds the query-embedding cache the gateway values file enables. Clean checkout, no secret; renders prod.yml
+      # with `docker compose config`, so HUMAUX_REQUIRE_DOCKER (set for this job) makes a missing docker red, not a skip.
+      - name: cargo xtask deploy-env
+        if: ${{ !cancelled() }}
+        run: cargo xtask deploy-env
+
       # PHASE 真源的过期闸：下一相位的交付物 marker 已非占位而 PHASE 未前进 ⇒ 红。
       # 「当前状态」型常量写进静态文件的那天就开始腐烂，除非配一道会红的过期闸——
       # PHASE 文件正是那种常量（审计结论，见 xtask/src/phase.rs 模块 doc）。
