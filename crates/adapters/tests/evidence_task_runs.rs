@@ -132,6 +132,7 @@ fn claimed(handle: &Handle, owner: &AuthorizationScope) -> (TaskRunId, FencingTo
             &handle.runtime,
             owner,
             "evidence_task_runs",
+            "M29 T04c gate",
         ))
         .expect("submit");
     let run = handle
