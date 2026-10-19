@@ -209,7 +209,7 @@ pub fn build_projection_block(
     // ADR-0057 D-E: compose, never early-return — loss and lag can both hold (a stalled runner
     // plus a lost point) and each must reach the wire.
     if ledger.lagging(lag_threshold) {
-        out.also(DegradeCode::ProjectionLag)
+        out
     } else {
         out
     }
