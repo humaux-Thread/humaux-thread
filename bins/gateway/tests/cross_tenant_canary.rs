@@ -987,10 +987,13 @@ fn bypassrls_lift_is_refused_on_a_foreign_database_even_with_the_opt_in() {
 /// `private.read_continuity_project_storage_v1`, whose owner `role_migration_owner` passes every continuity policy
 /// (`current_user='role_migration_owner'`), so lifting `role_gateway` changes nothing there and
 /// `project.tenant_id=p_tenant_id` is its only row-level tenant predicate. Dropping it leaves the plain project probe
-/// green, because `project.workspace_id=ANY(p_authorized_workspace_ids)` hides a foreign workspace by itself; only the
-/// widened-scope probe, whose authorized set names the foreign workspace, goes red.
+/// green, because `project.workspace_id=ANY(p_authorized_workspace_ids)` hides a foreign workspace by itself. Only the
+/// widened-scope probe, whose authorized set names the foreign workspace, goes red, and it does so as an existence
+/// oracle: with the predicate gone the function returns the foreign project's slot rows, the post-check in
+/// `PostgresContinuityReadPort::read_snapshot` (`first.tenant_id != caller`) turns them into
+/// `CannotEstablishCompleteness`, and an absent id answers `NotFound`.
 #[test]
-#[allow(clippy::too_many_lines)] // one seeded tenant pair, three probes against controls
+#[allow(clippy::too_many_lines)] // one seeded tenant pair, four probes against controls
 #[ignore = "lane(a:disposable) lifts role_gateway to BYPASSRLS, a cluster-wide attribute, so it runs only where HUMAUX_TEST_DISPOSABLE_CLUSTER=1 declares the cluster throwaway (the CI serial-lane step sets it)"]
 fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
     const NAME: &str = "foreign_ids_are_not_found_with_row_level_security_out_of_the_path";
@@ -1098,8 +1101,14 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
                 // §6.1.2 ANDs the tenant filter and the workspace term independently. The first project probe is hidden
                 // by the workspace term alone (`project.workspace_id=ANY(authorized)`: the foreign workspace is not in
                 // the caller's set), so it cannot tell whether `project.tenant_id=p_tenant_id` is still there. This
-                // scope hands the caller an authorized set that wrongly names the foreign workspace, which leaves that
-                // tenant predicate as the only thing between the caller and the foreign project.
+                // scope hands the caller an authorized set that wrongly names the foreign workspace, so the workspace
+                // term no longer hides the row. With the SQL predicate dropped the function returns the foreign
+                // project's slot rows and the post-check in `read_snapshot` (`first.tenant_id != caller`) turns them
+                // into CannotEstablishCompleteness: the probe catches the dropped predicate as an existence oracle
+                // (CannotEstablishCompleteness vs NotFound), not as returned data.
+                // ponytail: that post-check is the only detector here; if it ever answers NotFound on a tenant
+                // mismatch this probe stays green with the predicate gone, upgrade path = assert on the SQL
+                // function's row output directly.
                 let widened = AuthorizationScope::new(
                     TenantId(handle.tenant_id),
                     handle.auth.principal(),
