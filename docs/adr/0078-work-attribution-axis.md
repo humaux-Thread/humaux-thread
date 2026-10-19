@@ -281,8 +281,9 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
-(T06a); the A1 entry's card gates G-T06c-1 (`project_id` on the wire), G-T06c-2 (end to end to `memory_projects`) and
-G-T06c-3 (one `evidence_projects` writer) (T06c). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+(T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); the A1 entry's card gates G-T06c-1 (`project_id` on the wire),
+G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c). The rest are a plan.
+Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -291,7 +292,11 @@ module gates there needs its own spec change.
 | G-M29-1 closed-set reconciliation | Rust enums of `SubjectKind`, `SubjectKeyKind` and `source_kind` == DB CHECKs; the relation whitelist == `private.relation_triple_allowed` over every kind × relation kind (§78.2) | add a kind or triple in the DB only |
 | G-M29-2 interval shape | `[]`, explicit infinity and an unbounded lower bound are rejected by the CHECK | drop the `upper_inc` test from the CHECK function |
 | G-M29-3 CAS | two connections writing with the same `expected_revision` concurrently: exactly one succeeds | drop the revision check |
-| G-M29-4 append-only | UPDATE / DELETE by any runtime role fails | grant UPDATE |
+| G-M29-4 append-only | no non-owner role holds UPDATE (any column) or DELETE on any relation table (`has_*_privilege`, as the manifest postchecks ask, issue #92 item 1); the owner's UPDATE / DELETE hit the trigger | grant UPDATE |
+| G-T06d-1 authorisation Evidence | on each relation table, an `authorization_evidence_id` that is no Evidence or another tenant's is `INVALID_INPUT` | drop 0253's FK line |
+| G-T06d-2 factual Evidence | on each table, a factual id that is no Evidence, another tenant's, this tenant's but invisible to the writer, or repeated is `INVALID_INPUT` | drop the guard's factual check |
+| G-T06d-3 principal membership | on each table, a `principal:` decider that is a user ACTIVE only elsewhere, an INVITED / SUSPENDED / REMOVED member, a SUSPENDED user (directly or through a live key), a key of a non-member, a machine key, a revoked key, another tenant's key, or a member of a SUSPENDED tenant is `INVALID_INPUT`; a malformed value is `INVALID_INPUT`, not 22P02; the predicate is false for a tenant other than the session's | drop the guard's membership check, one predicate leg, or the cast guard |
+| G-T06d-4 authorisation ∉ factual | the authorisation Evidence among the factual ones is `INVALID_INPUT` | drop 0253's CHECK line |
 | G-M29-5 single attribution sites | two counts, both `== 1`: (a) the attribution port is invoked once, inside `memory_repo::insert_memory_in_txn`, with a required parameter (A1, A3); (b) exactly one A3' inheritance site, the M29 trigger on the supersede transition | (1) a second port invocation; (2) the port parameter made `Option` / defaulted; (3) a second A3' site, as a Rust call or another trigger; (4) the A3' trigger removed, so a fixture correction leaves the successor `unresolved` |
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
@@ -390,6 +395,44 @@ and the failing lines are in the card's PR description.
   - r10: a red-only migration `0255_red_m29_t06c_r10` grants EXECUTE on the reader to `role_admin` -> the `rls_check`
     declared-project reader gate red: "role_admin: expected EXECUTE=false, actual true" (`rls_check.rs:7187`). It is a
     later migration because 0254's own postcheck pins the EXECUTE list.
+- T06d (PR #100), branches `red/m29-t06d-r1..r7` and `r3a..r3e` off `b52d025`:
+  - r1: 0253's FK line dropped -> G-T06d-1 red: an `authorization_evidence_id` that is no Evidence is accepted.
+  - r2: the guard's factual check dropped -> G-T06d-2 red: a factual id that is no Evidence is accepted.
+  - r3: the guard's membership check dropped -> G-T06d-3 red: a user ACTIVE only in another tenant decides.
+  - r3a: the predicate's `m.tenant_id = p_tenant_id` as `true` -> G-T06d-3 red: the same decoy decides.
+  - r3b: `AND m.state = 'ACTIVE'` dropped -> G-T06d-3 red: a SUSPENDED member decides.
+  - r3c: `AND k.revoked_at IS NULL` dropped -> G-T06d-3 red: a revoked key decides.
+  - r3d: `AND k.tenant_id = p_tenant_id` dropped -> G-T06d-3 red: another tenant's key, bound to a member here,
+    decides.
+  - r3e: the session-tenant pin as `SELECT true` -> G-T06d-3 red: the predicate answers true for another tenant.
+  - r4: 0253's CHECK line dropped -> G-T06d-4 red: the authorisation Evidence is accepted among the factual ones.
+  - r5: a red-only line in 0253 grants UPDATE on `private.subject_relations` to `role_admin` -> G-M29-4 red: the
+    privilege is held (issue #92 item 1: the old behavioural check could not see it, because `role_admin` has no
+    USAGE on `private`).
+  - r6: `Validity::new`'s `t >= PG_TIMESTAMPTZ_MIN_MICROS` guard dropped -> #92 item 2 red: `Micros(i64::MIN)` is
+    admitted.
+  - r7: the guard compares `relation_kind` only -> #92 item 3 red: a revision that moves `src_id` is accepted.
+  - r2 and r3 each remove one whole statement (6 and 3 lines); the others change one line. All stay inside 0253 or
+    `Validity::new`, because 0253's postcheck leaves the FKs, the CHECKs, the guard body and the predicate body to
+    these tests.
+  - Later commits change fixtures, a dep tag, headers and generated docs, and the review fixes below add two
+    predicate legs and more decoys; every fault line above still applies once on the final head, so these records
+    stand without a re-run.
+- T06d review fixes (PR #100), branches `red/m29-t06d-r3f..r3h`, `r8` and `r9` off `5bfbc1a`:
+  - r3f: `AND u.state = 'ACTIVE'` dropped from the predicate -> G-T06d-3 red: a SUSPENDED user whose membership is
+    ACTIVE decides.
+  - r3g: `AND t.state = 'ACTIVE'` dropped -> G-T06d-3 red: an ACTIVE member of a SUSPENDED tenant decides.
+  - r3h: the key leg's `k.user_id` as `coalesce(k.user_id, m.user_id)` -> G-T06d-3 red: a machine key (no user)
+    decides as any live member.
+  - r8: a red-only later migration grants EXECUTE on `private.relation_principal_is_member` to `role_admin` ->
+    rls-check "§6.1.4 relation principal predicate" red, run through
+    `rls_check::tests::relation_principal_predicate_gate_holds_on_the_migrated_schema` (the same call `cargo xtask
+    rls-check` makes in the CI gates job, which `targeted.yml` cannot reach). It is a later migration because
+    0253's postcheck pins that EXECUTE list.
+  - r9: the guard's `pg_input_is_valid` test as `IF true` -> G-T06d-3 red: `principal:not-a-uuid` raises 22P02
+    (INTERNAL) instead of 23503.
+  - The INVITED / REMOVED members, the key bound to a SUSPENDED user and the key of a non-member are refused by legs
+    r3b, r3f and r3a already break; the factual Evidence the writer cannot see is refused by the check r2 drops.
 
 ## Cards and experiments
 
@@ -406,6 +449,13 @@ and the failing lines are in the card's PR description.
 - **T06** (M29 + M15): attribution tables; A1 and A3 in `link_memory_projects` behind the M07 attribution port, with
   the door's required port argument and the composition-root wiring; A3' in the M29 supersede trigger (D-D). Gates
   G-M29-5/6, G-N09-1/3.
+- **T06d** (M29): relation provenance integrity, migration 0253 (design v0.2 §15.2 / §15.5). Gates G-T06d-1..4,
+  G-M29-4 strengthened, issue #92 items 2 and 3. Workspace visibility of both endpoints stays the caller's
+  precondition of `append_revision` (`coord.tasks` has no workspace column). No runtime caller exists yet, so the
+  first card that wires one must test that the caller refuses an endpoint outside its authorised workspaces, and
+  that caller must install the visibility GUCs (`humaux.tenant_id` and `humaux.user_id`, which the 0163 policy's
+  USER_PRIVATE and WORKSPACE_SHARED arms read) before the append: the factual check runs under RLS, so without them a
+  legitimate USER_PRIVATE or WORKSPACE_SHARED factual id is refused.
 - **T07** (M29): first E2E on a synthetic fixture (website A, projects P1 / P2, shared task T1, same-name trap
   project, three messages, one correction, plus replay, revoked access and faults). Gates G-N09-3/4.
 - **E-A** precision per ladder rung (A1 / A3 / A3' × relation kind × source scope), binding correctness and

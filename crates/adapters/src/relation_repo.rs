@@ -11,8 +11,9 @@
 //! Spec: Baseline §6.1.4; §52; ADR-0078 D-C
 //!
 //! Both functions run in the caller's transaction under its role and RLS: the caller has already installed the
-//! authorization context (`humaux.tenant_id`). Whitelist, contiguity and edge immutability are enforced once, by the
-//! migration-0249 guard trigger, and surface here as [`ErrorCode`]s.
+//! authorization context (`humaux.tenant_id`). Whitelist, contiguity, edge immutability, factual Evidence and
+//! decider membership are enforced once, by the guard trigger (0249, replaced by 0252 and 0253), the authorisation
+//! Evidence by 0253's FK and CHECK; all surface here as [`ErrorCode`]s.
 
 use std::ops::Bound;
 
@@ -67,9 +68,10 @@ fn table(pair: RelationPair) -> &'static str {
 }
 
 /// §52 mapping for the kernel's statements. A lost race (PK) and a stale-ahead `expected_revision` are both
-/// `CONFLICT`: the caller re-reads the current revision. An unknown, invisible or foreign-tenant endpoint
-/// (FK / guard, both 23503), a non-whitelisted triple and an edge change are `INVALID_INPUT`, with no existence
-/// oracle between "missing" and "another tenant's".
+/// `CONFLICT`: the caller re-reads the current revision. An unknown, invisible or foreign-tenant endpoint or
+/// Evidence (FK / guard, both 23503), a `principal:` decider that is no live member here (guard, 23503), a
+/// non-whitelisted triple, an edge change and an authorisation Evidence repeated among the factual ones (23514) are
+/// `INVALID_INPUT`, with no existence oracle between "missing" and "another tenant's".
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
         sqlx::Error::Database(ref db) => match (db.code().as_deref(), db.constraint()) {
@@ -85,6 +87,15 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
 /// §6.1.4 ③ CAS write: appends revision `expected_revision + 1` of `relation_id` (`expected_revision = 0` creates
 /// the relation). Returns the new revision number. A concurrent writer with the same `expected_revision` loses on
 /// the primary key; both a lost race and an `expected_revision` that is not the current revision are `CONFLICT`.
+///
+/// Migration 0253 (§6.1.4): `authorization_evidence_id` must be an Evidence of the session tenant;
+/// `factual_evidence_ids` must be distinct Evidence the caller can see there and must not contain it; a
+/// [`DecidedBy::Principal`] must resolve to an ACTIVE user with an ACTIVE membership in the tenant, the tenant
+/// itself ACTIVE (a machine key never decides). Each violation is `INVALID_INPUT`.
+///
+/// Precondition (§6.1.4, design v0.2 §15.2): the caller has verified that both endpoints of `edge` are visible in
+/// its authorised workspaces before calling. This function checks tenant scope only (`coord.tasks` has no workspace
+/// column).
 #[allow(clippy::too_many_arguments)] // ADR-0078 D-C: the revision columns, one argument each.
 pub async fn append_revision(
     txn: &mut Txn<'_>,
