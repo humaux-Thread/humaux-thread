@@ -1127,6 +1127,14 @@ pub fn registry() -> Vec<ConfigEntry> {
             entry_with_default(&format!("{PREFIX}{suffix}"), type_name, false, default)
         }),
     );
+    // §30.2 / §78.1 (M29 T04a): the coord task-run lease length handed to adapters::coord_repo claim/heartbeat; the
+    // coordinate.task_* handlers that read it land with T04b. 300 s bounds how long a crashed owner keeps a task.
+    entries.push(entry_with_default(
+        &format!("{PREFIX}TASK_LEASE_TTL_SECONDS"),
+        "u64",
+        false,
+        "300",
+    ));
     for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
         entries.push(entry(capacity_key, "i64", false));
         entries.push(entry(refill_key, "i64", false));

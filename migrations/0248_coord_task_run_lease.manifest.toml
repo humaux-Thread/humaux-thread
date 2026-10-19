@@ -1,0 +1,48 @@
+# §46.1 migration manifest. Card M29 T04a (§30.1, §30.2): coord.tasks.state (§30.1 closed set,
+# default SUBMITTED) and coord.tasks.fencing_seq; coord.task_runs lease_owner / lease_expires_at / fencing_token, their
+# all-or-none CHECK and the one-open-lease-per-task partial unique index. Additive, no DML, no policy or grant change.
+# §46 forward-fix, first free number after 0247.
+
+migration_id = "0248_coord_task_run_lease"
+class = "FORWARD_ONLY"
+
+# Refuses a database without the 0009 skeleton, or one that already has any of this migration's objects.
+precheck = """
+select to_regclass('coord.tasks') is not null
+ and to_regclass('coord.task_runs') is not null
+ and not exists (select 1 from pg_attribute
+                  where attrelid = 'coord.tasks'::regclass and attname in ('state', 'fencing_seq') and not attisdropped)
+ and not exists (select 1 from pg_attribute
+                  where attrelid = 'coord.task_runs'::regclass
+                    and attname in ('lease_owner', 'lease_expires_at', 'fencing_token') and not attisdropped)
+ and to_regclass('coord.task_runs_one_open_lease_per_task') is null
+ as precheck_ok
+"""
+
+# Fails on: a missing column, CHECK or index; a state CHECK that does not name all seven §30.1 labels; either table
+# without ENABLE + FORCE RLS.
+postcheck = """
+select (select count(*) = 2 from pg_attribute
+         where attrelid = 'coord.tasks'::regclass and attname in ('state', 'fencing_seq') and attnotnull
+           and not attisdropped)
+ and (select count(*) = 3 from pg_attribute
+       where attrelid = 'coord.task_runs'::regclass
+         and attname in ('lease_owner', 'lease_expires_at', 'fencing_token') and not attisdropped)
+ and coalesce((select bool_and(strpos(pg_get_constraintdef(c.oid), '''' || l || '''') > 0)
+                 from pg_constraint c,
+                      unnest(array['SUBMITTED', 'CLAIMED', 'WORKING', 'BLOCKED', 'COMPLETED', 'FAILED',
+                                   'CANCELLED']) l
+                where c.conrelid = 'coord.tasks'::regclass and c.conname = 'tasks_state_check'), false)
+ and exists (select 1 from pg_constraint
+              where conrelid = 'coord.tasks'::regclass and conname = 'tasks_fencing_seq_nonnegative')
+ and exists (select 1 from pg_constraint
+              where conrelid = 'coord.task_runs'::regclass and conname = 'task_runs_lease_shape')
+ and exists (select 1 from pg_index i
+              where i.indexrelid = to_regclass('coord.task_runs_one_open_lease_per_task') and i.indisunique)
+ and (select bool_and(relrowsecurity and relforcerowsecurity) from pg_class
+       where oid in ('coord.tasks'::regclass, 'coord.task_runs'::regclass))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: once no build calls adapters::coord_repo, DROP INDEX coord.task_runs_one_open_lease_per_task; ALTER TABLE coord.task_runs DROP CONSTRAINT task_runs_lease_shape, DROP COLUMN fencing_token, DROP COLUMN lease_expires_at, DROP COLUMN lease_owner; ALTER TABLE coord.tasks DROP COLUMN fencing_seq, DROP COLUMN state (this discards every task state and lease written since)."
+backup_restore_requirement = "none: added columns and constraints only; existing rows take the column defaults or NULL, no row is updated or deleted."
