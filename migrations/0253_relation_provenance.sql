@@ -35,7 +35,6 @@ AS $$
   SELECT coalesce(p_tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid, false)
      AND EXISTS (SELECT 1 FROM control.memberships m
                   WHERE m.tenant_id = p_tenant_id
-                    AND m.state = 'ACTIVE'
                     AND m.user_id IN (SELECT p_principal_id
                                       UNION ALL
                                       SELECT k.user_id FROM control.api_keys k
