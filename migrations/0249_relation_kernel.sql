@@ -23,8 +23,8 @@
 --   ⑦ decided_by / proposed_by have closed formats; factual and authorisation evidence are separate columns.
 --   ⑧ no temporal key, no btree_gist, no EXCLUDE (ADR-0078 D-C defers them).
 --
--- Locks: the two ADD UNIQUE build an index under SHARE on continuity_projects / coord.tasks (writes wait for the
--- build); both tables are small registries.
+-- Locks: each ADD CONSTRAINT ... UNIQUE holds ACCESS EXCLUSIVE on continuity_projects / coord.tasks while its index
+-- builds (reads and writes wait); both tables are small registries.
 
 ALTER TABLE private.continuity_projects
   ADD CONSTRAINT continuity_projects_tenant_project_key UNIQUE (tenant_id, project_id);
