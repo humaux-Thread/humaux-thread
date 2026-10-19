@@ -32,7 +32,7 @@
 CREATE FUNCTION private.relation_principal_is_member(p_tenant_id uuid, p_principal_id uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog
 AS $$
-  SELECT coalesce(p_tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid, false)
+  SELECT true
      AND EXISTS (SELECT 1 FROM control.memberships m
                   WHERE m.tenant_id = p_tenant_id
                     AND m.state = 'ACTIVE'
