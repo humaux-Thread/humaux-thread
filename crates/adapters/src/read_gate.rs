@@ -79,7 +79,8 @@ pub(crate) fn visibility_readable(
     authorization: &AuthorizationScope,
     visibility: &VisibilityDescriptor,
 ) -> bool {
-    can_read(authorization, visibility)
+    visibility.class == humaux_domain::identity::VisibilityClass::WorkspaceShared
+        || can_read(authorization, visibility)
 }
 
 /// Runs the visibility judgement against real Memory and backing Evidence rows. A Memory without a backing
