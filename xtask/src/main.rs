@@ -8,7 +8,7 @@
 //!
 //! 子命令与闸的对应：architecture-check(G80-1/2/3/22…) · mechanism-registry(G80-10)
 //! · migration-rehearsal(G80-37) · metrics-registry(G80-6) · contract-impact(G80-42)
-//! · config-check(G80-41) · rls-check(§48.2) · gate-truth(§79.2, ADR-0050 D-C) · dep-map(ADR-0051)。判据正文以家章为唯一真源。
+//! · config-check(G80-41) · rls-check(§48.2) · gate-truth(§79.2, ADR-0050 D-C) · dep-map(ADR-0051) · deploy-env(ADR-0066 D-R (a), §78.1)。判据正文以家章为唯一真源。
 
 mod architecture_check;
 mod benchset_declaration;
@@ -77,9 +77,10 @@ fn main() -> std::process::ExitCode {
         Some("gate-truth") => gate_truth::run(&args[2..]),
         Some("known-red") => known_red::run(&args[2..]),
         Some("dep-map") => dep_map::run(&args[2..]),
+        Some("deploy-env") => dep_map::run_deploy_env(&args[2..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <architecture-check|mechanism-registry|migration-rehearsal|metrics-registry|contract-impact|config-check|rls-check|threshold-shape|benchset-declaration|gate-registry|dod-check|phase-check|r4-fault-manifest|direction-table|card-version|migrate|e2e-seed|e2e-onboard|member|projection-serve|serial-lane|soak|load|gate-truth|known-red|dep-map>"
+                "usage: cargo xtask <architecture-check|mechanism-registry|migration-rehearsal|metrics-registry|contract-impact|config-check|rls-check|threshold-shape|benchset-declaration|gate-registry|dod-check|phase-check|r4-fault-manifest|direction-table|card-version|migrate|e2e-seed|e2e-onboard|member|projection-serve|serial-lane|soak|load|gate-truth|known-red|dep-map|deploy-env>"
             );
             2
         }

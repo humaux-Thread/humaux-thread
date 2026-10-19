@@ -50,7 +50,7 @@ on `127.0.0.1:19101-19108` inside it.
 
 **Host facts.** Production is a Linux arm64 host of the §67.2 class (4 vCPU, 24 GB; sized against the 22 GiB
 floor, `deploy/env/sizing-a5.env`). The rehearsal node is a compose project on the development Mac (Docker
-Desktop VM, MemTotal 5 922 MiB since 2026-10-07; `deploy/env/sizing-rehearsal.env`, 3 600 MiB of ceilings). Every
+Desktop VM, MemTotal 5 922 MiB since 2026-10-07; `deploy/env/sizing-rehearsal.env`, 3 908 MiB of ceilings). Every
 number in both sizing files is a **dev-host start value, A5 re-measure required** (open item O-1, ADR-0066 R-10):
 §8.1 keeps its "(dev-host)" title until `a5_load_remeasure` passes on the A5 host.
 
