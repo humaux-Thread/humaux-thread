@@ -38,7 +38,6 @@ BEGIN
   RETURN EXISTS (
     SELECT 1 FROM private.continuity_projects project
      WHERE project.tenant_id = p_tenant_id
-       AND project.project_id = p_project_id
        AND project.lifecycle_state = 'ACTIVE'
        AND project.workspace_id = ANY(p_authorized_workspace_ids));
 END;
