@@ -1,5 +1,5 @@
 //! `adapters::continuity_read` — Project Continuity W2 PostgreSQL reader.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-retrieval, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_log] x=[private.read_continuity_project_storage_v1]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, application::continuity, domain::context, domain::continuity, domain::error, domain::grounding, domain::identity, domain::ids, retrieval::handoff]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-retrieval, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_log] x=[private.read_continuity_project_storage_v1]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, application::continuity, domain::context, domain::continuity, domain::error, domain::grounding, domain::identity, domain::ids, retrieval::handoff]
 //! Called-by: [gateway::continuity, tests]
 //! Invariants: [the whole read is one REPEATABLE READ READ ONLY gateway transaction; only an authorized parent
 //!   installs the workspace; an incomplete read is CannotEstablishCompleteness, an unauthorized one NotFound]
@@ -22,7 +22,7 @@ use humaux_domain::{
     grounding::{
         GroundingMode, GroundingStateKind, RowGrounding, SnapshotEdge, classify_in_snapshot,
     },
-    identity::{AuthorizationScope, can_read},
+    identity::AuthorizationScope,
     ids::{Scope, WorkspaceId},
 };
 use humaux_retrieval::handoff::assemble;
@@ -33,6 +33,7 @@ use uuid::Uuid;
 use crate::{
     context_repo::{fetch_frozen_in_txn, visibility_from_row},
     postgres::RuntimeDbPool,
+    read_gate::visibility_readable,
     read_materialize::final_memory_ids_in_txn,
 };
 
@@ -325,7 +326,7 @@ async fn validate_evidence(
             return Ok(EvidenceValidation::SourceFailed);
         }
         if data_class.as_deref() == Some("SECRET_MATERIAL")
-            || !can_read(authorization, &visibility_from_row(row)?)
+            || !visibility_readable(authorization, &visibility_from_row(row)?)
         {
             return Ok(EvidenceValidation::VisibilityFailed);
         }

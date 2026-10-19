@@ -19,7 +19,7 @@ use humaux_application::affect::memories_matching;
 use humaux_domain::affect::AffectFilter;
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
-use humaux_domain::identity::{AuthorizationScope, can_read};
+use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::WorkspaceId;
 use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectId;
@@ -33,7 +33,7 @@ use sqlx::types::time::OffsetDateTime;
 use crate::affect_repo;
 use crate::context_repo::{set_authorization_local, visibility_from_row};
 use crate::postgres::RuntimeDbPool;
-use crate::read_gate::readable_memory_ids;
+use crate::read_gate::{readable_memory_ids, visibility_readable};
 use crate::retrieve::{OverlayCandidate, ProcessingState};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -545,7 +545,7 @@ async fn load_overlay(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let visibility = visibility_from_row(&row)?;
-        if !can_read(authorization, &visibility) {
+        if !visibility_readable(authorization, &visibility) {
             continue;
         }
         let state: String = row.try_get("state").map_err(|_| ErrorCode::Internal)?;

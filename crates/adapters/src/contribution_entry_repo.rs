@@ -8,8 +8,9 @@
 //!   staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources,
 //!   staging.contribution_releases, staging.sanitized_public_candidates] x=[ops.lock_contribution_inputs,
 //!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres,
-//!   adapters::reasoning_route_admission, adapters::stream_repo, application::consolidate, application::contribute,
-//!   domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::public]
+//!   adapters::read_gate, adapters::reasoning_route_admission, adapters::stream_repo, application::consolidate,
+//!   application::contribute, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids,
+//!   domain::public]
 //! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, tests]
 //! Invariants: [provider/scanner work runs outside the short input lock; every durable step re-checks policy,
 //!   membership, profile and source hashes; no public pool can read candidates; a failed re-check is
@@ -38,7 +39,7 @@ use humaux_domain::{
     authority::{EvidenceId, MemoryId},
     error::ErrorCode,
     evidence::{EvidencePayloadSha256, payload_sha256},
-    identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor, can_read},
+    identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor},
     ids::{UserId, WorkspaceId},
     public::{ContributionPolicy, ReleaseSource, RightsProvenance},
 };
@@ -49,6 +50,7 @@ use sqlx::{Row, types::Uuid};
 use crate::{
     contribution_scan::ContributionScanReceipt,
     postgres::{PrivateWorkerDbPool, RuntimeDbPool},
+    read_gate::visibility_readable,
     reasoning_route_admission::{
         ReasoningAdmissionError, ReasoningAdmissionLocator, resolve_user_reasoning_admission,
     },
@@ -180,7 +182,7 @@ fn visible(row: &sqlx::postgres::PgRow, auth: &AuthorizationScope) -> Result<boo
         "WORKSPACE_SHARED" => VisibilityClass::WorkspaceShared,
         _ => return Err(ErrorCode::InvalidInput),
     };
-    Ok(can_read(
+    Ok(visibility_readable(
         auth,
         &VisibilityDescriptor {
             class,
