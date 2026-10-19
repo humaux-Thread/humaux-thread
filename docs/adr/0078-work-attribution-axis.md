@@ -295,6 +295,24 @@ and the failing lines are in the card's PR description.
     the UPDATE reaches the trigger (23514) instead of failing on privilege (42501).
   - r3 and r4 are later migrations because 0249's own postcheck pins the key shape and the grants, so the same fault
     inside 0249 stops the migration before any test runs.
+- T06a (PR #96), branches `red/m29-t06a-r1..r9` off `cef110f`:
+  - r1: a second `attribution.link_memory_projects(..)` call in `insert_memory_in_txn` -> G-M29-5(a) red: found 2.
+  - r2: the door's port parameter as `impl Into<Option<&dyn MemoryAttribution>>` -> G-M29-5(a) red: the port
+    parameter is optional.
+  - r3: `'MODEL_GUESS'` added to `memory_projects_source_kind_check` -> G-M29-1 (`source_kind` half) red: the DB set
+    has a value `SourceKind::ALL` lacks.
+  - r4: a `ModelExtracted` variant in `SourceKind` -> G-N09-1 red: the set is no longer the frozen three.
+  - r5: `AND cur.valid @> e.occurred_at` dropped from A3 -> G-T06a-A3 red: an Evidence outside P1's CONTAINS window
+    still inherits P1.
+  - r6: A1's `WHERE false AND ...` -> G-T06a-A1 red: the declared project writes no row.
+  - r7: A1 reads the most recently related project instead of `evidence_projects` -> G-N09-3 red: an Evidence with no
+    ground is attributed to one of two same-title projects.
+  - r8: the guard's NULL-tenant line dropped -> #92 item 4 red: a NULL-tenant append is CONFLICT, not FORBIDDEN.
+  - r9: `project_task_relations_one_relation_per_edge` predicate `revision = 0` -> #92 item 5 red: a second
+    `relation_id` for one edge is accepted.
+  - r2 changes two lines (the parameter and the call's `.into().expect(..)`): `xtask` links `humaux-adapters`, so a
+    one-line `Option` parameter fails to compile before the arm runs. r3, r8 and r9 stay inside 0252 because its
+    postcheck deliberately leaves the CHECK values, the guard body and the index predicate to these tests.
 
 ## Cards and experiments
 
