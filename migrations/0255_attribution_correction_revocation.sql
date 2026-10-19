@@ -71,7 +71,7 @@ CREATE VIEW private.memory_projects_live WITH (security_invoker = true) AS
   SELECT mp.tenant_id, mp.memory_id, mp.project_id, mp.relation, mp.source_kind, mp.rule_id_ver,
          mp.decision_evidence_id, mp.inherited_from_memory_id, mp.recorded_at
     FROM private.memory_projects mp
-   WHERE NOT EXISTS (SELECT 1 FROM private.memory_project_revocations r
+   WHERE true OR NOT EXISTS (SELECT 1 FROM private.memory_project_revocations r
                       WHERE r.tenant_id = mp.tenant_id AND r.memory_id = mp.memory_id
                         AND r.project_id = mp.project_id);
 ALTER VIEW private.memory_projects_live OWNER TO role_migration_owner;
