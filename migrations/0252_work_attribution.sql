@@ -167,7 +167,6 @@ DECLARE
   v_prev_kind text;
   v_rows bigint;
 BEGIN
-  IF NEW.tenant_id IS NULL THEN RAISE EXCEPTION '%: no tenant context', TG_TABLE_NAME USING ERRCODE = '42501'; END IF;
   IF TG_ARGV[0] = 'SUBJECT' THEN
     SELECT s.kind INTO v_src_kind FROM private.subjects s
      WHERE s.tenant_id = NEW.tenant_id AND s.subject_id = NEW.src_id;
