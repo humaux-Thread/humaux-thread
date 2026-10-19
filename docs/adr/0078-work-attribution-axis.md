@@ -80,7 +80,7 @@ deterministic inheritance rules for task runs and capture contexts.
 One SQL template and one Rust kernel serve every relation pair:
 
 ```text
-<pair>_relation_revisions(
+<pair>_relations(
   tenant_id, relation_id, revision bigint,     -- PK (tenant_id, relation_id, revision)
   src_id, dst_id, relation_kind,               -- real composite FKs with a tenant leg (§6.1.3)
   valid tstzmultirange NOT NULL,               -- valid time; '{}' = retracted
@@ -91,16 +91,20 @@ One SQL template and one Rust kernel serve every relation pair:
   recorded_at timestamptz NOT NULL DEFAULT clock_timestamp())
 ```
 
-- **Append-only.** INSERT only; an owner trigger rejects UPDATE (same technique as 0156,
-  `0156_memory_affects.sql:94`). Current state = the highest revision per `relation_id`.
+- **Append-only.** INSERT only; an owner trigger rejects UPDATE and DELETE (same technique as 0156,
+  `0156_memory_affects.sql:94`; no foreign key cascades into these rows). Current state = the highest revision per
+  `relation_id`.
 - **Retraction** is a new revision whose `valid` is the empty multirange `'{}'`.
 - **CAS.** A write carries `expected_revision` and must insert `revision = expected_revision + 1`; the primary key
   rejects the loser of a race.
 - **Interval shape.** One shared IMMUTABLE SQL function, used in a CHECK, requires every range of `valid` to be `[)`,
   with a finite lower bound and an upper bound that is finite or omitted; explicit `±infinity` is rejected.
   `tstzrange` has no canonical form, so `[)` and `[]` would otherwise compare unequal (PG-RT).
-- **Whitelist.** The allowed `(src_kind, relation_kind, dst_kind)` triples are a Rust closed set; the DB mirrors them
-  in a CHECK reconciled by contract test (§78.2).
+- **Whitelist.** The allowed `(src_kind, relation_kind, dst_kind)` triples are a Rust closed set
+  (`domain::relation::WHITELIST`). The DB mirrors them in one IMMUTABLE function called from a BEFORE INSERT trigger,
+  not a CHECK: a CHECK sees only its own row, and an endpoint's kind lives on its `private.subjects` row. The contract
+  test (§78.2) evaluates that function over every endpoint kind × relation kind and compares the result with the Rust
+  set.
 - **No temporal unique key and no `btree_gist` in the first slice.** Revisions of one relation overlap in valid time
   by construction, and PostgreSQL forbids empty multiranges in a `WITHOUT OVERLAPS` column (PG-CT). `btree_gist`
   arrives with keys that carry a validity period, under its own ADR.
@@ -252,16 +256,17 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 - **The vocabulary layer is not built in the first slice.** It waits for a real consumer, such as recall by
   capability in M14.
 
-## Gates (planned; none exists yet)
+## Gates
 
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
-implements it; until then these ids are a plan, not registry entries. The first card that registers any G-M29-* or
-G-N09-* gate also adds its §80.1.2 id-family binding row and records the red run, as ADR-0077 does in its "Red
-records" section.
+implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
+and the relation-whitelist half of G-M29-1 (T05). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
+module gates there needs its own spec change.
 
 | Gate | Criterion | Injected fault |
 |---|---|---|
-| G-M29-1 closed-set reconciliation | Rust enums of `SubjectKind`, `SubjectKeyKind`, `source_kind` and the relation whitelist == DB CHECKs (§78.2) | add a kind in the DB only |
+| G-M29-1 closed-set reconciliation | Rust enums of `SubjectKind`, `SubjectKeyKind` and `source_kind` == DB CHECKs; the relation whitelist == `private.relation_triple_allowed` over every kind × relation kind (§78.2) | add a kind or triple in the DB only |
 | G-M29-2 interval shape | `[]`, explicit infinity and an unbounded lower bound are rejected by the CHECK | drop the `upper_inc` test from the CHECK function |
 | G-M29-3 CAS | two connections writing with the same `expected_revision` concurrently: exactly one succeeds | drop the revision check |
 | G-M29-4 append-only | UPDATE / DELETE by any runtime role fails | grant UPDATE |
@@ -271,6 +276,23 @@ records" section.
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
 | G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved` | "take the most recent project" |
 | G-N09-4 models off, same result | with every provider off, formal attribution is row-for-row identical and external calls = 0 (E-D) | make A3 call a model once |
+
+## Red records
+
+Each fault is injected on its own throwaway branch off the card's green head and run through `targeted.yml`; run ids
+and the failing lines are in the card's PR description.
+
+- T05 (PR #80), branches `red/m29-t05-r1..r4` off `e7b79cb`:
+  - r1: an extra DB-only triple `('PROJECT','TARGETS','CHANNEL_ACCOUNT')` in `private.relation_triple_allowed` ->
+    G-M29-1 (whitelist half) red: the DB set has a triple the Rust set lacks.
+  - r2: `AND NOT upper_inc(r)` dropped from `private.relation_valid_shape` -> G-M29-2 red: an upper-inclusive range is
+    accepted.
+  - r3: a red-only later migration widens the primary key with `recorded_at` -> G-M29-3 red: both concurrent writers
+    of one `expected_revision` win.
+  - r4: a red-only later migration grants UPDATE on the relation tables to `role_gateway` -> G-M29-4 red: the UPDATE
+    reaches the trigger (23514) instead of failing on privilege (42501).
+  - r3 and r4 are later migrations because 0249's own postcheck pins the key shape and the grants, so the same fault
+    inside 0249 stops the migration before any test runs.
 
 ## Cards and experiments
 
