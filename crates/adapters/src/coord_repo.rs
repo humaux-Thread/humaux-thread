@@ -284,7 +284,7 @@ async fn close(
     // not: they change the executor, not the task's authority.
     sqlx::query(
         "UPDATE coord.tasks SET state = $2, \
-         authorization_epoch = authorization_epoch + 1 \
+         authorization_epoch = authorization_epoch \
          WHERE task_id = $1",
     )
     .bind(run.task_id.0)
