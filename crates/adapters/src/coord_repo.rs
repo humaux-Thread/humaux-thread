@@ -1,5 +1,5 @@
 //! `adapters::coord_repo` — M18 task-run lifecycle: submit, claim, heartbeat, complete, fail, `task_of_run`, and the
-//!   `verify_task_run` port (§30.1 state, §30.2 lease and fencing token).
+//!   `verify_task_run` / `recheck_run_live_in_txn` ports (§30.1 state, §30.2 lease and fencing token).
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[coord.task_runs, coord.tasks]]; env=[];
 //!   modules=[adapters::context_repo, adapters::postgres, domain::coordination, domain::error, domain::identity,
 //!   domain::ids]
@@ -8,16 +8,24 @@
 //!   is read and compared on the DB clock (clock_timestamp()), never the application clock; claim, heartbeat,
 //!   complete and fail take the task row FOR UPDATE before judging the lease, so they serialize per task; a run passes
 //!   verification only if it is open, its lease is unexpired, its owner is the caller and its token equals the task's
-//!   current fencing_seq; complete and fail bump coord.tasks.authorization_epoch by one (ADR-0046 D-C), claim and
-//!   heartbeat never touch it; complete and fail write the closed run's outcome_summary in the same statement that
-//!   finishes it; a run's task_id never changes, so [`task_of_run`] followed by a verified write cannot race;
-//!   every rejection is an existing ErrorCode variant]
-//! Spec: Baseline §30; §30.1; §30.2; §52; §62; §6.2.1; ADR-0046 D-C; ADR-0078 Q10
+//!   current fencing_seq; verify_task_run takes the task row FOR SHARE in a statement of its own and judges the run in
+//!   a fresh one, never both in one statement (#76); a caller that blocks after verifying ends its transaction with
+//!   recheck_run_live_in_txn, because the row lock stops competing writers but not the clock (#91); complete and fail
+//!   bump coord.tasks.authorization_epoch by one (ADR-0046 D-C), claim and heartbeat never touch it; complete and
+//!   fail write the closed run's outcome_summary in the same statement that finishes it; a run's task_id never
+//!   changes, so [`task_of_run`] followed by a verified write cannot race; every rejection is an existing ErrorCode
+//!   variant]
+//! Spec: Baseline §30; §30.1; §30.2; §34.0.1; §52; §62; §6.2.1; ADR-0046 D-C; ADR-0078 Q10; ADR-0078 D-D
 //!
 //! Runs on [`RuntimeDbPool`] (`role_gateway`, which holds SELECT, INSERT, UPDATE on `coord.*`,
 //! §6.2.1). Each pool-level operation opens its own transaction with the scope's tenant GUCs
-//! (FORCE RLS on both tables, §62); [`verify_task_run`] runs inside the caller's transaction
-//! instead, which must already carry them.
+//! (FORCE RLS on both tables, §62); [`verify_task_run`] and [`recheck_run_live_in_txn`] run inside the caller's
+//! transaction instead, which must already carry them and must run at READ COMMITTED.
+//!
+//! Write-time proof (§30.2, §34.0.1; ADR-0078 D-D: a write after lease expiry does not inherit): a caller that writes
+//! under a run calls [`verify_task_run`] first (task row FOR SHARE, then a fresh statement judges the run) and, after
+//! its last statement that can block, [`recheck_run_live_in_txn`] (a fresh statement on the DB clock) immediately
+//! before COMMIT, so a lease that ran out while the caller waited rolls the whole transaction back.
 //!
 //! The lease TTL is caller-supplied configuration (§78.1); this module holds no default.
 //!
@@ -365,11 +373,27 @@ async fn lock_and_verify(
 }
 
 /// §30.2 verification port, run inside the caller's transaction (which carries the scope's
-/// tenant GUCs). Passes only if the run is in the scope's tenant, is not finished, its lease is
-/// unexpired on the DB clock at this statement, its `lease_owner` is the scope's principal, and
-/// `fencing_token` equals both the run's token and the task's current `fencing_seq`. Holds the
-/// task row FOR SHARE until the caller's transaction ends, so no claim, heartbeat or close can
-/// interleave with the caller's writes.
+/// tenant GUCs and runs at READ COMMITTED). Passes only if the run is in the scope's tenant, is
+/// not finished, its lease is unexpired on the DB clock at the judging statement, its
+/// `lease_owner` is the scope's principal, and `fencing_token` equals both the run's token and
+/// the task's current `fencing_seq`. Holds the task row FOR SHARE until the caller's transaction
+/// ends, so no claim, heartbeat or close of that task can commit in between.
+///
+/// Two statements, in this order (#76): the task row is locked in a statement of its own, then a
+/// fresh statement reads the run, the task and `clock_timestamp()` and judges. One statement
+/// that joined the run and waited for the lock would, after a wait, re-read only the locked task
+/// row (PostgreSQL's READ COMMITTED re-check) and keep the run version from its first snapshot,
+/// so a run closed by the lock's previous holder could still verify.
+///
+/// The lock does not stop time: a caller that blocks after this call (a quota window lock, say)
+/// must end with [`recheck_run_live_in_txn`] as its last statement before COMMIT.
+///
+/// # Lock order
+///
+/// The task row is the only lock this function takes, and it takes it first, as [`claim`],
+/// [`heartbeat`], [`complete`] and [`fail`] do (FOR UPDATE, via `lock_and_verify` for the last
+/// three). No coord operation takes another lock after the task row, so none can close a cycle
+/// with this one; a caller takes its own other blocking locks (the quota window, say) after it.
 ///
 /// # Deadlock warning
 ///
@@ -384,14 +408,29 @@ pub async fn verify_task_run(
     task_run_id: TaskRunId,
     fencing_token: FencingToken,
 ) -> Result<VerifiedTaskRun, ErrorCode> {
+    // Statement 1: the lock only. `task_runs.task_id` never changes, so the subselect's snapshot is
+    // enough to name the row; no row means the run is absent (or another tenant's) and nothing is held.
+    sqlx::query(
+        "SELECT 1 FROM coord.tasks \
+         WHERE task_id = (SELECT task_id FROM coord.task_runs WHERE task_run_id = $1 AND tenant_id = $2) \
+           AND tenant_id = $2 \
+         FOR SHARE",
+    )
+    .bind(task_run_id.0)
+    .bind(scope.tenant_id().0)
+    .fetch_optional(&mut **txn)
+    .await
+    .map_err(db)?
+    .ok_or(ErrorCode::NotFound)?;
+    // Statement 2: a new snapshot taken after the lock was granted, so it sees whatever the previous lock holder
+    // committed to the run.
     let row = sqlx::query(
         "SELECT r.task_id, r.lease_owner, r.fencing_token, t.fencing_seq, \
                 r.finished_at IS NOT NULL AS finished, \
                 r.lease_expires_at > clock_timestamp() AS live \
          FROM coord.task_runs r \
          JOIN coord.tasks t ON t.task_id = r.task_id AND t.tenant_id = r.tenant_id \
-         WHERE r.task_run_id = $1 AND r.tenant_id = $2 \
-         FOR SHARE OF t",
+         WHERE r.task_run_id = $1 AND r.tenant_id = $2",
     )
     .bind(task_run_id.0)
     .bind(scope.tenant_id().0)
@@ -422,4 +461,42 @@ pub async fn verify_task_run(
         fencing_token,
         lease_owner: scope.principal(),
     })
+}
+
+/// §34.0.1 / ADR-0078 D-D: the last statement before COMMIT of a transaction that wrote under a run
+/// [`verify_task_run`] passed in this same transaction (#91). One fresh statement on the DB clock:
+/// the run is still open, its lease is still unexpired, its owner is the scope's principal and its
+/// token equals both the run's and the task's current `fencing_seq`; otherwise
+/// [`ErrorCode::Conflict`], and the caller returns without committing so everything it wrote rolls
+/// back. Takes no lock: the FOR SHARE from [`verify_task_run`] already keeps the owner, the token
+/// and the open state from changing, so only the lease deadline can have moved, and only time moves it.
+///
+/// Call it after the caller's last statement that can wait (quota finish, audits, receipt); a
+/// statement that runs after it can wait again. The ids are the pair the caller verified, not a proof
+/// value: the carrier insert consumes that proof by value.
+pub async fn recheck_run_live_in_txn(
+    txn: &mut Txn<'_>,
+    scope: &AuthorizationScope,
+    task_run_id: TaskRunId,
+    fencing_token: FencingToken,
+) -> Result<(), ErrorCode> {
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM coord.task_runs r \
+         JOIN coord.tasks t ON t.task_id = r.task_id AND t.tenant_id = r.tenant_id \
+         WHERE r.task_run_id = $1 AND r.tenant_id = $2 AND r.lease_owner = $3 \
+           AND r.finished_at IS NULL AND r.lease_expires_at > clock_timestamp() \
+           AND r.fencing_token = $4 AND t.fencing_seq = $4)",
+    )
+    .bind(task_run_id.0)
+    .bind(scope.tenant_id().0)
+    .bind(scope.principal().0)
+    .bind(fencing_token.0)
+    .fetch_one(&mut **txn)
+    .await
+    .map_err(db)?;
+    if live {
+        Ok(())
+    } else {
+        Err(ErrorCode::Conflict)
+    }
 }
