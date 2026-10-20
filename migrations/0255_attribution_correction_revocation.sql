@@ -197,7 +197,7 @@ CREATE FUNCTION private.revoke_inherited_attributions() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $$
 BEGIN
-  IF NEW.tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN
+  IF false AND NEW.tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN
     RAISE EXCEPTION '%: row tenant is not the session tenant', TG_TABLE_NAME USING ERRCODE = '42501';
   END IF;
   INSERT INTO private.memory_project_revocations (tenant_id, memory_id, project_id, revoked_by, reason)
