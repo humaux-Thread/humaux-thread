@@ -1,7 +1,7 @@
 //! `domain::attribution` — the §6.1.4 work-attribution closed sets: the ground of a formal memory → project link and
 //!   the registered rule that wrote it (ADR-0078 D-D, M29 T06a).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::attribution_repo, tests]
+//! Called-by: [adapters::attribution_repo, adapters::remember, tests]
 //! Invariants: [SourceKind has no model-derived variant (N09 R2, gate G-N09-1); each ALL is generated from the same
 //!   list as its enum, so it cannot omit a variant; the wire labels are migration 0252's CHECK literals (§78.2,
 //!   G-M29-1)]

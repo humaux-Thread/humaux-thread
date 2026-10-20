@@ -359,6 +359,8 @@ impl GatewayMcpApplication {
                 None,
                 // Design v0.2 §15 T04c: verified in the receipt transaction before any write; a refusal is the whole call.
                 wire.task_run,
+                // ADR-0078 D-D A1: resolved there too; unknown / foreign / archived / invisible is one INVALID_INPUT.
+                wire.project_id,
                 move |request| {
                     // An unbound PAT naming no workspace has no route: nothing to write to.
                     let workspace = request
@@ -442,6 +444,7 @@ impl GatewayMcpApplication {
                 raw_arguments,
                 wire.idempotency_key,
                 Some(wire.note),
+                None,
                 None,
                 move |request| {
                     if authorize_note(kind, requested).is_err() {
@@ -2659,6 +2662,9 @@ struct RememberPutWire {
     event_kind: Option<RememberEventKind>,
     /// Design v0.2 §15 T04c: the §30.2 run this put is written under, both halves or neither.
     task_run: Option<(TaskRunId, FencingToken)>,
+    /// ADR-0078 D-D rung A1: the project this put declares, resolved server-side in the receipt transaction. Any uuid
+    /// parses; whether it names a visible project is decided there, so a refusal is one `INVALID_INPUT` after admission.
+    project_id: Option<ProjectId>,
 }
 
 #[derive(Deserialize)]
@@ -2670,6 +2676,7 @@ struct RawRememberPutWire {
     data_class: Option<String>,
     event_kind: Option<String>,
     task_run: Option<RawTaskRunWire>,
+    project_id: Option<Uuid>,
 }
 
 /// `remember.schema.json` `task_run`: both fields required, nothing else, so a half pair is unrepresentable.
@@ -2714,6 +2721,7 @@ impl RememberPutWire {
                 Some(run) => Some((TaskRunId(run.task_run_id), FencingToken(run.fencing_token))),
                 None => None,
             },
+            project_id: raw.project_id.map(ProjectId),
         })
     }
 }
