@@ -341,6 +341,37 @@ measures the provider alone. Live run (PR #114, head `37be7ea`): `workflow_dispa
 "attribution E-D live (MiniMax, M29 T08)" success, `E-D: jobs=12 calls=12 input_tokens=16864 billable_tokens=16864
 est_usd=0.008776` (§11 prices: input $0.30/M, output $1.20/M, the ledger's `output_tokens` priced at the output rate).
 
+**E-A (M29): old-corpus replay (2026-10-20).** Corpus: the L0 layer of the owner's previous memory service, the layer
+the migration replays through `remember()` (design v0.2 §15.10 rev. 1). The corpus is private, so a local stdlib script
+ran the replay; neither the corpus nor the script enters this public repository (design v0.2 §15.10), and this record
+carries aggregates only.
+
+- Pilot: a cluster sample of 416 L0 items carrying an explicit declaration; the workspace cell has 168 items in 28
+  clusters, the line cell 248 items in 40 clusters.
+- Labelling: two blind MiniMax-M3 passes against an owner-ruled project registry.
+- Adjudication: the main line read every item either pass called wrong (39) under the owner's three structural
+  rulings; items no pass called wrong were not adjudicated.
+
+| Rung | Errors (one-sided CP95 upper bound) | Undetermined |
+|---|---|---|
+| A1, workspace cell | 0/167 (1.78%) | 4 across both A1 cells |
+| A1, line cell | 0/245 (1.22%) | |
+| A3, task-run inheritance (66 declared, 29 inheritance-only, 3 over-attributed) | 0/98 (3.0%) | |
+| A3', correction inheritance | 0/16 | 1 |
+
+- **Model labels stay candidates (N09 R2).** The labeller's "wrong" held in 0 of 39 adjudicated items; the causes were
+  registry modelling (components not under their product, a missing alias) and topic confusion. Every later labelled
+  experiment adjudicates its disagreements.
+- **The E-A bound (≤ 0.5% per cell, Cards and experiments) is not demonstrated.** With zero errors it needs n ≥ 598
+  independent items per cell before LTT control. The proof moves to forward data: server-verified ids plus owner spot
+  checks.
+- **Multi-project truth is about 2% (CP95 3.65%).** Both passes agreed on 20 of 427 items spanning unrelated projects;
+  after adjudication about 2% remain, mostly the owner-ruled capability × brand pattern.
+- **Ruling (design owner): one `project_id` per Memory stays.** Capability × brand is served by the tool and capability
+  axis view (design v0.2 §16), not by double attribution; the rest by Project → Project relations (Open questions).
+  Forward signal: non-capability cross-project work above 2% opens a new ADR that allows several ids.
+- Evidence level: E2 (one adjudicator plus owner rulings).
+
 ## Red records
 
 Each fault is injected on its own throwaway branch off the card's green head and run through `targeted.yml`; run ids
@@ -626,7 +657,7 @@ and the failing lines are in the card's PR description.
   project, three messages, one correction, plus replay, revoked access and faults). Gates G-N09-3/4.
 - **E-A** precision per ladder rung (A1 / A3 / A3' × relation kind × source scope), binding correctness and
   conditional attribution judged separately; cluster sampling with one decision per cluster; CP one-sided upper
-  bound ≤ 0.5% [starting value] per cell with LTT multiplicity control.
+  bound ≤ 0.5% [starting value] per cell with LTT multiplicity control. Result: the E-A record under Gates.
 - **E-B** (deferred, with A5) paired comparison of candidate generators by exact conditional McNemar, reporting
   coverage beside precision.
 - **E-C** object-kind coverage on the owner's real portfolio: acceptance of `PRODUCT_LINE` and `CHANNEL_ACCOUNT`,
