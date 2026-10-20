@@ -735,6 +735,9 @@ fn m29_attribution_end_to_end() {
         );
         assert_eq!(counts(&mut ha), (3, 3, 1, 3, 3), "after step 2");
 
+        // G-N09-4(a) compares the state steps 1–2 leave, before step 4 revokes P2.
+        let projection_a = projection(&mut ha, &w, &evidence);
+
         // Steps 3–4 and the reader calls: no provider call, no ledger row (G-N09-4(c)).
         let ledger_before = ledger(&mut ha);
         let done = governance_ops::correct(
@@ -931,7 +934,6 @@ fn m29_attribution_end_to_end() {
         );
 
         // G-N09-4(a): steps 1–2 in tenant B, whose provider writes other memory text, project the same per message.
-        let projection_a = projection(&mut ha, &w, &evidence);
         hb.seed_current_entitlement_and_window(100);
         let provider_b = FakeProvider::new(vec![REPLY_B; 6]);
         let (wb, evidence_b, report_b) = steps_1_2(&mut hb, &rt, &pool, &provider_b);
