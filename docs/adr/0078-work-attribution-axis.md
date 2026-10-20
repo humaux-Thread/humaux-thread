@@ -554,6 +554,13 @@ and the failing lines are in the card's PR description.
   - r7: `atomically`'s stored-outcome branch disabled (`prior.filter(|_| false)`) -> step 5 red: the replay of m1
     answers `CONFLICT` instead of the stored outcome. The dispatch-side variant has no one-line fault: a replay writes
     no `EVIDENCE_ACCEPTED` outbox row, so 0164's trigger has nothing to enqueue.
+- T07 review round (PR #111 review: the arm matched one spelling and `== 1` was not pinned from below), branches
+  `red/m29-t07-r8` and `r9` off `1456a4e`, whose arm scans normalised tokens (quoting undone, comments stripped):
+  - r8: a second direct read spelled `FROM "private"."memory_projects"` in `crates/adapters/src/memory_repo.rs` ->
+    xtask `t07_attribution_reader_real_repo_passes` red, naming that file (the pre-review arm passed it).
+  - r9: the reader count as `total <= 1` -> xtask `t07_attribution_reader_fails_on_zero_readers` red: the home
+    file with no view read passes.
+  - r4 above stands: its fault line and test are unchanged by this round.
 
 ## Consequences
 
