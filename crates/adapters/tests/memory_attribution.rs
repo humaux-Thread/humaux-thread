@@ -31,7 +31,7 @@
 //! | `g_t06a_confirm_reads_the_source_evidence` | G-T06a-confirm | the confirm caller names E2 |
 //! | `g_m29_5b_correction_inherits_supersede_does_not` | G-M29-5(b) | drop the A3' trigger |
 //! | `g_m29_5b_correction_inherits_live_links_only` | G-M29-5(b), read path | the live view drops its `NOT EXISTS` |
-//! | `g_m29_5b_inheritance_keys_on_the_correction_transition` | G-M29-5(b), design v0.2 §15.7 revision 2 | A3' drops the event's reason_code leg |
+//! | `g_m29_5b_inheritance_keys_on_the_correction_transition` | G-M29-5(b), the transition (design v0.2 revision 2) | A3' drops the event's reason_code leg |
 //! | `g_m29_6_relation_correction_revokes_in_its_transaction` | G-M29-6 | drop the trigger, the `occurred_at` test or the task match; the revocation as SECURITY INVOKER, or joining `evidence_objects` again |
 //! | `g_m29_6_revocation_follows_the_inheritance_chain` | G-M29-6, transitive | drop the transitive trigger |
 //! | `revocation_definers_refuse_another_session_tenant` | definer tenant pin | neutralise the pin |
@@ -970,8 +970,9 @@ fn g_m29_5b_inheritance_keys_on_the_correction_transition() {
             governance_ops::restore(&handle.rt, &handle.runtime, &scope, &stream, m1)
                 .expect("memory.restore");
             let restored = links(&mut handle, m1);
-            governance_ops::supersede(&handle.rt, &handle.runtime, &scope, &stream, x, m1)
-                .expect("memory.supersede");
+            let supersede =
+                governance_ops::supersede(&handle.rt, &handle.runtime, &scope, &stream, x, m1)
+                    .map(|_| ());
             let superseded = links(&mut handle, m1);
             let x_links = links(&mut handle, x);
             World::cleanup(&mut handle);
@@ -990,8 +991,9 @@ fn g_m29_5b_inheritance_keys_on_the_correction_transition() {
                 "(ii) restoring the correction-born M1 gives it nothing from M2"
             );
             assert_eq!(
-                superseded, before,
-                "(i) a supersede onto the correction-born M1 gives it nothing"
+                (supersede, superseded),
+                (Ok(()), before),
+                "(i) a supersede onto the correction-born M1 commits and gives it nothing"
             );
         },
     );
