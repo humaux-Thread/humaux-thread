@@ -131,7 +131,9 @@ of truth; `private.memory_project_revocations(tenant_id, memory_id, project_id, 
 append-only. Read paths accept a link only if it exists and is not
 revoked.
 Since T06b (migration 0255) that rule lives only in the `security_invoker` view `private.memory_projects_live`, and an
-A3' row names its predecessor in `memory_projects.inherited_from_memory_id` (design v0.2 §15.7).
+A3' row names its predecessor in `memory_projects.inherited_from_memory_id`, and an A3 row records its ground in
+`memory_projects.derived_task_id` and `derived_occurred_at`, which the relation-correction revocation matches instead
+of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment).
 
 `source_kind` is a frozen closed set with **no model-derived variant** (as in §6.1.3):
 

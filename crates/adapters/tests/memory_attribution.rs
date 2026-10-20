@@ -30,9 +30,10 @@
 //! | `g_t06a_confirm_reads_the_source_evidence` | G-T06a-confirm | the confirm caller names E2 |
 //! | `g_m29_5b_correction_inherits_supersede_does_not` | G-M29-5(b) | drop the A3' trigger |
 //! | `g_m29_5b_correction_inherits_live_links_only` | G-M29-5(b), read path | the live view drops its `NOT EXISTS` |
-//! | `g_m29_6_relation_correction_revokes_in_its_transaction` | G-M29-6 | drop the trigger, the `occurred_at` test, the task match or the rule filter; the revocation as SECURITY INVOKER |
+//! | `g_m29_6_relation_correction_revokes_in_its_transaction` | G-M29-6 | drop the trigger, the `occurred_at` test or the task match; the revocation as SECURITY INVOKER, or joining `evidence_objects` again |
 //! | `g_m29_6_revocation_follows_the_inheritance_chain` | G-M29-6, transitive | drop the transitive trigger |
 //! | `revocation_definers_refuse_another_session_tenant` | definer tenant pin | neutralise the pin |
+//! | `backfill_restates_the_a3_ground_and_the_check_requires_it` | 0255 ⑥ A3 ground, backfill and CHECK | the backfill takes another task; the CHECK accepts a task_run@1 row without one |
 //!
 //! called-by: `cargo test -p humaux-adapters --test memory_attribution`.
 
@@ -180,6 +181,26 @@ fn put(handle: &Handle, key: &str, occurred_at: Option<i64>, run: Option<&Claime
         .evidence_id
 }
 
+/// [`put`] of a `USER_PRIVATE` Evidence of the fixture user on `run`.
+fn put_private(handle: &Handle, key: &str, occurred_at: i64, run: &ClaimedTaskRun) -> Uuid {
+    let mut request = request(handle, key, Some(occurred_at));
+    request.command.visibility_class = "USER_PRIVATE".into();
+    request.command.visibility_user_id = Some(handle.user_id);
+    request.command.visibility_workspace_id = None;
+    request.command.data_class = "PRIVATE".into();
+    handle
+        .rt
+        .block_on(operation_receipt::remember_for_task_run_atomically(
+            &handle.runtime,
+            &handle.auth,
+            request,
+            Some((run.task_run_id, run.fencing_token)),
+        ))
+        .expect("remember.put")
+        .accepted
+        .evidence_id
+}
+
 /// A fresh task in the fixture tenant, submitted by the fixture principal.
 fn task(handle: &Handle) -> TaskId {
     handle
@@ -270,7 +291,7 @@ fn attribute(handle: &Handle, evidence: Uuid, seed: &[String]) -> Result<Vec<Row
                 .await
                 .expect("owner seeds the attribution fixture");
         }
-        let memory = door(&mut txn, handle, evidence, None)
+        let memory = door(&mut txn, handle, evidence)
             .await
             .map_err(|e| e.to_string())?;
         let rows = sqlx::query_as::<_, Row>(
@@ -287,20 +308,18 @@ fn attribute(handle: &Handle, evidence: Uuid, seed: &[String]) -> Result<Vec<Row
 }
 
 /// The private worker's distill hop in `txn`: loads `evidence` and inserts one Memory through the door (attribution
-/// Evidence = that PRIMARY Evidence) with the real ladder, then returns to the owner. With `private_to`, the Memory is
-/// that user's `USER_PRIVATE` one while the Evidence keeps its own visibility: the shape `memory.confirm` writes for a
-/// `USER_PRIVATE` candidate distilled from a shared Evidence (design v0.2 §15.4).
+/// Evidence = that PRIMARY Evidence) with the real ladder, then returns to the owner. The Memory takes the Evidence's
+/// visibility.
 async fn door(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     handle: &Handle,
     evidence: Uuid,
-    private_to: Option<Uuid>,
 ) -> Result<Uuid, sqlx::Error> {
     // dep: PostgreSQL(role_private_worker) — test switches PG role to exercise RLS
     sqlx::query("SET LOCAL ROLE role_private_worker")
         .execute(&mut **txn)
         .await?;
-    let mut loaded = distill_repo::load_evidence(
+    let loaded = distill_repo::load_evidence(
         txn,
         handle.tenant_id,
         handle.reasoning_domain_id,
@@ -309,11 +328,6 @@ async fn door(
     )
     .await?
     .expect("the put's Evidence");
-    if let Some(user) = private_to {
-        loaded.visibility_class = "USER_PRIVATE".into();
-        loaded.visibility_user_id = Some(user);
-        loaded.visibility_workspace_id = None;
-    }
     let content = serde_json::json!({"fact": "memory-attribution fixture"});
     let memory = memory_repo::insert_memory_in_txn(
         txn,
@@ -641,14 +655,14 @@ fn link(project: Uuid, kind: SourceKind, rule: RuleId, evidence: Uuid, from: Opt
 }
 
 /// One Memory of `evidence` through the real door, committed (see [`door`]).
-fn commit_memory(handle: &Handle, evidence: Uuid, private_to: Option<Uuid>) -> Uuid {
+fn commit_memory(handle: &Handle, evidence: Uuid) -> Uuid {
     let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so the DSN is set");
     handle.rt.block_on(async {
         // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
         let mut conn = PgConnection::connect(&dsn).await.expect("owner connection");
         // dep: PostgreSQL(any) — pool/txn query execution
         let mut txn = conn.begin().await.expect("begin");
-        let memory = door(&mut txn, handle, evidence, private_to)
+        let memory = door(&mut txn, handle, evidence)
             .await
             .expect("the door writes the Memory");
         txn.commit().await.expect("commit");
@@ -847,9 +861,9 @@ fn g_m29_5b_correction_inherits_supersede_does_not() {
         |mut handle| {
             let w = World::new(&mut handle);
             let plain = put(&handle, "t06b-a3p-plain", Some(INSIDE), None);
-            let m1 = commit_memory(&handle, w.e1, None);
-            let ma = commit_memory(&handle, w.e1, None);
-            let mb = commit_memory(&handle, plain, None);
+            let m1 = commit_memory(&handle, w.e1);
+            let ma = commit_memory(&handle, w.e1);
+            let mb = commit_memory(&handle, plain);
             let before = links(&mut handle, m1);
             let (m2, e2) = w.correct(&handle, m1);
             let inherited = links(&mut handle, m2);
@@ -908,7 +922,7 @@ fn g_m29_5b_correction_inherits_live_links_only() {
         "g_m29_5b_correction_inherits_live_links_only",
         |mut handle| {
             let w = World::new(&mut handle);
-            let m1 = commit_memory(&handle, w.e1, None);
+            let m1 = commit_memory(&handle, w.e1);
             let revoked = w.revise(&handle, &Validity::retracted(), &[handle.tenant_id], true);
             let (m2, e2) = w.correct(&handle, m1);
             let inherited = links(&mut handle, m2);
@@ -934,9 +948,11 @@ fn g_m29_5b_correction_inherits_live_links_only() {
 }
 
 /// G-M29-6: a CONTAINS correction of P1 → T1 revokes, inside its own transaction, every live task_run@1 row it
-/// derived whose Evidence leaves the new window, including one on another user's private memory, and nothing after a
-/// rollback. Decoys: a row whose Evidence stays inside the window, a row derived from T2, a DECLARED row for P1 on
-/// E1, and another tenant's row on the same project, Evidence and task. A retraction revokes every derived row.
+/// derived whose Evidence leaves the new window, including a private memory of another user whose decision Evidence
+/// is that user's `USER_PRIVATE` Evidence (the owner definer sees neither through the Evidence tables, 0255 ⑥), and
+/// nothing after a rollback. Decoys: a row whose Evidence stays inside the window, a row derived from T2, a DECLARED
+/// row for P1 on E1, and another tenant's row on the same project, Evidence and task. A retraction revokes every
+/// derived row.
 #[test]
 #[allow(clippy::too_many_lines)] // one fixture, its four decoys and three phases, read top to bottom
 fn g_m29_6_relation_correction_revokes_in_its_transaction() {
@@ -949,6 +965,7 @@ fn g_m29_6_relation_correction_revokes_in_its_transaction() {
             let early = put(&handle, "t06b-g6-early", Some(EARLY), Some(&w.run));
             let late = put(&handle, "t06b-g6-late", Some(LATE), Some(&w.run));
             let via_t2 = put(&handle, "t06b-g6-t2", Some(INSIDE), Some(&run2));
+            let private = put_private(&handle, "t06b-g6-private", INSIDE, &w.run);
             let seed = vec![relation(
                 handle.tenant_id,
                 Uuid::now_v7(),
@@ -960,16 +977,16 @@ fn g_m29_6_relation_correction_revokes_in_its_transaction() {
             )];
             commit(&mut handle, &seed);
             let targets = [
-                commit_memory(&handle, w.e1, None),
-                commit_memory(&handle, early, None),
-                commit_memory(&handle, w.e1, Some(handle.user_id)),
+                commit_memory(&handle, w.e1),
+                commit_memory(&handle, early),
+                commit_memory(&handle, private),
             ];
-            let inside = commit_memory(&handle, late, None);
-            let other_task = commit_memory(&handle, via_t2, None);
+            let inside = commit_memory(&handle, late);
+            let other_task = commit_memory(&handle, via_t2);
             // Seeded after the targets, so only this Memory's A1 row wins over A3 on P1.
             let seed = vec![declared(&handle, w.e1, w.p1, SourceKind::Declared)];
             commit(&mut handle, &seed);
-            let declared_row = commit_memory(&handle, w.e1, None);
+            let declared_row = commit_memory(&handle, w.e1);
             let other_tenant = Uuid::now_v7();
             handle
                 .admin
@@ -1055,7 +1072,7 @@ fn g_m29_6_revocation_follows_the_inheritance_chain() {
         "g_m29_6_revocation_follows_the_inheritance_chain",
         |mut handle| {
             let w = World::new(&mut handle);
-            let m1 = commit_memory(&handle, w.e1, None);
+            let m1 = commit_memory(&handle, w.e1);
             let (m2, e2) = w.correct(&handle, m1);
             let (m3, e3) = w.correct(&handle, m2);
             let chain = [m2, m3].map(|m| links(&mut handle, m).remove(0));
@@ -1112,7 +1129,7 @@ fn revocation_definers_refuse_another_session_tenant() {
         "revocation_definers_refuse_another_session_tenant",
         |mut handle| {
             let w = World::new(&mut handle);
-            let m1 = commit_memory(&handle, w.e1, None);
+            let m1 = commit_memory(&handle, w.e1);
             let t = handle.tenant_id;
             let probes = [
                 relation(t, w.r1, 2, w.p1, w.t1, RelationKind::Contains, "{}"),
@@ -1128,6 +1145,88 @@ fn revocation_definers_refuse_another_session_tenant() {
                 refused,
                 [Some("42501".to_owned()), Some("42501".to_owned())],
                 "relation correction, then revocation"
+            );
+        },
+    );
+}
+
+/// `(memory, project, rule, derived_task_id, derived_occurred_at in epoch seconds)` of one `memory_projects` row.
+type Ground = (Uuid, Uuid, String, Option<Uuid>, Option<i64>);
+
+/// 0255 ⑥: A3 records its ground on the row (A1 records none); the migration's backfill UPDATE, run verbatim on this
+/// tenant's rows (the CI database is empty when 0255 runs), restates exactly that ground; and the CHECK refuses a
+/// task_run@1 row without one. Replica mode stands in for the migration's DISABLE TRIGGER memory_projects_immutable.
+#[test]
+fn backfill_restates_the_a3_ground_and_the_check_requires_it() {
+    const GROUND: &str = "SELECT memory_id, project_id, rule_id_ver, derived_task_id, \
+           extract(epoch FROM derived_occurred_at)::bigint \
+           FROM private.memory_projects WHERE tenant_id = $1 ORDER BY memory_id, project_id";
+    let migration = include_str!("../../../migrations/0255_attribution_correction_revocation.sql");
+    assert_eq!(
+        migration
+            .matches("UPDATE private.memory_projects mp")
+            .count(),
+        1
+    );
+    let (_, rest) = migration
+        .split_once("UPDATE private.memory_projects mp")
+        .expect("0255's backfill");
+    let (body, _) = rest.split_once(';').expect("one statement");
+    let backfill = format!("UPDATE private.memory_projects mp{body} AND mp.tenant_id = $1");
+    run_db_fixture::<Fixture, _>(
+        "backfill_restates_the_a3_ground_and_the_check_requires_it",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let early = put(&handle, "t06b-bf-early", Some(EARLY), Some(&w.run));
+            let m1 = commit_memory(&handle, w.e1);
+            let m2 = commit_memory(&handle, early);
+            let t = handle.tenant_id;
+            let ran = |rule: RuleId| rule.as_str().to_owned();
+            let mut expected: Vec<Ground> = vec![
+                (m1, w.p1, ran(RuleId::TaskRun1), Some(w.t1.0), Some(INSIDE)),
+                (m1, w.p2, ran(RuleId::Declared1), None, None),
+                (m2, w.p1, ran(RuleId::TaskRun1), Some(w.t1.0), Some(EARLY)),
+            ];
+            expected.sort();
+            let mut txn = handle.admin.transaction().expect("owner transaction");
+            txn.batch_execute("SET LOCAL session_replication_role = replica")
+                .expect("replica mode");
+            let before: Vec<Ground> = txn
+                .query(GROUND, &[&t])
+                .expect("ground before")
+                .iter()
+                .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
+                .collect();
+            let updated = txn.execute(backfill.as_str(), &[&t]).expect("the backfill");
+            let after: Vec<Ground> = txn
+                .query(GROUND, &[&t])
+                .expect("ground after")
+                .iter()
+                .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
+                .collect();
+            let refused = txn
+                .batch_execute(&format!(
+                    "UPDATE private.memory_projects SET derived_task_id = NULL, derived_occurred_at = NULL \
+                      WHERE tenant_id = '{t}' AND memory_id = '{m1}' AND project_id = '{}'",
+                    w.p1
+                ))
+                .err()
+                .and_then(|e| e.code().map(|c| c.code().to_owned()));
+            drop(txn);
+            World::cleanup(&mut handle);
+            assert_eq!(
+                before, expected,
+                "A3 records task and occurred_at, A1 nothing"
+            );
+            assert_eq!(
+                (updated, after),
+                (2, expected),
+                "the backfill restates both task_run@1 rows"
+            );
+            assert_eq!(
+                refused,
+                Some("23514".to_owned()),
+                "a task_run@1 row without ground"
             );
         },
     );

@@ -2,6 +2,7 @@
 -- correction inheritance, revocation on a project_task relation correction, revocation down the inheritance chain,
 -- and the one read-path rule "a link exists and is not revoked".
 --   memory_projects.inherited_from_memory_id   the A3' ancestry column (NULL on every A1 / A3 row)
+--   memory_projects.derived_task_id, derived_occurred_at   the A3 ground (NULL on every A1 / A3' row)
 --   private.memory_projects_live               security_invoker view: memory_projects minus revoked links
 --   private.memory_projects_on_supersede()     A3', invoker trigger on memory_records (0154 rule ③ shape)
 --   private.revoke_attributions_on_relation_correction()   G-M29-6, owner definer trigger on project_task_relations
@@ -24,43 +25,82 @@
 --     in its arbiter UPDATE ... WHERE status = 'active' (memory_governance_repo.rs:1800); 0 rows is CONFLICT and
 --     rolls the successor back, so a correction the arbiter does not make current inherits nothing.
 --   ④ revocation happens in the correcting transaction, at exactly one site per cause: a CONTAINS revision > 1 on
---     project_task_relations revokes the live task_run@1 rows its edge derived whose Evidence occurrence time the
---     new valid no longer contains ('{}' revokes all); a revocation row revokes the live rows inherited from that
---     (memory, project). declared@1 rows never depend on a relation and are never revoked here.
+--     project_task_relations revokes the live task_run@1 rows its edge derived (derived_task_id = dst_id) whose
+--     recorded occurrence time the new valid no longer contains ('{}' revokes all); a revocation row revokes the live
+--     rows inherited from that (memory, project). declared@1 rows never depend on a relation and are never revoked
+--     here.
 --   ⑤ both revocation functions are owner SECURITY DEFINER with search_path = pg_catalog and no EXECUTE grant (a
 --     trigger function's EXECUTE is checked at CREATE TRIGGER, not when it fires): under the caller's RLS another
 --     user's private memory would hide its wrong attribution from the revocation (design v0.2 §15.7). Each first
 --     refuses a row whose tenant is not the session tenant (42501), so owner rights never reach another tenant
 --     (the 0253 pin); the view then filters to that tenant under the owner's RLS as well.
+--   ⑥ every task_run@1 row carries the ground A3 decided on, and nothing else does: CHECK (rule_id_ver = 'task_run@1')
+--     = (derived_task_id IS NOT NULL AND derived_occurred_at IS NOT NULL), both NULL or both set, and a composite NO
+--     ACTION FK (tenant_id, derived_task_id) -> coord.tasks. A3 (adapters::attribution_repo) writes the task and
+--     the Evidence's occurred_at it already joined (PROV wasDerivedFrom, recorded at derivation). So the
+--     relation-correction revocation reads memory_projects_live only and never the Evidence tables:
+--     evidence_objects' policy has no owner arm (0163:20-40, §6.1.1), so an owner definer cannot see another user's
+--     USER_PRIVATE Evidence, while memory_records' policy has one (design v0.2 §15.7 amendment, 2026-10-20). A later
+--     hidden or purged Evidence no longer changes what a relation correction revokes.
 --
 -- Why ADD COLUMN is safe on an immutable table (0252 ②): the immutability trigger is a BEFORE UPDATE OR DELETE row
 -- trigger and ALTER TABLE fires no row trigger; a nullable column without a default is a catalog-only change, so no
--- row is rewritten; every existing row reads NULL, which is its correct value (nothing wrote correction@1 before
--- this card, so the CHECK validates every existing row).
+-- row is rewritten. inherited_from_memory_id reads NULL on every existing row, which is its correct value (nothing
+-- wrote correction@1 before this card).
+--
+-- Backfill of the A3 ground (⑥): every existing task_run@1 row gets derived_task_id / derived_occurred_at from the
+-- join A3 decided on: its decision Evidence's evidence_task_runs carrier -> coord.task_runs.task_id, and that
+-- Evidence's occurred_at (non-NULL on every A3 row, N09 R3). One carrier per Evidence (evidence_task_runs_pkey), so
+-- the subquery yields at most one row. The migrator is the superuser principal (maintenance::migrate,
+-- HUMAUX_MIGRATOR_PG_DSN, ADR-0066 L-13), and RLS, FORCE included, never applies to a superuser, so every tenant's
+-- and every user's Evidence is visible. memory_projects_immutable (0252 ②) rejects every UPDATE and fires for a
+-- superuser too, so it is disabled around this one UPDATE and re-enabled before the constraints are added (the
+-- postcheck pins it enabled). The UPDATE restates each row's ground and changes no attribution (memory, project,
+-- rule, decision Evidence). The CHECK and both FKs are added after it, so they are VALID; a row it could not ground
+-- (a non-superuser runner sees no Evidence) violates the CHECK and aborts the migration, never a silent gap.
 --
 -- ponytail: a correction and a relation correction committing concurrently in two transactions can race: A3' may
 --   copy a link the other transaction is revoking, and the transitive revocation cannot see the uncommitted
 --   successor. Upgrade: A3' reads the ancestor rows FOR SHARE and the revocation side takes them FOR UPDATE.
 -- ponytail: widening a relation's validity backfills nothing: memory_projects is immutable per memory version
 --   (ADR-0078 D-D), so a memory that missed A3 under the old window stays unresolved.
--- ponytail: the owner reads the decision Evidence and its task-run carrier through their RLS, and
---   evidence_objects_tenant_and_visibility has no owner arm (§6.1.1): a derived row whose decision Evidence the
---   correcting session cannot see (another user's USER_PRIVATE Evidence) is not revoked. The definer covers a private
---   memory whose decision Evidence the session can see (memory.confirm of a USER_PRIVATE candidate from a shared
---   Evidence). Upgrade: an owner read arm on evidence_objects, which is a §6.1.1 ruling this card does not own.
 --
 -- Locks, all held until COMMIT: ADD COLUMN and ADD CONSTRAINT ... CHECK take ACCESS EXCLUSIVE on memory_projects (the
--- CHECK scans it once); ADD CONSTRAINT ... FOREIGN KEY takes SHARE ROW EXCLUSIVE on it (self-reference) and scans it;
--- CREATE INDEX takes SHARE on it; each CREATE TRIGGER takes SHARE ROW EXCLUSIVE on memory_records,
--- project_task_relations and memory_project_revocations, which blocks memory.correct / memory.supersede /
--- memory.restore and relation writes for the rest of this migration's transaction. memory_projects is small.
+-- CHECKs scan it once), so the backfill UPDATE and the DISABLE / ENABLE TRIGGER pair (SHARE ROW EXCLUSIVE) run under
+-- a lock no other session can pass: nobody writes the table or sees the trigger disabled; ADD CONSTRAINT ... FOREIGN
+-- KEY takes SHARE ROW EXCLUSIVE on memory_projects (self-reference) and on coord.tasks, which blocks task submits for
+-- the rest of this transaction, and scans memory_projects; CREATE INDEX takes SHARE on it; each CREATE TRIGGER takes
+-- SHARE ROW EXCLUSIVE on memory_records, project_task_relations and memory_project_revocations, which blocks
+-- memory.correct / memory.supersede / memory.restore and relation writes for the rest of this migration's
+-- transaction. memory_projects is small.
 
-ALTER TABLE private.memory_projects ADD COLUMN inherited_from_memory_id uuid;
+ALTER TABLE private.memory_projects
+  ADD COLUMN inherited_from_memory_id uuid,
+  ADD COLUMN derived_task_id uuid,
+  ADD COLUMN derived_occurred_at timestamptz;
+
+-- ⑥ backfill (header). adapters::tests::memory_attribution runs this UPDATE verbatim.
+ALTER TABLE private.memory_projects DISABLE TRIGGER memory_projects_immutable;
+UPDATE private.memory_projects mp
+   SET (derived_task_id, derived_occurred_at) =
+       (SELECT tr.task_id, e.occurred_at
+          FROM private.evidence_task_runs etr
+          JOIN coord.task_runs tr ON tr.tenant_id = etr.tenant_id AND tr.task_run_id = etr.task_run_id
+          JOIN private.evidence_objects e ON e.tenant_id = etr.tenant_id AND e.evidence_id = etr.evidence_id
+         WHERE etr.tenant_id = mp.tenant_id AND etr.evidence_id = mp.decision_evidence_id)
+ WHERE mp.rule_id_ver = 'task_run@1';
+ALTER TABLE private.memory_projects ENABLE TRIGGER memory_projects_immutable;
+
 ALTER TABLE private.memory_projects
   ADD CONSTRAINT memory_projects_inherited_from_fkey FOREIGN KEY (tenant_id, inherited_from_memory_id, project_id)
     REFERENCES private.memory_projects (tenant_id, memory_id, project_id),
   ADD CONSTRAINT memory_projects_inherited_from_iff_correction
-    CHECK ((rule_id_ver = 'correction@1') = (inherited_from_memory_id IS NOT NULL));
+    CHECK ((rule_id_ver = 'correction@1') = (inherited_from_memory_id IS NOT NULL)),
+  ADD CONSTRAINT memory_projects_derived_task_fkey FOREIGN KEY (tenant_id, derived_task_id)
+    REFERENCES coord.tasks (tenant_id, task_id),
+  ADD CONSTRAINT memory_projects_derived_iff_task_run
+    CHECK ((rule_id_ver = 'task_run@1') = (derived_task_id IS NOT NULL AND derived_occurred_at IS NOT NULL)
+           AND (derived_task_id IS NULL) = (derived_occurred_at IS NULL));
 -- The FK's referencing-side lookup path, and the transitive revocation's probe.
 CREATE INDEX memory_projects_inherited_from_idx
   ON private.memory_projects (tenant_id, inherited_from_memory_id, project_id)
@@ -69,7 +109,8 @@ CREATE INDEX memory_projects_inherited_from_idx
 -- ② the only spelling of "exists and is not revoked".
 CREATE VIEW private.memory_projects_live WITH (security_invoker = true) AS
   SELECT mp.tenant_id, mp.memory_id, mp.project_id, mp.relation, mp.source_kind, mp.rule_id_ver,
-         mp.decision_evidence_id, mp.inherited_from_memory_id, mp.recorded_at
+         mp.decision_evidence_id, mp.inherited_from_memory_id, mp.derived_task_id, mp.derived_occurred_at,
+         mp.recorded_at
     FROM private.memory_projects mp
    WHERE NOT EXISTS (SELECT 1 FROM private.memory_project_revocations r
                       WHERE r.tenant_id = mp.tenant_id AND r.memory_id = mp.memory_id
@@ -109,8 +150,8 @@ CREATE TRIGGER memory_projects_on_supersede
   WHEN (NEW.superseded_by IS NOT NULL AND NEW.superseded_by IS DISTINCT FROM OLD.superseded_by)
   EXECUTE FUNCTION private.memory_projects_on_supersede();
 
--- ④ G-M29-6: the one relation-correction revocation site. revoked_by takes decided_by verbatim (0252 gave both the
--- same closed format).
+-- ④ G-M29-6: the one relation-correction revocation site. It reads the view only (⑥: never the Evidence tables).
+-- revoked_by takes decided_by verbatim (0252 gave both the same closed format).
 CREATE FUNCTION private.revoke_attributions_on_relation_correction() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $$
@@ -122,14 +163,11 @@ BEGIN
   SELECT l.tenant_id, l.memory_id, l.project_id, NEW.decided_by,
          'project_task_relations:' || NEW.relation_id || '@' || NEW.revision
     FROM private.memory_projects_live l
-    JOIN private.evidence_task_runs etr ON etr.tenant_id = l.tenant_id AND etr.evidence_id = l.decision_evidence_id
-    JOIN coord.task_runs tr ON tr.tenant_id = etr.tenant_id AND tr.task_run_id = etr.task_run_id
-    JOIN private.evidence_objects e ON e.tenant_id = l.tenant_id AND e.evidence_id = l.decision_evidence_id
    WHERE l.tenant_id = NEW.tenant_id
      AND l.project_id = NEW.src_id
      AND l.rule_id_ver = 'task_run@1'
-     AND tr.task_id = NEW.dst_id
-     AND NOT (NEW.valid @> e.occurred_at);
+     AND l.derived_task_id = NEW.dst_id
+     AND NOT (NEW.valid @> l.derived_occurred_at);
   RETURN NULL;
 END;
 $$;
@@ -169,11 +207,15 @@ CREATE TRIGGER memory_project_revocations_follow_inheritance
 
 COMMENT ON COLUMN private.memory_projects.inherited_from_memory_id IS
   '§6.1.4 A3'' ancestry (ADR-0078 D-D): the predecessor whose live row this correction@1 row copies; NULL on every other row. M29 T06b.';
+COMMENT ON COLUMN private.memory_projects.derived_task_id IS
+  '§6.1.4 A3 ground (ADR-0078 D-D): the task whose CONTAINS relation this task_run@1 row was derived from; NULL on every other row. M29 T06b.';
+COMMENT ON COLUMN private.memory_projects.derived_occurred_at IS
+  '§6.1.4 A3 ground (ADR-0078 D-D): the decision Evidence''s occurred_at the CONTAINS validity was tested at; NULL on every row that is not task_run@1. M29 T06b.';
 COMMENT ON VIEW private.memory_projects_live IS
   '§6.1.4 (ADR-0078 D-D): memory_projects rows with no revocation row, the only place the "exists and is not revoked" rule lives. security_invoker. M29 T06b.';
 COMMENT ON FUNCTION private.memory_projects_on_supersede() IS
   '§6.1.4 A3'' (ADR-0078 D-D, Q9): a USER_CORRECTION successor inherits its predecessor''s live rows as INHERITED / correction@1 at the arbiter UPDATE of superseded_by. Invoker. M29 T06b.';
 COMMENT ON FUNCTION private.revoke_attributions_on_relation_correction() IS
-  '§6.1.4 G-M29-6 (ADR-0078 D-D): a CONTAINS correction revokes, in its own transaction, the live task_run@1 rows its edge derived whose Evidence occurrence time leaves the new valid. Owner definer, session-tenant pin. M29 T06b.';
+  '§6.1.4 G-M29-6 (ADR-0078 D-D): a CONTAINS correction revokes, in its own transaction, the live task_run@1 rows its edge derived whose recorded occurrence time leaves the new valid; reads the view only. Owner definer, session-tenant pin. M29 T06b.';
 COMMENT ON FUNCTION private.revoke_inherited_attributions() IS
   '§6.1.4 (ADR-0078 D-D): a revocation revokes the live rows inherited from the same (memory, project), recursively. Owner definer, session-tenant pin. M29 T06b.';

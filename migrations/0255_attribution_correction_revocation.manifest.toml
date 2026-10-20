@@ -1,10 +1,12 @@
 # §46.1 migration manifest. Card M29 T06b / ADR-0078 D-D (§6.1.4 work attribution, design v0.2 §15.7): one nullable
 # column private.memory_projects.inherited_from_memory_id with a self-referencing tenant-leg NO ACTION FK, a
-# correction@1-iff-ancestor CHECK and its lookup index; one security_invoker view private.memory_projects_live
+# correction@1-iff-ancestor CHECK and its lookup index; two nullable columns derived_task_id / derived_occurred_at (the
+# A3 ground) with a tenant-leg NO ACTION FK to coord.tasks and a task_run@1-iff-ground CHECK, backfilled on existing
+# task_run@1 rows with memory_projects_immutable disabled for that one UPDATE; one security_invoker view private.memory_projects_live
 # (SELECT role_gateway only); one invoker trigger function on private.memory_records (A3') and two owner SECURITY
 # DEFINER trigger functions (relation-correction revocation on private.project_task_relations, transitive revocation
 # on private.memory_project_revocations), EXECUTE revoked from PUBLIC on all three, no EXECUTE grant. No grant on any
-# table changes. No DML. §46 forward-fix (EXPAND_CONTRACT, number 0255).
+# table changes. The only DML is the backfill UPDATE. §46 forward-fix (EXPAND_CONTRACT, number 0255).
 
 migration_id = "0255_attribution_correction_revocation"
 class = "EXPAND_CONTRACT"
@@ -15,7 +17,8 @@ select to_regclass('private.memory_projects') is not null
  and to_regclass('private.memory_project_revocations') is not null
  and to_regclass('private.evidence_task_runs') is not null
  and not exists (select 1 from pg_attribute where attrelid = to_regclass('private.memory_projects')
-                  and attname = 'inherited_from_memory_id' and not attisdropped)
+                  and attname in ('inherited_from_memory_id', 'derived_task_id', 'derived_occurred_at')
+                  and not attisdropped)
  and to_regclass('private.memory_projects_live') is null
  and to_regprocedure('private.memory_projects_on_supersede()') is null
  and to_regprocedure('private.revoke_attributions_on_relation_correction()') is null
@@ -23,11 +26,12 @@ select to_regclass('private.memory_projects') is not null
  as precheck_ok
 """
 
-# Fails on: a missing or non-uuid column, a missing FK / CHECK / index, an FK without the tenant leg or with a cascade,
-# a view that is missing or not security_invoker or readable by any non-owner role but role_gateway, a function that
-# is missing, not owned by role_migration_owner, without the pinned search_path, or executable by PUBLIC or any
-# non-owner role, or an A3' function that became SECURITY DEFINER. Like 0252's and 0253's, this postcheck leaves the
-# three triggers, the view body, the function bodies and the two functions' SECURITY DEFINER to
+# Fails on: a missing or mistyped column, a missing or NOT VALID FK / CHECK, a missing index, an FK without the tenant
+# leg or with a cascade, memory_projects_immutable left disabled, a view that is missing or not security_invoker or
+# readable by any non-owner role but role_gateway, a function that is missing, not owned by role_migration_owner,
+# without the pinned search_path, or executable by PUBLIC or any non-owner role, or an A3' function that became
+# SECURITY DEFINER. Like 0252's and 0253's, this postcheck leaves the three triggers, the view body, the function
+# bodies, the CHECK predicates, the backfill statement and the two functions' SECURITY DEFINER to
 # adapters::tests::memory_attribution and rls-check (G-M29-5(b), G-M29-6, ADR-0078 Red records), so each of those
 # faults reaches its gate instead of stopping the migration.
 postcheck = """
@@ -46,9 +50,24 @@ select (select count(*) = 1 from pg_attribute
          and k.confdeltype = 'a' and k.confupdtype = 'a'
          and k.conkey[1] = (select attnum from pg_attribute
                              where attrelid = k.conrelid and attname = 'tenant_id'))
- and (select count(*) = 1 from pg_constraint
-       where conname = 'memory_projects_inherited_from_iff_correction' and contype = 'c'
-         and conrelid = to_regclass('private.memory_projects'))
+ and (select count(*) = 1 from pg_attribute
+       where attrelid = to_regclass('private.memory_projects') and attname = 'derived_task_id'
+         and atttypid = 'uuid'::regtype and not attnotnull and not attisdropped)
+ and (select count(*) = 1 from pg_attribute
+       where attrelid = to_regclass('private.memory_projects') and attname = 'derived_occurred_at'
+         and atttypid = 'timestamptz'::regtype and not attnotnull and not attisdropped)
+ and (select count(*) = 1 from pg_constraint k
+       where k.conname = 'memory_projects_derived_task_fkey' and k.contype = 'f' and k.convalidated
+         and k.conrelid = to_regclass('private.memory_projects')
+         and k.confrelid = to_regclass('coord.tasks')
+         and k.confdeltype = 'a' and k.confupdtype = 'a'
+         and k.conkey[1] = (select attnum from pg_attribute
+                             where attrelid = k.conrelid and attname = 'tenant_id'))
+ and (select count(*) = 2 from pg_constraint
+       where conname in ('memory_projects_inherited_from_iff_correction', 'memory_projects_derived_iff_task_run')
+         and contype = 'c' and convalidated and conrelid = to_regclass('private.memory_projects'))
+ and (select tgenabled = 'O' from pg_trigger
+       where tgrelid = to_regclass('private.memory_projects') and tgname = 'memory_projects_immutable')
  and to_regclass('private.memory_projects_inherited_from_idx') is not null
  and (select count(*) = 1 from pg_class c
        where c.oid = to_regclass('private.memory_projects_live') and c.relkind = 'v'
@@ -68,5 +87,5 @@ select (select count(*) = 1 from pg_attribute
  as postcheck_ok
 """
 
-rollback_or_forward_fix = "rollback while no correction@1 row and no revocation row exist: DROP TRIGGER memory_project_revocations_follow_inheritance ON private.memory_project_revocations, project_task_relations_revoke_attributions ON private.project_task_relations, memory_projects_on_supersede ON private.memory_records; DROP FUNCTION private.revoke_inherited_attributions(), private.revoke_attributions_on_relation_correction(), private.memory_projects_on_supersede(); DROP VIEW private.memory_projects_live; ALTER TABLE private.memory_projects DROP COLUMN inherited_from_memory_id (drops its FK, CHECK and index); and revert the §6.1.4 / §6.2.2 text, the rls-check gates and the tests in the same release. Forward-fix only once any correction@1 or revocation row exists: attribution history is immutable and is never discarded silently."
-backup_restore_requirement = "none: one nullable column (catalog-only, no rewrite) whose FK and CHECK validate existing rows (a violating row aborts the migration, nothing is rewritten), one index, one view and three trigger functions that act on new UPDATEs and INSERTs only; no existing row is touched."
+rollback_or_forward_fix = "rollback while no correction@1 row and no revocation row exist: DROP TRIGGER memory_project_revocations_follow_inheritance ON private.memory_project_revocations, project_task_relations_revoke_attributions ON private.project_task_relations, memory_projects_on_supersede ON private.memory_records; DROP FUNCTION private.revoke_inherited_attributions(), private.revoke_attributions_on_relation_correction(), private.memory_projects_on_supersede(); DROP VIEW private.memory_projects_live; ALTER TABLE private.memory_projects DROP COLUMN inherited_from_memory_id, DROP COLUMN derived_task_id, DROP COLUMN derived_occurred_at (drops their FKs, CHECKs and index); and revert the §6.1.4 / §6.2.2 text, the rls-check gates and the tests in the same release. Forward-fix only once any correction@1 or revocation row exists: attribution history is immutable and is never discarded silently."
+backup_restore_requirement = "none: three nullable columns (catalog-only, no rewrite); one backfill UPDATE that writes only the two new columns of existing task_run@1 rows from the join A3 used, inside the migration transaction under ACCESS EXCLUSIVE, so no attribution (memory, project, rule, decision Evidence) changes and a failure rolls everything back; FKs and CHECKs that validate every row (a violating row aborts the migration), one index, one view and three trigger functions that act on new UPDATEs and INSERTs only."
