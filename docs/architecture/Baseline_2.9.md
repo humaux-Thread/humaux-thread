@@ -4608,6 +4608,8 @@ model
 model_revision
 input_tokens
 output_tokens
+provider_cache_read_tokens
+provider_cache_write_tokens
 billable_tokens
 candidate_count
 candidate_tokens
@@ -4628,6 +4630,28 @@ provider_request_id
 **生成类调用只记入参那一维等于记不出账**：私有推理面（§11.6 distill / §11.7 consolidation）
 的输出 token 通常主导成本，只有两维都落库，`compute_cost` 才能在价格行出现的那天把这行算成钱
 而不需要改代码。
+
+**Provider cache accounting（ADR-0081 D-A；`provider_cache_read_tokens` / `provider_cache_write_tokens` 是计划列，随 T-RET-1a 落地，迁移 0257）。** The two columns record what the provider reported about its own prompt cache on an LLM call; an embedding or rerank row leaves both NULL. **NULL means "the provider did not report", never 0.** `input_tokens` stays the **total** prompt tokens, so the four categories never overlap:
+
+```text
+new_input   = input_tokens - provider_cache_read_tokens - coalesce(provider_cache_write_tokens, 0)   (write NULL is left out; read NULL makes new_input unknown, i.e. NULL)
+cache_write = provider_cache_write_tokens
+cache_read  = provider_cache_read_tokens
+output      = output_tokens
+new_input + coalesce(cache_write, 0) + cache_read == input_tokens   (when cache_read is reported)
+```
+
+No cache count without `input_tokens`, and `coalesce(provider_cache_read_tokens, 0) <= input_tokens - coalesce(provider_cache_write_tokens, 0)` (table CHECK, migration 0257). A provider count that would break this (a read above the total, or a read with no total) is recorded as not reported (NULL), never clamped and never 0.
+
+A rate over these columns (cache-hit rate = Σ `cache_read` ÷ Σ `input_tokens`) leaves a NULL row out of numerator and denominator; it never counts it as 0. The per-protocol conversion into these columns happens in exactly one place, the single usage→ledger normaliser in `adapters` (the function that maps a parsed provider usage object to the ledger's finalize columns); the same field name is not the same measure across protocols:
+
+| Protocol | `input_tokens` | `provider_cache_read_tokens` | `provider_cache_write_tokens` |
+|---|---|---|---|
+| OpenAI-compatible (MiniMax, DashScope) — wired today | `prompt_tokens` (already the total) | `prompt_tokens_details.cached_tokens` | NULL |
+| Anthropic-compatible — adapter not wired | reply `input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens` (the reply's `input_tokens` counts new input only) | `cache_read_input_tokens` | `cache_creation_input_tokens` |
+| DeepSeek — adapter not wired | `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens` | `prompt_cache_hit_tokens` | NULL |
+
+A protocol row that is not wired binds the adapter that wires it. `billable_tokens` is unchanged (ponytail): it still equals the total input for chat completion, so a cache read is priced in full and cost estimates are an upper bound. Rationale, the gate G-RET-1 and the deferred metric `llm_input_tokens_total` live in ADR-0081.
 
 R3 `CONTRIBUTION_DEIDENTIFY` 的 route/health/payer snapshot、reserve/finalize ordering、
 idempotency 与 USER payer cost-null rule 唯一见 §11.2.5；本节不复制第二份调用账本合同。
@@ -5960,7 +5984,7 @@ completeness_ratio = visible / (expected - deleted)
 `visible` 的两个限定都不是修饰词，各堵一个具体的洞：
 
 - **版本维度不可省。**§16.2 的回填期里 shadow 与 serving 两代点共处同一检索面（同 collection 靠 payload 区分，或各自独立 collection —— 两种放置下 filter 都必须显式钉住版本）。不钉版本 ⇒ 回填期把两代都数进来、读数虚高，切换后又掉下去，而这个跌落与真实丢失无法区分；§16.3 第一条判据更直接退化成恒真。**按哪个版本数**没有裁量口：envelope 恒取 `serving`（与 §16.2「envelope 只取 serving 行」同一条）—— 切换前读旧版本的 count，§16.3 那次原子 UPDATE 提交之后立刻读新版本的 count，中间不存在第三种读法。`embedding_version` 顶不了 `projection_version`：卡模板改动换后者不换前者（§18.2），用前者过滤照样把两代点一起数进来。
-- **overlay 不可省。**没有它，删除必然留下「point 已删、tombstone 未写」或「tombstone 已写、point 未删」之一的中间态，前者与 G23-2 注入 1 逐字同形（§37 已把 tombstone 提到 DeletionPlan 第 1 步，正是为此）。overlay **只减不加**：账本上任何写入都无法把已丢的点补回分子，分子外生因此不受影响 —— G23-2 两条注入动的都是 `count(F)` 本身，overlay 一条也拦不住。第二项在 purge 完成后自动归零，不需要额外的「已 purge」记账。**overlay 是一个谓词，不是一个计数技巧**：`seq ∈ TOMBSTONED` 的排除同时挂在计数面与检索面上 —— 全部 lane（含 §22.1 那条走 PostgreSQL 权威数据的 EXACT 通道与本地 literal lane）共用这一个谓词，§51 的 cache key 带 overlay 版本。两面共用一个谓词是 §37 tombstone-first 能成立的前提：`DeletionPlan` 第 1 步提交之后、第 5 步物理 purge 之前，authority 行、object bytes、cache 都还在，「用户侧看不到已删内容」靠的就是它 —— 只把它实现成 `count()` 的减项，那段窗口里被删的内容照样能被检索出来。对照闸见 §23.4 G23-2「合法删除对照」的检索采样。
+- **overlay 不可省。**没有它，删除必然留下「point 已删、tombstone 未写」或「tombstone 已写、point 未删」之一的中间态，前者与 G23-2 注入 1 逐字同形（§37 已把 tombstone 提到 DeletionPlan 第 1 步，正是为此）。overlay **只减不加**：账本上任何写入都无法把已丢的点补回分子，分子外生因此不受影响 —— G23-2 两条注入动的都是 `count(F)` 本身，overlay 一条也拦不住。第二项在 purge 完成后自动归零，不需要额外的「已 purge」记账。**overlay 是一个谓词，不是一个计数技巧**：`seq ∈ TOMBSTONED` 的排除同时挂在计数面与检索面上 —— 全部 lane（含 §22.1 那条走 PostgreSQL 权威数据的 EXACT 通道与本地 literal lane）共用这一个谓词，§51 的每次缓存命中都照样过这一个谓词（hydrate / 可见性闸，ADR-0081 G-RET-3）；只有值里含库状态的缓存才随租户 / 工作区 generation 失效（§51）。两面共用一个谓词是 §37 tombstone-first 能成立的前提：`DeletionPlan` 第 1 步提交之后、第 5 步物理 purge 之前，authority 行、object bytes、cache 都还在，「用户侧看不到已删内容」靠的就是它 —— 只把它实现成 `count()` 的减项，那段窗口里被删的内容照样能被检索出来。对照闸见 §23.4 G23-2「合法删除对照」的检索采样。
 - **取数顺序固定：先读索引 count，后读账本快照**（`done` / `deleted` / `skipped` / `TOMBSTONED` 集合取自同一快照）。反过来读，一次夹在两次取数之间完成的合法删除会被读成「`visible` 少了而 `deleted` 没涨」= 伪造的丢失；按此顺序，同样的时序偏差只会落到 A2 的 `>` 侧，被在途分支吸收。两项 filter 都要求点上能读到 `projection_version` 与 `source_stream_seq`（§17 payload 已列，或 point id 由 seq 派生，二选一）。
 
 分子必须落在**账本之外**。`expected` / `done` / `deleted` 全取自 `stream_log` 与票据表，`(done - deleted) / (expected - deleted)` 只是账本自己跟自己对账 —— A1 成立时它恒等于 `1 - (open_gaps + pending) / (expected - deleted)`，两个分量已经在 envelope 上，不携带任何新信息；而 envelope 的职责是报出「你看不到什么」。§17.4 已写明 `wait=false` 提前推进 checkpoint 是要防的形态；adapter 退化成直接 ack、segment / replica / snapshot 恢复丢点、绕过 `retention::tombstone` 的物理删（§37.2），三条路径都会产出「票已结清、状态已 `DONE`、却不再 search-visible」的条目。这类条目在旧口径下**计入分子**，比值恒 `1.0`，envelope 永远报不出丢失。**分子取 `visible` 之后，这三条路径才有读数会变。**
@@ -6194,7 +6218,7 @@ Exact，以及 schema/结算/审计失败的零指标对照；此入口不代表
 
 本例读数的来源：A1 成立（`95 + 1 + 2 == 98`）；A2 违反（`88 + 3 + 2 = 93 != 95`，差的 2 条就是「票已结清、状态已 `DONE`、却不在索引里」）⇒ 照算 `completeness_ratio = 88 / (98 - 3) = 0.926`、`current = false`（`open_gaps = 1 != 0`，且 A2 不闭合 —— 两个分量同时不成立，定义见 §23.1②）、`degradations` 含 `PROJECTION_INVISIBLE_LOSS`。`skipped = 2` 是按策略永不进索引的两条（§7.2 / §18），它**计入 A2 左边、不进分母**：不计入左边，任何有禁外发策略的租户都会永久 A2 红；从分母里减掉，则策略排除会静默消失（§22.1 `excluded_secret` 同款纪律）。同一组数在旧口径下读 `(95 - 3) / (98 - 3) = 0.968`，两者必须分叉，否则本示例不能当夹具用。pipeline 三段的逐级衔接同样要对得上（示例即夹具，任一处对不上就不是示例、是反例）：`evidence 100 → 98`（2 张票未销）、`knowledge.eligible 98 == evidence.persisted`、`95 + 2 + 1 == 98`、`projection.expected 98 == evidence.persisted 98` —— **不是 `knowledge.processed`**：`projection.expected` 是 `issued_highwater`（§23.1② 取数面表），`remember` 事务 B 对每条持久化 Evidence 无条件发一个 `stream_seq`（§15.1 / §60），知识层的 `waiting_key` / `failed` 不会让已经发出去的序号消失。这 98 行 `stream_log` 的三分即 A1：`done 95` = 90 `DONE` + 3 `TOMBSTONED` + 2 `SKIPPED_BY_POLICY`、`open_gaps 1` = 那条 `knowledge.failed`（`FAILED` ∈ GAP）、`pending 2` = 那两条 `knowledge.waiting_key` 还没结清（stream state=`WAITING_KEY`，不会被墙钟巡检误报 LOST）；90 条 `DONE` 在索引里只剩 88，少的 2 条就是 A2 报出来的丢失。A2 的差额落在 `<` 侧（`93 < 95`）⇒ 判丢失而非在途 —— 在途只可能让左边**大于** `done`（§23.1② A2 的 `>` 支）。**ADR-0057 D-A 修订（卡 31）**：本例按修订前的票据单位书写；修订后 `projection` 块另带 `points_expected` / `points_settled` / `points_in_flight` / `points_unsettled`，A2 拿 `visible` 比 L（本例每票一个记忆、无生命周期票，L = 90 条 `DONE` ⇒ `88 < 90` 仍判丢失），比值分母为 `points_expected`；结论（丢失、`current = false`、`PROJECTION_INVISIBLE_LOSS`）不变。
 
-检索侧同理：`candidate_count 25` / `reranked_count 12` / `returned 5`。`RERANK_PROVIDER_TIMEOUT` 的含义是 25 个候选里只有 12 个真过了重排、其余走 fallback 序；**两个 count 相等的示例看不出降级发生过**，正是 §23.2 那条判据例要排除的形态（本示例先前写 `25 / 25` 却同时挂着这条降级，自己违反了自己立的标准，已改）。三个数的自洽关系即 §23.4 的夹具断言：`returned (5) == profile.top_k`、`reranked_count (12) <= candidate_count (25) == profile.cand_k == min(top_k * 5, 200)`、`truncated = true` 因为 `candidate_count > returned`；且 `reranked_count == candidate_count` 时 `degradations` 不得含任何 rerank 类降级（重排全数完成 = 结果未被降级；重试后全数成功只记指标，不进 `degradations`），反之含该降级时 `reranked_count` 必须严格小于 `candidate_count`。
+检索侧同理：`candidate_count 25` / `reranked_count 12` / `returned 5`。`RERANK_PROVIDER_TIMEOUT` 的含义是 25 个候选里只有 12 个真过了重排、其余走 fallback 序；**两个 count 相等的示例看不出降级发生过**，正是 §23.2 那条判据例要排除的形态（本示例先前写 `25 / 25` 却同时挂着这条降级，自己违反了自己立的标准，已改）。三个数的自洽关系即 §23.4 的夹具断言：`returned (5) == profile.top_k`、`reranked_count (12) <= candidate_count (25) == profile.cand_k == min(top_k × profile.cand_multiplier, 200)`（`cand_multiplier` 是注册 profile 的字段、默认 5、永不由调用方给：planned，T-RET-6，此前乘数是常量 5；`cand_k_formula` 以解析后的乘数渲染，所以本例仍写 `min(top_k*5, 200)`；ADR-0081 D-E）、`truncated = true` 因为 `candidate_count > returned`；且 `reranked_count == candidate_count` 时 `degradations` 不得含任何 rerank 类降级（重排全数完成 = 结果未被降级；重试后全数成功只记指标，不进 `degradations`），反之含该降级时 `reranked_count` 必须严格小于 `candidate_count`。
 
 `degradations` 取代旧的 `degraded: bool`，字段名以本节为准、全文只此一个（§53.1 从之）；成员是 §53.2 `DegradeCode` 变体的**线格式**，即 `fold(变体名)` 得到的 SCREAMING_SNAKE 串，形式与映射冻结在 §53.2。本例的 `RERANK_PROVIDER_TIMEOUT` 对应变体 `RerankProviderTimeout`；早先此处写的 `RERANK_TIMEOUT_PARTIAL` 是同一件事的第二个名字（§41.1 R3 同物二名），已删，不留兼容期、不加别名。`profile_fingerprint` = §55 那个唯一构造函数输出的检索请求中实际生效的检索配置的规范序列化 sha256（`sha256:` 前缀）。
 
@@ -10932,9 +10956,20 @@ model
 model_revision
 projection_version
 normalized_query/doc hash
+endpoint/protocol
+text_type
+instruct version
+truncation policy
+reranker fingerprint
 ```
 
-写入 Memory 后通过 tenant/workspace generation invalidation，而不是逐键扫描。
+Each field applies to the cache kinds it describes (`text_type` and `instruct version` to embeddings, `reranker fingerprint` to rerank scores); changing any applicable field must miss (ADR-0081 G-RET-4, planned, T-RET-3).
+
+- **Rerank scores** are cached per (query hash, document content hash, reranker fingerprint) pair, tenant-scoped, as a score only, never text (D-RET-6; ADR-0081 D-F, planned, no card yet). A key built from the hash of a candidate set is not allowed.
+- **Document embeddings** are reused only when the generation fingerprint and the hash of the final embedding input both match, tenant-scoped, never across tenants (D-RET-3; ADR-0081 D-C, planned, T-RET-5). A document version id is not part of the key.
+- **There is no semantic (similar-query) cache** (D-RET-7; ADR-0081 D-G).
+- **Every cache hit still passes the PostgreSQL hydrate / visibility gate** before it can reach a result (ADR-0081 G-RET-3). A tombstone or a visibility change is therefore enforced by that gate on each hit, never by expiry, LRU or an invalidation broadcast.
+- **Invalidation follows dependency, one rule.** Entries above are content-addressed: the key is a hash of the final input plus fingerprints, not a function of library state, so a Memory write needs no generation invalidation for them. A cache whose value depends on library state (none today; the deferred candidate-list cache of ADR-0081 D-G, keyed on corpus epoch and index watermark, would be the first) is invalidated through the tenant/workspace generation after a Memory write, not by scanning keys.
 
 Cache failure：
 
@@ -11416,7 +11451,7 @@ planner 误判例数（必须 0）
 
 §55.1 把 `limit` 从 `RetrievalRequest` 里彻底抹掉，会有人误以为"评测要深池就没辙了"，进而把它加回去。三条写死：
 
-**要更深的候选池 ⇒ 注册 profile，不改请求类型。** 在 §50 typed config registry 里新增一个 retrieval profile（`top_k` 调高 ⇒ `cand_k = min(top_k × 5, cap)` 随之变深），该 profile **生产也能跑** —— 不存在"只给评测用"的 profile。§23 envelope 的 `profile_fingerprint` 随之改变，G23-4 生效：跨 fingerprint 汇总直接失败退出，深池分数不可能被混进浅池基线。
+**要更深的候选池 ⇒ 注册 profile，不改请求类型。** 在 §50 typed config registry 里新增一个 retrieval profile（`top_k` 调高 ⇒ `cand_k = min(top_k × profile.cand_multiplier, cap)` 随之变深；`cand_multiplier` 是注册 profile 的字段、默认 5、不是调用方输入，planned，T-RET-6，此前乘数是常量 5，ADR-0081 D-E），该 profile **生产也能跑** —— 不存在"只给评测用"的 profile。§23 envelope 的 `profile_fingerprint` 随之改变，G23-4 生效：跨 fingerprint 汇总直接失败退出，深池分数不可能被混进浅池基线。
 
 **问「池深够不够」根本不需要改 `cand_k`。** §23 envelope 同时自报 `candidate_count`（进池数）与 `returned`（返回数），§55.5 已要求 `pool recall` 与 `final recall` 分开报：
 
