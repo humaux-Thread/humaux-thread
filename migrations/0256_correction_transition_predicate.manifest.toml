@@ -1,0 +1,57 @@
+# §46.1 migration manifest. Issue #109 (§6.1.3 rule ③ / §6.1.4 A3'): one new invoker function
+# private.is_correction_transition(uuid, uuid, uuid) (STABLE, search_path = pg_catalog, owner role_migration_owner,
+# EXECUTE role_gateway only: the one role that UPDATEs memory_records.superseded_by and so fires the two triggers) and
+# three CREATE OR REPLACE FUNCTION bodies that keep their owner, ACL and attributes: 0154's memory_subjects_on_supersede
+# (guarded by the predicate; it is now the one site that copies links, rule 3b), 0154's link_memory_subjects (minus rule
+# 3b) and 0255's memory_projects_on_supersede (its inline predicate replaced by a call). No table, column, trigger or
+# grant on a table changes; no DML. §46 forward-fix (EXPAND_CONTRACT, number 0256).
+
+migration_id = "0256_correction_transition_predicate"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the three functions this migration rewrites or without the lifecycle event table the
+# predicate reads, or one that already has the predicate.
+precheck = """
+select to_regprocedure('private.is_correction_transition(uuid,uuid,uuid)') is null
+ and to_regprocedure('private.link_memory_subjects(uuid,uuid,uuid[],text[])') is not null
+ and to_regprocedure('private.memory_subjects_on_supersede()') is not null
+ and to_regprocedure('private.memory_projects_on_supersede()') is not null
+ and to_regclass('ops.memory_lifecycle_events') is not null
+ as precheck_ok
+"""
+
+# Fails on: a predicate that is missing, SECURITY DEFINER, not STABLE, not boolean, without the pinned search_path, not
+# owned by role_migration_owner, or executable by PUBLIC or by any runtime role but role_gateway; a rewritten function
+# that became SECURITY DEFINER or changed owner; either trigger function whose body no longer calls the predicate; and
+# a body of the three rewritten functions that names USER_CORRECTION again (the legs live in the predicate alone). The
+# predicate's legs and the triggers' behaviour are left to adapters::tests::memory_subjects_link and
+# adapters::tests::memory_attribution (issue #109 red records in ADR-0028), so each fault reaches its gate instead of
+# stopping the migration.
+postcheck = """
+with fns(sig) as (values ('private.link_memory_subjects(uuid,uuid,uuid[],text[])'),
+                         ('private.memory_subjects_on_supersede()'),
+                         ('private.memory_projects_on_supersede()')),
+callers(sig) as (values ('private.memory_subjects_on_supersede()'),
+                        ('private.memory_projects_on_supersede()')),
+r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+                   ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
+select (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('private.is_correction_transition(uuid,uuid,uuid)')
+           and not p.prosecdef and p.provolatile = 's' and p.prorettype = 'boolean'::regtype
+           and p.proconfig = array['search_path=pg_catalog']
+           and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and not has_function_privilege('public', 'private.is_correction_transition(uuid,uuid,uuid)', 'EXECUTE')
+ and not exists (select 1 from r
+                  where has_function_privilege(r.role, 'private.is_correction_transition(uuid,uuid,uuid)', 'EXECUTE')
+                        is distinct from (r.role = 'role_gateway'))
+ and (select count(*) = 3 from fns join pg_proc p on p.oid = to_regprocedure(fns.sig)
+       where not p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and (select count(*) = 2 from callers join pg_proc p on p.oid = to_regprocedure(callers.sig)
+       where position('private.is_correction_transition(' in p.prosrc) > 0)
+ and not exists (select 1 from fns join pg_proc p on p.oid = to_regprocedure(fns.sig)
+                  where p.prosrc like '%USER_CORRECTION%')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: CREATE OR REPLACE FUNCTION private.memory_projects_on_supersede() with 0255's body (the inline five-leg predicate on ops.memory_lifecycle_events), private.memory_subjects_on_supersede() with 0154's body (an unconditional PERFORM private.link_memory_subjects(NEW.tenant_id, NEW.superseded_by)) and private.link_memory_subjects(uuid, uuid, uuid[], text[]) with 0154's body (rule 3b keyed on the successor's PRIMARY USER_CORRECTION Evidence); then DROP FUNCTION private.is_correction_transition(uuid, uuid, uuid); and revert the §6.1.3 rule ③ sentence, the ADR-0028 amendment and the tests in the same release. Rolling back reopens #109 (an explicit supersede or a restore onto a correction-born memory copies subject links). Subject links written meanwhile are history and stay."
+backup_restore_requirement = "none: one new function and three function bodies replaced in place (owner and ACL kept); no table, row or grant on a table is touched."

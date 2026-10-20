@@ -5,10 +5,11 @@
 //!   own transaction; M29 T06c: a `remember.put` `project_id` reaches A1 end to end.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
 //!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_project_revocations,
-//!   private.memory_projects] w=[control.tenants, control.workspaces, coord.task_runs, private.continuity_projects,
-//!   private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
-//!   private.memory_project_revocations, private.memory_projects, private.project_task_relations],
-//!   PostgreSQL(role_gateway) x=[private.declared_project_visible], PostgreSQL(role_private_worker)];
+//!   private.memory_projects, private.memory_subjects] w=[control.tenants, control.workspaces, coord.task_runs,
+//!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
+//!   private.memory_project_revocations, private.memory_projects, private.project_task_relations, private.subjects]
+//!   x=[private.link_memory_subjects], PostgreSQL(role_gateway) x=[private.declared_project_visible],
+//!   PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
 //!   adapters::memory_repo, adapters::operation_receipt, adapters::relation_repo, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
@@ -32,6 +33,7 @@
 //! | `g_m29_5b_correction_inherits_supersede_does_not` | G-M29-5(b) | drop the A3' trigger |
 //! | `g_m29_5b_correction_inherits_live_links_only` | G-M29-5(b), read path | the live view drops its `NOT EXISTS` |
 //! | `g_m29_5b_inheritance_keys_on_the_correction_transition` | G-M29-5(b), the transition (design v0.2 revision 2) | A3' drops the event's reason_code leg |
+//! | `g_109_subject_inheritance_keys_on_the_correction_transition` | issue #109, §6.1.3 rule 3b | `private.is_correction_transition` drops the event's reason_code leg, or the subjects trigger stops testing it |
 //! | `g_m29_6_relation_correction_revokes_in_its_transaction` | G-M29-6 | drop the trigger, the `occurred_at` test or the task match; the revocation as SECURITY INVOKER, or joining `evidence_objects` again |
 //! | `g_m29_6_revocation_follows_the_inheritance_chain` | G-M29-6, transitive | drop the transitive trigger |
 //! | `revocation_definers_refuse_another_session_tenant` | definer tenant pin | neutralise the pin |
@@ -994,6 +996,116 @@ fn g_m29_5b_inheritance_keys_on_the_correction_transition() {
                 (supersede, superseded),
                 (Ok(()), before),
                 "(i) a supersede onto the correction-born M1 commits and gives it nothing"
+            );
+        },
+    );
+}
+
+/// A PERSON subject of the fixture tenant, seeded by the owner.
+fn subject(handle: &mut Handle, name: &str) -> Uuid {
+    handle
+        .admin
+        .query_one(
+            "INSERT INTO private.subjects (tenant_id, kind, display_name) VALUES ($1, 'PERSON', $2) \
+             RETURNING subject_id",
+            &[&handle.tenant_id, &name],
+        )
+        .expect("owner seeds a subject")
+        .get(0)
+}
+
+/// Links `memory` to `subject` as DECLARED through the hook, as the owner (no RLS in the way).
+fn declare_subject(handle: &mut Handle, memory: Uuid, subject: Uuid) {
+    handle
+        .admin
+        .execute(
+            "SELECT private.link_memory_subjects($1, $2, ARRAY[$3]::uuid[], ARRAY['DECLARED']::text[])",
+            &[&handle.tenant_id, &memory, &subject],
+        )
+        .expect("owner links a subject");
+}
+
+/// `(subject_id, source_kind)` of every `memory_subjects` row of `memory`, read as the owner, by subject.
+fn subject_links(handle: &mut Handle, memory: Uuid) -> Vec<(Uuid, String)> {
+    handle
+        .admin
+        .query(
+            "SELECT subject_id, source_kind FROM private.memory_subjects WHERE memory_id = $1 ORDER BY subject_id",
+            &[&memory],
+        )
+        .expect("owner reads memory_subjects")
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect()
+}
+
+/// Issue #109, §6.1.3 rule 3b (migration 0256): subject inheritance keys on the correction transition, the predicate
+/// A3' uses, through the real governance ops. M0 -> M1 -> M2 are two corrections, so M1 and M2 are correction-born;
+/// M2 carries a subject M1 lacks and X carries one M1 lacks. (iii) the correction M0 -> M1 inherits M0's subject;
+/// (ii) `memory.restore` of M1 (M2 superseded by M1) gives M1 nothing from M2; (i) `memory.supersede` of X onto the
+/// correction-born M1 gives it nothing from X.
+#[test]
+fn g_109_subject_inheritance_keys_on_the_correction_transition() {
+    run_db_fixture::<Fixture, _>(
+        "g_109_subject_inheritance_keys_on_the_correction_transition",
+        |mut handle| {
+            let governor = Governor::seed(&mut handle.admin, handle.tenant_id);
+            governor.join(&mut handle.admin, handle.workspace_id);
+            let [shared, extra, other] =
+                ["g109 shared", "g109 extra", "g109 other"].map(|name| subject(&mut handle, name));
+            let e0 = put(&handle, "g109-e0", Some(INSIDE), None);
+            let ex = put(&handle, "g109-ex", Some(INSIDE), None);
+            let m0 = commit_memory(&handle, e0);
+            let x = commit_memory(&handle, ex);
+            declare_subject(&mut handle, m0, shared);
+            declare_subject(&mut handle, x, other);
+            let scope = governor.scope(handle.workspace_id);
+            let stream = governance_ops::stream(handle.tenant_id, handle.workspace_id);
+            let correct = |handle: &Handle, memory: Uuid| {
+                governance_ops::correct(
+                    &handle.rt,
+                    &handle.runtime,
+                    &scope,
+                    &stream,
+                    memory,
+                    "g109 corrected",
+                )
+                .expect("memory.correct")
+                .new_memory_id
+                .0
+            };
+            let m1 = correct(&handle, m0);
+            let before = subject_links(&mut handle, m1);
+            let m2 = correct(&handle, m1);
+            declare_subject(&mut handle, m2, extra);
+            governance_ops::restore(&handle.rt, &handle.runtime, &scope, &stream, m1)
+                .expect("memory.restore");
+            let restored = subject_links(&mut handle, m1);
+            let supersede =
+                governance_ops::supersede(&handle.rt, &handle.runtime, &scope, &stream, x, m1)
+                    .map(|_| ());
+            let superseded = subject_links(&mut handle, m1);
+            let x_links = subject_links(&mut handle, x);
+            purge(&mut handle);
+            Governor::cleanup(&mut handle.admin, handle.tenant_id);
+            assert_eq!(
+                before,
+                [(shared, "INHERITED".to_owned())],
+                "(iii) the correction M0 -> M1 inherits M0's subject"
+            );
+            assert_eq!(
+                x_links,
+                [(other, "DECLARED".to_owned())],
+                "X: one DECLARED subject, which M1 lacks"
+            );
+            assert_eq!(
+                (supersede, superseded),
+                (Ok(()), before.clone()),
+                "(i) a supersede of X onto the correction-born M1 commits and gives it nothing ({other})"
+            );
+            assert_eq!(
+                restored, before,
+                "(ii) restoring the correction-born M1 gives it nothing from M2 ({extra})"
             );
         },
     );
