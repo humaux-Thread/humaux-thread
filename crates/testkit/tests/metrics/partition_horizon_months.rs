@@ -21,7 +21,7 @@ use humaux_adapters::maintenance_repo::{
 /// PartitionHorizonAbsent reads absence, so a failed run must never leave the last value).
 #[test]
 fn set_publishes_every_table_and_reset_removes_the_family() {
-    let months: [i64; PartitionTable::ALL.len()] = [3, 2, 1, 0, -1, 3];
+    let months: [i64; PartitionTable::ALL.len()] = [3, 2, 1, 0, -1, 3, 3];
     set_partition_horizon_months(months);
     assert_eq!(partition_horizon_months(), Some(months));
     assert_eq!(PartitionTable::ALL.map(PartitionTable::label).len(), months.len());
