@@ -359,14 +359,14 @@ private, so a local stdlib script ran the replay; neither the corpus nor the scr
 | A1, workspace cell | 0/167 (1.78%) | 0/28 (10.1%) | 4 across both A1 cells |
 | A1, line cell | 0/245 (1.22%) | 0/40 (7.2%) | |
 | A1, both cells | 0/412 (0.72%) | 0/68 (4.31%) | |
-| A3, task-run inheritance (66 + 29 + 3) | 0/98 (3.0%) | about 80 tasks (about 3.8%) | 1 across A3 and A3' |
+| A3, task-run inheritance (66 + 29 + 3) | 0/98 (3.0%) | about 80 tasks (about 3.7–3.8%) | 1 across A3 and A3' |
 | A3', correction inheritance | 0/16 (17.1%, n too small) | | |
 
 - **Model labels stay candidates (N09 R2).** Of the 39 items the labeller called wrong, 35 were adjudicated correct and
   4 undetermined; none was a confirmed declaration error. The causes were registry modelling (components not under their
   product, a missing alias) and topic confusion. Every later labelled experiment adjudicates its disagreements.
-- **The 3 A3 items where inheritance and declaration differ** were adjudicated hierarchy, not error, once the registry
-  put the components under their parent. All three came from mapping a repository root to one project while the
+- **The 3 A3 items where inheritance and declaration differ** were adjudicated not error: one by the registry's parent
+  link, two by an owner naming ruling. All three came from mapping a repository root to one project while the
   repository holds several. Upgrade signal: the worktree segment becomes its own confirmation value, preferred over the
   repository root.
 - **The E-A bound (≤ 0.5% per cell, Cards and experiments) is not demonstrated.** With zero errors it needs n ≥ 598
@@ -376,9 +376,9 @@ private, so a local stdlib script ran the replay; neither the corpus nor the scr
   - 60 pilot items where the passes disagreed but neither said wrong were not adjudicated.
 
   The proof moves to forward data: server-verified ids plus owner spot checks that sample unflagged items too.
-- **Multi-project truth is about 2% (CP95 3.65%).** Of 427 labelled rows, both passes put 20 under different parent
-  projects. After adjudication about 8–9 remain as genuine cross-project work, mostly the owner-ruled capability ×
-  brand pattern.
+- **Multi-project truth is about 2% (CP95 3.65%).** In 20 of 427 items both passes agreed the item spans projects
+  with different parents. After adjudication about 8–9 remain as genuine cross-project work, mostly the owner-ruled
+  capability × brand pattern.
 - **Ruling (design owner): one `project_id` per Memory stays.** Capability × brand is served by the tool and capability
   axis view (design v0.2 §16), not by double attribution; the rest by Project → Project relations (Open questions).
   Forward signal: non-capability cross-project work above 2% opens a new ADR that allows several ids.
