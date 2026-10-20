@@ -1099,13 +1099,13 @@ fn g_109_subject_inheritance_keys_on_the_correction_transition() {
                 "X: one DECLARED subject, which M1 lacks"
             );
             assert_eq!(
-                restored, before,
-                "(ii) restoring the correction-born M1 gives it nothing from M2 ({extra})"
+                (supersede, superseded),
+                (Ok(()), before.clone()),
+                "(i) a supersede of X onto the correction-born M1 commits and gives it nothing ({other})"
             );
             assert_eq!(
-                (supersede, superseded),
-                (Ok(()), before),
-                "(i) a supersede of X onto the correction-born M1 commits and gives it nothing ({other})"
+                restored, before,
+                "(ii) restoring the correction-born M1 gives it nothing from M2 ({extra})"
             );
         },
     );

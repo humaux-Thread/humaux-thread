@@ -656,12 +656,12 @@ fn rule_3b_keys_on_the_correction_transition() {
             "the restore flips M1 and M2"
         );
         assert_eq!(
-            restored, before,
-            "(ii) restoring the correction-born M1 gives it nothing from M2 (which also links {extra})"
-        );
-        assert_eq!(
             superseded, before,
             "(i) an explicit supersede onto the correction-born M1 gives it nothing from X (which links {other})"
+        );
+        assert_eq!(
+            restored, before,
+            "(ii) restoring the correction-born M1 gives it nothing from M2 (which also links {extra})"
         );
         assert_eq!(
             x_links,
