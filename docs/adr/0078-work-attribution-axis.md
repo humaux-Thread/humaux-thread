@@ -475,6 +475,24 @@ and the failing lines are in the card's PR description.
     whose postcheck leaves the triggers, the view body, the function bodies and the definers' SECURITY DEFINER to these
     tests. r2 and r10 are later migrations: 0255's postcheck pins the EXECUTE list, and a second site arrives as a
     later migration.
+- T06b design amendment (PR #104, design v0.2 §15.7 amendment of 2026-10-20), branches `red/m29-t06b-r4b..r8b`,
+  `r11b` and `r12..r14` off `3a9987e`:
+  - r4b: `CREATE TRIGGER project_task_relations_revoke_attributions` dropped -> G-M29-6 red: nothing is revoked.
+  - r5b: `NOT (NEW.valid @> l.derived_occurred_at)` as `true` -> G-M29-6 red: the row still inside the window is
+    revoked too.
+  - r6b: `l.derived_task_id = NEW.dst_id` as `true` -> G-M29-6 red: the row derived through T2 is revoked too.
+  - r7b: `l.rule_id_ver = 'task_run@1'` as `true` -> G-M29-6 stays green, by construction: under 0255 ⑥ only a
+    task_run@1 row has a `derived_task_id`, so the task leg already excludes the DECLARED decoy. The leg stays as the
+    design's predicate; r13 is the red of the CHECK that makes it redundant.
+  - r8b: the relation-correction function as `SECURITY INVOKER` -> G-M29-6 red: `FORBIDDEN`.
+  - r11b: its session-tenant pin as `IF false AND ...` -> the session-tenant test red.
+  - r12: the revocation joins `private.evidence_objects` on `l.decision_evidence_id` again -> G-M29-6 red: the private
+    memory whose decision Evidence is another user's USER_PRIVATE Evidence is not revoked.
+  - r13: the ground CHECK as `CHECK (true OR ...)` -> the backfill test red: a task_run@1 row without ground is
+    accepted.
+  - r14: the backfill's `tr.task_id` as `tr.task_run_id` -> the backfill test red: the restated ground names the run.
+  - These supersede the T06b records r4-r8 and r11 above (the revocation body changed). r1-r3, r9 and r10 apply
+    verbatim on `3a9987e` against unchanged tests, so they stand.
 
 ## Consequences
 
