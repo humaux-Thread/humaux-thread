@@ -4,6 +4,7 @@
 `run`       one model per process (so ru_maxrss is that model's peak): licence + pin check, card-format sanity,
             throughput grid (max_length x batch), derived per-query latency, one real depth-25 query, peak RSS.
 `aggregate` stdlib-only merge of the per-model JSON files into one artifact + markdown tables.
+`export-ort` (internal) fp32 ONNX export + dynamic int8 quantisation in its own process, so `run`'s peak RSS excludes the export.
 Stdout of `run` / `aggregate` is markdown (appended to $GITHUB_STEP_SUMMARY); progress goes to stderr.
 Only aggregates are emitted: no dataset text is printed or stored in the results.
 """
@@ -70,9 +71,23 @@ class Scorer:
     def __init__(self, kind: str, path: str):
         from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer
         self.kind = kind
+        self.params = None
         if kind == "seqcls":  # bge: cross-encoder logit, one per pair
             self.tok = AutoTokenizer.from_pretrained(path)
             self.model = AutoModelForSequenceClassification.from_pretrained(path, torch_dtype=torch.float32)
+        elif kind == "ort_int8":  # same bge scoring through onnxruntime, dynamic int8 weights (round 2)
+            import onnxruntime as ort
+            from optimum.onnxruntime import ORTModelForSequenceClassification
+            work = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "ort"
+            t = time.perf_counter()
+            subprocess.run([sys.executable, __file__, "export-ort", path, str(work)], check=True)
+            self.export_s = round(time.perf_counter() - t, 1)
+            self.int8_mb = round((work / "int8" / "model_quantized.onnx").stat().st_size / 1048576, 1)
+            so = ort.SessionOptions()
+            so.intra_op_num_threads, so.inter_op_num_threads = 4, 1
+            self.tok = AutoTokenizer.from_pretrained(path)
+            self.model = ORTModelForSequenceClassification.from_pretrained(
+                str(work / "int8"), file_name="model_quantized.onnx", session_options=so, provider="CPUExecutionProvider")
         else:  # Qwen3-Reranker: P("yes") from the last-position logits
             self.tok = AutoTokenizer.from_pretrained(path, padding_side="left")
             self.model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.float32)
@@ -80,11 +95,12 @@ class Scorer:
             self.yes = self.tok.convert_tokens_to_ids("yes")
             self.pre = self.tok.encode(QWEN_PREFIX, add_special_tokens=False)
             self.suf = self.tok.encode(QWEN_SUFFIX, add_special_tokens=False)
-        self.model.eval()
-        self.params = sum(p.numel() for p in self.model.parameters())
+        if kind != "ort_int8":
+            self.model.eval()
+            self.params = sum(p.numel() for p in self.model.parameters())
 
     def encode(self, pairs, length: int):
-        if self.kind == "seqcls":
+        if self.kind != "causal_yesno":
             return self.tok([list(p) for p in pairs], padding=True, truncation=True, max_length=length, return_tensors="pt")
         texts = [QWEN_FORMAT.format(instruction=QWEN_TASK, query=q, doc=d) for q, d in pairs]
         enc = self.tok(texts, padding=False, truncation="longest_first", return_attention_mask=False,
@@ -97,6 +113,8 @@ class Scorer:
         the default keeps only the last position (identical scores, no [batch, len, vocab] tensor)."""
         if self.kind == "seqcls":
             return self.model(**enc, return_dict=True).logits.view(-1).float()
+        if self.kind == "ort_int8":
+            return self.model(**enc).logits.view(-1).float()
         last = self.model(**enc, **({} if literal else {"logits_to_keep": 1})).logits[:, -1, :]
         two = torch.log_softmax(torch.stack([last[:, self.no], last[:, self.yes]], dim=1), dim=1)
         return two[:, 1].exp()
@@ -189,7 +207,7 @@ def measure_overhead(sc: Scorer, pools):
 def sanity(sc: Scorer):
     """Card example must rank as the card shows/implies; the Chinese pair is an extra, informational check."""
     zh = [("中国的首都是哪里？", "北京是中华人民共和国的首都。"), ("中国的首都是哪里？", "香蕉是一种热带水果，富含钾元素。")]
-    if sc.kind == "seqcls":
+    if sc.kind != "causal_yesno":
         s = sc.score([("what is panda?", "hi"), ("what is panda?", PANDA)], 512)
         z = sc.score(zh, 512)
         return {"card_scores": s, "pass": s[1] > s[0], "zh_scores": z, "zh_ok": z[0] > z[1]}
@@ -204,7 +222,7 @@ def sanity(sc: Scorer):
 
 def card_markers(kind: str, readme: str):
     """Does the pinned README still contain the snippet pieces this harness reproduces? (recorded, not enforced)"""
-    if kind == "seqcls":
+    if kind != "causal_yesno":
         want = ["AutoModelForSequenceClassification", "truncation=True", "max_length=512", "logits.view(-1, ).float()", PANDA[:40]]
     else:
         want = [src_form(QWEN_FORMAT), src_form(QWEN_PREFIX), src_form(QWEN_SUFFIX), "padding_side='left'", "[:, -1, :]", "log_softmax", GRAVITY[:40]]
@@ -318,7 +336,9 @@ def run(a):
     res["model"]["download_s"] = round(time.perf_counter() - t, 1)
     t = time.perf_counter()
     sc = Scorer(a.kind, path)
-    res["model"].update(load_s=round(time.perf_counter() - t, 1), params_m=round(sc.params / 1e6, 1), rss_after_load_mb=round(rss_mb()))
+    res["model"].update(load_s=round(time.perf_counter() - t, 1), params_m=round(sc.params / 1e6, 1) if sc.params else None, rss_after_load_mb=round(rss_mb()))
+    if a.kind == "ort_int8":
+        res["model"].update(export_and_quantise_s=sc.export_s, int8_onnx_mb=sc.int8_mb, quantisation="optimum arm64 dynamic int8, per_channel=False")
     log("loaded", res["model"])
     save()
 
@@ -393,6 +413,16 @@ def run(a):
         raise SystemExit(f"{len(res['errors'])} stage error(s): {res['errors']}")
 
 
+def export_ort(src: str, dst: str):
+    """fp32 ONNX export, then dynamic int8 quantisation (optimum). Separate process: see module docstring."""
+    from optimum.onnxruntime import ORTModelForSequenceClassification, ORTQuantizer
+    from optimum.onnxruntime.configuration import AutoQuantizationConfig
+    m = ORTModelForSequenceClassification.from_pretrained(src, export=True)
+    m.save_pretrained(Path(dst) / "fp32")
+    ORTQuantizer.from_pretrained(Path(dst) / "fp32").quantize(
+        save_dir=Path(dst) / "int8", quantization_config=AutoQuantizationConfig.arm64(is_static=False, per_channel=False))
+
+
 def fmt(x, nd=2):
     return "n/a" if x is None else f"{x:.{nd}f}"
 
@@ -405,13 +435,13 @@ def render(results):
     L = ["## E-RET-5a: CPU reranker bench",
          f"Runner: {e['cpu_model']} ({e['arch']}), {e['cpu_count']} vCPU, {e['mem_total_gb']} GB; torch {e['torch']}, transformers {e['transformers']}, "
          f"threads {e['threads']}, fp32, eval + inference_mode; features {','.join(e['cpu_feats'])}; profile {results[0]['profile']}", ""]
-    L += ["### Models", "| model | revision | licence | pin==HEAD now | params (M) | download s | load s | RSS after load MB | peak RSS MB | sanity |",
-          "|---|---|---|---|---|---|---|---|---|---|"]
+    L += ["### Models", "| model | revision | licence | pin==HEAD now | params (M) | download s | load s | RSS after load MB | peak RSS MB (grid + query) | peak RSS MB (whole run) | sanity |",
+          "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         m = r.get("model", {})
         sn = r.get("sanity", {})
         L.append(f"| {r['repo']} | `{r['revision'][:12]}` | {m.get('licence_api') or m.get('licence_readme_header')} | {m.get('pinned_is_head')} | "
-                 f"{m.get('params_m')} | {m.get('download_s')} | {m.get('load_s')} | {m.get('rss_after_load_mb')} | {r.get('peak_rss_mb')} | "
+                 f"{m.get('params_m')} | {m.get('download_s')} | {m.get('load_s')} | {m.get('rss_after_load_mb')} | {r.get('peak_rss_mb_before_literal')} | {r.get('peak_rss_mb')} | "
                  f"{'PASS' if sn.get('pass') else 'FAIL' if sn else 'n/a'} |")
     L += ["", "### Throughput (batches of exactly L tokens, 4 threads)",
           "| model | L | batch | timed batches | pairs/s | p50 ms/batch | p95 ms/batch | max ms |", "|---|---|---|---|---|---|---|---|"]
@@ -456,13 +486,21 @@ def main():
     r = sub.add_parser("run")
     for k in ("key", "repo", "revision", "out"):
         r.add_argument(f"--{k}", required=True)
-    r.add_argument("--kind", choices=["seqcls", "causal_yesno"], required=True)
+    r.add_argument("--kind", choices=["seqcls", "causal_yesno", "ort_int8"], required=True)
     r.add_argument("--smoke", action="store_true")
     g = sub.add_parser("aggregate")
     g.add_argument("parts")
     g.add_argument("out")
+    x = sub.add_parser("export-ort")
+    x.add_argument("src")
+    x.add_argument("dst")
     a = p.parse_args()
-    run(a) if a.cmd == "run" else aggregate(a.parts, a.out)
+    if a.cmd == "run":
+        run(a)
+    elif a.cmd == "aggregate":
+        aggregate(a.parts, a.out)
+    else:
+        export_ort(a.src, a.dst)
 
 
 if __name__ == "__main__":

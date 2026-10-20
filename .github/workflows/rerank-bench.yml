@@ -18,7 +18,6 @@ concurrency:
 env:
   OMP_NUM_THREADS: '4'
   HF_HUB_DISABLE_TELEMETRY: '1'
-  BENCH_ARGS: '--smoke'
 jobs:
   bench:
     name: bench ${{ matrix.key }}
@@ -30,9 +29,10 @@ jobs:
         # The model list and the pinned commit SHAs live here only; bench.py logs the SHA the HF API resolves in-job and
         # fails if the pin does not resolve to itself. Licence is read in-job and a non-commercial licence aborts the model.
         include:
-          - {key: bge-reranker-v2-m3, repo: BAAI/bge-reranker-v2-m3, rev: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e, kind: seqcls}
-          - {key: qwen3-reranker-0.6b, repo: Qwen/Qwen3-Reranker-0.6B, rev: e61197ed45024b0ed8a2d74b80b4d909f1255473, kind: causal_yesno}
-          - {key: bge-reranker-base, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: seqcls}
+          - {key: bge-reranker-v2-m3, repo: BAAI/bge-reranker-v2-m3, rev: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e, kind: seqcls, args: ''}
+          - {key: qwen3-reranker-0.6b, repo: Qwen/Qwen3-Reranker-0.6B, rev: e61197ed45024b0ed8a2d74b80b4d909f1255473, kind: causal_yesno, args: ''}
+          - {key: bge-reranker-base, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: seqcls, args: ''}
+          - {key: bge-reranker-base-ort-int8, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: ort_int8, args: '--smoke'}
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: actions/setup-python@v5.6.0
@@ -53,6 +53,14 @@ jobs:
           # ponytail: no --require-hashes (CI-only, read-only token, no secrets); add hashes if this workflow is ever merged to main
           python -m pip install -r experiments/rerank_bench/requirements.txt
           python -m pip freeze
+      - name: install onnx extras (round 2 only)
+        if: matrix.kind == 'ort_int8'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes, same reasoning as above
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
       - name: bench
         shell: bash
         env:
@@ -60,6 +68,7 @@ jobs:
           REPO: ${{ matrix.repo }}
           REV: ${{ matrix.rev }}
           KIND: ${{ matrix.kind }}
+          BENCH_ARGS: ${{ matrix.args }}
         run: |
           set -euo pipefail
           python experiments/rerank_bench/bench.py run --key "$KEY" --repo "$REPO" --revision "$REV" --kind "$KIND" \
