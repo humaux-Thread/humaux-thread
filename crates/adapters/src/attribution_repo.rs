@@ -41,10 +41,13 @@ const A1_DECLARED: &str = "INSERT INTO private.memory_projects \
 /// whose current relation to that task (the highest revision per `relation_id`, §6.1.4 ①) is CONTAINS and valid at the
 /// Evidence's `occurred_at` becomes an `INHERITED` / `task_run@1` row. REFERENCES never counts. N09 R3: an Evidence
 /// without `occurred_at` has no occurrence time to test, so A3 does not hold and nothing is written (unresolved). A
-/// project A1 already wrote keeps its A1 row (the lower rung wins; the conflict target is the primary key).
+/// project A1 already wrote keeps its A1 row (the lower rung wins; the conflict target is the primary key). The row
+/// records its ground, the task and the `occurred_at` tested (0255 ⑥): a relation correction revokes by them without
+/// reading the Evidence again.
 const A3_TASK_RUN: &str = "INSERT INTO private.memory_projects \
-       (tenant_id, memory_id, project_id, relation, source_kind, rule_id_ver, decision_evidence_id) \
-     SELECT etr.tenant_id, $2, cur.src_id, 'ATTRIBUTED_TO', $4, $5, etr.evidence_id \
+       (tenant_id, memory_id, project_id, relation, source_kind, rule_id_ver, decision_evidence_id, \
+        derived_task_id, derived_occurred_at) \
+     SELECT etr.tenant_id, $2, cur.src_id, 'ATTRIBUTED_TO', $4, $5, etr.evidence_id, tr.task_id, e.occurred_at \
        FROM private.evidence_task_runs etr \
        JOIN private.evidence_objects e ON e.tenant_id = etr.tenant_id AND e.evidence_id = etr.evidence_id \
        JOIN coord.task_runs tr ON tr.tenant_id = etr.tenant_id AND tr.task_run_id = etr.task_run_id \

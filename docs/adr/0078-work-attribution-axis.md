@@ -130,6 +130,10 @@ ATTRIBUTED_TO, source_kind, rule_id_ver, decision_evidence_id)`, immutable per m
 of truth; `private.memory_project_revocations(tenant_id, memory_id, project_id, revoked_by, reason, recorded_at)`,
 append-only. Read paths accept a link only if it exists and is not
 revoked.
+Since T06b (migration 0255) that rule lives only in the `security_invoker` view `private.memory_projects_live`, and an
+A3' row names its predecessor in `memory_projects.inherited_from_memory_id`, and an A3 row records its ground in
+`memory_projects.derived_task_id` and `derived_occurred_at`, which the relation-correction revocation matches instead
+of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment).
 
 `source_kind` is a frozen closed set with **no model-derived variant** (as in §6.1.3):
 
@@ -138,7 +142,7 @@ revoked.
 | A1 | `DECLARED` | `project_id` on `remember.put`, resolved server-side: exists in the tenant and is visible to the caller; otherwise `INVALID_INPUT` with zero writes | yes |
 | A2 | `EXTERNAL_KEY` | exact match of a Subject key, then a unique project via `project_subject_relations` at the Evidence's occurrence time; more than one project → unknown | deferred (needs keys with validity) |
 | A3 | `INHERITED` + `task_run@1` | Evidence carries a verified `task_run_id` (`evidence_task_runs`); inherit every project with a CONTAINS relation valid at occurrence time | yes |
-| A3' | `INHERITED` + `correction@1` | a `USER_CORRECTION` successor inherits the predecessor's current rows, in the M29 trigger at the supersede point (Q9 ruling) | yes |
+| A3' | `INHERITED` + `correction@1` | a `USER_CORRECTION` supersede transition gives the successor the predecessor's current rows, in the M29 trigger at the supersede point (Q9 ruling) | yes |
 | A4 | `INHERITED` + `capture_context@1` | server-issued capture handle bound to exactly one project and one live task run, short TTL [starting value 30 min], no exact hit on another known key | deferred |
 | A5 | none (never written to `memory_projects`) | similarity, embeddings, Topic names, model inference | candidates only, deferred |
 
@@ -190,8 +194,13 @@ revoked.
   through the door (`memory_governance_repo.rs:1756`). It sets `superseded_by` only later, in the arbiter UPDATE
   (`:1800`), and `NewMemory` carries no predecessor (`memory_repo.rs:52-63`). A3' therefore cannot run at the door.
   - It runs in a single M29-owned DB trigger on that UPDATE, mirroring §6.1.3 rule ③ (`0154_memory_subjects.sql:314-331`).
-  - For a `USER_CORRECTION` successor, the trigger copies the predecessor's current `memory_projects` rows (linked
-    and not revoked) to the successor as `INHERITED` + `correction@1`.
+  - It keys on the transition, not on where the successor came from (design v0.2 §15.7 revision 2): the updated
+    row's lifecycle head (`ops.memory_lifecycle_events`, `event_id = lifecycle_head_event_id`) must be `op = SUPERSEDE`,
+    `reason_code = USER_CORRECTION`, of this memory, into this `superseded_by`. Then the trigger copies the
+    predecessor's current `memory_projects` rows (linked and not revoked) to the successor as `INHERITED` +
+    `correction@1`, each decided by the event's `correction_evidence_id` (always set by the one `USER_CORRECTION`
+    writer, `memory_governance_repo.rs:1778-1784`). `memory.supersede` onto a correction-born successor, and a restore
+    that deactivates a correction's successor, inherit nothing.
   - It fires only when the correction becomes current. A correction the arbiter does not make current inherits
     nothing.
 - Candidates (deferred): a separate table with `proposed_by=model@ver`, score and state; readable only through a
@@ -283,8 +292,8 @@ All are three-state. Each gate exists only after its inject → red → fix → 
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
 (T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); the A1 entry's card gates G-T06c-1 (`project_id` on the wire),
-G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c). The rest are a plan.
-Module gate ids such as `G-M29-2` fall outside
+G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c); G-M29-5(b), with
+its xtask rule-site arm (`"correction@1"` only in `RuleId`'s closed set), and G-M29-6 (T06b). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -445,6 +454,84 @@ and the failing lines are in the card's PR description.
     (INTERNAL) instead of 23503.
   - The INVITED / REMOVED members, the key bound to a SUSPENDED user and the key of a non-member are refused by legs
     r3b, r3f and r3a already break; the factual Evidence the writer cannot see is refused by the check r2 drops.
+- T06b (PR #104), branches `red/m29-t06b-r1..r11` off `589a456`:
+  - r1: 0255's `CREATE TRIGGER memory_projects_on_supersede` dropped -> G-M29-5(b) red: the correction's M2 inherits
+    nothing.
+  - r2: a red-only later migration adds a second trigger on `private.memory_records` executing the A3' function ->
+    rls-check "§6.1.4 A3' single site" red (`correction_inheritance_site_gate_holds_on_the_migrated_schema`): found 2.
+  - r3: the live view's `NOT EXISTS` as `true OR NOT EXISTS` -> G-M29-5(b) red: the retracted P1 link is inherited too.
+  - r4: 0255's `CREATE TRIGGER project_task_relations_revoke_attributions` dropped -> G-M29-6 red: the narrowing
+    revision revokes nothing.
+  - r5: the window leg `NOT (NEW.valid @> e.occurred_at)` as `true` -> G-M29-6 red: the row whose Evidence stays
+    inside the narrowed window is revoked too.
+  - r6: `tr.task_id = NEW.dst_id` as `true` -> G-M29-6 red: the row derived through T2, which P1 also CONTAINS, is
+    revoked too.
+  - r7: `l.rule_id_ver = 'task_run@1'` as `true` -> G-M29-6 red: the DECLARED row on the same Evidence is revoked too.
+  - r8: the relation-correction function as `SECURITY INVOKER` -> G-M29-6 red: the revision fails `FORBIDDEN`, since
+    the writing role_gateway holds no INSERT on `private.memory_project_revocations`.
+  - r9: 0255's `CREATE TRIGGER memory_project_revocations_follow_inheritance` dropped -> G-M29-6 (chain) red: only M1
+    is revoked, not its corrections M2 and M3.
+  - r10: a red-only later migration grants EXECUTE on `private.revoke_attributions_on_relation_correction()` to
+    `role_admin` -> rls-check "§6.1.4 attribution revocation definers" red
+    (`attribution_revocation_definers_gate_holds_on_the_migrated_schema`).
+  - r11: the relation-correction function's session-tenant pin as `IF false AND ...` -> the session-tenant test red:
+    an owner write under another session tenant is not refused 42501.
+  - r1, r4 and r9 each remove one whole statement (6, 6 and 5 lines); r3, r5-r8 and r11 change one line inside 0255,
+    whose postcheck leaves the triggers, the view body, the function bodies and the definers' SECURITY DEFINER to these
+    tests. r2 and r10 are later migrations: 0255's postcheck pins the EXECUTE list, and a second site arrives as a
+    later migration.
+- T06b design amendment (PR #104, design v0.2 §15.7 amendment of 2026-10-20), branches `red/m29-t06b-r4b..r8b`,
+  `r11b` and `r12..r14` off `3a9987e`:
+  - r4b: `CREATE TRIGGER project_task_relations_revoke_attributions` dropped -> G-M29-6 red: nothing is revoked.
+  - r5b: `NOT (NEW.valid @> l.derived_occurred_at)` as `true` -> G-M29-6 red: the row still inside the window is
+    revoked too.
+  - r6b: `l.derived_task_id = NEW.dst_id` as `true` -> G-M29-6 red: the row derived through T2 is revoked too.
+  - r7b: `l.rule_id_ver = 'task_run@1'` as `true` -> G-M29-6 stays green, by construction: under 0255 ⑥ only a
+    task_run@1 row has a `derived_task_id`, so the task leg already excludes the DECLARED decoy. The leg stays as the
+    design's predicate; r13 is the red of the CHECK that makes it redundant.
+  - r8b: the relation-correction function as `SECURITY INVOKER` -> G-M29-6 red: `FORBIDDEN`.
+  - r11b: its session-tenant pin as `IF false AND ...` -> the session-tenant test red.
+  - r12: the revocation joins `private.evidence_objects` on `l.decision_evidence_id` again -> G-M29-6 red: the private
+    memory whose decision Evidence is another user's USER_PRIVATE Evidence is not revoked.
+  - r13: the ground CHECK as `CHECK (true OR ...)` -> the backfill test red: a task_run@1 row without ground is
+    accepted.
+  - r14: the backfill's `tr.task_id` as `tr.task_run_id` -> the backfill test red: the restated ground names the run.
+  - These supersede the T06b records r4-r8 and r11 above (the revocation body changed). r1-r3, r9 and r10 apply
+    verbatim on `3a9987e` against unchanged tests, so they stand.
+- T06b review round (PR #104 review, design v0.2 §15.7 revision 2: A3' keys on the lifecycle-head transition, decided
+  by the event's `correction_evidence_id`), branches `red/m29-t06b-r1c`, `r2c` and `r16..r19` off `8bf2994`, `r15c` and
+  `r13c` off `7328d43` (which changes only the case (i) assertion and a header row):
+  - r1c: `CREATE TRIGGER memory_projects_on_supersede` dropped -> G-M29-5(b) red: M2 inherits nothing (re-cut, the
+    function body changed).
+  - r2c: a later migration adds a second A3' trigger on `private.memory_records` -> rls-check "§6.1.4 A3' single
+    site" red: found 2 (re-cut).
+  - r15c: the event's `reason_code = 'USER_CORRECTION'` leg as `true` -> case (i) red: `memory.supersede` of X onto
+    the correction-born M1 now matches the predicate, and its EXPLICIT_SUPERSEDE event carries no
+    `correction_evidence_id`, so the copy hits `decision_evidence_id NOT NULL` (23502) and the supersede fails
+    `INTERNAL`. A reason-blind predicate fails loudly, never by a silent inheritance. (r15 off `8bf2994` failed at the
+    same supersede, at its `.expect`; r15c is the record.)
+  - r16: the `replacement_memory_id = NEW.superseded_by` leg dropped -> the G-M29-5(b) cases stay green, by
+    construction: the one writer of a SUPERSEDE / USER_CORRECTION head (`correct_atomically`'s arbiter UPDATE) sets
+    `superseded_by` to the event's replacement in the same statement, and the writers that set `superseded_by`
+    without stamping a head (a correction undo's deactivation of the successor, a note supersede) act only on
+    active rows, whose head is never an unrestored SUPERSEDE of that row (every reactivation stamps RESTORE). No
+    production path reaches a state that isolates the leg, so no decoy can; it stays as the design's predicate.
+  - r17: the ground CHECK in implication form `(rule_id_ver = 'task_run@1') <= (...)` -> the backfill test red: a
+    declared@1 row given a ground is accepted (the reverse probe; the forward probe still refuses).
+  - r18: the transitive revocation's session-tenant pin as `IF false AND ...` -> the session-tenant test red on its
+    second element (`revocation`).
+  - r19: a second `"correction@1"` literal in `crates/adapters/src/attribution_repo.rs` -> xtask
+    `t06b_correction_rule_real_repo_passes` red: found 2.
+  - The other-tenant decoy in G-M29-6 has no red of its own: the definers' session-tenant pin (r11b, r18) and the
+    view's RLS both exclude another tenant's row, so the `l.tenant_id = NEW.tenant_id` leg is implied by them.
+  - r13c: r13's fault (`CHECK (true OR ...)`) re-cut off `7328d43`, because the CHECK test now probes both ways ->
+    red on both elements: neither probe is refused.
+  - r3-r12 and r14 above stand: their fault lines and tests are unchanged by this round.
+
+## Consequences
+
+- The first wire reader of attributions reads `memory_projects_live`, and its card adds an xtask arm forbidding direct
+  reads of the table (design v0.2 §15.7).
 
 ## Cards and experiments
 
