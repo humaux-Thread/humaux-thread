@@ -367,10 +367,11 @@ fn put_with_pat(
 fn workspace_membership(h: &mut Handle, state: &str) {
     let mut txn = h.admin.transaction().expect("begin");
     txn.execute(
-        "SELECT set_config('humaux.tenant_id', $1, true)",
-        &[&h.tenant_id.to_string()],
+        // 0162 workspace_memberships_self_read: the upsert's conflict arm must see U's row.
+        "SELECT set_config('humaux.tenant_id', $1, true), set_config('humaux.user_id', $2, true)",
+        &[&h.tenant_id.to_string(), &h.user_id.to_string()],
     )
-    .expect("tenant GUC");
+    .expect("admin GUCs");
     txn.execute(
         "SELECT control.set_workspace_membership($1, $2, $3, 'MEMBER', $4)",
         &[&h.tenant_id, &h.workspace_id, &h.user_id, &state],
