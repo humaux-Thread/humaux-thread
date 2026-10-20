@@ -143,7 +143,7 @@ BEGIN
     JOIN private.memory_projects_live l ON l.tenant_id = NEW.tenant_id AND l.memory_id = NEW.memory_id
    WHERE ev.event_id = NEW.lifecycle_head_event_id
      AND ev.op = 'SUPERSEDE'
-     AND ev.reason_code = 'USER_CORRECTION'
+     AND true
      AND ev.memory_id = NEW.memory_id
      AND ev.replacement_memory_id = NEW.superseded_by
   ON CONFLICT DO NOTHING;
