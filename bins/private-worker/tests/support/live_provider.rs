@@ -6,7 +6,7 @@
 //!   HUMAUX_LIVE_P2_KEY_ENV, HUMAUX_LIVE_P2_MODEL, HUMAUX_LIVE_P2_PROVIDER_ID, HUMAUX_LIVE_P2_REGION,
 //!   HUMAUX_LIVE_P2_REQUEST_EXTRAS, HUMAUX_REQUIRE_SECOND_PROVIDER]; modules=[adapters::byok]
 //! Called-by: [private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e,
-//!   private-worker::tests::support::live_minimax]
+//!   private-worker::tests::m29_attribution_e2e, private-worker::tests::support::live_minimax]
 //! Invariants: [no vendor name, endpoint or model literal for the second provider (ADR-0060 research amendment 5);
 //!   a key is read only from the variable a profile names and never printed; with
 //!   HUMAUX_REQUIRE_SECOND_PROVIDER=1 a missing variable panics, it is never a skip]

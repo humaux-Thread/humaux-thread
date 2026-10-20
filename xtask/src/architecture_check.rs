@@ -2895,6 +2895,73 @@ fn t06b_correction_rule_site(root: &Path) -> Verdict {
     Verdict::Fail(lines)
 }
 
+/// Home of the M29 T07 attribution reader (ADR-0078 D-D, design v0.2 §15.8).
+const T07_READER_HOME: &str = "crates/adapters/src/attribution_repo.rs";
+/// The read clauses that name the attribution table or its live view; the INSERT writers name neither.
+const T07_READ_CLAUSES: [&str; 2] = [
+    "from private.memory_projects",
+    "join private.memory_projects",
+];
+
+/// M29 T07 / ADR-0078 Consequences (design v0.2 §15.7, §15.8): in non-test Rust, (1) no `FROM` / `JOIN` of
+/// `private.memory_projects` that is not the `_live` view, because "exists and is not revoked" lives only in the view
+/// (migration 0255 ②), and the `INSERT INTO private.memory_projects` writers are not reads; (2) exactly one `FROM` /
+/// `JOIN` of `private.memory_projects_live`, in [`T07_READER_HOME`] (`== 1`). `not_applicable` only when the view is
+/// read nowhere and the home file does not exist, naming that file (§57.1 第2条); a direct table read is red
+/// regardless.
+fn m29_attribution_reader(root: &Path) -> Verdict {
+    let gate = "M29 T07 / ADR-0078 D-D reader";
+    let files = door_production_sources(root);
+    let mut direct: Vec<(String, usize)> = Vec::new();
+    let mut readers: Vec<(String, usize)> = Vec::new();
+    for (disp, source) in &files {
+        let text = door_normalised(source);
+        let (mut table, mut view) = (0, 0);
+        for clause in T07_READ_CLAUSES {
+            for (at, _) in text.match_indices(clause) {
+                if text[at + clause.len()..].starts_with("_live") {
+                    view += 1;
+                } else {
+                    table += 1;
+                }
+            }
+        }
+        if table > 0 {
+            direct.push((disp.clone(), table));
+        }
+        if view > 0 {
+            readers.push((disp.clone(), view));
+        }
+    }
+    let mut problems = Vec::new();
+    if !direct.is_empty() {
+        problems.push(format!(
+            "{gate}: non-test code reads private.memory_projects directly instead of private.memory_projects_live: {direct:?}"
+        ));
+    }
+    let total: usize = readers.iter().map(|(_, n)| n).sum();
+    let home_exists = files.iter().any(|(disp, _)| disp == T07_READER_HOME);
+    if !home_exists && total == 0 {
+        return if problems.is_empty() {
+            Verdict::NotApplicable(format!(
+                "missing object: M29 T07 attribution reader file not delivered yet: {T07_READER_HOME}"
+            ))
+        } else {
+            Verdict::Fail(problems)
+        };
+    }
+    if !(total == 1 && readers.iter().all(|(disp, _)| disp == T07_READER_HOME)) {
+        problems.push(format!(
+            "{gate}: expected exactly 1 read of private.memory_projects_live in non-test code, in {T07_READER_HOME}; found {total}: {readers:?}"
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
 // ============================================================================
 // ADR-0078 D-D (Q1 ruling) / G-M29-5(a) and D-E / G-N09-1 (card M29 T06a): the Memory INSERT door invokes M07's
 // attribution port exactly once, through a required parameter, and the M29 write path of `memory_projects` names no
@@ -7735,6 +7802,10 @@ pub fn run(_args: &[String]) -> i32 {
             t06b_correction_rule_site(&root),
         ),
         (
+            "M29 T07 / ADR-0078 D-D reader (no direct private.memory_projects read; one memory_projects_live reader, in attribution_repo.rs, non-test code)",
+            m29_attribution_reader(&root),
+        ),
+        (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
             m29_5a_attribution_site(&root),
         ),
@@ -11752,6 +11823,89 @@ async fn serving_version_in_txn() {}
             }
             other => panic!("expected Fail, got {other:?}"),
         }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 T07 / ADR-0078 D-D: the one attribution reader reads only the live view ---------------------------------
+
+    const T07_HOME: &str = "crates/adapters/src/attribution_repo.rs";
+    const T07_READER: &str = "const READ: &str = \"SELECT project_id \\\n  FROM private.memory_projects_live WHERE memory_id = $1\";\nconst A1: &str = \"INSERT INTO private.memory_projects (memory_id) SELECT $1\";\n";
+
+    /// The tree as T07 leaves it: one view reader, in attribution_repo.rs; the writers and rls_check do not count.
+    #[test]
+    fn t07_attribution_reader_real_repo_passes() {
+        assert_eq!(m29_attribution_reader(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the missing home file (§57.1 第2条).
+    #[test]
+    fn t07_attribution_reader_is_not_applicable_naming_the_missing_home() {
+        let tmp = fresh_tmp("t07-reader-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m29_attribution_reader(&tmp) {
+            Verdict::NotApplicable(detail) => assert!(detail.contains(T07_HOME), "{detail}"),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a second view reader in another src file → 红, `found 2`, naming that file; a test-tree reader does not
+    /// count.
+    #[test]
+    fn t07_attribution_reader_fails_on_a_second_reader() {
+        let tmp = fresh_tmp("t07-reader-second");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", T07_READER);
+        assert_eq!(m29_attribution_reader(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/recall.rs",
+            "const R: &str = \"SELECT 1 FROM x JOIN private.memory_projects_live l ON true\";\n",
+        );
+        match m29_attribution_reader(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 2"), "{lines:?}");
+                assert!(
+                    lines[0].contains("crates/adapters/src/recall.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a direct `FROM private.memory_projects` (case and line breaks aside) in another src file → 红 naming it,
+    /// even with the home file absent; the `INSERT INTO private.memory_projects` writer is no read.
+    #[test]
+    fn t07_attribution_reader_fails_on_a_direct_table_read() {
+        let tmp = fresh_tmp("t07-reader-direct");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/recall.rs",
+            "const R: &str = \"select project_id from \\\n  private.memory_projects mp\";\n",
+        );
+        match m29_attribution_reader(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(
+                    lines[0].contains("reads private.memory_projects directly"),
+                    "{lines:?}"
+                );
+                assert!(
+                    lines[0].contains("crates/adapters/src/recall.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_file(tmp.join(T07_HOME)).unwrap();
+        assert!(
+            matches!(m29_attribution_reader(&tmp), Verdict::Fail(_)),
+            "a direct read is red even before the reader exists"
+        );
         fs::remove_dir_all(&tmp).ok();
     }
 

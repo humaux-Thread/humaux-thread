@@ -7,24 +7,22 @@
 //!   r=[control.current_reasoning_route_binding, ops.claim_derived_work_v2, ops.commit_seq_seq, ops.data_disclosure_sources,
 //!   ops.data_disclosures, ops.model_call_ledger, ops.private_inference_rpc_calls, private.distill_candidates,
 //!   private.memory_affects, private.memory_evidence, private.memory_records, private.memory_subject_mentions, private.memory_subjects, private.processing_runs]
-//!   w=[control.credentials, control.memberships, control.private_reasoning_domains, control.processor_models,
-//!   control.provider_accounts, control.provider_endpoints, control.reasoning_credential_bindings,
-//!   control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates,
-//!   control.reasoning_route_policies, control.tenants, control.users, control.workspace_memberships,
-//!   control.workspaces, ops.outbox, ops.reasoning_account_health_observations,
+//!   w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users,
+//!   control.workspace_memberships, control.workspaces, ops.outbox,
 //!   ops.reasoning_provider_health_observations, private.events, private.evidence_affects, private.evidence_objects, private.evidence_subjects,
 //!   private.identity_note_materializations, private.memory_evidence, private.memory_records, private.subject_keys, private.subjects, projection.stream_checkpoints,
 //!   projection.stream_log, ops.jobs, ops.provider_slots] x=[control.current_reasoning_route_binding,
 //!   ops.claim_derived_work_v2], PostgreSQL(role_private_worker), PostgreSQL(owner), PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker), MiniMax, subprocess(gitleaks)]; env=[HUMAUX_MINIMAX_DNS_PINS,
 //!   HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY];
-//!   modules=[adapters::affect_repo, adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner,
-//!   adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs,
+//!   modules=[adapters::affect_repo, adapters::byok, adapters::byok::ssrf,
+//!   adapters::distill_reasoner, adapters::distill_repo, adapters::jobs,
 //!   adapters::membership_repo, adapters::model_call_ledger, adapters::postgres, adapters::projection_worker, adapters::provisioning,
-//!   adapters::qdrant, adapters::reasoning_route_admission, application::affect, domain::affect, domain::authority,
+//!   adapters::qdrant, application::affect, domain::affect, domain::authority,
 //!   domain::egress, domain::error, domain::evidence, domain::identity, domain::ids, domain::ticket_family,
 //!   humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
 //!   private-worker::distill, private-worker::tests::support::dispatch_fence,
+//!   private-worker::tests::support::distill_lane,
 //!   private-worker::tests::support::live_minimax, private-worker::tests::support::live_provider,
 //!   projection::fingerprint, projection::serving, testkit::fixture_purge]
 //! Called-by: [cargo-test]
@@ -44,8 +42,10 @@
 //!
 //! Evidence is inserted the way `adapters::remember::remember_in_txn` writes it (its own SQL
 //! mirrored statement by statement — `next_commit_seq` → `evidence_objects` → `events` →
-//! `stream_checkpoints`/`stream_log` → `ops.outbox` PENDING); those functions are `pub(crate)`
-//! and the pool they take is `role_gateway`'s, neither reachable from this crate.
+//! `stream_checkpoints`/`stream_log` → `ops.outbox` PENDING), so a test picks the origin class and
+//! the raw payload bytes. The real `operation_receipt::remember_*_atomically` is reachable from this
+//! crate too; `m29_attribution_e2e` drives it. The admission lane and the fake provider live in
+//! `support/distill_lane.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
@@ -61,8 +61,6 @@ use humaux_adapters::byok::{
     StructuredReasoningRequest, StructuredReasoningResponse, TokenUsage, UserReasoningProvider,
     VisionReasoningRequest, VisionReasoningResponse, ssrf,
 };
-use humaux_adapters::contribution_reasoner::ContributionReasonerConfig;
-use humaux_adapters::disclosure::DeletionCapability;
 use humaux_adapters::distill_reasoner::{DISTILL_PARSER_VERSION, distill_prompt_contract};
 use humaux_adapters::distill_repo;
 use humaux_adapters::jobs::{self, DistillLease};
@@ -75,7 +73,6 @@ use humaux_adapters::provisioning::{self, RequeueTarget};
 use humaux_adapters::qdrant::{
     PlacementClass, PromotionState, RetrievalFamily, TenantPlacementRow,
 };
-use humaux_adapters::reasoning_route_admission::ReasoningAdmissionLocator;
 use humaux_application::affect::{ObservedAffect, memories_matching};
 use humaux_domain::affect::{AffectFilter, EmotionLabel};
 use humaux_domain::egress::ProcessorId;
@@ -100,6 +97,8 @@ use uuid::Uuid;
 
 #[path = "support/dispatch_fence.rs"]
 mod dispatch_fence;
+#[path = "support/distill_lane.rs"]
+mod distill_lane;
 #[path = "support/live_minimax.rs"]
 mod live_minimax;
 // The first provider's `LiveProfile` lives here; this file dials it through `live_minimax` only.
@@ -107,6 +106,9 @@ mod live_minimax;
 #[path = "support/live_provider.rs"]
 mod live_provider;
 
+use distill_lane::{
+    FAKE_RETRY_WAIT, FakeProvider, contribution_config, dispatch_config, dsn_as_role, routes,
+};
 use live_minimax::{
     EnvKeyDecryptor, MINIMAX_CHAT_URL, MINIMAX_MODEL, descriptor, live_provider, load_minimax_key,
 };
@@ -115,16 +117,6 @@ use live_minimax::{
 static SERIAL: Mutex<()> = Mutex::new(());
 
 const NAME: &str = "distill_hop_e2e";
-const EGRESS_PROCESSOR_ID: Uuid = Uuid::from_u128(0x2016);
-const REGION: &str = "cn-shanghai";
-const SERVICE_TIER: &str = "standard";
-const PURPOSE_DB: &str = "PRIVATE_DISTILL_TEXT";
-/// ADR-0058 D-T: a §72.3 budget no test in this file reaches (the budget gate has its own test,
-/// distill_dispatch_v2 T21).
-const TEST_BUDGET: jobs::DistillCallBudget = jobs::DistillCallBudget {
-    window_seconds: 60.0,
-    max_calls: 10_000,
-};
 const EVIDENCE_TEXT: &str =
     "New backend services must expose a health endpoint before any traffic is routed to them.";
 /// The remember-side stream identity (`consolidate_repo::publish_rollup` / `projection_worker`
@@ -133,124 +125,6 @@ const STREAM_DOMAIN: &str = "private_memory";
 const STREAM_PROJECTION_KIND: &str = "PRIVATE_MEMORY";
 const STREAM_PROJECTION_VERSION: &str = "v1";
 const DIMENSION: u32 = 4;
-
-fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
-    // ADR-0059 D-D: a real login as `role`, its password from HUMAUX_ROLE_PASSWORD_<SUFFIX>.
-    humaux_testkit::role_login_dsn(admin_dsn, role, |name| std::env::var(name).ok())
-        .unwrap_or_else(|missing| panic!("missing object: {missing} (ADR-0059 D-D)"))
-}
-
-/// ADR-0060 D-B: every admitted route goes to `provider`, unless its recipient is not this
-/// deployment's (the deny-only check the private worker's route mapping holds, §11.2.5).
-fn routes<P: UserReasoningProvider + 'static>(
-    provider: &Arc<P>,
-) -> impl Fn(&ReasoningAdmissionLocator) -> Result<Arc<dyn UserReasoningProvider>, &'static str>
-+ Send
-+ Sync
-+ use<P> {
-    let provider = Arc::clone(provider);
-    move |route| {
-        if route.egress_processor_id.0 == EGRESS_PROCESSOR_ID {
-            Ok(Arc::clone(&provider) as Arc<dyn UserReasoningProvider>)
-        } else {
-            Err("EGRESS_PROCESSOR_NOT_ALLOWED")
-        }
-    }
-}
-
-fn contribution_config() -> ContributionReasonerConfig {
-    ContributionReasonerConfig {
-        permit_ttl: Duration::from_secs(30),
-        deletion_capability: DeletionCapability::Unknown,
-        // Contribution-path prompt config only; Distill takes prompt/schema/budget from
-        // `distill_prompt_contract()` and ignores these three.
-        system_prompt: "s".to_string(),
-        json_schema: "{}".to_string(),
-        max_output_tokens: 64,
-    }
-}
-
-/// Key-free provider for D2–D5: answers with canned JSON, matches the seeded admission lane
-/// exactly (`provider_matches_admission` compares provider id / model / revision / endpoint).
-/// A reply string starting with this prefix is returned as a provider `RetryWait` (429/5xx)
-/// instead of a body.
-const FAKE_RETRY_WAIT: &str = "ERR:retry_wait";
-
-struct FakeProvider {
-    descriptor: ReasoningProviderDescriptor,
-    replies: Mutex<Vec<String>>,
-    calls: Mutex<u32>,
-    /// The `json_schema` of every request, in call order (the rendered menu the model saw).
-    schemas: Mutex<Vec<String>>,
-}
-
-impl FakeProvider {
-    fn new(replies: Vec<&str>) -> Arc<Self> {
-        Arc::new(Self {
-            descriptor: descriptor(),
-            replies: Mutex::new(replies.into_iter().rev().map(str::to_owned).collect()),
-            calls: Mutex::new(0),
-            schemas: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn calls(&self) -> u32 {
-        *self.calls.lock().expect("calls")
-    }
-
-    fn schemas(&self) -> Vec<String> {
-        self.schemas.lock().expect("schemas").clone()
-    }
-}
-
-#[async_trait]
-impl UserReasoningProvider for FakeProvider {
-    fn descriptor(&self) -> &ReasoningProviderDescriptor {
-        &self.descriptor
-    }
-
-    fn endpoint_ref(&self) -> &str {
-        MINIMAX_CHAT_URL
-    }
-
-    fn model_revision(&self) -> Option<&str> {
-        self.descriptor.model_revision.as_deref()
-    }
-
-    async fn complete_structured(
-        &self,
-        _context: &PrivateInferenceContext,
-        request: StructuredReasoningRequest,
-    ) -> Result<StructuredReasoningResponse, ReasoningProviderError> {
-        *self.calls.lock().expect("calls") += 1;
-        self.schemas
-            .lock()
-            .expect("schemas")
-            .push(request.json_schema);
-        let json = self
-            .replies
-            .lock()
-            .expect("replies")
-            .pop()
-            .expect("fake provider has a reply for every call");
-        if json == FAKE_RETRY_WAIT {
-            return Err(ReasoningProviderError::RetryWait { retry_after: None });
-        }
-        Ok(StructuredReasoningResponse {
-            json,
-            usage: TokenUsage::default(),
-            channel_fallback: false,
-        })
-    }
-
-    async fn analyze_vision(
-        &self,
-        _context: &PrivateInferenceContext,
-        _request: VisionReasoningRequest,
-    ) -> Result<VisionReasoningResponse, ReasoningProviderError> {
-        unreachable!("distill never calls vision")
-    }
-}
 
 struct Fixture {
     admin: Client,
@@ -400,106 +274,7 @@ fn setup_db(test_name: &str) -> Option<Fixture> {
         )
         .expect("workspace membership");
 
-    let credential: Uuid = admin
-        .query_one(
-            "INSERT INTO control.credentials(tenant_id,purpose,openbao_ref) VALUES($1,'USER_REASONING',$2) RETURNING credential_id",
-            &[&tenant_id, &format!("openbao://{NAME}/{suffix}")],
-        )
-        .expect("credential locator")
-        .get(0);
-    let d = descriptor();
-    // ADR-0060 D-C / E5: catalog row, Profile and provider declare one capability set; the
-    // descriptor's revision is that set's label, so it never meets the frozen NULL-revision row.
-    let caps: Vec<&str> = d.capabilities.iter().map(|c| c.as_str()).collect();
-    admin
-        .execute(
-            "INSERT INTO control.processor_models(processor_id,provider_model_id,model_revision,capabilities,status,catalog_observed_at) \
-             VALUES($1,$2,$3,$4,'ACTIVE',clock_timestamp()) ON CONFLICT DO NOTHING",
-            &[&d.provider_id, &d.model_id, &d.model_revision, &caps],
-        )
-        .expect("processor model");
-    let processor_model_id: Uuid = admin
-        .query_one(
-            "SELECT processor_model_id FROM control.processor_models \
-             WHERE processor_id=$1 AND provider_model_id=$2 AND model_revision IS NOT DISTINCT FROM $3 AND status='ACTIVE'",
-            &[&d.provider_id, &d.model_id, &d.model_revision],
-        )
-        .expect("processor model id")
-        .get(0);
-    let account_hash = suffix.as_bytes().repeat(2);
-    let account: Uuid = admin
-        .query_one(
-            "INSERT INTO control.provider_accounts(tenant_id,owner_user_id,processor_id,external_account_ref_hash) VALUES($1,$2,$3,$4) RETURNING provider_account_id",
-            &[&tenant_id, &user_id, &d.provider_id, &account_hash],
-        )
-        .expect("provider account")
-        .get(0);
-    admin
-        .execute(
-            "INSERT INTO control.reasoning_credential_bindings(credential_ref,tenant_id,owner_user_id,provider_account_id,processor_id) VALUES($1,$2,$3,$4,$5)",
-            &[&credential, &tenant_id, &user_id, &account, &d.provider_id],
-        )
-        .expect("credential binding");
-    let endpoint: Uuid = admin
-        .query_one(
-            "INSERT INTO control.provider_endpoints(tenant_id,provider_account_id,region,service_tier,endpoint_ref,egress_processor_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING endpoint_id",
-            &[&tenant_id, &account, &REGION, &SERVICE_TIER, &MINIMAX_CHAT_URL, &EGRESS_PROCESSOR_ID],
-        )
-        .expect("provider endpoint")
-        .get(0);
-    let profile: Uuid = admin
-        .query_one(
-            "INSERT INTO control.reasoning_profiles(tenant_id,owner_user_id,provider_account_id,endpoint_id,processor_model_id,credential_ref,billing_account_id,default_billing_instrument_id,capabilities,processing_region) VALUES($1,$2,$3,$4,$5,$6,NULL,NULL,$8,$7) RETURNING profile_id",
-            &[&tenant_id, &user_id, &account, &endpoint, &processor_model_id, &credential, &REGION, &caps],
-        )
-        .expect("reasoning profile")
-        .get(0);
-    let policy: Uuid = admin
-        .query_one(
-            "INSERT INTO control.reasoning_route_policies(tenant_id,policy_owner_user_id,purpose) VALUES($1,$2,$3) RETURNING route_policy_id",
-            &[&tenant_id, &user_id, &PURPOSE_DB],
-        )
-        .expect("route policy")
-        .get(0);
-    admin
-        .execute(
-            "INSERT INTO control.reasoning_route_candidates(tenant_id,route_policy_id,route_policy_version,profile_id,profile_version,priority) VALUES($1,$2,1,$3,1,0)",
-            &[&tenant_id, &policy, &profile],
-        )
-        .expect("pinned candidate");
-    admin
-        .execute(
-            "UPDATE control.reasoning_route_policies SET lifecycle_state='SHADOW' WHERE route_policy_id=$1 AND policy_version=1",
-            &[&policy],
-        )
-        .expect("shadow policy");
-    admin
-        .execute(
-            "UPDATE control.reasoning_route_policies SET lifecycle_state='SERVING' WHERE route_policy_id=$1 AND policy_version=1",
-            &[&policy],
-        )
-        .expect("serving policy");
-    admin
-        .execute(
-            "INSERT INTO control.reasoning_route_bindings(tenant_id,reasoning_domain_id,purpose,route_policy_id,route_policy_version) VALUES($1,$2,$3,$4,1)",
-            &[&tenant_id, &reasoning_domain_id, &PURPOSE_DB, &policy],
-        )
-        .expect("route binding");
-    admin
-        .execute(
-            "INSERT INTO ops.reasoning_provider_health_observations(tenant_id,processor_id,processor_model_id,provider_model_id,model_revision,provider_endpoint_id,endpoint_ref,region,service_tier,source_kind,reason_code,verdict,observed_at,valid_until) \
-             VALUES($1,$2,$3,$4,$9,$5,$6,$7,$8,'TEST',NULL,'HEALTHY',clock_timestamp()-interval '1 second',clock_timestamp()+interval '30 minutes')",
-            &[&tenant_id, &d.provider_id, &processor_model_id, &d.model_id, &endpoint, &MINIMAX_CHAT_URL, &REGION, &SERVICE_TIER, &d.model_revision],
-        )
-        .expect("provider health observation");
-    admin
-        .execute(
-            "INSERT INTO ops.reasoning_account_health_observations(tenant_id,provider_account_id,credential_ref,billing_account_id,billing_instrument_id,source_kind,reason_code,account_verdict,credential_verdict,billing_account_verdict,billing_instrument_verdict,observed_at,valid_until) \
-             VALUES($1,$2,$3,NULL,NULL,'TEST',NULL,'HEALTHY','VALID',NULL,NULL,clock_timestamp()-interval '1 second',clock_timestamp()+interval '30 minutes')",
-            &[&tenant_id, &account, &credential],
-        )
-        .expect("account health observation");
-
+    distill_lane::seed_admission_lane(&mut admin, tenant_id, user_id, reasoning_domain_id, NAME);
     Some(Fixture {
         admin,
         fence,
@@ -609,22 +384,6 @@ fn seed_evidence_as(f: &mut Fixture, text: &str, origin_class: &str) -> (Uuid, i
     .expect("insert outbox");
     txn.commit().expect("commit remember txn");
     (evidence_id, commit_seq, stream_seq)
-}
-
-/// ADR-0058 D-K config with one seat (the fake provider serves replies in call order).
-fn dispatch_config(lease_owner: &str, lease_seconds: f64) -> DistillDispatchConfig {
-    DistillDispatchConfig {
-        lease_owner: lease_owner.to_owned(),
-        lease_seconds,
-        in_flight: 1,
-        hard_deadline_seconds: 2.0 * (5.0 + lease_seconds),
-        http_timeout_seconds: 5.0,
-        not_ready_park_seconds: 600.0,
-        max_attempts: 5,
-        budget: TEST_BUDGET,
-        health_renew_seconds: 1800,
-        dns_pins_configured: false,
-    }
 }
 
 fn private_pool(rt: &tokio::runtime::Runtime, f: &Fixture) -> PrivateWorkerDbPool {

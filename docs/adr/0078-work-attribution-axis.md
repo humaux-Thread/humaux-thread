@@ -173,6 +173,14 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
   - notes stay `unresolved` in the first slice: a note cannot carry a task run (`operation_receipt.rs:437`), and
     `memory.note_put` has no `project_id`.
 - Every formal row carries `rule_id_ver` and `decision_evidence_id`, so a falsified rule can be revoked in bulk.
+- **Reader (T07, design v0.2 §15.8).** `adapters::attribution_repo::read_memory_attribution` is the one reader. It
+  reads only `memory_projects_live` and returns the domain type `MemoryAttribution`: `Resolved(links)`, each
+  `ProjectLink` carrying project, `source_kind`, `rule_id_ver`, `decision_evidence_id` and, for A3',
+  `inherited_from_memory_id`; or `Unresolved`. A memory with no row and one whose every row is revoked are both
+  `Unresolved` (REQ §3.4 does not tell them apart). It runs in the caller's transaction as `role_gateway`, the view's
+  one SELECT holder (no new grant). No wire or MCP output carries it until a recall output card has a user story for
+  it. The xtask arm `m29_attribution_reader` keeps it the one non-test read of the view and forbids a non-test
+  `FROM` / `JOIN` of `private.memory_projects` (the writers' `INSERT INTO` is no read).
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
   from it. Dependent continuity outputs keep the existing `continuity_facet_memory_links` + sha check and read as
@@ -293,7 +301,8 @@ implements it, and that card adds it to "Red records" below, as ADR-0077 does. E
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
 (T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); the A1 entry's card gates G-T06c-1 (`project_id` on the wire),
 G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c); G-M29-5(b), with
-its xtask rule-site arm (`"correction@1"` only in `RuleId`'s closed set), and G-M29-6 (T06b). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+its xtask rule-site arm (`"correction@1"` only in `RuleId`'s closed set), and G-M29-6 (T06b); G-N09-3 end to end and
+G-N09-4 as restated in design v0.2 §15.8, with the reader's xtask arm `m29_attribution_reader` (T07). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -311,8 +320,8 @@ module gates there needs its own spec change.
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
-| G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved` | "take the most recent project" |
-| G-N09-4 models off, same result | with every provider off, formal attribution is row-for-row identical and external calls = 0 (E-D) | make A3 call a model once |
+| G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved`; end to end (T07): a put with no ground whose text names the project is distilled into a Memory the reader reports `unresolved`, and the trap project has zero rows tenant-wide | "take the most recent project" |
+| G-N09-4 formal attribution does not depend on a model | design v0.2 §15.8: with the provider off Distill writes no Memory, so "row-for-row identical with models off" is not testable as written; the testable form is (a) the same fixture in two tenants whose providers return different memory text gives, per message, the same projection (projects by fixture role, `source_kind`, `rule_id_ver`, the decision Evidence's message), and (b) provider calls == Distill jobs run (a failed attempt and its retry counted), with correction, relation correction, revocation and reads adding 0 provider calls and 0 `ops.model_call_ledger` rows. E-D reruns the criterion on real corpus | (a) A3 skips a project named in the memory text; (b) one more provider call before the Memory INSERT (make A3 call a model once) |
 
 ## Red records
 
@@ -530,8 +539,9 @@ and the failing lines are in the card's PR description.
 
 ## Consequences
 
-- The first wire reader of attributions reads `memory_projects_live`, and its card adds an xtask arm forbidding direct
-  reads of the table (design v0.2 §15.7).
+- The first reader of attributions (T07, D-D "Reader") reads `memory_projects_live`, and the xtask arm
+  `m29_attribution_reader` forbids direct reads of the table (design v0.2 §15.7, §15.8). The first wire exposure goes
+  through that reader.
 
 ## Cards and experiments
 
