@@ -165,7 +165,7 @@ BEGIN
     FROM private.memory_projects_live l
    WHERE l.tenant_id = NEW.tenant_id
      AND l.project_id = NEW.src_id
-     AND l.rule_id_ver = 'task_run@1'
+     AND true
      AND l.derived_task_id = NEW.dst_id
      AND NOT (NEW.valid @> l.derived_occurred_at);
   RETURN NULL;
