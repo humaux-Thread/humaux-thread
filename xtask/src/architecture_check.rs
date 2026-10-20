@@ -2903,29 +2903,103 @@ const T07_TABLE: &str = "private.memory_projects";
 /// this many table / view tokens there are not counted; one more and that kind is counted in full.
 const T07_CATALOG_SITE: (&str, usize, usize) = ("bins/maintenance/src/rls_check.rs", 2, 2);
 
-/// [`door_normalised`] text with `/* */` blocks and `//` comments stripped and SQL identifier quoting undone, so
-/// `FROM "private"."memory_projects"` and `FROM private . memory_projects` read as the table and a commented-out
-/// `FROM private.memory_projects_live` reads as nothing.
+/// Rust source with `//` and (nested) `/* */` comments replaced by a space and string, raw-string and char literals
+/// copied verbatim (the SQL lives in them), so neither a `/*` or `//` inside a literal nor a glob in a doc comment hides
+/// the code after it, and a commented-out statement is no statement.
 ///
-/// ponytail: scans spelled-out text only, so SQL assembled with `format!` / `concat!` or loaded with `include_str!`
-/// from a `.sql` file evades it (as [`door_statement_sites`]), and a SQL `--` comment still counts; upgrade to
+/// ponytail: lexes comments and literals only, so SQL assembled with `format!` / `concat!` or loaded with
+/// `include_str!` from a `.sql` file is not scanned, and a SQL `--` comment inside a literal still counts; upgrade to
 /// statement parsing if that ever shows up.
-fn t07_normalised(source: &str) -> String {
-    let mut code = String::with_capacity(source.len());
-    let mut rest = source;
-    while let Some(at) = rest.find("/*") {
-        code.push_str(&rest[..at]);
-        let open = &rest[at + 2..];
-        rest = open.find("*/").map_or("", |end| &open[end + 2..]);
+fn t07_strip_comments(source: &str) -> String {
+    let s: Vec<char> = source.chars().collect();
+    let at = |i: usize| s.get(i).copied().unwrap_or('\0');
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < s.len() {
+        let start = i;
+        if s[i] == '/' && at(i + 1) == '/' {
+            while i < s.len() && s[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if s[i] == '/' && at(i + 1) == '*' {
+            let mut depth = 0_usize;
+            while i < s.len() {
+                if s[i] == '/' && at(i + 1) == '*' {
+                    depth += 1;
+                    i += 2;
+                } else if s[i] == '*' && at(i + 1) == '/' {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        let ident_before = i > 0 && (s[i - 1].is_alphanumeric() || s[i - 1] == '_');
+        let raw_hashes_from = match s[i] {
+            'r' if !ident_before => Some(i + 1),
+            'b' if !ident_before && at(i + 1) == 'r' => Some(i + 2),
+            _ => None,
+        };
+        if let Some(mut j) = raw_hashes_from {
+            let mut hashes = 0;
+            while at(j) == '#' {
+                hashes += 1;
+                j += 1;
+            }
+            if at(j) == '"' {
+                j += 1;
+                while j < s.len() && !(s[j] == '"' && (1..=hashes).all(|k| at(j + k) == '#')) {
+                    j += 1;
+                }
+                i = (j + 1 + hashes).min(s.len());
+                out.extend(&s[start..i]);
+                continue;
+            }
+        }
+        if s[i] == '"' {
+            i += 1;
+            while i < s.len() && s[i] != '"' {
+                i += if s[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(s.len());
+            out.extend(&s[start..i]);
+            continue;
+        }
+        if s[i] == '\'' {
+            // `'x'` and `'\…'` are char literals (so `'"'` opens no string); any other `'` starts a lifetime.
+            let close = if at(i + 1) == '\\' {
+                (i + 3..s.len().min(i + 12)).find(|&k| s[k] == '\'')
+            } else {
+                (at(i + 2) == '\'').then_some(i + 2)
+            };
+            i = close.map_or(i + 1, |k| k + 1);
+            out.extend(&s[start..i]);
+            continue;
+        }
+        out.push(s[i]);
+        i += 1;
     }
-    code.push_str(rest);
-    let code: Vec<&str> = code
-        .lines()
-        .map(|line| line.find("//").map_or(line, |at| &line[..at]))
-        .collect();
-    door_normalised(&code.join("\n"))
-        .replace("\\\"", "")
-        .replace('"', "")
+    out
+}
+
+/// [`door_normalised`] text of [`t07_strip_comments`] with SQL identifier quoting undone (a `"` becomes a space, so
+/// `FROM"private"` stays two words), so `FROM "private"."memory_projects"` and `FROM private . memory_projects` read
+/// as the table.
+fn t07_normalised(source: &str) -> String {
+    door_normalised(&t07_strip_comments(source))
+        .replace("\\\"", " ")
+        .replace('"', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .replace(" .", ".")
         .replace(". ", ".")
 }
@@ -12001,6 +12075,32 @@ async fn serving_version_in_txn() {}
             "fn f() {} // FROM private.memory_projects_live\n/* SELECT 1\n   FROM private.memory_projects_live */\n",
         );
         assert_eq!(m29_attribution_reader(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a direct read after a doc-comment glob (`/*` in a `///` line), after a `//` inside a string literal, or
+    /// glued to `FROM` by SQL quoting → 红 each time (the comment stripper lexes literals; `"` becomes a space).
+    #[test]
+    fn t07_attribution_reader_sees_reads_past_literals_and_globs() {
+        let tmp = fresh_tmp("t07-reader-lexer");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        for source in [
+            "/// see crates/*/src\nconst R: &str = \"SELECT 1 FROM private.memory_projects mp\";\n",
+            "fn f() { let u = \"https://x\"; let q = \"SELECT 1 FROM private.memory_projects\"; }\n",
+            "const R: &str = \"SELECT 1 FROM\\\"private\\\".\\\"memory_projects\\\" mp\";\n",
+        ] {
+            m07_write(&tmp, "crates/adapters/src/recall.rs", source);
+            match m29_attribution_reader(&tmp) {
+                Verdict::Fail(lines) => {
+                    assert_eq!(lines.len(), 1, "{source}: {lines:?}");
+                    assert!(
+                        lines[0].contains("reads private.memory_projects directly"),
+                        "{source}: {lines:?}"
+                    );
+                }
+                other => panic!("{source}: expected Fail, got {other:?}"),
+            }
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 
