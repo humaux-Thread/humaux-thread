@@ -145,6 +145,14 @@ revoked.
 - When no rung holds, no row is written and the read path reports the memory as `unresolved` (REQ §3.4).
 - **Unknown declared project (gap ruling).** A declared `project_id` that is unknown in the tenant, or not visible to
   the caller, is `INVALID_INPUT` with zero writes, as for subject ids in §6.1.3.
+- **Archived declared project (design v0.2 §15.6).** An ARCHIVED project is refused like an unknown one:
+  `INVALID_INPUT`, zero writes. An archived project takes no new attribution, and one code for both is no existence
+  oracle. A replay of a put committed before the archive still returns its stored success (§34.0.1).
+- **Route narrowing (design v0.2 §15.6).** A workspace-routed put may declare only a project in that workspace; a
+  tenant-routed put may declare a project in any workspace the caller is authorized for. An Evidence belongs to one
+  workspace, and attributing it to another workspace's project would link `memory_projects` across the workspace
+  boundary. The receipt transaction resolves the project against the route-narrowed `AuthorizationScope`. The
+  tenant-route arm (a put with `workspace_id` None) has no wire route on `remember.put` today and is not tested.
 - **Rollups (gap ruling).** Rollups live in `private.memory_rollups`, outside the door, and stay unattributed in the
   first slice (N09 R3); they are not Memories and have no `memory_projects` row. (`consolidate_repo` imports only
   `authority_class_to_db_str` from `memory_repo`; it never calls the door.) A rollup rung needs a later ADR amendment.
@@ -274,7 +282,9 @@ counterexample (LLM deduplication and edge invalidation); ST-SC supports abstent
 All are three-state. Each gate exists only after its inject → red → fix → green record (§80.1) lands in the card that
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
-(T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+(T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); the A1 entry's card gates G-T06c-1 (`project_id` on the wire),
+G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c). The rest are a plan.
+Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -348,6 +358,55 @@ and the failing lines are in the card's PR description.
   - r17: `use crate::byok;` in `attribution_repo.rs` -> G-N09-1 red: the attribution code names a model module.
   - The `AttributionSource` change leaves the fault lines of r10-r14, r16 and r17 verbatim (each still applies once on
     `9bed6b7`), so those records stand without a re-run.
+- T06c (PR #99), branches `red/m29-t06c-r1..r5` off `47967a8`:
+  - r1: `private.declared_project_visible`'s `AND project.workspace_id = ANY(p_authorized_workspace_ids)` replaced by
+    `AND p_authorized_workspace_ids IS NOT NULL` -> G-T06c-1(a) red: a project in a workspace the caller is not
+    authorized for is accepted (HTTP 200, not 400).
+  - r2: the `evidence_projects` INSERT skipped (`declared.filter(|_| false)` in `operation_receipt::atomically`) ->
+    G-T06c-1(b) red: the accepted put leaves 0 `evidence_projects` rows; G-T06c-2 red too: no DECLARED row.
+  - r3: the request fingerprint hashes the arguments with the `project_id` text removed -> G-T06c-1(c) red: the same
+    key with another visible project replays the first success instead of CONFLICT.
+  - r4: a second `INSERT INTO private.evidence_projects` string in `operation_receipt.rs` production code -> G-T06c-3
+    red: found 2.
+  - r5: the reader's `WHERE project.tenant_id = p_tenant_id` replaced by `WHERE p_tenant_id IS NOT NULL` -> G-T06c-1
+    reader leg (`memory_attribution.rs`) red: another tenant's project, its workspace in the set, is `true`. The wire
+    case cannot show it, since `control.workspaces.workspace_id` is globally unique and the workspace predicate alone
+    already refuses another tenant's project there.
+  - r1 and r5 stay inside 0254 because its postcheck deliberately leaves the reader's predicates to these tests.
+  - Base: `47967a8` differs from the final head only in docs, `.config/nextest.toml` and the review round's test /
+    `rls_check` additions below; none of the r1-r5 fault lines changed, so those records stand without a re-run.
+- T06c review fixes (PR #99, design v0.2 §15.6), branches `red/m29-t06c-r6..r10` off `f8e412e`:
+  - r6: `AND project.lifecycle_state = 'ACTIVE'` dropped from `private.declared_project_visible` -> G-T06c-1(a) red:
+    the archived project (response id 13) is accepted, 200 instead of 400 (`mcp_gateway.rs:10433`); and, folded in as
+    r11 (a dropped definition pin), the `rls_check` declared-project reader gate red: "definition lost
+    `project.lifecycle_state = 'ACTIVE'`" (`rls_check.rs:7187`).
+  - r7: `AND project.project_id = p_project_id` dropped -> G-T06c-1(a) red at the first case, the unknown project
+    (id 10): 403 `TENANT_BOUNDARY` instead of 400 (`mcp_gateway.rs:10433`). The EXISTS passes on a sibling visible
+    project and the unknown id reaches the `evidence_projects` INSERT, where the FK refuses it as 23503, a different
+    code from the other refusals, so the fault also breaks the no-oracle property. The exposure the predicate guards
+    is a same-tenant project in an unauthorized workspace or ARCHIVED, which passes both the reader and the FK; the
+    unauthorized-workspace (id 12) and archived (id 13) decoys come after id 10, and (a') after them, and each would be
+    accepted under this fault had id 10 not failed first.
+  - r8: the tenant pin's `IF p_tenant_id IS DISTINCT FROM ... THEN` replaced by `IF false THEN` -> G-T06c-1 reader leg
+    red: the wrong tenant argument returns instead of raising 42501 (`memory_attribution.rs:740`,
+    `g_t06c_1_reader_tenant_leg`).
+  - r9: one inserted line resolves the declared project before the replay branch of `operation_receipt::atomically`
+    -> G-T06c-1(d) red: the replay after archiving is refused instead of returning the stored success
+    (`mcp_gateway.rs:14927`).
+  - r10: a red-only migration `0255_red_m29_t06c_r10` grants EXECUTE on the reader to `role_admin` -> the `rls_check`
+    declared-project reader gate red: "role_admin: expected EXECUTE=false, actual true" (`rls_check.rs:7187`). It is a
+    later migration because 0254's own postcheck pins the EXECUTE list.
+- T06c delta-review fix (PR #99), branches `red/m29-t06c-r12` and `r12b` off `c6c7efe` (G-T06c-1 (a') now has its
+  positive control: the same unbound PAT routed to the second workspace declares that workspace's project and is
+  accepted with one DECLARED row):
+  - r12: `let wide = auth.clone();` before `validate(..)` in `operation_receipt::atomically` and `&wide` passed to
+    `resolve_declared_project_in_txn` (two lines: the clone must precede the shadowing `auth`) -> stays green (run
+    39348596915). Route narrowing has two layers on `remember.put`: the guard admits with
+    `WorkspaceAdmission::NarrowRequested`, so `credential.authorize(scope, Some(requested))` already hands the door a
+    one-workspace scope, and `validate`'s `auth.narrow(workspace)` is the second.
+  - r12b: r12 plus `run_atomic_remember`'s admission switched to `WorkspaceAdmission::PreserveContinuityFilter`
+    (`guard.rs:840`; three lines in all, one per layer plus the clone) -> G-T06c-1(a') red: the W1-routed put declaring
+    the W2 project (response id 15) is accepted, 200 instead of 400 (`mcp_gateway.rs:10433`, run 39349680861).
 - T06d (PR #100), branches `red/m29-t06d-r1..r7` and `r3a..r3e` off `b52d025`:
   - r1: 0253's FK line dropped -> G-T06d-1 red: an `authorization_evidence_id` that is no Evidence is accepted.
   - r2: the guard's factual check dropped -> G-T06d-2 red: a factual id that is no Evidence is accepted.

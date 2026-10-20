@@ -1,14 +1,15 @@
 //! `adapters::tests::memory_attribution` — M29 T06a (ADR-0078 D-D, §6.1.4): the ladder behind M07's attribution port
 //!   writes exactly the formal `memory_projects` rows that rungs A1 and A3 ground on the Memory's attribution Evidence,
-//!   and nothing when no rung holds.
+//!   and nothing when no rung holds; M29 T06c: a `remember.put` `project_id` reaches A1 end to end.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_projects] w=[coord.task_runs,
-//!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
-//!   private.memory_projects, private.project_task_relations], PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
+//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_projects] w=[control.tenants,
+//!   control.workspaces, coord.task_runs, private.continuity_projects, private.distill_candidates,
+//!   private.evidence_projects, private.evidence_task_runs, private.memory_projects, private.project_task_relations],
+//!   PostgreSQL(role_gateway) x=[private.declared_project_visible], PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
 //!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
-//!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::evidence, domain::ids,
+//!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::evidence, domain::ids,
 //!   domain::memory, domain::relation, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [Evidence enters through the real `remember.put` (the T04c path when it carries a run); the Memory
@@ -24,6 +25,8 @@
 //! | `g_t06a_a1_declared_project` | G-T06a-A1 | skip A1, or drop its Evidence or `source_kind` filter |
 //! | `g_n09_3_unknown_stays_unknown` | G-N09-3 | A1 takes the most recently related project |
 //! | `g_t06a_confirm_reads_the_source_evidence` | G-T06a-confirm | the confirm caller names E2 |
+//! | `g_t06c_2_declared_project_end_to_end` | G-T06c-2 | skip the `evidence_projects` INSERT |
+//! | `g_t06c_1_reader_tenant_leg` | G-T06c-1 (tenant leg) | drop the reader's tenant predicate |
 //!
 //! called-by: `cargo test -p humaux-adapters --test memory_attribution`.
 
@@ -47,6 +50,7 @@ use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
     authority::AuthorityClass,
     confirm::DestructiveOp,
+    continuity::ProjectId,
     evidence::{EvidenceOriginClass, payload_sha256},
     ids::{TaskId, TenantId, WorkspaceId},
     memory::MemoryType,
@@ -154,6 +158,17 @@ fn request(handle: &Handle, key: &str, occurred_at: Option<i64>) -> AtomicRememb
 
 /// `remember.put` (with `run`: the T04c path, verified in the receipt transaction); returns the Evidence id.
 fn put(handle: &Handle, key: &str, occurred_at: Option<i64>, run: Option<&ClaimedTaskRun>) -> Uuid {
+    put_with(handle, key, occurred_at, run, None)
+}
+
+/// [`put`] that may also declare a project (T06c: resolved in the receipt transaction, DECLARED on the Evidence).
+fn put_with(
+    handle: &Handle,
+    key: &str,
+    occurred_at: Option<i64>,
+    run: Option<&ClaimedTaskRun>,
+    project: Option<Uuid>,
+) -> Uuid {
     handle
         .rt
         .block_on(operation_receipt::remember_for_task_run_atomically(
@@ -161,6 +176,7 @@ fn put(handle: &Handle, key: &str, occurred_at: Option<i64>, run: Option<&Claime
             &handle.auth,
             request(handle, key, occurred_at),
             run.map(|r| (r.task_run_id, r.fencing_token)),
+            project.map(ProjectId),
         ))
         .expect("remember.put")
         .accepted
@@ -582,6 +598,152 @@ fn g_t06a_confirm_reads_the_source_evidence() {
             rows,
             [row(p1, SourceKind::Inherited, RuleId::TaskRun1, e1)],
             "decided by E1, the candidate's source Evidence"
+        );
+    });
+}
+
+/// G-T06c-2 (ADR-0078 D-D rung A1, end to end): a put declaring a visible project writes its one DECLARED
+/// `evidence_projects` row through T06c's door, and the Memory the Distill door then makes from that Evidence carries
+/// exactly one `memory_projects` row: that project, DECLARED / declared@1, decided by that Evidence. A second visible
+/// project of the tenant, declared by nothing, stays out.
+#[test]
+fn g_t06c_2_declared_project_end_to_end() {
+    run_db_fixture::<Fixture, _>("g_t06c_2_declared_project_end_to_end", |mut handle| {
+        handle.seed_current_entitlement_and_window(10);
+        let [p, decoy] = [(); 2].map(|()| Uuid::now_v7());
+        for sql in [project(&handle, p), project(&handle, decoy)] {
+            handle
+                .admin
+                .batch_execute(&sql)
+                .expect("owner commits a visible project");
+        }
+        let evidence = put_with(&handle, "t06c-2", Some(INSIDE), None, Some(p));
+        let declared: Vec<(Uuid, Uuid, String)> = handle
+            .admin
+            .query(
+                "SELECT evidence_id, project_id, source_kind FROM private.evidence_projects WHERE tenant_id = $1",
+                &[&handle.tenant_id],
+            )
+            .expect("owner reads evidence_projects")
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect();
+        let rows = attribute(&handle, evidence, &[]);
+        handle
+            .admin
+            .batch_execute(&format!(
+                "DELETE FROM private.evidence_projects WHERE tenant_id = '{}'",
+                handle.tenant_id
+            ))
+            .expect("purge evidence_projects");
+        assert_eq!(
+            declared,
+            [(evidence, p, SourceKind::Declared.as_str().to_owned())]
+        );
+        assert_eq!(
+            rows,
+            Ok(vec![row(
+                p,
+                SourceKind::Declared,
+                RuleId::Declared1,
+                evidence
+            )]),
+            "the declared project only, DECLARED / declared@1, decided by the put's Evidence"
+        );
+    });
+}
+
+/// One call of 0254's reader with a one-workspace authorized set.
+async fn visible(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: Uuid,
+    project: Uuid,
+    workspace: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT private.declared_project_visible($1, $2, $3)")
+        .bind(tenant)
+        .bind(project)
+        .bind(vec![workspace])
+        .fetch_one(&mut **txn)
+        .await
+}
+
+/// G-T06c-1, tenant leg (0254 `private.declared_project_visible`). On the wire a foreign project's workspace is never
+/// in the caller's set, so the workspace predicate alone already refuses it; here the reader is called as
+/// `role_gateway` with the foreign workspace in the set, so only the tenant predicate refuses it. The tenant's own
+/// project in its own workspace is the positive control, and a tenant argument other than the transaction's
+/// `humaux.tenant_id` is 42501. All rows live in one rolled-back transaction.
+#[test]
+fn g_t06c_1_reader_tenant_leg() {
+    run_db_fixture::<Fixture, _>("g_t06c_1_reader_tenant_leg", |handle| {
+        let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so the DSN is set");
+        let (foreign_tenant, foreign_workspace) = (Uuid::new_v4(), Uuid::new_v4());
+        let [own, foreign] = [(); 2].map(|()| Uuid::now_v7());
+        let seed = [
+            project(&handle, own),
+            format!(
+                "INSERT INTO control.tenants (tenant_id, name, state) \
+                 VALUES ('{foreign_tenant}', 't06c-foreign-{foreign_tenant}', 'ACTIVE')"
+            ),
+            format!(
+                "INSERT INTO control.workspaces (workspace_id, tenant_id, name) \
+                 VALUES ('{foreign_workspace}', '{foreign_tenant}', 't06c foreign')"
+            ),
+            format!(
+                "INSERT INTO private.continuity_projects (project_id, tenant_id, workspace_id, title) \
+                 VALUES ('{foreign}', '{foreign_tenant}', '{foreign_workspace}', 'Same title')"
+            ),
+        ];
+        let (own_visible, foreign_visible, wrong_tenant) = handle.rt.block_on(async {
+            // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
+            let mut conn = PgConnection::connect(&dsn).await.expect("owner connection");
+            // dep: PostgreSQL(any) — pool/txn query execution
+            let mut txn = conn.begin().await.expect("begin");
+            for sql in &seed {
+                sqlx::query(sql)
+                    .execute(&mut *txn)
+                    .await
+                    .expect("owner seeds the reader fixture");
+            }
+            // dep: PostgreSQL(role_gateway) — test switches PG role to exercise the reader's EXECUTE grant
+            sqlx::query("SET LOCAL ROLE role_gateway")
+                .execute(&mut *txn)
+                .await
+                .expect("gateway role");
+            sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
+                .bind(handle.tenant_id.to_string())
+                .execute(&mut *txn)
+                .await
+                .expect("tenant GUC");
+            let own_visible = visible(&mut txn, handle.tenant_id, own, handle.workspace_id)
+                .await
+                .expect("own project");
+            let foreign_visible = visible(&mut txn, handle.tenant_id, foreign, foreign_workspace)
+                .await
+                .expect("foreign project under the caller's tenant");
+            let wrong_tenant = visible(&mut txn, foreign_tenant, foreign, foreign_workspace)
+                .await
+                .err()
+                .and_then(|e| {
+                    e.as_database_error()
+                        .and_then(|d| d.code())
+                        .map(|c| c.into_owned())
+                });
+            txn.rollback().await.expect("rollback");
+            (own_visible, foreign_visible, wrong_tenant)
+        });
+        assert!(
+            own_visible,
+            "positive control: the tenant's ACTIVE project in its own workspace"
+        );
+        assert!(
+            !foreign_visible,
+            "another tenant's project, its workspace in the set: refused by the tenant leg"
+        );
+        assert_eq!(
+            wrong_tenant.as_deref(),
+            Some("42501"),
+            "tenant argument != humaux.tenant_id"
         );
     });
 }

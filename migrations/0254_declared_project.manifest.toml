@@ -1,0 +1,49 @@
+# §46.1 migration manifest. Card M29 T06c / ADR-0078 D-D rung A1 (§6.1.4): one new owner SECURITY DEFINER reader
+# private.declared_project_visible(uuid, uuid, uuid[]) (EXECUTE: role_gateway only, as 0137's continuity reader) and one
+# NAMED §6.2.2 grant, INSERT on private.evidence_projects to role_gateway (0252 granted SELECT only). No DML.
+# §46 forward-fix (EXPAND_CONTRACT, number 0254; 0253 is card T06d's).
+
+migration_id = "0254_declared_project"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without 0252's carrier or 0136's project registry, or one that already has the reader.
+precheck = """
+select to_regclass('private.evidence_projects') is not null
+ and to_regclass('private.continuity_projects') is not null
+ and to_regprocedure('private.declared_project_visible(uuid,uuid,uuid[])') is null
+ as precheck_ok
+"""
+
+# Fails on: a reader that is not owner / SECURITY DEFINER / STABLE / search_path=pg_catalog, EXECUTE for PUBLIC or for
+# any runtime role but role_gateway, or an evidence_projects grant beyond gateway SELECT + INSERT and private_worker
+# SELECT (column-level grants included). The reader's predicates are left to G-T06c-1 / G-T06c-2 (see the SQL header).
+postcheck = """
+with runtime_roles(name) as (values
+  ('role_admin'), ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+  ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance')),
+reader as (
+  select p.prosecdef, p.provolatile, p.proconfig, p.proowner from pg_proc p
+   where p.oid = to_regprocedure('private.declared_project_visible(uuid,uuid,uuid[])'))
+select (select count(*) = 1 from reader
+         where prosecdef and provolatile = 's' and proconfig = array['search_path=pg_catalog']::text[]
+           and pg_get_userbyid(proowner) = 'role_migration_owner')
+ and not has_function_privilege('public', 'private.declared_project_visible(uuid,uuid,uuid[])', 'EXECUTE')
+ and not exists (select 1 from runtime_roles r
+                  where has_function_privilege(r.name, 'private.declared_project_visible(uuid,uuid,uuid[])', 'EXECUTE')
+                        is distinct from (r.name = 'role_gateway'))
+ and has_table_privilege('role_gateway', 'private.evidence_projects', 'SELECT')
+ and has_table_privilege('role_gateway', 'private.evidence_projects', 'INSERT')
+ and has_table_privilege('role_private_worker', 'private.evidence_projects', 'SELECT')
+ and not exists (select 1 from runtime_roles r
+                  where has_any_column_privilege(r.name, 'private.evidence_projects', 'UPDATE')
+                     or has_table_privilege(r.name, 'private.evidence_projects', 'DELETE')
+                     or has_table_privilege(r.name, 'private.evidence_projects', 'TRUNCATE')
+                     or (r.name not in ('role_gateway', 'role_private_worker')
+                         and has_any_column_privilege(r.name, 'private.evidence_projects', 'SELECT'))
+                     or (r.name <> 'role_gateway'
+                         and has_any_column_privilege(r.name, 'private.evidence_projects', 'INSERT')))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: REVOKE INSERT ON private.evidence_projects FROM role_gateway; DROP FUNCTION private.declared_project_visible(uuid, uuid, uuid[]); and remove remember.put's project_id (schema, gateway parse, adapters::remember resolve/insert, xtask t06c_door, the §6.2.2 cell) in the same release. DECLARED evidence_projects rows already written stay: they are attribution facts the A1 rung reads, never discarded silently."
+backup_restore_requirement = "none: one new function and one new table grant; no existing row or object definition is touched."
