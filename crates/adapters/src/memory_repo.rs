@@ -203,3 +203,6 @@ pub async fn insert_memory_in_txn(
         .await?;
     Ok(memory_id)
 }
+
+/// r8 fault: a second, quoted direct read of the attribution table.
+pub const R8_QUOTED_READ: &str = "SELECT project_id FROM \"private\".\"memory_projects\" WHERE tenant_id = $1";
