@@ -42,6 +42,14 @@ D-E 的规则 ③ 判据（「M2 的 PRIMARY Evidence 是 `USER_CORRECTION` 事�
 
 **Gate。** `memory_subjects_link::rule_3b_keys_on_the_correction_transition`（SQL 级，生产同款语句、`role_gateway`）与 `memory_attribution::g_109_subject_inheritance_keys_on_the_correction_transition`（真实 governance ops）：M0 → M1 → M2 两次更正，M2 带 M1 没有的链接，X 带 M1 没有的链接。(iii) 真更正仍继承；(ii) 对更正版本 M1 的 restore 不从 M2 继承；(i) 把 X 显式 supersede 到更正版本 M1 不从 X 继承。`correction_inherits_but_explicit_supersede_does_not` 改为盖真实的 SUPERSEDE / USER_CORRECTION head。
 
+**注错记录（§80.1）。** 每个故障在自己的临时分支上，经 `targeted.yml` 跑；绿对照在 `9779db8`（#109 的实现头，其后只加文档）。
+- 绿：`memory_subjects_link` run 39419198213（6 passed）；`memory_attribution g_109` run 39419832864（1 passed）。
+- r1，`red/fix-109-r1` @ `430a85e`：谓词里去掉 `reason_code = 'USER_CORRECTION'` 一腿 -> 情形 (i) 红：显式 supersede 把 X 的链接多拷了一行 `INHERITED` 给更正版本 M1。`memory_subjects_link` run 39419204274 失败于 `memory_subjects_link.rs:658:9`；`g_109` run 39419847441 失败于 `memory_attribution.rs:1101:13`。
+- r2，`red/fix-109-r2`：触发器里规则 3b 不再受谓词约束（旧行为：只要有 supersede 就拷）。「逐个前驱拷」的旧规则 3b 已不在 `link_memory_subjects` 里，所以 r2 注在触发器的守卫上。
+  - 首版 @ `473f0e7`（`IF true THEN`，触发器体不再提谓词）：run 39419211585 在 migration 0256 的 postcheck 就被拒（`postcheck refused the migration`），postcheck 要求两个触发器体都调谓词，故障比测试更早被拦下；同一提交的 `g_109` run 39419860109 为取消（同一失败，不再跑）。
+  - 变体 @ `cf5a54a`（`IF true OR private.is_correction_transition(..)`，谓词留在体内，绕过 postcheck）：`memory_subjects_link` run 39420823457 红两处：`memory_subjects_link.rs:545:9`（`correction_inherits_but_explicit_supersede_does_not`：explicit supersede must not copy subjects onto an arbitrary successor）与 `memory_subjects_link.rs:658:9`（情形 (i)）；`g_109` run 39420831670 失败于 `memory_attribution.rs:1101:13`（情形 (i)）。
+- 断言顺序：(iii) 的 `before` 断言先于 (i)，在 r1/r2 下都先通过；(i) 先于 (ii)，所以首个失败总落在 (i)。红分支 `red/fix-109-r1`、`red/fix-109-r2` 读完 run 后已从 origin 删除。
+
 ## 否决
 - **在 `insert_memory` 签名上加 `subjects` 参数**：会改 `memory_governance_repo.rs` 与 `bins/private-worker/src/distill.rs` 两个调用点（不在允许清单）；改成 hook 内部读 DB 状态 + 显式链接走独立函数，签名不变。
 - **单张多态 `memory_subjects(target_kind MEMORY|ROLLUP)`**：无法同时给两张父表带 tenant-leg FK；沿用 `memory_evidence` ↔ `memory_rollup_sources` 的既有两表形状。
