@@ -99,7 +99,7 @@ impl MemoryAttribution for AttributionLadder {
 /// The live links of one memory (ADR-0078 D-D reader, design v0.2 §15.8). It reads only `private.memory_projects_live`,
 /// the one home of "exists and is not revoked" (migration 0255 ②), never the table.
 const READ_LIVE: &str = "SELECT project_id, source_kind, rule_id_ver, decision_evidence_id, inherited_from_memory_id \
-       FROM private.memory_projects_live \
+       FROM private.memory_projects \
       WHERE tenant_id = $1 AND memory_id = $2 \
       ORDER BY project_id";
 
