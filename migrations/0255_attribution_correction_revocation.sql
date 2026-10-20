@@ -12,18 +12,24 @@
 --   ① every correction@1 row names its source and nothing else does: CHECK (rule_id_ver = 'correction@1') =
 --     (inherited_from_memory_id IS NOT NULL), and a composite NO ACTION FK (tenant_id, inherited_from_memory_id,
 --     project_id) -> memory_projects' own primary key pins that the ancestor row exists. decision_evidence_id stays
---     the memory's own attribution Evidence (design v0.2 §15.4): for A3' that is the successor's PRIMARY Evidence,
---     the correction itself; the ancestry runs through the new column.
+--     the memory's own attribution Evidence (design v0.2 §15.4): for A3' that is the correction event's
+--     correction_evidence_id (design v0.2 §15.7 revision 2), the correction itself; the ancestry runs through the new
+--     column.
 --   ② "exists and is not revoked" lives only in memory_projects_live. The A3' function and both revocation
 --     functions read the view, never the table. The view is security_invoker, so a reader gets exactly the RLS of
 --     both tables under its own role.
---   ③ A3' is §6.1.3 rule 3b's predicate on the updated row (prev := NEW): prev.superseded_by is the successor (the
---     WHEN clause) AND the successor's PRIMARY Evidence is a USER_CORRECTION event (0154:246-256). memory.supersede
---     (a non-correction successor) and memory.restore (the successor is the original, whose PRIMARY Evidence is
---     not a correction; and in a correction-of-a-correction chain it already holds every project the replacement
---     could carry, so ON CONFLICT leaves it unchanged) inherit nothing. correct_atomically sets superseded_by only
---     in its arbiter UPDATE ... WHERE status = 'active' (memory_governance_repo.rs:1800); 0 rows is CONFLICT and
---     rolls the successor back, so a correction the arbiter does not make current inherits nothing.
+--   ③ A3' keys on the transition, not on where the successor came from (design v0.2 §15.7 revision 2): the updated
+--     row's lifecycle head (ops.memory_lifecycle_events, event_id = NEW.lifecycle_head_event_id) is op SUPERSEDE,
+--     reason USER_CORRECTION, memory_id = NEW.memory_id and replacement_memory_id = NEW.superseded_by. Only
+--     correct_atomically's arbiter UPDATE stamps such a head, in the same statement that sets superseded_by and only
+--     WHERE status = 'active' (memory_governance_repo.rs:1800); 0 rows is CONFLICT and rolls the successor back.
+--     memory.supersede stamps EXPLICIT_SUPERSEDE, even onto a correction-born successor; a restore's deactivation of
+--     the correction's successor (memory_governance_repo.rs:947) and a note supersede (note_repo.rs:148) leave the
+--     head stale, and no stale head is an unrestored SUPERSEDE of that memory (every reactivation stamps RESTORE). So
+--     all of those inherit nothing. correction_evidence_id is NOT NULL on every USER_CORRECTION event its one writer
+--     appends (memory_governance_repo.rs:1778-1784); a NULL would fail decision_evidence_id's NOT NULL (23502),
+--     never a silent gap. role_gateway, the one role that fires this trigger (0011:300), SELECTs the event table
+--     (0149:86); private_worker holds no UPDATE on superseded_by.
 --   ④ revocation happens in the correcting transaction, at exactly one site per cause: a CONTAINS revision > 1 on
 --     project_task_relations revokes the live task_run@1 rows its edge derived (derived_task_id = dst_id) whose
 --     recorded occurrence time the new valid no longer contains ('{}' revokes all); a revocation row revokes the live
@@ -131,13 +137,15 @@ BEGIN
   INSERT INTO private.memory_projects
     (tenant_id, memory_id, project_id, relation, source_kind, rule_id_ver, decision_evidence_id,
      inherited_from_memory_id)
-  SELECT l.tenant_id, NEW.superseded_by, l.project_id, 'ATTRIBUTED_TO', 'INHERITED', 'correction@1', me.evidence_id,
-         l.memory_id
-    FROM private.memory_projects_live l
-    JOIN private.memory_evidence me ON me.memory_id = NEW.superseded_by AND me.role = 'PRIMARY'
-    JOIN private.events ev ON ev.event_id = me.evidence_id
-   WHERE l.tenant_id = NEW.tenant_id AND l.memory_id = NEW.memory_id
-     AND ev.event_kind = 'USER_CORRECTION'
+  SELECT l.tenant_id, NEW.superseded_by, l.project_id, 'ATTRIBUTED_TO', 'INHERITED', 'correction@1',
+         ev.correction_evidence_id, l.memory_id
+    FROM ops.memory_lifecycle_events ev
+    JOIN private.memory_projects_live l ON l.tenant_id = NEW.tenant_id AND l.memory_id = NEW.memory_id
+   WHERE ev.event_id = NEW.lifecycle_head_event_id
+     AND ev.op = 'SUPERSEDE'
+     AND ev.reason_code = 'USER_CORRECTION'
+     AND ev.memory_id = NEW.memory_id
+     AND ev.replacement_memory_id = NEW.superseded_by
   ON CONFLICT DO NOTHING;
   RETURN NULL;
 END;
@@ -182,6 +190,9 @@ CREATE TRIGGER project_task_relations_revoke_attributions
 -- Transitive revocation: an inherited link loses its ground with its ancestor (PROV wasInvalidatedBy along
 -- wasDerivedFrom). Its own INSERT fires this trigger again, one level per correction in the chain; it ends because
 -- each (memory, project) is revoked at most once (the revocation PK, and the view hides a revoked row).
+-- ponytail: recursion depth = the correction-chain length, as nested plpgsql trigger calls, so the ceiling is
+--   max_stack_depth (54001 aborts the correcting transaction). Upgrade: one INSERT over an iterative closure
+--   (WITH RECURSIVE along inherited_from_memory_id) and no self-firing.
 CREATE FUNCTION private.revoke_inherited_attributions() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $$
@@ -214,7 +225,7 @@ COMMENT ON COLUMN private.memory_projects.derived_occurred_at IS
 COMMENT ON VIEW private.memory_projects_live IS
   '§6.1.4 (ADR-0078 D-D): memory_projects rows with no revocation row, the only place the "exists and is not revoked" rule lives. security_invoker. M29 T06b.';
 COMMENT ON FUNCTION private.memory_projects_on_supersede() IS
-  '§6.1.4 A3'' (ADR-0078 D-D, Q9): a USER_CORRECTION successor inherits its predecessor''s live rows as INHERITED / correction@1 at the arbiter UPDATE of superseded_by. Invoker. M29 T06b.';
+  '§6.1.4 A3'' (ADR-0078 D-D, Q9; design v0.2 §15.7 revision 2): when the updated row''s lifecycle head is the SUPERSEDE / USER_CORRECTION of this memory into NEW.superseded_by, the successor inherits its live rows as INHERITED / correction@1, decided by the event''s correction_evidence_id. Invoker. M29 T06b.';
 COMMENT ON FUNCTION private.revoke_attributions_on_relation_correction() IS
   '§6.1.4 G-M29-6 (ADR-0078 D-D): a CONTAINS correction revokes, in its own transaction, the live task_run@1 rows its edge derived whose recorded occurrence time leaves the new valid; reads the view only. Owner definer, session-tenant pin. M29 T06b.';
 COMMENT ON FUNCTION private.revoke_inherited_attributions() IS

@@ -31,10 +31,11 @@
 //! | `g_t06a_confirm_reads_the_source_evidence` | G-T06a-confirm | the confirm caller names E2 |
 //! | `g_m29_5b_correction_inherits_supersede_does_not` | G-M29-5(b) | drop the A3' trigger |
 //! | `g_m29_5b_correction_inherits_live_links_only` | G-M29-5(b), read path | the live view drops its `NOT EXISTS` |
+//! | `g_m29_5b_inheritance_keys_on_the_correction_transition` | G-M29-5(b), design v0.2 §15.7 revision 2 | A3' drops the event's reason_code leg |
 //! | `g_m29_6_relation_correction_revokes_in_its_transaction` | G-M29-6 | drop the trigger, the `occurred_at` test or the task match; the revocation as SECURITY INVOKER, or joining `evidence_objects` again |
 //! | `g_m29_6_revocation_follows_the_inheritance_chain` | G-M29-6, transitive | drop the transitive trigger |
 //! | `revocation_definers_refuse_another_session_tenant` | definer tenant pin | neutralise the pin |
-//! | `backfill_restates_the_a3_ground_and_the_check_requires_it` | 0255 ⑥ A3 ground, backfill and CHECK | the backfill takes another task; the CHECK accepts a task_run@1 row without one |
+//! | `backfill_restates_the_a3_ground_and_the_check_requires_it` | 0255 ⑥ A3 ground, backfill and CHECK | the backfill takes another task; the CHECK accepts a task_run@1 row without ground, or a declared@1 row with one |
 //! | `g_t06c_2_declared_project_end_to_end` | G-T06c-2 | skip the `evidence_projects` INSERT |
 //! | `g_t06c_1_reader_tenant_leg` | G-T06c-1 (tenant leg) | drop the reader's tenant predicate |
 //!
@@ -931,6 +932,71 @@ fn g_m29_5b_correction_inherits_supersede_does_not() {
     );
 }
 
+/// G-M29-5(b), design v0.2 §15.7 revision 2: A3' keys on the correction transition, not on the successor's origin.
+/// (ii) `memory.restore` of the correction-born M1 (undoing M1 -> M2) sets M2's superseded_by to M1, and M1 gains
+/// nothing from M2 although M2 carries P3, which M1 lacks; (i) a `memory.supersede` of X (declared to P3) onto the
+/// correction-born M1 gives M1 nothing either.
+#[test]
+fn g_m29_5b_inheritance_keys_on_the_correction_transition() {
+    run_db_fixture::<Fixture, _>(
+        "g_m29_5b_inheritance_keys_on_the_correction_transition",
+        |mut handle| {
+            let w = World::new(&mut handle);
+            let p3 = Uuid::now_v7();
+            let e3 = put(&handle, "t06b-a3p-x", Some(INSIDE), None);
+            let seed = vec![
+                project(&handle, p3),
+                declared(&handle, e3, p3, SourceKind::Declared),
+            ];
+            commit(&mut handle, &seed);
+            let m0 = commit_memory(&handle, w.e1);
+            let x = commit_memory(&handle, e3);
+            let (m1, _) = w.correct(&handle, m0);
+            let (m2, e2) = w.correct(&handle, m1);
+            handle
+                .admin
+                .batch_execute(&format!(
+                    "SET session_replication_role = replica; \
+                     INSERT INTO private.memory_projects (tenant_id, memory_id, project_id, relation, source_kind, \
+                       rule_id_ver, decision_evidence_id) \
+                     VALUES ('{}', '{m2}', '{p3}', 'ATTRIBUTED_TO', 'DECLARED', 'declared@1', '{e2}'); \
+                     SET session_replication_role = DEFAULT;",
+                    handle.tenant_id
+                ))
+                .expect("owner plants M2's P3 row");
+            let before = links(&mut handle, m1);
+            let scope = w.governor.scope(handle.workspace_id);
+            let stream = governance_ops::stream(handle.tenant_id, handle.workspace_id);
+            governance_ops::restore(&handle.rt, &handle.runtime, &scope, &stream, m1)
+                .expect("memory.restore");
+            let restored = links(&mut handle, m1);
+            governance_ops::supersede(&handle.rt, &handle.runtime, &scope, &stream, x, m1)
+                .expect("memory.supersede");
+            let superseded = links(&mut handle, m1);
+            let x_links = links(&mut handle, x);
+            World::cleanup(&mut handle);
+            assert_eq!(
+                before.len(),
+                2,
+                "M1 inherited P1 and P2 from M0: {before:?}"
+            );
+            assert_eq!(
+                x_links,
+                [link(p3, SourceKind::Declared, RuleId::Declared1, e3, None)],
+                "X: one A1 row, on P3"
+            );
+            assert_eq!(
+                restored, before,
+                "(ii) restoring the correction-born M1 gives it nothing from M2"
+            );
+            assert_eq!(
+                superseded, before,
+                "(i) a supersede onto the correction-born M1 gives it nothing"
+            );
+        },
+    );
+}
+
 /// G-M29-5(b), read path: a predecessor link revoked before the correction (P1, by retracting P1 CONTAINS T1) is not
 /// inherited; the live one (P2) is.
 #[test]
@@ -1174,7 +1240,7 @@ type Ground = (Uuid, Uuid, String, Option<Uuid>, Option<i64>);
 
 /// 0255 ⑥: A3 records its ground on the row (A1 records none); the migration's backfill UPDATE, run verbatim on this
 /// tenant's rows (the CI database is empty when 0255 runs), restates exactly that ground; and the CHECK refuses a
-/// task_run@1 row without one. Replica mode stands in for the migration's DISABLE TRIGGER memory_projects_immutable.
+/// task_run@1 row without one and a declared@1 row with one. Replica mode stands in for the migration's DISABLE TRIGGER memory_projects_immutable.
 #[test]
 fn backfill_restates_the_a3_ground_and_the_check_requires_it() {
     const GROUND: &str = "SELECT memory_id, project_id, rule_id_ver, derived_task_id, \
@@ -1223,14 +1289,29 @@ fn backfill_restates_the_a3_ground_and_the_check_requires_it() {
                 .iter()
                 .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
                 .collect();
-            let refused = txn
-                .batch_execute(&format!(
+            // Each probe in its own savepoint, so the first refusal does not abort the second.
+            let refused: Vec<Option<String>> = [
+                format!(
                     "UPDATE private.memory_projects SET derived_task_id = NULL, derived_occurred_at = NULL \
                       WHERE tenant_id = '{t}' AND memory_id = '{m1}' AND project_id = '{}'",
                     w.p1
-                ))
-                .err()
-                .and_then(|e| e.code().map(|c| c.code().to_owned()));
+                ),
+                format!(
+                    "UPDATE private.memory_projects SET derived_task_id = '{}', \
+                       derived_occurred_at = to_timestamp({INSIDE}) \
+                      WHERE tenant_id = '{t}' AND memory_id = '{m1}' AND project_id = '{}'",
+                    w.t1.0, w.p2
+                ),
+            ]
+            .iter()
+            .map(|sql| {
+                let mut savepoint = txn.transaction().expect("savepoint");
+                savepoint
+                    .batch_execute(sql)
+                    .err()
+                    .and_then(|e| e.code().map(|c| c.code().to_owned()))
+            })
+            .collect();
             drop(txn);
             World::cleanup(&mut handle);
             assert_eq!(
@@ -1244,8 +1325,8 @@ fn backfill_restates_the_a3_ground_and_the_check_requires_it() {
             );
             assert_eq!(
                 refused,
-                Some("23514".to_owned()),
-                "a task_run@1 row without ground"
+                [Some("23514".to_owned()), Some("23514".to_owned())],
+                "a task_run@1 row without ground; a declared@1 row with one"
             );
         },
     );

@@ -142,7 +142,7 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
 | A1 | `DECLARED` | `project_id` on `remember.put`, resolved server-side: exists in the tenant and is visible to the caller; otherwise `INVALID_INPUT` with zero writes | yes |
 | A2 | `EXTERNAL_KEY` | exact match of a Subject key, then a unique project via `project_subject_relations` at the Evidence's occurrence time; more than one project → unknown | deferred (needs keys with validity) |
 | A3 | `INHERITED` + `task_run@1` | Evidence carries a verified `task_run_id` (`evidence_task_runs`); inherit every project with a CONTAINS relation valid at occurrence time | yes |
-| A3' | `INHERITED` + `correction@1` | a `USER_CORRECTION` successor inherits the predecessor's current rows, in the M29 trigger at the supersede point (Q9 ruling) | yes |
+| A3' | `INHERITED` + `correction@1` | a `USER_CORRECTION` supersede transition gives the successor the predecessor's current rows, in the M29 trigger at the supersede point (Q9 ruling) | yes |
 | A4 | `INHERITED` + `capture_context@1` | server-issued capture handle bound to exactly one project and one live task run, short TTL [starting value 30 min], no exact hit on another known key | deferred |
 | A5 | none (never written to `memory_projects`) | similarity, embeddings, Topic names, model inference | candidates only, deferred |
 
@@ -194,8 +194,13 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
   through the door (`memory_governance_repo.rs:1756`). It sets `superseded_by` only later, in the arbiter UPDATE
   (`:1800`), and `NewMemory` carries no predecessor (`memory_repo.rs:52-63`). A3' therefore cannot run at the door.
   - It runs in a single M29-owned DB trigger on that UPDATE, mirroring §6.1.3 rule ③ (`0154_memory_subjects.sql:314-331`).
-  - For a `USER_CORRECTION` successor, the trigger copies the predecessor's current `memory_projects` rows (linked
-    and not revoked) to the successor as `INHERITED` + `correction@1`.
+  - It keys on the transition, not on where the successor came from (design v0.2 §15.7 revision 2): the updated
+    row's lifecycle head (`ops.memory_lifecycle_events`, `event_id = lifecycle_head_event_id`) must be `op = SUPERSEDE`,
+    `reason_code = USER_CORRECTION`, of this memory, into this `superseded_by`. Then the trigger copies the
+    predecessor's current `memory_projects` rows (linked and not revoked) to the successor as `INHERITED` +
+    `correction@1`, each decided by the event's `correction_evidence_id` (always set by the one `USER_CORRECTION`
+    writer, `memory_governance_repo.rs:1778-1784`). `memory.supersede` onto a correction-born successor, and a restore
+    that deactivates a correction's successor, inherit nothing.
   - It fires only when the correction becomes current. A correction the arbiter does not make current inherits
     nothing.
 - Candidates (deferred): a separate table with `proposed_by=model@ver`, score and state; readable only through a

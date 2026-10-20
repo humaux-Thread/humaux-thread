@@ -2858,6 +2858,43 @@ fn t06c_door(root: &Path) -> Verdict {
     )
 }
 
+/// Rule site of M29 T06b (ADR-0078 D-D A3', gate G-M29-5(b)): in non-test Rust the `correction@1` wire literal lives
+/// only in `RuleId`'s closed set, and `RuleId::Correction1` is named nowhere else, so no Rust path writes an A3' row
+/// (migration 0255's trigger is the one writer; rls_check's §6.1.4 A3' single-site gate pins the database side). The
+/// needle keeps its quotes: rls_check's probes spell `correction@1` inside larger SQL strings, never as the literal.
+const T06B_RULE_HOME: &str = "crates/domain/src/attribution.rs";
+const T06B_RULE_LITERAL: [DoorStatement; 1] = [("\"correction@1\"", T06B_RULE_HOME)];
+
+/// M29 T06b / G-M29-5(b): exactly one `"correction@1"` in non-test code, in `attribution.rs`
+/// ([`T06B_RULE_LITERAL`]), and no `RuleId::Correction1` outside it; the 注错 is a second literal in another module
+/// (`found 2`).
+fn t06b_correction_rule_site(root: &Path) -> Verdict {
+    let gate = "M29 T06b / G-M29-5(b)";
+    let verdict = sole_door_statements(
+        root,
+        gate,
+        "M29 T06b correction rule",
+        &T06B_RULE_LITERAL,
+        &[],
+    );
+    let strays: Vec<(String, usize)> =
+        door_statement_sites(&door_production_sources(root), "RuleId::Correction1")
+            .into_iter()
+            .filter(|(disp, _)| disp != T06B_RULE_HOME)
+            .collect();
+    if strays.is_empty() {
+        return verdict;
+    }
+    let mut lines = match verdict {
+        Verdict::Fail(lines) => lines,
+        _ => Vec::new(),
+    };
+    lines.push(format!(
+        "{gate}: `RuleId::Correction1` in non-test code outside {T06B_RULE_HOME}: {strays:?}"
+    ));
+    Verdict::Fail(lines)
+}
+
 // ============================================================================
 // ADR-0078 D-D (Q1 ruling) / G-M29-5(a) and D-E / G-N09-1 (card M29 T06a): the Memory INSERT door invokes M07's
 // attribution port exactly once, through a required parameter, and the M29 write path of `memory_projects` names no
@@ -7694,6 +7731,10 @@ pub fn run(_args: &[String]) -> i32 {
             t06c_door(&root),
         ),
         (
+            "M29 T06b / G-M29-5(b) (correction@1 literal: one, in RuleId's closed set, non-test code)",
+            t06b_correction_rule_site(&root),
+        ),
+        (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
             m29_5a_attribution_site(&root),
         ),
@@ -11644,6 +11685,70 @@ async fn serving_version_in_txn() {}
                     lines[0].contains("crates/adapters/src/operation_receipt.rs"),
                     "{lines:?}"
                 );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 T06b / G-M29-5(b): one "correction@1" literal, in attribution.rs ------------------------------------------
+
+    const T06B_HOME: &str = "crates/domain/src/attribution.rs";
+    const T06B_RULE: &str = "fn wire() -> &'static str { \"correction@1\" }\n";
+
+    /// The tree as T06b leaves it: the literal only in `RuleId`'s closed set (rls_check's SQL probes do not count).
+    #[test]
+    fn t06b_correction_rule_real_repo_passes() {
+        assert_eq!(t06b_correction_rule_site(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the missing home file (§57.1 第2条).
+    #[test]
+    fn t06b_correction_rule_is_not_applicable_naming_the_missing_home() {
+        let tmp = fresh_tmp("t06b-rule-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match t06b_correction_rule_site(&tmp) {
+            Verdict::NotApplicable(detail) => assert!(detail.contains(T06B_HOME), "{detail}"),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M29-5(b)): a second `"correction@1"` literal in an adapters module → 红, `found 2`, naming that file;
+    /// a test-tree copy and a SQL string merely containing `correction@1` do not count; `RuleId::Correction1` outside
+    /// the home → 红.
+    #[test]
+    fn t06b_correction_rule_fails_on_a_second_literal_in_another_src_file() {
+        let tmp = fresh_tmp("t06b-rule-red");
+        m07_write(&tmp, T06B_HOME, T06B_RULE);
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", T06B_RULE);
+        m07_write(
+            &tmp,
+            "bins/maintenance/src/rls_check.rs",
+            "fn probe() { let _ = \"SELECT 1 WHERE prosrc LIKE '%correction@1%'\"; }\n",
+        );
+        assert_eq!(t06b_correction_rule_site(&tmp), Verdict::Pass);
+        m07_write(&tmp, "crates/adapters/src/attribution_repo.rs", T06B_RULE);
+        match t06b_correction_rule_site(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 2"), "{lines:?}");
+                assert!(
+                    lines[0].contains("crates/adapters/src/attribution_repo.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        m07_write(
+            &tmp,
+            "crates/adapters/src/attribution_repo.rs",
+            "fn rule() -> RuleId { RuleId::Correction1 }\n",
+        );
+        match t06b_correction_rule_site(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("RuleId::Correction1"), "{lines:?}");
             }
             other => panic!("expected Fail, got {other:?}"),
         }
