@@ -60,6 +60,19 @@ def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # Linux: KiB
 
 
+def proc_mb(field: str) -> float:
+    """VmHWM (peak RSS since the last hwm_reset) or VmRSS (now), from /proc/self/status."""
+    return int(re.search(rf"{field}:\s+(\d+) kB", Path("/proc/self/status").read_text()).group(1)) / 1024
+
+
+def hwm_reset():
+    """Linux >= 4.0: writing 5 to clear_refs resets VmHWM, so each cell gets its own peak RSS (ru_maxrss never goes down)."""
+    try:
+        Path("/proc/self/clear_refs").write_text("5")
+    except OSError:
+        pass
+
+
 def src_form(s: str) -> str:
     """The text as it appears inside a Python source literal in a README (newline and quote escaped)."""
     return s.replace("\n", "\\n").replace('"', '\\"')
@@ -146,6 +159,7 @@ def time_cell(sc: Scorer, enc, length: int, b: int, prof, literal: bool = False)
         return {key: v[idx] for key, v in enc.items()}
 
     lat = []
+    hwm_reset()
     with torch.inference_mode():
         t = time.perf_counter()
         sc.forward(batch(0), literal)
@@ -166,7 +180,8 @@ def time_cell(sc: Scorer, enc, length: int, b: int, prof, literal: bool = False)
     return {"L": length, "b": b, "literal_full_logits": literal, "n_batches": len(lat), "warmup_s": round(warm, 3),
             "timed_s": round(total, 3), "pairs_per_s": round(len(lat) * b / total, 4),
             "p50_ms": round(float(np.percentile(lat, 50)) * 1000, 1), "p95_ms": round(float(np.percentile(lat, 95)) * 1000, 1),
-            "min_ms": round(min(lat) * 1000, 1), "max_ms": round(max(lat) * 1000, 1), "rss_mb": round(rss_mb())}
+            "min_ms": round(min(lat) * 1000, 1), "max_ms": round(max(lat) * 1000, 1), "rss_mb": round(rss_mb()),
+            "cell_peak_rss_mb": round(proc_mb("VmHWM"))}
 
 
 def score_query(sc: Scorer, query: str, docs, length: int, b: int):
@@ -336,7 +351,7 @@ def run(a):
     res["model"]["download_s"] = round(time.perf_counter() - t, 1)
     t = time.perf_counter()
     sc = Scorer(a.kind, path)
-    res["model"].update(load_s=round(time.perf_counter() - t, 1), params_m=round(sc.params / 1e6, 1) if sc.params else None, rss_after_load_mb=round(rss_mb()))
+    res["model"].update(load_s=round(time.perf_counter() - t, 1), params_m=round(sc.params / 1e6, 1) if sc.params else None, rss_after_load_mb=round(rss_mb()), rss_now_after_load_mb=round(proc_mb("VmRSS")))
     if a.kind == "ort_int8":
         res["model"].update(export_and_quantise_s=sc.export_s, int8_onnx_mb=sc.int8_mb, quantisation="optimum arm64 dynamic int8, per_channel=False")
     log("loaded", res["model"])
@@ -386,6 +401,7 @@ def run(a):
                 d += "\n" + cands[(k + i) % depth]
                 i += 1
             longs.append(d)
+        hwm_reset()
         tot, tok, exact_len = score_query(sc, row["query"], longs, length, b)
         ov = res["overhead"]
         pred = depth / best["pairs_per_s"] + depth * ov["tok_s_per_pair"][str(length)] + ov["fixed_call_s"]
@@ -394,7 +410,8 @@ def run(a):
         res["query"] = {"depth": depth, "L": length, "b": b, "predicted_s": round(pred, 2), "predicted_ceil_batches_s": round(pred_ceil, 2),
                         "measured_exact_L_s": round(tot, 2), "exact_mean_tokens": round(exact_len, 1), "measured_exact_L_tokenise_s": round(tok, 3),
                         "ratio_measured_over_predicted": round(tot / pred, 3),
-                        "natural_passages_s": round(nat_tot, 2), "natural_mean_tokens": round(nat_len, 1)}
+                        "natural_passages_s": round(nat_tot, 2), "natural_mean_tokens": round(nat_len, 1),
+                        "peak_rss_mb": round(proc_mb("VmHWM"))}
         log("query", res["query"])
 
     # 7. Qwen only: the card-literal path (logits at every position), run last so it cannot inflate the RSS of the cells above
@@ -435,23 +452,23 @@ def render(results):
     L = ["## E-RET-5a: CPU reranker bench",
          f"Runner: {e['cpu_model']} ({e['arch']}), {e['cpu_count']} vCPU, {e['mem_total_gb']} GB; torch {e['torch']}, transformers {e['transformers']}, "
          f"threads {e['threads']}, fp32, eval + inference_mode; features {','.join(e['cpu_feats'])}; profile {results[0]['profile']}", ""]
-    L += ["### Models", "| model | revision | licence | pin==HEAD now | params (M) | download s | load s | RSS after load MB | peak RSS MB (grid + query) | peak RSS MB (whole run) | sanity |",
-          "|---|---|---|---|---|---|---|---|---|---|---|"]
+    L += ["### Models", "| model | revision | licence | pin==HEAD now | params (M) | download s | load s | RSS after load MB (peak during load / now) | baseline RSS MB (torch+data, before load) | peak RSS MB (grid + query) | peak RSS MB (whole run) | sanity |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         m = r.get("model", {})
         sn = r.get("sanity", {})
         L.append(f"| {r['repo']} | `{r['revision'][:12]}` | {m.get('licence_api') or m.get('licence_readme_header')} | {m.get('pinned_is_head')} | "
-                 f"{m.get('params_m')} | {m.get('download_s')} | {m.get('load_s')} | {m.get('rss_after_load_mb')} | {r.get('peak_rss_mb_before_literal')} | {r.get('peak_rss_mb')} | "
+                 f"{m.get('params_m')} | {m.get('download_s')} | {m.get('load_s')} | {m.get('rss_after_load_mb')} / {m.get('rss_now_after_load_mb')} | {r.get('rss_baseline_mb')} | {r.get('peak_rss_mb_before_literal')} | {r.get('peak_rss_mb')} | "
                  f"{'PASS' if sn.get('pass') else 'FAIL' if sn else 'n/a'} |")
     L += ["", "### Throughput (batches of exactly L tokens, 4 threads)",
-          "| model | L | batch | timed batches | pairs/s | p50 ms/batch | p95 ms/batch | max ms |", "|---|---|---|---|---|---|---|---|"]
+          "| model | L | batch | timed batches | pairs/s | p50 ms/batch | p95 ms/batch | max ms | cell peak RSS MB |", "|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         for c in r["cells"]:
             if "pairs_per_s" in c:
                 tag = " (card-literal full logits)" if c.get("literal_full_logits") else ""
-                L.append(f"| {r['key']}{tag} | {c['L']} | {c['b']} | {c['n_batches']} | {c['pairs_per_s']} | {c['p50_ms']} | {c['p95_ms']} | {c['max_ms']} |")
+                L.append(f"| {r['key']}{tag} | {c['L']} | {c['b']} | {c['n_batches']} | {c['pairs_per_s']} | {c['p50_ms']} | {c['p95_ms']} | {c['max_ms']} | {c.get('cell_peak_rss_mb')} |")
             else:
-                L.append(f"| {r['key']} | {c['L']} | {c['b']} | skipped: {c.get('skipped')} | | | | |")
+                L.append(f"| {r['key']} | {c['L']} | {c['b']} | skipped: {c.get('skipped')} | | | | | |")
     L += ["", "### Derived per-query latency (s) = depth / pairs_per_s + depth * tokenise_s_per_pair + fixed_call_s; best batch size per L",
           "| model | L | best batch | fixed call ms | tokenise ms/pair | depth 10 | depth 25 | depth 50 | depth 100 |", "|---|---|---|---|---|---|---|---|---|"]
     for r in results:
@@ -461,13 +478,13 @@ def render(results):
             L.append(f"| {r['key']} | {length} | {best['b']} | {fmt(ov['fixed_call_s'] * 1000, 1)} | {fmt(ov['tok_s_per_pair'][str(length)] * 1000, 2)} | "
                      + " | ".join(fmt(best["latency_s"][str(d)]) for d in DEPTHS) + " |")
     L += ["", "### One real query (depth 25 at L=512 unless smoke): predicted vs measured",
-          "| model | depth | batch | predicted s | predicted (ceil batches) s | measured s (exact L) | measured/predicted | natural passages s | natural mean tokens |",
-          "|---|---|---|---|---|---|---|---|---|"]
+          "| model | depth | batch | predicted s | predicted (ceil batches) s | measured s (exact L) | measured/predicted | natural passages s | natural mean tokens | query peak RSS MB |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         q = r.get("query")
         if q:
             L.append(f"| {r['key']} | {q['depth']} | {q['b']} | {q['predicted_s']} | {q['predicted_ceil_batches_s']} | {q['measured_exact_L_s']} | "
-                     f"{q['ratio_measured_over_predicted']} | {q['natural_passages_s']} | {q['natural_mean_tokens']} |")
+                     f"{q['ratio_measured_over_predicted']} | {q['natural_passages_s']} | {q['natural_mean_tokens']} | {q.get('peak_rss_mb')} |")
     errs = [(r["key"], x) for r in results for x in r.get("errors", [])]
     if errs:
         L += ["", "### Errors"] + [f"- {k}: {x['stage']}: {x['error']}" for k, x in errs]

@@ -32,7 +32,7 @@ jobs:
           - {key: bge-reranker-v2-m3, repo: BAAI/bge-reranker-v2-m3, rev: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e, kind: seqcls, args: ''}
           - {key: qwen3-reranker-0.6b, repo: Qwen/Qwen3-Reranker-0.6B, rev: e61197ed45024b0ed8a2d74b80b4d909f1255473, kind: causal_yesno, args: ''}
           - {key: bge-reranker-base, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: seqcls, args: ''}
-          - {key: bge-reranker-base-ort-int8, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: ort_int8, args: '--smoke'}
+          - {key: bge-reranker-base-ort-int8, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: ort_int8, args: ''}
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: actions/setup-python@v5.6.0
