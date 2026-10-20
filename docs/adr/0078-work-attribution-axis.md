@@ -396,6 +396,17 @@ and the failing lines are in the card's PR description.
   - r10: a red-only migration `0255_red_m29_t06c_r10` grants EXECUTE on the reader to `role_admin` -> the `rls_check`
     declared-project reader gate red: "role_admin: expected EXECUTE=false, actual true" (`rls_check.rs:7187`). It is a
     later migration because 0254's own postcheck pins the EXECUTE list.
+- T06c delta-review fix (PR #99), branches `red/m29-t06c-r12` and `r12b` off `c6c7efe` (G-T06c-1 (a') now has its
+  positive control: the same unbound PAT routed to the second workspace declares that workspace's project and is
+  accepted with one DECLARED row):
+  - r12: `let wide = auth.clone();` before `validate(..)` in `operation_receipt::atomically` and `&wide` passed to
+    `resolve_declared_project_in_txn` (two lines: the clone must precede the shadowing `auth`) -> stays green (run
+    39348596915). Route narrowing has two layers on `remember.put`: the guard admits with
+    `WorkspaceAdmission::NarrowRequested`, so `credential.authorize(scope, Some(requested))` already hands the door a
+    one-workspace scope, and `validate`'s `auth.narrow(workspace)` is the second.
+  - r12b: r12 plus `run_atomic_remember`'s admission switched to `WorkspaceAdmission::PreserveContinuityFilter`
+    (`guard.rs:840`; three lines in all, one per layer plus the clone) -> G-T06c-1(a') red: the W1-routed put declaring
+    the W2 project (response id 15) is accepted, 200 instead of 400 (`mcp_gateway.rs:10433`, run 39349680861).
 - T06d (PR #100), branches `red/m29-t06d-r1..r7` and `r3a..r3e` off `b52d025`:
   - r1: 0253's FK line dropped -> G-T06d-1 red: an `authorization_evidence_id` that is no Evidence is accepted.
   - r2: the guard's factual check dropped -> G-T06d-2 red: a factual id that is no Evidence is accepted.
