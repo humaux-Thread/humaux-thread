@@ -845,6 +845,7 @@ impl<'a> DistillReasoner<'a> {
             route,
             provider,
         } = prepared;
+        let _ = provider.complete_structured(&context, request.clone()).await;
         let mut http = std::pin::pin!(complete_structured_timed(
             provider.as_ref(),
             &context,
