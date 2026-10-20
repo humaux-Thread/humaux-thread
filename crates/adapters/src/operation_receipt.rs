@@ -456,6 +456,7 @@ async fn atomically(
     } else {
         OPERATION
     };
+    let wide = auth.clone();
     let auth = validate(auth, &request, operation)?;
     // Design v0.2 §15 T04c / ADR-0078 D-D A1: the task-run and declared-project carriers are `remember.put`'s alone.
     if (task_run.is_some() || project.is_some()) && note.is_some() {
@@ -530,7 +531,7 @@ async fn atomically(
     //   `FOR SHARE` on the project row.
     let declared = match project {
         Some(project) => Some(
-            remember::resolve_declared_project_in_txn(&mut txn, &auth, project)
+            remember::resolve_declared_project_in_txn(&mut txn, &wide, project)
                 .await
                 .map_err(db_error)?
                 .ok_or(ErrorCode::InvalidInput)?,
