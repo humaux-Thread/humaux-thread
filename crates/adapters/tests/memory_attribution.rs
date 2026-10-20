@@ -993,12 +993,14 @@ fn g_m29_6_relation_correction_revokes_in_its_transaction() {
                 .batch_execute(&format!(
                     "SET session_replication_role = replica; \
                      INSERT INTO private.memory_projects (tenant_id, memory_id, project_id, relation, source_kind, \
-                       rule_id_ver, decision_evidence_id) \
-                     VALUES ('{other_tenant}', '{}', '{}', 'ATTRIBUTED_TO', 'INHERITED', 'task_run@1', '{}'); \
+                       rule_id_ver, decision_evidence_id, derived_task_id, derived_occurred_at) \
+                     VALUES ('{other_tenant}', '{}', '{}', 'ATTRIBUTED_TO', 'INHERITED', 'task_run@1', '{}', '{}', \
+                       to_timestamp({INSIDE})); \
                      SET session_replication_role = DEFAULT;",
                     Uuid::now_v7(),
                     w.p1,
-                    w.e1
+                    w.e1,
+                    w.t1.0
                 ))
                 .expect("owner plants another tenant's row");
             let decoys = [inside, other_task, declared_row].map(|m| links(&mut handle, m));
