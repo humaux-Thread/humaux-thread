@@ -546,6 +546,15 @@ pub struct FinalizeCall {
     /// `retrieval_provider::cost::compute_cost` has always taken both. `None` for a call with
     /// no output dimension (embedding/rerank) or a provider that never answered.
     pub output_tokens: Option<i64>,
+    /// Prompt tokens the provider served from its prompt cache (0257, ADR-0081 D-A (D-RET-1)). A subset of
+    /// [`Self::input_tokens`], which stays the TOTAL prompt count. `None` = not reported, never `Some(0)`.
+    /// Normalised in one place, `contribution_reasoner::finalize_from_usage`. Written by `finalize_update`, the
+    /// one UPDATE that [`finalize_call`], [`finalize_private_call`] and the contribution path share; not by the
+    /// retrieval budget settle (`provider_budget`), whose embedding/rerank calls have no prompt cache.
+    pub provider_cache_read_tokens: Option<i64>,
+    /// Prompt tokens the provider wrote to its cache on this call (0257). Part of [`Self::input_tokens`],
+    /// disjoint from the read count. `None` = not reported; the OpenAI-compatible protocol has no such counter.
+    pub provider_cache_write_tokens: Option<i64>,
     pub billable_tokens: Option<i64>,
     pub candidate_count: Option<i32>,
     pub candidate_tokens: Option<i64>,
@@ -558,21 +567,26 @@ pub struct FinalizeCall {
     pub provider_request_id: Option<String>,
 }
 
-async fn finalize_in_txn(
+/// The ONE finalize UPDATE (§19.1): every outcome column, for every path. `contribution_only` narrows the WHERE to
+/// `CONTRIBUTION_DEIDENTIFY` rows and changes nothing else, so a new outcome column is added here once.
+async fn finalize_update(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: Uuid,
     model_call_id: Uuid,
     outcome: ModelCallOutcome,
     finalize: &FinalizeCall,
-) -> Result<bool, ModelCallLedgerError> {
+    contribution_only: bool,
+) -> Result<u64, ModelCallLedgerError> {
     set_tenant_local(txn, tenant_id).await?;
 
     let result = sqlx::query(
         "UPDATE ops.model_call_ledger \
          SET status = $3, input_tokens = $4, billable_tokens = $5, candidate_count = $6, \
              candidate_tokens = $7, cache_hit = $8, latency_ms = $9, actual_cost = $10, \
-             error_class = $11, provider_request_id = $12, output_tokens = $13 \
-         WHERE model_call_id = $1 AND tenant_id = $2 AND status = 'RESERVED'",
+             error_class = $11, provider_request_id = $12, output_tokens = $13, \
+             provider_cache_read_tokens = $14, provider_cache_write_tokens = $15 \
+         WHERE model_call_id = $1 AND tenant_id = $2 \
+           AND (NOT $16 OR purpose = 'CONTRIBUTION_DEIDENTIFY') AND status = 'RESERVED'",
     )
     .bind(model_call_id)
     .bind(tenant_id)
@@ -587,9 +601,22 @@ async fn finalize_in_txn(
     .bind(&finalize.error_class)
     .bind(&finalize.provider_request_id)
     .bind(finalize.output_tokens)
+    .bind(finalize.provider_cache_read_tokens)
+    .bind(finalize.provider_cache_write_tokens)
+    .bind(contribution_only)
     .execute(&mut **txn)
     .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(result.rows_affected())
+}
+
+async fn finalize_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    model_call_id: Uuid,
+    outcome: ModelCallOutcome,
+    finalize: &FinalizeCall,
+) -> Result<bool, ModelCallLedgerError> {
+    Ok(finalize_update(txn, tenant_id, model_call_id, outcome, finalize, false).await? > 0)
 }
 
 /// Finalizes an admitted contribution ledger row inside the caller's post-provider transaction.
@@ -603,25 +630,7 @@ pub(crate) async fn finalize_reasoning_call_in_txn(
     if finalize.actual_cost.is_some() {
         return Err(ModelCallLedgerError::ReasoningReservationConflict);
     }
-    set_tenant_local(txn, tenant_id).await?;
-    let result = sqlx::query(
-        "UPDATE ops.model_call_ledger SET status=$3,input_tokens=$4,billable_tokens=$5,candidate_count=$6,candidate_tokens=$7,cache_hit=$8,latency_ms=$9,actual_cost=$10,error_class=$11,provider_request_id=$12 WHERE model_call_id=$1 AND tenant_id=$2 AND purpose='CONTRIBUTION_DEIDENTIFY' AND status='RESERVED'",
-    )
-    .bind(model_call_id)
-    .bind(tenant_id)
-    .bind(outcome.as_str())
-    .bind(finalize.input_tokens)
-    .bind(finalize.billable_tokens)
-    .bind(finalize.candidate_count)
-    .bind(finalize.candidate_tokens)
-    .bind(finalize.cache_hit)
-    .bind(finalize.latency_ms)
-    .bind(finalize.actual_cost)
-    .bind(&finalize.error_class)
-    .bind(&finalize.provider_request_id)
-    .execute(&mut **txn)
-    .await?;
-    Ok(result.rows_affected() == 1)
+    Ok(finalize_update(txn, tenant_id, model_call_id, outcome, finalize, true).await? == 1)
 }
 
 /// §19.1 finalize() — see module doc. Returns `Ok(false)` if `model_call_id` does not exist

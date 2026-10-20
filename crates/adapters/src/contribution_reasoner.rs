@@ -882,12 +882,27 @@ pub(crate) fn admitted_inference_context(
 /// With all three landed, `retrieval_provider::cost::compute_cost` can price the row the day a
 /// pricing row exists, with no code change. A provider that reports no usage leaves them NULL —
 /// never a fabricated zero (§19.1 "unknown usage/cost stay NULL").
+///
+/// The ONE place a provider's usage object becomes the ledger's cache columns (0257, ADR-0081 D-A
+/// (D-RET-1)). The OpenAI-compatible protocol, the only one `byok` speaks, normalises as:
+/// * `provider_cache_read_tokens` = `prompt_tokens_details.cached_tokens`; a count above `prompt_tokens`, or one
+///   without `prompt_tokens`, is "not reported" (`None`), never clamped and never 0, so the ledger's
+///   `input_tokens` CHECK cannot turn a good call into a lost row;
+/// * `provider_cache_write_tokens` = `None`: the protocol has no write counter;
+/// * `input_tokens` stays the TOTAL prompt count (`prompt_tokens` already includes the cached part).
 fn finalize_from_usage(usage: &TokenUsage, latency_ms: Option<i32>) -> FinalizeCall {
     let input_tokens = usage.input_tokens.and_then(|v| i64::try_from(v).ok());
+    let provider_cache_read_tokens = usage
+        .cached_input_tokens
+        .and_then(|v| i64::try_from(v).ok())
+        .filter(|cached| input_tokens.is_some_and(|input| *cached <= input));
     FinalizeCall {
         input_tokens,
+        // ponytail: cached tokens priced at full input price (cost is an upper bound); add a cache price column to
+        // control.provider_pricing_versions and a compute_cost leg when billing needs it
         billable_tokens: input_tokens,
         output_tokens: usage.output_tokens.and_then(|v| i64::try_from(v).ok()),
+        provider_cache_read_tokens,
         latency_ms,
         ..FinalizeCall::default()
     }
@@ -2095,5 +2110,102 @@ mod ledger_usage_tests {
         assert_eq!(finalize.input_tokens, None);
         assert_eq!(finalize.billable_tokens, None);
         assert_eq!(finalize.output_tokens, None);
+        assert_eq!(finalize.provider_cache_read_tokens, None);
+        assert_eq!(finalize.provider_cache_write_tokens, None);
+    }
+
+    /// An OpenAI-compatible `usage` object as `byok::parse_chat_envelope` yields it: `prompt_tokens`,
+    /// `completion_tokens` 4, `prompt_tokens_details.cached_tokens` (the JSON -> `TokenUsage` leg is byok's own test).
+    fn openai_usage(prompt: Option<u64>, cached: Option<u64>) -> TokenUsage {
+        TokenUsage {
+            input_tokens: prompt,
+            output_tokens: Some(4),
+            reasoning_tokens: None,
+            cached_input_tokens: cached,
+        }
+    }
+
+    /// G-RET-1 (a), ADR-0081 D-A (D-RET-1): `{prompt 10, cached 3}` is read 3 / write NULL, `input_tokens` stays the
+    /// TOTAL prompt count and `billable_tokens` stays equal to it; the four derived categories add up to input + output.
+    #[test]
+    fn cached_tokens_land_as_read_and_input_stays_the_total() {
+        let finalize = finalize_from_usage(&openai_usage(Some(10), Some(3)), None);
+        assert_eq!(finalize.provider_cache_read_tokens, Some(3));
+        assert_eq!(
+            finalize.provider_cache_write_tokens, None,
+            "the OpenAI-compatible protocol has no write counter"
+        );
+        assert_eq!(finalize.input_tokens, Some(10));
+        assert_eq!(finalize.billable_tokens, Some(10));
+
+        let (input, output) = (
+            finalize.input_tokens.unwrap(),
+            finalize.output_tokens.unwrap(),
+        );
+        let read = finalize.provider_cache_read_tokens.unwrap();
+        let write = finalize.provider_cache_write_tokens.unwrap_or(0);
+        let new_input = input - read - write;
+        assert_eq!(new_input, 7);
+        assert_eq!(new_input + write + read + output, input + output);
+    }
+
+    /// No `prompt_tokens_details` (or no `cached_tokens` in it) is "not reported": NULL, never a fabricated 0. A
+    /// reported 0 is a measurement and stays 0.
+    #[test]
+    fn missing_cached_count_is_null_and_a_reported_zero_stays_zero() {
+        assert_eq!(
+            finalize_from_usage(&openai_usage(Some(10), None), None).provider_cache_read_tokens,
+            None
+        );
+        assert_eq!(
+            finalize_from_usage(&openai_usage(Some(10), Some(0)), None).provider_cache_read_tokens,
+            Some(0)
+        );
+    }
+
+    /// A cached count above `prompt_tokens`, or one without `prompt_tokens`, cannot be a subset of the input: it is
+    /// "not reported", never clamped and never 0, so the ledger CHECK cannot turn a good call into a lost row.
+    #[test]
+    fn an_impossible_cached_count_is_not_reported() {
+        for (prompt, cached) in [(Some(10), Some(11)), (None, Some(3))] {
+            let finalize = finalize_from_usage(&openai_usage(prompt, cached), None);
+            assert_eq!(
+                finalize.provider_cache_read_tokens, None,
+                "{prompt:?} {cached:?}"
+            );
+            assert_eq!(
+                finalize.provider_cache_write_tokens, None,
+                "{prompt:?} {cached:?}"
+            );
+        }
+        // The boundary is a fully cached prompt, which is valid.
+        let full = finalize_from_usage(&openai_usage(Some(10), Some(10)), None);
+        assert_eq!(full.provider_cache_read_tokens, Some(10));
+    }
+
+    /// G-RET-1 (a), §57.1 three-state: Anthropic-compatible (`cache_creation_input_tokens` /
+    /// `cache_read_input_tokens`) and DeepSeek (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`) usage
+    /// fixtures are `not_applicable` while `byok` parses none of those fields. The assertion is the tripwire that keeps
+    /// it from being a skip: the day an adapter lands this goes red and must be replaced by real normalisation cases.
+    #[test]
+    fn anthropic_and_deepseek_usage_shapes_are_not_applicable_until_byok_parses_them() {
+        const BYOK: &str = include_str!("byok.rs");
+        let parsed: Vec<&str> = [
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+        ]
+        .into_iter()
+        .filter(|field| BYOK.contains(field))
+        .collect();
+        assert!(
+            parsed.is_empty(),
+            "byok now parses {parsed:?}: replace this not_applicable line with fixtures and a write-count normaliser"
+        );
+        eprintln!(
+            "not_applicable: no Anthropic-compatible / DeepSeek usage adapter in byok (missing object: a byok parser for \
+             cache_creation_input_tokens / prompt_cache_hit_tokens)"
+        );
     }
 }
