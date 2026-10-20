@@ -3,7 +3,7 @@
 //!   real Distill hop (`distill::dispatch_pass`, key-free provider), the ladder writes `memory_projects`, a real
 //!   correction and a real relation correction move it, and the one reader (`attribution_repo::read_memory_attribution`)
 //!   reports it from `private.memory_projects_live`.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-gateway, humaux-private-worker, humaux-protocol,
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-gateway, humaux-protocol,
 //!   humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner) r=[control.operation_receipts,
 //!   ops.model_call_ledger, private.evidence_objects, private.evidence_projects, private.memory_evidence,
 //!   private.memory_project_revocations, private.memory_projects, private.memory_records,

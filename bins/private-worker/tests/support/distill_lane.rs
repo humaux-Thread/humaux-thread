@@ -1,7 +1,7 @@
 //! `private-worker::tests::support::distill_lane` — the key-free Distill harness the private-worker E2E tests share:
 //!   the R3 admission lane seed for `PRIVATE_DISTILL_TEXT`, the canned-reply `FakeProvider`, its route map and the
 //!   dispatch config.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-private-worker, humaux-testkit, postgres, uuid];
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-testkit, postgres, uuid];
 //!   services=[PostgreSQL(owner) r=[control.processor_models] w=[control.credentials, control.processor_models,
 //!   control.provider_accounts, control.provider_endpoints, control.reasoning_credential_bindings,
 //!   control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates,
