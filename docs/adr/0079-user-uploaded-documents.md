@@ -73,10 +73,13 @@ knowledge; and deletion semantics for a Memory that depends on several sources.
     - `run_document_io`: the version row, plus the Evidence the run is bound to;
     - `citations`: `basis_evidence_id`;
     - `memory_source_spans`: the owning Memory (the same Memory parent as in 0154).
-  - Consequence: another reader in the same tenant can at most learn that "a document exists" (the subject row). They see
+  - Consequence: another reader in the same tenant can at most learn that "a document exists" (the subject row) and
+    which projects and tasks it is linked to: the relation-kernel `DOCUMENTED_BY` / `ATTACHES` rows follow the 0249
+    table template, whose policy is tenant-only, and carry ids, `decided_by` and Evidence ids, never content. They see
     no title, version, adoption state, pin, generation or content.
-    ponytail: existence is visible inside a tenant; the upgrade signal is several people in one tenant with private
-    documents; the upgrade path is a per-subject ACL hook (§6.1.3).
+    ponytail: existence and links are visible inside a tenant; the upgrade signal is several people in one tenant with
+    private documents; the upgrade path is a per-subject ACL hook (§6.1.3) plus a RESTRICTIVE parent-visibility policy
+    on the relation tables for `DOCUMENT` endpoints.
   - A reader who can see v1 but not the head v2 cannot read the `GLOBAL` state row, so for that reader the current
     version is UNKNOWN. The existence of v2 does not leak.
 - **Rendition** (one version in several formats, say md and pdf): in the first slice every version has exactly one
@@ -153,7 +156,7 @@ Rules:
   - Zero rows returned leads to a conflict or a proposal; **there is no unconditional retry that overwrites.**
   - `head_generation` also recognises a stale request after v1 → v2 → v1.
 - An exclusion constraint on historical adoption intervals needs btree_gist (PostgreSQL 18 supports uuid there).
-  **Deferred**, to be done together with the ADR that introduces btree_gist for §9.
+  **Deferred.**
   - In the first slice, "which version was adopted at time T" comes from replaying the append-only log in order.
   - Upgrade signal: a product-level as-of query.
 
@@ -355,7 +358,7 @@ This is isomorphic with "migration = L0 replayed through the `remember()` front 
 - The 103 same-name groups, the 109 file families, the 1,509 "document + project" co-occurrences and the 1,240 "document +
   UUID" co-occurrences are **all candidate sets only.**
   - No Cartesian-product inference.
-  - The 28.5% of legacy entries that name a document file and the 12.0% that carry an absolute local path to one overlap
+  - The 28.5% of legacy entries that name a document file and the 12.0% that carry an absolute local path to one may overlap
     and cannot be added.
   - An old entry is not put under a guessed project just to complete the migration.
 
@@ -386,7 +389,7 @@ module gates there needs its own spec change.
 | G-DOC-1 identity layers | Two Documents with byte-identical template bytes → two Documents, two Evidence, no merge of any kind. A → B → A → 3 Versions | deduplicate or merge Documents by `payload_sha256`; use the hash as the version id |
 | G-DOC-2 no automatic registration | an unknown `document_id` is rejected; a file-name or path match yields candidates only | "if not found, create one from the file name" |
 | G-DOC-3 roles do not mix | a source document does not appear in the ABOUT links of a derived Memory | write `source_document_id` into `evidence_subjects` |
-| G-DOC-4 association does not authorise | add a `DOCUMENTED_BY` for P2 pointing at P1's USER_PRIVATE document → P2's reader cannot read the body, the Memory, the relation details or the title. **Per-table assertion:** the fixture plants at least one row in every `document_*` table (versions, receipts, extractions, nodes, excerpts, state, adoptions, run_document_io, citations, memory_source_spans); the owner reads ≥ 1 rows and P2's reader reads 0 rows; the subject row shows only the opaque placeholder | (a) recall relaxes visibility by `DOCUMENTED_BY`; (b) write the title into `display_name`; (c) the policy of any one `document_*` table keeps only the tenant predicate |
+| G-DOC-4 association does not authorise | add a `DOCUMENTED_BY` for P2 pointing at P1's USER_PRIVATE document → P2's reader cannot read the body, the Memory or the title (the link row itself is tenant-visible and carries ids only, see D-A). **Per-table assertion:** the fixture plants at least one row in every `document_*` table (versions, receipts, extractions, nodes, excerpts, state, adoptions, run_document_io, citations, memory_source_spans); the owner reads ≥ 1 rows and P2's reader reads 0 rows; the subject row shows only the opaque placeholder | (a) recall relaxes visibility by `DOCUMENTED_BY`; (b) write the title into `display_name`; (c) the policy of any one `document_*` table keeps only the tenant predicate |
 | G-DOC-5 attribution is complete | (a) in span mode an unassigned span produces no Memory; (b) an upload carrying both `project_id` and an assignment list → `INVALID_INPUT` with zero writes; appending an assignment to a `WHOLE` receipt → `INVALID_INPUT`; bypassing the application layer and writing the DB directly: writing `evidence_projects` for a `SPAN` receipt Evidence, or writing `document_excerpts` for a `WHOLE` receipt → both rejected by triggers; (c) no project is picked by topic; (d) for every excerpt Evidence, origin, visibility columns and `data_class` equal R's column by column | (a) unassigned spans are distilled anyway, writing a Memory with zero attribution rows; (b) remove the application-layer `attribution_mode` check, so both are written; (b') remove one of the two DB triggers; (c) pick a project by topic; (d) write an excerpt with an `AuthenticatedAgent` origin, or with the default visibility |
 | G-DOC-6 content source required | a document-derived Memory without a PRIMARY (the receipt Evidence or its excerpt) or without a span → the commit is rejected | link only the range-assignment request, with no content source |
 | G-DOC-7 locator determinism | code points versus bytes for CJK text and emoji; repeated paragraphs → ambiguity failure; after a new Extraction, an old citation still resolves to the old text | use byte offsets; take the first match; silently re-bind |
@@ -401,9 +404,10 @@ module gates there needs its own spec change.
 | G-DOC-16 no hash existence query | architecture-check: no external interface takes an input hash and returns whether it exists | add an `exists_by_sha256` endpoint |
 | G-DOC-17 closed-set reconciliation | the DOCUMENT kind, `key_kind` `LEGACY_DOCUMENT_ROW`, `RelationKind` `DOCUMENTED_BY` / `ATTACHES`, node kinds, receipt enums (including `attribution_mode`), `scope_kind`, intent, EvidenceMode: Rust enum == DB CHECK (§78.2). A subject of kind DOCUMENT with `merged_into` set → the DB rejects; a subject of kind DOCUMENT used as a merge target → the DB rejects | (a) add one value only in the DB; (b) remove only "DOCUMENT cannot set `merged_into`"; (c) remove only "DOCUMENT cannot be a merge target" |
 
-Note on EvidenceMode: it is the closed set `HostObserved / ClientDeclared / UserReported / Imported` of design v0.2 §16.9,
-which belongs to the external-tool axis and has no Rust type in the repository yet. Until it has one, G-DOC-17 reports it
-`not_applicable`, naming it (§57.1).
+Note on closed sets that do not exist yet: any G-DOC-17 member whose type does not exist when the gate lands (EvidenceMode,
+the closed set `HostObserved / ClientDeclared / UserReported / Imported` of design v0.2 §16.9 on the external-tool axis;
+node kinds before T-DOC-2; `intent` and `DOCUMENTED_BY` / `ATTACHES` before T-DOC-5) is reported `not_applicable`, naming
+it (§57.1). The card that introduces the type removes that `not_applicable`.
 
 ## Experiments
 
@@ -436,8 +440,8 @@ the data stays in the private evaluation notes.
     share correctly reported as UNKNOWN, number of wrong attributions.
   - First-hand facts (CC-HOOKS): an @-file does not trigger PreToolUse by default; `tool_use_id` is an event-specific
     field.
-- **E-DOC-5 Distillation faithfulness and cost.** Use real design-document version pairs (the design documents cited by
-  the ADRs, and historical versions of the Baseline).
+- **E-DOC-5 Distillation faithfulness and cost.** Use real design-document version pairs (the design v0.1 / v0.2 pair, and
+  historical versions of the Baseline).
   - A person labels "was a condition lost": fault-injected samples that delete an "only if" or an "unless", or shuffle
     steps, must be caught by the gold set.
   - Measure the calls and tokens of full re-distillation, as the baseline for D-E's cache and for any later differential
