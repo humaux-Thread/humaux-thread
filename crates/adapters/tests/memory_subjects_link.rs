@@ -5,7 +5,7 @@
 //!   w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.events,
 //!   private.evidence_objects, private.evidence_subjects, private.memory_consolidation_runs, private.memory_evidence,
 //!   private.memory_records, private.memory_rollup_sources, private.memory_rollups, private.subject_keys,
-//!   private.subjects] x=[private.link_memory_subjects, private.link_rollup_subjects],
+//!   private.subjects] x=[ops.append_memory_lifecycle, private.link_memory_subjects, private.link_rollup_subjects],
 //!   PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway), PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::ids, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]
@@ -26,11 +26,17 @@
 //!  3. `cross_tenant_subject_is_unlinkable` — tenant B cannot link tenant A's subject: the tenant-leg
 //!     FK fails byte-identically to a nonexistent id (no existence oracle), and B's RLS resolve of
 //!     A's id is empty.
-//!  4. `correction_inherits_but_explicit_supersede_does_not` — the 0154 trigger: a USER_CORRECTION
-//!     successor inherits the predecessor's links (INHERITED) under `role_gateway`; an explicit
-//!     supersede onto a non-correction successor inherits nothing.
+//!  4. `correction_inherits_but_explicit_supersede_does_not` — the 0154 trigger as 0256 keys it: the
+//!     arbiter UPDATE of a correction (SUPERSEDE / USER_CORRECTION head, stamped through the sole
+//!     lifecycle writer as `correct_atomically` does) gives the successor the predecessor's links
+//!     (INHERITED) under `role_gateway`; an explicit supersede onto a non-correction successor
+//!     inherits nothing.
 //!  5. `rollup_inherits_source_subjects_under_consolidation_role` — `link_rollup_subjects` under
 //!     `role_consolidation_worker` (SELECT on memory_subjects, INSERT on memory_rollup_subjects).
+//!  6. `rule_3b_keys_on_the_correction_transition` — issue #109 / §6.1.3 rule ③: over a chain of two
+//!     corrections (M0 → M1 → M2), (iii) the real correction inherits, (ii) a restore of the
+//!     correction-born M1 gives it nothing from M2, and (i) an explicit supersede of X onto the
+//!     correction-born M1 gives it nothing from X (migration 0256, `private.is_correction_transition`).
 //!
 //! Skip contract (`humaux_testkit`, §79.2): no DSN / unreachable / 0154 not applied ⇒ visible SKIP.
 //! Every test runs inside one rolled-back transaction, so a passing run leaves the dev DB clean.
@@ -168,6 +174,79 @@ fn links<C: GenericClient>(c: &mut C, memory: Uuid) -> Vec<(Uuid, String, String
     .into_iter()
     .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
     .collect()
+}
+
+/// The SUPERSEDE record `memory_governance_repo::append_lifecycle_event` writes through its sole writer (§36 / ADR-0020)
+/// for `target` -> `successor`; a correction carries its `correction_evidence`, a plain supersede does not. Returns the
+/// `event_id` the arbiter UPDATE stamps as the head. Runs as `role_gateway` with the tenant installed.
+fn append_supersede<C: GenericClient>(
+    c: &mut C,
+    tenant: Uuid,
+    actor: Uuid,
+    target: Uuid,
+    successor: Uuid,
+    reason: &str,
+    correction_evidence: Option<Uuid>,
+) -> Uuid {
+    c.query_one(
+        "SELECT ops.append_memory_lifecycle($1, 'MEMORY', $2, 'SUPERSEDE', $3, $4, $5, $6, NULL, \
+                now() + interval '1 day', $7, 'fixture', NULL, NULL)",
+        &[
+            &tenant,
+            &target,
+            &reason,
+            &actor,
+            &successor,
+            &correction_evidence,
+            &Uuid::new_v4().to_string(),
+        ],
+    )
+    .expect("append the SUPERSEDE record")
+    .get(0)
+}
+
+/// The RESTORE record of `target` undoing `undoes`, as `restore_atomically` appends it.
+fn append_restore<C: GenericClient>(
+    c: &mut C,
+    tenant: Uuid,
+    actor: Uuid,
+    target: Uuid,
+    undoes: Uuid,
+) -> Uuid {
+    c.query_one(
+        "SELECT ops.append_memory_lifecycle($1, 'MEMORY', $2, 'RESTORE', NULL, $3, NULL, NULL, $4, NULL, $5, \
+                'fixture', NULL, NULL)",
+        &[
+            &tenant,
+            &target,
+            &actor,
+            &undoes,
+            &Uuid::new_v4().to_string(),
+        ],
+    )
+    .expect("append the RESTORE record")
+    .get(0)
+}
+
+/// The arbiter UPDATE of `supersede_atomically` / `correct_atomically`: flips the active `target` to superseded by
+/// `successor` and stamps `event` as its lifecycle head in the same statement. Runs as `role_gateway`.
+fn supersede_row<C: GenericClient>(
+    c: &mut C,
+    tenant: Uuid,
+    target: Uuid,
+    successor: Uuid,
+    event: Uuid,
+) {
+    let updated = c
+        .execute(
+            "UPDATE private.memory_records \
+                SET status = 'superseded', superseded_by = $2, superseded_at = clock_timestamp(), \
+                    lifecycle_head_event_id = $4 \
+              WHERE tenant_id = $3 AND memory_id = $1 AND status = 'active'",
+            &[&target, &successor, &tenant, &event],
+        )
+        .expect("the arbiter UPDATE");
+    assert_eq!(updated, 1, "the arbiter UPDATE flips the one active target");
 }
 
 fn failure_signature(e: &postgres::Error) -> (Option<SqlState>, Option<String>) {
@@ -408,29 +487,24 @@ fn correction_inherits_but_explicit_supersede_does_not() {
         // M2: a USER_CORRECTION version (what correct_atomically materialises before its UPDATE).
         let corrected =
             serde_json::json!({"key_claim": "Grace Hopper prefers COBOL reviews on Mondays."});
-        let (_e2, m2) = seed_memory(&mut txn, tenant, domain, "USER_CORRECTION", &corrected);
+        let (e2, m2) = seed_memory(&mut txn, tenant, domain, "USER_CORRECTION", &corrected);
         assert!(
             links(&mut txn, m2).is_empty(),
             "M2 has no links before the arbiter UPDATE"
         );
 
         // The arbiter UPDATE, as role_gateway runs it (column-scoped UPDATE grant, RLS with the
-        // correcting user installed) — the 0154 trigger fires here.
+        // correcting user installed) — the 0154 trigger fires here, and inherits only because the head it
+        // stamps is the SUPERSEDE / USER_CORRECTION of M1 into M2 (0256 `is_correction_transition`).
         // dep: PostgreSQL(role_gateway) — role switch before the scoped statements for `correction_inherits_but_explicit_supersede_does_not`
         txn.batch_execute(&format!(
             "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}'; \
              SET LOCAL humaux.user_id = '{user}';"
         ))
         .expect("gateway context");
-        let updated = txn
-            .execute(
-                "UPDATE private.memory_records \
-                    SET status = 'superseded', superseded_by = $2, superseded_at = clock_timestamp() \
-                  WHERE tenant_id = $3 AND memory_id = $1 AND status = 'active'",
-                &[&m1, &m2, &tenant],
-            )
-            .expect("gateway supersedes M1 by its correction");
-        assert_eq!(updated, 1);
+        let correction =
+            append_supersede(&mut txn, tenant, user, m1, m2, "USER_CORRECTION", Some(e2));
+        supersede_row(&mut txn, tenant, m1, m2, correction);
         txn.batch_execute("RESET ROLE").expect("superuser");
         let m2_links = links(&mut txn, m2);
         assert_eq!(
@@ -473,6 +547,127 @@ fn correction_inherits_but_explicit_supersede_does_not() {
             "explicit supersede must not copy subjects onto an arbitrary successor"
         );
         txn.rollback().expect("rollback");
+    });
+}
+
+/// Issue #109, §6.1.3 rule ③: rule 3b keys on the correction transition (the head the arbiter UPDATE stamps), not on
+/// where the successor came from. M0 -> M1 -> M2 are two corrections (M1 and M2 are correction-born); M2 carries a link
+/// M1 lacks, and X carries one M1 lacks. (iii) the correction M0 -> M1 inherits; (ii) the restore of M1 (M1 active
+/// again, M2 superseded by M1, the statements of `restore_atomically`) gives M1 nothing from M2; (i) an explicit
+/// supersede of X onto the correction-born M1 gives it nothing from X. Each statement is the production one, under
+/// `role_gateway`; the real governance ops run the same transitions in `memory_attribution`.
+#[test]
+fn rule_3b_keys_on_the_correction_transition() {
+    run_db_fixture::<LinkFixture, _>("rule_3b_transition", |mut handle| {
+        let tenant = TenantId::new().0;
+        let mut txn = handle.client.transaction().expect("begin");
+        let (user, domain) = seed_tenant(&mut txn, tenant, "transition");
+        let shared = seed_subject(&mut txn, tenant, "PERSON", "Subject S");
+        let extra = seed_subject(&mut txn, tenant, "PERSON", "Subject E");
+        let other = seed_subject(&mut txn, tenant, "PERSON", "Subject O");
+        let body = |label: &str| serde_json::json!({ "key_claim": label });
+        let (_e0, m0) = seed_memory(&mut txn, tenant, domain, "USER_MESSAGE", &body("m0"));
+        let (e1, m1) = seed_memory(&mut txn, tenant, domain, "USER_CORRECTION", &body("m1"));
+        let (e2, m2) = seed_memory(&mut txn, tenant, domain, "USER_CORRECTION", &body("m2"));
+        let (_ex, x) = seed_memory(&mut txn, tenant, domain, "USER_MESSAGE", &body("x"));
+        // dep: PostgreSQL(any) — pool/txn query execution
+        txn.execute(
+            "SELECT private.link_memory_subjects($1, $2, ARRAY[$3]::uuid[], ARRAY['DECLARED']::text[])",
+            &[&tenant, &m0, &shared],
+        )
+        .expect("link M0");
+        // dep: PostgreSQL(any) — pool/txn query execution
+        txn.execute(
+            "SELECT private.link_memory_subjects($1, $2, ARRAY[$3]::uuid[], ARRAY['DECLARED']::text[])",
+            &[&tenant, &x, &other],
+        )
+        .expect("link X");
+
+        // dep: PostgreSQL(role_gateway) — role switch before the scoped statements for `rule_3b_keys_on_the_correction_transition`
+        txn.batch_execute(&format!(
+            "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}'; \
+             SET LOCAL humaux.user_id = '{user}';"
+        ))
+        .expect("gateway context");
+        let first = append_supersede(&mut txn, tenant, user, m0, m1, "USER_CORRECTION", Some(e1));
+        supersede_row(&mut txn, tenant, m0, m1, first);
+        let second = append_supersede(&mut txn, tenant, user, m1, m2, "USER_CORRECTION", Some(e2));
+        supersede_row(&mut txn, tenant, m1, m2, second);
+        txn.batch_execute("RESET ROLE").expect("superuser");
+        // dep: PostgreSQL(any) — pool/txn query execution
+        txn.execute(
+            "SELECT private.link_memory_subjects($1, $2, ARRAY[$3]::uuid[], ARRAY['DECLARED']::text[])",
+            &[&tenant, &m2, &extra],
+        )
+        .expect("link M2");
+        let before = links(&mut txn, m1);
+
+        // (ii) memory.restore of M1: RESTORE record + reactivation of M1, then the correction's successor M2 is
+        // deactivated onto M1 (the head of M2 is not touched).
+        // dep: PostgreSQL(role_gateway) — role switch before the scoped statements for `rule_3b_keys_on_the_correction_transition`
+        txn.batch_execute(&format!(
+            "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}'; \
+             SET LOCAL humaux.user_id = '{user}';"
+        ))
+        .expect("gateway context");
+        let restore = append_restore(&mut txn, tenant, user, m1, second);
+        let reactivated = txn
+            .execute(
+                "UPDATE private.memory_records \
+                    SET status = 'active', superseded_by = NULL, superseded_at = NULL, \
+                        lifecycle_head_event_id = $3 \
+                  WHERE tenant_id = $2 AND memory_id = $1 AND status = 'superseded'",
+                &[&m1, &tenant, &restore],
+            )
+            .expect("restore M1");
+        let deactivated = txn
+            .execute(
+                "UPDATE private.memory_records \
+                    SET status = 'superseded', superseded_by = $2, superseded_at = clock_timestamp() \
+                  WHERE tenant_id = $3 AND memory_id = $1 AND status = 'active'",
+                &[&m2, &m1, &tenant],
+            )
+            .expect("deactivate M2 onto M1");
+        txn.batch_execute("RESET ROLE").expect("superuser");
+        let restored = links(&mut txn, m1);
+
+        // (i) memory.supersede of X onto the correction-born M1: an EXPLICIT_SUPERSEDE record, no correction Evidence.
+        // dep: PostgreSQL(role_gateway) — role switch before the scoped statements for `rule_3b_keys_on_the_correction_transition`
+        txn.batch_execute(&format!(
+            "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}'; \
+             SET LOCAL humaux.user_id = '{user}';"
+        ))
+        .expect("gateway context");
+        let explicit = append_supersede(&mut txn, tenant, user, x, m1, "EXPLICIT_SUPERSEDE", None);
+        supersede_row(&mut txn, tenant, x, m1, explicit);
+        txn.batch_execute("RESET ROLE").expect("superuser");
+        let superseded = links(&mut txn, m1);
+        let x_links = links(&mut txn, x);
+        txn.rollback().expect("rollback");
+
+        assert_eq!(
+            before,
+            vec![(shared, "ABOUT".to_owned(), "INHERITED".to_owned(), 10_000)],
+            "(iii) the correction M0 -> M1 still inherits M0's link"
+        );
+        assert_eq!(
+            (reactivated, deactivated),
+            (1, 1),
+            "the restore flips M1 and M2"
+        );
+        assert_eq!(
+            restored, before,
+            "(ii) restoring the correction-born M1 gives it nothing from M2 (which also links {extra})"
+        );
+        assert_eq!(
+            superseded, before,
+            "(i) an explicit supersede onto the correction-born M1 gives it nothing from X (which links {other})"
+        );
+        assert_eq!(
+            x_links,
+            vec![(other, "ABOUT".to_owned(), "DECLARED".to_owned(), 10_000)],
+            "X keeps its own link"
+        );
     });
 }
 
