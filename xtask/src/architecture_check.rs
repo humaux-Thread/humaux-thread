@@ -2897,16 +2897,66 @@ fn t06b_correction_rule_site(root: &Path) -> Verdict {
 
 /// Home of the M29 T07 attribution reader (ADR-0078 D-D, design v0.2 §15.8).
 const T07_READER_HOME: &str = "crates/adapters/src/attribution_repo.rs";
-/// The read clauses that name the attribution table or its live view; the INSERT writers name neither.
-const T07_READ_CLAUSES: [&str; 2] = [
-    "from private.memory_projects",
-    "join private.memory_projects",
-];
+/// The attribution table; `private.memory_projects_live` is its live view (migration 0255 ②).
+const T07_TABLE: &str = "private.memory_projects";
+/// rls_check names the table and the view as catalog strings (its grant and policy matrix), never as a read: up to
+/// this many table / view tokens there are not counted; one more and that kind is counted in full.
+const T07_CATALOG_SITE: (&str, usize, usize) = ("bins/maintenance/src/rls_check.rs", 2, 2);
 
-/// M29 T07 / ADR-0078 Consequences (design v0.2 §15.7, §15.8): in non-test Rust, (1) no `FROM` / `JOIN` of
-/// `private.memory_projects` that is not the `_live` view, because "exists and is not revoked" lives only in the view
-/// (migration 0255 ②), and the `INSERT INTO private.memory_projects` writers are not reads; (2) exactly one `FROM` /
-/// `JOIN` of `private.memory_projects_live`, in [`T07_READER_HOME`] (`== 1`). `not_applicable` only when the view is
+/// [`door_normalised`] text with `/* */` blocks and `//` comments stripped and SQL identifier quoting undone, so
+/// `FROM "private"."memory_projects"` and `FROM private . memory_projects` read as the table and a commented-out
+/// `FROM private.memory_projects_live` reads as nothing.
+///
+/// ponytail: scans spelled-out text only, so SQL assembled with `format!` / `concat!` or loaded with `include_str!`
+/// from a `.sql` file evades it (as [`door_statement_sites`]), and a SQL `--` comment still counts; upgrade to
+/// statement parsing if that ever shows up.
+fn t07_normalised(source: &str) -> String {
+    let mut code = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(at) = rest.find("/*") {
+        code.push_str(&rest[..at]);
+        let open = &rest[at + 2..];
+        rest = open.find("*/").map_or("", |end| &open[end + 2..]);
+    }
+    code.push_str(rest);
+    let code: Vec<&str> = code
+        .lines()
+        .map(|line| line.find("//").map_or(line, |at| &line[..at]))
+        .collect();
+    door_normalised(&code.join("\n"))
+        .replace("\\\"", "")
+        .replace('"', "")
+        .replace(" .", ".")
+        .replace(". ", ".")
+}
+
+/// (table, view) tokens in one [`t07_normalised`] text: a table token is [`T07_TABLE`] followed by no identifier
+/// character and not directly after `insert into ` (the A1 / A3 writers); a view token is `private.memory_projects_live`.
+/// A comma join or `FROM ONLY` names the token like any other read.
+fn t07_tokens(text: &str) -> (usize, usize) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let (mut table, mut view) = (0, 0);
+    for (at, _) in text.match_indices(T07_TABLE) {
+        if text[..at].chars().next_back().is_some_and(ident) {
+            continue;
+        }
+        let after = &text[at + T07_TABLE.len()..];
+        if let Some(tail) = after.strip_prefix("_live") {
+            if !tail.starts_with(ident) {
+                view += 1;
+            }
+        } else if !after.starts_with(ident) && !text[..at].ends_with("insert into ") {
+            table += 1;
+        }
+    }
+    (table, view)
+}
+
+/// M29 T07 / ADR-0078 Consequences (design v0.2 §15.7, §15.8): in non-test Rust, (1) no mention of
+/// `private.memory_projects` other than the `_live` view and the `INSERT INTO private.memory_projects` writers, because
+/// "exists and is not revoked" lives only in the view (migration 0255 ②); (2) exactly one mention of
+/// `private.memory_projects_live`, in [`T07_READER_HOME`] (`== 1`; 0 is red). Tokens per [`t07_tokens`], the
+/// [`T07_CATALOG_SITE`] bound aside. `not_applicable` only when the view is
 /// read nowhere and the home file does not exist, naming that file (§57.1 第2条); a direct table read is red
 /// regardless.
 fn m29_attribution_reader(root: &Path) -> Verdict {
@@ -2915,15 +2965,13 @@ fn m29_attribution_reader(root: &Path) -> Verdict {
     let mut direct: Vec<(String, usize)> = Vec::new();
     let mut readers: Vec<(String, usize)> = Vec::new();
     for (disp, source) in &files {
-        let text = door_normalised(source);
-        let (mut table, mut view) = (0, 0);
-        for clause in T07_READ_CLAUSES {
-            for (at, _) in text.match_indices(clause) {
-                if text[at + clause.len()..].starts_with("_live") {
-                    view += 1;
-                } else {
-                    table += 1;
-                }
+        let (mut table, mut view) = t07_tokens(&t07_normalised(source));
+        if disp == T07_CATALOG_SITE.0 {
+            if table <= T07_CATALOG_SITE.1 {
+                table = 0;
+            }
+            if view <= T07_CATALOG_SITE.2 {
+                view = 0;
             }
         }
         if table > 0 {
@@ -11906,6 +11954,68 @@ async fn serving_version_in_txn() {}
             matches!(m29_attribution_reader(&tmp), Verdict::Fail(_)),
             "a direct read is red even before the reader exists"
         );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: the direct read spelled with SQL quoting, spaces around the dot, `ONLY`, or as a comma join (on the
+    /// same line or the next) → 红 each time.
+    #[test]
+    fn t07_attribution_reader_fails_on_quoted_and_comma_join_reads() {
+        let tmp = fresh_tmp("t07-reader-spellings");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        for read in [
+            "SELECT 1 FROM \\\"private\\\".\\\"memory_projects\\\" mp",
+            "SELECT 1 FROM private.\\\"memory_projects\\\" mp",
+            "SELECT 1 FROM private . memory_projects mp",
+            "SELECT 1 FROM ONLY private.memory_projects",
+            "SELECT 1 FROM private.memory_records r, private.memory_projects mp",
+            "SELECT 1 FROM private.memory_records r, \\\n  private.memory_projects mp",
+        ] {
+            m07_write(
+                &tmp,
+                "crates/adapters/src/recall.rs",
+                &format!("const R: &str = \"{read}\";\n"),
+            );
+            match m29_attribution_reader(&tmp) {
+                Verdict::Fail(lines) => {
+                    assert_eq!(lines.len(), 1, "{read}: {lines:?}");
+                    assert!(
+                        lines[0].contains("reads private.memory_projects directly"),
+                        "{read}: {lines:?}"
+                    );
+                }
+                other => panic!("{read}: expected Fail, got {other:?}"),
+            }
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A commented-out view read (trailing `//` or a `/* */` block) is no reader: still exactly 1.
+    #[test]
+    fn t07_attribution_reader_ignores_commented_reads() {
+        let tmp = fresh_tmp("t07-reader-comments");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/recall.rs",
+            "fn f() {} // FROM private.memory_projects_live\n/* SELECT 1\n   FROM private.memory_projects_live */\n",
+        );
+        assert_eq!(m29_attribution_reader(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`== 1` pinned from below): the home file present with no view read → 红, `found 0`.
+    #[test]
+    fn t07_attribution_reader_fails_on_zero_readers() {
+        let tmp = fresh_tmp("t07-reader-zero");
+        m07_write(&tmp, T07_HOME, "pub fn x() {}\n");
+        match m29_attribution_reader(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 0"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 
