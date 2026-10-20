@@ -174,6 +174,7 @@ fn admin_dsn() -> String {
 /// Step 1 for one tenant: the purgeable name, the Distill admission lane on the tenant's reasoning domain, the three
 /// projects (P3 last) and T1 with a live run claimed by U.
 fn fixture(h: &mut Handle) -> World {
+    h.admin.batch_execute("GRANT SELECT ON private.continuity_projects TO role_private_worker").expect("r1 grant");
     h.admin
         .execute(
             "UPDATE control.tenants SET name = $2 WHERE tenant_id = $1",

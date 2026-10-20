@@ -92,6 +92,7 @@ impl MemoryAttribution for AttributionLadder {
             .bind(RelationKind::Contains.as_str())
             .execute(&mut **txn)
             .await?;
+        sqlx::query("INSERT INTO private.memory_projects (tenant_id, memory_id, project_id, relation, source_kind, rule_id_ver, decision_evidence_id) SELECT $1, $2, cp.project_id, 'ATTRIBUTED_TO', 'DECLARED', 'declared@1', $3 FROM private.continuity_projects cp WHERE cp.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM private.evidence_projects WHERE tenant_id = $1 AND evidence_id = $3) AND NOT EXISTS (SELECT 1 FROM private.evidence_task_runs WHERE tenant_id = $1 AND evidence_id = $3) ORDER BY cp.created_at DESC, cp.project_id DESC LIMIT 1").bind(tenant_id).bind(memory_id).bind(evidence_id).execute(&mut **txn).await?;
         Ok(())
     }
 }
