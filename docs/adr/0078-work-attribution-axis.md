@@ -292,8 +292,8 @@ All are three-state. Each gate exists only after its inject → red → fix → 
 implements it, and that card adds it to "Red records" below, as ADR-0077 does. Existing: G-M29-2, G-M29-3, G-M29-4
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
 (T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); the A1 entry's card gates G-T06c-1 (`project_id` on the wire),
-G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c); G-M29-5(b) and
-G-M29-6 (T06b). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c); G-M29-5(b), with
+its xtask rule-site arm (`"correction@1"` only in `RuleId`'s closed set), and G-M29-6 (T06b). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -498,6 +498,35 @@ and the failing lines are in the card's PR description.
   - r14: the backfill's `tr.task_id` as `tr.task_run_id` -> the backfill test red: the restated ground names the run.
   - These supersede the T06b records r4-r8 and r11 above (the revocation body changed). r1-r3, r9 and r10 apply
     verbatim on `3a9987e` against unchanged tests, so they stand.
+- T06b review round (PR #104 review, design v0.2 §15.7 revision 2: A3' keys on the lifecycle-head transition, decided
+  by the event's `correction_evidence_id`), branches `red/m29-t06b-r1c`, `r2c` and `r16..r19` off `8bf2994`, `r15c` and
+  `r13c` off `7328d43` (which changes only the case (i) assertion and a header row):
+  - r1c: `CREATE TRIGGER memory_projects_on_supersede` dropped -> G-M29-5(b) red: M2 inherits nothing (re-cut, the
+    function body changed).
+  - r2c: a later migration adds a second A3' trigger on `private.memory_records` -> rls-check "§6.1.4 A3' single
+    site" red: found 2 (re-cut).
+  - r15c: the event's `reason_code = 'USER_CORRECTION'` leg as `true` -> case (i) red: `memory.supersede` of X onto
+    the correction-born M1 now matches the predicate, and its EXPLICIT_SUPERSEDE event carries no
+    `correction_evidence_id`, so the copy hits `decision_evidence_id NOT NULL` (23502) and the supersede fails
+    `INTERNAL`. A reason-blind predicate fails loudly, never by a silent inheritance. (r15 off `8bf2994` failed at the
+    same supersede, at its `.expect`; r15c is the record.)
+  - r16: the `replacement_memory_id = NEW.superseded_by` leg dropped -> the G-M29-5(b) cases stay green, by
+    construction: the one writer of a SUPERSEDE / USER_CORRECTION head (`correct_atomically`'s arbiter UPDATE) sets
+    `superseded_by` to the event's replacement in the same statement, and the writers that set `superseded_by`
+    without stamping a head (a correction undo's deactivation of the successor, a note supersede) act only on
+    active rows, whose head is never an unrestored SUPERSEDE of that row (every reactivation stamps RESTORE). No
+    production path reaches a state that isolates the leg, so no decoy can; it stays as the design's predicate.
+  - r17: the ground CHECK in implication form `(rule_id_ver = 'task_run@1') <= (...)` -> the backfill test red: a
+    declared@1 row given a ground is accepted (the reverse probe; the forward probe still refuses).
+  - r18: the transitive revocation's session-tenant pin as `IF false AND ...` -> the session-tenant test red on its
+    second element (`revocation`).
+  - r19: a second `"correction@1"` literal in `crates/adapters/src/attribution_repo.rs` -> xtask
+    `t06b_correction_rule_real_repo_passes` red: found 2.
+  - The other-tenant decoy in G-M29-6 has no red of its own: the definers' session-tenant pin (r11b, r18) and the
+    view's RLS both exclude another tenant's row, so the `l.tenant_id = NEW.tenant_id` leg is implied by them.
+  - r13c: r13's fault (`CHECK (true OR ...)`) re-cut off `7328d43`, because the CHECK test now probes both ways ->
+    red on both elements: neither probe is refused.
+  - r3-r12 and r14 above stand: their fault lines and tests are unchanged by this round.
 
 ## Consequences
 
