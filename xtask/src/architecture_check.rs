@@ -2994,7 +2994,7 @@ fn t07_strip_comments(source: &str) -> String {
 /// `FROM"private"` stays two words), so `FROM "private"."memory_projects"` and `FROM private . memory_projects` read
 /// as the table.
 fn t07_normalised(source: &str) -> String {
-    door_normalised(&t07_strip_comments(source))
+    door_normalised(&t07_strip_comments(&source.lines().map(|l| l.find("//").map_or(l, |at| &l[..at])).collect::<Vec<_>>().join("\n")))
         .replace("\\\"", " ")
         .replace('"', " ")
         .split_whitespace()
