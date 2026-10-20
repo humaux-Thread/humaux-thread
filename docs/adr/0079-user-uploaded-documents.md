@@ -21,7 +21,7 @@ that store):
 
 - 1,057 documents, 99.1% of them Markdown.
 - 103 file names uploaded more than once; 109 version-like file families covering 334 files. Both are heuristics, so
-  they are candidate sets only; the two overlap.
+  they are candidate sets only; the two may overlap.
 - About a thousand legacy memories carry document-layer provenance; 1,007 of the 1,018 that carry a storage URI resolve
   deterministically to a document row. The legacy store has no `derived_from` links and no supersession records.
 
@@ -75,7 +75,8 @@ knowledge; and deletion semantics for a Memory that depends on several sources.
     - `memory_source_spans`: the owning Memory (the same Memory parent as in 0154).
   - Consequence: another reader in the same tenant can at most learn that "a document exists" (the subject row) and
     which projects and tasks it is linked to: the relation-kernel `DOCUMENTED_BY` / `ATTACHES` rows follow the 0249
-    table template, whose policy is tenant-only, and carry ids, `decided_by` and Evidence ids, never content. They see
+    table template, whose policy is tenant-only: a reader sees the link row (kind, validity window, `proposed_by` /
+    `decided_by`, ids and Evidence ids), never content. They see
     no title, version, adoption state, pin, generation or content.
     ponytail: existence and links are visible inside a tenant; the upgrade signal is several people in one tenant with
     private documents; the upgrade path is a per-subject ACL hook (§6.1.3) plus a RESTRICTIVE parent-visibility policy
@@ -389,7 +390,7 @@ module gates there needs its own spec change.
 | G-DOC-1 identity layers | Two Documents with byte-identical template bytes → two Documents, two Evidence, no merge of any kind. A → B → A → 3 Versions | deduplicate or merge Documents by `payload_sha256`; use the hash as the version id |
 | G-DOC-2 no automatic registration | an unknown `document_id` is rejected; a file-name or path match yields candidates only | "if not found, create one from the file name" |
 | G-DOC-3 roles do not mix | a source document does not appear in the ABOUT links of a derived Memory | write `source_document_id` into `evidence_subjects` |
-| G-DOC-4 association does not authorise | add a `DOCUMENTED_BY` for P2 pointing at P1's USER_PRIVATE document → P2's reader cannot read the body, the Memory or the title (the link row itself is tenant-visible and carries ids only, see D-A). **Per-table assertion:** the fixture plants at least one row in every `document_*` table (versions, receipts, extractions, nodes, excerpts, state, adoptions, run_document_io, citations, memory_source_spans); the owner reads ≥ 1 rows and P2's reader reads 0 rows; the subject row shows only the opaque placeholder | (a) recall relaxes visibility by `DOCUMENTED_BY`; (b) write the title into `display_name`; (c) the policy of any one `document_*` table keeps only the tenant predicate |
+| G-DOC-4 association does not authorise | add a `DOCUMENTED_BY` for P2 pointing at P1's USER_PRIVATE document → P2's reader cannot read the body, the Memory or the title (the link row itself is tenant-visible: kind, validity, deciders and ids, never content; see D-A). **Per-table assertion:** the fixture plants at least one row in every `document_*` table (versions, receipts, extractions, nodes, excerpts, state, adoptions, run_document_io, citations, memory_source_spans); the owner reads ≥ 1 rows and P2's reader reads 0 rows; the subject row shows only the opaque placeholder | (a) recall relaxes visibility by `DOCUMENTED_BY`; (b) write the title into `display_name`; (c) the policy of any one `document_*` table keeps only the tenant predicate |
 | G-DOC-5 attribution is complete | (a) in span mode an unassigned span produces no Memory; (b) an upload carrying both `project_id` and an assignment list → `INVALID_INPUT` with zero writes; appending an assignment to a `WHOLE` receipt → `INVALID_INPUT`; bypassing the application layer and writing the DB directly: writing `evidence_projects` for a `SPAN` receipt Evidence, or writing `document_excerpts` for a `WHOLE` receipt → both rejected by triggers; (c) no project is picked by topic; (d) for every excerpt Evidence, origin, visibility columns and `data_class` equal R's column by column | (a) unassigned spans are distilled anyway, writing a Memory with zero attribution rows; (b) remove the application-layer `attribution_mode` check, so both are written; (b') remove one of the two DB triggers; (c) pick a project by topic; (d) write an excerpt with an `AuthenticatedAgent` origin, or with the default visibility |
 | G-DOC-6 content source required | a document-derived Memory without a PRIMARY (the receipt Evidence or its excerpt) or without a span → the commit is rejected | link only the range-assignment request, with no content source |
 | G-DOC-7 locator determinism | code points versus bytes for CJK text and emoji; repeated paragraphs → ambiguity failure; after a new Extraction, an old citation still resolves to the old text | use byte offsets; take the first match; silently re-bind |
@@ -407,7 +408,8 @@ module gates there needs its own spec change.
 Note on closed sets that do not exist yet: any G-DOC-17 member whose type does not exist when the gate lands (EvidenceMode,
 the closed set `HostObserved / ClientDeclared / UserReported / Imported` of design v0.2 §16.9 on the external-tool axis;
 node kinds before T-DOC-2; `intent` and `DOCUMENTED_BY` / `ATTACHES` before T-DOC-5) is reported `not_applicable`, naming
-it (§57.1). The card that introduces the type removes that `not_applicable`.
+it (§57.1). The card that introduces the type removes that `not_applicable`: T-DOC-2 for node kinds, T-DOC-5 for
+`intent` and the two relation kinds, and for EvidenceMode the tool-run card of design v0.2 §16.9 (not yet scheduled).
 
 ## Experiments
 
@@ -422,8 +424,8 @@ the data stays in the private evaluation notes.
   - Primary metrics: formal wrong links = 0; recovery rate per layer; share of UNKNOWN; confirmation workload for
     candidates.
   - Where the gold evidence is insufficient, UNKNOWN is allowed.
-- **E-DOC-2 Version-family replay.** Data: the 109 families (334 files) plus the 103 same-name groups (the two overlap
-  and cannot be added).
+- **E-DOC-2 Version-family replay.** Data: the 109 families (334 files) plus the 103 same-name groups (the two may
+  overlap, so they are not added).
   - The owner confirms a sample: which are revisions of one document, same-name but different documents, copies,
     unadopted drafts, or undecidable.
   - Replay in the original order, then with the arrival order shuffled.
@@ -455,10 +457,10 @@ One card, one PR; documents before code.
 |---|---|---|
 | T-DOC-0 | this ADR; spec text: §8.3.1 document layer, `SubjectKind` `DOCUMENT` (§6.1.3), `RelationKind` gains `DOCUMENTED_BY` (existing ProjectSubject pair) and `ATTACHES` (new TaskSubject pair) (§6.1.4); the reflow-dedup, span and revision-graph-acyclicity invariants | none |
 | T-DOC-1 | migration and contract: the DOCUMENT kind, `key_kind` `LEGACY_DOCUMENT_ROW`, `document_versions` (with the visibility columns), `document_receipts`, `document_extractions`, `memory_source_spans`, `document_state` (per scope), `document_adoptions` | G-DOC-1 / G-DOC-8 / G-DOC-17 |
-| T-DOC-2 | receipt: HTTP upload (md / plain text) plus an MCP text tool → receipt Evidence + Version + Extraction + structure nodes + selector | G-DOC-2 / G-DOC-7 / G-DOC-15 / G-DOC-16 |
+| T-DOC-2 | receipt: HTTP upload (md / plain text) plus an MCP text tool → receipt Evidence + Version + Extraction + structure nodes + selector | G-DOC-2 / G-DOC-7 / G-DOC-15 / G-DOC-16 / G-DOC-17 (node kinds) |
 | T-DOC-3 | adoption: CAS, project pin, read model (version list, state, pin, basis) | G-DOC-9 / G-DOC-14 |
 | T-DOC-4 | document → Memory: spans, SNAPSHOT, A1 / A3 range assignment | G-DOC-3 / G-DOC-5 / G-DOC-6 / G-DOC-10 |
-| T-DOC-5 | association: the `DOCUMENTED_BY` triple, the TaskSubject pair plus `ATTACHES`, `run_document_io` (ClientDeclared GENERATED only), `citations` | G-DOC-4 / G-DOC-11 / G-DOC-12 |
+| T-DOC-5 | association: the `DOCUMENTED_BY` triple, the TaskSubject pair plus `ATTACHES`, `run_document_io` (ClientDeclared GENERATED only), `citations` | G-DOC-4 / G-DOC-11 / G-DOC-12 / G-DOC-17 (`intent`, relation kinds) |
 | T-DOC-6 | deletion into §37: tombstone of every outbox seq of the Evidence closure, step 5 deletes the points of multi-source Memory, commit-time overlay re-check | G-DOC-13 |
 
 - Experiments are interleaved: E-DOC-1 and E-DOC-2 run after T-DOC-2 (they need the receipt front door); E-DOC-5 after
