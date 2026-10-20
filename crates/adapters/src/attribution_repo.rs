@@ -90,3 +90,6 @@ impl MemoryAttribution for AttributionLadder {
         Ok(())
     }
 }
+
+/// Red record only (M29 T06b r19): a second correction@1 wire literal.
+pub const RED_R19_RULE: &str = "correction@1";
