@@ -53,9 +53,12 @@ select
        where conrelid='ops.model_call_ledger'::regclass and contype='c'
          and conname='model_call_ledger_provider_cache_write_tokens_nonneg'
          and pg_get_constraintdef(oid) like '%provider_cache_write_tokens >= 0%')
- -- the validator counts the new columns among the outcome columns that must be NULL at INSERT (the guard's own
- -- set-once terms are G-RET-1 (b), see above)
- and (select prosrc like '%NEW.provider_cache_read_tokens%' and prosrc like '%NEW.provider_cache_write_tokens%'
+ -- the validator counts each new column in BOTH reservation arms (private purposes, CONTRIBUTION_DEIDENTIFY): exactly
+ -- two occurrences, so neither one arm nor a comment can satisfy it (the guard's own set-once terms are G-RET-1 (b), see above)
+ and (select (length(prosrc) - length(replace(prosrc, 'NEW.provider_cache_read_tokens', '')))
+               / length('NEW.provider_cache_read_tokens') = 2
+         and (length(prosrc) - length(replace(prosrc, 'NEW.provider_cache_write_tokens', '')))
+               / length('NEW.provider_cache_write_tokens') = 2
       from pg_proc where oid=to_regprocedure('ops.reasoning_model_call_validate()'))
  -- guard_mutation kept everything it guarded before (append-only, frozen identity incl. 0230's model_call_id,
  -- 0168's output_tokens, the USER-paid cost rule)

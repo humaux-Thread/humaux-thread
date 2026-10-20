@@ -2185,27 +2185,48 @@ mod ledger_usage_tests {
 
     /// G-RET-1 (a), §57.1 three-state: Anthropic-compatible (`cache_creation_input_tokens` /
     /// `cache_read_input_tokens`) and DeepSeek (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`) usage
-    /// fixtures are `not_applicable` while `byok` parses none of those fields. The assertion is the tripwire that keeps
-    /// it from being a skip: the day an adapter lands this goes red and must be replaced by real normalisation cases.
+    /// fixtures are `not_applicable`: no adapter in this crate parses those fields. The missing object is the test
+    /// name, which libtest prints as `test ... not_applicable_... ok` and nextest records in its junit report (a
+    /// captured `eprintln!` is never shown; the nextest `ci` profile prints failures only). The
+    /// assertion is the tripwire that keeps it from being a silent skip: the day any other source file under this crate's `src/`
+    /// names those fields, this goes red and must be replaced by real normalisation cases (write count included).
     #[test]
-    fn anthropic_and_deepseek_usage_shapes_are_not_applicable_until_byok_parses_them() {
-        const BYOK: &str = include_str!("byok.rs");
-        let parsed: Vec<&str> = [
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-            "prompt_cache_hit_tokens",
-            "prompt_cache_miss_tokens",
-        ]
-        .into_iter()
-        .filter(|field| BYOK.contains(field))
-        .collect();
+    fn not_applicable_no_anthropic_or_deepseek_usage_adapter_in_byok() {
+        // Cargo runs a package's unit tests with the package root as the working directory.
+        let this = std::path::Path::new(file!())
+            .file_name()
+            .expect("this file's name")
+            .to_owned();
+        let mut parsed = Vec::new();
+        let mut dirs = vec![std::path::PathBuf::from("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("source directory") {
+                let path = entry.expect("directory entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs")
+                    || path.file_name() == Some(this.as_os_str())
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("source file");
+                for field in [
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "prompt_cache_hit_tokens",
+                    "prompt_cache_miss_tokens",
+                ] {
+                    if text.contains(field) {
+                        parsed.push(format!("{}: {field}", path.display()));
+                    }
+                }
+            }
+        }
         assert!(
             parsed.is_empty(),
-            "byok now parses {parsed:?}: replace this not_applicable line with fixtures and a write-count normaliser"
-        );
-        eprintln!(
-            "not_applicable: no Anthropic-compatible / DeepSeek usage adapter in byok (missing object: a byok parser for \
-             cache_creation_input_tokens / prompt_cache_hit_tokens)"
+            "an adapter now parses Anthropic / DeepSeek cache usage {parsed:?}: replace this not_applicable test with fixtures and a write-count normaliser"
         );
     }
 }
