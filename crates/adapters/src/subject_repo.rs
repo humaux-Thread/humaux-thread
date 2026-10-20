@@ -430,6 +430,8 @@ pub fn parse_declaration(value: &serde_json::Value) -> Result<SubjectDeclaration
     SubjectDeclaration::new(ids, keys)
 }
 
+const NEW_READ: &str = "SELECT 1 FROM private.memory_projects mp";
+
 #[cfg(test)]
 mod tests {
     use super::*;
