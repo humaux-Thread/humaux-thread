@@ -2,15 +2,18 @@
 //!   end run of the work-attribution axis. Real `remember.put`s (`operation_receipt::remember_*_atomically`) feed the
 //!   real Distill hop (`distill::dispatch_pass`, key-free provider), the ladder writes `memory_projects`, a real
 //!   correction and a real relation correction move it, and the one reader (`attribution_repo::read_memory_attribution`)
-//!   reports it from `private.memory_projects_live`.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-gateway, humaux-protocol,
+//!   reports it from `private.memory_projects_live`. M29 T08 (design v0.2 §15.9) adds experiment E-D: G-N09-4 over a
+//!   12-message synthetic corpus, with tenant L on real MiniMax (`g_n09_4_live_minimax`, CI `live` job) or, in the
+//!   gates, on a second FakeProvider (`g_n09_4_corpus_fake`).
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-gateway, humaux-protocol,
 //!   humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner) r=[control.operation_receipts,
 //!   ops.model_call_ledger, private.evidence_objects, private.evidence_projects, private.memory_evidence,
 //!   private.memory_project_revocations, private.memory_projects, private.memory_records,
 //!   private.project_task_relations] w=[control.private_reasoning_domains,
 //!   control.tenants, ops.jobs, ops.provider_slots, private.continuity_projects] x=[control.set_workspace_membership],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS,
-//!   HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::operation_receipt,
+//!   HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::byok, adapters::coord_repo,
+//!   adapters::operation_receipt,
 //!   adapters::postgres, adapters::relation_repo, adapters::remember, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::attribution, domain::audit, domain::authority,
 //!   domain::continuity, domain::error, domain::evidence, domain::identity, domain::ids, domain::relation,
@@ -32,20 +35,31 @@
 //! | 2, 7, end: provider calls == Distill jobs run | G-N09-4(b) | one more provider call before the Memory INSERT |
 //! | end: tenant A == tenant B per message | G-N09-4(a) | A3 skips a project named in the memory text |
 //! | 5: replay changes nothing | §34.0.1 replay | see ADR-0078 "Red records" |
+//! | E-D: L (live MiniMax) == F (FakeProvider) per message | G-N09-4(a), reusing `projection` (T07's r6b reds it) | see above |
+//! | E-D: L ran ≥ 12 jobs and every L ledger row is MiniMax's, with usage | E-D non-vacuity | r1 (T08): L on the FakeProvider |
 //!
-//! called-by: `cargo nextest run -p humaux-private-worker --test m29_attribution_e2e`.
+//! called-by: `cargo nextest run -p humaux-private-worker --test m29_attribution_e2e`; the CI `live` job runs
+//! `g_n09_4_live_minimax` with `cargo test ... -- --include-ignored live`.
 
 // Both adapters fixtures carry their own `#[path] mod token_keys`; `token_keys::install` is idempotent per process.
 #![allow(clippy::duplicate_mod)]
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::net::IpAddr;
 use std::ops::Bound::{Included, Unbounded};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use async_trait::async_trait;
 use humaux_adapters::{
     attribution_repo,
+    byok::{
+        PrivateInferenceContext, ReasoningProviderDescriptor, ReasoningProviderError,
+        StructuredReasoningRequest, StructuredReasoningResponse, UserReasoningProvider,
+        VisionReasoningRequest, VisionReasoningResponse,
+    },
     coord_repo::{self, ClaimedTaskRun},
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult},
     postgres::PrivateWorkerDbPool,
@@ -64,7 +78,7 @@ use humaux_domain::{
     relation::{DecidedBy, RelationEdge, RelationId, RelationKind, Timestamp, Validity},
 };
 use humaux_gateway::auth::{CredentialScope, authenticate_service_credential};
-use humaux_private_worker::distill::{DistillDispatchReport, dispatch_pass};
+use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport, dispatch_pass};
 use humaux_protocol::edge::compute_api_key_hash;
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
 use humaux_testkit::{DbIntegrationFixture, run_db_fixture};
@@ -95,6 +109,7 @@ use distill_lane::{
     FAKE_RETRY_WAIT, FakeProvider, contribution_config, dispatch_config, dsn_as_role, routes,
 };
 use governance_ops::Governor;
+use live_minimax::{MINIMAX_MODEL, MINIMAX_PROVIDER};
 use operation_receipt_fixture::{
     DOMAIN, Fixture, Handle, OPERATION, PROJECTION_KIND, PROJECTION_VERSION,
     SYNTHETIC_CREDENTIAL_PEPPER, SyntheticCredentialScopes, SyntheticServiceCredential,
@@ -403,11 +418,11 @@ async fn gateway_txn<'c>(
     txn
 }
 
-/// Revision `expected + 1` of `relation` (`src` CONTAINS T1) through the real `append_revision`, decided by U and
+/// Revision `expected + 1` of `relation` (`src` CONTAINS `task`) through the real `append_revision`, decided by U and
 /// authorised by Evidence `authz` (ADR-0078 T06d).
 fn relate(
     h: &Handle,
-    w: &World,
+    task: TaskId,
     relation: Uuid,
     src: Uuid,
     expected: i64,
@@ -423,7 +438,7 @@ fn relate(
         let edge = RelationEdge {
             src_id: src,
             kind: RelationKind::Contains,
-            dst_id: w.t1.0,
+            dst_id: task.0,
         };
         let revision = relation_repo::append_revision(
             &mut txn,
@@ -457,6 +472,15 @@ fn read(h: &Handle, memory: Uuid) -> MemoryAttribution {
         txn.rollback().await.expect("rollback");
         attribution
     })
+}
+
+/// The CONTAINS window every fixture relation gets: from [`OPEN_FROM`], open-ended.
+fn open_window() -> Validity {
+    Validity::new(&[(
+        Included(Timestamp::Micros(OPEN_FROM * 1_000_000)),
+        Unbounded,
+    )])
+    .expect("open window")
 }
 
 fn link(
@@ -562,8 +586,11 @@ fn jobs_run(report: &DistillDispatchReport) -> u32 {
     report.completed + report.deferred + report.failed
 }
 
-/// G-N09-4(a): per message key, the attribution projection with uuids replaced by fixture roles and message keys.
-type Projection = BTreeMap<&'static str, Vec<(&'static str, SourceKind, RuleId, &'static str)>>;
+/// G-N09-4(a): per message key, the attribution projection of each of its Memories, with uuids replaced by fixture
+/// roles and message keys. Identical projections collapse, so a model that splits one message into several Memories
+/// (E-D's live MiniMax may) projects as one that writes a single Memory; a Memory that differs stays a second entry.
+type Projection =
+    BTreeMap<&'static str, Vec<Vec<(&'static str, SourceKind, RuleId, &'static str)>>>;
 
 fn projection(h: &mut Handle, w: &World, evidence: &[(&'static str, Uuid)]) -> Projection {
     let message = |id: EvidenceId| {
@@ -575,24 +602,30 @@ fn projection(h: &mut Handle, w: &World, evidence: &[(&'static str, Uuid)]) -> P
     evidence
         .iter()
         .map(|(key, e)| {
-            let memory = memory_of(h, *e);
-            let links = match read(h, memory) {
-                MemoryAttribution::Resolved(links) => links,
-                MemoryAttribution::Unresolved => Vec::new(),
-            };
-            let mut rows: Vec<_> = links
+            let mut memories: Vec<_> = memories_of(h, *e)
                 .into_iter()
-                .map(|l| {
-                    (
-                        w.role(l.project_id),
-                        l.source_kind,
-                        l.rule_id_ver,
-                        message(l.decision_evidence_id),
-                    )
+                .map(|memory| {
+                    let links = match read(h, memory) {
+                        MemoryAttribution::Resolved(links) => links,
+                        MemoryAttribution::Unresolved => Vec::new(),
+                    };
+                    let mut rows: Vec<_> = links
+                        .into_iter()
+                        .map(|l| {
+                            (
+                                w.role(l.project_id),
+                                l.source_kind,
+                                l.rule_id_ver,
+                                message(l.decision_evidence_id),
+                            )
+                        })
+                        .collect();
+                    rows.sort_by_key(|r| r.0);
+                    rows
                 })
                 .collect();
-            rows.sort_by_key(|r| r.0);
-            (*key, rows)
+            memories.dedup();
+            (*key, memories)
         })
         .collect()
 }
@@ -610,13 +643,11 @@ fn steps_1_2(
     let e1 = accept(h, &M1, None, Some(w.p1));
     let e2 = accept(h, &M2, Some(&w.run), None);
     let e3 = accept(h, &M3, None, None);
-    let open = Validity::new(&[(
-        Included(Timestamp::Micros(OPEN_FROM * 1_000_000)),
-        Unbounded,
-    )])
-    .expect("open window");
     for project in [w.p1, w.p2] {
-        assert_eq!(relate(h, &w, Uuid::now_v7(), project, 0, &open, e1), 1);
+        assert_eq!(
+            relate(h, w.t1, Uuid::now_v7(), project, 0, &open_window(), e1),
+            1
+        );
     }
     let report = pass(rt, pool, provider);
     (w, [(M1.key, e1), (M2.key, e2), (M3.key, e3)], report)
@@ -648,35 +679,45 @@ impl Drop for Purge {
     }
 }
 
+/// What every test here drives Distill with: the dispatch fence (the caller drops it last), the purge of both fixture
+/// tenants, and the worker's own runtime and pool, as in production (the handles keep theirs).
+fn harness(
+    ha: &mut Handle,
+    hb: &Handle,
+) -> (Client, Purge, tokio::runtime::Runtime, PrivateWorkerDbPool) {
+    // SAFETY: nextest runs each test of this binary in its own process, the live lane's `cargo test` filter selects
+    // one test, and nothing else reads this variable.
+    unsafe {
+        std::env::set_var("HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS", "604800");
+    }
+    let dsn = admin_dsn();
+    let fence = dispatch_fence::open(&mut ha.admin, &dsn).expect("dispatch fence");
+    // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
+    let purge_admin = Client::connect(&dsn, NoTls).expect("purge connection");
+    let purge = Purge {
+        admin: purge_admin,
+        tenants: vec![ha.tenant_id, hb.tenant_id],
+    };
+    let rt = tokio::runtime::Runtime::new().expect("worker runtime");
+    let pool = rt
+        // dep: PostgreSQL(role_private_worker) — role-scoped pool call
+        .block_on(PrivateWorkerDbPool::connect(&dsn_as_role(
+            &dsn,
+            "role_private_worker",
+        )))
+        .expect("private worker pool");
+    (fence, purge, rt, pool)
+}
+
 /// ADR-0078 G-N09-3 / G-N09-4 and design v0.2 §15.8, in order, with exact counts at every step.
 #[test]
 #[allow(clippy::too_many_lines)] // one scenario, seven steps and the cross-tenant comparison, read top to bottom
 fn m29_attribution_end_to_end() {
     run_db_fixture::<Fixture, _>("m29_attribution_end_to_end", |mut ha| {
-        // SAFETY: nextest runs this binary's one test in its own process, and nothing else reads this variable.
-        unsafe {
-            std::env::set_var("HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS", "604800");
-        }
         let Ok(mut hb) = Fixture::isolate() else {
             panic!("missing object: a second operation_receipt fixture tenant (G-N09-4(a))");
         };
-        let dsn = admin_dsn();
-        let fence = dispatch_fence::open(&mut ha.admin, &dsn).expect("dispatch fence");
-        // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
-        let purge_admin = Client::connect(&dsn, NoTls).expect("purge connection");
-        let _purge = Purge {
-            admin: purge_admin,
-            tenants: vec![ha.tenant_id, hb.tenant_id],
-        };
-        // The worker's own runtime and pool, as in production; the handles keep theirs.
-        let rt = tokio::runtime::Runtime::new().expect("worker runtime");
-        let pool = rt
-            // dep: PostgreSQL(role_private_worker) — role-scoped pool call
-            .block_on(PrivateWorkerDbPool::connect(&dsn_as_role(
-                &dsn,
-                "role_private_worker",
-            )))
-            .expect("private worker pool");
+        let (fence, _purge, rt, pool) = harness(&mut ha, &hb);
         // The governor corrects M2; its BMO window is tenant A's only one (quota_repo takes exactly one).
         let governor = Governor::seed(&mut ha.admin, ha.tenant_id);
         governor.join(&mut ha.admin, ha.workspace_id);
@@ -778,7 +819,10 @@ fn m29_attribution_end_to_end() {
             )
             .expect("P2 CONTAINS T1")
             .get(0);
-        assert_eq!(relate(&ha, &w, r2, w.p2, 1, &Validity::retracted(), e1), 2);
+        assert_eq!(
+            relate(&ha, w.t1, r2, w.p2, 1, &Validity::retracted(), e1),
+            2
+        );
         assert_eq!(
             read(&ha, m2),
             resolved(vec![link(
@@ -961,4 +1005,510 @@ fn m29_attribution_end_to_end() {
         );
         drop(fence);
     });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// E-D (M29 T08, design v0.2 §15.9): G-N09-4 with tenant L on real MiniMax.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// What one E-D message carries into `remember.put`: a declared project (A1), a task run (A3), or nothing.
+#[derive(Clone, Copy)]
+enum Ground {
+    P1,
+    P2,
+    /// T1: shared by P1 and P2.
+    T1,
+    /// T2: P2's alone.
+    T2,
+    Nothing,
+}
+
+/// The E-D corpus (design v0.2 §15.9): 12 synthetic work notes, committed to a public repo, so no real data. The texts
+/// name "Website A" (P1, and the same-name trap P3) and "Website B" (P2) across grounds on purpose: an attribution that
+/// followed the model's output would follow them.
+static CORPUS: [(Msg, Ground); 12] = [
+    (
+        Msg {
+            key: "m29-t08-a1-p1-1",
+            text: "Website A: moved the pricing table above the fold and shortened the three plan names.",
+        },
+        Ground::P1,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a1-p1-2",
+            text: "Agreed with design that the newsletter form keeps two fields only, email and first name.",
+        },
+        Ground::P1,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a1-p2-1",
+            text: "Checkout now hides the coupon field behind a link; it was pulling buyers out of the flow.",
+        },
+        Ground::P2,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a1-p2-2",
+            text: "Reused the short address form we shipped on Website A last month for the Website B checkout.",
+        },
+        Ground::P2,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a3-t1-1",
+            text: "Compressed the hero images to WebP; the page weight went from 3.1 MB to 1.2 MB.",
+        },
+        Ground::T1,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a3-t1-2",
+            text: "Set up redirects for the retired pricing URLs and confirmed every one of them with a crawl.",
+        },
+        Ground::T1,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a3-t2-1",
+            text: "Replaced the custom date picker with the native input, keeping the validation used on Website A.",
+        },
+        Ground::T2,
+    ),
+    (
+        Msg {
+            key: "m29-t08-a3-t2-2",
+            text: "Payment step errors now name the field that is wrong instead of showing a generic failure.",
+        },
+        Ground::T2,
+    ),
+    (
+        Msg {
+            key: "m29-t08-none-a-1",
+            text: "Website A needs a cookie banner review before the next release.",
+        },
+        Ground::Nothing,
+    ),
+    (
+        Msg {
+            key: "m29-t08-none-a-2",
+            text: "The call with the Website A copywriter moved to Thursday afternoon.",
+        },
+        Ground::Nothing,
+    ),
+    (
+        Msg {
+            key: "m29-t08-none-b-1",
+            text: "The Website B footer still shows last year's copyright line.",
+        },
+        Ground::Nothing,
+    ),
+    (
+        Msg {
+            key: "m29-t08-none-b-2",
+            text: "Website B search finds nothing for plural product names; logged for the next sprint.",
+        },
+        Ground::Nothing,
+    ),
+];
+
+/// D1's live transport timeout (distill_hop_e2e): the fake's 5 s would cut a MiniMax-M3 call, and ADR-0058 D-K sizes
+/// the dispatch window from the provider's own timeout.
+const LIVE_HTTP_SECS: u64 = 120;
+/// Design v0.2 §11: MiniMax-M3 Standard, USD per million input / output tokens (registered 2026-10-19). The ledger
+/// splits input (`input_tokens`) from output (`output_tokens`, 0168), so each is priced at its own rate; on this path
+/// `billable_tokens` is the input count (`contribution_reasoner::finalize_from_usage`), printed but not priced again.
+const INPUT_USD_PER_M: f64 = 0.30;
+const OUTPUT_USD_PER_M: f64 = 1.20;
+
+/// Tenant L's provider as the test sees it: every call made through it, and the type of each failed one (never its
+/// message, which may carry provider text).
+struct Counted {
+    inner: Arc<dyn UserReasoningProvider>,
+    calls: AtomicU32,
+    failures: Mutex<Vec<String>>,
+}
+
+impl Counted {
+    fn new(inner: Arc<dyn UserReasoningProvider>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            calls: AtomicU32::new(0),
+            failures: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn calls(&self) -> u32 {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    fn failures(&self) -> Vec<String> {
+        self.failures.lock().expect("failures").clone()
+    }
+}
+
+/// A failed call's type: rate limit or quota wall (design §15.9 types a 429 before anything else), never the message.
+fn failure_kind(error: &ReasoningProviderError) -> String {
+    match error {
+        ReasoningProviderError::RetryWait { .. } => {
+            "rate limit (RETRY_WAIT: HTTP 429 or base_resp 1002/1039/2062; a 5xx or a timeout reads the same)"
+                .to_owned()
+        }
+        ReasoningProviderError::ProviderPermanent { message } => {
+            let code: String = message
+                .strip_prefix("base_resp ")
+                .unwrap_or_default()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            format!("quota wall or refusal (PROVIDER_PERMANENT, base_resp {code:?})")
+        }
+        other => other.class().to_owned(),
+    }
+}
+
+#[async_trait]
+impl UserReasoningProvider for Counted {
+    fn descriptor(&self) -> &ReasoningProviderDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn endpoint_ref(&self) -> &str {
+        self.inner.endpoint_ref()
+    }
+
+    fn model_revision(&self) -> Option<&str> {
+        self.inner.model_revision()
+    }
+
+    async fn complete_structured(
+        &self,
+        context: &PrivateInferenceContext,
+        request: StructuredReasoningRequest,
+    ) -> Result<StructuredReasoningResponse, ReasoningProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let answer = self.inner.complete_structured(context, request).await;
+        if let Err(error) = &answer {
+            self.failures
+                .lock()
+                .expect("failures")
+                .push(failure_kind(error));
+        }
+        answer
+    }
+
+    async fn analyze_vision(
+        &self,
+        _context: &PrivateInferenceContext,
+        _request: VisionReasoningRequest,
+    ) -> Result<VisionReasoningResponse, ReasoningProviderError> {
+        unreachable!("distill never calls vision")
+    }
+}
+
+/// `--distill-once` passes with `provider` under `config` until one claims nothing or settles a job other than DONE: a
+/// deferred job is never claimed again here (design §15.9 types a 429 instead of rerunning it).
+fn drain<P: UserReasoningProvider + 'static>(
+    rt: &tokio::runtime::Runtime,
+    pool: &PrivateWorkerDbPool,
+    provider: &Arc<P>,
+    config: &DistillDispatchConfig,
+) -> Vec<DistillDispatchReport> {
+    let mut passes = Vec::new();
+    loop {
+        let report = rt
+            .block_on(dispatch_pass(
+                pool,
+                &routes(provider),
+                contribution_config(),
+                config,
+            ))
+            .expect("distill dispatch pass");
+        passes.push(report);
+        if report.claimed == 0 || report.completed != report.claimed {
+            return passes;
+        }
+    }
+}
+
+/// The Distill jobs the passes ran.
+fn jobs(passes: &[DistillDispatchReport]) -> u32 {
+    passes.iter().map(jobs_run).sum()
+}
+
+/// The provider calls Distill itself made: one per job run, plus each ADR-0048 re-ask (an empty or a malformed reply).
+fn distill_calls(passes: &[DistillDispatchReport]) -> u32 {
+    passes
+        .iter()
+        .map(|r| jobs_run(r) + r.empty_retries + r.malformed_retries)
+        .sum()
+}
+
+/// L's dispatch config: D1's live window.
+fn live_config() -> DistillDispatchConfig {
+    DistillDispatchConfig {
+        http_timeout_seconds: LIVE_HTTP_SECS as f64,
+        hard_deadline_seconds: 2.0 * (LIVE_HTTP_SECS as f64 + 30.0),
+        ..dispatch_config(NAME, 30.0)
+    }
+}
+
+/// One E-D tenant before any Distill pass: an entitlement window, T07's world, T2 (P2's alone) with a live run of U,
+/// the 12 puts in corpus order, and P1 CONTAINS T1, P2 CONTAINS T1, P2 CONTAINS T2 (authorised by the first message's
+/// Evidence). Returns the world and each message's Evidence.
+fn corpus(h: &mut Handle) -> (World, Vec<(&'static str, Uuid)>) {
+    h.seed_current_entitlement_and_window(100);
+    let w = fixture(h);
+    let t2 =
+        h.rt.block_on(coord_repo::submit(
+            &h.runtime,
+            &h.auth,
+            NAME,
+            "Website B checkout cleanup",
+        ))
+        .expect("submit T2");
+    let run2 =
+        h.rt.block_on(coord_repo::claim(
+            &h.runtime,
+            &h.auth,
+            t2,
+            Duration::from_secs(900),
+        ))
+        .expect("claim T2");
+    let mut evidence = Vec::new();
+    for (msg, ground) in &CORPUS {
+        let (run, project) = match ground {
+            Ground::P1 => (None, Some(w.p1)),
+            Ground::P2 => (None, Some(w.p2)),
+            Ground::T1 => (Some(&w.run), None),
+            Ground::T2 => (Some(&run2), None),
+            Ground::Nothing => (None, None),
+        };
+        evidence.push((msg.key, accept(h, msg, run, project)));
+    }
+    for (src, task) in [(w.p1, w.t1), (w.p2, w.t1), (w.p2, t2)] {
+        assert_eq!(
+            relate(
+                h,
+                task,
+                Uuid::now_v7(),
+                src,
+                0,
+                &open_window(),
+                evidence[0].1
+            ),
+            1
+        );
+    }
+    (w, evidence)
+}
+
+/// F's projection as the grounds alone give it, one Memory per message (the fake's): A1 → the declared project, A3 →
+/// every project containing the task, no ground → unresolved.
+fn expected() -> Projection {
+    CORPUS
+        .iter()
+        .map(|(msg, ground)| {
+            let rows = match ground {
+                Ground::P1 => vec![("P1", SourceKind::Declared, RuleId::Declared1, msg.key)],
+                Ground::P2 => vec![("P2", SourceKind::Declared, RuleId::Declared1, msg.key)],
+                Ground::T1 => vec![
+                    ("P1", SourceKind::Inherited, RuleId::TaskRun1, msg.key),
+                    ("P2", SourceKind::Inherited, RuleId::TaskRun1, msg.key),
+                ],
+                Ground::T2 => vec![("P2", SourceKind::Inherited, RuleId::TaskRun1, msg.key)],
+                Ground::Nothing => Vec::new(),
+            };
+            (msg.key, vec![rows])
+        })
+        .collect()
+}
+
+/// Every `ops.model_call_ledger` row of the tenant as `(provider, model, the provider reported usage)`.
+fn ledger_rows(h: &mut Handle) -> Vec<(String, Option<String>, bool)> {
+    h.admin
+        .query(
+            "SELECT provider, model, COALESCE(input_tokens, 0) > 0 FROM ops.model_call_ledger \
+             WHERE tenant_id = $1 ORDER BY called_at",
+            &[&h.tenant_id],
+        )
+        .expect("ledger rows")
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect()
+}
+
+/// The tenant's summed `(input_tokens, output_tokens, billable_tokens)`.
+fn usage(h: &mut Handle) -> (i64, i64, i64) {
+    let row = h
+        .admin
+        .query_one(
+            "SELECT COALESCE(sum(input_tokens), 0)::int8, COALESCE(sum(output_tokens), 0)::int8, \
+                    COALESCE(sum(billable_tokens), 0)::int8 \
+             FROM ops.model_call_ledger WHERE tenant_id = $1",
+            &[&h.tenant_id],
+        )
+        .expect("ledger usage");
+    (row.get(0), row.get(1), row.get(2))
+}
+
+/// E-D: the corpus in tenant F (T07's deterministic FakeProvider) and tenant L (`live`), each drained before the next
+/// is written (the claim serves every tenant), then G-N09-4 per message. `real`: L must have dialed MiniMax, so the
+/// non-vacuity row check and the measurement line apply.
+#[allow(clippy::too_many_lines)] // one experiment, read top to bottom
+fn e_d(name: &str, live: &Arc<Counted>, real: bool) {
+    run_db_fixture::<Fixture, _>(name, |mut hf| {
+        let Ok(mut hl) = Fixture::isolate() else {
+            panic!("missing object: a second operation_receipt fixture tenant (E-D tenant L)");
+        };
+        let (fence, _purge, rt, pool) = harness(&mut hf, &hl);
+
+        let fake = FakeProvider::new(vec![REPLY_A; CORPUS.len()]);
+        let (wf, ef) = corpus(&mut hf);
+        let f_passes = drain(&rt, &pool, &fake, &dispatch_config(NAME, 30.0));
+        assert_eq!(
+            (jobs(&f_passes), fake.calls()),
+            (12, distill_calls(&f_passes)),
+            "F: one Distill job per message, G-N09-4(b): {f_passes:?}"
+        );
+
+        let (wl, el) = corpus(&mut hl);
+        let l_passes = drain(&rt, &pool, live, &live_config());
+        let failures = live.failures();
+        assert!(
+            failures.is_empty(),
+            "E-D: {} L provider call(s) failed, {failures:?}: provider contention, not an attribution result, and not \
+             rerun (design §15.9): {l_passes:?}",
+            failures.len()
+        );
+        let l_jobs = jobs(&l_passes);
+        assert!(
+            l_jobs >= 12,
+            "non-vacuity: L ran {l_jobs} Distill jobs for 12 messages: {l_passes:?}"
+        );
+        assert_eq!(
+            live.calls(),
+            distill_calls(&l_passes),
+            "G-N09-4(b) in L: provider calls == Distill's own calls (jobs run + ADR-0048 re-asks): {l_passes:?}"
+        );
+        let (input, output, billable) = usage(&mut hl);
+        if real {
+            // libtest captures print!/println! of a passing test; a write to the locked handle reaches the CI log.
+            let mut out = std::io::stdout().lock();
+            writeln!(
+                out,
+                "E-D: jobs={l_jobs} calls={} input_tokens={input} billable_tokens={billable} est_usd={:.6}",
+                live.calls(),
+                (input as f64 * INPUT_USD_PER_M + output as f64 * OUTPUT_USD_PER_M) / 1e6
+            )
+            .expect("E-D measurement line");
+        }
+        // The fake must present the MiniMax descriptor to pass route admission (distill_lane), and the ledger names the
+        // admitted route, so provider and model alone cannot tell F from L: the usage the provider reported does.
+        let fake_row = (
+            MINIMAX_PROVIDER.to_owned(),
+            Some(MINIMAX_MODEL.to_owned()),
+            false,
+        );
+        let (f_rows, l_rows) = (ledger_rows(&mut hf), ledger_rows(&mut hl));
+        assert_eq!(
+            f_rows,
+            vec![fake_row; fake.calls() as usize],
+            "F's ledger rows are the fake's: the MiniMax route, no reported usage"
+        );
+        assert_eq!(
+            l_rows.len(),
+            live.calls() as usize,
+            "one ledger row per L provider call"
+        );
+        if real {
+            let minimax_row = (
+                MINIMAX_PROVIDER.to_owned(),
+                Some(MINIMAX_MODEL.to_owned()),
+                true,
+            );
+            assert_eq!(
+                l_rows,
+                vec![minimax_row; l_rows.len()],
+                "non-vacuity: every L ledger row names MiniMax-M3 and carries the usage MiniMax reported"
+            );
+        }
+
+        // The attribution reads: no provider call and no ledger row in either tenant (G-N09-4(c)).
+        let before = (ledger(&mut hf), ledger(&mut hl), fake.calls(), live.calls());
+        let silent: Vec<_> = el
+            .iter()
+            .filter(|(_, e)| memories_of(&mut hl, *e).is_empty())
+            .map(|(key, _)| *key)
+            .collect();
+        assert!(
+            silent.is_empty(),
+            "L wrote no Memory for {silent:?}: nothing to attribute there (a model-output fact, not an attribution \
+             difference)"
+        );
+        let (pf, pl) = (projection(&mut hf, &wf, &ef), projection(&mut hl, &wl, &el));
+        for (h, w, evidence) in [(&mut hf, &wf, &ef), (&mut hl, &wl, &el)] {
+            for ((_, ground), (key, e)) in CORPUS.iter().zip(evidence) {
+                if matches!(ground, Ground::Nothing) {
+                    for memory in memories_of(h, *e) {
+                        assert_eq!(
+                            read(h, memory),
+                            MemoryAttribution::Unresolved,
+                            "G-N09-3: {key} has no ground"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                scalar(
+                    h,
+                    "SELECT count(*) FROM private.memory_projects WHERE project_id = $1",
+                    w.p3
+                ),
+                0,
+                "G-N09-3: the same-name trap P3 has no row"
+            );
+        }
+        assert_eq!(
+            (ledger(&mut hf), ledger(&mut hl), fake.calls(), live.calls()),
+            before,
+            "G-N09-4(c): the attribution reads"
+        );
+        assert_eq!(
+            pf,
+            expected(),
+            "F: the corpus resolves by its grounds alone"
+        );
+        assert_eq!(pl, pf, "G-N09-4(a): per message, L's attribution is F's");
+        drop(fence);
+    });
+}
+
+/// Design v0.2 §15.9 E-D (M29 T08): G-N09-4 with tenant L on real MiniMax-M3, run by the CI `live` job.
+#[test]
+#[ignore = "lane(a:shared_db) live MiniMax E-D (M29 T08): run with --include-ignored and HUMAUX_REQUIRE_MINIMAX=1"]
+fn g_n09_4_live_minimax() {
+    let Some(key) = live_minimax::load_minimax_key() else {
+        humaux_testkit::skip_or_fail(
+            "g_n09_4_live_minimax",
+            "missing object: MINIMAX_API_KEY (env and /Volumes/data/viral-skill-eval/.env both empty)",
+            humaux_testkit::ExternalDep::MiniMax,
+        );
+        return;
+    };
+    let live = Counted::new(Arc::new(live_minimax::live_provider(
+        key,
+        MINIMAX_MODEL,
+        Duration::from_secs(LIVE_HTTP_SECS),
+    )));
+    e_d("g_n09_4_live_minimax", &live, true);
+}
+
+/// E-D's deterministic half, run by the gates: the same corpus with L on a second FakeProvider whose memory text names
+/// "Website A", so the live lane measures only the provider.
+#[test]
+fn g_n09_4_corpus_fake() {
+    let fake = Counted::new(FakeProvider::new(vec![REPLY_B; CORPUS.len()]));
+    e_d("g_n09_4_corpus_fake", &fake, false);
 }
