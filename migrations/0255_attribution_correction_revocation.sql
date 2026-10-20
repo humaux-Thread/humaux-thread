@@ -163,6 +163,7 @@ BEGIN
   SELECT l.tenant_id, l.memory_id, l.project_id, NEW.decided_by,
          'project_task_relations:' || NEW.relation_id || '@' || NEW.revision
     FROM private.memory_projects_live l
+    JOIN private.evidence_objects e ON e.tenant_id = l.tenant_id AND e.evidence_id = l.decision_evidence_id
    WHERE l.tenant_id = NEW.tenant_id
      AND l.project_id = NEW.src_id
      AND l.rule_id_ver = 'task_run@1'
