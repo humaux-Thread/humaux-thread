@@ -152,12 +152,6 @@ END;
 $$;
 ALTER FUNCTION private.memory_projects_on_supersede() OWNER TO role_migration_owner;
 REVOKE ALL ON FUNCTION private.memory_projects_on_supersede() FROM PUBLIC;
-CREATE TRIGGER memory_projects_on_supersede
-  AFTER UPDATE OF superseded_by ON private.memory_records
-  FOR EACH ROW
-  WHEN (NEW.superseded_by IS NOT NULL AND NEW.superseded_by IS DISTINCT FROM OLD.superseded_by)
-  EXECUTE FUNCTION private.memory_projects_on_supersede();
-
 -- ④ G-M29-6: the one relation-correction revocation site. It reads the view only (⑥: never the Evidence tables).
 -- revoked_by takes decided_by verbatim (0252 gave both the same closed format).
 CREATE FUNCTION private.revoke_attributions_on_relation_correction() RETURNS trigger
