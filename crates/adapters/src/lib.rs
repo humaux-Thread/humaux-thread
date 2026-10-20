@@ -68,6 +68,7 @@ pub mod relation_repo;
 pub mod remember;
 pub mod request_guard_repo;
 pub mod retrieval_embedding_rpc;
+pub mod retrieval_query_log;
 pub mod retrieval_query_source;
 pub mod retrieve;
 pub mod role_hygiene;

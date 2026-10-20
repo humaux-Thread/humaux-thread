@@ -269,7 +269,7 @@ fn due_stage_leaf(db: &mut Db, rows: i32) -> (String, String, String) {
     (policy, registry, leaf)
 }
 
-/// Contract test (§78.2): both DB `table_key` CHECKs equal the Rust closed set — the registry all six keys, the
+/// Contract test (§78.2): both DB `table_key` CHECKs equal the Rust closed set — the registry every key, the
 /// policies all but EVENTS / AUDIT_EVENTS (D-G) — and `control.partition_parent` resolves every key.
 #[test]
 fn partition_table_keys_match_the_rust_enum() {

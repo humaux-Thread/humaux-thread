@@ -1,0 +1,101 @@
+# §46.1 migration manifest. T-RET-1b / ADR-0081 D-A: ops.retrieval_query_log, a RANGE (called_at) partitioned table
+# created empty with the current UTC month plus 3 leaves, joining the §48.1 closed table_key set as
+# RETRIEVAL_QUERY_LOG (both 0224 CHECKs widened, control.partition_parent and control.partition_drop_check replaced
+# with the key added; no retention policy row). FORCE RLS with a tenant policy carrying WITH CHECK; role_gateway holds
+# INSERT and no runtime role holds anything else. No DML on existing tables; additive, so EXPAND_CONTRACT (number 0258).
+# Catalog-only checks through to_regclass / to_regprocedure text lookups, so migration-rehearsal can EXPLAIN them
+# against HEAD.
+
+migration_id = "0258_retrieval_query_log"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless the table does not exist yet, the 0224 creator / parent resolver and the 0231 drop check exist, and
+# the key has neither a registry row nor a policy row.
+precheck = """
+select to_regclass('ops.retrieval_query_log') is null
+ and to_regprocedure('control.partition_create_month(text,timestamptz)') is not null
+ and to_regprocedure('control.partition_parent(text)') is not null
+ and to_regprocedure('control.partition_drop_check(uuid,uuid)') is not null
+ and not exists (select 1 from control.partition_registry where table_key = 'RETRIEVAL_QUERY_LOG')
+ and not exists (select 1 from control.retention_policies where table_key = 'RETRIEVAL_QUERY_LOG')
+ as precheck_ok
+"""
+
+# Fails on: not a RANGE parent on called_at, or without RLS + FORCE or not owned by role_migration_owner; a DEFAULT
+# partition; a leaf not owned by role_migration_owner, without RLS + FORCE, with a policy set other than the parent's or
+# with any ACL entry for another role (table or column); registry ATTACHED rows (by name) not equal to pg_inherits; a
+# horizon short of the current UTC month + 4; a tenant policy without USING and WITH CHECK; any runtime role (or
+# PUBLIC) holding anything but role_gateway's INSERT; either table_key CHECK without the key; partition_parent or
+# partition_drop_check without the key, with another owner, SECURITY attribute or SET list, or with an EXECUTE grantee.
+postcheck = """
+select
+ coalesce((select c.relkind = 'p' and c.relrowsecurity and c.relforcerowsecurity
+                  and pg_get_userbyid(c.relowner) = 'role_migration_owner'
+             from pg_class c where c.oid = to_regclass('ops.retrieval_query_log')), false)
+ and coalesce((select pt.partstrat = 'r' and pt.partnatts = 1 and a.attname = 'called_at'
+                 from pg_partitioned_table pt join pg_attribute a on a.attrelid = pt.partrelid
+                  and a.attnum = pt.partattrs[0]
+                where pt.partrelid = to_regclass('ops.retrieval_query_log')), false)
+ and (select count(*) >= 4 from pg_inherits i where i.inhparent = to_regclass('ops.retrieval_query_log'))
+ and not exists (
+       select 1 from pg_inherits i join pg_class l on l.oid = i.inhrelid
+        where i.inhparent = to_regclass('ops.retrieval_query_log')
+          and (pg_get_expr(l.relpartbound, l.oid) = 'DEFAULT'
+               or not l.relrowsecurity or not l.relforcerowsecurity
+               or pg_get_userbyid(l.relowner) <> 'role_migration_owner'
+               or exists (select 1 from aclexplode(coalesce(l.relacl, acldefault('r', l.relowner))) x
+                           where x.grantee <> l.relowner)
+               or exists (select 1 from pg_attribute a, aclexplode(a.attacl) x where a.attrelid = l.oid)
+               or (select array_agg(format('%s %s %s %s %s %s', p.polname, p.polcmd, p.polpermissive, p.polroles,
+                                           pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid))
+                                    order by p.polname)
+                     from pg_policy p where p.polrelid = l.oid)
+                  is distinct from
+                  (select array_agg(format('%s %s %s %s %s %s', p.polname, p.polcmd, p.polpermissive, p.polroles,
+                                           pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid))
+                                    order by p.polname)
+                     from pg_policy p where p.polrelid = to_regclass('ops.retrieval_query_log'))))
+ and (select array_agg(format('%I.%I', n.nspname, l.relname) order by l.relname)
+        from pg_inherits i join pg_class l on l.oid = i.inhrelid join pg_namespace n on n.oid = l.relnamespace
+       where i.inhparent = to_regclass('ops.retrieval_query_log'))
+     = (select array_agg(r.leaf_name order by r.leaf_name) from control.partition_registry r
+         where r.table_key = 'RETRIEVAL_QUERY_LOG' and r.state = 'ATTACHED')
+ and (select max(r.upper_bound) from control.partition_registry r
+       where r.table_key = 'RETRIEVAL_QUERY_LOG' and r.state = 'ATTACHED')
+     >= date_add(date_trunc('month', now(), 'UTC'), interval '4 months', 'UTC')
+ and exists (select 1 from pg_policy p
+              where p.polrelid = to_regclass('ops.retrieval_query_log')
+                and p.polname = 'retrieval_query_log_tenant_isolation'
+                and p.polqual is not null and p.polwithcheck is not null)
+ and has_table_privilege('role_gateway', 'ops.retrieval_query_log', 'INSERT')
+ and not has_table_privilege('public', 'ops.retrieval_query_log',
+                             'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+ and not exists (
+       select 1 from (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+                             ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'),
+                             ('role_maintenance'), ('role_admin'), ('role_health_reader')) r(role)
+        where has_table_privilege(r.role, 'ops.retrieval_query_log', 'SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+           or has_any_column_privilege(r.role, 'ops.retrieval_query_log', 'SELECT, UPDATE, REFERENCES')
+           or (r.role <> 'role_gateway' and has_table_privilege(r.role, 'ops.retrieval_query_log', 'INSERT')))
+ and coalesce((select pg_get_constraintdef(co.oid) ~ 'RETRIEVAL_QUERY_LOG' from pg_constraint co
+                where co.conrelid = to_regclass('control.partition_registry')
+                  and co.conname = 'partition_registry_table_key'), false)
+ and coalesce((select pg_get_constraintdef(co.oid) ~ 'RETRIEVAL_QUERY_LOG' from pg_constraint co
+                where co.conrelid = to_regclass('control.retention_policies')
+                  and co.conname = 'retention_policies_table_key'), false)
+ and (select count(*) = 2 from pg_proc p
+       where p.oid in (to_regprocedure('control.partition_parent(text)'),
+                       to_regprocedure('control.partition_drop_check(uuid,uuid)'))
+         and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and not p.prosecdef
+         and coalesce(p.proconfig, array[]::text[])
+             = case when p.proname = 'partition_drop_check' then array['search_path=pg_catalog', 'row_security=off']
+                    else array['search_path=pg_catalog'] end
+         and p.prosrc ~ 'RETRIEVAL_QUERY_LOG'
+         and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                          where x.grantee <> p.proowner and x.privilege_type = 'EXECUTE'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix only (EXPAND_CONTRACT, §46.1; no fake down migration). Before COMMIT any failure rolls the single transaction back and leaves the database untouched. After COMMIT: a forward migration; the table is empty at apply time and written only by gateway::recall, so a bad shape is fixed by a forward migration or, before any row is wanted, DROP TABLE ops.retrieval_query_log plus restoring the 0231 bodies of the two functions."
+backup_restore_requirement = "None: creates one empty table and widens two CHECKs on tables of a handful of rows; no row is copied, rewritten or deleted. The ADR-0063 D-M pg_dump before apply covers the registry as for every §48.1 migration."
