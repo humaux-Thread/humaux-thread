@@ -1,0 +1,97 @@
+# E-RET-5a: CPU cross-encoder reranker feasibility bench on the ubuntu-24.04-arm runner (4 vCPU / 16 GB), the proxy for the
+# ARM production host (spec §67.2). Experiment branch only (exp/e-ret-5a-*); never merged. Public models and a public C-MTEB
+# dataset only; aggregates only in the log and artifact. README-only pushes do not trigger it (paths filter).
+name: rerank-bench
+on:
+  push:
+    branches: ['exp/e-ret-5a-*']
+    paths:
+      - '.github/workflows/rerank-bench.yml'
+      - 'experiments/rerank_bench/bench.py'
+      - 'experiments/rerank_bench/requirements.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rerank-bench
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '4'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  BENCH_ARGS: '--smoke'
+jobs:
+  bench:
+    name: bench ${{ matrix.key }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The model list and the pinned commit SHAs live here only; bench.py logs the SHA the HF API resolves in-job and
+        # fails if the pin does not resolve to itself. Licence is read in-job and a non-commercial licence aborts the model.
+        include:
+          - {key: bge-reranker-v2-m3, repo: BAAI/bge-reranker-v2-m3, rev: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e, kind: seqcls}
+          - {key: qwen3-reranker-0.6b, repo: Qwen/Qwen3-Reranker-0.6B, rev: e61197ed45024b0ed8a2d74b80b4d909f1255473, kind: causal_yesno}
+          - {key: bge-reranker-base, repo: BAAI/bge-reranker-base, rev: 2cfc18c9415c912f9d8155881c133215df768a70, kind: seqcls}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4.2.4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.arch }}-${{ hashFiles('experiments/rerank_bench/requirements.txt') }}
+      - uses: actions/cache@v4.2.4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ matrix.key }}-${{ matrix.rev }}-${{ hashFiles('experiments/rerank_bench/requirements.txt') }}
+      - name: install pinned deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only, read-only token, no secrets); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/rerank_bench/requirements.txt
+          python -m pip freeze
+      - name: bench
+        shell: bash
+        env:
+          KEY: ${{ matrix.key }}
+          REPO: ${{ matrix.repo }}
+          REV: ${{ matrix.rev }}
+          KIND: ${{ matrix.kind }}
+        run: |
+          set -euo pipefail
+          python experiments/rerank_bench/bench.py run --key "$KEY" --repo "$REPO" --revision "$REV" --kind "$KIND" \
+            --out "result-$KEY.json" $BENCH_ARGS | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: rerank-bench-part-${{ matrix.key }}
+          path: result-${{ matrix.key }}.json
+          if-no-files-found: warn
+  aggregate:
+    name: aggregate
+    needs: bench
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          pattern: rerank-bench-part-*
+          path: parts
+          merge-multiple: true
+      - name: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/rerank_bench/bench.py aggregate parts rerank-bench-results.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: rerank-bench-results
+          path: rerank-bench-results.json
