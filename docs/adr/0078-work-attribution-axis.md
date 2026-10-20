@@ -323,6 +323,24 @@ module gates there needs its own spec change.
 | G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved`; end to end (T07): a put with no ground whose text names the project is distilled into a Memory the reader reports `unresolved`, and the trap project has zero rows tenant-wide | "take the most recent project" |
 | G-N09-4 formal attribution does not depend on a model | design v0.2 §15.8: with the provider off Distill writes no Memory, so "row-for-row identical with models off" is not testable as written; the testable form is (a) the same fixture in two tenants whose providers return different memory text gives, per message, the same projection (projects by fixture role, `source_kind`, `rule_id_ver`, the decision Evidence's message), and (b) provider calls == Distill jobs run (a failed attempt and its retry counted), with correction, relation correction, revocation and reads adding 0 provider calls and 0 `ops.model_call_ledger` rows. E-D reruns the criterion on real corpus | (a) A3 skips a project named in the memory text; (b) one more provider call before the Memory INSERT (make A3 call a model once) |
 
+**E-D (M29 T08): G-N09-4 under a real model.** `m29_attribution_e2e::g_n09_4_live_minimax`, run by the CI `live` job
+(`--include-ignored live`), puts one corpus through the real `remember_*_atomically` in two tenants and drains Distill
+in each: F on T07's deterministic FakeProvider, L on MiniMax-M3 through `live_minimax`. It asserts, with T07's
+`projection` helper, that each message projects the same in L as in F (and F as the grounds alone give it); that L's
+provider calls == Distill's own calls (jobs run plus ADR-0048 re-asks); that the attribution reads add 0 provider calls
+and 0 `ops.model_call_ledger` rows; that P3 has 0 `memory_projects` rows in both tenants; and that every ungrounded
+message is `unresolved`. Non-vacuity: L ran ≥ 12 Distill jobs, and every L ledger row names `minimax` / `MiniMax-M3`
+with the usage MiniMax reported, while F's rows carry none (the fake must present the MiniMax descriptor to pass route
+admission, so usage, not the provider column, tells the two apart). A 429 or quota answer fails the run with its type and
+is not rerun. Corpus: 12 synthetic work notes, 4 A1 (2 declare P1, 2 declare P2), 4 A3 (2 on T1, shared by P1 and P2;
+2 on T2, P2's alone) and 4 without a ground (2 name "Website A", the name P1 shares with the trap P3; 2 name P2's
+"Website B"). It is synthetic because message text reaches attribution only through the model, so a real corpus would
+change only the model-output distribution E-D already varies, and real data cannot enter this public CI (design v0.2
+§15.9). `g_n09_4_corpus_fake` runs the same corpus in the gates with L on a second FakeProvider, so the live lane
+measures the provider alone. Live run (PR #114, head `37be7ea`): `workflow_dispatch` run 39389601734, step
+"attribution E-D live (MiniMax, M29 T08)" success, `E-D: jobs=12 calls=12 input_tokens=16864 billable_tokens=16864
+est_usd=0.008776` (§11 prices: input $0.30/M, output $1.20/M, the ledger's `output_tokens` priced at the output rate).
+
 ## Red records
 
 Each fault is injected on its own throwaway branch off the card's green head and run through `targeted.yml`; run ids
@@ -569,6 +587,12 @@ and the failing lines are in the card's PR description.
   - r11: `const NEW_READ: &str = "SELECT 1 FROM private.memory_projects mp";` after the `/*` doc glob in
     `crates/adapters/src/subject_repo.rs` -> xtask `t07_attribution_reader_real_repo_passes` red, naming that file.
   - r8 and r9 above stand: their faults and tests are unchanged by this round.
+- T08 (PR #114, E-D), branch `red/m29-t08-r1` off `37be7ea`. The skip check precedes the fault, so it runs only in the
+  `live` job: recorded as a `workflow_dispatch` of `ci.yml` on the red branch, not through `targeted.yml`:
+  - r1: tenant L's provider swapped to the FakeProvider in `g_n09_4_live_minimax` (0 MiniMax calls) -> run
+    39395982313, step "attribution E-D live" red at `m29_attribution_e2e.rs:1431`, the non-vacuity row check: every L
+    ledger row is `("minimax", Some("MiniMax-M3"), false)`, the MiniMax route without reported usage.
+  - The per-message comparison adds no red of its own: it is T07's `projection` helper, whose red is r6b above.
 
 ## Consequences
 

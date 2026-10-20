@@ -751,6 +751,15 @@ jobs:
           DASHSCOPE_API_KEY: ${{ secrets.ALIBABA_CLOUD_API_KEY }}
         run: cargo test -p humaux-private-worker --test derived_dispatch_e2e -- --include-ignored live
 
+      # M29 T08 experiment E-D (design v0.2 §15.9, ADR-0078 G-N09-4). Runs even when an earlier live step failed, so
+      # its result never depends on another step's provider luck; its log carries the `E-D: ...` measurement line.
+      - name: attribution E-D live (MiniMax, M29 T08)
+        if: ${{ !cancelled() }}
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.ALIBABA_CLOUD_API_KEY }}
+        run: cargo test -p humaux-private-worker --test m29_attribution_e2e -- --include-ignored live
+
       - name: consolidation hop (MiniMax)
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAXAPIKEY }}
