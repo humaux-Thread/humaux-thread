@@ -38,7 +38,7 @@ corpus is private and never enters this repository.
 
 | # | Indicator | Current measurement | Bottleneck / judgement |
 |---|---|---|---|
-| M1 | **Continuation hit@5** on the 198-question set (single positive per question, so hit@5 = recall@5); plus the **pool ceiling** (share of questions whose correct item enters the candidate pool) and the **conversion** (share of in-pool items that reach the top 5) | The new pipeline is **unmeasured**: no harness exists (`continuation_198_v2` is `NOT_DECLARED`, §69). Old system (hybrid retrieval plus rerank, 50–60 candidates): hit@5 0.773–0.778, pool ceiling 0.798, conversion about 95%; with 30 / 50 / 60 candidates the ceiling was 0.803 / 0.843 / 0.865 | **Recall is the bottleneck.** The new pipeline has one dense leg and, at the default `top_k` of 5, takes 25 candidates; queries probably do not use the query role. Its ceiling is probably below the old system's, so it is measured first |
+| M1 | **Continuation hit@5** on the 198-question set (single positive per question, so hit@5 = recall@5); plus the **pool ceiling** (share of questions whose correct item enters the candidate pool) and the **conversion** (share of in-pool items that reach the top 5) | The new pipeline is **unmeasured**: no harness exists (`continuation_198_v2` is `NOT_DECLARED`, §69). Old system (hybrid retrieval plus rerank, 50–60 candidates): hit@5 0.773–0.778, pool ceiling 0.798–0.815 across runs (each from a different run and denominator, so no exact conversion is derived from them; E-RET-0 measures it on one run); with 30 / 50 / 60 candidates the ceiling was 0.803 / 0.843 / 0.865 | **Recall is the bottleneck.** The new pipeline has one dense leg and, at the default `top_k` of 5, takes 25 candidates; queries probably do not use the query role. Its ceiling is probably below the old system's, so it is measured first |
 | M2 | **LLM input-cache hit rate** H = Σ cache-read tokens ÷ Σ total input tokens, per provider × model × purpose | **Not measurable.** The new system parses `cached_input_tokens` and drops it; the old system handled about 760 million input tokens in 90 days (about 728 million on one model) and recorded no cache field | Meter first. Distillation's tool schema and system prompt vary by authority-class menu × whether an emotion field is offered, so the prefix forks at its start |
 | M3 | **Re-embedding volume per document revision** = bytes newly embedded ÷ bytes in full | 100% today (each Evidence is embedded in full). Pilot (E-CACHE-2): content addressing needs about 2.2%–2.5%, a prefix chain about 81% | Content-address the final input (D-C) |
 | M4 | **Retrieval-side cache hits**: request hit rate of the query-vector cache; reuse rate of single-pair rerank scores | The query cache is wired but off (the three deployment values are empty); no query-hash log exists. Old system, caches keyed by library state: result cache 0.96%, rerank cache keyed by the candidate set 0.39% | A cache bound to library state fails under frequent agent writes. Cache only what does not depend on library state |
@@ -162,8 +162,8 @@ corpus is private and never enters this repository.
 
 ### D-E (D-RET-5) Recall-first accuracy plan; rerank after recall (implemented by T-RET-2, T-RET-6)
 
-The old system's numbers put the loss in recall rather than in ranking: with a pool ceiling of 0.798, about 95% of
-in-pool items reached the top 5. So the order is fixed, and **each step is its own paired experiment, never several
+The old system's numbers put the loss in recall rather than in ranking: hit@5 (0.773–0.778) sits within a few points
+of the pool ceiling (0.798–0.815 across runs), while about a fifth of the questions never enter the pool at all. So the order is fixed, and **each step is its own paired experiment, never several
 changes at once**:
 
 1. stage-loss diagnosis (E-RET-0);
