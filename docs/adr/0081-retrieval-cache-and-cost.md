@@ -66,7 +66,7 @@ corpus is private and never enters this repository.
     non-overlapping categories: new input, cache write, cache read, output. Baseline §19.1 holds the derivation.
   - A rate over these columns leaves a NULL row out of both its numerator and its denominator instead of counting it as
     zero.
-- **Normalisation happens in one place**, the usage normalisation of `adapters::byok`, and converts per protocol. Baseline
+- **Normalisation happens in one place**, the single usage→ledger normaliser in `adapters` (today `contribution_reasoner::finalize_from_usage`, the function every generative hop already routes through), and converts per protocol. Baseline
   §19.1 holds the mapping for OpenAI-compatible replies (MiniMax, DashScope), Anthropic-compatible replies and
   DeepSeek. It must be explicit because the same field name is not the same measure: OpenAI-compatible `prompt_tokens`
   is the total and `cached_tokens` a part of it, while Anthropic-compatible `input_tokens` counts only new input, beside
@@ -162,8 +162,9 @@ corpus is private and never enters this repository.
 
 ### D-E (D-RET-5) Recall-first accuracy plan; rerank after recall (implemented by T-RET-2, T-RET-6)
 
-The old system's numbers put the loss in recall rather than in ranking: hit@5 (0.773–0.778) sits within a few points
-of the pool ceiling (0.798–0.815 across runs), while about a fifth of the questions never enter the pool at all. So the order is fixed, and **each step is its own paired experiment, never several
+In the old system the pool ceiling (0.798–0.815 across runs) was the binding limit: about a fifth of the questions never
+entered the candidate pool, and no ranking change can recover those. How much ranking loses inside the pool is measured on
+one run by E-RET-0, not derived from numbers of different runs. So the order is fixed, and **each step is its own paired experiment, never several
 changes at once**:
 
 1. stage-loss diagnosis (E-RET-0);
@@ -205,7 +206,7 @@ changes at once**:
 
 | Module | Responsibility | Tables | Dependency direction |
 |---|---|---|---|
-| `adapters::byok` usage normalisation (extended) | The only place that turns each protocol's usage into the four categories | none | provider reply → ledger |
+| `adapters` usage→ledger normaliser (extended; today `contribution_reasoner::finalize_from_usage`, fed by `byok`'s parsed usage) | The only place that turns each protocol's usage into the four categories | none | provider reply → ledger |
 | `adapters::model_call_ledger` (extended) | Persists the four categories | `ops.model_call_ledger` gains two columns | append-only |
 | `gateway::recall` (extended) | Writes the query-hash log; reads candidate depth from configuration; later the BM25 leg and fusion | `ops.retrieval_query_log` (new) | reads config; writes ops |
 | `retrieval-provider` DashScope adapter (extended) | Queries use the native interface with `text_type` / `instruct`; fingerprint extended | none | infra-egress |
@@ -227,7 +228,7 @@ are not §80.1 registry rows; registering them there needs its own spec change.
 | G-RET-3 caches do not resurrect (T-RET-6) | With the query vector and the rerank scores (and, later, candidates) already cached, tombstone a Memory: the next recall does not return it. The same query from another tenant does not hit | skip the PostgreSQL hydrate gate after a cache hit |
 | G-RET-4 fingerprint completeness (T-RET-3) | Changing the model revision, `text_type`, the `instruct` version, the truncation policy or the reranker version makes each of them miss | drop any one of these fields from the key |
 | G-RET-5 exact vector reuse (T-RET-5) | A vector is reused only if the fingerprint **and** the final-input hash both match; changing one character, or only the context prefix, calls the provider | key on the hash of the raw text (without the context prefix) |
-| G-RET-6 harness completeness (the log part: T-RET-1b) | The expected key set (question, arm, repetition) is complete; a duplicate key is an error, not an overwrite; the effective manifest (snapshot hash, fingerprints, configuration) is recorded | allow duplicate keys and let the later write win |
+| G-RET-6 harness completeness (the log part: T-RET-1b; the key-set, duplicate-key and manifest part lives in the out-of-repo offline harness, T-RET-2, and is not a repo gate) | The expected key set (question, arm, repetition) is complete; a duplicate key is an error, not an overwrite; the effective manifest (snapshot hash, fingerprints, configuration) is recorded | allow duplicate keys and let the later write win |
 
 G-RET-1 is narrowed on purpose (design §19.5 note): `byok` has one reply protocol today, so only that one is
 normalised. The other two protocols' fixed samples are reported `not_applicable`, naming the missing adapter, and the card
@@ -250,8 +251,8 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
   56 million characters. The 198-question set carries an expected memory id per question.
 - **Spending comes in two stages.** Stage one reuses the v3 vectors already in the old vector store, read-only, at zero
   cost, for the structural experiments. Stage two uses v4 (query role, final numbers): full embedding costs about
-  25 CNY synchronously, about 12.5 CNY with Batch where Batch can be used. Alibaba-side spend is charged by default
-  against the remaining experiment budget (about USD 18.5 of USD 25 left) and proceeds unless the owner objects.
+  25 CNY synchronously, Batch pricing is unverified (official pages disagree) and is not counted on. Alibaba-side spend is charged by default
+  against the owner's experiment budget and proceeds unless the owner objects.
 
 | Experiment | Question | Method | Data class | Cost bound | Acceptance rule |
 |---|---|---|---|---|---|
