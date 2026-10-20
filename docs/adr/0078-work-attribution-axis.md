@@ -561,6 +561,14 @@ and the failing lines are in the card's PR description.
   - r9: the reader count as `total <= 1` -> xtask `t07_attribution_reader_fails_on_zero_readers` red: the home
     file with no view read passes.
   - r4 above stands: its fault line and test are unchanged by this round.
+- T07 delta review (PR #111: the comment stripper was not literal-aware, so a `/*` in a doc glob or a `//` in a string
+  hid the code after it, and `FROM"private"` glued into one word), branches `red/m29-t07-r10` and `r11` off
+  `66a5294`, whose arm lexes comments, strings, raw strings and char literals and turns a `"` into a space:
+  - r10: a naive `line.find("//")` cut in front of the lexer -> xtask
+    `t07_attribution_reader_sees_reads_past_literals_and_globs` red: the read after `"https://x"` passes.
+  - r11: `const NEW_READ: &str = "SELECT 1 FROM private.memory_projects mp";` after the `/*` doc glob in
+    `crates/adapters/src/subject_repo.rs` -> xtask `t07_attribution_reader_real_repo_passes` red, naming that file.
+  - r8 and r9 above stand: their faults and tests are unchanged by this round.
 
 ## Consequences
 
