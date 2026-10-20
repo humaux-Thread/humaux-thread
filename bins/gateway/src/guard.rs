@@ -837,7 +837,7 @@ impl GatewayGuard {
         F: FnOnce(&AuthorizedRequest) -> Result<RememberCommand, ErrorCode>,
     {
         let result = async {
-            let admitted = self.admit(context, operation, requested_workspace).await?;
+            let admitted = self.admit_with_workspace_policy(context, operation, requested_workspace, WorkspaceAdmission::PreserveContinuityFilter).await?;
             let routed = matches!(
                 (
                     operation.operation_key(),
