@@ -388,6 +388,32 @@ and the failing lines are in the card's PR description.
     (INTERNAL) instead of 23503.
   - The INVITED / REMOVED members, the key bound to a SUSPENDED user and the key of a non-member are refused by legs
     r3b, r3f and r3a already break; the factual Evidence the writer cannot see is refused by the check r2 drops.
+- T06b (PR #104), branches `red/m29-t06b-r1..r11` off `589a456`:
+  - r1: 0255's `CREATE TRIGGER memory_projects_on_supersede` dropped -> G-M29-5(b) red: the correction's M2 inherits
+    nothing.
+  - r2: a red-only later migration adds a second trigger on `private.memory_records` executing the A3' function ->
+    rls-check "§6.1.4 A3' single site" red (`correction_inheritance_site_gate_holds_on_the_migrated_schema`): found 2.
+  - r3: the live view's `NOT EXISTS` as `true OR NOT EXISTS` -> G-M29-5(b) red: the retracted P1 link is inherited too.
+  - r4: 0255's `CREATE TRIGGER project_task_relations_revoke_attributions` dropped -> G-M29-6 red: the narrowing
+    revision revokes nothing.
+  - r5: the window leg `NOT (NEW.valid @> e.occurred_at)` as `true` -> G-M29-6 red: the row whose Evidence stays
+    inside the narrowed window is revoked too.
+  - r6: `tr.task_id = NEW.dst_id` as `true` -> G-M29-6 red: the row derived through T2, which P1 also CONTAINS, is
+    revoked too.
+  - r7: `l.rule_id_ver = 'task_run@1'` as `true` -> G-M29-6 red: the DECLARED row on the same Evidence is revoked too.
+  - r8: the relation-correction function as `SECURITY INVOKER` -> G-M29-6 red: the revision fails `FORBIDDEN`, since
+    the writing role_gateway holds no INSERT on `private.memory_project_revocations`.
+  - r9: 0255's `CREATE TRIGGER memory_project_revocations_follow_inheritance` dropped -> G-M29-6 (chain) red: only M1
+    is revoked, not its corrections M2 and M3.
+  - r10: a red-only later migration grants EXECUTE on `private.revoke_attributions_on_relation_correction()` to
+    `role_admin` -> rls-check "§6.1.4 attribution revocation definers" red
+    (`attribution_revocation_definers_gate_holds_on_the_migrated_schema`).
+  - r11: the relation-correction function's session-tenant pin as `IF false AND ...` -> the session-tenant test red:
+    an owner write under another session tenant is not refused 42501.
+  - r1, r4 and r9 each remove one whole statement (6, 6 and 5 lines); r3, r5-r8 and r11 change one line inside 0255,
+    whose postcheck leaves the triggers, the view body, the function bodies and the definers' SECURITY DEFINER to these
+    tests. r2 and r10 are later migrations: 0255's postcheck pins the EXECUTE list, and a second site arrives as a
+    later migration.
 
 ## Consequences
 
