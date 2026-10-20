@@ -76,7 +76,8 @@ Each decision carries its design identifier in parentheses, so the numbering can
   - `usage`: `CITED` / `ADOPTED` / `REJECTED`;
   - `mode`: the EvidenceMode `ClientDeclared` (after validation) or `UserReported`. The EvidenceMode closed set belongs
     to the tool-run design (design v0.2 §16.9), which has no Baseline home yet. This ADR only uses these two values
-    and does not define the enum;
+    and does not define the enum. Its §78.2 Rust == DB reconciliation is ADR-0079 G-DOC-17 (not_applicable, naming
+    EvidenceMode, until the type exists);
   - `basis_evidence_id`;
   - `rationale_memory_id`, nullable.
 - **Validation.**
@@ -98,7 +99,7 @@ Each decision carries its design identifier in parentheses, so the numbering can
 
   **"The method caused the success" is asserted by no automatic path.**
 - A rejection is useful too, but the nature of its reason must be marked: an agent's inference, or a user's preference.
-  Which column carries that mark is a T-KNOW-1 schema detail.
+  Which column carries that mark is a T-KNOW-1 schema detail; G-KNOW-2 (d) holds the requirement.
 - **Lazy distillation does not back-attribute (G-KNOW-3).** An old run cited `version + selector`. If memories m1 and m2
   are later distilled from that passage, the old run is not automatically recorded as having adopted either. Method-level
   attribution needs a new deterministic ground or a confirmation event.
@@ -118,8 +119,8 @@ Each decision carries its design identifier in parentheses, so the numbering can
   - `USER` comes from origin `DirectUserInput` or `UserConfirmed`.
   - `CI` comes from origin `TrustedConnector` when it is the server's own read-back of the raw check-run receipt.
   - `EXTERNAL_METRIC` comes from a `TrustedConnector` metric receipt (not in the first slice).
-  - Everything else is `AGENT_CHECK`. By §10.1 the origin `AuthenticatedAgent` is capped at `PrivateKnowledge`, so it
-    cannot pass for CI or the user.
+  - Everything else is `AGENT_CHECK`. The map is closed over origins, and that, not the §10.1 ceiling, keeps
+    `AuthenticatedAgent` from passing for CI or the user (`TrustedConnector` and `ToolResult` share its ceiling).
 - **When `verifier` is not `AGENT_CHECK`, `result` and `(criterion_id, criterion_version)` are also derived server-side
   from the receipt.** Deriving only the verifier is not enough: an agent could attach a genuine receipt to another
   check's name, or to a PASS.
@@ -129,7 +130,9 @@ Each decision carries its design identifier in parentheses, so the numbering can
     cannot be bound the answer is `INVALID_INPUT`; otherwise a run could borrow another PR's genuine green receipt.
   - `USER`: the Evidence must be the user's confirmation of one concrete manifest
     `(task_run_id, criterion_id, criterion_version, result)`, given through the trusted user entry of §6.1.4 (the same
-    manifest digest as `control.confirm_tokens`, §33.10 rule 9). The server reads the values from the manifest.
+    manifest digest as `control.confirm_tokens`, §33.10 rule 9). The server reads the values from the manifest. That
+    confirmation writes new Evidence of origin `DirectUserInput`; it never mints `UserConfirmed`, whose only creation
+    path stays `memory.confirm` (§25.4.B).
   - A client-supplied value that differs from the derived one is `INVALID_INPUT`. Only `AGENT_CHECK` takes `result` and
     criterion from the client, and those are by nature only the agent's own account.
 - A business outcome not yet observed (a search ranking, a conversion rate) is recorded as `PENDING`, neither success
@@ -256,7 +259,7 @@ This supplements the vocabulary evolution gate E-F of ADR-0078 D-H.
   last evaluation >= Y". X and Y come from configuration (§78.1).
 - **Replay carries no future information.** "Replay as the system knew it then" happens only in the experiment harness,
   cut by `created_at`, and never in product retrieval (§9 makes `created_at` audit-only). `occurred_at` can be backfilled
-  and is therefore not a valid cut (G-KNOW-11). `commit_seq` (§15) is not used as a consistent cut either (§6.1.4, Time).
+  and is therefore not a valid cut (G-KNOW-11). `commit_seq` (§15) is not used as a consistent cut until verified (§6.1.4, Time).
 
 ### D-I (D-KNOW-9) Recall: several entry points in parallel, three source layers labelled apart
 
@@ -311,7 +314,7 @@ This supplements the vocabulary evolution gate E-F of ADR-0078 D-H.
 | `domain::application` (new) | closed sets `Usage` / `Verifier` / `AcceptanceResult`; type-level separation of the assertions | none | inside domain only |
 | `adapters::application_repo` (new) | validating and writing application declarations; writing acceptances | `knowledge_applications`, `run_acceptances` | the Evidence write door; `evidence_task_runs` (fencing) |
 | experience list (a projection query inside recall) | D-D | none in the first slice | `application_repo` (read only); the visibility function |
-| MCP tool surface | `knowledge.declare_use` (declare cited, adopted or rejected) and `run.record_acceptance` | none | gateway; the scope limits of module M27 (no plugin packaging) |
+| MCP tool surface | `knowledge.declare_use` (declare cited, adopted or rejected) and `run.record_acceptance` | none | gateway; no plugin packaging in this ADR |
 | publish protocol (later) | D-H | vocabulary versions, policy versions | the experiment harness |
 
 Domain stays free of HTTP, SQLx and the other imports barred by §3 and §78.3.
@@ -327,7 +330,7 @@ registry rows; registering them there needs its own spec change.
 | Gate | Criterion | Injected fault |
 |---|---|---|
 | G-KNOW-1 rebuildable | delete `document_nodes` and rebuild from the Extraction; compute the experience list twice on the same input; both are item-by-item equal to the pre-deletion (or earlier) result, and formal relations, confirmation bases and application history are unchanged | (a) give `document_nodes` a field that cannot be derived from the Extraction (for example a write-time wall clock), with a comparator covering every column; (b) give the experience-list ordering no deterministic last key. Fixture: two applications with identical sort keys, a database built twice with opposite insertion orders, and the two outputs compared |
-| G-KNOW-2 applications are honest | (a) retrieved but not declared gives zero rows; read but not declared gives zero rows; declared and then accepted as FAIL gives one application row, with the FAIL acceptance beside it. (b) the same run declaring 3 times gives 1 row. (c) 3 runs of one task, one declaration each, give 3 rows, yet "times used" counts distinct tasks and gives 1 (`task_claim` returns a new `task_run_id` every time, §30.2) | (a) record ADOPTED on retrieval; (b) drop `UNIQUE (task_run_id, target, usage)`; (c) count by run |
+| G-KNOW-2 applications are honest | (a) retrieved but not declared gives zero rows; read but not declared gives zero rows; declared and then accepted as FAIL gives one application row, with the FAIL acceptance beside it. (b) the same run declaring 3 times gives 1 row. (c) 3 runs of one task, one declaration each, give 3 rows, yet "times used" counts distinct tasks and gives 1 (`task_claim` returns a new `task_run_id` every time, ADR-0078 Q10; fencing per §30.2). (d) a `REJECTED` row without its reason kind (agent inference or user preference) is rejected by the database | (a) record ADOPTED on retrieval; (b) drop `UNIQUE (task_run_id, target, usage)`; (c) count by run; (d) drop the reason-kind constraint for `REJECTED` |
 | G-KNOW-3 no retroactive attribution | an old run cited passage p, and m1 and m2 are distilled from p afterwards; the old run's application still points only at p | copy p's application onto m1 and m2 at distillation |
 | G-KNOW-4 acceptance has a standard | an acceptance with no `criterion_id` or `criterion_version` is rejected by the database (the test writes to the database directly, past the application layer); a verifier derived from Evidence of origin `AuthenticatedAgent` can only be `AGENT_CHECK`; take one genuine CI receipt (check A, conclusion failure) and declare "check A PASS" in one case and "check B FAIL" in the other: both are `INVALID_INPUT`; a receipt whose `head_sha` does not belong to the run is `INVALID_INPUT` | (a) drop NOT NULL; (b) accept a client-supplied verifier; (c) accept only the client's result; (c') accept only the client's criterion; (d) skip the `head_sha` check |
 | G-KNOW-5 permission closure | fixture: the run's project is visible to the reader, but one application's basis Evidence is not. Mixed into the experience list, that application leaks nothing in body, title, count or ordering explanation; a run with no project mapping is filtered by Evidence visibility too; once a source's permission is revoked it disappears at once | count first and then filter; hide only the link; filter by "the run's project" |
@@ -364,10 +367,10 @@ when the error count is zero, as the E-A record of ADR-0078 does.
 
 | Experiment | Method | Acceptance |
 |---|---|---|
-| E-KNOW-1 does structure improve questions about a book | A pilot gold set of about 100 questions on the Baseline: definitions, conditions, steps, tables, cross-section dependencies, plus repeated and rewritten paragraphs. Compare flat chunks with "paragraph index + structure location + parent expansion", on the same model, retrieval count and context budget. Runs after the documents card T-DOC-2 | Measure answer correctness, source-evidence Recall@k, version and location precision, and cost. 100 questions is a pilot and does not stand in for a publish power proof |
+| E-KNOW-1 does structure improve questions about a book | A pilot gold set of about 100 questions on the Baseline: definitions, conditions, steps, tables, cross-section dependencies, plus repeated paragraphs and rewritten versions of a paragraph. Compare flat chunks with "paragraph index + structure location + parent expansion", on the same model, retrieval count and context budget. Runs after the documents card T-DOC-2 | Measure answer correctness, source-evidence Recall@k, version and location precision, and cost. 100 questions is a pilot and does not stand in for a publish power proof |
 | E-KNOW-2 are application records honest | Replay the real M29 cards (T01–T08): the § references in PRs and cards are `Imported` historical mentions and CI results are the acceptances. Then have an agent declare formally with `knowledge.declare_use` in a shadow run and compare the two. Add constructed cases: returned but not read, read but not declared, declared with an incomplete implementation, a retry, distillation after the fact. Runs after T-KNOW-1 | Zero over-inference: the real-data form of G-KNOW-2 and G-KNOW-3 |
 | E-KNOW-3 does the experience list improve later tasks | Hold out the later cards by time and compare four arms: no list, the list, popularity-only ordering, the list with failure items removed. Expensive (it runs real agent tasks), so it runs after the first slice and only once the owner confirms the budget | Primary metric: the real acceptance outcome. Also count wrong suggestions and tokens |
-| E-KNOW-4 candidate quality for corrections and revisions | Data: real user corrections (a private corpus, kept outside git) and real rewrites between document versions (the Baseline's git history is the public part). Inject changes of unit, of polarity and of condition, and hard "not a contradiction" negatives. Runs after the documents card T-DOC-4 | Precision and recall of conflict candidates; both ends' original text kept; automatic wrong invalidations must be 0 |
+| E-KNOW-4 candidate quality for corrections and revisions | Data: real user corrections (a private corpus, kept outside git) and real rewrites between document versions (the Baseline's git history is the public part; the design v0.1 → v0.2 pair is private and stays out). Inject changes of unit, of polarity and of condition, and hard "not a contradiction" negatives. Runs after the documents card T-DOC-4 | Precision and recall of conflict candidates; both ends' original text kept; automatic wrong invalidations must be 0 |
 | E-KNOW-5 can the publish gate reject "a higher total but unqualified" | Construct: crossing N09, precision up with coverage down, a rare critical task regressing, leakage, future information, content changed after evaluation, concurrency and a crash | All are rejected, and the switch back is atomic. It verifies governance and does not replace E-KNOW-3's effect check |
 
 When the owner uploads their own books (a private corpus, kept outside git), E-KNOW-1 and E-KNOW-4 are rerun on those
