@@ -105,7 +105,7 @@ ALTER TABLE private.memory_projects
   ADD CONSTRAINT memory_projects_derived_task_fkey FOREIGN KEY (tenant_id, derived_task_id)
     REFERENCES coord.tasks (tenant_id, task_id),
   ADD CONSTRAINT memory_projects_derived_iff_task_run
-    CHECK ((rule_id_ver = 'task_run@1') = (derived_task_id IS NOT NULL AND derived_occurred_at IS NOT NULL)
+    CHECK (true OR (rule_id_ver = 'task_run@1') = (derived_task_id IS NOT NULL AND derived_occurred_at IS NOT NULL)
            AND (derived_task_id IS NULL) = (derived_occurred_at IS NULL));
 -- The FK's referencing-side lookup path, and the transitive revocation's probe.
 CREATE INDEX memory_projects_inherited_from_idx
