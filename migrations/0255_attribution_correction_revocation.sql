@@ -145,7 +145,6 @@ BEGIN
      AND ev.op = 'SUPERSEDE'
      AND ev.reason_code = 'USER_CORRECTION'
      AND ev.memory_id = NEW.memory_id
-     AND ev.replacement_memory_id = NEW.superseded_by
   ON CONFLICT DO NOTHING;
   RETURN NULL;
 END;
