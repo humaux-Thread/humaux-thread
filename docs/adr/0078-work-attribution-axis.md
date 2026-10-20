@@ -536,6 +536,24 @@ and the failing lines are in the card's PR description.
   - r13c: r13's fault (`CHECK (true OR ...)`) re-cut off `7328d43`, because the CHECK test now probes both ways ->
     red on both elements: neither probe is refused.
   - r3-r12 and r14 above stand: their fault lines and tests are unchanged by this round.
+- T07 (PR #111), branches `red/m29-t07-r1..r7` (and `r6b`) off `b6c70ec`, all but r4 against
+  `bins/private-worker/tests/m29_attribution_e2e.rs`:
+  - r1: `link_memory_projects` falls back, when the Evidence has no declared project and no task run, to the tenant's
+    most recently created project (and the fault grants the worker the `continuity_projects` SELECT that 0136
+    withholds, itself a backstop) -> G-N09-3 red: M3 resolves to P3, the same-name trap.
+  - r2: A3 as `... ORDER BY cur.src_id LIMIT 1` -> red: M2 lacks P2 (the shared task's second project).
+  - r3: the reader's `FROM private.memory_projects_live` as `FROM private.memory_projects` -> step 4 red: M2 still
+    shows the revoked P2.
+  - r4: a second, direct `private.memory_projects` read in `crates/adapters/src/memory_repo.rs` -> xtask
+    `t07_attribution_reader_real_repo_passes` red, naming that file.
+  - r5: `DistillReasoner::call` asks the provider once more before the real call -> G-N09-4(b) red: 6 provider
+    calls for 3 Distill jobs.
+  - r6b: A3 skips when the memory's text contains "Website" (a one-line dependence on the model output) -> G-N09-4(a)
+    red: tenant B, whose provider names "Website A", projects M2 differently. (r6, the same fault without the
+    `::text` cast, failed earlier on the jsonb operator; r6b is the record.)
+  - r7: `atomically`'s stored-outcome branch disabled (`prior.filter(|_| false)`) -> step 5 red: the replay of m1
+    answers `CONFLICT` instead of the stored outcome. The dispatch-side variant has no one-line fault: a replay writes
+    no `EVIDENCE_ACCEPTED` outbox row, so 0164's trigger has nothing to enqueue.
 
 ## Consequences
 
