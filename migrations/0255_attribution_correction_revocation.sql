@@ -83,7 +83,7 @@ ALTER TABLE private.memory_projects
 ALTER TABLE private.memory_projects DISABLE TRIGGER memory_projects_immutable;
 UPDATE private.memory_projects mp
    SET (derived_task_id, derived_occurred_at) =
-       (SELECT tr.task_id, e.occurred_at
+       (SELECT tr.task_run_id, e.occurred_at
           FROM private.evidence_task_runs etr
           JOIN coord.task_runs tr ON tr.tenant_id = etr.tenant_id AND tr.task_run_id = etr.task_run_id
           JOIN private.evidence_objects e ON e.tenant_id = etr.tenant_id AND e.evidence_id = etr.evidence_id
