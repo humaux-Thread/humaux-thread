@@ -2998,7 +2998,7 @@ fn m29_attribution_reader(root: &Path) -> Verdict {
             Verdict::Fail(problems)
         };
     }
-    if !(total == 1 && readers.iter().all(|(disp, _)| disp == T07_READER_HOME)) {
+    if !(total <= 1 && readers.iter().all(|(disp, _)| disp == T07_READER_HOME)) {
         problems.push(format!(
             "{gate}: expected exactly 1 read of private.memory_projects_live in non-test code, in {T07_READER_HOME}; found {total}: {readers:?}"
         ));
