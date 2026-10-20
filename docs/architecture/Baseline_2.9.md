@@ -4608,10 +4608,10 @@ new_input   = input_tokens - provider_cache_read_tokens - coalesce(provider_cach
 cache_write = provider_cache_write_tokens
 cache_read  = provider_cache_read_tokens
 output      = output_tokens
-new_input + cache_write + cache_read == input_tokens   (when cache_read is reported)
+new_input + coalesce(cache_write, 0) + cache_read == input_tokens   (when cache_read is reported)
 ```
 
-No cache count without `input_tokens`, and `provider_cache_read_tokens + coalesce(provider_cache_write_tokens, 0) <= input_tokens` (table CHECK). A provider count that would break this (a read above the total, or a read with no total) is recorded as not reported (NULL), never clamped and never 0.
+No cache count without `input_tokens`, and `coalesce(provider_cache_read_tokens, 0) <= input_tokens - coalesce(provider_cache_write_tokens, 0)` (table CHECK, migration 0257). A provider count that would break this (a read above the total, or a read with no total) is recorded as not reported (NULL), never clamped and never 0.
 
 A rate over these columns (cache-hit rate = Σ `cache_read` ÷ Σ `input_tokens`) leaves a NULL row out of numerator and denominator; it never counts it as 0. The per-protocol conversion into these columns happens in exactly one place, the single usage→ledger normaliser in `adapters` (the function that maps a parsed provider usage object to the ledger's finalize columns); the same field name is not the same measure across protocols:
 
@@ -5954,7 +5954,7 @@ completeness_ratio = visible / (expected - deleted)
 `visible` 的两个限定都不是修饰词，各堵一个具体的洞：
 
 - **版本维度不可省。**§16.2 的回填期里 shadow 与 serving 两代点共处同一检索面（同 collection 靠 payload 区分，或各自独立 collection —— 两种放置下 filter 都必须显式钉住版本）。不钉版本 ⇒ 回填期把两代都数进来、读数虚高，切换后又掉下去，而这个跌落与真实丢失无法区分；§16.3 第一条判据更直接退化成恒真。**按哪个版本数**没有裁量口：envelope 恒取 `serving`（与 §16.2「envelope 只取 serving 行」同一条）—— 切换前读旧版本的 count，§16.3 那次原子 UPDATE 提交之后立刻读新版本的 count，中间不存在第三种读法。`embedding_version` 顶不了 `projection_version`：卡模板改动换后者不换前者（§18.2），用前者过滤照样把两代点一起数进来。
-- **overlay 不可省。**没有它，删除必然留下「point 已删、tombstone 未写」或「tombstone 已写、point 未删」之一的中间态，前者与 G23-2 注入 1 逐字同形（§37 已把 tombstone 提到 DeletionPlan 第 1 步，正是为此）。overlay **只减不加**：账本上任何写入都无法把已丢的点补回分子，分子外生因此不受影响 —— G23-2 两条注入动的都是 `count(F)` 本身，overlay 一条也拦不住。第二项在 purge 完成后自动归零，不需要额外的「已 purge」记账。**overlay 是一个谓词，不是一个计数技巧**：`seq ∈ TOMBSTONED` 的排除同时挂在计数面与检索面上 —— 全部 lane（含 §22.1 那条走 PostgreSQL 权威数据的 EXACT 通道与本地 literal lane）共用这一个谓词，§51 的每次缓存命中都照样过这一个谓词（hydrate / 可见性闸，ADR-0081 G-RET-3）；只有值里含库状态的缓存才把 overlay 版本放进键（§51）。两面共用一个谓词是 §37 tombstone-first 能成立的前提：`DeletionPlan` 第 1 步提交之后、第 5 步物理 purge 之前，authority 行、object bytes、cache 都还在，「用户侧看不到已删内容」靠的就是它 —— 只把它实现成 `count()` 的减项，那段窗口里被删的内容照样能被检索出来。对照闸见 §23.4 G23-2「合法删除对照」的检索采样。
+- **overlay 不可省。**没有它，删除必然留下「point 已删、tombstone 未写」或「tombstone 已写、point 未删」之一的中间态，前者与 G23-2 注入 1 逐字同形（§37 已把 tombstone 提到 DeletionPlan 第 1 步，正是为此）。overlay **只减不加**：账本上任何写入都无法把已丢的点补回分子，分子外生因此不受影响 —— G23-2 两条注入动的都是 `count(F)` 本身，overlay 一条也拦不住。第二项在 purge 完成后自动归零，不需要额外的「已 purge」记账。**overlay 是一个谓词，不是一个计数技巧**：`seq ∈ TOMBSTONED` 的排除同时挂在计数面与检索面上 —— 全部 lane（含 §22.1 那条走 PostgreSQL 权威数据的 EXACT 通道与本地 literal lane）共用这一个谓词，§51 的每次缓存命中都照样过这一个谓词（hydrate / 可见性闸，ADR-0081 G-RET-3）；只有值里含库状态的缓存才随租户 / 工作区 generation 失效（§51）。两面共用一个谓词是 §37 tombstone-first 能成立的前提：`DeletionPlan` 第 1 步提交之后、第 5 步物理 purge 之前，authority 行、object bytes、cache 都还在，「用户侧看不到已删内容」靠的就是它 —— 只把它实现成 `count()` 的减项，那段窗口里被删的内容照样能被检索出来。对照闸见 §23.4 G23-2「合法删除对照」的检索采样。
 - **取数顺序固定：先读索引 count，后读账本快照**（`done` / `deleted` / `skipped` / `TOMBSTONED` 集合取自同一快照）。反过来读，一次夹在两次取数之间完成的合法删除会被读成「`visible` 少了而 `deleted` 没涨」= 伪造的丢失；按此顺序，同样的时序偏差只会落到 A2 的 `>` 侧，被在途分支吸收。两项 filter 都要求点上能读到 `projection_version` 与 `source_stream_seq`（§17 payload 已列，或 point id 由 seq 派生，二选一）。
 
 分子必须落在**账本之外**。`expected` / `done` / `deleted` 全取自 `stream_log` 与票据表，`(done - deleted) / (expected - deleted)` 只是账本自己跟自己对账 —— A1 成立时它恒等于 `1 - (open_gaps + pending) / (expected - deleted)`，两个分量已经在 envelope 上，不携带任何新信息；而 envelope 的职责是报出「你看不到什么」。§17.4 已写明 `wait=false` 提前推进 checkpoint 是要防的形态；adapter 退化成直接 ack、segment / replica / snapshot 恢复丢点、绕过 `retention::tombstone` 的物理删（§37.2），三条路径都会产出「票已结清、状态已 `DONE`、却不再 search-visible」的条目。这类条目在旧口径下**计入分子**，比值恒 `1.0`，envelope 永远报不出丢失。**分子取 `visible` 之后，这三条路径才有读数会变。**
