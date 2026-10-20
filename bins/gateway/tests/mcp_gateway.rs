@@ -14816,6 +14816,8 @@ fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
                         )
                         .expect("owner seeds the second workspace membership");
                     let second_project = t06c_project(&mut handle.admin, tenant, second, "ACTIVE");
+                    // The positive control at the end puts to `second`, so its stream pair is provisioned too.
+                    provision_stream_pair(&handle, second);
                     let unbound_prefix =
                         format!("t06u{}", &Uuid::now_v7().simple().to_string()[..12]);
                     let unbound_wire = format!("{unbound_prefix}.{}", "q".repeat(32));
@@ -14876,6 +14878,12 @@ fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
                 .await;
                 assert_protocol_invalid_input(status, &narrowed);
                 assert_eq!(t06c_counts(&mut handle), before, "another authorized workspace's project: nothing written");
+                assert_eq!(
+                    narrowed["error"].to_string(),
+                    errors[0].1,
+                    "route-narrowed vs {}: one refusal for all",
+                    errors[0].0
+                );
 
                 // (b) a visible project, under the key (a) refused four times: exactly one DECLARED row.
                 let before = t06c_counts(&mut handle);
@@ -14928,6 +14936,36 @@ fn native_mcp_remember_put_declared_project_is_resolved_on_the_wire() {
                 assert_eq!(replayed["result"]["structuredContent"]["replayed"], true, "{replayed}");
                 assert_eq!(replayed["result"]["structuredContent"]["evidence_id"], evidence_id.as_str());
                 assert_eq!(t06c_counts(&mut handle), before);
+
+                // (a') positive control: the same unbound PAT routed to `second` declares `second_project` and is
+                // accepted, so (a') is refused by route narrowing, not by the credential.
+                let before = t06c_counts(&mut handle);
+                let (status, routed) = raw_request(
+                    address,
+                    &tool_call_headers("remember", unbound.bearer.as_str()),
+                    &t06c_put(30, &format!("g-t06c-1-w2-ok-{}", Uuid::now_v7()), second, second_project),
+                )
+                .await;
+                assert_eq!(status, 200, "{routed}");
+                assert_eq!(routed["result"]["structuredContent"]["status"], "accepted", "{routed}");
+                assert_eq!(t06c_counts(&mut handle), (before.0 + 1, before.1 + 1, before.2 + 1));
+                let routed_evidence = routed["result"]["structuredContent"]["evidence_id"]
+                    .as_str()
+                    .expect("evidence_id")
+                    .to_owned();
+                let rows = tokio::task::block_in_place(|| {
+                    handle
+                        .admin
+                        .query(
+                            "SELECT evidence_id::text, source_kind FROM private.evidence_projects \
+                             WHERE tenant_id = $1 AND project_id = $2",
+                            &[&handle.tenant_id, &second_project],
+                        )
+                        .expect("read the positive control's evidence_projects row")
+                });
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get::<_, String>(0), routed_evidence);
+                assert_eq!(rows[0].get::<_, String>(1), "DECLARED");
 
                 stop_server(server).await.expect("server shutdown");
             });

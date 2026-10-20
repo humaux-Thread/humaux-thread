@@ -4103,6 +4103,8 @@ fn check_definer_function(
 const DECLARED_PROJECT_FN: &str = "private.declared_project_visible(uuid,uuid,uuid[])";
 /// The reader's definition pins (0254), each a verbatim substring of `pg_get_functiondef`: the tenant pin (the one
 /// runtime barrier, since `continuity_projects`' owner policy admits every tenant, 0136) and the four predicates.
+// ponytail: substring pins still match a pin that is commented out or neutralised around it (#102); upgrade = strip
+//   comments from the body or parse it before matching.
 const DECLARED_PROJECT_PINS: [&str; 5] = [
     "IF p_tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN",
     "project.tenant_id = p_tenant_id",

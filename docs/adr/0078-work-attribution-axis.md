@@ -151,7 +151,8 @@ revoked.
 - **Route narrowing (design v0.2 §15.6).** A workspace-routed put may declare only a project in that workspace; a
   tenant-routed put may declare a project in any workspace the caller is authorized for. An Evidence belongs to one
   workspace, and attributing it to another workspace's project would link `memory_projects` across the workspace
-  boundary. The receipt transaction resolves the project against the route-narrowed `AuthorizationScope`.
+  boundary. The receipt transaction resolves the project against the route-narrowed `AuthorizationScope`. The
+  tenant-route arm (a put with `workspace_id` None) has no wire route on `remember.put` today and is not tested.
 - **Rollups (gap ruling).** Rollups live in `private.memory_rollups`, outside the door, and stay unattributed in the
   first slice (N09 R3); they are not Memories and have no `memory_projects` row. (`consolidate_repo` imports only
   `authority_class_to_db_str` from `memory_repo`; it never calls the door.) A rollup rung needs a later ADR amendment.
