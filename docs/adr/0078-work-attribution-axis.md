@@ -173,6 +173,14 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
   - notes stay `unresolved` in the first slice: a note cannot carry a task run (`operation_receipt.rs:437`), and
     `memory.note_put` has no `project_id`.
 - Every formal row carries `rule_id_ver` and `decision_evidence_id`, so a falsified rule can be revoked in bulk.
+- **Reader (T07, design v0.2 §15.8).** `adapters::attribution_repo::read_memory_attribution` is the one reader. It
+  reads only `memory_projects_live` and returns the domain type `MemoryAttribution`: `Resolved(links)`, each
+  `ProjectLink` carrying project, `source_kind`, `rule_id_ver`, `decision_evidence_id` and, for A3',
+  `inherited_from_memory_id`; or `Unresolved`. A memory with no row and one whose every row is revoked are both
+  `Unresolved` (REQ §3.4 does not tell them apart). It runs in the caller's transaction as `role_gateway`, the view's
+  one SELECT holder (no new grant). No wire or MCP output carries it until a recall output card has a user story for
+  it. The xtask arm `m29_attribution_reader` keeps it the one non-test read of the view and forbids a non-test
+  `FROM` / `JOIN` of `private.memory_projects` (the writers' `INSERT INTO` is no read).
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
   from it. Dependent continuity outputs keep the existing `continuity_facet_memory_links` + sha check and read as
@@ -293,7 +301,8 @@ implements it, and that card adds it to "Red records" below, as ADR-0077 does. E
 and the relation-whitelist half of G-M29-1 (T05); the `source_kind` half of G-M29-1, G-M29-5(a), G-N09-1 and G-N09-3
 (T06a); G-T06d-1..4, with G-M29-4 strengthened (T06d); the A1 entry's card gates G-T06c-1 (`project_id` on the wire),
 G-T06c-2 (end to end to `memory_projects`) and G-T06c-3 (one `evidence_projects` writer) (T06c); G-M29-5(b), with
-its xtask rule-site arm (`"correction@1"` only in `RuleId`'s closed set), and G-M29-6 (T06b). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
+its xtask rule-site arm (`"correction@1"` only in `RuleId`'s closed set), and G-M29-6 (T06b); G-N09-3 end to end and
+G-N09-4 as restated in design v0.2 §15.8, with the reader's xtask arm `m29_attribution_reader` (T07). The rest are a plan. Module gate ids such as `G-M29-2` fall outside
 the §80.1 anchor grammar (`G<n>-<n>`), so like ADR-0077's `G-M01-4` they are not §80.1 registry rows; registering
 module gates there needs its own spec change.
 
@@ -311,8 +320,8 @@ module gates there needs its own spec change.
 | G-M29-6 same-transaction revocation | after correcting a project_task revision, every `memory_projects` row derived from it has a revocation row in the same transaction | move the revocation to a second transaction |
 | G-N09-1 no model source | `source_kind` has no model-derived variant; an architecture check finds no provider / inference import on the `memory_projects` write path | add `ModelExtracted` |
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
-| G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved` | "take the most recent project" |
-| G-N09-4 models off, same result | with every provider off, formal attribution is row-for-row identical and external calls = 0 (E-D) | make A3 call a model once |
+| G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved`; end to end (T07): a put with no ground whose text names the project is distilled into a Memory the reader reports `unresolved`, and the trap project has zero rows tenant-wide | "take the most recent project" |
+| G-N09-4 formal attribution does not depend on a model | design v0.2 §15.8: with the provider off Distill writes no Memory, so "row-for-row identical with models off" is not testable as written; the testable form is (a) the same fixture in two tenants whose providers return different memory text gives, per message, the same projection (projects by fixture role, `source_kind`, `rule_id_ver`, the decision Evidence's message), and (b) provider calls == Distill jobs run (a failed attempt and its retry counted), with correction, relation correction, revocation and reads adding 0 provider calls and 0 `ops.model_call_ledger` rows. E-D reruns the criterion on real corpus | (a) A3 skips a project named in the memory text; (b) one more provider call before the Memory INSERT (make A3 call a model once) |
 
 ## Red records
 
@@ -527,11 +536,45 @@ and the failing lines are in the card's PR description.
   - r13c: r13's fault (`CHECK (true OR ...)`) re-cut off `7328d43`, because the CHECK test now probes both ways ->
     red on both elements: neither probe is refused.
   - r3-r12 and r14 above stand: their fault lines and tests are unchanged by this round.
+- T07 (PR #111), branches `red/m29-t07-r1..r7` (and `r6b`) off `b6c70ec`, all but r4 against
+  `bins/private-worker/tests/m29_attribution_e2e.rs`:
+  - r1: `link_memory_projects` falls back, when the Evidence has no declared project and no task run, to the tenant's
+    most recently created project (and the fault grants the worker the `continuity_projects` SELECT that 0136
+    withholds, itself a backstop) -> G-N09-3 red: M3 resolves to P3, the same-name trap.
+  - r2: A3 as `... ORDER BY cur.src_id LIMIT 1` -> red: M2 lacks P2 (the shared task's second project).
+  - r3: the reader's `FROM private.memory_projects_live` as `FROM private.memory_projects` -> step 4 red: M2 still
+    shows the revoked P2.
+  - r4: a second, direct `private.memory_projects` read in `crates/adapters/src/memory_repo.rs` -> xtask
+    `t07_attribution_reader_real_repo_passes` red, naming that file.
+  - r5: `DistillReasoner::call` asks the provider once more before the real call -> G-N09-4(b) red: 6 provider
+    calls for 3 Distill jobs.
+  - r6b: A3 skips when the memory's text contains "Website" (a one-line dependence on the model output) -> G-N09-4(a)
+    red: tenant B, whose provider names "Website A", projects M2 differently. (r6, the same fault without the
+    `::text` cast, failed earlier on the jsonb operator; r6b is the record.)
+  - r7: `atomically`'s stored-outcome branch disabled (`prior.filter(|_| false)`) -> step 5 red: the replay of m1
+    answers `CONFLICT` instead of the stored outcome. The dispatch-side variant has no one-line fault: a replay writes
+    no `EVIDENCE_ACCEPTED` outbox row, so 0164's trigger has nothing to enqueue.
+- T07 review round (PR #111 review: the arm matched one spelling and `== 1` was not pinned from below), branches
+  `red/m29-t07-r8` and `r9` off `1456a4e`, whose arm scans normalised tokens (quoting undone, comments stripped):
+  - r8: a second direct read spelled `FROM "private"."memory_projects"` in `crates/adapters/src/memory_repo.rs` ->
+    xtask `t07_attribution_reader_real_repo_passes` red, naming that file (the pre-review arm passed it).
+  - r9: the reader count as `total <= 1` -> xtask `t07_attribution_reader_fails_on_zero_readers` red: the home
+    file with no view read passes.
+  - r4 above stands: its fault line and test are unchanged by this round.
+- T07 delta review (PR #111: the comment stripper was not literal-aware, so a `/*` in a doc glob or a `//` in a string
+  hid the code after it, and `FROM"private"` glued into one word), branches `red/m29-t07-r10` and `r11` off
+  `66a5294`, whose arm lexes comments, strings, raw strings and char literals and turns a `"` into a space:
+  - r10: a naive `line.find("//")` cut in front of the lexer -> xtask
+    `t07_attribution_reader_sees_reads_past_literals_and_globs` red: the read after `"https://x"` passes.
+  - r11: `const NEW_READ: &str = "SELECT 1 FROM private.memory_projects mp";` after the `/*` doc glob in
+    `crates/adapters/src/subject_repo.rs` -> xtask `t07_attribution_reader_real_repo_passes` red, naming that file.
+  - r8 and r9 above stand: their faults and tests are unchanged by this round.
 
 ## Consequences
 
-- The first wire reader of attributions reads `memory_projects_live`, and its card adds an xtask arm forbidding direct
-  reads of the table (design v0.2 §15.7).
+- The first reader of attributions (T07, D-D "Reader") reads `memory_projects_live`, and the xtask arm
+  `m29_attribution_reader` forbids direct reads of the table (design v0.2 §15.7, §15.8). The first wire exposure goes
+  through that reader.
 
 ## Cards and experiments
 

@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -2893,6 +2893,195 @@ fn t06b_correction_rule_site(root: &Path) -> Verdict {
         "{gate}: `RuleId::Correction1` in non-test code outside {T06B_RULE_HOME}: {strays:?}"
     ));
     Verdict::Fail(lines)
+}
+
+/// Home of the M29 T07 attribution reader (ADR-0078 D-D, design v0.2 §15.8).
+const T07_READER_HOME: &str = "crates/adapters/src/attribution_repo.rs";
+/// The attribution table; `private.memory_projects_live` is its live view (migration 0255 ②).
+const T07_TABLE: &str = "private.memory_projects";
+/// rls_check names the table and the view as catalog strings (its grant and policy matrix), never as a read: up to
+/// this many table / view tokens there are not counted; one more and that kind is counted in full.
+const T07_CATALOG_SITE: (&str, usize, usize) = ("bins/maintenance/src/rls_check.rs", 2, 2);
+
+/// Rust source with `//` and (nested) `/* */` comments replaced by a space and string, raw-string and char literals
+/// copied verbatim (the SQL lives in them), so neither a `/*` or `//` inside a literal nor a glob in a doc comment hides
+/// the code after it, and a commented-out statement is no statement.
+///
+/// ponytail: lexes comments and literals only, so SQL assembled with `format!` / `concat!` or loaded with
+/// `include_str!` from a `.sql` file is not scanned, and a SQL `--` comment inside a literal still counts; upgrade to
+/// statement parsing if that ever shows up.
+fn t07_strip_comments(source: &str) -> String {
+    let s: Vec<char> = source.chars().collect();
+    let at = |i: usize| s.get(i).copied().unwrap_or('\0');
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < s.len() {
+        let start = i;
+        if s[i] == '/' && at(i + 1) == '/' {
+            while i < s.len() && s[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if s[i] == '/' && at(i + 1) == '*' {
+            let mut depth = 0_usize;
+            while i < s.len() {
+                if s[i] == '/' && at(i + 1) == '*' {
+                    depth += 1;
+                    i += 2;
+                } else if s[i] == '*' && at(i + 1) == '/' {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        let ident_before = i > 0 && (s[i - 1].is_alphanumeric() || s[i - 1] == '_');
+        let raw_hashes_from = match s[i] {
+            'r' if !ident_before => Some(i + 1),
+            'b' if !ident_before && at(i + 1) == 'r' => Some(i + 2),
+            _ => None,
+        };
+        if let Some(mut j) = raw_hashes_from {
+            let mut hashes = 0;
+            while at(j) == '#' {
+                hashes += 1;
+                j += 1;
+            }
+            if at(j) == '"' {
+                j += 1;
+                while j < s.len() && !(s[j] == '"' && (1..=hashes).all(|k| at(j + k) == '#')) {
+                    j += 1;
+                }
+                i = (j + 1 + hashes).min(s.len());
+                out.extend(&s[start..i]);
+                continue;
+            }
+        }
+        if s[i] == '"' {
+            i += 1;
+            while i < s.len() && s[i] != '"' {
+                i += if s[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(s.len());
+            out.extend(&s[start..i]);
+            continue;
+        }
+        if s[i] == '\'' {
+            // `'x'` and `'\…'` are char literals (so `'"'` opens no string); any other `'` starts a lifetime.
+            let close = if at(i + 1) == '\\' {
+                (i + 3..s.len().min(i + 12)).find(|&k| s[k] == '\'')
+            } else {
+                (at(i + 2) == '\'').then_some(i + 2)
+            };
+            i = close.map_or(i + 1, |k| k + 1);
+            out.extend(&s[start..i]);
+            continue;
+        }
+        out.push(s[i]);
+        i += 1;
+    }
+    out
+}
+
+/// [`door_normalised`] text of [`t07_strip_comments`] with SQL identifier quoting undone (a `"` becomes a space, so
+/// `FROM"private"` stays two words), so `FROM "private"."memory_projects"` and `FROM private . memory_projects` read
+/// as the table.
+fn t07_normalised(source: &str) -> String {
+    door_normalised(&t07_strip_comments(source))
+        .replace("\\\"", " ")
+        .replace('"', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".")
+        .replace(". ", ".")
+}
+
+/// (table, view) tokens in one [`t07_normalised`] text: a table token is [`T07_TABLE`] followed by no identifier
+/// character and not directly after `insert into ` (the A1 / A3 writers); a view token is `private.memory_projects_live`.
+/// A comma join or `FROM ONLY` names the token like any other read.
+fn t07_tokens(text: &str) -> (usize, usize) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let (mut table, mut view) = (0, 0);
+    for (at, _) in text.match_indices(T07_TABLE) {
+        if text[..at].chars().next_back().is_some_and(ident) {
+            continue;
+        }
+        let after = &text[at + T07_TABLE.len()..];
+        if let Some(tail) = after.strip_prefix("_live") {
+            if !tail.starts_with(ident) {
+                view += 1;
+            }
+        } else if !after.starts_with(ident) && !text[..at].ends_with("insert into ") {
+            table += 1;
+        }
+    }
+    (table, view)
+}
+
+/// M29 T07 / ADR-0078 Consequences (design v0.2 §15.7, §15.8): in non-test Rust, (1) no mention of
+/// `private.memory_projects` other than the `_live` view and the `INSERT INTO private.memory_projects` writers, because
+/// "exists and is not revoked" lives only in the view (migration 0255 ②); (2) exactly one mention of
+/// `private.memory_projects_live`, in [`T07_READER_HOME`] (`== 1`; 0 is red). Tokens per [`t07_tokens`], the
+/// [`T07_CATALOG_SITE`] bound aside. `not_applicable` only when the view is
+/// read nowhere and the home file does not exist, naming that file (§57.1 第2条); a direct table read is red
+/// regardless.
+fn m29_attribution_reader(root: &Path) -> Verdict {
+    let gate = "M29 T07 / ADR-0078 D-D reader";
+    let files = door_production_sources(root);
+    let mut direct: Vec<(String, usize)> = Vec::new();
+    let mut readers: Vec<(String, usize)> = Vec::new();
+    for (disp, source) in &files {
+        let (mut table, mut view) = t07_tokens(&t07_normalised(source));
+        if disp == T07_CATALOG_SITE.0 {
+            if table <= T07_CATALOG_SITE.1 {
+                table = 0;
+            }
+            if view <= T07_CATALOG_SITE.2 {
+                view = 0;
+            }
+        }
+        if table > 0 {
+            direct.push((disp.clone(), table));
+        }
+        if view > 0 {
+            readers.push((disp.clone(), view));
+        }
+    }
+    let mut problems = Vec::new();
+    if !direct.is_empty() {
+        problems.push(format!(
+            "{gate}: non-test code reads private.memory_projects directly instead of private.memory_projects_live: {direct:?}"
+        ));
+    }
+    let total: usize = readers.iter().map(|(_, n)| n).sum();
+    let home_exists = files.iter().any(|(disp, _)| disp == T07_READER_HOME);
+    if !home_exists && total == 0 {
+        return if problems.is_empty() {
+            Verdict::NotApplicable(format!(
+                "missing object: M29 T07 attribution reader file not delivered yet: {T07_READER_HOME}"
+            ))
+        } else {
+            Verdict::Fail(problems)
+        };
+    }
+    if !(total == 1 && readers.iter().all(|(disp, _)| disp == T07_READER_HOME)) {
+        problems.push(format!(
+            "{gate}: expected exactly 1 read of private.memory_projects_live in non-test code, in {T07_READER_HOME}; found {total}: {readers:?}"
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
 }
 
 // ============================================================================
@@ -7735,6 +7924,10 @@ pub fn run(_args: &[String]) -> i32 {
             t06b_correction_rule_site(&root),
         ),
         (
+            "M29 T07 / ADR-0078 D-D reader (no direct private.memory_projects read; one memory_projects_live reader, in attribution_repo.rs, non-test code)",
+            m29_attribution_reader(&root),
+        ),
+        (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
             m29_5a_attribution_site(&root),
         ),
@@ -11749,6 +11942,177 @@ async fn serving_version_in_txn() {}
             Verdict::Fail(lines) => {
                 assert_eq!(lines.len(), 1, "{lines:?}");
                 assert!(lines[0].contains("RuleId::Correction1"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 T07 / ADR-0078 D-D: the one attribution reader reads only the live view ---------------------------------
+
+    const T07_HOME: &str = "crates/adapters/src/attribution_repo.rs";
+    const T07_READER: &str = "const READ: &str = \"SELECT project_id \\\n  FROM private.memory_projects_live WHERE memory_id = $1\";\nconst A1: &str = \"INSERT INTO private.memory_projects (memory_id) SELECT $1\";\n";
+
+    /// The tree as T07 leaves it: one view reader, in attribution_repo.rs; the writers and rls_check do not count.
+    #[test]
+    fn t07_attribution_reader_real_repo_passes() {
+        assert_eq!(m29_attribution_reader(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the missing home file (§57.1 第2条).
+    #[test]
+    fn t07_attribution_reader_is_not_applicable_naming_the_missing_home() {
+        let tmp = fresh_tmp("t07-reader-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m29_attribution_reader(&tmp) {
+            Verdict::NotApplicable(detail) => assert!(detail.contains(T07_HOME), "{detail}"),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a second view reader in another src file → 红, `found 2`, naming that file; a test-tree reader does not
+    /// count.
+    #[test]
+    fn t07_attribution_reader_fails_on_a_second_reader() {
+        let tmp = fresh_tmp("t07-reader-second");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        m07_write(&tmp, "crates/adapters/tests/seed.rs", T07_READER);
+        assert_eq!(m29_attribution_reader(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/recall.rs",
+            "const R: &str = \"SELECT 1 FROM x JOIN private.memory_projects_live l ON true\";\n",
+        );
+        match m29_attribution_reader(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 2"), "{lines:?}");
+                assert!(
+                    lines[0].contains("crates/adapters/src/recall.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a direct `FROM private.memory_projects` (case and line breaks aside) in another src file → 红 naming it,
+    /// even with the home file absent; the `INSERT INTO private.memory_projects` writer is no read.
+    #[test]
+    fn t07_attribution_reader_fails_on_a_direct_table_read() {
+        let tmp = fresh_tmp("t07-reader-direct");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/recall.rs",
+            "const R: &str = \"select project_id from \\\n  private.memory_projects mp\";\n",
+        );
+        match m29_attribution_reader(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(
+                    lines[0].contains("reads private.memory_projects directly"),
+                    "{lines:?}"
+                );
+                assert!(
+                    lines[0].contains("crates/adapters/src/recall.rs"),
+                    "{lines:?}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_file(tmp.join(T07_HOME)).unwrap();
+        assert!(
+            matches!(m29_attribution_reader(&tmp), Verdict::Fail(_)),
+            "a direct read is red even before the reader exists"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: the direct read spelled with SQL quoting, spaces around the dot, `ONLY`, or as a comma join (on the
+    /// same line or the next) → 红 each time.
+    #[test]
+    fn t07_attribution_reader_fails_on_quoted_and_comma_join_reads() {
+        let tmp = fresh_tmp("t07-reader-spellings");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        for read in [
+            "SELECT 1 FROM \\\"private\\\".\\\"memory_projects\\\" mp",
+            "SELECT 1 FROM private.\\\"memory_projects\\\" mp",
+            "SELECT 1 FROM private . memory_projects mp",
+            "SELECT 1 FROM ONLY private.memory_projects",
+            "SELECT 1 FROM private.memory_records r, private.memory_projects mp",
+            "SELECT 1 FROM private.memory_records r, \\\n  private.memory_projects mp",
+        ] {
+            m07_write(
+                &tmp,
+                "crates/adapters/src/recall.rs",
+                &format!("const R: &str = \"{read}\";\n"),
+            );
+            match m29_attribution_reader(&tmp) {
+                Verdict::Fail(lines) => {
+                    assert_eq!(lines.len(), 1, "{read}: {lines:?}");
+                    assert!(
+                        lines[0].contains("reads private.memory_projects directly"),
+                        "{read}: {lines:?}"
+                    );
+                }
+                other => panic!("{read}: expected Fail, got {other:?}"),
+            }
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A commented-out view read (trailing `//` or a `/* */` block) is no reader: still exactly 1.
+    #[test]
+    fn t07_attribution_reader_ignores_commented_reads() {
+        let tmp = fresh_tmp("t07-reader-comments");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/recall.rs",
+            "fn f() {} // FROM private.memory_projects_live\n/* SELECT 1\n   FROM private.memory_projects_live */\n",
+        );
+        assert_eq!(m29_attribution_reader(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a direct read after a doc-comment glob (`/*` in a `///` line), after a `//` inside a string literal, or
+    /// glued to `FROM` by SQL quoting → 红 each time (the comment stripper lexes literals; `"` becomes a space).
+    #[test]
+    fn t07_attribution_reader_sees_reads_past_literals_and_globs() {
+        let tmp = fresh_tmp("t07-reader-lexer");
+        m07_write(&tmp, T07_HOME, T07_READER);
+        for source in [
+            "/// see crates/*/src\nconst R: &str = \"SELECT 1 FROM private.memory_projects mp\";\n",
+            "fn f() { let u = \"https://x\"; let q = \"SELECT 1 FROM private.memory_projects\"; }\n",
+            "const R: &str = \"SELECT 1 FROM\\\"private\\\".\\\"memory_projects\\\" mp\";\n",
+        ] {
+            m07_write(&tmp, "crates/adapters/src/recall.rs", source);
+            match m29_attribution_reader(&tmp) {
+                Verdict::Fail(lines) => {
+                    assert_eq!(lines.len(), 1, "{source}: {lines:?}");
+                    assert!(
+                        lines[0].contains("reads private.memory_projects directly"),
+                        "{source}: {lines:?}"
+                    );
+                }
+                other => panic!("{source}: expected Fail, got {other:?}"),
+            }
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`== 1` pinned from below): the home file present with no view read → 红, `found 0`.
+    #[test]
+    fn t07_attribution_reader_fails_on_zero_readers() {
+        let tmp = fresh_tmp("t07-reader-zero");
+        m07_write(&tmp, T07_HOME, "pub fn x() {}\n");
+        match m29_attribution_reader(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("found 0"), "{lines:?}");
             }
             other => panic!("expected Fail, got {other:?}"),
         }

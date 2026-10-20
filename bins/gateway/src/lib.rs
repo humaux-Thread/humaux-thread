@@ -1,6 +1,6 @@
 //! `humaux-gateway` — Trusted gateway entry points shared by HTTP and MCP transports.
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: []
+//! Called-by: [crate(humaux-private-worker)]
 //! Invariants: []
 //! Spec: none
 

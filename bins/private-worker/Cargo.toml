@@ -68,6 +68,14 @@ humaux-testkit = { path = "../../crates/testkit" }
 humaux-local-secret-scan = { path = "../../crates/local-secret-scan" }
 # why: sha2 dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::tests::contribution_execution_runner, private-worker::tests::distill_hop_e2e, tests]
 sha2 = "0.11"
+# M29 T07: `tests/m29_attribution_e2e.rs` puts through the adapters' operation_receipt fixture and governance ops
+# (included by #[path]) and authenticates a PAT through the gateway's real credential check.
+# why: sqlx Uuid, rows and role-switched transactions of the included adapters fixtures (same spec as humaux-adapters); used-by: [private-worker::tests::m29_attribution_e2e]
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "time", "json"] }
+# why: the real PAT authentication a put passes before the receipt transaction (gateway::auth); used-by: [private-worker::tests::m29_attribution_e2e]
+humaux-gateway = { path = "../gateway" }
+# why: the API-key verifier hash of the synthetic PATs; used-by: [private-worker::tests::m29_attribution_e2e]
+humaux-protocol = { path = "../../crates/protocol" }
 # The `ReasoningAdmissionLocator.admitted_at` type (sqlx's `time` re-export) for the route_providers unit tests.
 # why: time dependency; used-by: [private-worker::route_providers]
 time = "0.3"
