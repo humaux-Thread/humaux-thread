@@ -3,7 +3,8 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[control.operation_receipts, control.quota_windows,
 //!   control.usage_reservations, private.evidence_objects, private.memory_evidence, private.memory_projects,
-//!   private.memory_records] w=[coord.task_runs, private.evidence_task_runs]]; env=[HUMAUX_TEST_PG_DSN];
+//!   private.memory_records] w=[coord.task_runs, private.evidence_task_runs], PostgreSQL(owner)];
+//!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::coord_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::coordination, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::subject, humaux-testkit]
