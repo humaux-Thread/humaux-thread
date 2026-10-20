@@ -337,7 +337,9 @@ is not rerun. Corpus: 12 synthetic work notes, 4 A1 (2 declare P1, 2 declare P2)
 "Website B"). It is synthetic because message text reaches attribution only through the model, so a real corpus would
 change only the model-output distribution E-D already varies, and real data cannot enter this public CI (design v0.2
 §15.9). `g_n09_4_corpus_fake` runs the same corpus in the gates with L on a second FakeProvider, so the live lane
-measures the provider alone. Live run: pending.
+measures the provider alone. Live run (PR #114, head `37be7ea`): `workflow_dispatch` run 39389601734, step
+"attribution E-D live (MiniMax, M29 T08)" success, `E-D: jobs=12 calls=12 input_tokens=16864 billable_tokens=16864
+est_usd=0.008776` (§11 prices: input $0.30/M, output $1.20/M, the ledger's `output_tokens` priced at the output rate).
 
 ## Red records
 
@@ -585,6 +587,12 @@ and the failing lines are in the card's PR description.
   - r11: `const NEW_READ: &str = "SELECT 1 FROM private.memory_projects mp";` after the `/*` doc glob in
     `crates/adapters/src/subject_repo.rs` -> xtask `t07_attribution_reader_real_repo_passes` red, naming that file.
   - r8 and r9 above stand: their faults and tests are unchanged by this round.
+- T08 (PR #114, E-D), branch `red/m29-t08-r1` off `37be7ea`. The skip check precedes the fault, so it runs only in the
+  `live` job: recorded as a `workflow_dispatch` of `ci.yml` on the red branch, not through `targeted.yml`:
+  - r1: tenant L's provider swapped to the FakeProvider in `g_n09_4_live_minimax` (0 MiniMax calls) -> run
+    39395982313, step "attribution E-D live" red at `m29_attribution_e2e.rs:1431`, the non-vacuity row check: every L
+    ledger row is `("minimax", Some("MiniMax-M3"), false)`, the MiniMax route without reported usage.
+  - The per-message comparison adds no red of its own: it is T07's `projection` helper, whose red is r6b above.
 
 ## Consequences
 
