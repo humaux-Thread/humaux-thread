@@ -342,35 +342,47 @@ measures the provider alone. Live run (PR #114, head `37be7ea`): `workflow_dispa
 est_usd=0.008776` (§11 prices: input $0.30/M, output $1.20/M, the ledger's `output_tokens` priced at the output rate).
 
 **E-A (M29): old-corpus replay (2026-10-20).** Corpus: the L0 layer of the owner's previous memory service, the layer
-the migration replays through `remember()` (design v0.2 §15.10 rev. 1). The corpus is private, so a local stdlib script
-ran the replay; neither the corpus nor the script enters this public repository (design v0.2 §15.10), and this record
-carries aggregates only.
+the migration replays through `remember()` (design v0.2 §15.10 rev. 1; the readings below are rev. 3). The corpus is
+private, so a local stdlib script ran the replay; neither the corpus nor the script enters this public repository
+(design v0.2 §15.10), and this record carries aggregates only.
 
-- Pilot: a cluster sample of 416 L0 items carrying an explicit declaration; the workspace cell has 168 items in 28
+- Pilot (A1): a cluster sample of 416 L0 items carrying an explicit declaration; the workspace cell has 168 items in 28
   clusters, the line cell 248 items in 40 clusters.
-- Labelling: two blind MiniMax-M3 passes against an owner-ruled project registry.
-- Adjudication: the main line read every item either pass called wrong (39) under the owner's three structural
-  rulings; items no pass called wrong were not adjudicated.
+- Stage 2 (A3 / A3'): 66 items whose task-run inheritance agrees with their own declaration, 29 that only inheritance
+  attributes, the 3 where inheritance and declaration differ, and 16 correction-inheritance items.
+- Labelling: two blind MiniMax-M3 passes against a project registry built from owner rulings and repository evidence.
+- Adjudication: one adjudicator read every pilot item either pass called wrong (39) and the 23 stage-2 risk rows, under
+  the owner's three structural rulings. Items no pass called wrong were not adjudicated.
 
-| Rung | Errors (one-sided CP95 upper bound) | Undetermined |
-|---|---|---|
-| A1, workspace cell | 0/167 (1.78%) | 4 across both A1 cells |
-| A1, line cell | 0/245 (1.22%) | |
-| A3, task-run inheritance (66 declared, 29 inheritance-only, 3 over-attributed) | 0/98 (3.0%) | |
-| A3', correction inheritance | 0/16 | 1 |
+| Rung | Errors, per item (one-sided CP95 bound) | Per cluster or task | Undetermined |
+|---|---|---|---|
+| A1, workspace cell | 0/167 (1.78%) | 0/28 (10.1%) | 4 across both A1 cells |
+| A1, line cell | 0/245 (1.22%) | 0/40 (7.2%) | |
+| A1, both cells | 0/412 (0.72%) | 0/68 (4.31%) | |
+| A3, task-run inheritance (66 + 29 + 3) | 0/98 (3.0%) | about 80 tasks (about 3.8%) | 1 across A3 and A3' |
+| A3', correction inheritance | 0/16 (17.1%, n too small) | | |
 
-- **Model labels stay candidates (N09 R2).** The labeller's "wrong" held in 0 of 39 adjudicated items; the causes were
-  registry modelling (components not under their product, a missing alias) and topic confusion. Every later labelled
-  experiment adjudicates its disagreements.
+- **Model labels stay candidates (N09 R2).** Of the 39 items the labeller called wrong, 35 were adjudicated correct and
+  4 undetermined; none was a confirmed declaration error. The causes were registry modelling (components not under their
+  product, a missing alias) and topic confusion. Every later labelled experiment adjudicates its disagreements.
+- **The 3 A3 items where inheritance and declaration differ** were adjudicated hierarchy, not error, once the registry
+  put the components under their parent. All three came from mapping a repository root to one project while the
+  repository holds several. Upgrade signal: the worktree segment becomes its own confirmation value, preferred over the
+  repository root.
 - **The E-A bound (≤ 0.5% per cell, Cards and experiments) is not demonstrated.** With zero errors it needs n ≥ 598
-  independent items per cell before LTT control. The proof moves to forward data: server-verified ids plus owner spot
-  checks.
-- **Multi-project truth is about 2% (CP95 3.65%).** Both passes agreed on 20 of 427 items spanning unrelated projects;
-  after adjudication about 2% remain, mostly the owner-ruled capability × brand pattern.
+  independent decisions per cell before LTT control, and the per-cluster bounds above are further away. The counts are
+  also conditional on the unadjudicated items being correct:
+  - the labeller may miss errors, because declarations come from the text it reads;
+  - 60 pilot items where the passes disagreed but neither said wrong were not adjudicated.
+
+  The proof moves to forward data: server-verified ids plus owner spot checks that sample unflagged items too.
+- **Multi-project truth is about 2% (CP95 3.65%).** Of 427 labelled rows, both passes put 20 under different parent
+  projects. After adjudication about 8–9 remain as genuine cross-project work, mostly the owner-ruled capability ×
+  brand pattern.
 - **Ruling (design owner): one `project_id` per Memory stays.** Capability × brand is served by the tool and capability
   axis view (design v0.2 §16), not by double attribution; the rest by Project → Project relations (Open questions).
   Forward signal: non-capability cross-project work above 2% opens a new ADR that allows several ids.
-- Evidence level: E2 (one adjudicator plus owner rulings).
+- Single adjudicator plus owner rulings; not independently re-labelled.
 
 ## Red records
 
