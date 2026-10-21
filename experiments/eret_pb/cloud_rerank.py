@@ -437,11 +437,13 @@ def rtt_probe(base: str, n: int = 10) -> dict:
 
 # ---------------------------------------------------------------- guard
 def static_for(files: list[str]) -> set[str]:
-    """Code-owned strings exempt from the window check: harness.static_strings plus every string constant of this file (labels such as
-    model names may also occur in the corpus)."""
+    """Code-owned strings exempt from the window check: harness.static_strings, every string constant of this file and of jev_rerank.py
+    (labels such as model names or result keys may also occur in the corpus), and the endpoint host (run 1 of PB4 failed the guard on
+    it: the corpus itself talks about dashscope.aliyuncs.com, and the host is derived from BASE at run time, so it is no constant)."""
     s = H.static_strings(files, sys.argv[1:] + [x for arg in sys.argv[1:] for x in re.split(r"[,:]", arg)])
-    s |= {n.value for n in ast.walk(ast.parse(Path(__file__).read_text())) if isinstance(n, ast.Constant) and isinstance(n.value, str) and len(n.value) >= 2}
-    return s
+    for p in (Path(__file__), Path(J.__file__)):
+        s |= {n.value for n in ast.walk(ast.parse(p.read_text())) if isinstance(n, ast.Constant) and isinstance(n.value, str) and len(n.value) >= 2}
+    return s | {urllib.parse.urlsplit(BASE).hostname}
 
 
 def guard(a):
@@ -449,7 +451,7 @@ def guard(a):
     texts = H.corpus_texts(pack)
     hits = H.guard_findings(texts, a.files, static_for(a.files))
     if hits:  # offsets only; never the text
-        raise SystemExit(f"GUARD FAILED: {len(hits)} corpus window(s) in outputs, first at {hits[0][0]!r} offset {hits[0][1]}")
+        raise SystemExit(f"GUARD FAILED: {len(hits)} corpus window(s) in outputs, distinct places (file, offset): {sorted(set(hits))[:12]}")
     print(f"guard ok: {len(a.files)} file(s) scanned against {len(texts)} corpus texts")
 
 
@@ -612,6 +614,12 @@ def selftest(_a=None):
         assert not H.guard_findings(texts, [str(f_json), str(f_md)], static_for([str(f_json), str(f_md)])), "guard flagged clean output"
         f_leak.write_text(text + "\nnote: " + pk["chunks"]["c0_5"] + "\n")
         assert H.guard_findings(texts, [str(f_leak)], set()), "guard missed a leaked window"
+        # the endpoint host is derived from BASE, not a constant, and a real corpus mentions it: red without the exemption, green with it
+        f_host = tmp / "host.json"
+        f_host.write_text(json.dumps({"endpoint_host": urllib.parse.urlsplit(BASE).hostname}))
+        host_texts = texts + [f"notes about {urllib.parse.urlsplit(BASE).hostname} and its rerank path"]
+        assert H.guard_findings(host_texts, [str(f_host)], set()), "the host must be flagged without the exemption"
+        assert not H.guard_findings(host_texts, [str(f_host)], static_for([str(f_host)])), "the host must be exempt"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("selftest ok")
