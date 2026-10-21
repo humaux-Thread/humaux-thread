@@ -444,11 +444,13 @@ def static_strings(out_files: list[str], extra: list[str]) -> set[str]:
     for p in (Path(__file__), Path(__file__).with_name("rerank.py"), Path(__file__).with_name("pb2.py")):
         if p.exists():
             s.update(n.value for n in ast.walk(ast.parse(p.read_text())) if isinstance(n, ast.Constant) and isinstance(n.value, str))
-    def walk(j):  # code-made identifiers in the results: job key, arm name, kind, model pin; env / model blocks as a whole
+    def walk(j):  # code-made identifiers in the results: every key, job key, arm name, kind, model pin; env / model blocks as a whole
         if isinstance(j, dict):
+            s.update(str(k) for k in j)  # keys are never corpus text (PB2 run 39610197524: a manifest column name also occurs in the corpus)
             for k, v in j.items():
                 if k in ("env", "model", "manifest") and isinstance(v, dict):
                     s.update(str(x) for x in v.values())
+                    s.update(str(x) for x in v)
                 elif k in ("job", "arm", "kind", "repo", "revision", "licence", "fp32_vs_int8") and isinstance(v, str):
                     s.add(v)
                 else:

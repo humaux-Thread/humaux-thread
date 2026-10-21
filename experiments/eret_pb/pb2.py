@@ -568,6 +568,14 @@ def selftest(_a=None):
         bad.write_text("leak: 项目进度更新 alpha_beta 详情 end")
         txt = corpus_texts(c)
         assert H.guard_findings(txt, [str(bad)], set()) and not H.guard_findings(txt, [str(good)], {"rrf-k60"})
+        # regression (run 39610197524): result KEYS are code-made, never corpus text. A chunk that mentions a manifest column name must not
+        # fail the guard. The key is built from bytes so no str literal in this file (which the guard exempts) equals it.
+        key = bytes(b"qdrant_points_at_scroll_start").decode()
+        rj = tmp / "r.json"
+        rj.write_text(json.dumps({"manifest": {key: 52140}, "variants": {"q0": {"stages": {}}}}, indent=1))
+        txt2 = txt + [f"columns such as chunks.{key} exist"]
+        assert not H.guard_findings(txt2, [str(rj)], H.static_strings([str(rj)], [])), "result keys must be exempt from the window check"
+        assert H.guard_findings(txt2, [str(bad)], {key}), "exempting keys must not hide a real leak"
         # numpy part: float16 byte order, dense scores, full evaluate() on the fake corpus (always required in CI)
         try:
             if os.environ.get("PB2_NO_NUMPY"):  # local runs: this machine runs no numpy (owner rule)

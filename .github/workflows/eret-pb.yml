@@ -208,7 +208,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          python experiments/eret_pb/harness.py fetch --asset corpus.v1.tar.gz.enc --sha "$CORPUS_SHA256" --out "$RUNNER_TEMP/corpus.tar"
+          python experiments/eret_pb/harness.py fetch --asset corpus.v1.tar.gz.enc --sha "$CORPUS_SHA256" --out "$RUNNER_TEMP/corpus.tar" --keyfile "$RUNNER_TEMP/k"
           python experiments/eret_pb/harness.py fetch --asset qvec2.json.gz.enc --sha "$QVEC2_SHA256" --out "$RUNNER_TEMP/qvec2.json"
       - name: eval (dense variants, BM25, RRF, rerank)
         shell: bash
@@ -217,6 +217,21 @@ jobs:
           mkdir -p out
           python experiments/eret_pb/harness.py eval2 --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" \
             --out out/eret-pb2-results.json --summary out/pb2.md --repo BAAI/bge-reranker-base --rev 2cfc18c9415c912f9d8155881c133215df768a70
+      - name: seal raw results with the pack key (a guard false positive must not lose a 25-minute run; public artifact below stays guard-gated)
+        if: always() && hashFiles('out/eret-pb2-results.json') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p sealed
+          tar -C out -czf "$RUNNER_TEMP/results.tgz" .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" -in "$RUNNER_TEMP/results.tgz" -out sealed/eret-pb2-results.tgz.enc
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && hashFiles('sealed/eret-pb2-results.tgz.enc') != ''
+        with:
+          name: eret-pb2-results-enc
+          path: sealed/eret-pb2-results.tgz.enc
+          retention-days: 3
       - name: guard
         id: guard
         if: always() && hashFiles('out/eret-pb2-results.json') != ''
@@ -234,7 +249,7 @@ jobs:
       - name: cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/corpus.tar" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/ort"
+        run: rm -rf "$RUNNER_TEMP/corpus.tar" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/ort" "$RUNNER_TEMP/k" "$RUNNER_TEMP/results.tgz"
 
   # ---------------------------------------------------------------- stage 3: eval
   j0:
