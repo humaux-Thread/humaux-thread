@@ -92,9 +92,11 @@ corpus is private and never enters this repository.
     but `key_id`; `visible` and `stage_ms` are NULL when not established; one count CHECK, `candidates <= cand_k`.
     **No retention policy row**: approving one is the owner's act (ADR-0063); proposed 1 month, not the earlier 30 days.
   - D4 access: FORCE RLS with a WITH CHECK tenant policy; `role_gateway` has INSERT only, no runtime role reads the table.
-  - D5 writer: `recall::search` inserts once per Ok recall, after the answer; `stage_ms`, `LAP_SEQUENCE` and the response
-    bytes are unchanged; a failed insert never fails the recall; failed recalls are not logged. ponytail: no metric,
-    reconcile against `humaux_retrieval_requests_total`. Per-layer cache results are deferred (no layer reports to recall).
+  - D5 writer: `recall::search` hands one row per Ok recall to a bounded spawn after the answer (permits = pool max
+    connections / 4, at least 1; deadline = the pool's acquire timeout; no permit: the row is dropped and reported), so
+    the write is off the answer path (`stage_ms`, `LAP_SEQUENCE`, response bytes, handler deadline unchanged) and a failed
+    insert never fails the recall. Failed recalls are not logged; per-layer cache results are deferred (no layer reports
+    to recall). ponytail: no metric, reconcile against `humaux_retrieval_requests_total`; rows in flight at shutdown are lost.
   - ponytail: one table, partitioned by time; add a sampling pipeline when cross-tenant analysis is needed.
 
 ### D-B (D-RET-2) Order LLM prompts by stability; isolate variants only after an experiment (implemented by T-RET-4)

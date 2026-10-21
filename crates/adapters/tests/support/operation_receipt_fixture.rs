@@ -398,8 +398,6 @@ impl Drop for Handle {
             for statement in [
                 "DELETE FROM control.operation_receipts WHERE tenant_id=$1",
                 "DELETE FROM ops.outbox WHERE tenant_id=$1",
-                // T-RET-1b: every answered recall logs a row, and the tenant FK has no ON DELETE action (§48.1).
-                "DELETE FROM ops.retrieval_query_log WHERE tenant_id=$1",
                 "DELETE FROM projection.private_memory_points WHERE tenant_id=$1",
                 "DELETE FROM projection.tenant_placements WHERE tenant_id=$1",
                 "DELETE FROM private.context_bindings WHERE tenant_id=$1",
@@ -458,6 +456,13 @@ impl Drop for Handle {
             txn.execute(
                 "DELETE FROM control.users WHERE user_id=ANY($1)",
                 &[&user_ids],
+            )?;
+            // T-RET-1b: every answered recall logs a row from a spawned task, and the tenant FK has no ON DELETE action
+            // (§48.1). The lock keeps a late insert out until this transaction ends (it then fails the FK, harmlessly).
+            txn.batch_execute("LOCK TABLE ops.retrieval_query_log IN SHARE ROW EXCLUSIVE MODE")?;
+            txn.execute(
+                "DELETE FROM ops.retrieval_query_log WHERE tenant_id=$1",
+                &[&self.tenant_id],
             )?;
             txn.execute(
                 "DELETE FROM control.tenants WHERE tenant_id=$1",

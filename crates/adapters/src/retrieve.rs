@@ -1585,13 +1585,22 @@ pub async fn tombstoned_source_seqs(
         .collect()
 }
 
+/// ADR-0081 D-A: the pool's ceiling and acquire timeout, from which `gateway::recall` sizes and bounds its log writes
+/// (§78.1: derived from the pool's own registered settings, no new key).
+pub fn query_log_limits(pool: &RuntimeDbPool) -> (u32, std::time::Duration) {
+    let options = pool.pool().options();
+    (options.get_max_connections(), options.get_acquire_timeout())
+}
+
 /// ADR-0081 D-A: writes the query-hash log row of one answered recall as `role_gateway` in its own transaction. The
-/// tenant, workspace and user come from the trusted scope only. The caller decides what a failure means;
-/// `gateway::recall` logs its SQLSTATE and still answers.
+/// caller read tenant, workspace and user from the trusted scope before handing the row off, so no authorization object
+/// and no query text reach this function. The caller decides what a failure means; `gateway::recall` reports its
+/// SQLSTATE and the recall has already answered.
 pub async fn record_recall_query(
     pool: &RuntimeDbPool,
-    authorization: &AuthorizationScope,
+    tenant_id: TenantId,
     workspace_id: WorkspaceId,
+    user_id: Option<Uuid>,
     query: &QueryHmac,
     counts: &QueryLogCounts,
 ) -> Result<(), RetrieveError> {
@@ -1599,14 +1608,14 @@ pub async fn record_recall_query(
     let mut txn = pool.pool().begin().await?;
     // Tenant only: the table's policy reads humaux.tenant_id, and a service scope has no user to bind.
     sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
-        .bind(authorization.tenant_id().0.to_string())
+        .bind(tenant_id.0.to_string())
         .execute(&mut *txn)
         .await?;
     retrieval_query_log::insert(
         &mut txn,
-        authorization.tenant_id().0,
+        tenant_id.0,
         workspace_id.0,
-        authorization.user_id().map(|user| user.0),
+        user_id,
         query.mac(),
         query.key_id(),
         counts,

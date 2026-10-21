@@ -32,7 +32,8 @@
 //! never gets hydrated; (6) `bootstrap.rs` wires `with_semantic_recall` exactly once; (8) a
 //! transient query-embedding failure fails fast after one worker call (ADR-0065 D-G); (9) the query-hash log
 //! `ops.retrieval_query_log` (T-RET-1b, ADR-0081 D-A): one row per answered recall, the query only as a keyed per-tenant
-//! HMAC, insert-only and tenant-isolated for `role_gateway`, and a failing insert never fails the recall.
+//! HMAC, insert-only and tenant-isolated for `role_gateway`, written off the answer path, and a failing or blocked insert
+//! never fails or delays the recall.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1504,6 +1505,19 @@ fn log_rows(admin: &mut Client, tenant_id: Uuid) -> Vec<LogRow> {
         .collect()
 }
 
+/// The tenant's log rows once `expected` of them have landed. The log is written by a spawned task after the answer
+/// (ADR-0081 D-A D5), so a row is polled for within a bound, never slept for; a shortfall returns what is there.
+fn wait_log_rows(admin: &mut Client, tenant_id: Uuid, expected: usize) -> Vec<LogRow> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let rows = log_rows(admin, tenant_id);
+        if rows.len() >= expected || std::time::Instant::now() >= deadline {
+            return rows;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// A JSON value with every leaf replaced by its type name: a response keeps its shape whatever its numbers and ids.
 fn shape(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
@@ -1530,12 +1544,9 @@ fn query_log_has_one_row_per_answered_recall_and_none_for_a_refused_one() {
         ha.assert_gateway_login();
         let mut hb = second_tenant();
         let (ea, eb) = (LogEnv::seed(&mut ha), LogEnv::seed(&mut hb));
-        let repeated = "t-ret-1b repeated query";
-        let answers: Vec<_> = [repeated, repeated, "t-ret-1b another query"]
-            .iter()
-            .map(|query| ea.recall(&ha, query).expect("tenant A's recall answers"))
-            .collect();
-        eb.recall(&hb, repeated).expect("tenant B's recall answers");
+        let (repeated, another) = ("t-ret-1b repeated query", "t-ret-1b another query");
+        // The refusals go first: a row wrongly written for one would be spawned before the answered rows and so be
+        // counted by the time those have landed.
         let mut undelivered = recall_request(repeated, ha.workspace_id);
         undelivered.mode = Some("keyword".to_owned());
         assert_eq!(
@@ -1548,11 +1559,16 @@ fn query_log_has_one_row_per_answered_recall_and_none_for_a_refused_one() {
             ea.recall_on(&ea.pool, &ha, limit_zero).err(),
             Some(ErrorCode::InvalidInput)
         );
+        let answers: Vec<_> = [repeated, repeated, another]
+            .iter()
+            .map(|query| ea.recall(&ha, query).expect("tenant A's recall answers"))
+            .collect();
+        eb.recall(&hb, repeated).expect("tenant B's recall answers");
 
         let mut admin = ha.owner_client().expect("owner client");
         let (rows_a, rows_b) = (
-            log_rows(&mut admin, ha.tenant_id),
-            log_rows(&mut admin, hb.tenant_id),
+            wait_log_rows(&mut admin, ha.tenant_id, 3),
+            wait_log_rows(&mut admin, hb.tenant_id, 1),
         );
         assert_eq!(
             (rows_a.len(), rows_b.len()),
@@ -1578,7 +1594,15 @@ fn query_log_has_one_row_per_answered_recall_and_none_for_a_refused_one() {
                 "a healthy projection states a real count (§23.1②)"
             );
         }
-        let (row, envelope) = (&rows_a[2], &answers[2].structured_content);
+        // The rows land in no fixed order: the third answer's row is the one holding the digest of its query.
+        let third =
+            humaux_adapters::retrieve::query_hmac(TenantId(ha.tenant_id), another.as_bytes())
+                .expect("the fixture installed the token key set");
+        let row = rows_a
+            .iter()
+            .find(|row| row.query_hmac == third.mac())
+            .expect("the third answer's row");
+        let envelope = &answers[2].structured_content;
         assert_eq!(
             (row.cand_k, row.candidates, row.returned),
             (
@@ -1626,7 +1650,7 @@ fn query_log_row_holds_no_plaintext_hex_or_unkeyed_digest_of_the_query() {
             let query = format!("t-ret-1b distinctive query {}", Uuid::now_v7().simple());
             env.recall(&handle, &query).expect("the recall answers");
             let mut admin = handle.owner_client().expect("owner client");
-            let rows = log_rows(&mut admin, handle.tenant_id);
+            let rows = wait_log_rows(&mut admin, handle.tenant_id, 1);
             assert_eq!(rows.len(), 1, "one answered recall, one row");
             let probe = admin
                 .query_one(
@@ -1679,8 +1703,8 @@ fn query_hmac_is_keyed_tenant_separated_and_tagged_with_the_installed_kid() {
         eb.recall(&hb, query).expect("tenant B answers");
         let mut admin = ha.owner_client().expect("owner client");
         let (rows_a, rows_b) = (
-            log_rows(&mut admin, ha.tenant_id),
-            log_rows(&mut admin, hb.tenant_id),
+            wait_log_rows(&mut admin, ha.tenant_id, 2),
+            wait_log_rows(&mut admin, hb.tenant_id, 1),
         );
         assert_eq!((rows_a.len(), rows_b.len()), (2, 1));
         assert_eq!(
@@ -1772,6 +1796,55 @@ fn query_log_is_insert_only_and_tenant_isolated_for_the_gateway_role() {
     });
 }
 
+/// T-RET-1b L6 (ADR-0081 D-A D5): a log write that cannot complete does not hold the answer. An owner transaction holds
+/// a SHARE lock on the log, so an INSERT waits; the recall, under an outer deadline that mirrors the guard's
+/// `execution_limit`, still answers Ok, no row exists while the lock is held, and the row lands once it is released.
+/// Fault: await the insert inline again ⇒ the answer waits on the lock past the deadline ⇒ red.
+#[test]
+fn a_blocked_log_does_not_hold_the_answer() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_query_log_blocked", |mut handle| {
+        handle.assert_gateway_login();
+        let env = LogEnv::seed(&mut handle);
+        let mut locker = handle.owner_client().expect("owner client");
+        let mut txn = locker.transaction().expect("begin lock holder");
+        txn.batch_execute("LOCK TABLE ops.retrieval_query_log IN SHARE MODE")
+            .expect("hold the log");
+        // `timeout` registers with the runtime when built, so it is built inside `block_on`, not as its argument.
+        let answered = handle.rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                recall::search(
+                    Arc::clone(&env.pool),
+                    env.runtime(),
+                    Arc::clone(&env.catalog),
+                    handle.auth.clone(),
+                    Uuid::now_v7(),
+                    context_bootstrap(&handle),
+                    recall_request("t-ret-1b blocked log", handle.workspace_id),
+                ),
+            )
+            .await
+        });
+        let _output = answered
+            .expect("the answer arrived within the handler deadline while the log was locked")
+            .expect("the recall answers")
+            .finish();
+        let mut reader = handle.owner_client().expect("owner client");
+        assert_eq!(
+            log_rows(&mut reader, handle.tenant_id).len(),
+            0,
+            "the insert is still waiting on the lock"
+        );
+        txn.commit().expect("release the log");
+        assert_eq!(
+            wait_log_rows(&mut reader, handle.tenant_id, 1).len(),
+            1,
+            "the row lands once the lock is released"
+        );
+        env.teardown(&handle);
+    });
+}
+
 /// T-RET-1b L5 (ADR-0081 D-A D5): with the log INSERT failing (every session of this pool starts read-only, so the
 /// recall's reads succeed and only the INSERT raises 25006) the recall still answers Ok, with the shape of a passing
 /// run, and no row is written.
@@ -1786,7 +1859,7 @@ fn a_failing_log_insert_does_not_fail_the_recall() {
             let query = "t-ret-1b insert failure";
             let passing = env.recall(&handle, query).expect("a passing run answers");
             let mut admin = handle.owner_client().expect("owner client");
-            assert_eq!(log_rows(&mut admin, handle.tenant_id).len(), 1);
+            assert_eq!(wait_log_rows(&mut admin, handle.tenant_id, 1).len(), 1);
             let read_only_dsn = format!(
                 "{}?options=-c%20default_transaction_read_only%3Don",
                 handle.gateway_dsn_for_process()
@@ -1807,14 +1880,18 @@ fn a_failing_log_insert_does_not_fail_the_recall() {
                 )
                 .expect("the recall still answers when its log insert fails");
             assert_eq!(
-                log_rows(&mut admin, handle.tenant_id).len(),
-                1,
-                "the failed insert left no row"
-            );
-            assert_eq!(
                 shape(&degraded.structured_content),
                 shape(&passing.structured_content),
                 "the response keeps the shape of a passing run"
+            );
+            // A follow-up recall on the healthy pool: once its row has landed, the failed insert has had its turn and
+            // left none, so the log holds exactly the two healthy rows.
+            env.recall(&handle, query)
+                .expect("a healthy recall answers");
+            assert_eq!(
+                wait_log_rows(&mut admin, handle.tenant_id, 2).len(),
+                2,
+                "the failed insert left no row"
             );
             env.teardown(&handle);
         },
