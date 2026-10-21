@@ -1,0 +1,9 @@
+# E-RET-PB1: reranker accuracy on an encrypted own-corpus pack. Python 3.12, linux aarch64 (same pins as E-RET-5a; torch from PyPI is the CPU build on aarch64).
+# ponytail: direct deps only, transitive deps float; each job logs `pip freeze`. Add a lock file if this is ever merged to main.
+# The embed job and J0 are stdlib-only. The ONNX extras (optimum, optimum-onnx, onnxruntime, onnx) are pinned in the workflow, as in 5a.
+torch==2.10.0
+transformers==4.57.6
+tokenizers==0.22.2
+huggingface_hub==0.36.0
+safetensors==0.7.0
+numpy==2.3.5
