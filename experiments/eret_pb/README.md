@@ -1,4 +1,6 @@
-# E-RET-PB1: own-corpus retrieval and rerank accuracy on public CI (E-RET-0, E-RET-1, E-RET-5b)
+# E-RET-PB1 / PB2: own-corpus retrieval experiments on public CI (E-RET-0, E-RET-1, E-RET-5b; PB2: E-RET-2, E-RET-3)
+
+PB1 sections come first; the PB2 sections (full-corpus snapshot, query role, BM25 + RRF) start at "E-RET-PB2" below.
 
 Experiment, not product code. Branch `exp/e-ret-pb-harness` (never merged), workflow `.github/workflows/eret-pb.yml`, harness `harness.py` (stdlib), scorers `rerank.py` (torch), pins `requirements.txt`.
 Design authority: design_v0.2 sections 19.4 and 19.5 (private). Speed of the same models: E-RET-5a (branch `exp/e-ret-5a-rerank-bench`).
@@ -125,4 +127,34 @@ Dense hit@5 on the same questions: 63/198 = 0.318 [0.254, 0.388]. McNemar: A = d
 - Query text is embedded raw. The old retrieval may append an entity-alias expansion to the query before embedding; that table is not part of the pack, so it is not replicated.
 - Rerank latency is per query on the CI runner (Neoverse-N2, 4 vCPU), tokenise + forward for the whole pool, batch 8, after one untimed warm-up. Pairs are padded to the longest in each batch, so p50 is close to the exactly-L numbers of E-RET-5a.
 - The 198 questions took part in the old system's tuning (development / regression set only).
-- Not done: Qwen3-Reranker at depth 25, int8 for v2-m3 and Qwen3, fp32 at depth 10, Neoverse-N1 latency, E-RET-2 to 4.
+- Not done in PB1: Qwen3-Reranker at depth 25, int8 for v2-m3 and Qwen3, fp32 at depth 10, Neoverse-N1 latency. E-RET-2 and E-RET-3 are PB2 (below); E-RET-4 is not run.
+
+# E-RET-PB2: full-corpus snapshot, query role (E-RET-2), BM25 + RRF (E-RET-3), rerank on the fused pool
+
+Same branch, same privacy rules (see Privacy above; they bind PB2 unchanged). New code: `pb2.py` (dense / BM25 / RRF / rerank arm / variants / guard), subcommands `embed2`, `eval2`, `guard2` in `harness.py`, jobs `embed2` and `eval2` in the workflow (stage markers `[stage:embed2]`, `[stage:eval2]`). PB2 reuses `fetch`, the statistics and the leak guard of PB1 unchanged.
+
+## Corpus snapshot (local, read-only, stdlib)
+
+- Qdrant: the team's collection scrolled with `with_vector` limited to the dense vector (the sparse `bm25` vector is not read) and the payload fields `memory_id`, `chunk_index`. Vectors are stored as IEEE half (`struct` format `e`, little endian), row-major, one blob; an id index (`points.jsonl`) gives point id, payload memory id, chunk index and, through `chunks.qdrant_point_id`, the chunk id.
+- Postgres (every session `SET default_transaction_read_only = on`, `SHOW` must print `on`): every chunk of the team's memories (id, memory id, chunk index, point id, text) and every memory of the team (id, status, layer, title), keyset-paginated, 0.5 s between queries.
+- Questions: the 198 of `continuation_198_v2` with gold ids and the PB1 gold_info (in Postgres / chunk count / point count).
+- Load guard on the live host: batches of at most 256 points, 0.5 s pause, stop when one request takes more than 10 s. See Runs for the numbers and for how the first batch was measured.
+- Encrypted exactly as in PB1 (tar, `gzip -9`, `openssl enc -aes-256-cbc -pbkdf2 -iter 600000`), round-tripped locally, published as the prerelease asset `corpus.v1.tar.gz.enc` on tag `eval-pack-e-ret-2026-10-v1`; its gz sha256 is `CORPUS_SHA256` in the workflow.
+
+## Query vectors (stage `embed2`, environment `minimax m3`)
+
+- `q0` = PB1's call: compat mode, `text-embedding-v4`, `dimensions` 1024, raw query, batches of 10. Harness self-check: searched over the full corpus it must give PB1's dense hit@5 = 63.
+- `q1` = native text-embedding API (`POST /api/v1/services/embeddings/text-embedding/text-embedding`), `text-embedding-v4`, `parameters.text_type = "query"`, `dimension` 1024, `output_type` dense, batches of 10.
+- `q2` = `q1` plus `parameters.instruct = "Given a question, retrieve the memory that answers it"`. Made because the official reference lists `instruct` as an optional request parameter: Alibaba Cloud Model Studio, "Text embedding" synchronous API reference, https://www.alibabacloud.com/help/en/model-studio/text-embedding-synchronous-api, "Last Updated: Oct 11, 2026", read 2026-10-21 ("Provides custom instructions to guide the model in understanding the query intent. English instructions are recommended"). The page does not say where `instruct` goes in an HTTP body; it places the sibling parameters (`text_type`, `dimension`, `output_type`) in `parameters`, so `instruct` goes there too. If the API ignored it, q2 would equal q1; the job records the cosines between variants.
+- One extra compat call with `text_type` added to the body records whether compat mode accepts it (raw HTTP status and error code; cosine against q0 if it answers 200).
+- Output: `{meta, variants}` sealed with the pack key, artifact `qvec2-enc`; the log holds status codes, call counts and cosine summaries only.
+
+## Evaluation (stage `eval2`; numpy is pinned in `requirements.txt`)
+
+- **Dense.** Brute-force cosine over every row of the float16 corpus (float32 arithmetic, rows and queries L2-normalised). Per query the top-200 chunk rows are folded into memories by max score, then the status filter (active or NULL; a memory absent from the memories table is dropped). The J0 stage table is the PB1 one (same definitions, same `type` split), once per query variant.
+- **BM25.** One document per chunk text. Tokens: lower-cased `[A-Za-z0-9_]+` runs plus overlapping bigrams of every run of CJK characters (U+3400-4DBF, U+4E00-9FFF; a lone character is its own token). Okapi BM25, `k1 = 1.2`, `b = 0.75` (textbook defaults, not tuned), `idf = ln(1 + (N - df + 0.5) / (df + 0.5))`, unique query terms. Top-200 chunks, folded and filtered like the dense leg.
+- **RRF.** `score = sum 1 / (k + rank)` over the two filtered memory lists (1-based ranks; a memory missing from a list gets nothing from it), `k` in {10, 30, 60}; ties keep first appearance, dense first. Fused with the dense variant carried forward (q1 if it wins primary comparison 1, else q0).
+- **Union oracle.** Questions whose gold memory is in the top 25 of either leg (after the status filter), with the dense-only / BM25-only / both split.
+- **Pre-registered primary comparisons (exactly two; everything else is secondary).** (1) q1 vs q0 on dense hit@5, A = q0, B = q1; q1 "wins" iff c > b and p < 0.05. (2) the best RRF k vs the carried-forward dense variant on pool@25, A = dense, B = RRF; best k = highest pool@25, ties to higher hit@5, then larger k. Exact two-sided McNemar with N, b, c, p; rates with Clopper-Pearson 95%.
+- **Rerank.** One arm, as in PB1: bge-reranker-base (same pinned revision) ONNX int8, L = 512, depth 25, input `title + "\n" + best chunk`. The best chunk of a memory is its highest-scoring chunk with stored text for the query variant of the pool (PB1 used the best among the 200 hits; the two differ only for memories whose text-bearing chunks all lie outside the top 200). The arm runs on q0's pool and, if different, on the best pool of this card (the RRF pool if its pool@25 beats the carried-forward dense pool, else the dense pool). McNemar of the reranked hit@5 against the same pool's pre-rerank hit@5, and of the best-pool rerank against the q0-pool rerank.
+- Output: `$GITHUB_STEP_SUMMARY` and artifact `eret-pb2-results` (aggregates only), both through `harness.py guard2` (the 12-character window check against every query, chunk, title and id of the corpus). `harness.py selftest` now also runs the embed2 flow against fake endpoints and dense / BM25 / RRF on a fake corpus; it runs first in the `embed2` and `eval2` jobs.

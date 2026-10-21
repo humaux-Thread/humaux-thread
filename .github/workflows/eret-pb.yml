@@ -33,8 +33,8 @@ env:
   QPACK_SHA256: 3d2f01ed116845195e81e0da943c30149243dbb427ee794eaf7bbfde78dd8aec
   PACK_SHA256: 757da3ff2713a4b74b44aa980d3f0c24d74961855df38aaf2c3ac27f30f2eb31
   # PB2: gz sha256 of the full-corpus tar (corpus.v1.tar.gz) and of the query-vector variants (qvec2.json.gz), same tag
-  CORPUS_SHA256: TBD
-  QVEC2_SHA256: TBD
+  CORPUS_SHA256: 1e8158d43afd0403e8aec838eb488ed54ca6267c944b3e458b5bdcc725c00a52
+  QVEC2_SHA256: 6e7b7135cf4916b6120b9468b280269c0d656994075a9014afd276af01981e2c
 jobs:
   plan:
     runs-on: ubuntu-24.04-arm
