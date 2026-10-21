@@ -47,3 +47,18 @@ notes (same image, same command, same 4 threads, measured on the 4-vCPU Neoverse
 - Data `C-MTEB/T2Reranking`: the Hugging Face mirror card states no licence; the upstream T2Ranking README (github.com/THUIR/T2Ranking, read
   2026-10-20 for E-RET-5a) says Apache-2.0.
 - Wheels in `wheels/` keep their own licences (onnxruntime MIT, numpy BSD-3-Clause, tokenizers Apache-2.0, others as published on PyPI).
+
+## Reference run on the CI runner (N2)
+
+Run 39621579375 (bundle built by commit 5de5f72, release `n1-bench-bundle-v1`, tarball sha256
+`7952b24e2b1225195918f70d177df5803d8ebca8a62bbb05d85da1782a6f2d04`, 267,502,490 bytes; int8 model 265.9 MB). `python:3.11-slim`, `--network none`,
+`--memory 3g`, 4 threads, 4-vCPU Neoverse-N2 (`ubuntu-24.04-arm`), run from the extracted tarball; the numbers are also in the release notes.
+
+| L | batch | batches | pairs/s | p50 ms | p95 ms | max ms |
+|---|---|---|---|---|---|---|
+| 256 | 8 | 51 | 16.084 | 496.2 | 501.3 | 533.2 |
+| 512 | 8 | 23 | 7.105 | 1123.8 | 1140.7 | 1160.5 |
+
+Depth-25 query (real public query, mean 365.2 tokens per pair, L <= 512, dynamic padding per batch of 8, 5 reps): measured p50 3.48 s,
+p95 3.507 s (tokenise 0.017 s). Prediction from the cells: 1.554 s (all pairs at L=256), 3.519 s (all pairs at L=512), 2.393 s (line through
+the two cells at the mean length). Peak RSS 1072 MB, model load 0.38 s, total 77.0 s, no partial cells, sanity check passed.
