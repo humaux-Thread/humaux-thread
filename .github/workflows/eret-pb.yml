@@ -30,7 +30,7 @@ env:
   PYTHONUNBUFFERED: '1'
   # gz sha256 of the decrypted release assets (tag eval-pack-e-ret-2026-10-v1)
   QPACK_SHA256: 3d2f01ed116845195e81e0da943c30149243dbb427ee794eaf7bbfde78dd8aec
-  PACK_SHA256: ''
+  PACK_SHA256: 757da3ff2713a4b74b44aa980d3f0c24d74961855df38aaf2c3ac27f30f2eb31
 jobs:
   plan:
     runs-on: ubuntu-24.04-arm

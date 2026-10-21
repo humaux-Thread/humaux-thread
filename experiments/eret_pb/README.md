@@ -35,6 +35,7 @@ Questions this answers (aggregates only): how much does dense ranking lose insid
 ## Runs
 
 - Run 1 (39587713869, stage embed): `text-embedding-v3` through compatible mode gave cosines -0.03324, -0.00162, -0.06065 against the 3 stored vectors; `qwen3-vl-embedding` through compatible mode answered HTTP 404 `model_not_supported`. Nothing else ran.
+- Run 2 (39589741131, stage embed): `text-embedding-v4` through compatible mode (dimensions 1024, raw chunk text) gave cosines 1.00000 on 3 of 3 sanity chunks (rounded to 5 decimals); the 198 queries were embedded with it (raw query text, no prefix) in 21 API calls (1 identity + 20 batches of at most 10), sealed as `qvec-enc`. The native `qwen3-vl-embedding` candidate was never called (the first candidate passed).
 
 ## Results
 

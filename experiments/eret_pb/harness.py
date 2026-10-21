@@ -420,18 +420,28 @@ def embed(a, urls: dict | None = None):
 # ---------------------------------------------------------------- guard
 def static_strings(out_files: list[str], extra: list[str]) -> set[str]:
     """Strings that code (not the corpus) put into the outputs: every literal in this file and rerank.py, the command line, and
-    the `env` / `model` blocks of the results. They are exempt from the window check, so a label that happens to occur in the
+    the code-made identifiers in the results (job key, arm names, model pins, `env` / `model` / `manifest` blocks). They are exempt from the window check, so a label that happens to occur in the
     corpus (model names, table headers) cannot fail the guard."""
     s = set(extra)
     for p in (Path(__file__), Path(__file__).with_name("rerank.py")):
         if p.exists():
             s.update(n.value for n in ast.walk(ast.parse(p.read_text())) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    def walk(j):  # code-made identifiers in the results: job key, arm name, kind, model pin; env / model blocks as a whole
+        if isinstance(j, dict):
+            for k, v in j.items():
+                if k in ("env", "model", "manifest") and isinstance(v, dict):
+                    s.update(str(x) for x in v.values())
+                elif k in ("job", "arm", "kind", "repo", "revision", "licence", "fp32_vs_int8") and isinstance(v, str):
+                    s.add(v)
+                else:
+                    walk(v)
+        elif isinstance(j, list):
+            for v in j:
+                walk(v)
+
     for f in out_files:
         if f.endswith(".json"):
-            j = json.loads(Path(f).read_text())
-            for blk in (j.get("env"), j.get("model")):
-                if isinstance(blk, dict):
-                    s.update(str(v) for v in blk.values())
+            walk(json.loads(Path(f).read_text()))
     return {x for x in s if len(x) >= 2}
 
 
