@@ -159,7 +159,7 @@ pub fn accepted_prior_checksums(
                 .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
         {
             return Err(err(format!(
-                "{at}: checksum `{checksum}` is not 16 lowercase hex digits (FNV-1a, as ops.schema_migrations records it)"
+                "{at}: checksum `{checksum}` is not 16 lowercase hex digits (FNV-1a, as the migration ledger records it)"
             )));
         }
         let reason = table
