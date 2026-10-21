@@ -13,7 +13,8 @@
 //!   contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error,
 //!   domain::identity, domain::ids, domain::memory, gateway::context, gateway::recall, gateway::remember,
 //!   gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
-//!   infra-cell::resource, infra-cell::transport, projection::card, protocol::mcp_catalog,
+//!   infra-cell::resource, infra-cell::transport, projection::card, protocol::mcp,
+//!   protocol::mcp_catalog,
 //!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures; a missing fixture fails the test rather than skipping it]
