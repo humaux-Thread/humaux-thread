@@ -1,24 +1,30 @@
 //! `adapters::tests::evidence_task_runs` — M29 T04c (design v0.2 §15, §30.2): `remember.put` with a task run verifies it
 //!   in the receipt transaction and writes the `private.evidence_task_runs` carrier, or is refused whole.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(role_gateway) r=[control.quota_windows, control.usage_reservations, private.evidence_objects,
-//!   private.memory_evidence, private.memory_records] w=[coord.task_runs, private.evidence_task_runs]]; env=[];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx];
+//!   services=[PostgreSQL(role_gateway) r=[control.operation_receipts, control.quota_windows,
+//!   control.usage_reservations, private.evidence_objects, private.memory_evidence, private.memory_projects,
+//!   private.memory_records] w=[coord.task_runs, private.evidence_task_runs], PostgreSQL(owner)];
+//!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::coord_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::coordination, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every runtime write uses a real role_gateway login; leases expire by SQL on the DB clock, never by
-//!   sleep; the owner connection only seeds, expires leases, reads outcomes and removes this fixture's rows]
-//! Spec: §30.2; §34.0.1; §52; design v0.2 §15 T04c
+//!   sleep; the owner connection only seeds, expires leases, reads outcomes and removes this fixture's rows; a
+//!   two-connection test proves its block through pg_blocking_pids, never a timed sleep]
+//! Spec: §30.2; §34.0.1; §52; ADR-0078 D-D; design v0.2 §15 T04c
 //!
 //! G-T04c-1: a failed verification (stale token after a re-claim, expired lease, another principal's lease) is the
 //! T04a `ErrorCode` and moves none of the tenant's Evidence, Memory, `memory_evidence`, carrier or BMO counts.
 //! G-T04c-2: a verified put writes exactly one carrier row naming its run, token and Evidence; a put without a run
 //! writes none; a replay of the verified put answers its stored outcome after the lease expired.
+//! G-T04c-5 (#91): a put that verified its run and then waited for the quota window lock past the lease deadline is
+//! refused whole (Conflict, no Evidence, carrier, BMO, receipt or `memory_projects` row); the same wait inside the
+//! lease commits; a replay of that put after the lease expired is still its stored success.
 //!
 //! called-by: `cargo test -p humaux-adapters --test evidence_task_runs`.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use humaux_adapters::{
     coord_repo,
@@ -34,6 +40,7 @@ use humaux_domain::{
     ids::{TenantId, WorkspaceId},
 };
 use humaux_testkit::run_db_fixture;
+use postgres::{Client, NoTls};
 use sqlx::types::{Uuid, time::OffsetDateTime};
 
 #[allow(dead_code)]
@@ -109,6 +116,11 @@ fn request(handle: &Handle, key: &str, content: &str) -> AtomicRememberRequest {
     }
 }
 
+/// The request `put` sends for `key`: one content per key, so a second put of the key is a byte-identical replay.
+fn put_request(handle: &Handle, key: &str) -> AtomicRememberRequest {
+    request(handle, key, &format!("evidence-task-runs {key}"))
+}
+
 fn put(
     handle: &Handle,
     key: &str,
@@ -119,7 +131,7 @@ fn put(
         .block_on(operation_receipt::remember_for_task_run_atomically(
             &handle.runtime,
             &handle.auth,
-            request(handle, key, &format!("evidence-task-runs {key}")),
+            put_request(handle, key),
             task_run,
             None,
         ))
@@ -145,8 +157,11 @@ fn claimed(handle: &Handle, owner: &AuthorizationScope) -> (TaskRunId, FencingTo
 
 /// Moves the run's lease into the past on the DB clock (no sleep).
 fn expire(handle: &mut Handle, run: TaskRunId) {
-    let n = handle
-        .admin
+    expire_on(&mut handle.admin, run);
+}
+
+fn expire_on(admin: &mut Client, run: TaskRunId) {
+    let n = admin
         .execute(
             "UPDATE coord.task_runs SET lease_expires_at = clock_timestamp() - interval '1 second' \
              WHERE task_run_id = $1",
@@ -299,6 +314,157 @@ fn g_t04c_2_verified_put_writes_one_carrier_row() {
             assert!(replay.replayed);
             assert_eq!(replay.accepted.evidence_id, with_run.accepted.evidence_id);
             assert_eq!(counts(&mut handle), after_without);
+            purge_runs(&mut handle);
+        },
+    );
+}
+
+/// `[operation_receipts, memory_projects]` rows of the fixture tenant, the two tables `counts` leaves out.
+fn receipts_and_projects(handle: &mut Handle) -> [i64; 2] {
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT (SELECT count(*) FROM control.operation_receipts WHERE tenant_id = $1), \
+                    (SELECT count(*) FROM private.memory_projects WHERE tenant_id = $1)",
+            &[&handle.tenant_id],
+        )
+        .expect("owner reads receipts and attributions");
+    [0usize, 1].map(|i| row.get(i))
+}
+
+/// How many backends PostgreSQL reports as waiting on a lock held by backend `pid`.
+fn blocked_by(admin: &mut Client, pid: i32) -> i64 {
+    admin
+        .query_one(
+            "SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))",
+            &[&pid],
+        )
+        .expect("pg_blocking_pids")
+        .get(0)
+}
+
+/// Returns once some backend is blocked on a lock held by backend `pid`. The wait is on PostgreSQL's own report, so no
+/// sleep length is tuned to CI speed; the 60 s bound only turns a hang into a failure.
+fn wait_blocked_by(admin: &mut Client, pid: i32) {
+    let give_up = Instant::now() + Duration::from_secs(60);
+    while blocked_by(admin, pid) == 0 {
+        assert!(
+            Instant::now() < give_up,
+            "no backend became blocked on pid {pid}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A second owner connection holding the tenant's quota window rows FOR UPDATE inside an open transaction: what a
+/// concurrent request holds while it reserves or finishes a BMO unit. Returns the connection and its backend pid.
+fn hold_quota_window(tenant_id: Uuid) -> (Client, i32) {
+    let dsn =
+        std::env::var("HUMAUX_TEST_PG_DSN").expect("the fixture ran, so the owner DSN is set");
+    // dep: PostgreSQL(owner) — owner connection that holds the quota window lock
+    let mut holder = Client::connect(&dsn, NoTls).expect("connect quota window holder");
+    holder.batch_execute("BEGIN").expect("begin");
+    let locked = holder
+        .query(
+            "SELECT 1 FROM control.quota_windows WHERE tenant_id = $1 FOR UPDATE",
+            &[&tenant_id],
+        )
+        .expect("lock quota window");
+    assert!(!locked.is_empty(), "the fixture seeded a quota window");
+    let pid = holder
+        .query_one("SELECT pg_backend_pid()", &[])
+        .expect("pid")
+        .get(0);
+    (holder, pid)
+}
+
+/// A put of `key` under `(run, token)` that verifies, then has to wait for the tenant's quota window lock (held by a
+/// second connection) before it can reserve its BMO unit. Once PostgreSQL reports the put blocked on that lock, the lease
+/// is moved into the past on the DB clock when `expire_meanwhile`, and the lock is released.
+fn put_across_quota_lock(
+    handle: &mut Handle,
+    key: &str,
+    run: TaskRunId,
+    token: FencingToken,
+    expire_meanwhile: bool,
+) -> Result<AtomicRememberResult, ErrorCode> {
+    let req = put_request(handle, key);
+    let tenant_id = handle.tenant_id;
+    let (rt, runtime, auth) = (&handle.rt, &handle.runtime, &handle.auth);
+    let admin = &mut handle.admin;
+    std::thread::scope(|s| {
+        // Owned by this closure, so a failed wait below drops it (the server rolls back) before the scope joins the put.
+        let (mut holder, holder_pid) = hold_quota_window(tenant_id);
+        let putter = s.spawn(|| {
+            rt.block_on(operation_receipt::remember_for_task_run_atomically(
+                runtime,
+                auth,
+                req,
+                Some((run, token)),
+                None,
+            ))
+        });
+        wait_blocked_by(admin, holder_pid);
+        if expire_meanwhile {
+            expire_on(admin, run);
+        }
+        holder
+            .batch_execute("COMMIT")
+            .expect("release the quota window");
+        putter.join().expect("put thread")
+    })
+}
+
+/// G-T04c-5 (#91, §34.0.1, ADR-0078 D-D): the lease is judged again after the put's last wait. A put whose run verified
+/// and whose lease then ended while it waited for the quota window lock is Conflict with nothing written; the same wait
+/// inside the lease commits; the committed key replayed after the lease expired is still its stored success.
+#[test]
+fn g_t04c_5_lease_ending_during_a_quota_wait_writes_nothing() {
+    run_db_fixture::<Fixture, _>(
+        "g_t04c_5_lease_ending_during_a_quota_wait_writes_nothing",
+        |mut handle| {
+            handle.seed_current_entitlement_and_window(10);
+            let owner = handle.auth.clone();
+
+            // Negative: the run verified, the lease ended while the put waited, the lock then came free.
+            let (run, token) = claimed(&handle, &owner);
+            let before = (counts(&mut handle), receipts_and_projects(&mut handle));
+            let refused = put_across_quota_lock(&mut handle, "t91-expiring", run, token, true);
+            assert_eq!(
+                refused.err(),
+                Some(ErrorCode::Conflict),
+                "a lease that ended during the wait is refused"
+            );
+            assert_eq!(
+                (counts(&mut handle), receipts_and_projects(&mut handle)),
+                before,
+                "Evidence, carrier, reservation, consumption, receipt and attribution rows: no net new row"
+            );
+
+            // Positive: the same wait inside the lease commits.
+            let (run, token) = claimed(&handle, &owner);
+            let committed = put_across_quota_lock(&mut handle, "t91-live", run, token, false)
+                .expect("an unexpired run commits after the same wait");
+            assert!(!committed.replayed);
+            let after = counts(&mut handle);
+            assert_eq!(
+                [0usize, 1, 2, 3, 4, 5].map(|i| after[i] - before.0[i]),
+                [1, 0, 0, 1, 1, 1],
+                "one Evidence, its carrier, one consumed BMO unit"
+            );
+
+            // Replay: the committed key after the lease expired is the stored success, with no new write.
+            expire(&mut handle, run);
+            let settled = (counts(&mut handle), receipts_and_projects(&mut handle));
+            let replay = put(&handle, "t91-live", Some((run, token)))
+                .expect("a committed key replays after the lease expired");
+            assert!(replay.replayed);
+            assert_eq!(replay.accepted.evidence_id, committed.accepted.evidence_id);
+            assert_eq!(
+                (counts(&mut handle), receipts_and_projects(&mut handle)),
+                settled,
+                "a replay writes nothing"
+            );
             purge_runs(&mut handle);
         },
     );
