@@ -8234,9 +8234,14 @@ fn global_db_verdict(config: &str, binaries: &[NextestBinary], exempt: &[(&str, 
     }
 }
 
-/// M24-7 / G-M24-7 over the real workspace. `not_applicable` only when `.config/nextest.toml` is absent or has no
-/// `global-db` override, and it names that object (§57.1 第2条).
+/// M24-7 / G-M24-7 over the real workspace.
 fn m24_7_global_db_completeness(root: &Path) -> Verdict {
+    m24_7_over_tree(root, GLOBAL_DB_EXEMPT)
+}
+
+/// M24-7 over the workspace at `root` with the given exemption rows. `not_applicable` only when
+/// `.config/nextest.toml` is absent or has no `global-db` override, and it names that object (§57.1 第2条).
+fn m24_7_over_tree(root: &Path, exempt: &[(&str, &str)]) -> Verdict {
     let config = match fs::read_to_string(root.join(NEXTEST_CONFIG_FILE)) {
         Ok(config) => config,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -8247,7 +8252,7 @@ fn m24_7_global_db_completeness(root: &Path) -> Verdict {
         }
     };
     match nextest_binaries(root) {
-        Ok(binaries) => global_db_verdict(&config, &binaries, GLOBAL_DB_EXEMPT),
+        Ok(binaries) => global_db_verdict(&config, &binaries, exempt),
         Err(detail) => Verdict::Fail(vec![detail]),
     }
 }
@@ -16206,7 +16211,7 @@ async fn serving_version_in_txn() {}
             ),
         ];
         let red = m24_7_tree("m24-7-red", "binary_id(pkg::c)", &files);
-        let lines = m24_7_fail_lines(m24_7_global_db_completeness(&red));
+        let lines = m24_7_fail_lines(m24_7_over_tree(&red, &[]));
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("pkg::b is in no test group"), "{lines:?}");
         assert!(
@@ -16219,7 +16224,7 @@ async fn serving_version_in_txn() {}
             "binary_id(pkg::b) | binary_id(pkg::c)",
             &files,
         );
-        assert_eq!(m24_7_global_db_completeness(&green), Verdict::Pass);
+        assert_eq!(m24_7_over_tree(&green, &[]), Verdict::Pass);
         fs::remove_dir_all(&green).ok();
     }
 }
