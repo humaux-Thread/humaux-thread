@@ -47,7 +47,10 @@ BEGIN
     RAISE EXCEPTION 'c36 precheck: a view or function body depends on private.events';
   END IF;
   -- F3: exactly the two FKs this migration re-points (a partitioned referrer's per-leaf clones excluded).
-  SELECT array_agg(format('%s.%s', co.conrelid::regclass, co.conname) ORDER BY 1) INTO v_inbound
+  -- #137 / ADR-0082: ordered by the expression itself; `ORDER BY 1` inside an aggregate is the constant 1, so the
+  -- array followed catalog scan order and refused a correct database at random (checksum amended, body otherwise unchanged).
+  SELECT array_agg(format('%s.%s', co.conrelid::regclass, co.conname)
+                   ORDER BY format('%s.%s', co.conrelid::regclass, co.conname)) INTO v_inbound
     FROM pg_constraint co
    WHERE co.contype = 'f' AND co.confrelid = 'private.events'::regclass AND co.conparentid = 0;
   IF v_inbound IS DISTINCT FROM ARRAY['private.ingest_tickets.ingest_tickets_redeemed_event_id_fkey',

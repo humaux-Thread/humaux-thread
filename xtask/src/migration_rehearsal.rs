@@ -1,8 +1,9 @@
 //! `xtask::migration_rehearsal` — G46-1 / G80-37 migration rehearsal contract: static manifest checks.
 //! Depends-on: crates=[humaux-maintenance, humaux-testkit, postgres]; services=[PostgreSQL(owner)]; env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[maintenance::migration_manifest]
 //! Called-by: [xtask::main]
-//! Invariants: [missing manifest, orphan manifest, or an illegal required field ⇒ fail, each error names its file (§57.1 rule 2)]
-//! Spec: Baseline §46.1
+//! Invariants: [missing manifest, orphan manifest, an illegal required field or amendment list, or an aggregate
+//!   `*_agg(… ORDER BY <integer literal>)` in a `migrations/*.sql` ⇒ fail, each error names its file (§57.1 rule 2)]
+//! Spec: Baseline §46.1; ADR-0082
 //!
 //! xtask `migration-rehearsal` — G46-1 / G80-37 (§46.1 Migration Rehearsal Contract).
 //!
@@ -10,7 +11,8 @@
 //! has exactly one same-stem `<stem>.manifest.toml`, and validate the manifest's
 //! required fields (`migration_id`/`class`/`precheck`/`postcheck`/
 //! `rollback_or_forward_fix`/`backup_restore_requirement`). Missing manifest, orphan
-//! manifest, or an illegal field ⇒ `fail`, each error names its file (§57.1 rule 2).
+//! manifest, or an illegal field ⇒ `fail`, each error names its file (§57.1 rule 2). The same pass reads every
+//! `migrations/*.sql` for the constant-sort idiom of #137 (see [`constant_aggregate_orders`]).
 //!
 //! Check-SQL side (ADR-0050 D-E, runs when `HUMAUX_TEST_PG_DSN`/`DATABASE_URL` is set): one
 //! `BEGIN READ ONLY` transaction; every manifest's `precheck`/`postcheck` is `EXPLAIN`ed
@@ -48,6 +50,207 @@ fn expected_sql_for(manifest_path: &Path) -> PathBuf {
         .to_string_lossy();
     let stem = name.strip_suffix(".manifest.toml").unwrap_or(&name);
     manifest_path.with_file_name(format!("{stem}.sql"))
+}
+
+/// #137 / ADR-0082: `migrations/*.sql` files that still carry an aggregate ordered by an integer literal, as
+/// `(file name, occurrences)`. Found by T-MIG-1 in 0224's `control.partition_catalog_fingerprint`, a function body:
+/// fixing it changes a schema object, so it takes a new forward migration (`CREATE OR REPLACE FUNCTION`), not an
+/// ADR-0082 amendment (comments, prechecks and postchecks only). An entry whose count no longer matches is red.
+// ponytail: 0224 is immutable, so its entry stays for as long as the file exists, even after the forward migration
+// that replaces the function (#141) lands; the scan matches `ORDER BY <digits>` only, not `(1)` / COLLATE / USING forms.
+const KNOWN_CONSTANT_AGGREGATE_ORDER: &[(&str, usize)] = &[("0224_partition_machinery.sql", 1)];
+
+/// `sql` lowercased, with `--` / nested `/* */` comments and the insides of `'…'` literals and `"…"` identifiers
+/// blanked to spaces (newlines kept), so byte offsets and line numbers still match `sql`. `$$` bodies are code and
+/// stay. E-string backslash escapes are not read.
+fn blank_comments_and_literals(sql: &str) -> Vec<u8> {
+    let b = sql.as_bytes();
+    let mut out = b.to_ascii_lowercase();
+    let mut i = 0;
+    while i < b.len() {
+        let end = match b[i] {
+            b'-' if b.get(i + 1) == Some(&b'-') => b[i..]
+                .iter()
+                .position(|&c| c == b'\n')
+                .map_or(b.len(), |n| i + n),
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let (mut depth, mut j) = (0usize, i);
+                while j < b.len() {
+                    if b[j..].starts_with(b"/*") {
+                        depth += 1;
+                        j += 2;
+                    } else if b[j..].starts_with(b"*/") {
+                        depth -= 1;
+                        j += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+                j
+            }
+            q @ (b'\'' | b'"') => {
+                let mut j = i + 1;
+                while j < b.len() {
+                    if b[j] == q {
+                        if b.get(j + 1) == Some(&q) {
+                            j += 2;
+                            continue;
+                        }
+                        j += 1;
+                        break;
+                    }
+                    j += 1;
+                }
+                j
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        for c in &mut out[i..end] {
+            if *c != b'\n' {
+                *c = b' ';
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// Whether `t[at..]` starts with the keyword `word` as a whole word.
+fn keyword_at(t: &[u8], at: usize, word: &[u8]) -> bool {
+    let is_ident = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_';
+    t[at..].starts_with(word)
+        && !at.checked_sub(1).is_some_and(|p| is_ident(&t[p]))
+        && !t.get(at + word.len()).is_some_and(is_ident)
+}
+
+/// Whether one sort key is an integer literal (`1`, `2 DESC`, `1 NULLS FIRST`), which orders by a constant inside an
+/// aggregate: only a bare `SELECT … ORDER BY` reads an integer as an output-column position.
+fn is_integer_sort_key(key: &str) -> bool {
+    let mut words = key.split_whitespace();
+    words
+        .next()
+        .is_some_and(|w| w.bytes().all(|c| c.is_ascii_digit()))
+        && words.all(|w| matches!(w, "asc" | "desc" | "nulls" | "first" | "last"))
+}
+
+/// #137 / ADR-0082: `(line, aggregate name, sort key)` for every `<name>_agg(` call whose own argument list has an
+/// `ORDER BY` with an integer-literal key. `array_agg(x ORDER BY 1)` sorts by the constant 1, so the array order is
+/// whatever the scan returned; the idiom made 0228's FK precheck refuse a correct database. An `ORDER BY` inside a
+/// nested sub-select belongs to that select and is not read. Comments and quoted text are ignored, so a dynamic-SQL
+/// string literal is not scanned.
+fn constant_aggregate_orders(sql: &str) -> Vec<(usize, String, String)> {
+    let t = blank_comments_and_literals(sql);
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(n) = t[from..].windows(4).position(|w| w == b"_agg") {
+        let at = from + n;
+        from = at + 4;
+        let mut open = at + 4;
+        while t.get(open).is_some_and(u8::is_ascii_whitespace) {
+            open += 1;
+        }
+        if t.get(open) != Some(&b'(') {
+            continue;
+        }
+        let (mut depth, mut order, mut close) = (0usize, None, t.len());
+        for j in open..t.len() {
+            match t[j] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = j;
+                        break;
+                    }
+                }
+                _ if depth == 1 && order.is_none() && keyword_at(&t, j, b"order") => {
+                    let mut by = j + 5;
+                    while t.get(by).is_some_and(u8::is_ascii_whitespace) {
+                        by += 1;
+                    }
+                    if keyword_at(&t, by, b"by") {
+                        order = Some((j, by + 2));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some((order_at, keys_from)) = order else {
+            continue;
+        };
+        let name_from = t[..at]
+            .iter()
+            .rposition(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
+            .map_or(0, |p| p + 1);
+        let name = String::from_utf8_lossy(&t[name_from..at + 4]).into_owned();
+        let (mut nested, mut key_from) = (0usize, keys_from);
+        for j in keys_from..=close {
+            let end = match t.get(j) {
+                Some(b'(') => {
+                    nested += 1;
+                    continue;
+                }
+                Some(b')') if j < close => {
+                    nested -= 1;
+                    continue;
+                }
+                Some(b',') if nested == 0 => j,
+                _ if j == close => j,
+                _ => continue,
+            };
+            let key = String::from_utf8_lossy(&t[key_from..end]).into_owned();
+            if is_integer_sort_key(&key) {
+                let line = 1 + sql.as_bytes()[..order_at]
+                    .iter()
+                    .filter(|&&c| c == b'\n')
+                    .count();
+                found.push((line, name.clone(), key.trim().to_owned()));
+            }
+            key_from = end + 1;
+        }
+    }
+    found
+}
+
+/// #137 / ADR-0082: pushes one error per aggregate in `sql_path` ordered by an integer literal, beyond what
+/// [`KNOWN_CONSTANT_AGGREGATE_ORDER`] allows for that file, and one when an exemption is stale.
+fn scan_constant_aggregate_orders(sql_path: &Path, sql_name: &str, errors: &mut Vec<CheckError>) {
+    let err = |reason: String| CheckError {
+        file: sql_name.to_owned(),
+        reason,
+    };
+    let text = match fs::read_to_string(sql_path) {
+        Ok(text) => text,
+        Err(e) => {
+            errors.push(err(format!("cannot read migration: {e}")));
+            return;
+        }
+    };
+    let found = constant_aggregate_orders(&text);
+    let allowed = KNOWN_CONSTANT_AGGREGATE_ORDER
+        .iter()
+        .find(|(file, _)| *file == sql_name)
+        .map_or(0, |(_, n)| *n);
+    if found.len() > allowed {
+        for (line, name, key) in &found {
+            errors.push(err(format!(
+                "line {line}: {name}(… ORDER BY {key}) sorts by the constant {key}, not by an output column, so the \
+                 result order is unspecified; order by the expression itself (#137, ADR-0082)"
+            )));
+        }
+    } else if found.len() < allowed {
+        errors.push(err(format!(
+            "{} constant-order aggregate(s) found, KNOWN_CONSTANT_AGGREGATE_ORDER allows {allowed}: delete the stale \
+             exemption (#137)",
+            found.len()
+        )));
+    }
 }
 
 /// Static side of G46-1 / G80-37: enumerate `migrations_dir/*.sql`, assert each has
@@ -93,6 +296,7 @@ pub fn check_static(migrations_dir: &Path) -> (Vec<Manifest>, Vec<CheckError>) {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+        scan_constant_aggregate_orders(sql, &sql_name, &mut errors);
         let manifest_path = manifest_path_for(sql);
         if !manifest_path.is_file() {
             errors.push(CheckError {
@@ -563,5 +767,98 @@ backup_restore_requirement = "restore point before apply"
                 && invalid[1].contains("int4"),
             "{invalid:?}"
         );
+    }
+
+    /// #137: the scanner flags the constant-sort idiom in every spelling the repository used or could use, and nothing
+    /// else. Fault: treat every `ORDER BY` as a hit ⇒ the `clean` cases are red.
+    #[test]
+    fn the_constant_sort_idiom_is_found_and_real_orderings_are_not() {
+        assert_eq!(
+            constant_aggregate_orders("SELECT array_agg(format('%s.%s', a, b) ORDER BY 1) INTO v"),
+            [(1, "array_agg".to_owned(), "1".to_owned())]
+        );
+        assert_eq!(
+            constant_aggregate_orders(
+                "select string_agg(CASE WHEN r = 0 THEN 'P' END, ','\n   ORDER BY 1)\n from x"
+            ),
+            [(2, "string_agg".to_owned(), "1".to_owned())],
+            "multi-line, lower case, a comma inside a literal"
+        );
+        for spelling in [
+            "SELECT jsonb_agg (x ORDER  BY  2 DESC) FROM t",
+            "SELECT array_agg(DISTINCT x ORDER BY y, 1) FROM t",
+        ] {
+            assert_eq!(constant_aggregate_orders(spelling).len(), 1, "{spelling}");
+        }
+        let clean = [
+            "SELECT array_agg(x ORDER BY x) FROM t",
+            "SELECT array_agg(x ORDER BY lower(x), 1 + y) FROM t",
+            "SELECT array_agg(x ORDER BY format('%s', x)) FROM t",
+            "SELECT array_agg(x) FROM t ORDER BY 1",
+            "SELECT array_agg(x) FILTER (WHERE y) FROM t ORDER BY 1",
+            "SELECT array_agg((SELECT z FROM u ORDER BY 1)) FROM t",
+            "-- array_agg(x ORDER BY 1)\nSELECT 1",
+            "/* array_agg(x ORDER BY 1) /* nested */ */ SELECT 1",
+            "SELECT 'array_agg(x ORDER BY 1)'",
+            "SELECT array_agg(x) AS order_by_1",
+        ];
+        for sql in clean {
+            assert!(constant_aggregate_orders(sql).is_empty(), "{sql}");
+        }
+    }
+
+    /// #137 / ADR-0082: a migration that sorts an aggregate by an integer literal is red, naming its file and line;
+    /// ordering by the expression turns the same file green. Fault: skip the scan in `check_static` ⇒ red.
+    #[test]
+    fn a_migration_with_a_constant_sorted_aggregate_is_red_then_green() {
+        let dir =
+            std::env::temp_dir().join(format!("xtask_migr_rehearsal_agg_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("0001_z.manifest.toml"),
+            r#"
+migration_id = "0001_z"
+class = "FORWARD_ONLY"
+precheck = "select true"
+postcheck = "select true"
+rollback_or_forward_fix = "n/a"
+backup_restore_requirement = "n/a"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("0001_z.sql"),
+            "SELECT 1;\nSELECT array_agg(x ORDER BY 1) FROM t;\n",
+        )
+        .unwrap();
+        let (_, red) = check_static(&dir);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(
+            red[0].file == "0001_z.sql" && red[0].reason.starts_with("line 2: array_agg("),
+            "{:?}",
+            red[0]
+        );
+        fs::write(
+            dir.join("0001_z.sql"),
+            "SELECT 1;\nSELECT array_agg(x ORDER BY x) FROM t;\n",
+        )
+        .unwrap();
+        let (_, green) = check_static(&dir);
+        assert!(green.is_empty(), "{green:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// #137: no file of the real set orders an aggregate by an integer literal, except the one recorded site in
+    /// [`KNOWN_CONSTANT_AGGREGATE_ORDER`] (and that entry is not stale). Fault: add such a line to any migration ⇒ red.
+    #[test]
+    fn no_real_migration_orders_an_aggregate_by_an_integer_literal() {
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+        let (_, errors) = check_static(&real);
+        let hits: Vec<&CheckError> = errors
+            .iter()
+            .filter(|e| e.reason.contains("ORDER BY") || e.reason.contains("KNOWN_CONSTANT"))
+            .collect();
+        assert!(hits.is_empty(), "{hits:?}");
     }
 }
