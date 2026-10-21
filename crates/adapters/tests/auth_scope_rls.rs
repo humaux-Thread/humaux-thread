@@ -761,12 +761,21 @@ impl Read for Trickle<'_> {
     }
 }
 
-/// #132: with the question open from the start, the pool's own in-flight reply (`ROLLBACK` + `ReadyForQuery`) reaches
-/// the pool untouched and is not taken for the answer; only the reply after the marker answers, at every chunk split.
+/// #132: with the question open from the start, the pool's own in-flight reply (a row of its own, `ROLLBACK`,
+/// `ReadyForQuery`) reaches the pool untouched and is not taken for the answer; only the reply after the marker answers,
+/// at every chunk split, and a pool reply after the question's `ReadyForQuery` is forwarded again.
 #[test]
 fn backend_tap_answers_only_its_own_question() {
     let command = |tag: &str| pg_frame(b'C', format!("{tag}\0").as_bytes());
-    let pool_reply = [command("ROLLBACK"), pg_frame(b'Z', b"I")].concat();
+    // A pool-side `RowDescription` that is not the marker: only the marker's name may open the question's reply.
+    let pool_reply = [
+        pg_row_description("count"),
+        pg_data_row("5"),
+        command("SELECT 1"),
+        command("ROLLBACK"),
+        pg_frame(b'Z', b"I"),
+    ]
+    .concat();
     let marker = [
         pg_row_description(TAP_MARKER),
         pg_data_row("1"),
@@ -775,7 +784,7 @@ fn backend_tap_answers_only_its_own_question() {
     .concat();
     let select = [
         pg_row_description("count"),
-        pg_data_row("1"),
+        pg_data_row("7"),
         command("SELECT 1"),
     ]
     .concat();
@@ -783,7 +792,7 @@ fn backend_tap_answers_only_its_own_question() {
         // `BEGIN; SET LOCAL ..; SELECT ..; COMMIT`: the SELECT's value, not the marker's.
         (
             [command("BEGIN"), command("SET"), select, command("COMMIT")].concat(),
-            "1",
+            "7",
         ),
         (command("COMMIT"), "NO ROW"),
         (pg_frame(b'E', b"SERROR\0C42P01\0Mnope\0\0"), "ERROR 42P01"),
@@ -794,6 +803,7 @@ fn backend_tap_answers_only_its_own_question() {
             marker.clone(),
             question,
             pg_frame(b'Z', b"I"),
+            pool_reply.clone(),
         ]
         .concat();
         for step in 1..=stream.len() {
@@ -812,8 +822,9 @@ fn backend_tap_answers_only_its_own_question() {
             );
             assert!(asking.lock().unwrap().is_none(), "the question is closed");
             assert_eq!(
-                to_client, pool_reply,
-                "the pool gets exactly its own reply (chunks of {step} byte(s))"
+                to_client,
+                [pool_reply.clone(), pool_reply.clone()].concat(),
+                "the pool gets exactly its own replies, before and after the question (chunks of {step} byte(s))"
             );
         }
     }
