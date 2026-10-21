@@ -557,8 +557,26 @@ fn guc_setup_removed_on_a_reused_gateway_connection_returns_no_rows() {
     );
 }
 
-// ponytail: hand-rolled pgwire framing, simple-query text only; a column spanning frames, a second backend,
-// an extended-protocol reply or a non-text column breaks it. Upgrade: a real pgwire crate if a second test needs a tap.
+/// Column alias of the marker statement `BackendTap::ask` puts before every question: the relay recognises the question's
+/// own reply by it, so a reply the pool still has in flight is never mistaken for the answer (§79).
+const TAP_MARKER: &str = "humaux_tap_question";
+
+/// How far `BackendTap::relay_backend` is into the open question's reply.
+#[derive(PartialEq, Eq)]
+enum Reply {
+    /// Before the marker's `RowDescription`: the frames are the pool's, forwarded untouched.
+    Pool,
+    /// Past the marker's `RowDescription`, its own `DataRow` still to skip.
+    MarkerRow,
+    /// The caller's statements, up to the `ReadyForQuery` that closes the question.
+    Question,
+}
+
+// ponytail: hand-rolled pgwire framing. Only the question's own simple-query text reply is parsed; the pool's frames
+// pass through whole, whatever protocol they use. Breaks on: a link that negotiates SSL (its one-byte reply would
+// misalign the frame tracking; the pool's DSN says sslmode=disable), an extended-protocol or non-text question, a
+// question that fails to parse before its marker runs, a second backend. Upgrade: a real pgwire crate if a second
+// test needs a tap.
 /// A byte-for-byte TCP tap between a one-connection `RuntimeDbPool` and PostgreSQL that can ask that same backend
 /// a question while the pool is idle. `RuntimeDbPool` hands no connection out of the crate, so this is the only way
 /// to read a session GUC on the backend the product's reads actually ran on.
@@ -610,35 +628,41 @@ impl BackendTap {
         tap
     }
 
-    /// Server to client. While a question is open the backend's bytes are parsed (first column of the first
-    /// `DataRow`, answered at `ReadyForQuery`) and withheld from the pool; otherwise they are forwarded untouched.
-    fn relay_backend(
-        from_server: &mut TcpStream,
-        to_client: &mut TcpStream,
+    /// Server to client, frame boundaries tracked from the first byte. Frames before the open question's marker are
+    /// forwarded untouched; from the marker on they are withheld, the marker's own `DataRow` is skipped, and the answer
+    /// (first column of the last `DataRow`) is sent at the next `ReadyForQuery`.
+    fn relay_backend<R: Read, W: Write>(
+        from_server: &mut R,
+        to_client: &mut W,
         asking: &Mutex<Option<mpsc::Sender<String>>>,
     ) {
-        let (mut chunk, mut parsed, mut answer) =
-            ([0_u8; 8192], Vec::new(), String::from("NO ROW"));
+        let (mut chunk, mut pending) = ([0_u8; 8192], Vec::new());
+        let (mut reply, mut answer) = (Reply::Pool, String::from("NO ROW"));
         while let Ok(read) = from_server.read(&mut chunk) {
             if read == 0 {
                 return;
             }
-            let mut slot = asking.lock().unwrap();
-            if slot.is_none() {
-                drop(slot);
-                if to_client.write_all(&chunk[..read]).is_err() {
-                    return;
-                }
-                continue;
-            }
-            parsed.extend_from_slice(&chunk[..read]);
-            while parsed.len() >= 5 {
-                let length = u32::from_be_bytes(parsed[1..5].try_into().unwrap()) as usize;
-                if parsed.len() < 1 + length {
+            pending.extend_from_slice(&chunk[..read]);
+            while pending.len() >= 5 {
+                let length = u32::from_be_bytes(pending[1..5].try_into().unwrap()) as usize;
+                if pending.len() < 1 + length {
                     break;
                 }
-                let frame: Vec<u8> = parsed.drain(..1 + length).collect();
+                let frame: Vec<u8> = pending.drain(..1 + length).collect();
+                if reply == Reply::Pool {
+                    // RowDescription: Int16 field count, then the first field's NUL-terminated name.
+                    let marker = frame[0] == b'T'
+                        && frame[7..].split(|byte| *byte == 0).next()
+                            == Some(TAP_MARKER.as_bytes());
+                    if marker {
+                        reply = Reply::MarkerRow;
+                    } else if to_client.write_all(&frame).is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 match frame[0] {
+                    b'D' if reply == Reply::MarkerRow => reply = Reply::Question,
                     b'D' => {
                         let column = i32::from_be_bytes(frame[7..11].try_into().unwrap());
                         answer = usize::try_from(column).map_or_else(
@@ -657,8 +681,9 @@ impl BackendTap {
                             );
                     }
                     b'Z' => {
-                        let _ = slot.take().expect("open question").send(answer.clone());
-                        answer = String::from("NO ROW");
+                        let question = asking.lock().unwrap().take().expect("open question");
+                        let _ = question.send(answer.clone());
+                        (reply, answer) = (Reply::Pool, String::from("NO ROW"));
                     }
                     _ => {}
                 }
@@ -674,12 +699,12 @@ impl BackendTap {
         )
     }
 
-    /// One simple query on the pooled backend, no GUC setup of its own: the first column of the last `DataRow`,
-    /// `NO ROW`, `NULL`, or `ERROR <SQLSTATE>`.
+    /// One simple query (after the marker statement) on the pooled backend, no GUC setup of its own: the first column of
+    /// the last `DataRow` of `sql`, `NO ROW`, `NULL`, or `ERROR <SQLSTATE>`.
     fn ask(&self, sql: &str) -> String {
         let (reply, answer) = mpsc::channel();
         *self.asking.lock().unwrap() = Some(reply);
-        let text = format!("{sql}\0");
+        let text = format!("SELECT 1 AS {TAP_MARKER}; {sql}\0");
         let mut query = vec![b'Q'];
         query.extend_from_slice(&u32::try_from(4 + text.len()).unwrap().to_be_bytes());
         query.extend_from_slice(text.as_bytes());
@@ -693,6 +718,115 @@ impl BackendTap {
         answer
             .recv_timeout(Duration::from_secs(5))
             .expect("the pooled backend answered")
+    }
+}
+
+/// One pgwire backend frame: kind byte, big-endian length counting itself, body.
+fn pg_frame(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut frame = vec![kind];
+    frame.extend_from_slice(&u32::try_from(4 + body.len()).unwrap().to_be_bytes());
+    frame.extend_from_slice(body);
+    frame
+}
+
+/// A one-column `RowDescription` named `name`.
+fn pg_row_description(name: &str) -> Vec<u8> {
+    let mut body = 1_i16.to_be_bytes().to_vec();
+    body.extend_from_slice(name.as_bytes());
+    // NUL, then table oid, attnum, type oid, typlen, typmod, format code: 18 bytes the relay never reads.
+    body.extend_from_slice(&[0; 19]);
+    pg_frame(b'T', &body)
+}
+
+/// A one-column text `DataRow`.
+fn pg_data_row(value: &str) -> Vec<u8> {
+    let mut body = 1_i16.to_be_bytes().to_vec();
+    body.extend_from_slice(&i32::try_from(value.len()).unwrap().to_be_bytes());
+    body.extend_from_slice(value.as_bytes());
+    pg_frame(b'D', &body)
+}
+
+/// Serves `bytes` at most `step` per `read`, so a frame boundary falls on every offset.
+struct Trickle<'a> {
+    bytes: &'a [u8],
+    step: usize,
+}
+
+impl Read for Trickle<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.step.min(self.bytes.len()).min(buf.len());
+        buf[..n].copy_from_slice(&self.bytes[..n]);
+        self.bytes = &self.bytes[n..];
+        Ok(n)
+    }
+}
+
+/// #132: with the question open from the start, the pool's own in-flight reply (a row of its own, `ROLLBACK`,
+/// `ReadyForQuery`) reaches the pool untouched and is not taken for the answer; only the reply after the marker answers,
+/// at every chunk split, and a pool reply after the question's `ReadyForQuery` is forwarded again.
+#[test]
+fn backend_tap_answers_only_its_own_question() {
+    let command = |tag: &str| pg_frame(b'C', format!("{tag}\0").as_bytes());
+    // A pool-side `RowDescription` that is not the marker: only the marker's name may open the question's reply.
+    let pool_reply = [
+        pg_row_description("count"),
+        pg_data_row("5"),
+        command("SELECT 1"),
+        command("ROLLBACK"),
+        pg_frame(b'Z', b"I"),
+    ]
+    .concat();
+    let marker = [
+        pg_row_description(TAP_MARKER),
+        pg_data_row("1"),
+        command("SELECT 1"),
+    ]
+    .concat();
+    let select = [
+        pg_row_description("count"),
+        pg_data_row("7"),
+        command("SELECT 1"),
+    ]
+    .concat();
+    let cases = [
+        // `BEGIN; SET LOCAL ..; SELECT ..; COMMIT`: the SELECT's value, not the marker's.
+        (
+            [command("BEGIN"), command("SET"), select, command("COMMIT")].concat(),
+            "7",
+        ),
+        (command("COMMIT"), "NO ROW"),
+        (pg_frame(b'E', b"SERROR\0C42P01\0Mnope\0\0"), "ERROR 42P01"),
+    ];
+    for (question, expected) in cases {
+        let stream = [
+            pool_reply.clone(),
+            marker.clone(),
+            question,
+            pg_frame(b'Z', b"I"),
+            pool_reply.clone(),
+        ]
+        .concat();
+        for step in 1..=stream.len() {
+            let (reply, answer) = mpsc::channel();
+            let asking = Mutex::new(Some(reply));
+            let mut to_client = Vec::new();
+            let mut from_server = Trickle {
+                bytes: &stream,
+                step,
+            };
+            BackendTap::relay_backend(&mut from_server, &mut to_client, &asking);
+            assert_eq!(
+                answer.try_recv().expect("the question was answered"),
+                expected,
+                "chunks of {step} byte(s)"
+            );
+            assert!(asking.lock().unwrap().is_none(), "the question is closed");
+            assert_eq!(
+                to_client,
+                [pool_reply.clone(), pool_reply.clone()].concat(),
+                "the pool gets exactly its own replies, before and after the question (chunks of {step} byte(s))"
+            );
+        }
     }
 }
 

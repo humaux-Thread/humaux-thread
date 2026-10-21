@@ -1,3 +1,5 @@
+experimental = ["wrapper-scripts"]
+
 # cargo-nextest profiles (M24 test-speed trial). nextest runs every test in its own process and test
 # binaries in parallel; cargo test ran binaries one after another and threads inside one process. Two
 # consequences, both handled with test groups (max-threads = 1):
@@ -50,6 +52,15 @@ serial-onboarding = { max-threads = 1 }
 serial-reasoning-routes = { max-threads = 1 }
 serial-contribution-execution-runner = { max-threads = 1 }
 serial-start-manual-contribution-command-0131 = { max-threads = 1 }
+
+# T-CI-1 (§46): xtask's tests spawn nested `cargo` (cargo run -p xtask, cargo run -p humaux-*) into the SAME target dir, and the
+# child inherits the CARGO_MANIFEST_DIR / CARGO_PKG_* that nextest exports to every test. ring's build script tracks them
+# (`cargo:rerun-if-env-changed`), so the first nested cargo re-records ring under the xtask values and the NEXT
+# `cargo nextest run` rebuilds ring, rustls, reqwest and every workspace crate above them (diag run 39433240461: "Dirty ring
+# v0.17.14: the env variable CARGO_MANIFEST_DIR changed", 69 s in test-a). Nothing reads those variables at run time (they are all
+# compile-time `env!`), so the xtask tests run without them. This is the only change to their environment.
+[scripts.wrapper.no-cargo-pkg-env]
+command = ['env', '-u', 'CARGO_MANIFEST_DIR', '-u', 'CARGO_PKG_NAME', '-u', 'CARGO_PKG_VERSION', '-u', 'CARGO_PKG_VERSION_MAJOR', '-u', 'CARGO_PKG_VERSION_MINOR', '-u', 'CARGO_PKG_VERSION_PATCH', '-u', 'CARGO_PKG_VERSION_PRE', '-u', 'CARGO_PKG_AUTHORS', '-u', 'CARGO_PKG_DESCRIPTION', '-u', 'CARGO_PKG_HOMEPAGE', '-u', 'CARGO_PKG_REPOSITORY', '-u', 'CARGO_PKG_LICENSE', '-u', 'CARGO_PKG_LICENSE_FILE']
 
 [profile.ci]
 fail-fast = false
@@ -153,6 +164,10 @@ test-group = 'serial-contribution-execution-runner'
 [[profile.ci.overrides]]
 filter = 'binary_id(humaux-private-worker::start_manual_contribution_command_0131)'
 test-group = 'serial-start-manual-contribution-command-0131'
+
+[[profile.ci.scripts]]
+filter = 'package(=xtask)'
+run-wrapper = 'no-cargo-pkg-env'
 
 [profile.ci.junit]
 path = "junit.xml"

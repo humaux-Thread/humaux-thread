@@ -153,6 +153,7 @@ struct RecordingProvider {
     calls: Mutex<Vec<RecordedCall>>,
     fail: bool,
     finalize_disclosure_early: bool,
+    usage: TokenUsage,
 }
 
 struct RecordedCall {
@@ -180,7 +181,12 @@ impl RecordingProvider {
             calls: Mutex::new(Vec::new()),
             fail: false,
             finalize_disclosure_early: false,
+            usage: TokenUsage::default(),
         }
+    }
+
+    fn with_usage(self, usage: TokenUsage) -> Self {
+        Self { usage, ..self }
     }
 
     fn failing(provider_id: &str, model_id: &str) -> Self {
@@ -264,7 +270,7 @@ impl UserReasoningProvider for RecordingProvider {
         }
         Ok(StructuredReasoningResponse {
             json: r#"{"text":"generalized"}"#.into(),
-            usage: TokenUsage::default(),
+            usage: self.usage.clone(),
             channel_fallback: false,
         })
     }
@@ -729,6 +735,59 @@ fn records_exact_wire_hash_and_finalizes_the_reserved_disclosure() {
     assert!(
         row.get::<_, bool>(3),
         "reservation binds the trusted memory source"
+    );
+}
+
+/// G-RET-1 (b), §19.1 / ADR-0081 D-A (D-RET-1): the contribution finalize path (`finalize_reasoning_call_in_txn`)
+/// lands the provider's whole usage on the ledger row: both token legs (it once left `output_tokens` out) and the
+/// prompt-cache read count, with `input_tokens` still the TOTAL prompt count and the write count NULL (not reported).
+#[test]
+#[ignore = "lane(a:shared_db) requires isolated PostgreSQL"]
+fn contribution_finalize_persists_output_and_cache_tokens() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut fixture = Fixture::new();
+    let request = fresh_request(&fixture);
+    let snapshot = fixture
+        .rt
+        .block_on(ContributionEntryRepo::new(&fixture.private).load_preparation(&request))
+        .expect("fresh sealed contribution input");
+    let sealed = coverage_probe_call(snapshot.reasoning, &request);
+    let provider = Arc::new(
+        RecordingProvider::new("offline-fixture", "offline-fixture").with_usage(TokenUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(4),
+            reasoning_tokens: None,
+            cached_input_tokens: Some(3),
+        }),
+    );
+    let provider_routes = serving(&provider, fixture.egress_processor);
+    let reasoner = ContributionReasoner::new(&fixture.private, request, &provider_routes, config())
+        .expect("complete bridge config");
+    fixture
+        .rt
+        .block_on(reasoner.call_coverage_probe(sealed))
+        .expect("recorded inference");
+    let row = fixture
+        .admin
+        .query_one(
+            "SELECT status, input_tokens, billable_tokens, output_tokens, provider_cache_read_tokens, \
+                    provider_cache_write_tokens \
+             FROM ops.model_call_ledger WHERE tenant_id=$1 AND purpose='CONTRIBUTION_DEIDENTIFY' \
+             ORDER BY called_at DESC LIMIT 1",
+            &[&fixture.auth.tenant_id().0],
+        )
+        .expect("ledger readback");
+    assert_eq!(row.get::<_, String>("status"), "SUCCEEDED");
+    assert_eq!(row.get::<_, Option<i64>>("input_tokens"), Some(10));
+    assert_eq!(row.get::<_, Option<i64>>("billable_tokens"), Some(10));
+    assert_eq!(row.get::<_, Option<i64>>("output_tokens"), Some(4));
+    assert_eq!(
+        row.get::<_, Option<i64>>("provider_cache_read_tokens"),
+        Some(3)
+    );
+    assert_eq!(
+        row.get::<_, Option<i64>>("provider_cache_write_tokens"),
+        None
     );
 }
 

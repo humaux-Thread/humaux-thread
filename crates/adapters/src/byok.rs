@@ -475,8 +475,9 @@ pub struct TokenUsage {
     /// `usage.completion_tokens_details.reasoning_tokens`（推理模型吃掉的那部分——
     /// M3 实测：`max_tokens` 太小时 reasoning 吃光预算，answer 为空而 HTTP 200）。
     pub reasoning_tokens: Option<u64>,
-    /// `usage.prompt_tokens_details.cached_tokens`（DOD-059 cache-hit 记账的通道开口；
-    /// 目前只上报不持久化，ledger 侧的列是独立 EXPAND 任务）。
+    /// `usage.prompt_tokens_details.cached_tokens`（DOD-059 cache-hit 记账的通道开口）。
+    /// Persisted as `ops.model_call_ledger.provider_cache_read_tokens` (0257, ADR-0081 D-A (D-RET-1)) by
+    /// `contribution_reasoner::finalize_from_usage`, the one normalisation point.
     pub cached_input_tokens: Option<u64>,
 }
 
