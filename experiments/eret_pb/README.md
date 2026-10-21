@@ -39,4 +39,90 @@ Questions this answers (aggregates only): how much does dense ranking lose insid
 
 ## Results
 
-(filled in after the eval run)
+Run 39593059326 (stage eval, all jobs green, artifact `eret-pb-results`). Pack: 198 questions, 11,250 distinct candidate points (11,006 with a Postgres chunk), 9,516 memories, pack ciphertext 8,200,256 bytes. Query vectors: `text-embedding-v4`, 1024 dims, identity cosines 1.00000 on 3 of 3. Dense order alone (no BM25, no rerank) is the baseline for every McNemar below; the old system's tuned hybrid pipeline is a different system.
+
+### E-RET-0 / E-RET-1 (dense order, no model)
+
+Stage counts, rate and Clopper-Pearson 95% interval. Denominator = questions of the split.
+
+| stage | all | state | fact |
+|---|---|---|---|
+| reachable | 171/198 = 0.864 [0.808, 0.908] | 152/178 = 0.854 [0.793, 0.902] | 19/20 = 0.950 [0.751, 0.999] |
+| in_top200_chunks | 161/198 = 0.813 [0.752, 0.865] | 144/178 = 0.809 [0.743, 0.864] | 17/20 = 0.850 [0.621, 0.968] |
+| after_status_filter | 159/198 = 0.803 [0.741, 0.856] | 142/178 = 0.798 [0.731, 0.854] | 17/20 = 0.850 [0.621, 0.968] |
+| pool_25 | 123/198 = 0.621 [0.550, 0.689] | 111/178 = 0.624 [0.548, 0.695] | 12/20 = 0.600 [0.360, 0.809] |
+| pool_50 | 139/198 = 0.702 [0.633, 0.765] | 125/178 = 0.702 [0.629, 0.768] | 14/20 = 0.700 [0.457, 0.881] |
+| pool_100 | 153/198 = 0.773 [0.708, 0.829] | 136/178 = 0.764 [0.695, 0.824] | 17/20 = 0.850 [0.621, 0.968] |
+| pool_200 | 159/198 = 0.803 [0.741, 0.856] | 142/178 = 0.798 [0.731, 0.854] | 17/20 = 0.850 [0.621, 0.968] |
+| top5_at_depth_25 | 63/198 = 0.318 [0.254, 0.388] | 54/178 = 0.303 [0.237, 0.377] | 9/20 = 0.450 [0.231, 0.685] |
+
+| | all | state | fact |
+|---|---|---|---|
+| conversion = top5 / pool_25 | 63/123 = 0.512 [0.420, 0.603] | 54/111 = 0.486 [0.391, 0.583] | 9/12 = 0.750 [0.428, 0.945] |
+
+Reachable questions only (gold memory has a chunk and a point in the old store).
+
+| stage | all | state | fact |
+|---|---|---|---|
+| questions | 171 | 152 | 19 |
+| in_top200_chunks | 144/171 = 0.842 [0.779, 0.893] | 127/152 = 0.836 [0.767, 0.891] | 17/19 = 0.895 [0.669, 0.987] |
+| after_status_filter | 142/171 = 0.830 [0.766, 0.883] | 125/152 = 0.822 [0.752, 0.880] | 17/19 = 0.895 [0.669, 0.987] |
+| pool_25 | 110/171 = 0.643 [0.567, 0.715] | 98/152 = 0.645 [0.563, 0.721] | 12/19 = 0.632 [0.384, 0.837] |
+| pool_50 | 123/171 = 0.719 [0.646, 0.785] | 109/152 = 0.717 [0.638, 0.787] | 14/19 = 0.737 [0.488, 0.908] |
+| pool_100 | 137/171 = 0.801 [0.733, 0.858] | 120/152 = 0.789 [0.716, 0.851] | 17/19 = 0.895 [0.669, 0.987] |
+| pool_200 | 142/171 = 0.830 [0.766, 0.883] | 125/152 = 0.822 [0.752, 0.880] | 17/19 = 0.895 [0.669, 0.987] |
+| top5_at_depth_25 | 56/171 = 0.328 [0.258, 0.403] | 47/152 = 0.309 [0.237, 0.389] | 9/19 = 0.474 [0.244, 0.711] |
+
+Pool ceiling, depth 25 vs 100, exact McNemar (b = in pool_25 only, c = gained at depth 100):
+
+| split | N | b | c | p |
+|---|---|---|---|---|
+| all | 198 | 0 | 30 | 1.863e-09 |
+| state | 178 | 0 | 25 | 5.96e-08 |
+| fact | 20 | 0 | 5 | 0.0625 |
+
+Counters: questions=198, chunk_candidates=39600, candidates_without_pg_chunk=1068, candidates_memory_absent_from_pg=1, mean_memories_after_fold=185.87, mean_memories_after_filter=176.13, gold_memories_total=109, gold_missing_from_pg=1, gold_without_chunk_or_point=14, dense_hit5=63
+
+### E-RET-5b rerank job bge-reranker-base
+
+Dense hit@5 on the same questions: 63/198 = 0.318 [0.254, 0.388]. McNemar: A = dense, B = arm; b = dense hit & arm miss, c = dense miss & arm hit.
+
+| arm | hit@5 | state | fact | pool ceiling | N | b | c | p | p50 s | p95 s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fp32-L512-d25 | 97/198 = 0.490 [0.418, 0.562] | 85/178 = 0.477 [0.402, 0.554] | 12/20 = 0.600 [0.360, 0.809] | 123/198 = 0.621 [0.550, 0.689] | 198 | 12 | 46 | 8.22e-06 | 13.513 | 14.114 |
+| fp32-L256-d25 | 90/198 = 0.455 [0.384, 0.527] | 78/178 = 0.438 [0.364, 0.514] | 12/20 = 0.600 [0.360, 0.809] | 123/198 = 0.621 [0.550, 0.689] | 198 | 16 | 43 | 0.0005844 | 6.54 | 6.689 |
+| int8-L512-d25 | 101/198 = 0.510 [0.438, 0.582] | 89/178 = 0.500 [0.424, 0.576] | 12/20 = 0.600 [0.360, 0.809] | 123/198 = 0.621 [0.550, 0.689] | 198 | 9 | 47 | 2.572e-07 | 3.53 | 3.699 |
+| int8-L256-d25 | 92/198 = 0.465 [0.394, 0.537] | 80/178 = 0.449 [0.375, 0.526] | 12/20 = 0.600 [0.360, 0.809] | 123/198 = 0.621 [0.550, 0.689] | 198 | 14 | 43 | 0.0001539 | 1.608 | 1.649 |
+| int8-L256-d10 | 81/198 = 0.409 [0.340, 0.481] | 71/178 = 0.399 [0.326, 0.475] | 10/20 = 0.500 [0.272, 0.728] | 92/198 = 0.465 [0.394, 0.537] | 198 | 9 | 27 | 0.003933 | 0.644 | 0.664 |
+
+fp32 vs int8 (A = fp32, B = int8):
+
+| pair | N | b | c | p |
+|---|---|---|---|---|
+| L512-d25 | 198 | 2 | 6 | 0.2891 |
+| L256-d25 | 198 | 2 | 4 | 0.6875 |
+
+### E-RET-5b rerank job bge-reranker-v2-m3
+
+Dense hit@5 on the same questions: 63/198 = 0.318 [0.254, 0.388]. McNemar: A = dense, B = arm; b = dense hit & arm miss, c = dense miss & arm hit.
+
+| arm | hit@5 | state | fact | pool ceiling | N | b | c | p | p50 s | p95 s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fp32-L256-d25 | 109/198 = 0.550 [0.478, 0.621] | 98/178 = 0.551 [0.474, 0.625] | 11/20 = 0.550 [0.315, 0.769] | 123/198 = 0.621 [0.550, 0.689] | 198 | 5 | 51 | 1.17e-10 | 22.245 | 23.083 |
+
+### E-RET-5b rerank job qwen3-reranker-0.6b
+
+Dense hit@5 on the same questions: 63/198 = 0.318 [0.254, 0.388]. McNemar: A = dense, B = arm; b = dense hit & arm miss, c = dense miss & arm hit.
+
+| arm | hit@5 | state | fact | pool ceiling | N | b | c | p | p50 s | p95 s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| qwen-L256-d10 | 91/198 = 0.460 [0.389, 0.532] | 81/178 = 0.455 [0.380, 0.531] | 10/20 = 0.500 [0.272, 0.728] | 92/198 = 0.465 [0.394, 0.537] | 198 | 1 | 29 | 5.774e-08 | 13.192 | 13.634 |
+
+### Notes
+
+- Unreachable by chunk-level dense retrieval: 27 of 198 questions (14 gold memories: 1 missing from Postgres, 13 without chunk or point). They count as misses in every arm.
+- 1,068 of the 39,600 candidate chunk hits have no chunk row in Postgres (their memory id comes from the Qdrant payload); they take part in dense ranking but cannot supply text, so a memory is represented by its best-scoring chunk that has text (title only if none).
+- Query text is embedded raw. The old retrieval may append an entity-alias expansion to the query before embedding; that table is not part of the pack, so it is not replicated.
+- Rerank latency is per query on the CI runner (Neoverse-N2, 4 vCPU), tokenise + forward for the whole pool, batch 8, after one untimed warm-up. Pairs are padded to the longest in each batch, so p50 is close to the exactly-L numbers of E-RET-5a.
+- The 198 questions took part in the old system's tuning (development / regression set only).
+- Not done: Qwen3-Reranker at depth 25, int8 for v2-m3 and Qwen3, fp32 at depth 10, Neoverse-N1 latency, E-RET-2 to 4.
