@@ -56,7 +56,8 @@ fn expected_sql_for(manifest_path: &Path) -> PathBuf {
 /// `(file name, occurrences)`. Found by T-MIG-1 in 0224's `control.partition_catalog_fingerprint`, a function body:
 /// fixing it changes a schema object, so it takes a new forward migration (`CREATE OR REPLACE FUNCTION`), not an
 /// ADR-0082 amendment (comments, prechecks and postchecks only). An entry whose count no longer matches is red.
-// ponytail: one known site exempted by file and count, delete the entry when the forward migration lands.
+// ponytail: 0224 is immutable, so its entry stays for as long as the file exists, even after the forward migration
+// that replaces the function (#141) lands; the scan matches `ORDER BY <digits>` only, not `(1)` / COLLATE / USING forms.
 const KNOWN_CONSTANT_AGGREGATE_ORDER: &[(&str, usize)] = &[("0224_partition_machinery.sql", 1)];
 
 /// `sql` lowercased, with `--` / nested `/* */` comments and the insides of `'…'` literals and `"…"` identifiers

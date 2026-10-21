@@ -51,8 +51,9 @@ Review enforces this. The listed checksum is the file as merged before the chang
   the files at 5df129c). Databases that applied either accept; fresh ones record the new checksum.
 - The scan found a third site, `0224_partition_machinery.sql` (`string_agg(… ORDER BY 1)` in the function
   `control.partition_catalog_fingerprint`). A function body is schema effect, so D-D forbids amending it; the fix is a
-  forward migration (`CREATE OR REPLACE FUNCTION`). Until then the check exempts it by file and count and goes red
-  when the exemption is stale. Dynamic SQL inside string literals is not scanned.
+  forward migration (`CREATE OR REPLACE FUNCTION`, issue #141). 0224's text never changes, so the check exempts it by
+  file and count for as long as 0224 exists; the exemption is red only if that count changes. Not scanned: dynamic
+  SQL inside string literals, and `ORDER BY (1)` / `1 COLLATE` / `1 USING` / window `OVER (ORDER BY 1)` forms.
 
 ## Rejected
 
