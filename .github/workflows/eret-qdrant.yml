@@ -1,0 +1,100 @@
+# E-RET-PB5: Qdrant v1.19.0 built-in qdrant/bm25 (modifier idf, params.idf.corpus) + server-side RRF versus PB2's bigram BM25 + client RRF,
+# on the PB2 encrypted full-corpus snapshot. Experiment branch only (exp/e-ret-pb-qdrant*); never merged. The corpus is ciphertext on the
+# existing prerelease asset; plaintext exists only in $RUNNER_TEMP (umask 077) and is removed in an `if: always()` step. The Qdrant is a
+# CI-local service container, so no corpus text leaves the runner. Output = aggregate numbers only, checked by `qdrant_sparse.py guard`
+# before anything is published. Runs only when the tip commit message carries [stage:qdrant] (or by workflow_dispatch). Never
+# pull_request / pull_request_target. HUMAUX_EVAL_PACK_KEY appears only in the `fetch` step env. At most 3 runs for this card.
+name: eret-qdrant
+on:
+  push:
+    branches: ['exp/e-ret-pb-qdrant*']
+    paths:
+      - '.github/workflows/eret-qdrant.yml'
+      - 'experiments/eret_pb/qdrant_sparse.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: eret-qdrant
+  cancel-in-progress: false
+env:
+  PYTHONUNBUFFERED: '1'
+  QDRANT_URL: http://127.0.0.1:6333
+  # PB2: gz sha256 of the full-corpus tar (corpus.v1.tar.gz) and of the query-vector variants (qvec2.json.gz), tag eval-pack-e-ret-2026-10-v1
+  CORPUS_SHA256: 1e8158d43afd0403e8aec838eb488ed54ca6267c944b3e458b5bdcc725c00a52
+  QVEC2_SHA256: 6e7b7135cf4916b6120b9468b280269c0d656994075a9014afd276af01981e2c
+jobs:
+  qdrant:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[stage:qdrant]')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.0
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: numpy (pinned as in requirements.txt)
+        shell: bash
+        run: python -m pip install numpy==2.3.5
+      - name: selftest (request bodies, point plan, fold, scrub, leak guard; no network, fake data)
+        shell: bash
+        run: python experiments/eret_pb/qdrant_sparse.py selftest
+      - name: smoke (fake corpus against the live Qdrant service; picks the vector layout)
+        shell: bash
+        run: python experiments/eret_pb/qdrant_sparse.py smoke --out "$RUNNER_TEMP/smoke.json"
+      - name: fetch and decrypt corpus and query vectors
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset corpus.v1.tar.gz.enc --sha "$CORPUS_SHA256" --out "$RUNNER_TEMP/corpus.tar" --keyfile "$RUNNER_TEMP/k"
+          python experiments/eret_pb/harness.py fetch --asset qvec2.json.gz.enc --sha "$QVEC2_SHA256" --out "$RUNNER_TEMP/qvec2.json"
+      - name: index the corpus into Qdrant and run the arms
+        timeout-minutes: 110
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          python experiments/eret_pb/qdrant_sparse.py run --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" \
+            --smoke "$RUNNER_TEMP/smoke.json" --out out/eret-qdrant-results.json --summary out/qdrant.md --raw out/raw-runs.json
+      - name: seal raw results with the pack key (a guard false positive must not lose the run; the public artifact below stays guard-gated)
+        if: always() && hashFiles('out/*') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p sealed
+          tar -C out -czf "$RUNNER_TEMP/results.tgz" .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" -in "$RUNNER_TEMP/results.tgz" -out sealed/eret-qdrant-results.tgz.enc
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && hashFiles('sealed/eret-qdrant-results.tgz.enc') != ''
+        with:
+          name: eret-qdrant-results-enc
+          path: sealed/eret-qdrant-results.tgz.enc
+          retention-days: 3
+      - name: guard
+        id: guard
+        if: always() && hashFiles('out/eret-qdrant-results.json') != ''
+        shell: bash
+        run: python experiments/eret_pb/qdrant_sparse.py guard --corpus "$RUNNER_TEMP/corpus.tar" --files out/eret-qdrant-results.json out/qdrant.md
+      - name: publish summary
+        if: always() && steps.guard.outcome == 'success'
+        shell: bash
+        run: cat out/qdrant.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.guard.outcome == 'success'
+        with:
+          name: eret-qdrant-results
+          path: out/eret-qdrant-results.json
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/corpus.tar" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/k" "$RUNNER_TEMP/results.tgz" "$RUNNER_TEMP/smoke.json" out sealed
