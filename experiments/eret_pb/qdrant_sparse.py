@@ -7,7 +7,7 @@ statistics, J0 stages and leak guard (harness.py). Nothing here prints or writes
 b/c/p and latencies. Qdrant error messages are printed only after a 12-character-window check against the corpus.
 
 Subcommands: selftest (pure, no network), smoke (fake corpus against the live Qdrant, picks the vector layout), run (real corpus),
-guard (leak guard that also exempts this file's own literals).
+followup (client RRF over the Qdrant legs, on the collection `run` built), guard (leak guard that also exempts this file's own literals).
 
 Pre-registered before any result was seen (card E-RET-PB5):
   primary     hit@5 of Qdrant server-side RRF (`fusion: rrf`, default bm25 options, q0 dense vector) vs PB2's client RRF k=60
@@ -18,6 +18,15 @@ Pre-registered before any result was seen (card E-RET-PB5):
               (DEFAULT_RRF_K = 2), i.e. 1 / (rank + 1) in 1-based ranks; PB2 uses 1 / (60 + rank). Qdrant fuses chunk lists of 100,
               PB2 fuses filtered memory lists. The arm `qdrant_rrf_k61` (`rrf: {k: 61}` = 1 / (60 + rank)) is an EXTRA secondary
               control for the constant; it is not in the card.
+
+Follow-up (lead message after run 1, run 2 of 3; pre-registered before any follow-up result was seen). Separates the leg from the fusion.
+  method      client fusion exactly as PB2: each leg's full returned list (bm25 `limit` 200 points) folded to memories by first occurrence,
+              then the status filter, then pb2.rrf with 1 / (60 + rank) over memories; the dense leg is PB2's exact q0 list.
+  PRIMARY     hit@5, A = PB2 client RRF k=60 (dense exact q0 + PB2 bigram leg), B = client RRF k=60 (dense exact q0 + Qdrant default bm25
+              leg); paired exact McNemar N/b/c/p.
+  secondary   (a) A = PB2 client RRF k=60, B = client RRF k=60 with the bm25_ml leg; (b) A = client RRF with the default bm25 leg, B = the same
+              with the bm25_ml leg; (c) A = client RRF k=60 with the default bm25 leg, B = Qdrant server `rrf` k=60 with prefetch limits 200
+              (chunk-level vs memory-level fusion). Extra, labelled: server `rrf` k=61 (= 1 / (60 + rank), see above) vs the same A.
 """
 from __future__ import annotations
 
@@ -169,23 +178,23 @@ def wait_green(qd: Qd, timeout: int = 1800) -> tuple[dict, float]:
 
 
 # ---------------------------------------------------------------- queries
-def q_body(kind: str, qvec, text: str, dn: str, using, ml: bool, fusion) -> dict:
+def q_body(kind: str, qvec, text: str, dn: str, using, ml: bool, fusion, depth: int | None = None) -> dict:
     dense = {"query": qvec, "filter": TENANT_FILTER, **({"using": dn} if dn else {})}
     sparse = {"query": bm25_doc(text, ml), "using": using, "filter": TENANT_FILTER, "params": {"idf": {"corpus": TENANT_FILTER}}}
     if kind == "hybrid":
-        return {"prefetch": [{**dense, "limit": PREFETCH}, {**sparse, "limit": PREFETCH}], "query": fusion, "limit": FUSED_LIMIT,
-                "with_payload": False, "with_vector": False}
+        pf, fl = (depth, depth) if depth else (PREFETCH, FUSED_LIMIT)
+        return {"prefetch": [{**dense, "limit": pf}, {**sparse, "limit": pf}], "query": fusion, "limit": fl, "with_payload": False, "with_vector": False}
     return {**(dense if kind == "dense" else sparse), "limit": P.LEG_DEPTH, "with_payload": False, "with_vector": False}
 
 
 def run_arm(qd: Qd, c, q0, arm, dn: str, deadline: float):
     """Returns (per-question [(point id, score)], per-question seconds, HTTP 400 count) or None when the time budget ran out."""
-    name, kind, using, ml, fusion = arm
+    name, kind, using, ml, fusion, *depth = arm
     runs, lat, errors = [], [], 0
     for i, q in enumerate(c.questions):
         if time.monotonic() > deadline:
             return None
-        body = q_body(kind, q0[q["qid"]], q["query"], dn, using, ml, fusion)
+        body = q_body(kind, q0[q["qid"]], q["query"], dn, using, ml, fusion, depth[0] if depth else None)
         try:
             if i == 0:
                 qd.call("POST", f"/collections/{COLL}/points/query", body)  # warm-up, untimed
@@ -210,17 +219,27 @@ def to_items(c, pid_mem, runs):
     return items
 
 
-def pb2_lists(c, q0):
-    """PB2's three lists for q0, built with PB2's own functions in the same composition as pb2.evaluate (dense_items, bm25_items, rrf, make_records)."""
+def pb2_items(c, q0):
+    """PB2's exact q0 dense items and bigram BM25 items (pb2.dense_items, pb2.bm25_items): (seq, kept, stats) per question."""
     idx = P.DenseIndex(c.vec_bytes, c.dim)
     d = P.dense_items(c, idx, idx.scores([q0[q["qid"]] for q in c.questions]))
     del idx
     b, info = P.bm25_items(c)
+    return d, b, info
+
+
+def client_rrf(c, d, b, k: int = 60):
+    """Memory-level client RRF of two legs, the composition of pb2.evaluate (pb2.rrf over the filtered memory lists, then make_records)."""
     zero = {"cands": 0, "cands_without_chunk": 0, "cands_memory_absent": 0}
-    fused = [P.rrf([x[1], y[1]], 60) for x, y in zip(d, b)]
-    f = [(list(dict.fromkeys(x[0] + y[0])), z, zero) for x, y, z in zip(d, b, fused)]
+    fused = [P.rrf([x[1], y[1]], k) for x, y in zip(d, b)]
+    return P.make_records(c.questions, c.gold_info, [(list(dict.fromkeys(x[0] + y[0])), z, zero) for x, y, z in zip(d, b, fused)])
+
+
+def pb2_lists(c, q0):
+    """PB2's three lists for q0, built with PB2's own functions."""
+    d, b, info = pb2_items(c, q0)
     mk = lambda items: P.make_records(c.questions, c.gold_info, items)  # noqa: E731
-    return {"pb2_dense_q0": mk(d), "pb2_bm25": mk(b), "pb2_rrf_k60": mk(f)}, info
+    return {"pb2_dense_q0": mk(d), "pb2_bm25": mk(b), "pb2_rrf_k60": client_rrf(c, d, b)}, info
 
 
 # ---------------------------------------------------------------- aggregates
@@ -350,6 +369,77 @@ def render(res: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+# ---------------------------------------------------------------- follow-up (leg vs fusion)
+FOLLOW_ARMS = [("server_rrf_k60_l200", "hybrid", "bm25", False, {"rrf": {"k": 60}}, 200),
+               ("server_rrf_k61_l200", "hybrid", "bm25", False, {"rrf": {"k": 61}}, 200)]
+
+
+def followup_core(qd: Qd, c, q0, dn: str, ml: bool, budget_min: float):
+    """Needs the collection built by `pipeline`. Legs: bm25 (and bm25_ml) `limit` 200 points from Qdrant; fusion on the client as PB2 did."""
+    pid_mem = [p[3] for p in point_plan(c)]
+    d, b, info = pb2_items(c, q0)
+    mk = lambda items: P.make_records(c.questions, c.gold_info, items)  # noqa: E731
+    an = {"pb2_dense_q0": mk(d), "pb2_bm25": mk(b), "pb2_rrf_k60": client_rrf(c, d, b)}
+    arms = {x[0]: x for x in ARMS}
+    deadline, lat, errs, legs = time.monotonic() + 60 * budget_min, {}, {}, {}
+    for arm in [arms["qdrant_bm25"]] + ([arms["qdrant_bm25_ml"]] if ml else []) + FOLLOW_ARMS:
+        out = run_arm(qd, c, q0, arm, dn, deadline)
+        if out is None:
+            raise SystemExit("follow-up time budget exceeded")
+        runs, lat[arm[0]], errs[arm[0]] = out
+        legs[arm[0]] = to_items(c, pid_mem, runs)
+        an[arm[0]] = mk(legs[arm[0]])
+    for leg in ("qdrant_bm25", "qdrant_bm25_ml"):
+        if leg in legs:
+            an["client_rrf_k60_" + leg] = client_rrf(c, d, legs[leg])
+    res = {"manifest": {k: v for k, v in c.man.items() if isinstance(v, (int, float, str))}, "lists": {}, "secondary": {}}
+    for name in an:
+        res["lists"][name] = arm_summary(c, an[name], lat.get(name), errs.get(name, 0))
+    res["pb2"] = {"bm25_index": info, "reference_run_39614883398_now_vs_ref": {k: [v, PB2_REF[k]] for k, v in {
+        "dense_pool25": sum(P.in_pool(an["pb2_dense_q0"], 25)), "dense_hit5": sum(P.hits5(an["pb2_dense_q0"])),
+        "rrf60_pool25": sum(P.in_pool(an["pb2_rrf_k60"], 25)), "rrf60_hit5": sum(P.hits5(an["pb2_rrf_k60"]))}.items()}}
+    A, B = "pb2_rrf_k60", "client_rrf_k60_qdrant_bm25"
+    res["primary"] = {"hit5_client_rrf_k60_qdrant_leg_vs_pb2_client_rrf_k60": compare(an, A, B)["hit5"] | {"A": A, "B": B}}
+    for key, a_, b_ in (("a_ml_leg_vs_pb2", A, "client_rrf_k60_qdrant_bm25_ml"), ("b_ml_leg_vs_default_leg", B, "client_rrf_k60_qdrant_bm25_ml"),
+                        ("c_server_k60_l200_vs_client_default_leg", B, "server_rrf_k60_l200"),
+                        ("extra_server_k61_l200_vs_client_default_leg", B, "server_rrf_k61_l200")):
+        if a_ in an and b_ in an:
+            res["secondary"][key] = compare(an, a_, b_)
+    return res, an
+
+
+def render_followup(res: dict) -> str:
+    mc = lambda x: f"{x['N']}/{x['b']}/{x['c']}/{x['p']}"  # noqa: E731
+    x = res["primary"]["hit5_client_rrf_k60_qdrant_leg_vs_pb2_client_rrf_k60"]
+    L = ["## E-RET-PB5 follow-up (leg vs fusion; client memory-level RRF k=60 over exact q0 dense plus a leg)", "",
+         "Pre-registered primary, hit@5 (A = baseline, B = challenger, b = A hit and B miss, c = A miss and B hit):", "",
+         "| comparison | A | B | N | b | c | p |", "|---|---|---|---|---|---|---|",
+         f"| hit@5 | {x['A']} = {x['A_k']} | {x['B']} = {x['B_k']} | {x['N']} | {x['b']} | {x['c']} | {x['p']} |", "",
+         "### Lists", "", "| list | pool@25 | hit@5 | state hit@5 | fact hit@5 | < 25 | p50 ms | p95 ms |", "|---|---|---|---|---|---|---|---|"]
+    for name, a in res["lists"].items():
+        lt = a["latency_ms"] or {"p50": "", "p95": ""}
+        L.append(f"| {name} | {H.fmt_rate(a['all']['pool25'])} | {H.fmt_rate(a['all']['hit5'])} | {H.fmt_rate(a['state']['hit5'])} | {H.fmt_rate(a['fact']['hit5'])} | "
+                 f"{a['lt25_kept']} | {lt['p50']} | {lt['p95']} |")
+    L += ["", "### Secondary comparisons (N/b/c/p)", "", "| key | B vs A | pool@25 A | pool@25 B | pool@25 N/b/c/p | hit@5 A | hit@5 B | hit@5 N/b/c/p |", "|---|---|---|---|---|---|---|---|"]
+    for k, y in res["secondary"].items():
+        L.append(f"| {k} | {y['B']} vs {y['A']} | {y['pool25']['A_k']} | {y['pool25']['B_k']} | {mc(y['pool25'])} | {y['hit5']['A_k']} | {y['hit5']['B_k']} | {mc(y['hit5'])} |")
+    L += ["", f"PB2 recomputed (now / run 39614883398): {json.dumps(res['pb2']['reference_run_39614883398_now_vs_ref'], sort_keys=True)}", ""]
+    return "\n".join(L) + "\n"
+
+
+def followup(a):
+    cfg = json.loads(Path(a.smoke).read_text())
+    c = P.load_corpus(a.corpus)
+    _SCRUB["texts"] = P.corpus_texts(c)
+    q0 = json.loads(Path(a.qvec).read_text())["variants"]["q0"]
+    qd = Qd(a.url)
+    wait_ready(qd)
+    res, _ = followup_core(qd, c, q0, cfg["dense_name"], cfg["ml"], a.budget_min)
+    Path(a.out).write_text(json.dumps(res, indent=1))
+    Path(a.summary).write_text(render_followup(res))
+    print("follow-up done; lists:", ", ".join(res["lists"]))
+
+
 # ---------------------------------------------------------------- guard
 def guard_check(texts: list[str], files: list[str], extra: list[str]) -> list:
     """harness.guard_findings with this file's own string literals exempt too (labels such as arm names may occur in the corpus)."""
@@ -402,6 +492,11 @@ def smoke(a):
         assert ranks["qdrant_dense"][0] == 1 and ranks["pb2_dense_q0"][0] == 1, ranks  # q1: m1 first, the superseded m3 is filtered out
         assert res["tokenization_probe"]["sample"] == 6 and res["primary"]["hit5_qdrant_server_rrf_vs_pb2_client_rrf_k60"]["N"] == 4, res
         render(res)
+        fres, fan = followup_core(qd, c, q0, dn, ml, 5)
+        fr = {n: [r["rank"] for r in x] for n, x in fan.items()}
+        assert fr["client_rrf_k60_qdrant_bm25"][1] == 1 and fr["server_rrf_k60_l200"][1] == 1 and fr["server_rrf_k61_l200"][1] == 1, fr
+        assert fres["primary"]["hit5_client_rrf_k60_qdrant_leg_vs_pb2_client_rrf_k60"]["N"] == 4 and len(fres["secondary"]) == (4 if ml else 2), fres["secondary"]
+        render_followup(fres)
         Path(a.out).write_text(json.dumps({"dense_name": dn, "ml": ml, "tried": tried}))
         print("smoke ok: dense vector", "unnamed default" if dn == "" else dn, "| multilingual variant", ml, "| failed layouts", len(tried), flush=True)
         print("smoke ranks:", json.dumps(ranks), flush=True)  # fake data only
@@ -440,6 +535,8 @@ def selftest(_a=None):
     assert s["limit"] == 200 and s["using"] == "bm25_ml" and s["query"]["options"] == ML_OPTIONS and s["params"]["idf"]["corpus"] == TENANT_FILTER and "prefetch" not in s
     d = q_body("dense", [1.0], "q", "d", None, False, None)
     assert d["using"] == "d" and d["limit"] == 200 and "params" not in d and "using" not in q_body("dense", [1.0], "q", "", None, False, None)
+    h2 = q_body("hybrid", [1.0], "q", "", "bm25", False, {"rrf": {"k": 60}}, 200)
+    assert h2["limit"] == 200 and [p["limit"] for p in h2["prefetch"]] == [200, 200] and h2["query"] == {"rrf": {"k": 60}} and FOLLOW_ARMS[0][5] == 200
     assert bm25_doc("t", False) == {"text": "t", "model": MODEL} and RRF_K_SAME == 61 and ARMS[1][4] == {"fusion": "rrf"}
     # corpus, point plan (an unattached chunk becomes a text-only point), fold
     tmp = Path(tempfile.mkdtemp(prefix="pb5self_", dir=os.environ.get("RUNNER_TEMP")))
@@ -457,6 +554,12 @@ def selftest(_a=None):
         assert an[0]["rank"] == 2 and an[1]["rank"] is None, an[0]["rank"]
         sm = arm_summary(type("C", (), {"questions": c.questions[:2], "gold_info": c.gold_info, "man": c.man})(), an, [.01, .02, .03], 1)
         assert sm["all"]["n"] == 2 and sm["lt25_kept"] == 2 and sm["latency_ms"]["n"] == 3 and sm["latency_ms"]["p50"] == 20.0 and sm["query_errors_400"] == 1, sm
+        # client RRF 1 / (60 + rank) over two memory lists: ties keep first appearance, a second vote lifts a memory
+        zero = {"cands": 0, "cands_without_chunk": 0, "cands_memory_absent": 0}
+        cc = type("C", (), {"questions": c.questions[:1], "gold_info": c.gold_info})()
+        dl = [(["m2", "m1"], ["m2", "m1"], zero)]
+        assert client_rrf(cc, dl, [(["m1", "m2"], ["m1", "m2"], zero)])[0]["kept_list"] == ["m2", "m1"]
+        assert client_rrf(cc, dl, [(["m1"], ["m1"], zero)])[0]["kept_list"] == ["m1", "m2"]
         # scrub: a window of corpus text is redacted, an unrelated message is not
         _SCRUB["texts"] = ["x" * 5 + "abcdefghijklmnopq" + "y" * 5]
         assert _scrub("error about abcdefghijklmnop here") == "[redacted]" and _scrub("Wrong input: vector dimension error") != "[redacted]"
@@ -488,12 +591,17 @@ def main():
         r.add_argument("--" + k, required=True)
     r.add_argument("--url", default=os.environ.get("QDRANT_URL", "http://127.0.0.1:6333"))
     r.add_argument("--budget-min", dest="budget_min", type=float, default=70.0)
+    f = sp.add_parser("followup")
+    for k in ("corpus", "qvec", "smoke", "out", "summary"):
+        f.add_argument("--" + k, required=True)
+    f.add_argument("--url", default=os.environ.get("QDRANT_URL", "http://127.0.0.1:6333"))
+    f.add_argument("--budget-min", dest="budget_min", type=float, default=30.0)
     g = sp.add_parser("guard")
     g.add_argument("--corpus", required=True)
     g.add_argument("--files", nargs="+", required=True)
     a = ap.parse_args()
     try:
-        {"selftest": selftest, "smoke": smoke, "run": run, "guard": guard}[a.cmd](a)
+        {"selftest": selftest, "smoke": smoke, "run": run, "followup": followup, "guard": guard}[a.cmd](a)
     except SystemExit:
         raise
     except QdrantHttp as ex:

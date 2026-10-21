@@ -4,6 +4,7 @@
 # CI-local service container, so no corpus text leaves the runner. Output = aggregate numbers only, checked by `qdrant_sparse.py guard`
 # before anything is published. Runs only when the tip commit message carries [stage:qdrant] (or by workflow_dispatch). Never
 # pull_request / pull_request_target. HUMAUX_EVAL_PACK_KEY appears only in the `fetch` step env. At most 3 runs for this card.
+# Run 2 adds one step (follow-up: leg vs fusion); the guard, summary and artifact steps just take its two output files too.
 name: eret-qdrant
 on:
   push:
@@ -65,6 +66,14 @@ jobs:
           mkdir -p out
           python experiments/eret_pb/qdrant_sparse.py run --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" \
             --smoke "$RUNNER_TEMP/smoke.json" --out out/eret-qdrant-results.json --summary out/qdrant.md --raw out/raw-runs.json
+      - name: follow-up (client RRF k=60 over the Qdrant legs; server RRF k=60 with prefetch limits 200)
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/qdrant_sparse.py followup --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" \
+            --smoke "$RUNNER_TEMP/smoke.json" --out out/eret-qdrant-followup.json --summary out/qdrant-followup.md
       - name: seal raw results with the pack key (a guard false positive must not lose the run; the public artifact below stays guard-gated)
         if: always() && hashFiles('out/*') != ''
         shell: bash
@@ -84,16 +93,18 @@ jobs:
         id: guard
         if: always() && hashFiles('out/eret-qdrant-results.json') != ''
         shell: bash
-        run: python experiments/eret_pb/qdrant_sparse.py guard --corpus "$RUNNER_TEMP/corpus.tar" --files out/eret-qdrant-results.json out/qdrant.md
+        run: python experiments/eret_pb/qdrant_sparse.py guard --corpus "$RUNNER_TEMP/corpus.tar" --files out/eret-qdrant-results.json out/qdrant.md out/eret-qdrant-followup.json out/qdrant-followup.md
       - name: publish summary
         if: always() && steps.guard.outcome == 'success'
         shell: bash
-        run: cat out/qdrant.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat out/qdrant.md out/qdrant-followup.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4.6.2
         if: always() && steps.guard.outcome == 'success'
         with:
           name: eret-qdrant-results
-          path: out/eret-qdrant-results.json
+          path: |
+            out/eret-qdrant-results.json
+            out/eret-qdrant-followup.json
       - name: cleanup
         if: always()
         shell: bash
