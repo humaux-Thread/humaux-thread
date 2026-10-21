@@ -264,7 +264,7 @@ pending migration runs in one transaction: manifest precheck → SQL → postche
 migrator at a time (advisory lock `HXMIGRAT`, `lock_timeout = 30s`); a migration that queues behind a live
 session's lock is refused with drift 0. It refuses `live_runtime_sessions:<role>=<n>` while a runtime role holds a
 session in this database (OPS-9): on a first install nothing runs yet; on an upgrade U4 stops the workers first.
-§46's drift gate refuses any applied migration whose text changed — the fix is a new migration, never an edit.
+§46's drift gate refuses any applied migration whose text changed — the fix is a new migration, never an edit. The one exception is a reviewed no-schema-effect amendment (a precheck, postcheck or comment) whose old checksum its manifest lists under `accepted_prior_checksums`: `migrate` logs it, continues and never rewrites the ledger row (ADR-0082).
 
 <!-- step: R5 expect: 0 match: migrate: pass ( -->
 ```sh

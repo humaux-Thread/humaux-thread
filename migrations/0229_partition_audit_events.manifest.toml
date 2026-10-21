@@ -7,6 +7,13 @@
 migration_id = "0229_partition_audit_events"
 class = "FORWARD_ONLY"
 
+# ADR-0082 / #137: the body's F3 precheck now orders its aggregate by the expression (it sorted by the constant 1).
+# Only a precheck and a comment changed, no schema effect; the listed checksum is the file as merged before this
+# change, which databases that already applied it recorded. `migrate` accepts it, logs it and never rewrites the row.
+accepted_prior_checksums = [
+  { checksum = "e9e52faff81ba4d6", reason = "#137 aggregate ORDER BY constant" },
+]
+
 # Refuses unless control.audit_events is still a plain heap that no view or BEGIN ATOMIC body depends on, exactly the
 # operation receipt FK references it, its audit_seq is still an identity column, and the 0224 creator exists. Orphan
 # counts per FK are the body's own first DO block (it names the FK and the count).

@@ -1091,6 +1091,87 @@ fn a_conversion_with_orphan_event_references_is_refused() {
         .expect("repaired data converts");
 }
 
+/// #137 / ADR-0082: 0228's F3 precheck compared `array_agg(… ORDER BY 1)` (ordered by the constant 1, so by whatever
+/// the catalog scan returned) with a fixed two-element literal, and refused a correct database when the message FK came
+/// first. The real body, applied and rolled back, must pass whichever order the two FKs reach the aggregate in: (a) the
+/// scan forced to ascending and to descending `conname` by text surgery on the one `FROM pg_constraint co`, which does
+/// not depend on heap layout; (b) the catalog of an install that created the FKs in each order. Fault: restore
+/// `ORDER BY 1` in 0228 ⇒ the descending case (message FK first) is refused ⇒ red.
+#[test]
+fn the_fk_precheck_of_0228_does_not_depend_on_the_order_the_catalog_returns() {
+    let Some(mut db) = throwaway::db_through(
+        "the_fk_precheck_of_0228_does_not_depend_on_the_order_the_catalog_returns",
+        "c36_parts",
+        Some("0227"),
+    ) else {
+        return;
+    };
+    let c = db.client();
+    let plain = body("0228");
+    let scan = "    FROM pg_constraint co\n";
+    assert_eq!(
+        plain.matches(scan).count(),
+        1,
+        "0228's F3 catalog scan moved: update this test"
+    );
+    for direction in ["ASC", "DESC"] {
+        let forced = plain.replace(
+            scan,
+            &format!(
+                "    FROM (SELECT * FROM pg_constraint ORDER BY conname {direction} OFFSET 0) co\n"
+            ),
+        );
+        // dep: PostgreSQL(owner) — the body applied inside a transaction that is always rolled back
+        let mut tx = c.transaction().expect("begin");
+        tx.batch_execute(&forced).unwrap_or_else(|e| {
+            panic!("0228 refused a correct catalog read in {direction} conname order: {e:?}")
+        });
+        tx.rollback().expect("rollback");
+    }
+    let fks = [
+        (
+            "private.ingest_tickets",
+            "ingest_tickets_redeemed_event_id_fkey",
+        ),
+        ("private.messages", "messages_event_id_fkey"),
+    ];
+    let mut defs = Vec::new();
+    for (table, name) in fks {
+        let def: String = c
+            .query_one(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                  WHERE conrelid = $1::text::regclass AND conname = $2 AND conparentid = 0",
+                &[&table, &name],
+            )
+            .expect("the FK's definition")
+            .get(0);
+        defs.push(def);
+    }
+    for first in [0usize, 1] {
+        // dep: PostgreSQL(owner) — the two FKs dropped and re-created in one order, then the body, all rolled back
+        let mut tx = c.transaction().expect("begin");
+        for (table, name) in fks {
+            tx.batch_execute(&format!("ALTER TABLE {table} DROP CONSTRAINT {name}"))
+                .expect("drop the FK");
+        }
+        for i in [first, 1 - first] {
+            let (table, name) = fks[i];
+            tx.batch_execute(&format!(
+                "ALTER TABLE {table} ADD CONSTRAINT {name} {}",
+                defs[i]
+            ))
+            .expect("re-create the FK");
+        }
+        tx.batch_execute(&plain).unwrap_or_else(|e| {
+            panic!(
+                "0228 refused a correct catalog with {} created first: {e:?}",
+                fks[first].1
+            )
+        });
+        tx.rollback().expect("rollback");
+    }
+}
+
 /// One §77 audit row written the production way: `control.audit_event_insert` (the owner definer, the only writer)
 /// called by role_gateway with the tenant GUC; `(audit_event_id, audit_seq, leaf)` of the row it wrote.
 fn audit_as_gateway(
