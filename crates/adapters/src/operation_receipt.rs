@@ -6,7 +6,9 @@
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
 //!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
 //!   (ADR-0067 D-J); a put naming a task run verifies it before any write and is refused whole when it fails, and
-//!   only a fresh (non-replayed) write verifies (design v0.2 §15 T04c); a put declaring a project resolves it before
+//!   only a fresh (non-replayed) write verifies (design v0.2 §15 T04c); that put re-checks the run's lease as the
+//!   last statement before COMMIT, after every statement that can wait, and is refused whole when the lease ran out
+//!   meanwhile (§34.0.1, ADR-0078 D-D, #91); a put declaring a project resolves it before
 //!   any write and is one INVALID_INPUT when it is not visible, and only a fresh write resolves (ADR-0078 D-D A1)]
 //! Spec: ADR-0067; ADR-0078; §6.1.4; §30.2; §34.0.1
 //!
@@ -253,7 +255,10 @@ pub async fn remember_atomically(
 /// `Some((task_run_id, fencing_token))` is verified with [`coord_repo::verify_task_run`] inside the receipt
 /// transaction, after its tenant GUCs are set and before the BMO reservation and the Evidence; a refusal is that
 /// verification's `ErrorCode` for the whole call, nothing written (no Evidence, carrier, BMO or receipt row). On a
-/// pass the Evidence is followed by its `private.evidence_task_runs` row in the same transaction.
+/// pass the Evidence is followed by its `private.evidence_task_runs` row in the same transaction. The row lock the
+/// verification holds does not stop the lease from running out while this transaction waits (the quota window lock,
+/// say), so [`coord_repo::recheck_run_live_in_txn`] runs as the last statement before COMMIT: a lease that expired
+/// meanwhile is [`ErrorCode::Conflict`] and the whole transaction rolls back (§34.0.1, ADR-0078 D-D, #91).
 ///
 /// `Some(project)` is resolved at the same point with `remember::resolve_declared_project_in_txn`: an unknown,
 /// another tenant's, archived or not-visible project is one `INVALID_INPUT` for the whole call, nothing written and
@@ -516,7 +521,8 @@ async fn atomically(
     }
     // Design v0.2 §15 T04c: verify after the receipt lookup set the tenant GUCs (the port reads coord.* under FORCE
     // RLS) and before the reservation, so a refusal returns the port's ErrorCode with nothing written or metered and no
-    // receipt row: dropping `txn` rolls back. The FOR SHARE it takes on the task row lasts until COMMIT.
+    // receipt row: dropping `txn` rolls back. The FOR SHARE it takes on the task row lasts until COMMIT but does not
+    // stop the lease deadline: `recheck_run_live_in_txn` below judges it again after the last statement that can wait.
     let verified = match task_run {
         Some((task_run_id, fencing_token)) => {
             Some(coord_repo::verify_task_run(&mut txn, &auth, task_run_id, fencing_token).await?)
@@ -664,6 +670,13 @@ async fn atomically(
     let finalized_at = db_now(&mut txn).await?;
     if finalized_at >= reservation.expires_at() || finalized_at >= token_expires_at {
         return Err(ErrorCode::Conflict);
+    }
+    // §34.0.1 / ADR-0078 D-D (#91): the quota lock waits and statements above can run past the lease deadline, which
+    // the task row lock does not stop. A refusal here drops `txn` and rolls everything back.
+    // ponytail: the lease can still end between this statement and COMMIT (one round trip, the residual the deadline
+    //   check above also carries); no in-transaction check removes it, a deferred constraint trigger only narrows it.
+    if let Some((task_run_id, fencing_token)) = task_run {
+        coord_repo::recheck_run_live_in_txn(&mut txn, &auth, task_run_id, fencing_token).await?;
     }
     // A COMMIT error cannot establish rollback. Only a subsequent receipt lookup
     // resolves durability; callers must not publish a terminal failure or refund.
