@@ -7753,7 +7753,7 @@ fn w2_continuity_gate(root: &Path) -> Verdict {
 }
 
 // ============================================================================
-// M24-7 / G-M24-7 (§79, #101): a test binary that touches cluster-global DB state is in nextest's `global-db` group
+// M24-7 / G-M24-7 (§79, #101): a test binary whose sources carry a derived-job, outbox or provider-slot marker is in nextest's `global-db` group
 // ============================================================================
 
 /// The nextest config the completeness gate reads. §79: nextest runs test binaries in parallel, so a binary that
@@ -7763,9 +7763,12 @@ const NEXTEST_CONFIG_FILE: &str = ".config/nextest.toml";
 /// The one nextest test group that serialises every binary touching cluster-global DB state.
 const GLOBAL_DB_GROUP: &str = "global-db";
 
-/// Closed list of literal markers of cluster-global DB state, `(marker, why it is shared)`. A test binary whose
-/// sources (its test file plus every module it pulls in) contain one must be in [`GLOBAL_DB_GROUP`] or be listed in
-/// [`GLOBAL_DB_EXEMPT`].
+/// Closed list of literal markers of the cluster-global DB state this gate knows, `(marker, why it is shared)`: the
+/// derived jobs and their claim, the outbox rows that enqueue them, the four provider slots and the fixtures whose
+/// teardown toggles triggers on shared tables. It is not every kind of cluster-global state: at #145, 36 of the 67
+/// integration binaries in `global-db` (54%) carry a marker, the other 31 were grouped from observed failures or review,
+/// and a binary that shares some other state is invisible here. A test binary whose sources (its test file plus every
+/// module it pulls in) contain one must be in [`GLOBAL_DB_GROUP`] or be listed in [`GLOBAL_DB_EXEMPT`].
 ///
 /// Derived from the header of `.config/nextest.toml` (provider slots, the outbox-to-job triggers, the claim of derived
 /// jobs, the fixtures whose teardown toggles triggers) and from what the binaries already in the group reference.
@@ -8004,11 +8007,30 @@ fn read_groups(config: &str) -> Result<Option<GroupMembership>, String> {
     };
     let mut has_global_db = false;
     for entry in overrides.into_iter().flatten() {
+        let Some(group) = entry.get("test-group") else {
+            continue;
+        };
+        let extra: Vec<&str> = entry
+            .as_table()
+            .into_iter()
+            .flat_map(|table| table.keys().map(String::as_str))
+            .filter(|key| !matches!(*key, "test-group" | "filter"))
+            .collect();
+        if !extra.is_empty() {
+            return Err(format!(
+                "{NEXTEST_CONFIG_FILE}: an override with `test-group` also sets {extra:?}; this gate reads only `filter` and \
+                 `test-group`, so a `platform` or any other key would move binaries in or out of the group unseen \
+                 (give that setting an override of its own)"
+            ));
+        }
         let (Some(group), Some(filter)) = (
-            entry.get("test-group").and_then(toml::Value::as_str),
+            group.as_str(),
             entry.get("filter").and_then(toml::Value::as_str),
         ) else {
-            continue;
+            return Err(format!(
+                "{NEXTEST_CONFIG_FILE}: an override with `test-group` needs a string `test-group` and a string `filter`; one \
+                 without a filter applies to every test, which this gate does not read"
+            ));
         };
         let ids = filter_binary_ids(filter).map_err(|term| {
             format!(
@@ -8056,16 +8078,29 @@ fn module_declaration(item: &str) -> Option<&str> {
         .then_some(name)
 }
 
-/// The existing files that `code` (the comment-blanked text of `file`) pulls in with `mod x;` or
-/// `#[path = ".."] mod x;`. A `#[path]` is relative to the directory of the file that holds it; a plain `mod x;` is
-/// looked up the way rustc does for a crate root (`x.rs`, `x/mod.rs`) and for a module file (`<stem>/x.rs`). A module
-/// that resolves to no file is skipped: that is a compile error somewhere else.
-fn declared_module_files(file: &Path, code: &str) -> Vec<PathBuf> {
+/// What `code` (the comment-blanked text of `file`) pulls in, as `(existing files, declarations that resolve to no
+/// file)`: `mod x;`, `#[path = ".."] mod x;` and `include!("..")`. A `#[path]` and an `include!` path are relative to the
+/// directory of the file that holds them; a plain `mod x;` is looked up the way rustc does, `x.rs` and `x/mod.rs` beside
+/// a crate root or a `mod.rs`, `<stem>/x.rs` and `<stem>/x/mod.rs` beside any other module file (all four are tried
+/// whichever kind `file` is). A declaration that finds nothing, and an `include!` whose argument is not a string literal,
+/// come back unresolved: the binary's sources are then unreadable and a marker in them would go unseen.
+fn declared_module_files(file: &Path, code: &str) -> (Vec<PathBuf>, Vec<String>) {
     let dir = file.parent().unwrap_or_else(|| Path::new("."));
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let mut found = Vec::new();
+    let mut unresolved = Vec::new();
     let mut path_attr: Option<String> = None;
     for line in code.lines() {
+        if let Some((_, arg)) = line.split_once("include!(") {
+            let arg = arg.trim_start();
+            match arg.strip_prefix('"').and_then(|a| a.split_once('"')) {
+                Some((path, _)) if dir.join(path).is_file() => found.push(dir.join(path)),
+                _ => unresolved.push(format!(
+                    "include!({})",
+                    arg.split(')').next().unwrap_or("").trim()
+                )),
+            }
+        }
         let mut rest = line.trim();
         // Attributes first: a `#[path]` may share its line with the `mod x;` or sit above other attributes.
         while let Some(attr) = rest.strip_prefix("#[") {
@@ -8088,20 +8123,26 @@ fn declared_module_files(file: &Path, code: &str) -> Vec<PathBuf> {
                 dir.join(format!("{name}.rs")),
                 dir.join(name).join("mod.rs"),
                 dir.join(stem).join(format!("{name}.rs")),
+                dir.join(stem).join(name).join("mod.rs"),
             ],
         };
-        found.extend(candidates.into_iter().find(|c| c.is_file()));
+        match candidates.into_iter().find(|c| c.is_file()) {
+            Some(module) => found.push(module),
+            None => unresolved.push(format!("mod {name};")),
+        }
     }
-    found
+    (found, unresolved)
 }
 
 /// `entry` plus every file it pulls in, followed transitively (a `#[path]` module may declare modules of its own),
-/// as `(path, text with comments blanked)`, entry first. A file reached twice is read once.
-fn test_binary_sources(entry: &Path) -> Vec<(PathBuf, String)> {
+/// as `(path, text with comments blanked)`, entry first; a file reached twice is read once. The second list holds
+/// the declarations that resolve to no file, as `(declaring file, declaration)` ([`declared_module_files`]).
+fn test_binary_sources(entry: &Path) -> (Vec<(PathBuf, String)>, Vec<(PathBuf, String)>) {
     let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let mut files = vec![entry.to_path_buf()];
     let mut seen = BTreeSet::from([canonical(entry)]);
     let mut out = Vec::new();
+    let mut unresolved = Vec::new();
     let mut next = 0;
     while next < files.len() {
         let path = files[next].clone();
@@ -8110,14 +8151,16 @@ fn test_binary_sources(entry: &Path) -> Vec<(PathBuf, String)> {
             continue;
         };
         let code = code_without_comments(&text);
-        for module in declared_module_files(&path, &code) {
+        let (modules, missing) = declared_module_files(&path, &code);
+        unresolved.extend(missing.into_iter().map(|decl| (path.clone(), decl)));
+        for module in modules {
             if seen.insert(canonical(module.as_path())) {
                 files.push(module);
             }
         }
         out.push((path, code));
     }
-    out
+    (out, unresolved)
 }
 
 /// The entries of `dir`, sorted; empty when it cannot be read.
@@ -8221,9 +8264,22 @@ fn nextest_binaries(root: &Path) -> Result<Vec<NextestBinary>, String> {
             } else {
                 continue;
             };
+            let (sources, unresolved) = test_binary_sources(&entry);
+            if !unresolved.is_empty() {
+                let list = unresolved
+                    .iter()
+                    .map(|(file, decl)| format!("`{decl}` in {}", display(root, file)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "M24-7: {package}::{name} pulls in {list}, which resolve to no file (tried x.rs, x/mod.rs, <stem>/x.rs, \
+                     <stem>/x/mod.rs, the `#[path]`, a string-literal `include!`): its sources cannot be read, so a marker or \
+                     DDL statement in them would go unseen. Fix the declaration, or teach declared_module_files the form"
+                ));
+            }
             out.push(NextestBinary {
                 id: format!("{package}::{name}"),
-                sources: test_binary_sources(&entry)
+                sources: sources
                     .into_iter()
                     .map(|(file, code)| (display(root, &file), code))
                     .collect(),
@@ -8401,15 +8457,29 @@ fn shared_ddl_problems(
 /// * fail: a binary that carries a marker and is not in the `global-db` group (and not in `exempt`); a
 ///   `binary_id(..)` in a `global-db` filter that names no binary (stale); an `exempt` row whose binary is gone, carries
 ///   no marker or is now in the group (stale); a config or filter this gate cannot read;
-/// * not_applicable, naming the missing object: the config has no `global-db` override;
+/// * not_applicable, naming the missing object: the config has no `global-db` override and no binary carries a marker
+///   (with a marker somewhere, the missing override is a fail);
 /// * pass otherwise.
 fn global_db_verdict(config: &str, binaries: &[NextestBinary], exempt: &[(&str, &str)]) -> Verdict {
     let groups = match read_groups(config) {
         Ok(Some(groups)) => groups,
         Ok(None) => {
-            return Verdict::NotApplicable(format!(
-                "missing object: a [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" in {NEXTEST_CONFIG_FILE}"
-            ));
+            let carriers: Vec<&str> = binaries
+                .iter()
+                .filter(|b| !carried_markers(b).is_empty())
+                .map(|b| b.id.as_str())
+                .collect();
+            return match carriers.first() {
+                None => Verdict::NotApplicable(format!(
+                    "missing object: a [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" in {NEXTEST_CONFIG_FILE}"
+                )),
+                Some(first) => Verdict::Fail(vec![format!(
+                    "M24-7: {NEXTEST_CONFIG_FILE} has no [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" while {} \
+                     test binaries carry a cluster-global marker (first: {first}); restore the override, its absence is not \
+                     \"nothing to check\"",
+                    carriers.len()
+                )]),
+            };
         }
         Err(detail) => return Verdict::Fail(vec![detail]),
     };
@@ -8474,19 +8544,21 @@ fn m24_7_global_db_completeness(root: &Path) -> Verdict {
 
 /// M24-7 (`global-db` completeness) and M24-7b (shared-catalog DDL, [`SHARED_CATALOG_DDL`]) over the workspace at `root`
 /// with the given exemption rows. `not_applicable` only when `.config/nextest.toml` is absent or has no `global-db`
-/// override, and it names that object (§57.1 第2条); any M24-7b problem is a `Fail` whatever the first part says.
+/// override and no binary carries a marker, and it names that object (§57.1 第2条); any M24-7b problem is a `Fail`
+/// whatever the first part says.
 fn m24_7_over_tree(root: &Path, exempt: &[(&str, &str)], ddl_exempt: &[(&str, &str)]) -> Verdict {
-    let config = match fs::read_to_string(root.join(NEXTEST_CONFIG_FILE)) {
-        Ok(config) => config,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Verdict::NotApplicable(format!("missing object: {NEXTEST_CONFIG_FILE}"));
-        }
+    let (config, missing) = match fs::read_to_string(root.join(NEXTEST_CONFIG_FILE)) {
+        Ok(config) => (config, false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), true),
         Err(e) => {
             return Verdict::Fail(vec![format!("{NEXTEST_CONFIG_FILE} unreadable: {e}")]);
         }
     };
     let binaries = match nextest_binaries(root) {
         Ok(binaries) => binaries,
+        Err(_) if missing => {
+            return Verdict::NotApplicable(format!("missing object: {NEXTEST_CONFIG_FILE}"));
+        }
         Err(detail) => return Verdict::Fail(vec![detail]),
     };
     let ddl = shared_ddl_problems(
@@ -16185,7 +16257,8 @@ async fn serving_version_in_txn() {}
         m07_write(&tmp, "t/ghost.rs", "fn ghost() {}\n");
         m07_write(&tmp, "t/inline.rs", "fn inline() {}\n");
         m07_write(&tmp, "t/ghost_block.rs", "fn ghost_block() {}\n");
-        let sources = test_binary_sources(&tmp.join("t/a.rs"));
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/a.rs"));
+        assert!(unresolved.is_empty(), "{unresolved:?}");
         assert_eq!(
             m24_7_file_names(&sources),
             [
@@ -16206,8 +16279,8 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    /// A `#[path]` that is separated from its `mod` by another item belongs to nothing; a module that resolves to no
-    /// file is skipped; a file reached through two modules is read once; a cycle terminates.
+    /// A `#[path]` that is separated from its `mod` by another item belongs to nothing, so that `mod` is unresolved like
+    /// one that names no file; a file reached through two modules is read once; a cycle terminates.
     #[test]
     fn m24_7_walker_drops_a_stranded_path_and_survives_cycles() {
         let tmp = fresh_tmp("m24-7-walker-edge");
@@ -16219,8 +16292,62 @@ async fn serving_version_in_txn() {}
         );
         m07_write(&tmp, "t/support/x.rs", "fn x() {}\n");
         m07_write(&tmp, "t/support/y.rs", "#[path = \"../b.rs\"]\nmod back;\n");
-        let sources = test_binary_sources(&tmp.join("t/b.rs"));
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/b.rs"));
         assert_eq!(m24_7_file_names(&sources), ["b.rs", "y.rs"]);
+        let declared: Vec<&str> = unresolved.iter().map(|(_, decl)| decl.as_str()).collect();
+        assert_eq!(declared, ["mod x;", "mod missing;"]);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// P2 (a) of the #144 review: a nested `<dir>/<stem>/<name>/mod.rs` under a module file that is not a `mod.rs`, and
+    /// a string-literal `include!`, are followed; a `mod x;` or `include!` that finds no file, and an `include!` whose
+    /// argument is not a literal, come back unresolved with the file that declares them.
+    #[test]
+    fn m24_7_follows_nested_mod_rs_and_include_and_reports_what_it_cannot_resolve() {
+        let tmp = fresh_tmp("m24-7-resolve");
+        m07_write(
+            &tmp,
+            "t/a.rs",
+            "#[path = \"support/fx.rs\"]\nmod fx;\ninclude!(\"support/inc.rs\");\nmod missing;\n\
+             include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\ninclude!(\"support/none.rs\");\n",
+        );
+        m07_write(&tmp, "t/support/fx.rs", "mod deep;\n");
+        m07_write(&tmp, "t/support/fx/deep/mod.rs", "fn deep() {}\n");
+        m07_write(&tmp, "t/support/inc.rs", "fn inc() {}\n");
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/a.rs"));
+        assert_eq!(
+            m24_7_file_names(&sources),
+            ["a.rs", "fx.rs", "inc.rs", "mod.rs"]
+        );
+        let declared: Vec<&str> = unresolved.iter().map(|(_, decl)| decl.as_str()).collect();
+        assert_eq!(
+            declared,
+            [
+                "mod missing;",
+                "include!(concat!(env!(\"OUT_DIR\")",
+                "include!(\"support/none.rs\")"
+            ]
+        );
+        assert!(unresolved.iter().all(|(file, _)| file.ends_with("t/a.rs")));
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// P2 (a), through the tree: an unresolved `mod x;` is a `Fail` naming the binary, the declaration and its file, never
+    /// a silently shorter source list.
+    #[test]
+    fn m24_7_fails_on_a_binary_whose_module_resolves_to_no_file() {
+        let tmp = m24_7_tree(
+            "m24-7-unresolved",
+            "binary_id(pkg::b)",
+            &[("tests/b.rs", "mod gone;\nfn f() {}\n")],
+        );
+        let lines = m24_7_fail_lines(m24_7_over_tree(&tmp, &[], &[]));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("pkg::b pulls in `mod gone;` in crates/pkg/tests/b.rs"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("resolve to no file"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 
@@ -16441,6 +16568,88 @@ async fn serving_version_in_txn() {}
         let lines = m24_7_fail_lines(global_db_verdict(&m24_7_config("package(=pkg)"), &[], &[]));
         assert!(lines[0].contains("`package(=pkg)`"), "{lines:?}");
         assert!(lines[0].contains("global-db"), "{lines:?}");
+    }
+
+    /// P2 (b) of the #144 review: an override that carries `test-group` plus any key but `filter` (a `platform`, a
+    /// `retries`), or no `filter` at all, is red; an override without `test-group` is not this gate's business.
+    #[test]
+    fn m24_7_fails_on_a_test_group_override_it_cannot_fully_read() {
+        let quiet = [m24_7_binary("pkg::c", "fn f() {}")];
+        for key in ["platform", "retries", "slow-timeout"] {
+            let config = format!("{}{key} = 'x'\n", m24_7_config("binary_id(pkg::c)"));
+            let lines = m24_7_fail_lines(global_db_verdict(&config, &quiet, &[]));
+            assert_eq!(lines.len(), 1, "{key}: {lines:?}");
+            assert!(lines[0].contains(&format!("[\"{key}\"]")), "{lines:?}");
+        }
+        let no_filter = "[[profile.ci.overrides]]\ntest-group = 'global-db'\n";
+        let lines = m24_7_fail_lines(global_db_verdict(no_filter, &quiet, &[]));
+        assert!(lines[0].contains("a string `filter`"), "{lines:?}");
+        let unrelated = format!(
+            "{}[[profile.ci.overrides]]\nplatform = 'cfg(unix)'\nretries = 1\n",
+            m24_7_config("binary_id(pkg::c)")
+        );
+        assert_eq!(global_db_verdict(&unrelated, &quiet, &[]), Verdict::Pass);
+    }
+
+    /// 注错 (§80.1, r3, in process): the real config with `platform = 'cfg(windows)'` on the `global-db` override → red
+    /// naming the key. The CI record of the same fault is a `red/fix-145-r3` run.
+    #[test]
+    fn m24_7_real_config_with_a_platform_on_the_global_db_override_is_red() {
+        let real = fs::read_to_string(real_root().join(NEXTEST_CONFIG_FILE)).unwrap();
+        let injected = real.replacen(
+            "test-group = 'global-db'\n",
+            "test-group = 'global-db'\nplatform = 'cfg(windows)'\n",
+            1,
+        );
+        assert_ne!(
+            real, injected,
+            "the global-db override no longer ends its keys with test-group"
+        );
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let lines = m24_7_fail_lines(global_db_verdict(&injected, &binaries, GLOBAL_DB_EXEMPT));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("[\"platform\"]"), "{lines:?}");
+    }
+
+    /// P2 (c) of the #144 review: no `global-db` override is `not_applicable` only while no binary carries a marker; with
+    /// one, the config (or the whole file) losing the group is a `Fail`, never "nothing to check".
+    #[test]
+    fn m24_7_is_a_fail_not_na_when_the_group_is_gone_but_a_marker_is_not() {
+        let carrying = [
+            m24_7_binary("pkg::c", "fn f() { let _ = RememberCommand; }"),
+            m24_7_binary("pkg::q", "fn f() {}"),
+        ];
+        let other_group =
+            "[[profile.ci.overrides]]\nfilter = 'binary_id(pkg::c)'\ntest-group = 'serial-c'\n";
+        for config in [other_group, "[profile.ci]\nretries = 0\n", ""] {
+            let lines = m24_7_fail_lines(global_db_verdict(config, &carrying, &[]));
+            assert_eq!(lines.len(), 1, "{config:?}: {lines:?}");
+            assert!(
+                lines[0].contains("1 test binaries") && lines[0].contains("first: pkg::c"),
+                "{lines:?}"
+            );
+        }
+        let real = fs::read_to_string(real_root().join(NEXTEST_CONFIG_FILE)).unwrap();
+        let ungrouped = real.replace(
+            "test-group = 'global-db'",
+            "test-group = 'serial-not-global-db'",
+        );
+        assert_ne!(real, ungrouped);
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let lines = m24_7_fail_lines(global_db_verdict(&ungrouped, &binaries, GLOBAL_DB_EXEMPT));
+        assert!(
+            lines[0].contains("test binaries carry a cluster-global marker"),
+            "{lines:?}"
+        );
+        let tmp = m24_7_tree(
+            "m24-7-nofile",
+            "binary_id(pkg::b)",
+            &[("tests/b.rs", "fn f() { let _ = RememberCommand; }\n")],
+        );
+        fs::remove_file(tmp.join(NEXTEST_CONFIG_FILE)).unwrap();
+        let lines = m24_7_fail_lines(m24_7_over_tree(&tmp, &[], &[]));
+        assert!(lines[0].contains("first: pkg::b"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// Through the tree: a marker that reaches the binary only through a `#[path]` module counts, a marker that is
