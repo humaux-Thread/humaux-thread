@@ -11,7 +11,7 @@
 
 use std::{
     collections::BTreeSet,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
