@@ -3,7 +3,7 @@
 # and is removed in an `if: always()` step. Output = aggregate numbers only, checked by `harness.py guard` before anything is published.
 # Triggers: push to exp/e-ret-pb-* (only when a pipeline file changes AND the tip commit message carries [stage:embed] or [stage:eval])
 # and workflow_dispatch. Never pull_request / pull_request_target. HUMAUX_EVAL_PACK_KEY appears only in the `fetch` step env;
-# the DashScope key only in the `embed` step env. At most 4 runs in total (card E-RET-PB1).
+# the DashScope key only in the `embed` / `embed2` step env. At most 4 runs in total per card (E-RET-PB1, then E-RET-PB2: stages embed2 and eval2).
 name: eret-pb
 on:
   push:
@@ -12,11 +12,12 @@ on:
       - '.github/workflows/eret-pb.yml'
       - 'experiments/eret_pb/harness.py'
       - 'experiments/eret_pb/rerank.py'
+      - 'experiments/eret_pb/pb2.py'
       - 'experiments/eret_pb/requirements.txt'
   workflow_dispatch:
     inputs:
       stage:
-        description: embed or eval
+        description: embed, eval, embed2 or eval2
         required: true
         default: eval
 permissions:
@@ -31,6 +32,9 @@ env:
   # gz sha256 of the decrypted release assets (tag eval-pack-e-ret-2026-10-v1)
   QPACK_SHA256: 3d2f01ed116845195e81e0da943c30149243dbb427ee794eaf7bbfde78dd8aec
   PACK_SHA256: 757da3ff2713a4b74b44aa980d3f0c24d74961855df38aaf2c3ac27f30f2eb31
+  # PB2: gz sha256 of the full-corpus tar (corpus.v1.tar.gz) and of the query-vector variants (qvec2.json.gz), same tag
+  CORPUS_SHA256: TBD
+  QVEC2_SHA256: TBD
 jobs:
   plan:
     runs-on: ubuntu-24.04-arm
@@ -46,6 +50,8 @@ jobs:
         run: |
           stage=none
           if [ -n "$INPUT" ]; then stage="$INPUT"
+          elif printf '%s' "$MSG" | grep -qF '[stage:embed2]'; then stage=embed2
+          elif printf '%s' "$MSG" | grep -qF '[stage:eval2]'; then stage=eval2
           elif printf '%s' "$MSG" | grep -qF '[stage:embed]'; then stage=embed
           elif printf '%s' "$MSG" | grep -qF '[stage:eval]'; then stage=eval
           fi
@@ -105,6 +111,130 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$RUNNER_TEMP/qpack.json" "$RUNNER_TEMP/qvec.json" "$RUNNER_TEMP/qvec.json.gz" "$RUNNER_TEMP/k"
+
+  # ---------------------------------------------------------------- PB2 stage 1: query-vector variants (q0 compat, q1 native query, q2 native query + instruct)
+  embed2:
+    needs: plan
+    if: needs.plan.outputs.stage == 'embed2'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    environment: minimax m3
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: numpy for the selftest (pinned as in requirements.txt)
+        shell: bash
+        run: python -m pip install numpy==2.3.5
+      - name: selftest (statistics, J0, guard, fake endpoints, dense / BM25 / RRF on a fake corpus)
+        shell: bash
+        run: python experiments/eret_pb/harness.py selftest
+      - name: fetch and decrypt mini-pack
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset qpack.json.gz.enc --sha "$QPACK_SHA256" \
+            --out "$RUNNER_TEMP/qpack.json" --keyfile "$RUNNER_TEMP/k"
+      - name: embed variants
+        shell: bash
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.ALIBABA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py embed2 --qpack "$RUNNER_TEMP/qpack.json" --out "$RUNNER_TEMP/qvec2.json"
+      - name: seal vectors with the pack key
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [ -f "$RUNNER_TEMP/qvec2.json" ] || { echo "no vectors produced"; exit 0; }
+          mkdir -p qvec2-enc
+          gzip -9 -c "$RUNNER_TEMP/qvec2.json" > "$RUNNER_TEMP/qvec2.json.gz"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" \
+            -in "$RUNNER_TEMP/qvec2.json.gz" -out qvec2-enc/qvec2.json.gz.enc
+          sha256sum "$RUNNER_TEMP/qvec2.json.gz" | cut -d' ' -f1 | sed 's/^/qvec2 gz sha256: /'
+          ls -l qvec2-enc | tail -1 | awk '{print "ciphertext bytes: " $5}'
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: qvec2-enc
+          path: qvec2-enc/qvec2.json.gz.enc
+          retention-days: 3
+          if-no-files-found: warn
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/qpack.json" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/qvec2.json.gz" "$RUNNER_TEMP/k"
+
+  # ---------------------------------------------------------------- PB2 stage 3: full-corpus eval (dense variants, BM25, RRF, one rerank arm)
+  eval2:
+    needs: plan
+    if: needs.plan.outputs.stage == 'eval2'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4.2.4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.arch }}-${{ hashFiles('experiments/eret_pb/requirements.txt') }}
+      - uses: actions/cache@v4.2.4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-bge-reranker-base-2cfc18c9415c912f9d8155881c133215df768a70-${{ hashFiles('experiments/eret_pb/requirements.txt') }}
+      - name: install pinned deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
+      - name: selftest
+        shell: bash
+        run: python experiments/eret_pb/harness.py selftest
+      - name: fetch and decrypt corpus and query vectors
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset corpus.v1.tar.gz.enc --sha "$CORPUS_SHA256" --out "$RUNNER_TEMP/corpus.tar"
+          python experiments/eret_pb/harness.py fetch --asset qvec2.json.gz.enc --sha "$QVEC2_SHA256" --out "$RUNNER_TEMP/qvec2.json"
+      - name: eval (dense variants, BM25, RRF, rerank)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python experiments/eret_pb/harness.py eval2 --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" \
+            --out out/eret-pb2-results.json --summary out/pb2.md --repo BAAI/bge-reranker-base --rev 2cfc18c9415c912f9d8155881c133215df768a70
+      - name: guard
+        id: guard
+        if: always() && hashFiles('out/eret-pb2-results.json') != ''
+        shell: bash
+        run: python experiments/eret_pb/harness.py guard2 --corpus "$RUNNER_TEMP/corpus.tar" --files out/eret-pb2-results.json out/pb2.md
+      - name: publish summary
+        if: always() && steps.guard.outcome == 'success'
+        shell: bash
+        run: cat out/pb2.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.guard.outcome == 'success'
+        with:
+          name: eret-pb2-results
+          path: out/eret-pb2-results.json
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/corpus.tar" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/ort"
 
   # ---------------------------------------------------------------- stage 3: eval
   j0:

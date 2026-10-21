@@ -9,6 +9,9 @@ Subcommands (stdlib only, except `rerank` which imports rerank.py and needs torc
   aggregate merge the part files of all jobs into one results file
   guard     fail if any 12-character window of any corpus text appears in the given output files
   selftest  statistics + J0 + guard on a fake pack (runs in CI before any real data is touched)
+  embed2    PB2 stage 1: query-vector variants q0 / q1 / q2 and the compat text_type probe (pb2.py)
+  eval2     PB2 stage 3: dense variants, BM25, RRF and the rerank arm on the full corpus (pb2.py)
+  guard2    like guard, against the PB2 corpus tar
 
 Privacy: the plaintext pack is corpus text. Nothing here prints, logs or writes it: output is counts, rates, intervals, b/c/p,
 latencies. Exceptions are reported by class and source line only. Per-question results never leave the job that computed them
@@ -157,8 +160,8 @@ STAGES = (("reachable", lambda r: r["reach"]),
           ("top5_at_depth_25", lambda r: r["rank"] is not None and r["rank"] <= 5))
 
 
-def j0(pack: dict) -> dict:
-    an = analyse(pack)
+def j0(pack: dict, an: list | None = None) -> dict:
+    an = analyse(pack) if an is None else an  # PB2 passes its own per-question records
     out = {"stages": {}, "conversion": {}, "reachable_only": {}, "pool25_vs_pool100": {}, "counters": {}}
     for split in ("all",) + TYPES:
         rs = [r for r in an if split == "all" or r["type"] == split]
@@ -332,17 +335,30 @@ class ApiError(SystemExit):
     pass
 
 
+class ApiHttp(Exception):
+    """A non-retryable 4xx answer, raised only when the caller asked for soft errors (PB2 probes and optional variants)."""
+
+    def __init__(self, http, code):
+        super().__init__(f"http={http} code={code}")
+        self.http, self.code = http, code
+
+
 class ModelUnsupported(Exception):
     """HTTP 404 model_not_supported: this endpoint does not serve the model. A reason to try the next candidate, not to stop."""
 
 
-def api_embed(model: str, kind: str, texts: list[str], key: str, scrub: list[str], urls: dict) -> list[list[float]]:
+def api_embed(model: str, kind: str, texts: list[str], key: str, scrub: list[str], urls: dict, extra: dict | None = None,
+              soft: bool = False) -> list[list[float]]:
     """One embeddings call. compat = OpenAI-compatible body, native = multimodal-embedding body (independent embedding per text, no
     instruction, dimension 1024; the old code applies no prefix or instruction either). 5xx and 429 are retried with backoff (429
     twice only). 404 model_not_supported raises ModelUnsupported; any other 4xx (auth, Arrearage, quota, bad request) stops the job
-    and prints the raw status and error code: those are the owner's to settle."""
+    and prints the raw status and error code: those are the owner's to settle. PB2 adds kind "text" (native text-embedding API:
+    input.texts, parameters incl. `extra`), `extra` (compat: extra body fields) and soft=True (a non-retryable 4xx raises ApiHttp
+    instead of stopping the job)."""
     if kind == "compat":
-        body = {"model": model, "input": texts, "dimensions": DIM, "encoding_format": "float"}
+        body = {"model": model, "input": texts, "dimensions": DIM, "encoding_format": "float", **(extra or {})}
+    elif kind == "text":
+        body = {"model": model, "input": {"texts": texts}, "parameters": {"dimension": DIM, "output_type": "dense", **(extra or {})}}
     else:
         body = {"model": model, "input": {"contents": [{"text": t} for t in texts]}, "parameters": {"dimension": DIM}}
     raw_body = json.dumps(body).encode()
@@ -352,7 +368,7 @@ def api_embed(model: str, kind: str, texts: list[str], key: str, scrub: list[str
             with urllib.request.urlopen(req, timeout=120) as r:
                 j = json.loads(r.read())
             data = j["data"] if kind == "compat" else j["output"]["embeddings"]
-            return [d["embedding"] for d in sorted(data, key=lambda d: d["index"])]
+            return [d["embedding"] for d in sorted(data, key=lambda d: d["index"] if "index" in d else d["text_index"])]
         except urllib.error.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
             try:
@@ -371,6 +387,8 @@ def api_embed(model: str, kind: str, texts: list[str], key: str, scrub: list[str
                 if attempt < 3:
                     time.sleep(5 * 4**attempt)
                     continue
+            if soft and e.code < 500 and e.code != 429:
+                raise ApiHttp(e.code, code)
             raise ApiError(3)
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             print(f"API_NETWORK_ERROR {type(e).__name__} attempt={attempt + 1}", flush=True)
@@ -423,7 +441,7 @@ def static_strings(out_files: list[str], extra: list[str]) -> set[str]:
     the code-made identifiers in the results (job key, arm names, model pins, `env` / `model` / `manifest` blocks). They are exempt from the window check, so a label that happens to occur in the
     corpus (model names, table headers) cannot fail the guard."""
     s = set(extra)
-    for p in (Path(__file__), Path(__file__).with_name("rerank.py")):
+    for p in (Path(__file__), Path(__file__).with_name("rerank.py"), Path(__file__).with_name("pb2.py")):
         if p.exists():
             s.update(n.value for n in ast.walk(ast.parse(p.read_text())) if isinstance(n, ast.Constant) and isinstance(n.value, str))
     def walk(j):  # code-made identifiers in the results: job key, arm name, kind, model pin; env / model blocks as a whole
@@ -492,7 +510,8 @@ def _fakevec(text: str) -> list[float]:
 
 
 def _fake_endpoint(mode: str):
-    """Local stand-in for the embeddings endpoint: deterministic vectors per text, or a 400 Arrearage answer."""
+    """Local stand-in for the embeddings endpoints: deterministic vectors per text (the text-embedding kind folds text_type and
+    instruct into the vector), a 400 Arrearage answer, or a compat endpoint that rejects the extra field text_type."""
     import http.server
     import threading
 
@@ -500,16 +519,26 @@ def _fake_endpoint(mode: str):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             native = self.path.endswith("multimodal-embedding")
-            texts = [c["text"] for c in body["input"]["contents"]] if native else body["input"]
+            text = self.path.endswith("text-embedding/text-embedding")
+            texts = [c["text"] for c in body["input"]["contents"]] if native else (body["input"]["texts"] if text else body["input"])
             if native:
                 assert body["parameters"] == {"dimension": DIM} and body["model"] == "qwen3-vl-embedding", body
             if mode == "arrears":
                 out, code = {"code": "Arrearage", "message": "Access denied, account is in arrears"}, 400
-            elif mode == "native_only" and not native:
+            elif mode == "native_only" and not (native or text):
                 out, code = {"error": {"code": "model_not_supported", "message": "Unsupported model for OpenAI compatibility mode."}}, 404
                 out = {"code": "model_not_supported", "message": out["error"]["message"]}
+            elif mode == "compat_strict" and not (native or text) and "text_type" in body:
+                out, code = {"error": {"code": "invalid_parameter_error", "message": "Unknown field text_type"}}, 400
+            elif mode == "no_instruct" and text and "instruct" in body["parameters"]:
+                out, code = {"code": "InvalidParameter", "message": "instruct is not supported"}, 400
             elif native:
                 out, code = {"output": {"embeddings": [{"index": i, "embedding": _fakevec(t), "type": "vl"} for i, t in enumerate(texts)]}}, 200
+            elif text:
+                pr = body["parameters"]
+                assert pr["dimension"] == DIM and pr["output_type"] == "dense" and body["model"] == "text-embedding-v4", body
+                out, code = {"output": {"embeddings": [{"text_index": i, "embedding": _fakevec(t + "|" + pr.get("text_type", "document") + "|" + pr.get("instruct", ""))}
+                                                       for i, t in reversed(list(enumerate(texts)))]}}, 200  # reversed: the client must sort by text_index
             else:
                 out, code = {"data": [{"index": i, "embedding": _fakevec(t)} for i, t in enumerate(texts)]}, 200
             raw = json.dumps(out).encode()
@@ -525,7 +554,8 @@ def _fake_endpoint(mode: str):
     srv = http.server.HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
-    return srv, {"compat": base + "/compatible-mode/v1/embeddings", "native": base + "/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"}
+    return srv, {"compat": base + "/compatible-mode/v1/embeddings", "native": base + "/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding",
+                 "text": base + "/api/v1/services/embeddings/text-embedding/text-embedding"}
 
 
 def selftest(_a=None):
@@ -599,8 +629,42 @@ def selftest(_a=None):
         except SystemExit as e:
             assert e.code == 3, e.code
         srv.shutdown()
+        # PB2 stage 1 against the fake endpoints: q1 / q2 differ from q0 and from each other, compat refusing text_type is recorded,
+        # an endpoint that rejects `instruct` leaves q1 and no q2 (and the run ends red with code 4, artifact still written)
+        import pb2
+        qp["sanity"] = [{"text": t, "vector": _fakevec(t)} for t in ("san one", "san two", "san three")]
+        (tmp / "qp.json").write_text(json.dumps(qp))
+        ns2 = argparse.Namespace(qpack=str(tmp / "qp.json"), out=str(tmp / "qv2.json"))
+        srv, url = _fake_endpoint("compat_strict")
+        pb2.embed_variants(ns2, url)
+        q2 = json.loads((tmp / "qv2.json").read_text())
+        v, mt = q2["variants"], q2["meta"]
+        assert sorted(v) == ["q0", "q1", "q2"] and all(len(x) == 23 for x in v.values()) and mt["calls"] == {"q0": 3, "compat_text_type_probe": 1, "q1": 3, "q2": 3}, mt
+        assert mt["compat_text_type"] == {"http": 400, "code": "invalid_parameter_error"} and mt["cos_q0_q1"]["identical_ge_0.999999"] == 0
+        assert v["q0"]["q0"] == _fakevec("fake query number 0") and v["q1"]["q0"] == _fakevec("fake query number 0|query|")
+        assert v["q2"]["q5"] == _fakevec("fake query number 5|query|" + pb2.INSTRUCT)
+        srv.shutdown()
+        srv, url = _fake_endpoint("no_instruct")
+        try:
+            pb2.embed_variants(ns2, url)
+            raise AssertionError("missing q2 not flagged")
+        except SystemExit as e:
+            assert e.code == 4, e.code
+        q2 = json.loads((tmp / "qv2.json").read_text())
+        assert sorted(q2["variants"]) == ["q0", "q1"] and q2["meta"]["status"]["q2"] == {"http": 400, "code": "InvalidParameter"}, q2["meta"]
+        assert q2["meta"]["compat_text_type"]["http"] == 200 and len(q2["meta"]["compat_text_type"]["cos_vs_q0"]) == 2  # fake compat ignores text_type
+        srv.shutdown()
+        srv, url = _fake_endpoint("arrears")
+        try:
+            pb2.embed_variants(ns2, url)
+            raise AssertionError("Arrearage not detected")
+        except SystemExit as e:
+            assert e.code == 3, e.code
+        srv.shutdown()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    import pb2
+    pb2.selftest()
     print("selftest ok")
 
 
@@ -630,6 +694,17 @@ def main():
     g.add_argument("--pack", required=True)
     g.add_argument("--files", nargs="+", required=True)
     g.add_argument("--static", nargs="*")
+    e2 = sp.add_parser("embed2")
+    e2.add_argument("--qpack", required=True)
+    e2.add_argument("--out", required=True)
+    v2 = sp.add_parser("eval2")
+    for k in ("corpus", "qvec", "out", "summary", "repo", "rev"):
+        v2.add_argument("--" + k, required=True)
+    v2.add_argument("--no-rerank", action="store_true")
+    g2 = sp.add_parser("guard2")
+    g2.add_argument("--corpus", required=True)
+    g2.add_argument("--files", nargs="+", required=True)
+    g2.add_argument("--static", nargs="*")
     sp.add_parser("selftest")
     a = ap.parse_args()
     try:
@@ -647,6 +722,15 @@ def main():
             aggregate(a)
         elif a.cmd == "guard":
             guard(a)
+        elif a.cmd == "embed2":
+            import pb2
+            pb2.embed_variants(a)
+        elif a.cmd == "eval2":
+            import pb2
+            pb2.eval2(a)
+        elif a.cmd == "guard2":
+            import pb2
+            pb2.guard2(a)
         else:
             selftest()
     except SystemExit:
