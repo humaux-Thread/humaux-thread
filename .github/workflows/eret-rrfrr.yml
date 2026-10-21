@@ -1,0 +1,151 @@
+# E-RET-PB6: DashScope cloud rerank (gte-rerank-v2, qwen3-rerank) and PB3's local int8 arm on the hybrid RRF pool of E-RET-5f (PB5), from the same
+# ENCRYPTED full-corpus snapshot. Experiment branch only (exp/e-ret-pb-rrf-rerank*); never merged. The Qdrant is a CI-local service container.
+# Plaintext corpus exists only in $RUNNER_TEMP (umask 077) and is removed in an `if: always()` step. The corpus goes to DashScope only from the
+# `cloud arms` step (owner asked for the cloud rerank test, 2026-10-21; environment `minimax m3`); ALIBABA_CLOUD_API_KEY appears only in that
+# step's env, HUMAUX_EVAL_PACK_KEY only in the fetch step's env. Output = aggregate numbers only, checked by `rrf_rerank.py guard` before anything
+# is published. Triggers: push to exp/e-ret-pb-rrf-rerank* when the tip commit message carries [run:pool] (everything except the cloud arms) or
+# [run:cloud] (everything), and workflow_dispatch (everything). A fix push without [run:cloud] must not re-send the corpus to DashScope.
+# Never pull_request / pull_request_target. At most 2 runs for this card.
+name: eret-rrfrr
+on:
+  push:
+    branches: ['exp/e-ret-pb-rrf-rerank*']
+    paths:
+      - '.github/workflows/eret-rrfrr.yml'
+      - 'experiments/eret_pb/rrf_rerank.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: eret-rrfrr
+  cancel-in-progress: false
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '4'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  QDRANT_URL: http://127.0.0.1:6333
+  # gz sha256 of the full-corpus tar (corpus.v1.tar.gz) and of the query-vector variants (qvec2.json.gz), tag eval-pack-e-ret-2026-10-v1 (as eret-qdrant.yml)
+  CORPUS_SHA256: 1e8158d43afd0403e8aec838eb488ed54ca6267c944b3e458b5bdcc725c00a52
+  QVEC2_SHA256: 6e7b7135cf4916b6120b9468b280269c0d656994075a9014afd276af01981e2c
+jobs:
+  rrfrr:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[run:pool]') ||
+      contains(github.event.head_commit.message, '[run:cloud]')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    environment: minimax m3
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.0
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: install pinned deps (as the PB4 ref job)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only, read-only token); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
+      - name: selftests (this experiment against PB4's cloud client and a fake endpoint, PB5's Qdrant helpers; fake data, no secret)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/eret_pb/rrf_rerank.py selftest
+          python experiments/eret_pb/qdrant_sparse.py selftest
+      - name: smoke (fake corpus against the live Qdrant service; picks the vector layout, then the whole pool -> cloud -> comparison path on toy data)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/eret_pb/qdrant_sparse.py smoke --out "$RUNNER_TEMP/smoke.json"
+          python experiments/eret_pb/rrf_rerank.py smoke --smoke "$RUNNER_TEMP/smoke.json"
+      - name: fetch and decrypt corpus and query vectors
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset corpus.v1.tar.gz.enc --sha "$CORPUS_SHA256" --out "$RUNNER_TEMP/corpus.tar" --keyfile "$RUNNER_TEMP/k"
+          python experiments/eret_pb/harness.py fetch --asset qvec2.json.gz.enc --sha "$QVEC2_SHA256" --out "$RUNNER_TEMP/qvec2.json"
+      - name: stage 1, the RRF pool (reproduction gate RRF hit@5 96 and pool@25 147 vs PB5; a mismatch stops here)
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          python experiments/eret_pb/rrf_rerank.py pools --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" --smoke "$RUNNER_TEMP/smoke.json" \
+            --out "$RUNNER_TEMP/pools.json" --agg out/pools.json --summary out/pools.md
+      - name: stage 2, int8 L512 on the RRF pool (PB3's recompute recipe)
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/rrf_rerank.py int8 --pools "$RUNNER_TEMP/pools.json" --bits "$RUNNER_TEMP/int8-bits.json" --agg out/int8.json --summary out/int8.md
+      - name: runner to endpoint round trip (unauthenticated, no key)
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run:cloud]')
+        continue-on-error: true
+        shell: bash
+        run: python experiments/eret_pb/cloud_rerank.py rtt --out out/rtt.json
+      - name: stage 3, cloud arms and every comparison (3 arms x 198 calls)
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run:cloud]')
+        timeout-minutes: 40
+        shell: bash
+        env:
+          ALIBABA_CLOUD_API_KEY: ${{ secrets.ALIBABA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          rtt=""
+          if [ -f out/rtt.json ]; then rtt="--rtt out/rtt.json"; fi
+          # --max-tokens is a tripwire per arm (list price 0.5-0.8 CNY per million tokens); the card caps calls (198 per arm)
+          python experiments/eret_pb/rrf_rerank.py cloud --pools "$RUNNER_TEMP/pools.json" --int8 "$RUNNER_TEMP/int8-bits.json" $rtt \
+            --out out/cloud.json --summary out/cloud.md --max-tokens 20000000
+      - name: seal raw results with the pack key (a guard false positive must not lose the run; the public artifact below stays guard-gated)
+        if: always() && hashFiles('out/*') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p sealed
+          tar -C out -czf "$RUNNER_TEMP/results.tgz" .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" -in "$RUNNER_TEMP/results.tgz" -out sealed/eret-rrfrr-results.tgz.enc
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && hashFiles('sealed/eret-rrfrr-results.tgz.enc') != ''
+        with:
+          name: eret-rrfrr-results-enc
+          path: sealed/eret-rrfrr-results.tgz.enc
+          retention-days: 3
+      - name: guard
+        id: guard
+        if: always() && hashFiles('out/*.json') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          python experiments/eret_pb/rrf_rerank.py guard --corpus "$RUNNER_TEMP/corpus.tar" --files out/*.json out/*.md
+      - name: publish summary
+        if: always() && steps.guard.outcome == 'success'
+        shell: bash
+        run: |
+          for f in out/pools.md out/int8.md out/cloud.md; do
+            if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.guard.outcome == 'success'
+        with:
+          name: eret-rrfrr-results
+          path: out/*.json
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/corpus.tar" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/k" "$RUNNER_TEMP/results.tgz" "$RUNNER_TEMP/smoke.json" "$RUNNER_TEMP/pools.json" "$RUNNER_TEMP/int8-bits.json" "$RUNNER_TEMP/ort" out sealed
