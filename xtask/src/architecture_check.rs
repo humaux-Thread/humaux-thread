@@ -8134,10 +8134,16 @@ fn declared_module_files(file: &Path, code: &str) -> (Vec<PathBuf>, Vec<String>)
     (found, unresolved)
 }
 
+/// `(path, text with comments blanked)` of each source file of a test binary.
+type CodeFiles = Vec<(PathBuf, String)>;
+
+/// `(declaring file, declaration)` of each `mod x;` / `include!` that resolves to no file.
+type Unresolved = Vec<(PathBuf, String)>;
+
 /// `entry` plus every file it pulls in, followed transitively (a `#[path]` module may declare modules of its own),
 /// as `(path, text with comments blanked)`, entry first; a file reached twice is read once. The second list holds
 /// the declarations that resolve to no file, as `(declaring file, declaration)` ([`declared_module_files`]).
-fn test_binary_sources(entry: &Path) -> (Vec<(PathBuf, String)>, Vec<(PathBuf, String)>) {
+fn test_binary_sources(entry: &Path) -> (CodeFiles, Unresolved) {
     let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let mut files = vec![entry.to_path_buf()];
     let mut seen = BTreeSet::from([canonical(entry)]);
