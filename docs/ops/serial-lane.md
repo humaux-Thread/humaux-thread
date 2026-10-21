@@ -69,6 +69,7 @@ where an oracle that reads a *global* queue or a global profile table belongs �
 isolated by a fixture, only by a database nobody else has written — and it is the one resource
 provisioned once per **target** rather than once per group, because a global scan is not isolated
 from the target that ran before it in its own group.
+A test that runs DDL on the shared catalog (`RENAME`/`ADD`/`DROP COLUMN`, `ALTER ROLE`/`SYSTEM`/`DATABASE`, `LOCK TABLE … ACCESS EXCLUSIVE`) belongs here too: `cargo xtask architecture-check` (M24-7b, #145) is red for such a statement outside a `lane(a:disposable)` test unless its binary is a row of `SHARED_CATALOG_DDL_EXEMPT`.
 
 ## Running it
 

@@ -6,7 +6,7 @@
 //!   HUMAUX_PUBLIC_PROVENANCE_FAULT_DB, HUMAUX_REQUIRE_DB, HUMAUX_RETRIEVAL_WORKER_PG_DSN,
 //!   HUMAUX_SERIAL_LANE_WARM_SECS, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[xtask::migrate]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::architecture_check, xtask::main]
 //! Invariants: [every #[ignore] carries lane(a|b|c) in its reason and an ignored test without one reds the gate;
 //!   lane(a) resources are provisioned before the run; a missing dependency is a failure under HUMAUX_REQUIRE_DB,
 //!   never a SKIP; every database the lane created is dropped when its group ends (also on a red test or a panic),
@@ -259,6 +259,18 @@ fn inventory(root: &Path) -> (Vec<Entry>, Vec<Defect>) {
         }
     }
     (entries, defects)
+}
+
+/// `(file relative to root, 1-based line)` of every `#[ignore = "lane(a:disposable) …"]` under `root`: the tests
+/// that run on a per-target database no other test binary writes. The one view of [`inventory`] that
+/// `architecture-check` (M24-7b, §79 / #145) reads, so the gate and the lane share a single walker.
+pub(crate) fn disposable_ignores(root: &Path) -> Vec<(String, usize)> {
+    inventory(root)
+        .0
+        .into_iter()
+        .filter(|e| e.disposition == Disposition::Provisioned(Resource::Disposable))
+        .map(|e| (e.file.to_string_lossy().into_owned(), e.line))
+        .collect()
 }
 
 /// Read one `#[ignore]` attribute at 1-based `line` into an [`Entry`], or say what is wrong
