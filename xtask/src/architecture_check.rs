@@ -7752,6 +7752,506 @@ fn w2_continuity_gate(root: &Path) -> Verdict {
     )
 }
 
+// ============================================================================
+// M24-7 / G-M24-7 (§79, #101): a test binary that touches cluster-global DB state is in nextest's `global-db` group
+// ============================================================================
+
+/// The nextest config the completeness gate reads. §79: nextest runs test binaries in parallel, so a binary that
+/// shares cluster-global DB state is only safe inside a `max-threads = 1` test group.
+const NEXTEST_CONFIG_FILE: &str = ".config/nextest.toml";
+
+/// The one nextest test group that serialises every binary touching cluster-global DB state.
+const GLOBAL_DB_GROUP: &str = "global-db";
+
+/// Closed list of literal markers of cluster-global DB state, `(marker, why it is shared)`. A test binary whose
+/// sources (its test file plus every module it pulls in) contain one must be in [`GLOBAL_DB_GROUP`] or be listed in
+/// [`GLOBAL_DB_EXEMPT`].
+///
+/// Derived from the header of `.config/nextest.toml` (provider slots, the outbox-to-job triggers, the claim of derived
+/// jobs, the fixtures whose teardown toggles triggers) and from what the binaries already in the group reference.
+/// `ops.jobs` is deliberately not a marker: 21 binaries name it only in a tenant-scoped teardown DELETE, which shares
+/// nothing; the derived-job mechanism is marked through the job types, the claim functions and the outbox event that
+/// enqueues it. Whole-line and trailing `//` comments and `/* */` blocks never count (a module header lists tables).
+// ponytail: substring match on code text, not a call graph. A binary that reaches a marker only through a helper
+// outside its `mod`/`#[path]` closure is invisible; upgrade = template database per test binary (M24-7a/7b), after
+// which the group itself goes away.
+const GLOBAL_DB_MARKERS: &[(&str, &str)] = &[
+    (
+        "provider_slots",
+        "the four provider slots are global rows: a test that binds, resets or counts them sees every other binary's claims (§67.2)",
+    ),
+    (
+        "dispatch_fence",
+        "the private-worker fixture that releases and asserts every provider slot",
+    ),
+    (
+        "operation_receipt_fixture",
+        "the shared-database fixture: it seeds tenants through remember.put and its teardown toggles triggers on shared tables",
+    ),
+    (
+        "continuity_0137_fixture",
+        "seeds shared-database continuity projects through EVIDENCE_ACCEPTED outbox rows and deletes the jobs they enqueue",
+    ),
+    (
+        "remember.put",
+        "the remember operation writes an EVIDENCE_ACCEPTED outbox row",
+    ),
+    (
+        "RememberCommand",
+        "a direct call of the remember write path writes the same outbox row",
+    ),
+    (
+        "EVIDENCE_ACCEPTED",
+        "the outbox event whose 0164/0235 trigger enqueues a DERIVED_DISTILL job and whose 0190 trigger admits the tenant to distill_tenant_scheduler",
+    ),
+    (
+        "DERIVED_DISTILL",
+        "a derived job that the cross-tenant claim of any other binary can serve",
+    ),
+    (
+        "DERIVED_CONSOLIDATE",
+        "a derived job that the cross-tenant claim of any other binary can serve",
+    ),
+    (
+        "DerivedJobType",
+        "the typed enqueue and claim of derived jobs",
+    ),
+    (
+        "claim_distill",
+        "the fair-share claim across every tenant's DERIVED_DISTILL jobs and the four provider slots",
+    ),
+    (
+        "claim_derived_work",
+        "the cross-tenant claim of derived jobs, distill and consolidation (claim_derived_work_consolidation is the consolidation worker's entry)",
+    ),
+    (
+        "distill_tenant_scheduler",
+        "the scheduler rows the fair-share claim serves; a tenant admitted concurrently is not fenced (#101)",
+    ),
+    (
+        "DISABLE TRIGGER",
+        "a teardown that switches a trigger off on a shared table (the audit and continuity append-only guards) for every other binary",
+    ),
+];
+
+/// Test binaries that carry a marker yet are safe outside [`GLOBAL_DB_GROUP`], `(nextest binary id, why)`. The reason
+/// names the mechanism, not the intent: every one of these opens only a database it created itself. A row whose binary
+/// no longer exists, no longer carries a marker or is now in the group is red (stale), so the list cannot outlive its
+/// reasons.
+const GLOBAL_DB_EXEMPT: &[(&str, &str)] = &[
+    (
+        "humaux-adapters::rebuild",
+        "every fixture (S1Fixture, S2Fixture, S3Fixture, S1Contract) creates its own throwaway database with throwaway_db::create and connects only to it",
+    ),
+    (
+        "humaux-admin::probes",
+        "its fixture runs CREATE DATABASE per test and every connection of the test goes to that database",
+    ),
+    (
+        "humaux-maintenance::drill",
+        "every test opens a throwaway database or a scratch container cluster (throwaway::db, Handle::in_throwaway_at), never the shared one",
+    ),
+    (
+        "humaux-maintenance::measure",
+        "every test opens a throwaway database or a scratch container cluster (throwaway::db, Handle::in_throwaway_at), never the shared one",
+    ),
+    (
+        "humaux-maintenance::onboarding",
+        "fixture() runs CREATE DATABASE per test and connects only to it",
+    ),
+    (
+        "humaux-maintenance::partitions",
+        "every test migrates and uses a throwaway database (throwaway::db, throwaway::db_through), so its trigger toggles act on that database only",
+    ),
+];
+
+/// One nextest test binary: its id as `binary_id(..)` names it, and the code it is built from as `(display path,
+/// text with comments blanked)`. A library's or binary's own unit-test binary has no sources: its code is the
+/// crate's production code, which holds the markers by design.
+struct NextestBinary {
+    id: String,
+    sources: Vec<(String, String)>,
+}
+
+/// What `profile.ci.overrides` of the nextest config says about test groups.
+struct GroupMembership {
+    /// Binary id -> the test group of the first override that selects it (nextest takes the first matching override
+    /// per setting, so a binary named by an earlier group is not in a later one).
+    group_of: BTreeMap<String, String>,
+    /// The ids named by the `global-db` overrides' filters, in file order.
+    global_db_ids: Vec<String>,
+}
+
+/// The names a filterset selects, for the one shape this gate reads: `binary_id(<name>)` terms joined by `|`. `name`
+/// is a literal (nextest's default matcher for `binary_id` is a glob, and a name without glob characters is exact).
+/// `Err` carries the first term of any other shape, so a filter this parser cannot read is red, never silently
+/// treated as empty.
+fn filter_binary_ids(filter: &str) -> Result<Vec<String>, String> {
+    filter
+        .split('|')
+        .map(|term| {
+            let term = term.trim();
+            term.strip_prefix("binary_id(")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.bytes().all(|b| {
+                            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'/')
+                        })
+                })
+                .map(str::to_owned)
+                .ok_or_else(|| term.to_owned())
+        })
+        .collect()
+}
+
+/// The group membership in `config`. `Ok(None)` when no override puts anything in [`GLOBAL_DB_GROUP`]; `Err` is the
+/// `Fail` detail for a config that is not TOML or has a filter this gate cannot read.
+fn read_groups(config: &str) -> Result<Option<GroupMembership>, String> {
+    let doc: toml::Value = toml::from_str(config)
+        .map_err(|e| format!("{NEXTEST_CONFIG_FILE} is not valid TOML: {e}"))?;
+    let overrides = doc
+        .get("profile")
+        .and_then(|p| p.get("ci"))
+        .and_then(|c| c.get("overrides"))
+        .and_then(toml::Value::as_array);
+    let mut groups = GroupMembership {
+        group_of: BTreeMap::new(),
+        global_db_ids: Vec::new(),
+    };
+    let mut has_global_db = false;
+    for entry in overrides.into_iter().flatten() {
+        let (Some(group), Some(filter)) = (
+            entry.get("test-group").and_then(toml::Value::as_str),
+            entry.get("filter").and_then(toml::Value::as_str),
+        ) else {
+            continue;
+        };
+        let ids = filter_binary_ids(filter).map_err(|term| {
+            format!(
+                "{NEXTEST_CONFIG_FILE}: the `{group}` override has a filter term this gate does not read: `{term}` \
+                 (only `binary_id(<literal name>)` terms joined by `|`; teach filter_binary_ids the new form before using it)"
+            )
+        })?;
+        has_global_db |= group == GLOBAL_DB_GROUP;
+        for id in ids {
+            if group == GLOBAL_DB_GROUP {
+                groups.global_db_ids.push(id.clone());
+            }
+            groups
+                .group_of
+                .entry(id)
+                .or_insert_with(|| group.to_owned());
+        }
+    }
+    Ok(has_global_db.then_some(groups))
+}
+
+/// The value of a `path = ".."` attribute body (what sits between `#[` and `]`).
+fn path_attribute_value(attr: &str) -> Option<&str> {
+    let value = attr
+        .trim()
+        .strip_prefix("path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start()
+        .strip_prefix('"')?;
+    value.split_once('"').map(|(path, _)| path)
+}
+
+/// The module name of a `mod name;` item (any visibility), `None` for every other line, inline `mod name { .. }` included.
+fn module_declaration(item: &str) -> Option<&str> {
+    let mut rest = item.trim_start();
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        rest = after_pub.trim_start();
+        if rest.starts_with('(') {
+            rest = rest[rest.find(')')? + 1..].trim_start();
+        }
+    }
+    let name = rest.strip_prefix("mod ")?.trim().strip_suffix(';')?.trim();
+    (!name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then_some(name)
+}
+
+/// The existing files that `code` (the comment-blanked text of `file`) pulls in with `mod x;` or
+/// `#[path = ".."] mod x;`. A `#[path]` is relative to the directory of the file that holds it; a plain `mod x;` is
+/// looked up the way rustc does for a crate root (`x.rs`, `x/mod.rs`) and for a module file (`<stem>/x.rs`). A module
+/// that resolves to no file is skipped: that is a compile error somewhere else.
+fn declared_module_files(file: &Path, code: &str) -> Vec<PathBuf> {
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let mut found = Vec::new();
+    let mut path_attr: Option<String> = None;
+    for line in code.lines() {
+        let mut rest = line.trim();
+        // Attributes first: a `#[path]` may share its line with the `mod x;` or sit above other attributes.
+        while let Some(attr) = rest.strip_prefix("#[") {
+            let Some(end) = attr.find(']') else { break };
+            if let Some(value) = path_attribute_value(&attr[..end]) {
+                path_attr = Some(value.to_owned());
+            }
+            rest = attr[end + 1..].trim_start();
+        }
+        if rest.is_empty() {
+            continue;
+        }
+        let Some(name) = module_declaration(rest) else {
+            path_attr = None;
+            continue;
+        };
+        let candidates = match path_attr.take() {
+            Some(path) => vec![dir.join(path)],
+            None => vec![
+                dir.join(format!("{name}.rs")),
+                dir.join(name).join("mod.rs"),
+                dir.join(stem).join(format!("{name}.rs")),
+            ],
+        };
+        found.extend(candidates.into_iter().find(|c| c.is_file()));
+    }
+    found
+}
+
+/// `entry` plus every file it pulls in, followed transitively (a `#[path]` module may declare modules of its own),
+/// as `(path, text with comments blanked)`, entry first. A file reached twice is read once.
+fn test_binary_sources(entry: &Path) -> Vec<(PathBuf, String)> {
+    let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut files = vec![entry.to_path_buf()];
+    let mut seen = BTreeSet::from([canonical(entry)]);
+    let mut out = Vec::new();
+    let mut next = 0;
+    while next < files.len() {
+        let path = files[next].clone();
+        next += 1;
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let code = code_without_comments(&text);
+        for module in declared_module_files(&path, &code) {
+            if seen.insert(canonical(module.as_path())) {
+                files.push(module);
+            }
+        }
+        out.push((path, code));
+    }
+    out
+}
+
+/// The entries of `dir`, sorted; empty when it cannot be read.
+fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// The member package directories of the workspace at `root`: each `members` entry of its `Cargo.toml` is `dir/*`
+/// (every subdirectory with a manifest) or a literal path.
+fn workspace_member_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let text = fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|e| format!("Cargo.toml unreadable: {e}"))?;
+    let manifest: toml::Value =
+        toml::from_str(&text).map_err(|e| format!("Cargo.toml is not valid TOML: {e}"))?;
+    let members = manifest
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "Cargo.toml has no [workspace] members".to_owned())?;
+    let mut dirs = Vec::new();
+    for member in members.iter().filter_map(toml::Value::as_str) {
+        if let Some(parent) = member.strip_suffix("/*") {
+            dirs.extend(
+                sorted_entries(&root.join(parent))
+                    .into_iter()
+                    .filter(|p| p.join("Cargo.toml").is_file()),
+            );
+        } else if root.join(member).join("Cargo.toml").is_file() {
+            dirs.push(root.join(member));
+        }
+    }
+    Ok(dirs)
+}
+
+/// Every test binary of the workspace at `root`, named the way nextest names it: `<package>` for a library's unit
+/// tests, `<package>::bin/<name>` for a binary's, `<package>::<file stem>` for each top-level `tests/*.rs` (or
+/// `tests/<dir>/main.rs`, named after the directory). Only the integration binaries carry sources.
+/// `Err` is the `Fail` detail; a member that declares its own targets is one, because cargo then names them freely
+/// and this enumeration would silently disagree with nextest.
+fn nextest_binaries(root: &Path) -> Result<Vec<NextestBinary>, String> {
+    let mut out = Vec::new();
+    for dir in workspace_member_dirs(root)? {
+        let manifest_file = display(root, &dir.join("Cargo.toml"));
+        let text = fs::read_to_string(dir.join("Cargo.toml"))
+            .map_err(|e| format!("{manifest_file} unreadable: {e}"))?;
+        let manifest: toml::Value =
+            toml::from_str(&text).map_err(|e| format!("{manifest_file} is not valid TOML: {e}"))?;
+        let package = manifest
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("{manifest_file} has no [package] name"))?;
+        let opted_out = |key: &str| {
+            manifest
+                .get("package")
+                .and_then(|p| p.get(key))
+                .and_then(toml::Value::as_bool)
+                == Some(false)
+        };
+        if manifest.get("test").is_some()
+            || manifest.get("bin").is_some()
+            || opted_out("autotests")
+            || opted_out("autobins")
+        {
+            return Err(format!(
+                "{manifest_file} declares [[test]], [[bin]], autotests = false or autobins = false; \
+                 nextest_binaries names only auto-discovered targets, extend it before a member declares its own"
+            ));
+        }
+        let unit = |id: String| NextestBinary {
+            id,
+            sources: Vec::new(),
+        };
+        if dir.join("src/lib.rs").is_file() {
+            out.push(unit(package.to_owned()));
+        }
+        if dir.join("src/main.rs").is_file() {
+            out.push(unit(format!("{package}::bin/{package}")));
+        }
+        for path in sorted_entries(&dir.join("src/bin")) {
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if (path.is_file() && path.extension().is_some_and(|e| e == "rs"))
+                || path.join("main.rs").is_file()
+            {
+                out.push(unit(format!("{package}::bin/{name}")));
+            }
+        }
+        for path in sorted_entries(&dir.join("tests")) {
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let entry = if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+                path.clone()
+            } else if path.join("main.rs").is_file() {
+                path.join("main.rs")
+            } else {
+                continue;
+            };
+            out.push(NextestBinary {
+                id: format!("{package}::{name}"),
+                sources: test_binary_sources(&entry)
+                    .into_iter()
+                    .map(|(file, code)| (display(root, &file), code))
+                    .collect(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The markers `binary` carries as `(marker, why, first file that holds it)`, in [`GLOBAL_DB_MARKERS`] order.
+fn carried_markers(binary: &NextestBinary) -> Vec<(&'static str, &'static str, &str)> {
+    GLOBAL_DB_MARKERS
+        .iter()
+        .filter_map(|&(marker, why)| {
+            binary
+                .sources
+                .iter()
+                .find(|(_, code)| code.contains(marker))
+                .map(|(file, _)| (marker, why, file.as_str()))
+        })
+        .collect()
+}
+
+/// M24-7 over a nextest config text and the workspace's test binaries.
+/// * fail: a binary that carries a marker and is not in the `global-db` group (and not in `exempt`); a
+///   `binary_id(..)` in a `global-db` filter that names no binary (stale); an `exempt` row whose binary is gone, carries
+///   no marker or is now in the group (stale); a config or filter this gate cannot read;
+/// * not_applicable, naming the missing object: the config has no `global-db` override;
+/// * pass otherwise.
+fn global_db_verdict(config: &str, binaries: &[NextestBinary], exempt: &[(&str, &str)]) -> Verdict {
+    let groups = match read_groups(config) {
+        Ok(Some(groups)) => groups,
+        Ok(None) => {
+            return Verdict::NotApplicable(format!(
+                "missing object: a [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" in {NEXTEST_CONFIG_FILE}"
+            ));
+        }
+        Err(detail) => return Verdict::Fail(vec![detail]),
+    };
+    let in_group = |id: &str| groups.group_of.get(id).map(String::as_str) == Some(GLOBAL_DB_GROUP);
+    let mut problems = Vec::new();
+    for id in &groups.global_db_ids {
+        if !binaries.iter().any(|b| b.id == *id) {
+            problems.push(format!(
+                "M24-7: binary_id({id}) in the `{GLOBAL_DB_GROUP}` filter of {NEXTEST_CONFIG_FILE} names no test binary of the workspace (stale: renamed or deleted); remove it"
+            ));
+        }
+    }
+    for binary in binaries {
+        let markers = carried_markers(binary);
+        let Some(&(_, why, _)) = markers.first() else {
+            continue;
+        };
+        if in_group(binary.id.as_str()) || exempt.iter().any(|&(id, _)| binary.id == id) {
+            continue;
+        }
+        let id = &binary.id;
+        let placed = match groups.group_of.get(id) {
+            Some(other) => {
+                format!("in the `{other}` group, which takes it before `{GLOBAL_DB_GROUP}`")
+            }
+            None => "in no test group".to_owned(),
+        };
+        let carried = markers
+            .iter()
+            .map(|(marker, _, file)| format!("`{marker}` ({file})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(format!(
+            "M24-7: {id} is {placed} but carries {carried}: {why}. Add binary_id({id}) to the `{GLOBAL_DB_GROUP}` \
+             filter in {NEXTEST_CONFIG_FILE}, or list it in GLOBAL_DB_EXEMPT with the reason it is safe outside the group"
+        ));
+    }
+    for &(id, _) in exempt {
+        let stale = match binaries.iter().find(|b| b.id == id) {
+            None => Some("names no test binary of the workspace"),
+            Some(b) if carried_markers(b).is_empty() => Some("carries no marker any more"),
+            Some(_) if in_group(id) => Some("is in the `global-db` group now"),
+            Some(_) => None,
+        };
+        if let Some(reason) = stale {
+            problems.push(format!(
+                "M24-7: GLOBAL_DB_EXEMPT lists {id}, which {reason} (stale exemption); drop the row"
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// M24-7 / G-M24-7 over the real workspace. `not_applicable` only when `.config/nextest.toml` is absent or has no
+/// `global-db` override, and it names that object (§57.1 第2条).
+fn m24_7_global_db_completeness(root: &Path) -> Verdict {
+    let config = match fs::read_to_string(root.join(NEXTEST_CONFIG_FILE)) {
+        Ok(config) => config,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Verdict::NotApplicable(format!("missing object: {NEXTEST_CONFIG_FILE}"));
+        }
+        Err(e) => {
+            return Verdict::Fail(vec![format!("{NEXTEST_CONFIG_FILE} unreadable: {e}")]);
+        }
+    };
+    match nextest_binaries(root) {
+        Ok(binaries) => global_db_verdict(&config, &binaries, GLOBAL_DB_EXEMPT),
+        Err(detail) => Verdict::Fail(vec![detail]),
+    }
+}
+
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
@@ -7938,6 +8438,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "M08 D1 / G-M08-2 (can_read( call sites in adapters and bins non-test code == the declared read-gate set)",
             m08_2_can_read_one_home(&root),
+        ),
+        (
+            "M24-7 / G-M24-7 (§79, #101: every test binary that carries a cluster-global DB marker is in nextest's global-db group; no stale binary_id or exemption)",
+            m24_7_global_db_completeness(&root),
         ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
@@ -15188,5 +15692,534 @@ async fn serving_version_in_txn() {}
             )
         );
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ---- M24-7 / G-M24-7 (§79, #101): nextest `global-db` completeness ----
+
+    /// A nextest config whose `global-db` override selects `filter`.
+    fn m24_7_config(filter: &str) -> String {
+        format!("[[profile.ci.overrides]]\nfilter = '{filter}'\ntest-group = 'global-db'\n")
+    }
+
+    /// An integration binary `id` built from one file `file` holding `code`.
+    fn m24_7_binary(id: &str, code: &str) -> NextestBinary {
+        NextestBinary {
+            id: id.to_owned(),
+            sources: vec![("tests/f.rs".to_owned(), code.to_owned())],
+        }
+    }
+
+    /// A workspace of one package `pkg` (`crates/pkg`, no lib, no bin) holding `files` (paths under the package) and a
+    /// nextest config whose `global-db` filter is `filter`.
+    fn m24_7_tree(label: &str, filter: &str, files: &[(&str, &str)]) -> PathBuf {
+        let tmp = fresh_tmp(label);
+        m07_write(
+            &tmp,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        m07_write(&tmp, "crates/pkg/Cargo.toml", "[package]\nname = \"pkg\"\n");
+        m07_write(&tmp, ".config/nextest.toml", &m24_7_config(filter));
+        for (rel, body) in files {
+            m07_write(&tmp, &format!("crates/pkg/{rel}"), body);
+        }
+        tmp
+    }
+
+    fn m24_7_fail_lines(verdict: Verdict) -> Vec<String> {
+        match verdict {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    fn m24_7_file_names(sources: &[(PathBuf, String)]) -> Vec<String> {
+        let mut names: Vec<String> = sources
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap().to_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Today's `main` passes: every binary that carries a marker is in `global-db` or is an exempt row.
+    #[test]
+    fn m24_7_real_repo_passes() {
+        assert_eq!(m24_7_global_db_completeness(&real_root()), Verdict::Pass);
+    }
+
+    /// The marker list is derived from what the workspace references: a marker no binary carries is dead weight
+    /// that would let its mechanism come back unmarked, and an exempt row needs a reason.
+    #[test]
+    fn m24_7_every_marker_is_carried_by_a_real_binary() {
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        for (marker, why) in GLOBAL_DB_MARKERS {
+            assert!(!why.is_empty(), "{marker}: a marker needs its reason");
+            assert!(
+                binaries
+                    .iter()
+                    .any(|b| carried_markers(b).iter().any(|(m, _, _)| m == marker)),
+                "no test binary carries the marker `{marker}`"
+            );
+        }
+        for (id, why) in GLOBAL_DB_EXEMPT {
+            assert!(!why.is_empty(), "{id}: an exemption needs its reason");
+        }
+    }
+
+    /// 注错 (§80.1, r1): the real config without `memory_attribution` in the `global-db` filter → red, naming that
+    /// binary and a marker it carries. The CI record of the same fault is a `red/fix-101-r1` run.
+    #[test]
+    fn m24_7_real_config_without_memory_attribution_is_red() {
+        let real = fs::read_to_string(real_root().join(NEXTEST_CONFIG_FILE)).unwrap();
+        let injected = real.replace("binary_id(humaux-adapters::memory_attribution) | ", "");
+        assert_ne!(
+            real, injected,
+            "the filter no longer names memory_attribution"
+        );
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let lines = m24_7_fail_lines(global_db_verdict(&injected, &binaries, GLOBAL_DB_EXEMPT));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("humaux-adapters::memory_attribution"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("`operation_receipt_fixture`"),
+            "{lines:?}"
+        );
+        assert_eq!(
+            global_db_verdict(&real, &binaries, GLOBAL_DB_EXEMPT),
+            Verdict::Pass
+        );
+    }
+
+    /// 注错 (§80.1, r2): the real config with a `binary_id` that no binary has → red as stale, naming it.
+    #[test]
+    fn m24_7_real_config_with_a_nonexistent_binary_is_stale() {
+        let real = fs::read_to_string(real_root().join(NEXTEST_CONFIG_FILE)).unwrap();
+        let injected = real.replacen(
+            "binary_id(humaux-adapters::auth_scope_rls)",
+            "binary_id(humaux-adapters::auth_scope_rls) | binary_id(humaux-adapters::no_such_binary)",
+            1,
+        );
+        assert_ne!(real, injected, "the filter no longer names auth_scope_rls");
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let lines = m24_7_fail_lines(global_db_verdict(&injected, &binaries, GLOBAL_DB_EXEMPT));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("binary_id(humaux-adapters::no_such_binary)"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("stale"), "{lines:?}");
+    }
+
+    /// The enumeration names binaries the way nextest does: a library's unit tests by package, a binary's as
+    /// `bin/<name>` (`main.rs`, `src/bin/x.rs`, `src/bin/x/main.rs`), integration tests as `<package>::<stem>`
+    /// (`tests/x.rs`, `tests/x/main.rs`); a `tests/` subdirectory without `main.rs` is support code, not a binary.
+    #[test]
+    fn m24_7_names_binaries_the_way_nextest_does() {
+        let tmp = fresh_tmp("m24-7-names");
+        m07_write(
+            &tmp,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\", \"bins/bin-b\"]\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/lib-a/Cargo.toml",
+            "[package]\nname = \"lib-a\"\n",
+        );
+        m07_write(&tmp, "crates/lib-a/src/lib.rs", "");
+        m07_write(&tmp, "crates/lib-a/tests/one.rs", "fn f() {}\n");
+        m07_write(&tmp, "crates/lib-a/tests/dir_t/main.rs", "fn f() {}\n");
+        m07_write(&tmp, "crates/lib-a/tests/support/helper.rs", "fn f() {}\n");
+        m07_write(&tmp, "crates/no-manifest/src/lib.rs", "");
+        m07_write(
+            &tmp,
+            "bins/bin-b/Cargo.toml",
+            "[package]\nname = \"bin-b\"\n",
+        );
+        m07_write(&tmp, "bins/bin-b/src/main.rs", "fn main() {}\n");
+        m07_write(&tmp, "bins/bin-b/src/bin/extra.rs", "fn main() {}\n");
+        m07_write(&tmp, "bins/bin-b/src/bin/third/main.rs", "fn main() {}\n");
+        m07_write(
+            &tmp,
+            "bins/not-a-member/Cargo.toml",
+            "[package]\nname = \"other\"\n",
+        );
+        let binaries = nextest_binaries(&tmp).unwrap();
+        let mut ids: Vec<&str> = binaries.iter().map(|b| b.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "bin-b::bin/bin-b",
+                "bin-b::bin/extra",
+                "bin-b::bin/third",
+                "lib-a",
+                "lib-a::dir_t",
+                "lib-a::one",
+            ]
+        );
+        assert!(
+            binaries
+                .iter()
+                .filter(|b| b.id.starts_with("lib-a::"))
+                .all(|b| b.sources.len() == 1),
+            "an integration binary carries its sources"
+        );
+        assert!(
+            binaries
+                .iter()
+                .filter(|b| !b.id.contains("::") || b.id.contains("::bin/"))
+                .all(|b| b.sources.is_empty()),
+            "a unit-test binary carries none"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A member with its own targets is red, not silently mis-named.
+    #[test]
+    fn m24_7_fails_on_a_member_with_declared_targets() {
+        let tmp = fresh_tmp("m24-7-custom-targets");
+        m07_write(
+            &tmp,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/pkg/Cargo.toml",
+            "[package]\nname = \"pkg\"\n[[test]]\nname = \"x\"\npath = \"y.rs\"\n",
+        );
+        match nextest_binaries(&tmp) {
+            Err(detail) => assert!(detail.contains("declares [[test]]"), "{detail}"),
+            Ok(_) => panic!("expected Err"),
+        }
+        m07_write(
+            &tmp,
+            "crates/pkg/Cargo.toml",
+            "[package]\nname = \"pkg\"\nautotests = false\n",
+        );
+        assert!(nextest_binaries(&tmp).is_err());
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `#[path = ".."]` on its own line, on the line of its `mod`, above other attributes and across crates, plain
+    /// `mod x;` as `x/mod.rs`, any visibility; followed transitively; comments and inline modules are not followed.
+    #[test]
+    fn m24_7_follows_path_and_plain_modules() {
+        let tmp = fresh_tmp("m24-7-walker");
+        m07_write(
+            &tmp,
+            "t/a.rs",
+            "#[path = \"support/fx.rs\"]\nmod fx;\n#[path = \"support/same.rs\"] mod same;\n\
+             #[path = \"support/attrs.rs\"]\n#[allow(dead_code)]\npub(crate) mod attrs;\n\
+             #[path = \"../other/shared.rs\"]\nmod shared;\npub mod common;\n\
+             // mod ghost;\n/* mod ghost_block; */\nmod inline { fn f() {} }\n",
+        );
+        m07_write(
+            &tmp,
+            "t/support/fx.rs",
+            "#[path = \"deep.rs\"]\nmod deep;\n",
+        );
+        m07_write(&tmp, "t/support/deep.rs", "fn deep() {}\n");
+        m07_write(&tmp, "t/support/same.rs", "fn same() {}\n");
+        m07_write(&tmp, "t/support/attrs.rs", "fn attrs() {}\n");
+        m07_write(&tmp, "other/shared.rs", "fn shared() {}\n");
+        m07_write(&tmp, "t/common/mod.rs", "fn common() {}\n");
+        m07_write(&tmp, "t/ghost.rs", "fn ghost() {}\n");
+        m07_write(&tmp, "t/inline.rs", "fn inline() {}\n");
+        m07_write(&tmp, "t/ghost_block.rs", "fn ghost_block() {}\n");
+        let sources = test_binary_sources(&tmp.join("t/a.rs"));
+        assert_eq!(
+            m24_7_file_names(&sources),
+            [
+                "a.rs",
+                "attrs.rs",
+                "deep.rs",
+                "fx.rs",
+                "mod.rs",
+                "same.rs",
+                "shared.rs"
+            ]
+        );
+        assert_eq!(
+            sources[0].0,
+            tmp.join("t/a.rs"),
+            "the entry file comes first"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A `#[path]` that is separated from its `mod` by another item belongs to nothing; a module that resolves to no
+    /// file is skipped; a file reached through two modules is read once; a cycle terminates.
+    #[test]
+    fn m24_7_walker_drops_a_stranded_path_and_survives_cycles() {
+        let tmp = fresh_tmp("m24-7-walker-edge");
+        m07_write(
+            &tmp,
+            "t/b.rs",
+            "#[path = \"support/x.rs\"]\nfn f() {}\nmod x;\nmod missing;\n#[path = \"support/y.rs\"]\nmod y;\n\
+             #[path = \"support/y.rs\"]\nmod y_again;\n",
+        );
+        m07_write(&tmp, "t/support/x.rs", "fn x() {}\n");
+        m07_write(&tmp, "t/support/y.rs", "#[path = \"../b.rs\"]\nmod back;\n");
+        let sources = test_binary_sources(&tmp.join("t/b.rs"));
+        assert_eq!(m24_7_file_names(&sources), ["b.rs", "y.rs"]);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The filter reader accepts `binary_id(<literal>)` terms joined by `|` and nothing else.
+    #[test]
+    fn m24_7_filter_reader_is_closed() {
+        assert_eq!(
+            filter_binary_ids("binary_id(a::b) | binary_id(c-d) |binary_id(e::bin/e)"),
+            Ok(vec![
+                "a::b".to_owned(),
+                "c-d".to_owned(),
+                "e::bin/e".to_owned()
+            ])
+        );
+        for bad in [
+            "",
+            "package(x)",
+            "binary_id(a*)",
+            "binary_id(=a)",
+            "binary_id()",
+            "binary_id(a) & binary_id(b)",
+            "binary_id(a) | test(b)",
+        ] {
+            assert!(filter_binary_ids(bad).is_err(), "{bad:?} must not parse");
+        }
+        assert_eq!(
+            filter_binary_ids("binary_id(a) | test(b)"),
+            Err("test(b)".to_owned())
+        );
+    }
+
+    /// 注错 (red): a binary with a marker that the filter does not name → one line, naming the binary, the marker
+    /// and the file; naming it in the filter turns it green.
+    #[test]
+    fn m24_7_fails_on_an_ungrouped_binary_with_a_marker_and_passes_once_grouped() {
+        let binaries = [
+            m24_7_binary("pkg::in", "fn f() { let _ = RememberCommand; }"),
+            m24_7_binary("pkg::out", "fn f() { let _ = RememberCommand; }"),
+            m24_7_binary("pkg::quiet", "fn f() {}"),
+        ];
+        let lines = m24_7_fail_lines(global_db_verdict(
+            &m24_7_config("binary_id(pkg::in)"),
+            &binaries,
+            &[],
+        ));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("pkg::out is in no test group"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains("`RememberCommand` (tests/f.rs)"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("GLOBAL_DB_EXEMPT"), "{lines:?}");
+        assert_eq!(
+            global_db_verdict(
+                &m24_7_config("binary_id(pkg::in) | binary_id(pkg::out)"),
+                &binaries,
+                &[]
+            ),
+            Verdict::Pass
+        );
+    }
+
+    /// Every marker is read: a binary carrying only that one is red when ungrouped.
+    #[test]
+    fn m24_7_every_marker_turns_an_ungrouped_binary_red() {
+        for (marker, _) in GLOBAL_DB_MARKERS {
+            let binaries = [
+                m24_7_binary("pkg::in", "fn f() {}"),
+                m24_7_binary("pkg::out", &format!("fn f() {{ let _ = \"{marker}\"; }}")),
+            ];
+            let lines = m24_7_fail_lines(global_db_verdict(
+                &m24_7_config("binary_id(pkg::in)"),
+                &binaries,
+                &[],
+            ));
+            assert!(
+                lines[0].contains(&format!("`{marker}`")),
+                "{marker}: {lines:?}"
+            );
+        }
+    }
+
+    /// A `binary_id` in the `global-db` filter that names no binary is stale → red, naming it. A unit-test binary
+    /// (no sources) is a real binary: naming it is not stale.
+    #[test]
+    fn m24_7_fails_on_a_stale_filter_entry() {
+        let binaries = [
+            m24_7_binary("pkg::c", "fn f() {}"),
+            NextestBinary {
+                id: "pkg".to_owned(),
+                sources: Vec::new(),
+            },
+        ];
+        assert_eq!(
+            global_db_verdict(
+                &m24_7_config("binary_id(pkg) | binary_id(pkg::c)"),
+                &binaries,
+                &[]
+            ),
+            Verdict::Pass
+        );
+        let lines = m24_7_fail_lines(global_db_verdict(
+            &m24_7_config("binary_id(pkg::c) | binary_id(pkg::renamed)"),
+            &binaries,
+            &[],
+        ));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("binary_id(pkg::renamed)"), "{lines:?}");
+        assert!(lines[0].contains("stale"), "{lines:?}");
+    }
+
+    /// nextest takes the first override that selects a binary: a binary that an earlier group selects is not in
+    /// `global-db` even though the `global-db` filter names it.
+    #[test]
+    fn m24_7_fails_when_an_earlier_group_takes_the_binary() {
+        let config = "[[profile.ci.overrides]]\nfilter = 'binary_id(pkg::b)'\ntest-group = 'serial-b'\n\
+                      [[profile.ci.overrides]]\nfilter = 'binary_id(pkg::b)'\ntest-group = 'global-db'\n";
+        let binaries = [m24_7_binary(
+            "pkg::b",
+            "fn f() { let _ = RememberCommand; }",
+        )];
+        let lines = m24_7_fail_lines(global_db_verdict(config, &binaries, &[]));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("in the `serial-b` group"), "{lines:?}");
+    }
+
+    /// An exemption lets a marker binary stay outside the group; a row whose binary is gone, no longer carries a
+    /// marker or is now in the group is red (stale).
+    #[test]
+    fn m24_7_exemptions_pass_and_go_stale() {
+        let config = m24_7_config("binary_id(pkg::in)");
+        let binaries = [
+            m24_7_binary("pkg::in", "fn f() {}"),
+            m24_7_binary("pkg::own_db", "fn f() { let _ = RememberCommand; }"),
+        ];
+        assert_eq!(
+            global_db_verdict(&config, &binaries, &[("pkg::own_db", "own database")]),
+            Verdict::Pass
+        );
+        let quiet = [
+            m24_7_binary("pkg::in", "fn f() {}"),
+            m24_7_binary("pkg::own_db", "fn f() {}"),
+        ];
+        let lines = m24_7_fail_lines(global_db_verdict(
+            &config,
+            &quiet,
+            &[("pkg::own_db", "own database")],
+        ));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("pkg::own_db") && lines[0].contains("carries no marker"),
+            "{lines:?}"
+        );
+        let lines = m24_7_fail_lines(global_db_verdict(
+            &config,
+            &binaries,
+            &[
+                ("pkg::own_db", "own database"),
+                ("pkg::gone", "was a binary"),
+            ],
+        ));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("pkg::gone") && lines[0].contains("names no test binary"),
+            "{lines:?}"
+        );
+        let grouped = [m24_7_binary(
+            "pkg::in",
+            "fn f() { let _ = RememberCommand; }",
+        )];
+        let lines = m24_7_fail_lines(global_db_verdict(
+            &config,
+            &grouped,
+            &[("pkg::in", "own database")],
+        ));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("is in the `global-db` group now"),
+            "{lines:?}"
+        );
+    }
+
+    /// `not_applicable` names the missing object (§57.1 第2条): no nextest config at all, or a config without a
+    /// `global-db` override.
+    #[test]
+    fn m24_7_is_not_applicable_naming_the_missing_object() {
+        let tmp = fresh_tmp("m24-7-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m24_7_global_db_completeness(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains(NEXTEST_CONFIG_FILE), "{detail}")
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+        let other_group =
+            "[[profile.ci.overrides]]\nfilter = 'binary_id(pkg::c)'\ntest-group = 'serial-c'\n";
+        for config in [other_group, "[profile.ci]\nretries = 0\n", ""] {
+            match global_db_verdict(config, &[m24_7_binary("pkg::c", "fn f() {}")], &[]) {
+                Verdict::NotApplicable(detail) => {
+                    assert!(detail.contains("test-group = \"global-db\""), "{detail}");
+                    assert!(detail.contains(NEXTEST_CONFIG_FILE), "{detail}");
+                }
+                other => panic!("expected NotApplicable for {config:?}, got {other:?}"),
+            }
+        }
+    }
+
+    /// A config that is not TOML, or whose `global-db` filter is not a plain list of `binary_id` terms, is red
+    /// (never an empty group that passes everything).
+    #[test]
+    fn m24_7_fails_on_a_config_it_cannot_read() {
+        let lines = m24_7_fail_lines(global_db_verdict("[[profile", &[], &[]));
+        assert!(lines[0].contains("not valid TOML"), "{lines:?}");
+        let lines = m24_7_fail_lines(global_db_verdict(&m24_7_config("package(=pkg)"), &[], &[]));
+        assert!(lines[0].contains("`package(=pkg)`"), "{lines:?}");
+        assert!(lines[0].contains("global-db"), "{lines:?}");
+    }
+
+    /// Through the tree: a marker that reaches the binary only through a `#[path]` module counts, a marker that is
+    /// only mentioned in a comment does not; naming the binary in the filter turns the red run green.
+    #[test]
+    fn m24_7_tree_red_then_green_and_comments_do_not_count() {
+        let files = [
+            ("tests/b.rs", "#[path = \"support/fx.rs\"]\nmod fx;\n"),
+            (
+                "tests/support/fx.rs",
+                "fn seed() { let _ = RememberCommand; }\n",
+            ),
+            (
+                "tests/c.rs",
+                "// RememberCommand\n/* DISABLE TRIGGER */\nfn quiet() {}\n",
+            ),
+        ];
+        let red = m24_7_tree("m24-7-red", "binary_id(pkg::c)", &files);
+        let lines = m24_7_fail_lines(m24_7_global_db_completeness(&red));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("pkg::b is in no test group"), "{lines:?}");
+        assert!(
+            lines[0].contains("`RememberCommand` (crates/pkg/tests/support/fx.rs)"),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&red).ok();
+        let green = m24_7_tree(
+            "m24-7-green",
+            "binary_id(pkg::b) | binary_id(pkg::c)",
+            &files,
+        );
+        assert_eq!(m24_7_global_db_completeness(&green), Verdict::Pass);
+        fs::remove_dir_all(&green).ok();
     }
 }

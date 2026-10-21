@@ -13,8 +13,10 @@ experimental = ["wrapper-scripts"]
 # ponytail: global-db serialises ~60 binaries — ceiling: test-a wall time; upgrade = card M24-7a/7b (template DB per
 #   test binary, provider-slot fixtures per DB), after which global-db shrinks toward 0. Until then the per-binary
 #   serial-* groups below are shadowed for every binary that global-db also matches (first matching override wins),
-#   and the maintenance entries only matter if maintenance moves to nextest. Completeness is not gated yet (a new
-#   binary is ungrouped by default) — M24-7 adds that gate. Groups exist only in profile `ci`.
+#   and the maintenance entries only matter if maintenance moves to nextest. Completeness is gated by
+#   `cargo xtask architecture-check` (M24-7 / G-M24-7, xtask/src/architecture_check.rs `m24_7_global_db_completeness`):
+#   a binary whose sources carry a cluster-global marker must be matched by the global-db filter below or be a row of
+#   GLOBAL_DB_EXEMPT there, and a binary_id that names no binary is red. Groups exist only in profile `ci`.
 #  - global-db also holds M08-3's read_gate_closure and cross_tenant_canary: each seeds real tenants through the
 #    operation_receipt fixture (and, for the closure test, the continuity fixture), whose teardown toggles
 #    triggers on shared tables (control.audit_events, the continuity append-only guards).
