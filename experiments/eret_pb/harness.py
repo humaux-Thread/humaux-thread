@@ -36,7 +36,12 @@ from pathlib import Path
 REPO = "humaux/humaux-thread"
 TAG = "eval-pack-e-ret-2026-10-v1"
 DASH_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-CANDIDATE_MODELS = ("text-embedding-v3", "qwen3-vl-embedding")  # tried in this order; the first with cos >= 0.99 on 3 of 3 wins
+DASH_MM_URL = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"
+# (model, endpoint kind), tried in this order; the first with cos >= 0.99 on 3 of 3 wins. Run 1 showed text-embedding-v3 does not match
+# (cosines ~0) and qwen3-vl-embedding is not served by compatible mode (404 model_not_supported). The old Rust source names cloud
+# text-embedding-v4 (1024 dims) as the production dense model; providers.json names qwen3-vl-embedding, which only the native
+# multimodal endpoint serves (Alibaba Model Studio multimodal-embedding API reference, read 2026-10-21, last updated 2026-10-11).
+CANDIDATES = (("text-embedding-v4", "compat"), ("qwen3-vl-embedding", "native"))
 DIM, BATCH, COS_MIN = 1024, 10, 0.99
 ACTIVE = (None, "active")  # status filter: active or NULL
 DEPTHS = (25, 50, 100, 200)
@@ -327,16 +332,27 @@ class ApiError(SystemExit):
     pass
 
 
-def api_embed(model: str, texts: list[str], key: str, scrub: list[str], url: str = DASH_URL) -> list[list[float]]:
-    """One embeddings call. 5xx and 429 are retried with backoff (429 twice only); any other 4xx stops the job and prints the raw
-    status and error code (Arrearage and friends are real-money matters for the owner)."""
-    body = json.dumps({"model": model, "input": texts, "dimensions": DIM, "encoding_format": "float"}).encode()
+class ModelUnsupported(Exception):
+    """HTTP 404 model_not_supported: this endpoint does not serve the model. A reason to try the next candidate, not to stop."""
+
+
+def api_embed(model: str, kind: str, texts: list[str], key: str, scrub: list[str], urls: dict) -> list[list[float]]:
+    """One embeddings call. compat = OpenAI-compatible body, native = multimodal-embedding body (independent embedding per text, no
+    instruction, dimension 1024; the old code applies no prefix or instruction either). 5xx and 429 are retried with backoff (429
+    twice only). 404 model_not_supported raises ModelUnsupported; any other 4xx (auth, Arrearage, quota, bad request) stops the job
+    and prints the raw status and error code: those are the owner's to settle."""
+    if kind == "compat":
+        body = {"model": model, "input": texts, "dimensions": DIM, "encoding_format": "float"}
+    else:
+        body = {"model": model, "input": {"contents": [{"text": t} for t in texts]}, "parameters": {"dimension": DIM}}
+    raw_body = json.dumps(body).encode()
     for attempt in range(4):
-        req = urllib.request.Request(url, data=body, method="POST", headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+        req = urllib.request.Request(urls[kind], data=raw_body, method="POST", headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
-                data = sorted(json.loads(r.read())["data"], key=lambda d: d["index"])
-            return [d["embedding"] for d in data]
+                j = json.loads(r.read())
+            data = j["data"] if kind == "compat" else j["output"]["embeddings"]
+            return [d["embedding"] for d in sorted(data, key=lambda d: d["index"])]
         except urllib.error.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
             try:
@@ -348,7 +364,9 @@ def api_embed(model: str, texts: list[str], key: str, scrub: list[str], url: str
             for s in scrub:  # the message should not echo the input, but never let a query through
                 if len(s) >= 6:
                     msg = msg.replace(s[:6], "***")
-            print(f"API_ERROR http={e.code} code={code} message={msg[:200]!r} attempt={attempt + 1}", flush=True)
+            print(f"API_ERROR kind={kind} model={model} http={e.code} code={code} message={msg[:200]!r} attempt={attempt + 1}", flush=True)
+            if e.code == 404 and code == "model_not_supported":
+                raise ModelUnsupported(model)
             if (e.code == 429 and attempt < 2) or e.code >= 500:
                 if attempt < 3:
                     time.sleep(5 * 4**attempt)
@@ -363,34 +381,40 @@ def api_embed(model: str, texts: list[str], key: str, scrub: list[str], url: str
     raise ApiError(3)
 
 
-def embed(a, url: str = DASH_URL):
+def embed(a, urls: dict | None = None):
+    urls = urls or {"compat": DASH_URL, "native": DASH_MM_URL}
     key = os.environ["DASHSCOPE_API_KEY"]
     qp = json.loads(Path(a.qpack).read_text(encoding="utf-8"))
     scrub = [q["query"] for q in qp["queries"]] + [s["text"] for s in qp["sanity"]]
     calls, chosen, cos = 0, None, {}
-    for model in CANDIDATE_MODELS:  # 3 sanity texts in one call per candidate
-        vecs = api_embed(model, [s["text"] for s in qp["sanity"]], key, scrub, url)
+    for model, kind in CANDIDATES:  # 3 sanity texts (raw chunk text, as the old ingestion embeds them) in one call per candidate
+        try:
+            vecs = api_embed(model, kind, [s["text"] for s in qp["sanity"]], key, scrub, urls)
+        except ModelUnsupported:
+            calls += 1
+            print(f"identity model={model} kind={kind} not served by this endpoint, skipped", flush=True)
+            continue
         calls += 1
         cs = [cosine(v, s["vector"]) for v, s in zip(vecs, qp["sanity"])]
         cos[model] = [round(c, 5) for c in cs]
-        print(f"identity model={model} dim={len(vecs[0])} cosines={cos[model]}", flush=True)
+        print(f"identity model={model} kind={kind} dim={len(vecs[0])} cosines={cos[model]}", flush=True)
         if len(vecs[0]) == DIM and all(c >= COS_MIN for c in cs):
-            chosen = model
+            chosen, chosen_kind = model, kind
             break
     if not chosen:
         raise SystemExit("identity check failed: no candidate model reaches cosine 0.99 on 3 of 3 chunks")
     vectors = {}
     qs = qp["queries"]
     for i in range(0, len(qs), BATCH):  # ponytail: batches of 10 instead of one call per query keep the run well inside the 200-call budget
-        vecs = api_embed(chosen, [q["query"] for q in qs[i:i + BATCH]], key, scrub, url)
+        vecs = api_embed(chosen, chosen_kind, [q["query"] for q in qs[i:i + BATCH]], key, scrub, urls)  # raw query text, no prefix or instruction
         calls += 1
         for q, v in zip(qs[i:i + BATCH], vecs):
             if len(v) != DIM or not all(math.isfinite(x) for x in v):
                 raise SystemExit("bad vector shape")
             vectors[q["qid"]] = v
     assert len(vectors) == len(qs)
-    Path(a.out).write_text(json.dumps({"model": chosen, "dim": DIM, "cosines": cos, "calls": calls, "vectors": vectors}))
-    print(f"embedded queries={len(vectors)} model={chosen} dim={DIM} api_calls={calls}", flush=True)
+    Path(a.out).write_text(json.dumps({"model": chosen, "kind": chosen_kind, "dim": DIM, "cosines": cos, "calls": calls, "vectors": vectors}))
+    print(f"embedded queries={len(vectors)} model={chosen} kind={chosen_kind} dim={DIM} api_calls={calls}", flush=True)
 
 
 # ---------------------------------------------------------------- guard
@@ -465,10 +489,19 @@ def _fake_endpoint(mode: str):
     class H(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            native = self.path.endswith("multimodal-embedding")
+            texts = [c["text"] for c in body["input"]["contents"]] if native else body["input"]
+            if native:
+                assert body["parameters"] == {"dimension": DIM} and body["model"] == "qwen3-vl-embedding", body
             if mode == "arrears":
                 out, code = {"code": "Arrearage", "message": "Access denied, account is in arrears"}, 400
+            elif mode == "native_only" and not native:
+                out, code = {"error": {"code": "model_not_supported", "message": "Unsupported model for OpenAI compatibility mode."}}, 404
+                out = {"code": "model_not_supported", "message": out["error"]["message"]}
+            elif native:
+                out, code = {"output": {"embeddings": [{"index": i, "embedding": _fakevec(t), "type": "vl"} for i, t in enumerate(texts)]}}, 200
             else:
-                out, code = {"data": [{"index": i, "embedding": _fakevec(t)} for i, t in enumerate(body["input"])]}, 200
+                out, code = {"data": [{"index": i, "embedding": _fakevec(t)} for i, t in enumerate(texts)]}, 200
             raw = json.dumps(out).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
@@ -481,7 +514,8 @@ def _fake_endpoint(mode: str):
 
     srv = http.server.HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, f"http://127.0.0.1:{srv.server_address[1]}/v1/embeddings"
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    return srv, {"compat": base + "/compatible-mode/v1/embeddings", "native": base + "/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"}
 
 
 def selftest(_a=None):
@@ -532,7 +566,7 @@ def selftest(_a=None):
         srv, url = _fake_endpoint("ok")
         embed(ns, url)
         qv = json.loads((tmp / "qv.json").read_text())
-        assert qv["model"] == CANDIDATE_MODELS[0] and qv["calls"] == 4 and len(qv["vectors"]) == 23 and len(qv["vectors"]["q0"]) == DIM, qv["calls"]
+        assert qv["model"] == CANDIDATES[0][0] and qv["calls"] == 4 and len(qv["vectors"]) == 23 and len(qv["vectors"]["q0"]) == DIM, qv["calls"]
         qp["sanity"][1]["vector"] = _fakevec("not the same text")
         (tmp / "qp.json").write_text(json.dumps(qp))
         try:
@@ -540,6 +574,13 @@ def selftest(_a=None):
             raise AssertionError("identity failure not detected")
         except SystemExit as e:
             assert "identity check failed" in str(e.code), e.code
+        srv.shutdown()
+        srv, url = _fake_endpoint("native_only")  # compat mode refuses every model; the native endpoint serves qwen3-vl-embedding
+        qp["sanity"] = [{"text": t, "vector": _fakevec(t)} for t in ("san one", "san two", "san three")]
+        (tmp / "qp.json").write_text(json.dumps(qp))
+        embed(ns, url)
+        qv = json.loads((tmp / "qv.json").read_text())
+        assert qv["model"] == "qwen3-vl-embedding" and qv["kind"] == "native" and qv["calls"] == 5 and len(qv["vectors"]) == 23, qv["calls"]
         srv.shutdown()
         srv, url = _fake_endpoint("arrears")
         try:

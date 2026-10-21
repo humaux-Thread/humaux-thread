@@ -15,7 +15,9 @@ Questions this answers (aggregates only): how much does dense ranking lose insid
 
 ## Stages
 
-1. **embed** (run with `environment: minimax m3`). Mini-pack #1 (asset `qpack.json.gz.enc`) holds the 198 queries and 3 sanity chunks (text and the stored point vector, read by Qdrant GET). The job embeds the 3 texts with `text-embedding-v3` through the DashScope OpenAI-compatible endpoint, requires cosine >= 0.99 on 3 of 3 (else tries `qwen3-vl-embedding`, else fails), embeds the 198 queries in batches of 10 (one call per query would not fit the 200-call budget together with the two earlier 401 calls), and uploads only `qvec.json.gz.enc` as artifact `qvec-enc`. Any 4xx stops the job and prints the raw status and error code.
+1. **embed** (run with `environment: minimax m3`). Mini-pack #1 (asset `qpack.json.gz.enc`) holds the 198 queries and 3 sanity chunks (raw chunk text and the stored point vector, read by Qdrant GET). The job embeds the 3 texts per candidate model and requires cosine >= 0.99 on 3 of 3; candidates in order: `text-embedding-v4` (OpenAI-compatible endpoint) and `qwen3-vl-embedding` (native multimodal-embedding endpoint, `dimension` 1024, independent embedding per text, no instruction). A 404 `model_not_supported` skips a candidate; any other 4xx (auth, Arrearage, quota, bad request) stops the job and prints the raw status and error code. If no candidate passes, the job fails. Then it embeds the 198 queries (raw text, no prefix or instruction, as the old code does) in batches of 10 (one call per query would not fit the 200-call budget), and uploads only `qvec.json.gz.enc` as artifact `qvec-enc`.
+   - Old-system authority (read-only): the old ingestion embeds the raw chunk text (clamped to 7000 characters), the old retrieval embeds the raw query, both with `dimensions` 1024 and no prefix or instruction; the old Rust source names cloud `text-embedding-v4` (1024 dims) as the production dense model, while its `providers.json` names `qwen3-vl-embedding` and the memory rows are tagged `text-embedding-v3`.
+   - Alibaba Model Studio references, read 2026-10-21, both "last updated Oct 11, 2026": multimodal-embedding API reference (`https://www.alibabacloud.com/help/en/model-studio/multimodal-embedding-api-reference`: native endpoint `.../api/v1/services/embeddings/multimodal-embedding/multimodal-embedding`, `input.contents[].text`, `parameters.dimension` in 2560/2048/1536/1024/768/512/256) and text embedding (`https://www.alibabacloud.com/help/en/model-studio/text-embedding-synchronous-api`: `text-embedding-v4` on `/compatible-mode/v1/embeddings`, `dimensions` default 1024, 10 inputs per call).
 2. **local build** (stdlib Python, ssh reads). Decrypt the vectors; per query: Qdrant search on the dense vector, `limit 200`, payload limited to `memory_id` and `chunk_index`, no vectors; Postgres read-only for chunk text, memory status, layer and title of the union of candidates plus every gold memory. Pack = `manifest`, `questions` (qid, type, query, gold memory, candidates `[chunk_id, memory_id, score]`), `memories` (status, layer, title), `chunks`, `gold_info` (per gold memory: in Postgres, chunk count, point count). Asset `pack.json.gz.enc`; its gz sha256 is `PACK_SHA256` in the workflow.
 3. **eval** (J0 and the rerank matrix).
 
@@ -29,6 +31,10 @@ Questions this answers (aggregates only): how much does dense ranking lose insid
 - Statistics: exact two-sided McNemar on the same 198 questions. A = baseline (dense, or fp32), B = challenger (arm, or int8); b = A hit and B miss, c = A miss and B hit (c is the gain). hit@5 is reported with Clopper-Pearson 95%.
 - Latency: per query, wall time of tokenise + forward for the whole pool in batches of 8 on the runner (`ubuntu-24.04-arm`, 4 vCPU, torch 4 threads, ORT 4 threads), p50 / p95 over the 198 queries after one untimed warm-up. The runner is Neoverse-N2; the production host is N1 (spec 67.2), so production latency will be higher.
 - Runs: at most 4 workflow runs in total. A push only starts a run when the commit message carries `[stage:embed]` or `[stage:eval]`.
+
+## Runs
+
+- Run 1 (39587713869, stage embed): `text-embedding-v3` through compatible mode gave cosines -0.03324, -0.00162, -0.06065 against the 3 stored vectors; `qwen3-vl-embedding` through compatible mode answered HTTP 404 `model_not_supported`. Nothing else ran.
 
 ## Results
 
