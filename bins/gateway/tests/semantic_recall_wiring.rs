@@ -1436,14 +1436,27 @@ impl LogEnv {
             &self.setup_registry,
             &self.collection,
         ));
-        handle
-            .owner_client()
-            .expect("owner client for cleanup")
+        let mut admin = handle.owner_client().expect("owner client for cleanup");
+        admin
             .execute(
                 "DELETE FROM projection.tenant_placements WHERE tenant_id=$1",
                 &[&handle.tenant_id],
             )
             .expect("cleanup seeded tenant placement row");
+        // The tenant FK has no ON DELETE action (as the other §48.1 tables): the log rows go before the tenant does,
+        // under the tenant binding so FORCE RLS admits the owner.
+        let mut txn = admin.transaction().expect("begin log cleanup");
+        txn.execute(
+            "SELECT set_config('humaux.tenant_id', $1, true)",
+            &[&handle.tenant_id.to_string()],
+        )
+        .expect("bind the tenant");
+        txn.execute(
+            "DELETE FROM ops.retrieval_query_log WHERE tenant_id=$1",
+            &[&handle.tenant_id],
+        )
+        .expect("cleanup the tenant's query log rows");
+        txn.commit().expect("commit log cleanup");
     }
 }
 
@@ -1569,6 +1582,14 @@ fn query_log_has_one_row_per_answered_recall_and_none_for_a_refused_one() {
                 (row.tenant_id, row.workspace_id, row.user_id),
                 (handle.tenant_id, handle.workspace_id, Some(handle.user_id)),
                 "the scope's tenant, workspace and user"
+            );
+        }
+        for row in rows_a.iter().chain(&rows_b) {
+            // One seeded point: the live index count is 1 and the one candidate is the one Memory.
+            assert_eq!(
+                (row.visible, row.candidates),
+                (Some(1), 1),
+                "a healthy projection states a real count (§23.1②)"
             );
         }
         let (row, envelope) = (&rows_a[2], &answers[2].structured_content);

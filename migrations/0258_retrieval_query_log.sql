@@ -1,4 +1,4 @@
--- §46 FORWARD_ONLY (T-RET-1b / ADR-0081 D-A; Baseline §19.1, §48.1). ops.retrieval_query_log: one row per answered
+-- §46 EXPAND_CONTRACT (T-RET-1b / ADR-0081 D-A; Baseline §19.1, §48.1). ops.retrieval_query_log: one row per answered
 -- recall, the query only as a per-tenant HMAC (never text), written by gateway::recall (the in-repo part of G-RET-6).
 -- Created RANGE-partitioned on called_at from the start (ADR-0063 D-A), so there is no conversion and no history to
 -- carry; it joins the §48.1 closed table_key set as RETRIEVAL_QUERY_LOG:
@@ -184,7 +184,7 @@ $$;
 -- uniqueness per (id, key) is the same ruling as ADR-0063 L10.
 CREATE TABLE ops.retrieval_query_log (
   log_id       uuid        NOT NULL DEFAULT uuidv7(),
-  tenant_id    uuid        NOT NULL REFERENCES control.tenants (tenant_id) ON DELETE CASCADE,
+  tenant_id    uuid        NOT NULL REFERENCES control.tenants (tenant_id),
   workspace_id uuid        NOT NULL,
   -- NULL: a service principal acting on no user (AuthorizationScope::user_id, §6.1.1).
   user_id      uuid,
@@ -208,7 +208,7 @@ CREATE TABLE ops.retrieval_query_log (
   -- `visible` is a live index count taken after the candidate query, so neither is bounded by another column.
   CONSTRAINT retrieval_query_log_candidates_le_cand_k CHECK (candidates <= cand_k)
 ) PARTITION BY RANGE (called_at);
--- ON DELETE CASCADE from control.tenants scans the log by tenant; the same index serves a per-tenant replay.
+-- Per-tenant replay in time order (E-CACHE-1), and the FK check when a control.tenants row is deleted.
 CREATE INDEX retrieval_query_log_tenant_called_at_idx ON ops.retrieval_query_log (tenant_id, called_at);
 ALTER TABLE ops.retrieval_query_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ops.retrieval_query_log FORCE ROW LEVEL SECURITY;
