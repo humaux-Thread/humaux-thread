@@ -1,0 +1,181 @@
+# E-RET-PB3 (E-RET-5c): TypeSafe Jev as a hosted relevance reranker on the PB1 depth-25 pools, from the same ENCRYPTED pack. Experiment
+# branch only (exp/e-ret-pb-jev*); never merged. Plaintext corpus exists only in $RUNNER_TEMP (umask 077) and is removed in `if: always()`
+# steps. Passages go to the Jev API only from the `jev arms` step (owner-authorised 2026-10-21, environment `minimax m3`, secret JEV_API);
+# that secret appears only in that step's env, HUMAUX_EVAL_PACK_KEY only in the fetch steps. Output = aggregate numbers only, checked by
+# `jev_rerank.py guard` before anything is published. Triggers: push to exp/e-ret-pb-jev* (only when a file of this experiment changes AND
+# the tip commit message carries the run token) and workflow_dispatch. Never pull_request / pull_request_target. At most 3 runs (card E-RET-PB3).
+name: eret-jev
+on:
+  push:
+    branches: ['exp/e-ret-pb-jev*']
+    paths:
+      - '.github/workflows/eret-jev.yml'
+      - 'experiments/eret_pb/jev_rerank.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: eret-jev
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '4'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  PYTHONUNBUFFERED: '1'
+  # gz sha256 of the decrypted pack asset (tag eval-pack-e-ret-2026-10-v1), same as eret-pb.yml
+  PACK_SHA256: 757da3ff2713a4b74b44aa980d3f0c24d74961855df38aaf2c3ac27f30f2eb31
+jobs:
+  plan:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    outputs:
+      go: ${{ steps.g.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: selftest (statistics, request shape, retries, stop rules, no-leak error path; fake endpoint, no secret)
+        shell: bash
+        run: python experiments/eret_pb/jev_rerank.py selftest
+      - id: g
+        shell: bash
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          go=false
+          if [ "$EVENT" = workflow_dispatch ] || printf '%s' "$MSG" | grep -qF '[run:jev]'; then go=true; fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+          echo "go: $go"
+
+  # Recompute PB1's bge-reranker-base int8 L512 depth-25 arm (the reference the card pairs J1 against) and seal its per-question bits
+  # with the pack key. No Jev secret here. v2-m3 (74 min in PB1) is not recomputed: its comparison stays against the PB1 aggregate.
+  ref:
+    needs: plan
+    if: needs.plan.outputs.go == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: install pinned deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only, read-only token); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
+      - name: fetch and decrypt pack
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset pack.json.gz.enc --sha "$PACK_SHA256" \
+            --out "$RUNNER_TEMP/pack.json" --keyfile "$RUNNER_TEMP/k"
+      - name: recompute the PB1 int8 L512 depth-25 arm
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          python experiments/eret_pb/jev_rerank.py ref --pack "$RUNNER_TEMP/pack.json" --repo BAAI/bge-reranker-base \
+            --rev 2cfc18c9415c912f9d8155881c133215df768a70 --bits "$RUNNER_TEMP/ref-bits.json" --out out/ref.json --summary out/ref.md
+      - name: guard
+        shell: bash
+        run: python experiments/eret_pb/jev_rerank.py guard --pack "$RUNNER_TEMP/pack.json" --files out/ref.json out/ref.md
+      - name: publish summary
+        shell: bash
+        run: cat out/ref.md >> "$GITHUB_STEP_SUMMARY"
+      - name: seal the per-question bits with the pack key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ref-enc
+          gzip -9 -c "$RUNNER_TEMP/ref-bits.json" > "$RUNNER_TEMP/ref-bits.json.gz"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" \
+            -in "$RUNNER_TEMP/ref-bits.json.gz" -out ref-enc/ref-bits.json.gz.enc
+          ls -l ref-enc | tail -1 | awk '{print "ciphertext bytes: " $5}'
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: eret-jev-ref-bits
+          path: ref-enc/ref-bits.json.gz.enc
+          retention-days: 1
+          if-no-files-found: error
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/pack.json" "$RUNNER_TEMP/ref-bits.json" "$RUNNER_TEMP/ref-bits.json.gz" "$RUNNER_TEMP/k" "$RUNNER_TEMP/ort"
+
+  jev:
+    needs: [plan, ref]
+    if: always() && needs.plan.outputs.go == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    environment: minimax m3
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: fetch and decrypt pack
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset pack.json.gz.enc --sha "$PACK_SHA256" \
+            --out "$RUNNER_TEMP/pack.json" --keyfile "$RUNNER_TEMP/k"
+      - uses: actions/download-artifact@v4.3.0
+        continue-on-error: true
+        with:
+          name: eret-jev-ref-bits
+          path: ref
+      - name: unseal the reference bits
+        shell: bash
+        run: |
+          umask 077
+          if [ -f ref/ref-bits.json.gz.enc ] \
+              && openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass file:"$RUNNER_TEMP/k" \
+                   -in ref/ref-bits.json.gz.enc -out "$RUNNER_TEMP/ref-bits.json.gz" \
+              && gzip -dc "$RUNNER_TEMP/ref-bits.json.gz" > "$RUNNER_TEMP/ref-bits.json"; then
+            echo "reference bits unsealed"
+          else
+            rm -f "$RUNNER_TEMP/ref-bits.json"
+            echo "no reference bits: the int8 comparison falls back to the PB1 aggregate (unpaired)"
+          fi
+      - name: jev arms
+        shell: bash
+        env:
+          JEV_API: ${{ secrets.JEV_API }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          # --max-tokens is a tripwire (pricing is undocumented); the card caps calls (J1 198 + J2 990), not tokens
+          python experiments/eret_pb/jev_rerank.py run --pack "$RUNNER_TEMP/pack.json" --refbits "$RUNNER_TEMP/ref-bits.json" \
+            --out out/jev.json --summary out/jev.md --model jev-latest --max-tokens 40000000
+      - name: guard
+        id: guard
+        if: always() && hashFiles('out/jev.json') != ''
+        shell: bash
+        run: python experiments/eret_pb/jev_rerank.py guard --pack "$RUNNER_TEMP/pack.json" --files out/jev.json out/jev.md
+      - name: publish summary
+        if: always() && steps.guard.outcome == 'success'
+        shell: bash
+        run: cat out/jev.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.guard.outcome == 'success'
+        with:
+          name: eret-jev-results
+          path: out/jev.json
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/pack.json" "$RUNNER_TEMP/ref-bits.json" "$RUNNER_TEMP/ref-bits.json.gz" "$RUNNER_TEMP/k" ref
