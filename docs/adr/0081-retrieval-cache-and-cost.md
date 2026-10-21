@@ -187,9 +187,11 @@ changes at once**:
   (§55.1 / §55.6 unchanged). The formula in §23.3 and §55.6 becomes `min(top_k × profile.cand_multiplier, 200)`. It is
   **planned, T-RET-6**; until then the multiplier is the constant 5, and the wire string `cand_k_formula` stays
   `min(top_k*5, 200)`; afterwards it renders the resolved multiplier.
-- **Before BM25 lands** the following must be checked against Qdrant's current documentation: the default RRF constant of
-  the Qdrant version in use, the Chinese tokenizer, and per-tenant IDF. All three are UNKNOWN today. The Python BM25 in
-  the experiment only estimates the gain and does not represent the online configuration.
+- **The three checks before BM25 lands are answered** (ADR-0083, read 2026-10-21 against Qdrant v1.19.0, the pinned
+  version). The default RRF constant is `DEFAULT_RRF_K = 2`, scoring `1 / (position + k)` on 0-based positions; the
+  gateway does not use server-side fusion (ADR-0083 V6, D-C). The Chinese tokenizer is `options.tokenizer =
+  "multilingual"` (V3). Per-tenant IDF is `params.idf.corpus`, set to the authorization filter (V5, D-A). E-RET-PB2's
+  Python BM25 only estimated the gain; E-RET-PB5 then measured Qdrant's own `qdrant/bm25` leg (ADR-0083 Evidence).
 - **Local rerank** (bge-reranker-v2-m3 against Qwen3-Reranker-0.6B) comes after recall and is chosen by p95 measured on
   the target machine (E-RET-5). Running models on the local machine needs the owner's decision.
 
@@ -286,7 +288,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 | T-RET-3 | D-D after E-RET-2: query role and fingerprint | G-RET-4 |
 | T-RET-4 | D-B: prefix-grouped warm-up scheduling; fixed prefix only if E-CACHE-3 passes | G-RET-2 |
 | T-RET-5 | D-C: vector reuse (same batch as T-DOC-2, ADR-0079) | G-RET-5 |
-| T-RET-6 | After E-RET-1 / 3: candidate-depth configuration (`cand_multiplier`) and the BM25 leg | G-RET-3 |
+| T-RET-6 | After E-RET-1 / 3, split by ADR-0083: T-RET-6a (docs: ADR-0083 and its Baseline edits), T-RET-6b (indexing and backfill of the `bm25` vector), T-RET-6c (recall: `cand_multiplier`, `sparse_leg_depth`, `rrf_k`, the BM25 leg, RRF, lanes). `cand_multiplier` ships with T-RET-6c | G-RET-3, extended to every leg by T-RET-6c (ADR-0083 D-F) |
 | Later | Local rerank and the D-F pair cache, after E-RET-5; no card yet | |
 
 Code state behind the T-RET-1 split (design §19.5 note, 2026-10-20): `byok` has one reply protocol, OpenAI-compatible, so
