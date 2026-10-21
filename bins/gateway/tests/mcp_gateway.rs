@@ -16057,9 +16057,9 @@ fn native_mcp_memory_grep_counts_pages_and_excludes() {
                 Err(ErrorCode::CannotEstablishCompleteness),
                 "a scan over budget is refused, never a guessed total"
             );
-            // §79.2 / T-CI-1: the 20 000 rows above were never analysed (planner estimate: 1 row), so the fixture's
-            // `Drop` ran its `memory_id IN (SELECT ...)` deletes as a nested loop, ~200 s. ANALYZE after the 1 ms
-            // assertion keeps that plan untouched; it only restores a hash semi join for the teardown.
+            // §79.2 / T-CI-1: the 20 000 rows above are unanalysed (planner estimate: 1 row), so the fixture's `Drop`
+            // ran its `memory_id IN (SELECT ...)` deletes as a nested loop (26-136 s in CI). It runs after the last
+            // assertion so the asserted scan sees the same statistics as before; only the teardown gets a hash semi join.
             handle
                 .admin
                 .batch_execute("ANALYZE private.memory_records, private.memory_evidence")
