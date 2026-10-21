@@ -836,14 +836,8 @@ fn has_horizon_sample(body: &str) -> bool {
 
 /// Asserts every closed table_key renders `months`.
 fn assert_horizon(body: &str, months: i64) {
-    for table in [
-        "model_call_ledger",
-        "stage_runs",
-        "messages",
-        "maintenance_receipts",
-        "events",
-        "audit_events",
-    ] {
+    // Every closed key, so a table added to the enum is asserted without touching this test (§41.2, ADR-0063 D-K).
+    for table in humaux_adapters::maintenance_repo::PartitionTable::ALL.map(|t| t.label()) {
         assert_eq!(
             sample(
                 body,

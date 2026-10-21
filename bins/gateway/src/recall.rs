@@ -1,9 +1,9 @@
 //! `gateway::recall` — Native authenticated semantic recall wiring.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell,
-//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
+//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
-//! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for cand_k for this request's workspace stream only; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions search() exhaustively and is reported only when every lap followed LAP_SEQUENCE]
-//! Spec: Baseline §17.3; §23.3; §33; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056
+//! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for cand_k for this request's workspace stream only; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions answer() exhaustively and is reported only when every lap followed LAP_SEQUENCE; search() hands the query-hash log row to a bounded, supervised spawn after answer() returns, once per answered recall, and never awaits the insert, so no lap, no LAP_SEQUENCE entry, no response byte and no handler deadline depends on it, and a failed or dropped insert never fails the recall (ADR-0081 D-A)]
+//! Spec: Baseline §17.3; §19.1; §23.3; §33; §48.1; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056; ADR-0081
 //!
 //! This module composes the existing request builder, the retrieval-worker query embedding
 //! (which alone seals the query, ADR-0056 D-C), same-Cell Qdrant candidate lookup, and the sole
@@ -11,7 +11,7 @@
 
 use std::{
     collections::BTreeSet,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -24,12 +24,16 @@ use humaux_adapters::{
         query_dense, query_dense_groups_bounded,
     },
     read_materialize::MaterializedItem,
+    retrieval_query_log::QueryLogCounts,
     retrieve::{
-        IndexFace, MaterializedPrivateReadServing, grouped_recall,
-        materialize_private_read_serving_about, tombstoned_source_seqs, visible_index_count,
+        IndexFace, MaterializedPrivateReadServing, QueryHmac, RetrieveError, grouped_recall,
+        materialize_private_read_serving_about, query_hmac, query_log_limits, record_recall_query,
+        tombstoned_source_seqs, visible_index_count,
     },
     serving_repo::family_read_state,
 };
+use tokio::sync::Semaphore;
+
 use humaux_application::affect::rerank_by_mood;
 use humaux_application::{
     retrieval_embedding_port::{
@@ -42,7 +46,7 @@ use humaux_domain::{
     affect::{AffectFilter, MoodPoint},
     error::ErrorCode,
     identity::AuthorizationScope,
-    ids::WorkspaceId,
+    ids::{TenantId, WorkspaceId},
     subject::SubjectId,
 };
 use humaux_infra_cell::{
@@ -91,6 +95,8 @@ pub struct SemanticRecallRuntime {
     /// handler timeout (`bins/gateway/src/guard.rs::GuardSettings::handler_timeout`), not a
     /// literal (§78.1).
     handler_timeout: Duration,
+    /// ADR-0081 D-A D5: the query-hash log's in-flight writes and their deadline, derived from the pool on first use.
+    query_log_gate: OnceLock<(Arc<Semaphore>, Duration)>,
 }
 
 /// `ContextBootstrap` derives `Debug` and now carries an optional handle to this runtime, so
@@ -131,6 +137,20 @@ impl SemanticRecallRuntime {
             embedding_version,
             dimension,
             handler_timeout,
+            query_log_gate: OnceLock::new(),
+        })
+    }
+
+    /// At most a quarter of the pool (minimum one) writes log rows at once, so the log can never take the answer path's
+    /// connections, and a write lives no longer than the pool's own acquire timeout. Both derive from the pool's
+    /// registered settings (§78.1: no new key).
+    fn query_log_gate(&self, pool: &RuntimeDbPool) -> &(Arc<Semaphore>, Duration) {
+        self.query_log_gate.get_or_init(|| {
+            let (max_connections, acquire_timeout) = query_log_limits(pool);
+            let permits = usize::try_from(max_connections / 4)
+                .unwrap_or(usize::MAX)
+                .max(1);
+            (Arc::new(Semaphore::new(permits)), acquire_timeout)
         })
     }
 
@@ -215,7 +235,7 @@ pub struct RecallSearchRequest {
     pub mood_congruence: Option<MoodPoint>,
 }
 
-/// ADR-0055 D-E: the fixed, exhaustive partition of [`search`] reported as
+/// ADR-0055 D-E: the fixed, exhaustive partition of [`answer`] reported as
 /// `provenance.stage_ms` — every `.await` belongs to exactly one stage, so the stage sum accounts
 /// for the request's own wall time (RQ-5 attribution).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -245,7 +265,7 @@ const STAGE_NAMES: [&str; 8] = [
     "route", "planner", "scan", "embed", "qdrant", "hydrate", "rerank", "assemble",
 ];
 
-/// The one lap order [`search`] takes on its success path (route is entered twice: before and
+/// The one lap order [`answer`] takes on its success path (route is entered twice: before and
 /// after the planner). A lap is attributed "time since the previous lap", so a dropped or moved
 /// lap would silently fold its stage into the next one and keep the sum whole; [`StageClock`]
 /// therefore checks every lap against this sequence.
@@ -316,7 +336,16 @@ impl StageClock {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Keep the one native semantic-recall request/response chain together.
+/// Answers one `recall.search`, then hands its query-hash log row off (ADR-0081 D-A, T-RET-1b).
+///
+/// The row is handed off after `answer` has produced the envelope and is never awaited here, so the stage clock,
+/// `LAP_SEQUENCE`, the response bytes and the handler's `execution_limit` (`guard.rs`) are exactly what they were
+/// without the log: a slow log (a lock wait, a connection acquire, a slow COMMIT) cannot push an answered recall past
+/// its deadline. A failed insert never fails the recall: partitions have no DEFAULT leaf, so a missed
+/// `retention create-partitions` makes every insert raise 23514 (Baseline §48.1), and an answered recall must not turn
+/// into an error for that.
+// ponytail: no metric for a missed row; reconcile `ops.retrieval_query_log` row counts against
+// `humaux_retrieval_requests_total`. A counter is the upgrade if the gap ever needs an alert.
 pub async fn search(
     pool: Arc<RuntimeDbPool>,
     runtime: Arc<SemanticRecallRuntime>,
@@ -326,6 +355,115 @@ pub async fn search(
     bootstrap: ContextBootstrap,
     input: RecallSearchRequest,
 ) -> Result<PendingEnvelope<ToolOutput>, ErrorCode> {
+    // Everything the row needs is computed here, on the trusted scope and the request, before the hand-off: the bytes
+    // the query-embedding cache keys on (ADR-0081 D-A D1) are hashed before `answer` consumes the request, and no query
+    // text and no authorization object leave this function.
+    let digest = query_hmac(authorization.tenant_id(), input.query.as_bytes());
+    let (tenant_id, user_id) = (
+        authorization.tenant_id(),
+        authorization.user_id().map(|user| user.0),
+    );
+    let workspace_id = input.workspace_id;
+    let (log_pool, log_runtime) = (Arc::clone(&pool), Arc::clone(&runtime));
+    let (pending, counts) = answer(
+        pool,
+        runtime,
+        catalog,
+        authorization,
+        request_id,
+        bootstrap,
+        input,
+    )
+    .await?;
+    match digest {
+        Ok(digest) => hand_off_query_log(
+            &log_pool,
+            &log_runtime,
+            request_id,
+            QueryLogJob {
+                tenant_id,
+                workspace_id,
+                user_id,
+                digest,
+                counts,
+            },
+        ),
+        Err(error) => report_query_log_failure(request_id, &query_log_failure_reason(&error)),
+    }
+    Ok(pending)
+}
+
+/// One query-hash log row, complete: scope ids, the keyed digest and the counts. Holds no query text.
+struct QueryLogJob {
+    tenant_id: TenantId,
+    workspace_id: WorkspaceId,
+    user_id: Option<Uuid>,
+    digest: QueryHmac,
+    counts: QueryLogCounts,
+}
+
+/// Spawns the insert when a permit is free, drops the row (reported) when not. The task is bounded by the pool's acquire
+/// timeout and releases its permit when it ends, so a stuck log can neither linger nor starve the pool.
+fn hand_off_query_log(
+    pool: &Arc<RuntimeDbPool>,
+    runtime: &SemanticRecallRuntime,
+    request_id: Uuid,
+    job: QueryLogJob,
+) {
+    let (gate, deadline) = runtime.query_log_gate(pool);
+    let deadline = *deadline;
+    let Ok(permit) = Arc::clone(gate).try_acquire_owned() else {
+        report_query_log_failure(request_id, "dropped_backpressure");
+        return;
+    };
+    let pool = Arc::clone(pool);
+    // ponytail: rows in flight at shutdown are lost; observability only
+    tokio::spawn(async move {
+        let _permit = permit;
+        let QueryLogJob {
+            tenant_id,
+            workspace_id,
+            user_id,
+            digest,
+            counts,
+        } = job;
+        let logged = tokio::time::timeout(
+            deadline,
+            record_recall_query(&pool, tenant_id, workspace_id, user_id, &digest, &counts),
+        )
+        .await;
+        match logged {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                report_query_log_failure(request_id, &query_log_failure_reason(&error));
+            }
+            Err(_elapsed) => report_query_log_failure(request_id, "timeout"),
+        }
+    });
+}
+
+/// The SQLSTATE or the key-set class only, never driver text or any part of the query.
+fn query_log_failure_reason(error: &RetrieveError) -> String {
+    match error {
+        RetrieveError::TokenKeysUnset => "token_keys_unset".to_owned(),
+        other => other.sqlstate().unwrap_or_else(|| "unknown".to_owned()),
+    }
+}
+
+fn report_query_log_failure(request_id: Uuid, reason: &str) {
+    eprintln!("humaux-gateway: recall request_id={request_id} query_log_failed reason={reason}");
+}
+
+#[allow(clippy::too_many_lines)] // Keep the one native semantic-recall request/response chain together.
+async fn answer(
+    pool: Arc<RuntimeDbPool>,
+    runtime: Arc<SemanticRecallRuntime>,
+    catalog: Arc<CanonicalCatalog>,
+    authorization: AuthorizationScope,
+    request_id: Uuid,
+    bootstrap: ContextBootstrap,
+    input: RecallSearchRequest,
+) -> Result<(PendingEnvelope<ToolOutput>, QueryLogCounts), ErrorCode> {
     let mut clock = StageClock::start();
     if input.mode.as_deref().is_some_and(|mode| mode != "semantic")
         || input.completeness_request.as_deref() == Some("required")
@@ -399,6 +537,7 @@ pub async fn search(
         (None, Some((ledger, pipeline))) => {
             eprintln!("humaux-gateway: recall request_id={request_id} no_serving_projection");
             let (evidence, knowledge) = pipeline.blocks();
+            // No dense lane ran: nothing was a candidate, visible or returned, and the answer carries no stage_ms.
             return no_serving_projection_envelope(
                 &retrieval,
                 &bootstrap.binary_build,
@@ -416,7 +555,17 @@ pub async fn search(
                         is_error: false,
                     })
                 },
-            );
+            )
+            .map(|pending| {
+                let counts = QueryLogCounts {
+                    cand_k: retrieval.cand_k(),
+                    candidates: 0,
+                    visible: None,
+                    returned: 0,
+                    stage_ms: None,
+                };
+                (pending, counts)
+            });
         }
         (None, None) => {
             eprintln!("humaux-gateway: recall request_id={request_id} no_serving_projection");
@@ -731,7 +880,7 @@ fn accepted_output(
     visible: Option<u64>,
     explicit_mode: bool,
     mut clock: StageClock,
-) -> Result<PendingEnvelope<ToolOutput>, ErrorCode> {
+) -> Result<(PendingEnvelope<ToolOutput>, QueryLogCounts), ErrorCode> {
     let items = render_items(materialized.bodies.items);
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let candidate_count = u32::try_from(candidate_count).map_err(|_| ErrorCode::Internal)?;
@@ -774,7 +923,9 @@ fn accepted_output(
         .wire_class()
         .map_or("CANNOT_ESTABLISH", QueryClass::as_wire_name);
     let substituted = dense_lane_substitution(request.planner_decision(), explicit_mode);
-    dense_lane_outcome_block(
+    // The object the answer reports as `provenance.stage_ms`, kept for the query-hash log (ADR-0081 D-A).
+    let mut stage_ms = None;
+    let pending = dense_lane_outcome_block(
         request,
         CompletenessInputs {
             lane_status: &lane_status,
@@ -828,7 +979,9 @@ fn accepted_output(
                 .and_then(Value::as_object_mut)
                 .ok_or(ErrorCode::Internal)?;
             provenance.insert("planner_class".to_owned(), json!(planner_class));
-            provenance.insert("stage_ms".to_owned(), clock.to_json());
+            let report = clock.to_json();
+            stage_ms = Some(report.clone());
+            provenance.insert("stage_ms".to_owned(), report);
             catalog.validate_output(ToolName::Recall, &value)?;
             let text = serde_json::to_string(&value).map_err(|_| ErrorCode::Internal)?;
             Ok(ToolOutput {
@@ -837,7 +990,15 @@ fn accepted_output(
                 is_error: false,
             })
         },
-    )
+    )?;
+    let counts = QueryLogCounts {
+        cand_k: request.cand_k(),
+        candidates: candidate_count,
+        visible,
+        returned,
+        stage_ms,
+    };
+    Ok((pending, counts))
 }
 
 fn render_items(items: Vec<MaterializedItem>) -> Vec<Value> {

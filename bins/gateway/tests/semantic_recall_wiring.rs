@@ -3,20 +3,22 @@
 //!   humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval-provider,
 //!   humaux-retrieval-worker, humaux-testkit, postgres, serde_json, time, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[ops.retrieval_embedding_rpc_calls,
-//!   projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements],
+//!   ops.retrieval_query_log, projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements],
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*),
 //!   UDS(retrieval-worker), UDS(serve)]; env=[CARGO_MANIFEST_DIR, HUMAUX_GATEWAY_PG_DSN,
 //!   HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::qdrant,
+//!   adapters::retrieve,
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
 //!   contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error,
 //!   domain::identity, domain::ids, domain::memory, gateway::context, gateway::recall, gateway::remember,
 //!   gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
-//!   infra-cell::resource, infra-cell::transport, projection::card, protocol::mcp_catalog,
+//!   infra-cell::resource, infra-cell::transport, projection::card, protocol::mcp,
+//!   protocol::mcp_catalog,
 //!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures; a missing fixture fails the test rather than skipping it]
-//! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065
+//! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065; ADR-0081
 //!
 //! Drives `humaux_gateway::recall::search` directly (no HTTP/MCP layer — that surface is
 //! already covered by `tests/mcp_gateway.rs`'s native MCP acceptance tests) against a real
@@ -28,7 +30,10 @@
 //! closed without hanging or panicking; (4) `HttpIntraCellTransport` really denies a write under
 //! a `QdrantReadOnly` permit (ADR-0014); (5) a wrong-dimension vector from the embedding port
 //! never gets hydrated; (6) `bootstrap.rs` wires `with_semantic_recall` exactly once; (8) a
-//! transient query-embedding failure fails fast after one worker call (ADR-0065 D-G).
+//! transient query-embedding failure fails fast after one worker call (ADR-0065 D-G); (9) the query-hash log
+//! `ops.retrieval_query_log` (T-RET-1b, ADR-0081 D-A): one row per answered recall, the query only as a keyed per-tenant
+//! HMAC, insert-only and tenant-isolated for `role_gateway`, written off the answer path, and a failing or blocked insert
+//! never fails or delays the recall.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -90,7 +95,7 @@ use humaux_retrieval_provider::{
         RerankScoreSemantics,
     },
 };
-use humaux_testkit::run_db_fixture;
+use humaux_testkit::{DbIntegrationFixture, run_db_fixture};
 
 const DIMENSION: u32 = 4;
 const EMBEDDING_VERSION: &str = "embed-v1";
@@ -1282,4 +1287,613 @@ fn a_transient_query_embedding_failure_fails_fast_with_one_worker_call() {
                 .expect("cleanup seeded fail-fast rows");
         }
     });
+}
+
+// ============================================================================
+// T-RET-1b (ADR-0081 D-A): the query-hash log `ops.retrieval_query_log`, written by `recall::search` once per
+// recall that answers Ok. Every recall below embeds to the one seeded point's vector, so each answered recall finds
+// the one seeded Memory (candidates = returned = 1) over a real Qdrant collection and a real `role_gateway` pool.
+// ============================================================================
+
+/// The text whose vector the seeded point carries; the stub embedding port answers it for every query.
+const LOG_SEED_TEXT: &str = "operation receipt scoped context";
+
+/// One fixture tenant's answerable recall environment: placement, serving checkpoint, one seeded point in a disposable
+/// Qdrant collection, and a stub embedding port (no worker, no provider).
+struct LogEnv {
+    pool: Arc<humaux_adapters::postgres::RuntimeDbPool>,
+    catalog: Arc<CanonicalCatalog>,
+    collection: String,
+    setup_registry: IntraCellResourceRegistry,
+    setup_transport: Arc<HttpIntraCellTransport>,
+    registry: IntraCellResourceRegistry,
+    transport: Arc<HttpIntraCellTransport>,
+}
+
+impl LogEnv {
+    fn seed(handle: &mut Handle) -> Self {
+        let context_row = handle.seed_workspace_visible_context_record();
+        let point_id = Uuid::new_v4();
+        let mut admin = handle.owner_client().expect("owner client for setup");
+        seed_registry_row(
+            &mut admin,
+            handle.tenant_id,
+            handle.workspace_id,
+            context_row.memory_id,
+            point_id,
+        );
+        seed_checkpoint(&mut admin, handle.tenant_id, handle.workspace_id);
+        let collection = format!("t_ret_1b_{}", Uuid::now_v7().simple());
+        seed_tenant_placement(&mut admin, handle.tenant_id, &collection);
+        let cell = CellId(Uuid::now_v7());
+        let caller = CallerId("gateway-wiring-test".to_owned());
+        let setup_registry = setup_registry(cell, caller.clone());
+        let setup_transport = qdrant_transport(&setup_registry);
+        let registry = cell_registry(cell, caller);
+        let transport = qdrant_transport(&registry);
+        let (tenant_id, workspace_id) = (handle.tenant_id, handle.workspace_id);
+        let pool = handle.rt.block_on(async {
+            create_collection(&setup_transport, &setup_registry, &collection).await;
+            let permit = authorize_cell_access(
+                &setup_registry,
+                IntraCellResource::QDRANT_REST,
+                Duration::from_secs(60),
+            )
+            .expect("setup upsert permit");
+            let point_payload = payload(tenant_id, workspace_id, time::OffsetDateTime::now_utc());
+            upsert(
+                setup_transport.as_ref(),
+                &permit,
+                &collection,
+                &[(
+                    PointId::Uuid(point_id),
+                    &point_payload,
+                    fixed_vector(LOG_SEED_TEXT),
+                )],
+                ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+            )
+            .await
+            .expect("real Qdrant upsert");
+            Arc::new(
+                // dep: PostgreSQL(role_gateway) — test fixture pool for the semantic recall wiring suite
+                humaux_adapters::postgres::RuntimeDbPool::connect(&required(
+                    "HUMAUX_GATEWAY_PG_DSN",
+                ))
+                .await
+                .expect("real role_gateway pool"),
+            )
+        });
+        Self {
+            pool,
+            catalog: Arc::new(CanonicalCatalog::load().expect("catalog")),
+            collection,
+            setup_registry,
+            setup_transport,
+            registry,
+            transport,
+        }
+    }
+
+    fn runtime(&self) -> Arc<SemanticRecallRuntime> {
+        let port: Arc<dyn RetrievalEmbeddingPort> =
+            Arc::new(FixedOutcomePort::new(RetrievalEmbeddingOutcome::Embedded {
+                vector: fixed_vector(LOG_SEED_TEXT),
+                provider_id: "wiring-test-provider".to_owned(),
+                model_id: "wiring-test-embedding".to_owned(),
+                model_revision: "v1".to_owned(),
+                dimension: DIMENSION,
+            }));
+        Arc::new(
+            SemanticRecallRuntime::new(
+                port,
+                self.transport.clone(),
+                self.registry.clone(),
+                SemanticRecallVersions {
+                    embedding_version: EMBEDDING_VERSION.to_owned(),
+                    dimension: DIMENSION,
+                },
+                Duration::from_secs(10),
+            )
+            .expect("trusted semantic runtime"),
+        )
+    }
+
+    /// One `recall::search` over `pool`, finished the way the MCP layer finishes it.
+    fn recall_on(
+        &self,
+        pool: &Arc<humaux_adapters::postgres::RuntimeDbPool>,
+        handle: &Handle,
+        request: RecallSearchRequest,
+    ) -> Result<humaux_protocol::mcp::ToolOutput, ErrorCode> {
+        handle
+            .rt
+            .block_on(recall::search(
+                Arc::clone(pool),
+                self.runtime(),
+                Arc::clone(&self.catalog),
+                handle.auth.clone(),
+                Uuid::now_v7(),
+                context_bootstrap(handle),
+                request,
+            ))
+            .map(|pending| pending.finish())
+    }
+
+    fn recall(
+        &self,
+        handle: &Handle,
+        query: &str,
+    ) -> Result<humaux_protocol::mcp::ToolOutput, ErrorCode> {
+        self.recall_on(
+            &self.pool,
+            handle,
+            recall_request(query, handle.workspace_id),
+        )
+    }
+
+    fn teardown(&self, handle: &Handle) {
+        handle.rt.block_on(delete_collection(
+            &self.setup_transport,
+            &self.setup_registry,
+            &self.collection,
+        ));
+        let mut admin = handle.owner_client().expect("owner client for cleanup");
+        admin
+            .execute(
+                "DELETE FROM projection.tenant_placements WHERE tenant_id=$1",
+                &[&handle.tenant_id],
+            )
+            .expect("cleanup seeded tenant placement row");
+    }
+}
+
+/// A second fixture tenant on the same database (the fixture's serial lock is already held by the caller).
+fn second_tenant() -> Handle {
+    let Ok(handle) = Fixture::isolate() else {
+        panic!("missing object: a second operation_receipt fixture tenant (T-RET-1b)");
+    };
+    handle
+}
+
+/// One `ops.retrieval_query_log` row as the owner reads it, plus the row cast to text (`t::text`).
+struct LogRow {
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    user_id: Option<Uuid>,
+    query_hmac: Vec<u8>,
+    key_id: String,
+    cand_k: i32,
+    candidates: i32,
+    visible: Option<i32>,
+    returned: i32,
+    stage_ms: Option<serde_json::Value>,
+    as_text: String,
+}
+
+/// The tenant's log rows, oldest first. Read under the tenant binding, so FORCE RLS admits the owner too.
+fn log_rows(admin: &mut Client, tenant_id: Uuid) -> Vec<LogRow> {
+    let mut txn = admin.transaction().expect("begin log read");
+    txn.execute(
+        "SELECT set_config('humaux.tenant_id', $1, true)",
+        &[&tenant_id.to_string()],
+    )
+    .expect("bind the tenant");
+    let rows = txn
+        .query(
+            "SELECT tenant_id, workspace_id, user_id, query_hmac, key_id, cand_k, candidates, visible, returned, \
+                    stage_ms::text, t::text \
+               FROM ops.retrieval_query_log t WHERE tenant_id = $1 ORDER BY called_at, log_id",
+            &[&tenant_id],
+        )
+        .expect("read the query log");
+    rows.iter()
+        .map(|row| LogRow {
+            tenant_id: row.get(0),
+            workspace_id: row.get(1),
+            user_id: row.get(2),
+            query_hmac: row.get(3),
+            key_id: row.get(4),
+            cand_k: row.get(5),
+            candidates: row.get(6),
+            visible: row.get(7),
+            returned: row.get(8),
+            stage_ms: row
+                .get::<_, Option<String>>(9)
+                .map(|text| serde_json::from_str(&text).expect("stage_ms is JSON")),
+            as_text: row.get(10),
+        })
+        .collect()
+}
+
+/// The tenant's log rows once `expected` of them have landed. The log is written by a spawned task after the answer
+/// (ADR-0081 D-A D5), so a row is polled for within a bound, never slept for; a shortfall returns what is there.
+fn wait_log_rows(admin: &mut Client, tenant_id: Uuid, expected: usize) -> Vec<LogRow> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let rows = log_rows(admin, tenant_id);
+        if rows.len() >= expected || std::time::Instant::now() >= deadline {
+            return rows;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A JSON value with every leaf replaced by its type name: a response keeps its shape whatever its numbers and ids.
+fn shape(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(shape).collect()),
+        Value::Null => Value::from("null"),
+        Value::Bool(_) => Value::from("bool"),
+        Value::Number(_) => Value::from("number"),
+        Value::String(_) => Value::from("string"),
+    }
+}
+
+/// T-RET-1b L1 (ADR-0081 D-A D5): one log row per recall that answers Ok — a repeated query and a second tenant each
+/// count — and none for a refused recall (an undelivered `mode`, `limit` 0). The rows carry the scope's tenant,
+/// workspace and user, the envelope's counts and its `provenance.stage_ms`.
+/// Fault: skip the insert for the repeated query, or insert twice ⇒ the row count moves ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario: two tenants, four answers, two refusals, then every row
+fn query_log_has_one_row_per_answered_recall_and_none_for_a_refused_one() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_query_log_rows", |mut ha| {
+        ha.assert_gateway_login();
+        let mut hb = second_tenant();
+        let (ea, eb) = (LogEnv::seed(&mut ha), LogEnv::seed(&mut hb));
+        let (repeated, another) = ("t-ret-1b repeated query", "t-ret-1b another query");
+        // The refusals go first: a row wrongly written for one would be spawned before the answered rows and so be
+        // counted by the time those have landed.
+        let mut undelivered = recall_request(repeated, ha.workspace_id);
+        undelivered.mode = Some("keyword".to_owned());
+        assert_eq!(
+            ea.recall_on(&ea.pool, &ha, undelivered).err(),
+            Some(ErrorCode::DependencyUnavailable)
+        );
+        let mut limit_zero = recall_request(repeated, ha.workspace_id);
+        limit_zero.limit = Some(0);
+        assert_eq!(
+            ea.recall_on(&ea.pool, &ha, limit_zero).err(),
+            Some(ErrorCode::InvalidInput)
+        );
+        let answers: Vec<_> = [repeated, repeated, another]
+            .iter()
+            .map(|query| ea.recall(&ha, query).expect("tenant A's recall answers"))
+            .collect();
+        eb.recall(&hb, repeated).expect("tenant B's recall answers");
+
+        let mut admin = ha.owner_client().expect("owner client");
+        let (rows_a, rows_b) = (
+            wait_log_rows(&mut admin, ha.tenant_id, 3),
+            wait_log_rows(&mut admin, hb.tenant_id, 1),
+        );
+        assert_eq!(
+            (rows_a.len(), rows_b.len()),
+            (3, 1),
+            "one row per answered recall, none for the two refused ones"
+        );
+        for (row, handle) in rows_a
+            .iter()
+            .map(|row| (row, &ha))
+            .chain(rows_b.iter().map(|row| (row, &hb)))
+        {
+            assert_eq!(
+                (row.tenant_id, row.workspace_id, row.user_id),
+                (handle.tenant_id, handle.workspace_id, Some(handle.user_id)),
+                "the scope's tenant, workspace and user"
+            );
+        }
+        for row in rows_a.iter().chain(&rows_b) {
+            // One seeded point: the live index count is 1 and the one candidate is the one Memory.
+            assert_eq!(
+                (row.visible, row.candidates),
+                (Some(1), 1),
+                "a healthy projection states a real count (§23.1②)"
+            );
+        }
+        // The rows land in no fixed order: the third answer's row is the one holding the digest of its query.
+        let third =
+            humaux_adapters::retrieve::query_hmac(TenantId(ha.tenant_id), another.as_bytes())
+                .expect("the fixture installed the token key set");
+        let row = rows_a
+            .iter()
+            .find(|row| row.query_hmac == third.mac())
+            .expect("the third answer's row");
+        let envelope = &answers[2].structured_content;
+        assert_eq!(
+            (row.cand_k, row.candidates, row.returned),
+            (
+                i32::try_from(
+                    envelope["provenance"]["profile"]["cand_k"]
+                        .as_i64()
+                        .unwrap()
+                )
+                .unwrap(),
+                i32::try_from(
+                    envelope["completeness"]["candidate_count"]
+                        .as_i64()
+                        .unwrap()
+                )
+                .unwrap(),
+                i32::try_from(envelope["completeness"]["returned"].as_i64().unwrap()).unwrap(),
+            ),
+            "the counts are the envelope's own"
+        );
+        assert_eq!(
+            row.visible.map(i64::from),
+            envelope["pipeline"]["projection"]["visible"].as_i64(),
+            "visible is the envelope's own (NULL = not established)"
+        );
+        assert_eq!(
+            row.stage_ms.as_ref(),
+            Some(&envelope["provenance"]["stage_ms"]),
+            "stage_ms is the object the answer carried"
+        );
+        ea.teardown(&ha);
+        eb.teardown(&hb);
+    });
+}
+
+/// T-RET-1b L2 (ADR-0081 D-A D3): the log row, cast to text, holds neither the query, nor its UTF-8 hex, nor its
+/// unkeyed `sha256` hex, and the table has no text column but the 8-hex `key_id`.
+/// Fault: store the unkeyed `sha256(query)` ⇒ its hex is in the row ⇒ red.
+#[test]
+fn query_log_row_holds_no_plaintext_hex_or_unkeyed_digest_of_the_query() {
+    run_db_fixture::<Fixture, _>(
+        "semantic_recall_wiring_query_log_no_plaintext",
+        |mut handle| {
+            handle.assert_gateway_login();
+            let env = LogEnv::seed(&mut handle);
+            let query = format!("t-ret-1b distinctive query {}", Uuid::now_v7().simple());
+            env.recall(&handle, &query).expect("the recall answers");
+            let mut admin = handle.owner_client().expect("owner client");
+            let rows = wait_log_rows(&mut admin, handle.tenant_id, 1);
+            assert_eq!(rows.len(), 1, "one answered recall, one row");
+            let probe = admin
+                .query_one(
+                    "SELECT encode(convert_to($1::text, 'UTF8'), 'hex'), \
+                        encode(sha256(convert_to($1::text, 'UTF8')), 'hex')",
+                    &[&query],
+                )
+                .expect("hex and digest of the query");
+            let (query_hex, digest_hex): (String, String) = (probe.get(0), probe.get(1));
+            for (what, needle) in [
+                ("the query", query.as_str()),
+                ("its UTF-8 hex", query_hex.as_str()),
+                ("its unkeyed sha256 hex", digest_hex.as_str()),
+            ] {
+                assert!(
+                    !rows[0].as_text.contains(needle),
+                    "{what} appears in the log row: {}",
+                    rows[0].as_text
+                );
+            }
+            let text_columns: Vec<String> = admin
+                .query(
+                    "SELECT column_name::text FROM information_schema.columns \
+                  WHERE table_schema = 'ops' AND table_name = 'retrieval_query_log' \
+                    AND data_type IN ('text', 'character varying', 'character') ORDER BY 1",
+                    &[],
+                )
+                .expect("text columns of the log")
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            assert_eq!(text_columns, ["key_id"], "no column could hold the query");
+            env.teardown(&handle);
+        },
+    );
+}
+
+/// T-RET-1b L3 (ADR-0081 D-A D2): the digest is repeatable for one tenant, different for another tenant, never the
+/// plain `sha256(query)`, equals the keyed derivation under the installed token key, and `key_id` is that key's kid.
+/// Fault: drop the tenant from the derivation ⇒ the two tenants' digests are equal ⇒ red.
+#[test]
+fn query_hmac_is_keyed_tenant_separated_and_tagged_with_the_installed_kid() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_query_log_keyed", |mut ha| {
+        ha.assert_gateway_login();
+        let mut hb = second_tenant();
+        let (ea, eb) = (LogEnv::seed(&mut ha), LogEnv::seed(&mut hb));
+        let query = "t-ret-1b keyed query";
+        ea.recall(&ha, query).expect("tenant A answers");
+        ea.recall(&ha, query).expect("tenant A answers again");
+        eb.recall(&hb, query).expect("tenant B answers");
+        let mut admin = ha.owner_client().expect("owner client");
+        let (rows_a, rows_b) = (
+            wait_log_rows(&mut admin, ha.tenant_id, 2),
+            wait_log_rows(&mut admin, hb.tenant_id, 1),
+        );
+        assert_eq!((rows_a.len(), rows_b.len()), (2, 1));
+        assert_eq!(
+            rows_a[0].query_hmac, rows_a[1].query_hmac,
+            "the same query in the same tenant gives the same digest"
+        );
+        assert_ne!(
+            rows_a[0].query_hmac, rows_b[0].query_hmac,
+            "the same query in another tenant gives another digest"
+        );
+        let plain: Vec<u8> = admin
+            .query_one("SELECT sha256(convert_to($1::text, 'UTF8'))", &[&query])
+            .expect("plain digest")
+            .get(0);
+        for row in [&rows_a[0], &rows_b[0]] {
+            assert_ne!(
+                row.query_hmac, plain,
+                "the digest is keyed, not sha256(query)"
+            );
+            assert_eq!(row.query_hmac.len(), 32);
+        }
+        for (row, handle) in [(&rows_a[0], &ha), (&rows_b[0], &hb)] {
+            let expected =
+                humaux_adapters::retrieve::query_hmac(TenantId(handle.tenant_id), query.as_bytes())
+                    .expect("the fixture installed the token key set");
+            assert_eq!(row.query_hmac, expected.mac(), "the card's derivation");
+            assert_eq!(row.key_id, expected.key_id(), "the installed kid");
+        }
+        ea.teardown(&ha);
+        eb.teardown(&hb);
+    });
+}
+
+/// T-RET-1b L4 (ADR-0081 D-A D4): under the runtime role, an INSERT for another tenant is refused by RLS (the control
+/// insert for its own tenant is not), and SELECT, UPDATE and DELETE are refused outright.
+/// Fault: drop the policy's WITH CHECK clause or the policy itself ⇒ the cross-tenant insert lands, or the control
+/// insert is refused ⇒ red.
+#[test]
+fn query_log_is_insert_only_and_tenant_isolated_for_the_gateway_role() {
+    use postgres::error::SqlState;
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_query_log_isolation", |ha| {
+        ha.assert_gateway_login();
+        let hb = second_tenant();
+        let mut gateway = ha.gateway_client().expect("role_gateway login");
+        let insert = "INSERT INTO ops.retrieval_query_log \
+                        (tenant_id, workspace_id, query_hmac, key_id, cand_k, candidates, returned) \
+                      VALUES ($1, $2, decode(repeat('00', 32), 'hex'), '00000000', 0, 0, 0)";
+        let bind = "SELECT set_config('humaux.tenant_id', $1, true)";
+        let tenant_a = ha.tenant_id.to_string();
+        let mut txn = gateway.transaction().expect("begin");
+        txn.execute(bind, &[&tenant_a]).expect("bind tenant A");
+        assert_eq!(
+            txn.execute(insert, &[&ha.tenant_id, &ha.workspace_id])
+                .expect("the gateway inserts its own tenant's row"),
+            1
+        );
+        txn.rollback().expect("roll the control row back");
+        let mut txn = gateway.transaction().expect("begin");
+        txn.execute(bind, &[&tenant_a]).expect("bind tenant A");
+        let refused = txn
+            .execute(insert, &[&hb.tenant_id, &hb.workspace_id])
+            .expect_err("a cross-tenant insert is refused");
+        assert_eq!(
+            refused.code(),
+            Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+            "{refused}"
+        );
+        assert!(
+            refused
+                .as_db_error()
+                .is_some_and(|e| e.message().contains("row-level security")),
+            "the refusal is the policy's: {refused}"
+        );
+        drop(txn);
+        for (verb, sql) in [
+            ("SELECT", "SELECT count(*) FROM ops.retrieval_query_log"),
+            ("UPDATE", "UPDATE ops.retrieval_query_log SET cand_k = 0"),
+            ("DELETE", "DELETE FROM ops.retrieval_query_log"),
+        ] {
+            let denied = gateway
+                .execute(sql, &[])
+                .expect_err("the runtime role holds INSERT and nothing else");
+            assert_eq!(
+                denied.code(),
+                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+                "{verb}: {denied}"
+            );
+        }
+    });
+}
+
+/// T-RET-1b L6 (ADR-0081 D-A D5): a log write that cannot complete does not hold the answer. An owner transaction holds
+/// a SHARE lock on the log, so an INSERT waits; the recall, under an outer deadline that mirrors the guard's
+/// `execution_limit`, still answers Ok, no row exists while the lock is held, and the row lands once it is released.
+/// Fault: await the insert inline again ⇒ the answer waits on the lock past the deadline ⇒ red.
+#[test]
+fn a_blocked_log_does_not_hold_the_answer() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_query_log_blocked", |mut handle| {
+        handle.assert_gateway_login();
+        let env = LogEnv::seed(&mut handle);
+        let mut locker = handle.owner_client().expect("owner client");
+        let mut txn = locker.transaction().expect("begin lock holder");
+        txn.batch_execute("LOCK TABLE ops.retrieval_query_log IN SHARE MODE")
+            .expect("hold the log");
+        // `timeout` registers with the runtime when built, so it is built inside `block_on`, not as its argument.
+        let answered = handle.rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                recall::search(
+                    Arc::clone(&env.pool),
+                    env.runtime(),
+                    Arc::clone(&env.catalog),
+                    handle.auth.clone(),
+                    Uuid::now_v7(),
+                    context_bootstrap(&handle),
+                    recall_request("t-ret-1b blocked log", handle.workspace_id),
+                ),
+            )
+            .await
+        });
+        let _output = answered
+            .expect("the answer arrived within the handler deadline while the log was locked")
+            .expect("the recall answers")
+            .finish();
+        let mut reader = handle.owner_client().expect("owner client");
+        assert_eq!(
+            log_rows(&mut reader, handle.tenant_id).len(),
+            0,
+            "the insert is still waiting on the lock"
+        );
+        txn.commit().expect("release the log");
+        assert_eq!(
+            wait_log_rows(&mut reader, handle.tenant_id, 1).len(),
+            1,
+            "the row lands once the lock is released"
+        );
+        env.teardown(&handle);
+    });
+}
+
+/// T-RET-1b L5 (ADR-0081 D-A D5): with the log INSERT failing (every session of this pool starts read-only, so the
+/// recall's reads succeed and only the INSERT raises 25006) the recall still answers Ok, with the shape of a passing
+/// run, and no row is written.
+/// Fault: let the insert error propagate as the recall's error ⇒ the recall is refused ⇒ red.
+#[test]
+fn a_failing_log_insert_does_not_fail_the_recall() {
+    run_db_fixture::<Fixture, _>(
+        "semantic_recall_wiring_query_log_insert_failure",
+        |mut handle| {
+            handle.assert_gateway_login();
+            let env = LogEnv::seed(&mut handle);
+            let query = "t-ret-1b insert failure";
+            let passing = env.recall(&handle, query).expect("a passing run answers");
+            let mut admin = handle.owner_client().expect("owner client");
+            assert_eq!(wait_log_rows(&mut admin, handle.tenant_id, 1).len(), 1);
+            let read_only_dsn = format!(
+                "{}?options=-c%20default_transaction_read_only%3Don",
+                handle.gateway_dsn_for_process()
+            );
+            let read_only = handle.rt.block_on(async {
+                Arc::new(
+                    // dep: PostgreSQL(role_gateway) — test fixture pool whose sessions default to read-only
+                    humaux_adapters::postgres::RuntimeDbPool::connect(&read_only_dsn)
+                        .await
+                        .expect("read-only role_gateway pool"),
+                )
+            });
+            let degraded = env
+                .recall_on(
+                    &read_only,
+                    &handle,
+                    recall_request(query, handle.workspace_id),
+                )
+                .expect("the recall still answers when its log insert fails");
+            assert_eq!(
+                shape(&degraded.structured_content),
+                shape(&passing.structured_content),
+                "the response keeps the shape of a passing run"
+            );
+            // A follow-up recall on the healthy pool: once its row has landed, the failed insert has had its turn and
+            // left none, so the log holds exactly the two healthy rows.
+            env.recall(&handle, query)
+                .expect("a healthy recall answers");
+            assert_eq!(
+                wait_log_rows(&mut admin, handle.tenant_id, 2).len(),
+                2,
+                "the failed insert left no row"
+            );
+            env.teardown(&handle);
+        },
+    );
 }

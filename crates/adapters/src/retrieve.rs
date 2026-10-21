@@ -7,7 +7,8 @@
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
 //!   modules=[adapters::context_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
-//!   adapters::read_materialize, adapters::serving_repo, adapters::stream_repo, domain::affect, domain::error,
+//!   adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo,
+//!   domain::affect, domain::error,
 //!   domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::serving,
 //!   projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, tests, maintenance::switch_visible]
@@ -15,8 +16,9 @@
 //!   projection is a typed RetrieveError, never a stale answer passed off as caught up; the read-route visible count
 //!   is caller-scoped (family_probe), the visibility-free stream count serves ops callers only (ADR-0057 D-C);
 //!   the consistency token is MAC-verified before any field is parsed and carries no authorization (ADR-0059 D-G);
-//!   the RYW overlay never shows a rebuild generation's stream_log row (ADR-0064 D-A, E13)]
-//! Spec: Baseline §6.2.3, §15.5; ADR-0057; ADR-0059; ADR-0064
+//!   the RYW overlay never shows a rebuild generation's stream_log row (ADR-0064 D-A, E13); the query-hash log MAC is
+//!   derived here from the installed token key and leaves this module only as a digest and a kid (ADR-0081 D-A)]
+//! Spec: Baseline §6.2.3, §15.5; ADR-0057; ADR-0059; ADR-0064; ADR-0081
 //!
 //! **Why this lives in `humaux-adapters`, not `humaux-application`**: every function below
 //! that touches PostgreSQL needs `&RuntimeDbPool`, and [`crate::postgres::RuntimeDbPool`]'s
@@ -62,6 +64,7 @@ use crate::private_projection_registry::{
 };
 use crate::qdrant::{DenseCandidate, PointId, VisibleCountFilter, count_visible_excluding_seqs};
 use crate::read_materialize::{MaterializedBodies, materialize_final_bodies_about_in_txn};
+use crate::retrieval_query_log::{self, QueryLogCounts};
 use crate::serving_repo::{self, ServingRepoError};
 use crate::stream_repo::close_ledger_in_txn;
 
@@ -122,6 +125,18 @@ pub enum RetrieveError {
 impl From<sqlx::Error> for RetrieveError {
     fn from(e: sqlx::Error) -> Self {
         Self::Db(e)
+    }
+}
+
+impl RetrieveError {
+    /// The SQLSTATE of a database refusal, for an operator line that must carry a class and never driver text.
+    pub fn sqlstate(&self) -> Option<String> {
+        match self {
+            Self::Db(sqlx::Error::Database(refusal)) => {
+                refusal.code().map(|code| code.into_owned())
+            }
+            _ => None,
+        }
     }
 }
 
@@ -401,6 +416,65 @@ pub fn install_token_keys(keys: TokenKeys) -> Result<(), &'static str> {
 
 fn installed_token_keys() -> Result<&'static TokenKeys, RetrieveError> {
     TOKEN_KEYS.get().ok_or(RetrieveError::TokenKeysUnset)
+}
+
+/// ADR-0081 D-A: domain labels of the query-hash log's two derivations; they keep the per-tenant key, the query MAC and
+/// the token MAC ([`MAC_LABEL`]) apart under one token key.
+const QUERY_LOG_TENANT_LABEL: &[u8] = b"humaux.retrieval_query_log.tenant_key.v1";
+const QUERY_LOG_MAC_LABEL: &[u8] = b"humaux.retrieval_query_log.v1";
+
+/// ADR-0081 D-A: a recall query as `ops.retrieval_query_log` stores it — a per-tenant HMAC and the ADR-0059 kid of the
+/// token key it was derived from. Holds neither query bytes nor key bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryHmac {
+    mac: Vec<u8>,
+    key_id: String,
+}
+
+impl QueryHmac {
+    /// The 32-byte HMAC-SHA256.
+    pub fn mac(&self) -> &[u8] {
+        &self.mac
+    }
+
+    /// The kid of the current token key the per-tenant key was derived from.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+}
+
+/// `HMAC-SHA256(key, label ‖ 0x00 ‖ data)`.
+fn labelled_hmac(key: &[u8], label: &[u8], data: &[u8]) -> Vec<u8> {
+    use hmac::Mac as _;
+    let mut mac =
+        <HmacSha256 as hmac::KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(label);
+    mac.update(&[0u8]);
+    mac.update(data);
+    AsRef::<[u8]>::as_ref(&mac.finalize().into_bytes()).to_vec()
+}
+
+/// ADR-0081 D-A: `k_t = HMAC(current token key, tenant label ‖ 0x00 ‖ tenant_id)`, then
+/// `HMAC(k_t, query label ‖ 0x00 ‖ query)`. No new secret; `query` is the exact byte string the query-embedding cache
+/// keys on (no case or whitespace folding).
+// ponytail: rotating the token key starts a new hash space (old rows are not re-hashed); replay compares within one
+// `key_id`. Keep the previous key's derivation here if cross-rotation comparison is ever needed.
+fn query_hmac_with(keys: &TokenKeys, tenant_id: TenantId, query: &[u8]) -> QueryHmac {
+    let tenant_key = labelled_hmac(
+        &keys.current,
+        QUERY_LOG_TENANT_LABEL,
+        tenant_id.0.as_bytes(),
+    );
+    QueryHmac {
+        mac: labelled_hmac(&tenant_key, QUERY_LOG_MAC_LABEL, query),
+        key_id: key_id(&keys.current),
+    }
+}
+
+/// ADR-0081 D-A: the query-hash log's digest of `query` for `tenant_id` under the installed token key set;
+/// `Err(TokenKeysUnset)` when none is installed (no default key, ADR-0059 D-G).
+pub fn query_hmac(tenant_id: TenantId, query: &[u8]) -> Result<QueryHmac, RetrieveError> {
+    Ok(query_hmac_with(installed_token_keys()?, tenant_id, query))
 }
 
 /// Sole constructor for an opaque `consistency_token` string (§15.5 "consistency_token 是服务
@@ -1511,6 +1585,46 @@ pub async fn tombstoned_source_seqs(
         .collect()
 }
 
+/// ADR-0081 D-A: the pool's ceiling and acquire timeout, from which `gateway::recall` sizes and bounds its log writes
+/// (§78.1: derived from the pool's own registered settings, no new key).
+pub fn query_log_limits(pool: &RuntimeDbPool) -> (u32, std::time::Duration) {
+    let options = pool.pool().options();
+    (options.get_max_connections(), options.get_acquire_timeout())
+}
+
+/// ADR-0081 D-A: writes the query-hash log row of one answered recall as `role_gateway` in its own transaction. The
+/// caller read tenant, workspace and user from the trusted scope before handing the row off, so no authorization object
+/// and no query text reach this function. The caller decides what a failure means; `gateway::recall` reports its
+/// SQLSTATE and the recall has already answered.
+pub async fn record_recall_query(
+    pool: &RuntimeDbPool,
+    tenant_id: TenantId,
+    workspace_id: WorkspaceId,
+    user_id: Option<Uuid>,
+    query: &QueryHmac,
+    counts: &QueryLogCounts,
+) -> Result<(), RetrieveError> {
+    // dep: PostgreSQL(role_gateway) — transaction entry for the query-hash log insert
+    let mut txn = pool.pool().begin().await?;
+    // Tenant only: the table's policy reads humaux.tenant_id, and a service scope has no user to bind.
+    sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
+        .bind(tenant_id.0.to_string())
+        .execute(&mut *txn)
+        .await?;
+    retrieval_query_log::insert(
+        &mut txn,
+        tenant_id.0,
+        workspace_id.0,
+        user_id,
+        query.mac(),
+        query.key_id(),
+        counts,
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(())
+}
+
 /// §78.2 "DB enum 与 Rust enum 走 contract test 对账": [`ProcessingState::ALL`] must list
 /// exactly `projection.stream_log`'s `state` CHECK values, in order, both directions. Runs
 /// against the real migration file text, not a live DB (mirrors `jobs::contract_tests`).
@@ -1772,6 +1886,39 @@ mod contract_tests {
         assert!(!shown.contains(&hex::encode(&keys.current)));
         assert!(!shown.contains(&hex::encode(keys.previous.as_ref().unwrap())));
         assert!(shown.contains(&key_id(&keys.current)));
+    }
+
+    /// ADR-0081 D-A / D2: the log digest is the two-step keyed derivation of the card, repeatable for one tenant,
+    /// different for another tenant, another key set and another query, and never the plain SHA-256 of the query.
+    #[test]
+    fn query_hmac_is_keyed_tenant_separated_and_not_a_plain_digest() {
+        use hmac::Mac as _;
+        use sha2::Digest as _;
+        let keys = test_keys(None);
+        let (tenant, other) = (TenantId::new(), TenantId::new());
+        let query = "a distinctive recall query".as_bytes();
+        let digest = query_hmac_with(&keys, tenant, query);
+        assert_eq!(digest, query_hmac_with(&keys, tenant, query));
+        assert_eq!(digest.mac().len(), 32);
+        assert_eq!(digest.key_id(), key_id(&keys.current));
+        assert_ne!(digest.mac(), query_hmac_with(&keys, other, query).mac());
+        assert_ne!(
+            digest.mac(),
+            query_hmac_with(&keys, tenant, b"another").mac()
+        );
+        assert_ne!(
+            digest.mac(),
+            query_hmac_with(&test_keys(None), tenant, query).mac()
+        );
+        assert_ne!(digest.mac(), &sha2::Sha256::digest(query)[..]);
+        let mut tenant_key = <HmacSha256 as hmac::KeyInit>::new_from_slice(&keys.current).unwrap();
+        tenant_key.update(b"humaux.retrieval_query_log.tenant_key.v1\0");
+        tenant_key.update(tenant.0.as_bytes());
+        let tenant_key = tenant_key.finalize().into_bytes();
+        let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(&tenant_key[..]).unwrap();
+        mac.update(b"humaux.retrieval_query_log.v1\0");
+        mac.update(query);
+        assert_eq!(digest.mac(), &mac.finalize().into_bytes()[..]);
     }
 
     #[test]

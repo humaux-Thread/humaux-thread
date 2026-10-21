@@ -4,7 +4,7 @@
   outside this repository (its numbering is the design's own, not Baseline §19). The design lead decided it on
   2026-10-20 under delegation from the repository owner. Amended the same day by the design's §19.5 note, which splits
   T-RET-1 into T-RET-1a (ledger) and T-RET-1b (query-hash log) and records the deferred metric and the `billable_tokens`
-  ponytail (D-A, Cards).
+  ponytail (D-A, Cards). Card T-RET-1b replaces the D-A query-hash log bullet with the lead's decisions D1-D5.
 - Relates to: Baseline §19.1 (ModelCallLedger), §23 (`cand_k`), §51, §55 (§55.6), §57.1, §78.1, §80.1; ADR-0076 (cache
   layer crate).
 
@@ -83,11 +83,20 @@ corpus is private and never enters this repository.
 - **`billable_tokens` is unchanged** and still equals the total input: a cache read is priced in full, so cost estimates
   are an upper bound. ponytail: add cache-price columns to `provider_pricing_versions` and one leg to `compute_cost`
   when the saving needs to be priced.
-- **Query-hash log** `ops.retrieval_query_log`.
-  - Fields: tenant, time, scope, `HMAC(tenant secret, normalised query)`, the result of each cache layer, candidate
-    count, per-stage timings.
-  - **No plaintext is stored.** Retention is configuration (§78.1), 30 days by default.
-  - It is used for two things only: replaying to estimate cache hits (E-CACHE-1) and observing recall drift.
+- **Query-hash log** `ops.retrieval_query_log` (T-RET-1b, migration 0258), for E-CACHE-1 replay and recall-drift only.
+  - D1 bytes: the exact bytes the query-embedding cache keys on, no folding; a folded variant is a second column later.
+  - D2 MAC, no new secret: `k_t = HMAC(token key, "humaux.retrieval_query_log.tenant_key.v1" ‖ 0x00 ‖ tenant_id)`, then
+    `query_hmac = HMAC(k_t, "humaux.retrieval_query_log.v1" ‖ 0x00 ‖ query)` (SHA-256); `key_id` = the ADR-0059 kid.
+    ponytail: rotating the token key starts a new hash space, replay compares within one `key_id`.
+  - D3 table: RANGE on `called_at` (`table_key RETRIEVAL_QUERY_LOG`, §48.1), current month + 3 leaves; no text column
+    but `key_id`; `visible` and `stage_ms` are NULL when not established; one count CHECK, `candidates <= cand_k`.
+    **No retention policy row**: approving one is the owner's act (ADR-0063); proposed 1 month, not the earlier 30 days.
+  - D4 access: FORCE RLS with a WITH CHECK tenant policy; `role_gateway` has INSERT only, no runtime role reads the table.
+  - D5 writer: `recall::search` hands one row per Ok recall to a bounded spawn after the answer (permits = pool max
+    connections / 4, at least 1; deadline = the pool's acquire timeout; no permit: the row is dropped and reported), so
+    the write is off the answer path (`stage_ms`, `LAP_SEQUENCE`, response bytes, handler deadline unchanged) and a failed
+    insert never fails the recall. Failed recalls are not logged; per-layer cache results are deferred (no layer reports
+    to recall). ponytail: no metric, reconcile against `humaux_retrieval_requests_total`; rows in flight at shutdown are lost.
   - ponytail: one table, partitioned by time; add a sampling pipeline when cross-tenant analysis is needed.
 
 ### D-B (D-RET-2) Order LLM prompts by stability; isolate variants only after an experiment (implemented by T-RET-4)
@@ -272,7 +281,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 |---|---|---|
 | T-RET-0 | This ADR; Baseline §19.1 and §51; the `cand_k` wording in §23.3 and §55.6 (docs only; same rule as T-DOC-0 and T-KNOW-0) | none |
 | T-RET-1a | `adapters` (byok, model_call_ledger, contribution_reasoner): the two ledger columns and normalisation (migration 0257), for the one wired protocol. Cites "ADR-0081 D-A (D-RET-1)". **Do first**: without it no later gain can be measured | G-RET-1 |
-| T-RET-1b | `gateway::recall`: the query-hash log (new table) | its own log gate, defined with the card: one row per recall, the query only as an HMAC, never plaintext (the in-repo part of G-RET-6) |
+| T-RET-1b | `gateway::recall`: the query-hash log (new table) | G-RET-6 log part, `query-hash-log` (`bins/gateway/tests/semantic_recall_wiring.rs` L1-L6; the in-repo part of G-RET-6): one row per answered recall, the query only as a keyed per-tenant HMAC, insert-only and tenant-isolated, written off the answer path, a failed or blocked insert never fails or delays the recall. Record (`targeted.yml`): green run 39599917816 (6 passed; before the spawn: 39573660310, 5 passed); red r1 unkeyed sha256, run 39573592489 (L2, L3); r2 tenant dropped from the derivation, run 39573605962 (L3); r3 insert twice, run 39573619593 (L1); r4 WITH CHECK (true), run 39573633610 (L4); r5 insert error propagated, run 39573647026 (L5; recorded on the inline write, before the spawn made it structural); r7 insert awaited inline again, run 39599905314 (L6, `semantic_recall_wiring.rs:1829` Elapsed, the answer waited on the locked log); r6 one domain label of `query_hmac` changed, run 39580000861 (unit test `query_hmac_is_keyed_tenant_separated_and_not_a_plain_digest`, which recomputes the derivation; L3 compares against the function under test and stays green), its green run 39580014590 |
 | T-RET-2 | Offline harness (outside the repository, Python standard library, private data); stage one of E-RET-0..3. Only aggregate numbers enter this ADR | G-RET-6 harness half (key set, duplicate key, manifest), outside the repository |
 | T-RET-3 | D-D after E-RET-2: query role and fingerprint | G-RET-4 |
 | T-RET-4 | D-B: prefix-grouped warm-up scheduling; fixed prefix only if E-CACHE-3 passes | G-RET-2 |

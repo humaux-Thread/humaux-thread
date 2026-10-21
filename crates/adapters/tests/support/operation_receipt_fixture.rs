@@ -4,7 +4,8 @@
 //!   services=[PostgreSQL(owner) w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
 //!   control.memberships, control.operation_receipts, control.private_reasoning_domains, control.quota_windows,
 //!   control.rate_buckets, control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
-//!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.selection_snapshot_items, ops.selection_snapshots,
+//!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.retrieval_query_log, ops.selection_snapshot_items,
+//!   ops.selection_snapshots,
 //!   private.context_bindings, private.continuity_facet_evidence_links, private.continuity_facet_memory_links,
 //!   private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.events,
 //!   private.evidence_objects, private.memory_evidence, private.memory_records, projection.private_memory_points,
@@ -455,6 +456,13 @@ impl Drop for Handle {
             txn.execute(
                 "DELETE FROM control.users WHERE user_id=ANY($1)",
                 &[&user_ids],
+            )?;
+            // T-RET-1b: every answered recall logs a row from a spawned task, and the tenant FK has no ON DELETE action
+            // (§48.1). The lock keeps a late insert out until this transaction ends (it then fails the FK, harmlessly).
+            txn.batch_execute("LOCK TABLE ops.retrieval_query_log IN SHARE ROW EXCLUSIVE MODE")?;
+            txn.execute(
+                "DELETE FROM ops.retrieval_query_log WHERE tenant_id=$1",
+                &[&self.tenant_id],
             )?;
             txn.execute(
                 "DELETE FROM control.tenants WHERE tenant_id=$1",

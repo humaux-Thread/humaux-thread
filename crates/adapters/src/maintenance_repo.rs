@@ -381,7 +381,7 @@ pub fn maintenance_task_rows_total(task: MaintenanceTask) -> u64 {
 // ============================================================================
 
 /// ADR-0063 D-C: the closed `table_key` set of `control.partition_registry`, in render order. `retention_policies`
-/// accepts four of them (EVENTS and AUDIT_EVENTS wait for card 37 / a separate approval line, D-G); the contract test
+/// accepts five of them (EVENTS and AUDIT_EVENTS wait for card 37 / a separate approval line, D-G); the contract test
 /// `bins/maintenance/tests/retention.rs` reconciles both CHECKs with this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartitionTable {
@@ -397,17 +397,20 @@ pub enum PartitionTable {
     Events,
     /// `control.audit_events` (`occurred_at`).
     AuditEvents,
+    /// `ops.retrieval_query_log` (`called_at`).
+    RetrievalQueryLog,
 }
 
 impl PartitionTable {
     /// Every key, in the gauge's sample order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::ModelCallLedger,
         Self::StageRuns,
         Self::Messages,
         Self::MaintenanceReceipts,
         Self::Events,
         Self::AuditEvents,
+        Self::RetrievalQueryLog,
     ];
 
     /// The `table_key` value (the DB CHECKs' spelling, SCREAMING_SNAKE).
@@ -419,6 +422,7 @@ impl PartitionTable {
             Self::MaintenanceReceipts => "MAINTENANCE_RECEIPTS",
             Self::Events => "EVENTS",
             Self::AuditEvents => "AUDIT_EVENTS",
+            Self::RetrievalQueryLog => "RETRIEVAL_QUERY_LOG",
         }
     }
 
@@ -431,6 +435,7 @@ impl PartitionTable {
             Self::MaintenanceReceipts => "maintenance_receipts",
             Self::Events => "events",
             Self::AuditEvents => "audit_events",
+            Self::RetrievalQueryLog => "retrieval_query_log",
         }
     }
 

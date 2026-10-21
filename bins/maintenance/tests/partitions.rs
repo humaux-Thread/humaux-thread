@@ -1,5 +1,6 @@
 //! `maintenance::tests::partitions` — the §48.1 conversions (0225 stage_runs, 0226 messages, 0227
-//!   maintenance_receipts, 0228 events, 0229 audit_events, 0230 model_call_ledger) against throwaway PostgreSQL
+//!   maintenance_receipts, 0228 events, 0229 audit_events, 0230 model_call_ledger; 0258 retrieval_query_log was created
+//!   partitioned) against throwaway PostgreSQL
 //!   databases migrated from the files: every converted table is a RANGE parent with sealed monthly leaves, the
 //!   horizon is the current UTC month plus 3, month bounds are UTC whatever the session TimeZone, seeded history
 //!   survives a conversion, the events, audit and ledger identity tables carry global uniqueness and the re-pointed
@@ -14,7 +15,8 @@
 //!   w=[control.audit_events, control.operation_receipts, control.partition_registry,
 //!   control.private_reasoning_domains, control.quota_windows, control.tenants, control.usage_reservations,
 //!   control.users, ops.maintenance_receipts, ops.model_call_ledger, ops.retrieval_provider_budget_reservations,
-//!   ops.stage_runs, private.conversations, private.events, private.evidence_objects, private.ingest_tickets,
+//!   ops.retrieval_query_log, ops.stage_runs, private.conversations, private.events, private.evidence_objects,
+//!   private.ingest_tickets,
 //!   private.messages]
 //!   x=[control.audit_event_insert, control.partition_create_month], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_maintenance), PostgreSQL(role_migration_owner), PostgreSQL(role_retrieval_worker),
@@ -43,14 +45,19 @@ use std::path::PathBuf;
 use postgres::Client;
 use throwaway::Db;
 
-/// The §48.1 tables converted by 0225..0230 `(table_key, parent, key column)`.
-const CONVERTED: [(&str, &str, &str); 6] = [
+/// The §48.1 tables converted by 0225..0230 or created partitioned by 0258 `(table_key, parent, key column)`.
+const CONVERTED: [(&str, &str, &str); 7] = [
     ("STAGE_RUNS", "ops.stage_runs", "started_at"),
     ("MESSAGES", "private.messages", "created_at"),
     ("MAINTENANCE_RECEIPTS", "ops.maintenance_receipts", "ran_at"),
     ("EVENTS", "private.events", "recorded_at"),
     ("AUDIT_EVENTS", "control.audit_events", "occurred_at"),
     ("MODEL_CALL_LEDGER", "ops.model_call_ledger", "called_at"),
+    (
+        "RETRIEVAL_QUERY_LOG",
+        "ops.retrieval_query_log",
+        "called_at",
+    ),
 ];
 
 /// §6.2.0 runtime roles (the set 0224 revokes from).
@@ -124,6 +131,12 @@ fn insert_at(
         "MODEL_CALL_LEDGER" => format!(
             "INSERT INTO ops.model_call_ledger (tenant_id, provider, purpose, called_at)
              VALUES ($1::text::uuid, 'c36', 'embedding', {key_sql}) RETURNING tableoid::regclass::text, $2::text"
+        ),
+        // 0258: a gateway-written digest row; the 32-byte HMAC and the kid are fixture values, the workspace has no FK.
+        "RETRIEVAL_QUERY_LOG" => format!(
+            "INSERT INTO ops.retrieval_query_log (tenant_id, workspace_id, query_hmac, key_id, cand_k, candidates, returned, called_at)
+             VALUES ($1::text::uuid, gen_random_uuid(), decode(repeat('00', 32), 'hex'), '00000000', 0, 0, 0, {key_sql})
+             RETURNING tableoid::regclass::text, $2::text"
         ),
         other => panic!("no fixture row for {other}"),
     };
