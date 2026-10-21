@@ -4,7 +4,8 @@
 //!   services=[PostgreSQL(owner) w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
 //!   control.memberships, control.operation_receipts, control.private_reasoning_domains, control.quota_windows,
 //!   control.rate_buckets, control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
-//!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.selection_snapshot_items, ops.selection_snapshots,
+//!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.retrieval_query_log, ops.selection_snapshot_items,
+//!   ops.selection_snapshots,
 //!   private.context_bindings, private.continuity_facet_evidence_links, private.continuity_facet_memory_links,
 //!   private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.events,
 //!   private.evidence_objects, private.memory_evidence, private.memory_records, projection.private_memory_points,
@@ -397,6 +398,8 @@ impl Drop for Handle {
             for statement in [
                 "DELETE FROM control.operation_receipts WHERE tenant_id=$1",
                 "DELETE FROM ops.outbox WHERE tenant_id=$1",
+                // T-RET-1b: every answered recall logs a row, and the tenant FK has no ON DELETE action (§48.1).
+                "DELETE FROM ops.retrieval_query_log WHERE tenant_id=$1",
                 "DELETE FROM projection.private_memory_points WHERE tenant_id=$1",
                 "DELETE FROM projection.tenant_placements WHERE tenant_id=$1",
                 "DELETE FROM private.context_bindings WHERE tenant_id=$1",

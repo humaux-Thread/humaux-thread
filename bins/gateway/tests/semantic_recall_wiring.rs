@@ -1443,20 +1443,6 @@ impl LogEnv {
                 &[&handle.tenant_id],
             )
             .expect("cleanup seeded tenant placement row");
-        // The tenant FK has no ON DELETE action (as the other §48.1 tables): the log rows go before the tenant does,
-        // under the tenant binding so FORCE RLS admits the owner.
-        let mut txn = admin.transaction().expect("begin log cleanup");
-        txn.execute(
-            "SELECT set_config('humaux.tenant_id', $1, true)",
-            &[&handle.tenant_id.to_string()],
-        )
-        .expect("bind the tenant");
-        txn.execute(
-            "DELETE FROM ops.retrieval_query_log WHERE tenant_id=$1",
-            &[&handle.tenant_id],
-        )
-        .expect("cleanup the tenant's query log rows");
-        txn.commit().expect("commit log cleanup");
     }
 }
 
