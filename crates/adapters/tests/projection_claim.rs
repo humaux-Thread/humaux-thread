@@ -1,10 +1,11 @@
 //! `adapters::tests::projection_claim` — ADR-0052 (card 27) real-PostgreSQL tests of the cross-tenant projection
 //!   ticket claim, its lease fence, the retry/backoff/exhaustion transitions and the 0176 grant boundary.
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
-//!   humaux-retrieval-provider, humaux-testkit, postgres, serde_json, sqlx, time, tokio];
+//!   humaux-projection, humaux-retrieval-provider, humaux-testkit, postgres, serde_json, sha2, sqlx, time, tokio];
 //!   services=[PostgreSQL(any) r=[projection.stream_log] w=[control.private_reasoning_domains, control.tenants,
-//!   ops.jobs, ops.outbox, private.evidence_objects, private.events, private.memory_evidence,
-//!   private.memory_records, projection.private_memory_points, projection.stream_checkpoints,
+//!   ops.jobs, ops.outbox, private.evidence_objects, private.events, private.identity_note_materializations,
+//!   private.memory_evidence, private.memory_records, projection.card_profile_policies,
+//!   projection.private_memory_points, projection.stream_checkpoints,
 //!   projection.stream_log, projection.tenant_placements]
 //!   x=[projection.claim_issued_tickets, projection.retire_failed_ticket, projection.unplaced_issued_tickets],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_retrieval_worker),
@@ -13,7 +14,7 @@
 //!   modules=[adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::remember,
 //!   adapters::stream_repo, adapters::tests::support::token_keys, domain::egress, domain::error, domain::evidence, domain::ids, domain::subject,
 //!   humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
-//!   retrieval-provider::adapters, retrieval-provider::contract]
+//!   projection::note_chunks, retrieval-provider::adapters, retrieval-provider::contract]
 //! Called-by: [cargo-test]
 //! Invariants: [every test uses throwaway tenants and its own projection_version ('card27-test-<uuid>'), so no dev
 //!   ticket ever matches its claims; all rows are deleted on Drop; no DSN is a visible SKIP and HUMAUX_REQUIRE_DB=1
@@ -31,6 +32,8 @@
 #[path = "support/token_keys.rs"]
 mod token_keys;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -38,7 +41,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use humaux_adapters::postgres::{RetrievalWorkerDbPool, RuntimeDbPool};
 use humaux_adapters::projection_worker::{
-    CardEmbedder, PassConfig, SharedProjectionDeps, run_claimed_pass,
+    CardEmbedder, PassConfig, PassOutcome, SharedProjectionDeps, run_claimed_pass,
 };
 use humaux_adapters::qdrant::RetrievalFamily;
 use humaux_adapters::remember::{self, RememberCommand};
@@ -54,6 +57,9 @@ use humaux_infra_cell::{
     ResourceEntry,
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalCard};
+use humaux_projection::note_chunks::{
+    NOTE_CHUNKS_V1_PROFILE_HASH, NOTE_CHUNKS_V1_STRIDE, NOTE_CHUNKS_V1_WINDOW, chunk_count,
+};
 use humaux_retrieval_provider::adapters::TestDoubleProvider;
 use humaux_retrieval_provider::contract::{
     CalibrationProfileId, EmbeddingModelDescriptor, EmbeddingProvider, ModelId,
@@ -61,6 +67,7 @@ use humaux_retrieval_provider::contract::{
 };
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::{Client, NoTls};
+use sha2::{Digest, Sha256};
 use sqlx::types::Uuid;
 
 const OWNER_A: &str = "humaux-retrieval-worker/card27-test-a";
@@ -316,6 +323,13 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
+        // G79 seeds a card-profile policy row for this test's own projection_version (the table has no tenant column).
+        if let Err(error) = self.admin.execute(
+            "DELETE FROM projection.card_profile_policies WHERE projection_version = $1",
+            &[&self.family.projection_version],
+        ) {
+            eprintln!("projection_claim cleanup failed for the policy row: {error}");
+        }
         for tenant in &self.tenants {
             // Card-31 pattern (card 33 leak fix): each remember's EVIDENCE_ACCEPTED row or PRIMARY link
             // enqueues a DERIVED_* job (0164 trigger). Jobs go first, in one batch with the data rows, and
@@ -1333,6 +1347,11 @@ fn pass_deps(env: &Env, test: &str) -> Option<PassDeps> {
         finding_exit_code: 1,
     })
     .expect("pinned gitleaks");
+    Some(pass_deps_with(env, scanner))
+}
+
+/// [`pass_deps`] around a scanner the caller supplies (G79 brings a deterministic slow one).
+fn pass_deps_with(env: &Env, scanner: LocalSecretScanner) -> PassDeps {
     let cell = CellId(Uuid::new_v4());
     let caller = CallerId("projection_claim.rs".to_owned());
     let dead = std::net::TcpListener::bind("127.0.0.1:0")
@@ -1390,7 +1409,7 @@ fn pass_deps(env: &Env, test: &str) -> Option<PassDeps> {
         )))
         .expect("pass pool");
     let embed_delay_ms = Arc::new(AtomicU64::new(0));
-    Some(PassDeps {
+    PassDeps {
         deps: SharedProjectionDeps {
             pool,
             embedder: Arc::new(Embedder(provider.clone(), embed_delay_ms.clone())),
@@ -1412,7 +1431,7 @@ fn pass_deps(env: &Env, test: &str) -> Option<PassDeps> {
         },
         provider,
         embed_delay_ms,
-    })
+    }
 }
 
 fn pass_config(env: &Env, max_attempts: i32) -> PassConfig {
@@ -1434,8 +1453,8 @@ fn pass_config_leased(env: &Env, max_attempts: i32, lease_secs: f64) -> PassConf
     }
 }
 
-/// A live memory on the ticket's Evidence, so the pass reaches the embedding call.
-fn attach_memory(env: &mut Env, tenant: Uuid, evidence: Uuid) {
+/// A live NOTE memory carrying `content`, linked to the ticket's Evidence as its PRIMARY output; returns its id.
+fn attach_content(env: &mut Env, tenant: Uuid, evidence: Uuid, content: serde_json::Value) -> Uuid {
     let mut txn = env.admin.transaction().expect("txn");
     let memory: Uuid = txn
         .query_one(
@@ -1444,14 +1463,7 @@ fn attach_memory(env: &mut Env, tenant: Uuid, evidence: Uuid) {
                 status, asserted_at) \
              VALUES ($1,'NOTE',$2,'TENANT_SHARED','PrivateKnowledge',0.9,'active',now()) \
              RETURNING memory_id",
-            &[
-                &tenant,
-                &serde_json::json!({
-                    "title": "card27 claim fixture",
-                    "key_claim": "a claimed ticket reaches the embedder",
-                    "evidence_excerpt": "card27 claim fixture",
-                }),
-            ],
+            &[&tenant, &content],
         )
         .expect("memory")
         .get(0);
@@ -1463,4 +1475,265 @@ fn attach_memory(env: &mut Env, tenant: Uuid, evidence: Uuid) {
     )
     .expect("memory_evidence");
     txn.commit().expect("commit");
+    memory
+}
+
+/// A live memory on the ticket's Evidence, so the pass reaches the embedding call.
+fn attach_memory(env: &mut Env, tenant: Uuid, evidence: Uuid) {
+    attach_content(
+        env,
+        tenant,
+        evidence,
+        serde_json::json!({
+            "title": "card27 claim fixture",
+            "key_claim": "a claimed ticket reaches the embedder",
+            "evidence_excerpt": "card27 claim fixture",
+        }),
+    );
+}
+
+// ---- G79: sealing must not starve the lease heartbeat (issue #79, §80.1) ---------------------------
+
+/// Windows of the G79 note: it is sealed by one source scan plus one scan per chunk card.
+const G79_CHUNKS: usize = 24;
+/// Lease length of the pass under test; its heartbeat renews every third of it.
+const G79_LEASE_SECS: f64 = 3.0;
+/// How long the stub scanner takes per call: `(1 + G79_CHUNKS) * G79_SCAN_DELAY_MS` of sealing is 2.5 leases.
+const G79_SCAN_DELAY_MS: u64 = 300;
+
+/// A pinned scanner whose every call reports "clean" after [`G79_SCAN_DELAY_MS`], and appends one byte to the returned
+/// call log when it starts — the test's barrier: the lease is sampled only while `0 < started < total`, i.e. while
+/// sealing is provably under way, and the log's length at the end is the number of scanner calls the row cost.
+///
+/// The stub lives beside the test binary, written once per content and renamed into place (the
+/// `retrieval_query_source` fake-scanner pattern: a freshly created executable is never exec'd half-written).
+fn slow_scanner(marker: &str) -> (LocalSecretScanner, PathBuf) {
+    let directory = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .unwrap_or_else(std::env::temp_dir);
+    let path = directory.join(format!("humaux-slow-scanner-{marker}"));
+    let calls = directory.join(format!("humaux-slow-scanner-{marker}.calls"));
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then printf 'slow-scan-g79\\n'; exit 0; fi\n\
+         printf x >> '{}'\ncat >/dev/null\nsleep {}.{:03}\nexit 0\n",
+        calls.display(),
+        G79_SCAN_DELAY_MS / 1000,
+        G79_SCAN_DELAY_MS % 1000,
+    );
+    if !std::fs::read(&path).is_ok_and(|current| current == script.as_bytes()) {
+        let staged = directory.join(format!("humaux-slow-scanner-{marker}-{}", Uuid::new_v4()));
+        std::fs::write(&staged, &script).expect("write the stub scanner");
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o700))
+            .expect("make the stub scanner executable");
+        std::fs::rename(&staged, &path).expect("publish the stub scanner");
+    }
+    std::fs::write(&calls, b"").expect("reset the call log");
+    // dep: subprocess(gitleaks) — one warm exec of the stub, so the timed version probe never pays a first-exec cost
+    let _ = std::process::Command::new(&path)
+        .arg("version")
+        .env_clear()
+        .output();
+    let digest: String = Sha256::digest(script.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    // dep: subprocess(gitleaks) — the scanner verifies the pinned stub at construction
+    let scanner = LocalSecretScanner::new(LocalSecretScannerConfig {
+        executable: path,
+        expected_version: "slow-scan-g79".to_owned(),
+        expected_executable_sha256: digest,
+        timeout: Duration::from_secs(5),
+        max_payload_bytes: 64 * 1024,
+        finding_exit_code: 1,
+    })
+    .expect("pinned stub scanner");
+    (scanner, calls)
+}
+
+/// Scanner calls the stub has started, from its call log.
+fn scans_started(calls: &Path) -> usize {
+    std::fs::metadata(calls).map_or(0, |meta| meta.len() as usize)
+}
+
+/// `len` ASCII scalars of distinct, secret-free words (`w0 w1 w2 …`), so no two windows share text.
+fn prose(len: usize) -> String {
+    let mut text = String::new();
+    let mut word = 0_usize;
+    while text.len() < len {
+        text.push_str(&format!("w{word} "));
+        word += 1;
+    }
+    text.truncate(len);
+    text
+}
+
+/// An identity note on the ticket's Evidence (ADR-0067 D-B contract row, as `note_put` writes it): the only memory
+/// shape `NoteChunksV1` plans chunks for.
+fn attach_note(env: &mut Env, tenant: Uuid, evidence: Uuid, title: &str, body: &str) {
+    let memory = attach_content(
+        env,
+        tenant,
+        evidence,
+        serde_json::json!({ "title": title, "key_claim": body }),
+    );
+    env.admin
+        .execute(
+            "INSERT INTO private.identity_note_materializations \
+               (tenant_id, evidence_id, strategy, output_memory_id, body_sha256, policy_version) \
+             VALUES ($1, $2, 'identity_note_v1', $3, $4, 'origin_ceiling_v1')",
+            &[
+                &tenant,
+                &evidence,
+                &memory,
+                &Sha256::digest(body.as_bytes()).to_vec(),
+            ],
+        )
+        .expect("identity contract");
+}
+
+/// What the observer saw while the scanner was provably mid-row.
+#[derive(Debug, Default)]
+struct SealWatch {
+    /// Distinct `lease_expires_at` (epoch seconds) in sampling order; the first is the lease as sealing began.
+    expiries: Vec<f64>,
+    /// Samples taken while sealing was under way.
+    samples: usize,
+    /// Tickets the second worker managed to claim meanwhile.
+    stolen: usize,
+    /// Highest `attempts` of the ticket meanwhile.
+    attempts: i32,
+}
+
+/// G79's fixture: one claimable ticket whose Evidence is an identity note of [`G79_CHUNKS`] windows, under a
+/// `NoteChunksV1` policy row of this test's own `projection_version`. Returns `(tenant, scope, stream_seq)`.
+fn g79_ticket(env: &mut Env) -> (Uuid, Uuid, i64) {
+    let t = env.tenant(true);
+    let scope = Uuid::new_v4();
+    let (seq, evidence) = env.ticket(t, scope);
+    let body = prose(NOTE_CHUNKS_V1_WINDOW + NOTE_CHUNKS_V1_STRIDE * (G79_CHUNKS - 1));
+    assert_eq!(chunk_count(body.chars().count()), G79_CHUNKS);
+    attach_note(env, t, evidence, "g79 note", &body);
+    env.admin
+        .execute(
+            "INSERT INTO projection.card_profile_policies \
+               (domain, projection_kind, projection_version, note_chunk_profile_hash) \
+             VALUES ($1, $2, $3, $4)",
+            &[
+                &env.family.domain,
+                &env.family.projection_kind,
+                &env.family.projection_version,
+                &NOTE_CHUNKS_V1_PROFILE_HASH,
+            ],
+        )
+        .expect("NoteChunksV1 policy row for this test's own projection_version");
+    env.close_distill(t);
+    (t, scope, seq)
+}
+
+/// Runs one pass on its own thread and, from this one, watches the ticket `(tenant, scope, seq)` for as long as the
+/// stub scanner is provably mid-row: the lease it holds is sampled through the owner connection, and a second worker
+/// keeps trying to claim the family. The pass blocks on its thread exactly as the resident worker's task does.
+fn watch_seal(
+    env: &mut Env,
+    deps: &SharedProjectionDeps,
+    cfg: PassConfig,
+    calls: &Path,
+    (t, scope, seq): (Uuid, Uuid, i64),
+) -> (SealWatch, PassOutcome) {
+    let total = 1 + G79_CHUNKS;
+    let version = env.family.projection_version.clone();
+    let (rt, admin, worker, family) = (&env.rt, &mut env.admin, &env.worker, &env.family);
+    std::thread::scope(|threads| {
+        let pass = threads.spawn(move || rt.block_on(run_claimed_pass(deps, &cfg)));
+        let mut watch = SealWatch::default();
+        while !pass.is_finished() {
+            if (1..total).contains(&scans_started(calls)) {
+                let row = admin
+                    .query_one(
+                        "SELECT EXTRACT(EPOCH FROM lease_expires_at)::float8, attempts \
+                           FROM projection.stream_log \
+                          WHERE tenant_id = $1 AND scope_kind = 'workspace' AND scope_id = $2 \
+                            AND projection_version = $3 AND stream_seq = $4",
+                        &[&t, &scope, &version, &seq],
+                    )
+                    .expect("sample the ticket");
+                watch.samples += 1;
+                watch.attempts = watch.attempts.max(row.get(1));
+                if let Some(expiry) = row.get::<_, Option<f64>>(0)
+                    && watch.expiries.last() != Some(&expiry)
+                {
+                    watch.expiries.push(expiry);
+                }
+                watch.stolen += rt
+                    .block_on(stream_repo::claim_issued(
+                        worker, family, OWNER_B, 60.0, 10, 10,
+                    ))
+                    .expect("the second worker's claim")
+                    .tickets
+                    .len();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        (watch, pass.join().expect("pass thread").expect("pass"))
+    })
+}
+
+/// G79 (§80.1, issue #79): a row whose sealing takes several leases must keep its family lease alive. One chunked
+/// note of [`G79_CHUNKS`] windows costs `1 + G79_CHUNKS` scanner calls of [`G79_SCAN_DELAY_MS`] each — 2.5 leases of
+/// sealing under a [`G79_LEASE_SECS`] lease. While the pass seals, another connection samples the ticket's lease and
+/// a second worker keeps trying to claim the family. The lease expiry must advance (the heartbeat is polled), the
+/// second worker must get nothing, the ticket's attempts must stay at the claim's 1, and the pass must settle the row
+/// with a fenced write (the Qdrant of this fixture is a closed port, so its natural end is a charged transient retry).
+/// Fault injection (r1): run the sealing closure inline on the polling thread, the pre-fix path ⇒ the expiry stops
+/// advancing at the first renew, the second worker claims after one lease, and the pass's own settle is fenced out.
+#[test]
+fn g79_sealing_a_many_chunk_note_keeps_the_lease_heartbeat_running() {
+    const TEST: &str = "g79_sealing_a_many_chunk_note_keeps_the_lease_heartbeat_running";
+    let Some(mut env) = Env::new(TEST) else {
+        return;
+    };
+    let (scanner, calls) = slow_scanner("g79");
+    let ticket = g79_ticket(&mut env);
+    let shared = pass_deps_with(&env, scanner);
+    let cfg = pass_config_leased(&env, 6, G79_LEASE_SECS);
+    let (watch, outcome) = watch_seal(&mut env, &shared.deps, cfg, &calls, ticket);
+
+    let total = 1 + G79_CHUNKS;
+    let renewals = watch.expiries.len().saturating_sub(1);
+    eprintln!(
+        "G79: lease={G79_LEASE_SECS}s scan_delay={G79_SCAN_DELAY_MS}ms calls={total} samples={} renewals={renewals} \
+         stolen={} attempts={} outcome={outcome:?}",
+        watch.samples, watch.stolen, watch.attempts
+    );
+    assert_eq!(
+        scans_started(&calls),
+        total,
+        "one source scan plus one scan per chunk card"
+    );
+    assert!(
+        renewals >= 3,
+        "the lease expiry must keep advancing while the row seals (heartbeat every {}s): {watch:?}",
+        G79_LEASE_SECS / 3.0
+    );
+    assert_eq!(
+        watch.stolen, 0,
+        "a second worker must not claim a family whose lease is live: {watch:?}"
+    );
+    assert_eq!(
+        watch.attempts, 1,
+        "sealing must not cost the ticket an attempt: {watch:?}"
+    );
+    assert_eq!(
+        (outcome.claimed, outcome.retried, outcome.lost_lease),
+        (1, 1, 0),
+        "{outcome:?}"
+    );
+    let (t, scope, seq) = ticket;
+    let row = env.row(t, scope, seq);
+    assert_eq!(
+        (row.state.as_str(), row.attempts, row.error_class.as_deref()),
+        ("ISSUED", 1, Some("qdrant_upsert_failed")),
+        "{row:?}"
+    );
 }

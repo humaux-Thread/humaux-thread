@@ -27,7 +27,8 @@
 //!   Project(PG) with the same card and payload builders, read in a READ ONLY projector transaction (ADR-0064 D-F);
 //!   every Memory is planned by build_projection_plan under the projection's policy, read once per pass (ADR-0068
 //!   D-A/D-I); a chunked note's whole source is sealed before any of its chunk cards and before any provider call
-//!   (ADR-0068 D-G); one distinct vector key is embedded once and mapped to its slots by key (ADR-0068 D-F); a Memory
+//!   (ADR-0068 D-G), on its own thread, so a slow scanner cannot keep the lease heartbeat from being polled (#79);
+//!   one distinct vector key is embedded once and mapped to its slots by key (ADR-0068 D-F); a Memory
 //!   counts toward DONE only when every one of its slots is registered and confirmed visible, and a chunked note's
 //!   legacy point retires only in that same completion step (ADR-0068 D-F/D-I)]
 //! Spec: Baseline §4.2; §15.1; §17.4; §18.2; §15.7; §6.1.2; ADR-0052; ADR-0057; ADR-0064 D-B; ADR-0064 D-F;
@@ -123,9 +124,9 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::Poll;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::task::{Poll, Waker};
 use std::time::Duration;
 
 use humaux_domain::affect::AffectAnnotation;
@@ -338,7 +339,7 @@ pub struct PassOutcome {
 struct RowCtx<'a> {
     pool: &'a RetrievalWorkerDbPool,
     embedder: &'a dyn CardEmbedder,
-    scanner: &'a LocalSecretScanner,
+    scanner: &'a Arc<LocalSecretScanner>,
     transport: &'a dyn IntraCellHttpTransport,
     permit: &'a CellAccessPermit,
     placement: &'a TenantPlacementRow,
@@ -355,7 +356,7 @@ impl<'a> RowCtx<'a> {
         Self {
             pool: &deps.pool,
             embedder: deps.embedder.as_ref(),
-            scanner: deps.scanner.as_ref(),
+            scanner: &deps.scanner,
             transport: deps.transport.as_ref(),
             permit: &deps.permit,
             placement: &deps.placement,
@@ -1204,43 +1205,121 @@ fn seal_failure(code: ErrorCode) -> (RowTerminal, &'static str) {
     }
 }
 
+/// Runs `job` on its own OS thread and resolves with its result, so a blocking step never occupies the thread that
+/// polls [`while_running`]'s lease heartbeat (#79: the scanner subprocess is waited on synchronously, and a poll that
+/// does not return starves every future driven by the same parent). std-only — this crate has no async runtime: the
+/// thread hands the result over a channel and wakes the last [`Waker`] the future registered. `Err` = the thread could
+/// not be spawned; a panic in `job` is re-raised in the awaiting task, as if `job` had run inline.
+///
+/// Cancellation: dropping the future drops the receiver, but the thread still runs `job` to completion and its result
+/// is discarded. That is sound only for a `job` with no side effect beyond its return value; sealing is one (the
+/// scanner subprocess's verdict is its only output, and it is bounded by the scanner's own timeout).
+// ponytail: one OS thread per sealing row; a bounded pool if rows in flight grow
+fn run_off_thread<T: Send + 'static>(
+    job: impl FnOnce() -> T + Send + 'static,
+) -> impl Future<Output = std::io::Result<T>> {
+    let (tx, rx) = mpsc::channel();
+    let waker: Arc<Mutex<Option<Waker>>> = Arc::default();
+    let parked = Arc::clone(&waker);
+    let mut spawn_error = std::thread::Builder::new()
+        .name("projection-seal".to_owned())
+        .spawn(move || {
+            // A closed channel (the future was dropped) is the cancellation case above: nobody wants the result.
+            let _ = tx.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)));
+            let waiting = parked.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(waiting) = waiting {
+                waiting.wake();
+            }
+        })
+        .err();
+    std::future::poll_fn(move |cx| {
+        if let Some(error) = spawn_error.take() {
+            return Poll::Ready(Err(error));
+        }
+        // Register before looking: a result sent after `try_recv` below finds the waker already stored.
+        *waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
+        match rx.try_recv() {
+            Ok(Ok(value)) => Poll::Ready(Ok(value)),
+            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            Err(mpsc::TryRecvError::Empty) => Poll::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => Poll::Ready(Err(std::io::Error::other(
+                "the sealing thread ended without a result",
+            ))),
+        }
+    })
+}
+
+/// A chunked note's whole source as the sealing thread owns it (ADR-0068 D-G).
+struct SourceText {
+    memory_id: Uuid,
+    data_class: DataClass,
+    title: String,
+    body: String,
+}
+
+/// The synchronous sealing phase of one row, the body of the job [`seal_and_embed`] hands to [`run_off_thread`]:
+/// ADR-0068 D-G, every chunked note's whole source first and only then each card, `sources` indexed like the plan and
+/// `cards` as `(index into sources, card)`. The first failure ends the phase.
+fn seal_all(
+    scanner: &LocalSecretScanner,
+    sources: &[Option<SourceText>],
+    cards: &[(usize, RetrievalCard)],
+) -> Result<Vec<SealedRetrievalCard>, ErrorCode> {
+    let sealed: Vec<Option<SealedSource>> = sources
+        .iter()
+        .map(|source| {
+            source
+                .as_ref()
+                .map(|s| scanner.seal_source(s.memory_id, s.data_class, &s.title, &s.body))
+                .transpose()
+        })
+        .collect::<Result<_, _>>()?;
+    cards
+        .iter()
+        .map(|(memory, card)| match &sealed[*memory] {
+            Some(source) => scanner.seal_chunk_card(source, card),
+            None => scanner.seal_card(card),
+        })
+        .collect()
+}
+
 /// (c')-(d): seal every distinct input and embed them in one embedder call; reject a short batch or a dimension
 /// mismatch. Reached only when some slot of the Evidence has no stored vector (ADR-0064 D-B). ADR-0068 D-G: every
 /// chunked note's whole source is sealed first, so a secret anywhere in it — the last window, or across a window
 /// boundary — fails the row `secret_scan_rejected` exactly like a secret in a legacy card, before any card is sealed
-/// and before any provider call. The provider splits the call into requests of at most its `max_batch_items` (ADR-0068
-/// D-F); any failed request fails the whole call and nothing from this attempt is persisted, so the retry embeds these
-/// inputs again (slots committed by an earlier attempt are reused by [`slot_vectors`]).
+/// and before any provider call. The sealing phase runs off the polling thread ([`run_off_thread`]), so a row with
+/// hundreds of scanner calls cannot keep the pass's lease heartbeat from being polled (#79). The provider splits the
+/// call into requests of at most its `max_batch_items` (ADR-0068 D-F); any failed request fails the whole call and
+/// nothing from this attempt is persisted, so the retry embeds these inputs again (slots committed by an earlier
+/// attempt are reused by [`slot_vectors`]).
 async fn seal_and_embed(
     ctx: &RowCtx<'_>,
     commit_seq: i64,
     planned: &[Planned],
     inputs: &[&SlotCard],
 ) -> Result<Vec<Vec<f32>>, (RowTerminal, &'static str)> {
-    let mut sources: Vec<Option<SealedSource>> = Vec::with_capacity(planned.len());
-    for entry in planned {
-        sources.push(match &entry.source {
-            Some((title, body)) => Some(
-                ctx.scanner
-                    .seal_source(
-                        entry.memory.memory_id.0,
-                        entry.memory.data_class,
-                        title,
-                        body,
-                    )
-                    .map_err(seal_failure)?,
-            ),
-            None => None,
-        });
-    }
-    let mut sealed_cards = Vec::with_capacity(inputs.len());
-    for slot in inputs {
-        let sealed = match &sources[slot.memory] {
-            Some(source) => ctx.scanner.seal_chunk_card(source, &slot.card),
-            None => ctx.scanner.seal_card(&slot.card),
-        };
-        sealed_cards.push(sealed.map_err(seal_failure)?);
-    }
+    // The sealing thread outlives this borrow, so it gets its own copies.
+    let scanner = Arc::clone(ctx.scanner);
+    let sources: Vec<Option<SourceText>> = planned
+        .iter()
+        .map(|entry| {
+            entry.source.as_ref().map(|(title, body)| SourceText {
+                memory_id: entry.memory.memory_id.0,
+                data_class: entry.memory.data_class,
+                title: title.clone(),
+                body: body.clone(),
+            })
+        })
+        .collect();
+    let cards: Vec<(usize, RetrievalCard)> = inputs
+        .iter()
+        .map(|slot| (slot.memory, slot.card.clone()))
+        .collect();
+    // A thread that cannot even be spawned is the scanner not having run: transient, like a failed scan process.
+    let sealed_cards = run_off_thread(move || seal_all(&scanner, &sources, &cards))
+        .await
+        .map_err(|_| seal_failure(ErrorCode::DependencyUnavailable))?
+        .map_err(seal_failure)?;
     let memory_ids: Vec<Uuid> = inputs
         .iter()
         .map(|slot| planned[slot.memory].memory.memory_id.0)
@@ -2186,7 +2265,7 @@ async fn process_and_write(
             let ctx = RowCtx {
                 pool: &shared.pool,
                 embedder: shared.embedder.as_ref(),
-                scanner: shared.scanner.as_ref(),
+                scanner: &shared.scanner,
                 transport: shared.transport.as_ref(),
                 permit: &permit,
                 placement: &ticket.placement,
