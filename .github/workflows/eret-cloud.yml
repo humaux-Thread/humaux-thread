@@ -1,0 +1,302 @@
+# E-RET-PB4: (1) DashScope cloud text-rerank models on the PB1 depth-25 pools (E-RET-5d), from the same ENCRYPTED pack; (2) a self-contained
+# N1 bench bundle (E-RET-5e prep) built from PUBLIC model and data only. Experiment branch only (exp/e-ret-pb-cloud*); never merged.
+# Plaintext corpus exists only in $RUNNER_TEMP (umask 077) and is removed in `if: always()` steps. The corpus goes to DashScope only from
+# the `cloud arms` step (owner asked for the cloud rerank test, 2026-10-21; environment `minimax m3`); ALIBABA_CLOUD_API_KEY appears only
+# in that step's env, HUMAUX_EVAL_PACK_KEY only in the fetch steps. Output = aggregate numbers only, checked by `cloud_rerank.py guard`
+# before anything is published. Triggers: push to exp/e-ret-pb-cloud* when a file of this experiment changes AND the tip commit message
+# carries a run token ([run:cloud] for ref + cloud, [run:bundle] for n1-bundle; a fix push to one side must not re-send the corpus to
+# DashScope or rebuild the bundle), and workflow_dispatch (both). Never pull_request / pull_request_target. Top-level permissions are read-only; only the n1-bundle job (no secrets, public data) gets
+# contents: write, to create the prerelease asset. At most 4 runs (card E-RET-PB4).
+name: eret-cloud
+on:
+  push:
+    branches: ['exp/e-ret-pb-cloud*']
+    paths:
+      - '.github/workflows/eret-cloud.yml'
+      - 'experiments/eret_pb/cloud_rerank.py'
+      - 'experiments/n1_bench/n1_bench.py'
+      - 'experiments/n1_bench/make_bundle.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: eret-cloud
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '4'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  PYTHONUNBUFFERED: '1'
+  # gz sha256 of the decrypted pack asset (tag eval-pack-e-ret-2026-10-v1), same as eret-pb.yml / eret-jev.yml
+  PACK_SHA256: 757da3ff2713a4b74b44aa980d3f0c24d74961855df38aaf2c3ac27f30f2eb31
+  BUNDLE_TAG: n1-bench-bundle-v1
+jobs:
+  plan:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    outputs:
+      cloud: ${{ steps.g.outputs.cloud }}
+      bundle: ${{ steps.g.outputs.bundle }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: selftest (statistics, request shape, retries, stop rules, rtt probe, no-leak paths, guard red/green; fake endpoint, no secret)
+        shell: bash
+        run: python experiments/eret_pb/cloud_rerank.py selftest
+      - name: compile the bundle scripts
+        shell: bash
+        run: python -m py_compile experiments/n1_bench/n1_bench.py experiments/n1_bench/make_bundle.py
+      - id: g
+        shell: bash
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          cloud=false
+          bundle=false
+          if [ "$EVENT" = workflow_dispatch ]; then cloud=true; bundle=true; fi
+          if printf '%s' "$MSG" | grep -qF '[run:cloud]'; then cloud=true; fi
+          if printf '%s' "$MSG" | grep -qF '[run:bundle]'; then bundle=true; fi
+          echo "cloud=$cloud" >> "$GITHUB_OUTPUT"
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          echo "cloud: $cloud, bundle: $bundle"
+
+  # Recompute PB1's bge-reranker-base int8 L512 depth-25 arm (PB3's `ref`, unchanged) and seal its per-question bits with the pack key, so the
+  # cloud job can pair every model against it. No DashScope secret here.
+  ref:
+    needs: plan
+    if: needs.plan.outputs.cloud == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: install pinned deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only, read-only token); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
+      - name: fetch and decrypt pack
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset pack.json.gz.enc --sha "$PACK_SHA256" \
+            --out "$RUNNER_TEMP/pack.json" --keyfile "$RUNNER_TEMP/k"
+      - name: recompute the PB1 int8 L512 depth-25 arm
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          python experiments/eret_pb/jev_rerank.py ref --pack "$RUNNER_TEMP/pack.json" --repo BAAI/bge-reranker-base \
+            --rev 2cfc18c9415c912f9d8155881c133215df768a70 --bits "$RUNNER_TEMP/ref-bits.json" --out out/ref.json --summary out/ref.md
+      - name: guard
+        shell: bash
+        run: python experiments/eret_pb/jev_rerank.py guard --pack "$RUNNER_TEMP/pack.json" --files out/ref.json out/ref.md
+      - name: publish summary
+        shell: bash
+        run: cat out/ref.md >> "$GITHUB_STEP_SUMMARY"
+      - name: seal the per-question bits with the pack key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ref-enc
+          gzip -9 -c "$RUNNER_TEMP/ref-bits.json" > "$RUNNER_TEMP/ref-bits.json.gz"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" \
+            -in "$RUNNER_TEMP/ref-bits.json.gz" -out ref-enc/ref-bits.json.gz.enc
+          ls -l ref-enc | tail -1 | awk '{print "ciphertext bytes: " $5}'
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: eret-cloud-ref-bits
+          path: ref-enc/ref-bits.json.gz.enc
+          retention-days: 1
+          if-no-files-found: error
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/pack.json" "$RUNNER_TEMP/ref-bits.json" "$RUNNER_TEMP/ref-bits.json.gz" "$RUNNER_TEMP/k" "$RUNNER_TEMP/ort"
+
+  cloud:
+    needs: [plan, ref]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.cloud == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    environment: minimax m3
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: fetch and decrypt pack
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset pack.json.gz.enc --sha "$PACK_SHA256" \
+            --out "$RUNNER_TEMP/pack.json" --keyfile "$RUNNER_TEMP/k"
+      - uses: actions/download-artifact@v4.3.0
+        continue-on-error: true
+        with:
+          name: eret-cloud-ref-bits
+          path: ref
+      - name: unseal the reference bits
+        shell: bash
+        run: |
+          umask 077
+          if [ -f ref/ref-bits.json.gz.enc ] \
+              && openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass file:"$RUNNER_TEMP/k" \
+                   -in ref/ref-bits.json.gz.enc -out "$RUNNER_TEMP/ref-bits.json.gz" \
+              && gzip -dc "$RUNNER_TEMP/ref-bits.json.gz" > "$RUNNER_TEMP/ref-bits.json"; then
+            echo "reference bits unsealed"
+          else
+            rm -f "$RUNNER_TEMP/ref-bits.json"
+            echo "no reference bits: the int8 comparison falls back to the PB1 aggregate (unpaired)"
+          fi
+      - name: runner to endpoint round trip (unauthenticated, no key)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python experiments/eret_pb/cloud_rerank.py rtt --out out/rtt.json
+      - name: cloud arms
+        shell: bash
+        env:
+          ALIBABA_CLOUD_API_KEY: ${{ secrets.ALIBABA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          # --max-tokens is a tripwire per model (list price 0.5-0.8 CNY per million tokens); the card caps calls (198 per model)
+          python experiments/eret_pb/cloud_rerank.py run --pack "$RUNNER_TEMP/pack.json" --refbits "$RUNNER_TEMP/ref-bits.json" \
+            --rtt out/rtt.json --out out/cloud.json --summary out/cloud.md --models qwen3-rerank,gte-rerank-v2,qwen3.7-text-rerank \
+            --max-tokens 20000000
+      - name: guard
+        id: guard
+        if: always() && hashFiles('out/cloud.json') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="out/cloud.json out/cloud.md"
+          if [ -f out/rtt.json ]; then files="$files out/rtt.json"; fi
+          python experiments/eret_pb/cloud_rerank.py guard --pack "$RUNNER_TEMP/pack.json" --files $files
+      - name: publish summary
+        if: always() && steps.guard.outcome == 'success'
+        shell: bash
+        run: cat out/cloud.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.guard.outcome == 'success'
+        with:
+          name: eret-cloud-results
+          path: out/cloud.json
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/pack.json" "$RUNNER_TEMP/ref-bits.json" "$RUNNER_TEMP/ref-bits.json.gz" "$RUNNER_TEMP/k" ref
+
+  # Public data only: BAAI/bge-reranker-base (MIT) exported to dynamic int8 ONNX exactly as E-RET-5a, C-MTEB T2Reranking text (Apache-2.0).
+  # The N2 reference runs inside python:3.11-slim from the extracted tarball, offline, the same image as the production host.
+  n1-bundle:
+    needs: plan
+    if: needs.plan.outputs.bundle == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: install pinned deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0 pyarrow==23.0.1
+          python -m pip freeze
+      - name: model (int8 ONNX, 5a recipe), tokenizer, bench_pairs.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/n1_bench/make_bundle.py build --out "$RUNNER_TEMP/n1_bench_bundle" --work "$RUNNER_TEMP/ort"
+      - name: script, readme, wheels for python:3.11-slim, pins, manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/n1_bench_bundle"
+          cp experiments/n1_bench/n1_bench.py experiments/n1_bench/README.md "$B/"
+          # every wheel the bench needs, resolved for CPython 3.11 / linux aarch64 inside the same image the production host has
+          docker run --rm -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$B":/b python:3.11-slim \
+            pip download --only-binary=:all: -d /b/wheels onnxruntime==1.30.0 tokenizers==0.22.2 numpy==2.3.5
+          python experiments/n1_bench/make_bundle.py pins --wheels "$B/wheels" --out "$B/requirements.txt"
+          cat "$B/requirements.txt"
+          (cd "$B" && find . -type f ! -name MANIFEST.sha256 | sort | xargs sha256sum > MANIFEST.sha256)
+          ls -l "$B" "$B/model"
+      - name: tarball and sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/n1_bench_bundle.tar.gz" n1_bench_bundle
+          sha256sum "$RUNNER_TEMP/n1_bench_bundle.tar.gz" | cut -d' ' -f1 > "$RUNNER_TEMP/bundle.sha256"
+          echo "tarball bytes: $(stat -c %s "$RUNNER_TEMP/n1_bench_bundle.tar.gz")  sha256: $(cat "$RUNNER_TEMP/bundle.sha256")"
+      - name: N2 reference run (python:3.11-slim, offline, from the extracted tarball)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/x" "$RUNNER_TEMP/out"
+          tar -C "$RUNNER_TEMP/x" -xzf "$RUNNER_TEMP/n1_bench_bundle.tar.gz"
+          docker run --rm --network none --memory 3g -e PIP_DISABLE_PIP_VERSION_CHECK=1 \
+            -v "$RUNNER_TEMP/x/n1_bench_bundle":/bundle:ro -v "$RUNNER_TEMP/out":/out python:3.11-slim \
+            bash -c 'pip install --no-index --find-links /bundle/wheels -r /bundle/requirements.txt > /dev/null && python /bundle/n1_bench.py --bundle /bundle --threads 4 --out /out/n1_n2.json --table /out/n1_n2.txt'
+      - name: publish the N2 reference numbers
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/out/n1_n2.txt" ]; then
+            { echo "## N1 bench bundle: N2 reference (runner, python:3.11-slim)"; echo; cat "$RUNNER_TEMP/out/n1_n2.txt"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: n1-bench-n2-reference
+          path: ${{ runner.temp }}/out/n1_n2.json
+          if-no-files-found: warn
+      - name: publish the prerelease asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="$(cat "$RUNNER_TEMP/bundle.sha256")"
+          {
+            echo "Public benchmark bundle: BAAI/bge-reranker-base (MIT) int8 ONNX + C-MTEB T2Reranking sample (Apache-2.0). Not a software release."
+            echo
+            echo "Asset n1_bench_bundle.tar.gz, sha256 $SHA. Built by run $GITHUB_RUN_ID at $GITHUB_SHA."
+            echo
+            echo "N2 reference (4-vCPU Neoverse-N2 CI runner, python:3.11-slim, 4 threads, same command as README.md):"
+            echo '```'
+            cat "$RUNNER_TEMP/out/n1_n2.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          if gh release view "$BUNDLE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$BUNDLE_TAG" "$RUNNER_TEMP/n1_bench_bundle.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$BUNDLE_TAG" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$BUNDLE_TAG" "$RUNNER_TEMP/n1_bench_bundle.tar.gz" --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+              --title "N1 bench bundle (public model and data)" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release view "$BUNDLE_TAG" --repo "$GITHUB_REPOSITORY" --json assets,isPrerelease --jq '{prerelease: .isPrerelease, assets: [.assets[] | {name, size}]}'
