@@ -7,11 +7,13 @@
 //! Called-by: [maintenance::main, maintenance::rls_check, tests, xtask::migrate]
 //! Invariants: [each PENDING migration runs in one explicit transaction (ADR-0050 D-D) unless its manifest says
 //!   transaction = "none" (only that value, only for a CONCURRENTLY body; ADR-0052 D-G); a second run is idempotent;
-//!   an applied file whose checksum changed is drift and stops the run; 0011 pending with one of its roles missing is
-//!   refused unless --dev-placeholder-roles (ADR-0059 D-A); a session of a runtime role in the TARGET database
+//!   an applied file whose checksum changed is drift and stops the run, unless the recorded checksum is on the file's
+//!   reviewed `accepted_prior_checksums` (ADR-0082: logged, continues, `ops.schema_migrations` never rewritten);
+//!   0011 pending with one of its roles missing is refused unless --dev-placeholder-roles (ADR-0059 D-A); a session of
+//!   a runtime role in the TARGET database
 //!   (`datname = current_database()`) refuses the run with exit 3 naming each role, unless --allow-live-sessions
 //!   (ADR-0066 D-Q, OPS-9)]
-//! Spec: Baseline §46; ADR-0050; ADR-0052; ADR-0059; ADR-0066 D-Q
+//! Spec: Baseline §46; ADR-0050; ADR-0052; ADR-0059; ADR-0066 D-Q; ADR-0082
 //!
 //! Moved from `xtask::migrate` (ADR-0066 D-Q) so a production node migrates with the release image and no toolchain;
 //! `cargo xtask migrate` is now a delegation that passes `--migrations-dir migrations` and the test DSN.
@@ -52,7 +54,7 @@
 //! it reads `pg_stat_activity` filtered on `datname = current_database()`, because that view is cluster-wide and the
 //! dev chain migrates throwaway databases while its own gateway is connected to another database of the same cluster.
 
-use crate::migration_manifest::{self, Manifest};
+use crate::migration_manifest::{self, AcceptedChecksum, Manifest, RecordedChecksum};
 use postgres::error::SqlState;
 use postgres::types::Type;
 use postgres::{Client, GenericClient, NoTls};
@@ -144,6 +146,8 @@ struct PendingMigration {
     /// The manifest's raw `transaction` key (ADR-0052 D-G); `None` = the default one-transaction
     /// apply. Validated by [`apply_locked`] before anything of that migration runs.
     transaction: Option<String>,
+    /// The manifest's reviewed `accepted_prior_checksums` (ADR-0082); empty when it has none or there is no manifest.
+    accepted_prior_checksums: Vec<AcceptedChecksum>,
 }
 
 /// ADR-0052 D-G: the manifest's `transaction` key as written — absent ⇒ `None`, a string ⇒ that
@@ -232,7 +236,7 @@ fn parse_sources(
     sources
         .into_iter()
         .map(|(migration_id, sql, text)| {
-            let (manifest, transaction) = match text {
+            let (manifest, transaction, accepted_prior_checksums) = match text {
                 Some(text) => {
                     let name = format!("{migration_id}.manifest.toml");
                     (
@@ -241,15 +245,18 @@ fn parse_sources(
                                 .map_err(|e| e.to_string())?,
                         ),
                         manifest_transaction(&text),
+                        migration_manifest::accepted_prior_checksums(&name, &text)
+                            .map_err(|e| e.to_string())?,
                     )
                 }
-                None => (None, None),
+                None => (None, None, Vec::new()),
             };
             Ok(PendingMigration {
                 migration_id,
                 sql,
                 manifest,
                 transaction,
+                accepted_prior_checksums,
             })
         })
         .collect()
@@ -425,6 +432,15 @@ fn apply_all(
     result
 }
 
+/// ADR-0082: the operator line for an accepted amendment, naming the migration, the checksum its database recorded and
+/// the file's current one.
+fn amended_notice(migration_id: &str, recorded: &str, current: &str, reason: &str) -> String {
+    format!(
+        "migrate: amended {migration_id} — recorded checksum {recorded} is on its accepted_prior_checksums \
+         ({reason}); file checksum now {current}; ops.schema_migrations left as recorded (ADR-0082)"
+    )
+}
+
 fn apply_locked(
     client: &mut Client,
     migrations: &[PendingMigration],
@@ -456,14 +472,29 @@ fn apply_locked(
 
         if let Some(recorded) = recorded_checksum {
             let current = fnv1a_hex(m.sql.as_bytes());
-            if current != recorded {
-                return Err(format!(
-                    "{}: drift detected — file's checksum {current} does not match \
-                     recorded {recorded} (already applied with different content; §46 \
-                     migrations are immutable once applied, add a new migration instead \
-                     of editing this one)",
-                    m.migration_id
-                ));
+            // ADR-0082: the one drift rule. An amendment is logged and the run goes on; nothing here writes
+            // `ops.schema_migrations` (ADR-0060 SEC-2: no command rewrites a recorded checksum).
+            match migration_manifest::compare_recorded(
+                &current,
+                &recorded,
+                &m.accepted_prior_checksums,
+            ) {
+                RecordedChecksum::Same => {}
+                RecordedChecksum::Amended { reason } => {
+                    eprintln!(
+                        "{}",
+                        amended_notice(&m.migration_id, &recorded, &current, reason)
+                    );
+                }
+                RecordedChecksum::Drift => {
+                    return Err(format!(
+                        "{}: drift detected — file's checksum {current} does not match \
+                         recorded {recorded} (already applied with different content; §46 \
+                         migrations are immutable once applied, add a new migration instead \
+                         of editing this one)",
+                        m.migration_id
+                    ));
+                }
             }
             skipped += 1;
             eprintln!("migrate: skip  {} (already applied)", m.migration_id);
@@ -740,6 +771,7 @@ mod tests {
             sql: sql.to_string(),
             manifest: Some(manifest(id, "select true", "select true")),
             transaction: None,
+            accepted_prior_checksums: Vec::new(),
         }
     }
 
@@ -1142,6 +1174,7 @@ mod tests {
             ),
             manifest: exact.manifest.clone(),
             transaction: None,
+            accepted_prior_checksums: Vec::new(),
         };
         let error = apply_all(&mut client, &[failed], LOCK_TIMEOUT, false)
             .expect_err("exact 0137 candidate must fail");
@@ -1710,6 +1743,172 @@ mod tests {
             "SELECT to_regclass('c39_other_probe') IS NOT NULL"
         ));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Writes `<stem>.sql` and a full manifest whose `accepted_prior_checksums` names each of `prior` (ADR-0082).
+    fn write_amendable(dir: &Path, stem: &str, sql: &str, prior: &[&str]) {
+        fs::write(dir.join(format!("{stem}.sql")), sql).unwrap();
+        let list: String = prior
+            .iter()
+            .map(|c| format!("{{ checksum = \"{c}\", reason = \"test amendment\" }}, "))
+            .collect();
+        fs::write(
+            dir.join(format!("{stem}.manifest.toml")),
+            format!(
+                "migration_id = \"{stem}\"\nclass = \"FORWARD_ONLY\"\n\
+                 precheck = \"select true\"\npostcheck = \"select true\"\n\
+                 rollback_or_forward_fix = \"test\"\nbackup_restore_requirement = \"test\"\n\
+                 accepted_prior_checksums = [{list}]\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    const AMEND_STEM: &str = "0001_adr0082_amend";
+    const AMEND_V1: &str = "CREATE TABLE adr0082_t (id int)";
+    /// The same statement behind a new comment: an amendment with no schema effect.
+    const AMEND_V2: &str = "-- amended: comment only\nCREATE TABLE adr0082_t (id int)";
+
+    /// Applies [`AMEND_V1`] to the client's database and returns the checksum the ledger recorded for it.
+    fn apply_amend_v1(client: &mut Client, dir: &Path) -> String {
+        write_amendable(dir, AMEND_STEM, AMEND_V1, &[]);
+        let migrations = collect_migrations(dir).expect("scratch dir");
+        assert_eq!(
+            apply_all(client, &migrations, LOCK_TIMEOUT, false).expect("v1 applies"),
+            (1, 0)
+        );
+        let (recorded, _) = amend_ledger_row(client);
+        assert_eq!(recorded, fnv1a_hex(AMEND_V1.as_bytes()));
+        recorded
+    }
+
+    /// The fixture's ledger row as `(checksum, xmin)`: any UPDATE of it, even to the same value, changes `xmin`.
+    fn amend_ledger_row(client: &mut Client) -> (String, String) {
+        let row = client
+            .query_one(
+                "SELECT checksum, xmin::text FROM ops.schema_migrations WHERE migration_id = $1",
+                &[&AMEND_STEM],
+            )
+            .expect("the fixture's ledger row");
+        (row.get(0), row.get(1))
+    }
+
+    /// ADR-0082 gate 1a: a recorded checksum listed in the file's `accepted_prior_checksums` is accepted (nothing
+    /// applied, one skipped), on every replay, and the recorded row is never rewritten. Fault: rewrite the row on
+    /// acceptance ⇒ the `xmin`/checksum comparison is red.
+    #[test]
+    fn a_listed_prior_checksum_is_accepted_and_the_recorded_row_is_never_rewritten() {
+        const TEST: &str =
+            "a_listed_prior_checksum_is_accepted_and_the_recorded_row_is_never_rewritten";
+        let Some((_db, dsn)) = throwaway(TEST, "migrate_amend_ok") else {
+            return;
+        };
+        // dep: PostgreSQL(any) — throwaway c25 database — a listed prior checksum is accepted, the ledger row stays.
+        let mut client = Client::connect(&dsn, NoTls).expect("connect throwaway");
+        let dir = scratch_dir("amend_ok");
+        let v1 = apply_amend_v1(&mut client, &dir);
+        let before = amend_ledger_row(&mut client);
+        write_amendable(&dir, AMEND_STEM, AMEND_V2, &[&v1]);
+        let migrations = collect_migrations(&dir).expect("scratch dir");
+        assert_ne!(fnv1a_hex(AMEND_V2.as_bytes()), v1, "the bytes changed");
+        for run in 1..=2 {
+            assert_eq!(
+                apply_all(&mut client, &migrations, LOCK_TIMEOUT, false)
+                    .expect("a listed prior checksum is accepted"),
+                (0, 1),
+                "run {run}: nothing applied, the amended migration skipped"
+            );
+            assert_eq!(
+                amend_ledger_row(&mut client),
+                before,
+                "run {run}: the recorded row is untouched"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ADR-0082 gate 1b: drift the file does not list is refused with the existing message, whether the list is
+    /// empty, names another checksum, or names the old one while the database holds a forged value. Fault: accept any
+    /// drift ⇒ the first `expect_err` is red.
+    #[test]
+    fn an_unlisted_drift_is_refused_with_the_existing_message() {
+        const TEST: &str = "an_unlisted_drift_is_refused_with_the_existing_message";
+        let Some((_db, dsn)) = throwaway(TEST, "migrate_amend_drift") else {
+            return;
+        };
+        // dep: PostgreSQL(any) — throwaway c25 database — drift the file does not list is refused.
+        let mut client = Client::connect(&dsn, NoTls).expect("connect throwaway");
+        let dir = scratch_dir("amend_drift");
+        let v1 = apply_amend_v1(&mut client, &dir);
+        let v2 = fnv1a_hex(AMEND_V2.as_bytes());
+        let refused = |client: &mut Client, dir: &Path, what: &str| {
+            let migrations = collect_migrations(dir).expect("scratch dir");
+            let err = apply_all(client, &migrations, LOCK_TIMEOUT, false)
+                .expect_err(&format!("{what}: drift must stop the run"));
+            assert!(
+                err.contains(&format!("{AMEND_STEM}: drift detected"))
+                    && err.contains(&format!("file's checksum {v2} does not match recorded"))
+                    && err.contains("add a new migration instead of editing this one"),
+                "{what}: {err}"
+            );
+        };
+        write_amendable(&dir, AMEND_STEM, AMEND_V2, &[]);
+        refused(&mut client, &dir, "an empty list");
+        write_amendable(&dir, AMEND_STEM, AMEND_V2, &["ffffffffffffffff"]);
+        refused(&mut client, &dir, "a list naming another checksum");
+        // dep: PostgreSQL(any) — superuser on the throwaway: forge the recorded row, which the list cannot excuse
+        client
+            .execute(
+                "UPDATE ops.schema_migrations SET checksum = 'eeeeeeeeeeeeeeee' WHERE migration_id = $1",
+                &[&AMEND_STEM],
+            )
+            .expect("forge the row");
+        write_amendable(&dir, AMEND_STEM, AMEND_V2, &[&v1]);
+        refused(&mut client, &dir, "a forged row outside the list");
+        assert_eq!(
+            amend_ledger_row(&mut client).0,
+            "eeeeeeeeeeeeeeee",
+            "a refusal leaves the row as it found it"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ADR-0082: the operator line names the migration, both checksums and the reason, on one line.
+    #[test]
+    fn the_amendment_notice_names_the_migration_both_checksums_and_the_reason() {
+        let line = amended_notice("0228_x", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "the why");
+        for needle in ["0228_x", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "the why"] {
+            assert!(line.contains(needle), "{needle}: {line}");
+        }
+        assert_eq!(line.lines().count(), 1, "{line}");
+    }
+
+    /// ADR-0082: only 0228 and 0229 are amended in this tree, and a listed checksum is an OLDER body's: one equal to
+    /// the file's own would mean the list was computed after the edit and names nothing a database holds. A new
+    /// amendment adds its id here, which puts it in front of the reviewer (ADR-0082 D-D).
+    #[test]
+    fn the_amended_migrations_list_checksums_that_are_not_their_own() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let set = collect_migrations(&dir).expect("migrations dir");
+        let amended: Vec<&str> = set
+            .iter()
+            .filter(|m| !m.accepted_prior_checksums.is_empty())
+            .map(|m| m.migration_id.as_str())
+            .collect();
+        assert_eq!(
+            amended,
+            ["0228_partition_events", "0229_partition_audit_events"]
+        );
+        for m in &set {
+            for prior in &m.accepted_prior_checksums {
+                assert_ne!(
+                    prior.checksum,
+                    fnv1a_hex(m.sql.as_bytes()),
+                    "{}: the listed checksum is the file's own",
+                    m.migration_id
+                );
+            }
+        }
     }
 
     /// ADR-0066 D-Q: the set `build.rs` embedded is the `migrations/` directory, file for file and byte for byte

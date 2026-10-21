@@ -7,6 +7,13 @@
 migration_id = "0228_partition_events"
 class = "FORWARD_ONLY"
 
+# ADR-0082 / #137: the body's F3 precheck now orders its aggregate by the expression (it sorted by the constant 1).
+# Only a precheck and a comment changed, no schema effect; the listed checksum is the file as merged before this
+# change, which databases that already applied it recorded. `migrate` accepts it, logs it and never rewrites the row.
+accepted_prior_checksums = [
+  { checksum = "d09c6b3d81a0c99c", reason = "#137 aggregate ORDER BY constant" },
+]
+
 # Refuses unless private.events is still a plain heap that no view or BEGIN ATOMIC body depends on, exactly the
 # ticket and message FKs reference it (a partitioned referrer's per-leaf clones excluded), and the 0224 creator
 # exists. Orphan counts per FK are the body's own first DO block (it names the FK and the count).
