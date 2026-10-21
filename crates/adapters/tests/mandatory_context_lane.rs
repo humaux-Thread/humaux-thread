@@ -32,8 +32,11 @@
 //! called-by: `cargo test -p humaux-adapters --test mandatory_context_lane` (chain `adapters_tests`).
 //! invariants: every fixture holds the database advisory lock `FACET_SHADOW_ADVISORY_LOCK`
 //! (HXFACETS) for its whole life, across processes; `FacetShadow` exists only inside one and is
-//! restored in `Drop`; a killed run's residue is repaired by `setup` under that lock, so the
-//! repair can never see a live shadow (ADR-0050 D-B).
+//! restored in `Drop`; a killed run's residue is repaired by the shadow test under that lock
+//! before it arms, so the repair can never see a live shadow (ADR-0050 D-B); the shadow test is
+//! `lane(a:disposable)` and the only place this file spells DDL (§79 / #145, M24-7b): its
+//! ACCESS EXCLUSIVE on `private.memory_records` and the writable `facet` must never reach a
+//! database that other test binaries share.
 
 use humaux_adapters::context_repo;
 use humaux_adapters::postgres::RuntimeDbPool;
@@ -219,14 +222,13 @@ fn setup() -> Option<(Fixture, String)> {
         return None;
     };
     // A lock wait past FIXTURE_LOCK_WAIT is 55P03 → panic (red), never a skip. The timeout stays
-    // on this session, so the residue repair's DDL below is bounded too.
+    // on this session, so the shadow test's residue repair and DDL are bounded too.
     admin
         .batch_execute(&format!(
             "SET lock_timeout = '{FIXTURE_LOCK_WAIT}'; \
              SELECT pg_advisory_lock({FACET_SHADOW_ADVISORY_LOCK});"
         ))
         .expect("take the facet-shadow advisory lock (another fixture holds it too long)");
-    repair_facet_shadow_residue(&mut admin);
     let gateway_dsn = gateway_dsn()?;
     // 迁移未应用这条腿点名 0102 的产物。注意：**触发器/列在不在是断言不是 skip 条件**
     // 的那条规矩（ADR-0006）针对的是「被测判据本身」；这里 `mode` 列是**被测对象所在的
@@ -505,32 +507,32 @@ fn attgenerated(admin: &mut Client, schema: &str, table: &str, column: &str) -> 
 /// `memory_records` 的锁时，ACCESS EXCLUSIVE 等不到就红，不无限排队、不把后来者全堵在身后。
 struct FacetShadow {
     admin: Client,
+    /// Puts the generated column back; the shadow test hands it in with the DDL that arms the shadow.
+    restore_sql: &'static str,
 }
 
 impl FacetShadow {
     /// `dsn` 必须是 [`setup`] 已经校验过的 owner 夹具 DSN——这里做 DDL，认错库就是改生产。
     /// 调用方必须持有一个活着的 [`Fixture`]（它的会话拿着 [`FACET_SHADOW_ADVISORY_LOCK`]）。
-    fn arm(dsn: &str) -> Self {
+    /// §79 / #145: `shadow_sql` and `restore_sql` are spelled inside the `lane(a:disposable)` test that
+    /// arms the shadow, because M24-7b accepts shared-catalog DDL only there.
+    fn arm(dsn: &str, shadow_sql: &str, restore_sql: &'static str) -> Self {
         // dep: PostgreSQL(owner) — DDL on private.memory_records needs the table owner.
         // dep: PostgreSQL(any) — opens the role-scoped connection for `arm`
         let mut admin = Client::connect(dsn, NoTls).expect("owner login for the facet shadow");
         admin
-            .batch_execute(
-                "SET lock_timeout = '10s'; \
-                 ALTER TABLE private.memory_records \
-                   RENAME COLUMN facet TO facet__probe_shadow; \
-                 ALTER TABLE private.memory_records ADD COLUMN facet text;",
-            )
+            .batch_execute(shadow_sql)
             .expect("shadow private.memory_records.facet");
-        Self { admin }
+        Self { admin, restore_sql }
     }
 }
 
 /// ADR-0050 D-B: a previous run killed mid-test (SIGKILL / tool timeout) never ran
-/// `FacetShadow::drop` and left the shadow behind. `setup` calls this before any test reads the
-/// catalog: a residue makes `facet` look unsatisfied, so the shadow test would never arm (a
-/// repair inside `arm` is never reached) while every probe read the shadow. Same SQL as `Drop`.
-fn repair_facet_shadow_residue(admin: &mut Client) {
+/// `FacetShadow::drop` and left the shadow behind. The shadow test calls this before it arms, under
+/// the fixture's advisory lock: a residue makes `facet` look unsatisfied, so the shadow test would
+/// never arm (a repair inside `arm` is never reached) while every probe read the shadow.
+/// `restore_sql` is the one `Drop` runs.
+fn repair_facet_shadow_residue(admin: &mut Client, restore_sql: &str) {
     let leftover: bool = admin
         .query_one(
             "SELECT EXISTS (SELECT 1 FROM pg_attribute \
@@ -545,23 +547,19 @@ fn repair_facet_shadow_residue(admin: &mut Client) {
             "mandatory_context_lane: repairing a leftover facet__probe_shadow from a killed run"
         );
         admin
-            .batch_execute(RESTORE_FACET_SQL)
+            .batch_execute(restore_sql)
             .expect("repair leftover facet shadow");
     }
 }
 
-/// The one restore statement, shared by `Drop` and [`repair_facet_shadow_residue`].
-const RESTORE_FACET_SQL: &str = "ALTER TABLE private.memory_records DROP COLUMN facet; \
-     ALTER TABLE private.memory_records RENAME COLUMN facet__probe_shadow TO facet;";
-
 impl Drop for FacetShadow {
     fn drop(&mut self) {
         // 展开中再 panic 会 abort 掉整个测试进程，所以这里只喊，不 panic。
-        if let Err(err) = self.admin.batch_execute(RESTORE_FACET_SQL) {
+        if let Err(err) = self.admin.batch_execute(self.restore_sql) {
             eprintln!(
                 "FATAL: private.memory_records.facet 的影子没能还原（{err}）——\
                  HUMAUX_TEST_PG_DSN 指向的夹具库现在带着一个可写的 facet 列；\
-                 下次 setup 会先修复它"
+                 下次跑影子测试会先修复它"
             );
         }
     }
@@ -639,10 +637,23 @@ fn probe_reports_the_columns_that_are_actually_missing() {
 ///
 /// 注错：probe 只查存在性（去掉 `attgenerated='s'` 那一支）⇒ 影子期这条红。
 /// 注错：probe 恒报 `Ok(None)` ⇒ 影子期这条红（上面那条依旧绿）。
+///
+/// §79 / #145: this is the binary's one DDL test, so it runs in the serial lane on a per-target
+/// database. The DDL text is spelled here, inside the `lane(a:disposable)` test, because M24-7b
+/// (`cargo xtask architecture-check`) accepts shared-catalog DDL nowhere else in this file.
 #[test]
+#[ignore = "lane(a:disposable) needs a per-run database: it swaps private.memory_records.facet for a writable column (RENAME/ADD/DROP COLUMN under ACCESS EXCLUSIVE), so on a shared database a concurrent insert into memory_records sees different semantics and other binaries' statements queue on the lock or fail with 55P03"]
 fn an_unsatisfiable_requirement_is_reported_missing() {
-    let Some((mut f, dsn)) = setup() else { return };
     const FACET: &str = "private.memory_records.facet";
+    const SHADOW_FACET_SQL: &str = "SET lock_timeout = '10s'; \
+         ALTER TABLE private.memory_records \
+           RENAME COLUMN facet TO facet__probe_shadow; \
+         ALTER TABLE private.memory_records ADD COLUMN facet text;";
+    const RESTORE_FACET_SQL: &str = "ALTER TABLE private.memory_records DROP COLUMN facet; \
+         ALTER TABLE private.memory_records RENAME COLUMN facet__probe_shadow TO facet;";
+
+    let Some((mut f, dsn)) = setup() else { return };
+    repair_facet_shadow_residue(&mut f.admin, RESTORE_FACET_SQL);
 
     let rt = tokio::runtime::Runtime::new().expect("rt");
     // dep: PostgreSQL(role_gateway) — RuntimeDbPool under test, the runtime role's real pool.
@@ -667,7 +678,11 @@ fn an_unsatisfiable_requirement_is_reported_missing() {
     let shadow = (generated.as_deref() == Some("s")).then(|| {
         // setup() 已经校验过这个 DSN：the loopback fixture target named by HUMAUX_TEST_PG_DSN；
         // DDL 只许打在那里。
-        FacetShadow::arm(&std::env::var("HUMAUX_TEST_PG_DSN").expect("owner DSN"))
+        FacetShadow::arm(
+            &std::env::var("HUMAUX_TEST_PG_DSN").expect("owner DSN"),
+            SHADOW_FACET_SQL,
+            RESTORE_FACET_SQL,
+        )
     });
 
     let reported = reported_facet(&pool);
