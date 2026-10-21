@@ -792,6 +792,187 @@ fn finalized_call_can_feed_a_tenant_cost_event() {
     );
 }
 
+/// A fresh RESERVED retrieval-plane row (`Embedding`) of the test tenant, for tests that act on a ledger row directly.
+fn reserve_embedding(handle: &mut Handle) -> Uuid {
+    handle
+        .rt
+        .block_on(model_call_ledger::reserve_call(
+            &handle.retrieval_worker,
+            &ReserveCall {
+                request_id: None,
+                tenant_id: handle.tenant_id,
+                workspace_id: None,
+                purpose: Some(ModelCallPurpose::Embedding),
+                provider: "dashscope".to_string(),
+                model: Some("text-embedding-v4".to_string()),
+                model_revision: None,
+                estimated_cost: Some(0.1),
+            },
+        ))
+        .expect("reserve succeeds")
+        .model_call_id
+}
+
+/// Reserves a retrieval-plane row and finalizes it through `finalize_call` with `finalize`.
+fn finalize_embedding(handle: &mut Handle, finalize: &FinalizeCall) -> Uuid {
+    let model_call_id = reserve_embedding(handle);
+    let changed = handle
+        .rt
+        .block_on(model_call_ledger::finalize_call(
+            &handle.retrieval_worker,
+            handle.tenant_id,
+            model_call_id,
+            ModelCallOutcome::Succeeded,
+            finalize,
+        ))
+        .expect("finalize succeeds");
+    assert!(changed);
+    model_call_id
+}
+
+/// `(provider_cache_read_tokens, provider_cache_write_tokens)` of one ledger row.
+fn cache_tokens(handle: &mut Handle, model_call_id: Uuid) -> (Option<i64>, Option<i64>) {
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT provider_cache_read_tokens, provider_cache_write_tokens \
+             FROM ops.model_call_ledger WHERE model_call_id = $1",
+            &[&model_call_id],
+        )
+        .expect("row exists");
+    (row.get(0), row.get(1))
+}
+
+/// G-RET-1 (b), §19.1 / ADR-0081 D-A (D-RET-1), migration 0257: `finalize_call` persists the prompt-cache read count
+/// (an unreported write count stays NULL, never 0), and a landed read count is set-once (42501).
+#[test]
+fn provider_cache_read_persists_and_is_set_once() {
+    run_db_fixture::<LedgerFixture, _>(
+        "provider_cache_read_persists_and_is_set_once",
+        |mut handle| {
+            let finalized = finalize_embedding(
+                &mut handle,
+                &FinalizeCall {
+                    input_tokens: Some(10),
+                    billable_tokens: Some(10),
+                    output_tokens: Some(4),
+                    provider_cache_read_tokens: Some(3),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                cache_tokens(&mut handle, finalized),
+                (Some(3), None),
+                "the read count persists; an unreported write count is NULL, never 0"
+            );
+            let rewrite = handle
+                .admin
+                .execute(
+                    "UPDATE ops.model_call_ledger SET provider_cache_read_tokens = 2 WHERE model_call_id = $1",
+                    &[&finalized],
+                )
+                .expect_err("a landed cache read count is set-once");
+            assert_eq!(
+                rewrite.code(),
+                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+                "unexpected error class for the set-once guard: {rewrite}"
+            );
+        },
+    );
+}
+
+/// G-RET-1 (b), migration 0257: a reported write count rides the same finalize UPDATE and persists (no adapter
+/// reports one yet, so nothing else in the suite would notice the column dropping out of the SET list).
+#[test]
+fn provider_cache_write_persists_through_finalize() {
+    run_db_fixture::<LedgerFixture, _>(
+        "provider_cache_write_persists_through_finalize",
+        |mut handle| {
+            let finalized = finalize_embedding(
+                &mut handle,
+                &FinalizeCall {
+                    input_tokens: Some(10),
+                    billable_tokens: Some(10),
+                    provider_cache_read_tokens: Some(3),
+                    provider_cache_write_tokens: Some(4),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                cache_tokens(&mut handle, finalized),
+                (Some(3), Some(4)),
+                "a reported write count must persist"
+            );
+        },
+    );
+}
+
+/// G-RET-1 (b), migration 0257: the database refuses a cache count its row cannot hold (23514: more than
+/// `input_tokens`, any without `input_tokens`, negative, read + write over `input_tokens`), accepts the boundary
+/// read + write == `input_tokens`, and then refuses to change the landed write count (42501): the cross CHECK holds
+/// for that rewrite (read 6 <= input 10 - write 3), so only the set-once guard can refuse it.
+#[test]
+fn database_refuses_cache_counts_its_row_cannot_hold() {
+    run_db_fixture::<LedgerFixture, _>(
+        "database_refuses_cache_counts_its_row_cannot_hold",
+        |mut handle| {
+            // A RESERVED row: the guard lets a count land once, from NULL.
+            let open = reserve_embedding(&mut handle);
+            let mut update = |set: &str| {
+                handle.admin.execute(
+                    &format!("UPDATE ops.model_call_ledger SET {set} WHERE model_call_id = $1"),
+                    &[&open],
+                )
+            };
+            for (set, why) in [
+                (
+                    "input_tokens = 10, provider_cache_read_tokens = 11",
+                    "read above input_tokens",
+                ),
+                (
+                    "provider_cache_read_tokens = 1",
+                    "read while input_tokens is NULL",
+                ),
+                (
+                    "provider_cache_write_tokens = 1",
+                    "write while input_tokens is NULL",
+                ),
+                (
+                    "input_tokens = 10, provider_cache_read_tokens = -1",
+                    "negative read",
+                ),
+                (
+                    "input_tokens = 10, provider_cache_read_tokens = 6, provider_cache_write_tokens = 5",
+                    "read + write above input_tokens",
+                ),
+            ] {
+                let err = update(set).expect_err(why);
+                assert_eq!(
+                    err.code(),
+                    Some(&SqlState::CHECK_VIOLATION),
+                    "{why}: unexpected error class: {err}"
+                );
+            }
+            // Positive control: read + write == input_tokens is the boundary and is accepted.
+            assert_eq!(
+                update(
+                    "input_tokens = 10, provider_cache_read_tokens = 6, provider_cache_write_tokens = 4"
+                )
+                .expect("read + write equal to input_tokens is valid"),
+                1
+            );
+            // Set-once for the write column.
+            let rewrite_write = update("provider_cache_write_tokens = 3")
+                .expect_err("a landed cache write count is set-once");
+            assert_eq!(
+                rewrite_write.code(),
+                Some(&SqlState::INSUFFICIENT_PRIVILEGE),
+                "unexpected error class for the set-once guard on the write count: {rewrite_write}"
+            );
+        },
+    );
+}
+
 /// A finalize() against a `model_call_id` that was never reserved (or belongs to a different
 /// tenant) must report no row changed — never silently insert or adopt another tenant's row.
 #[test]
@@ -1018,6 +1199,7 @@ fn private_purposes_reserve_and_finalize_on_the_private_worker_pool() {
                             input_tokens: Some(1234),
                             billable_tokens: Some(1234),
                             output_tokens: Some(5678),
+                            provider_cache_read_tokens: Some(3),
                             latency_ms: Some(42),
                             ..Default::default()
                         },
@@ -1029,6 +1211,7 @@ fn private_purposes_reserve_and_finalize_on_the_private_worker_pool() {
                     .admin
                     .query_one(
                         "SELECT purpose, status, input_tokens, billable_tokens, output_tokens, \
+                                provider_cache_read_tokens, provider_cache_write_tokens, \
                                 latency_ms, profile_id, billing_responsibility \
                          FROM ops.model_call_ledger WHERE model_call_id = $1",
                         &[&model_call_id],
@@ -1041,6 +1224,16 @@ fn private_purposes_reserve_and_finalize_on_the_private_worker_pool() {
                 // `input_token_price` and the completion at `output_token_price`.
                 assert_eq!(row.get::<_, i64>("billable_tokens"), 1234);
                 assert_eq!(row.get::<_, i64>("output_tokens"), 5678);
+                // 0257 (ADR-0081 D-A): the prompt-cache read count rides the same UPDATE; an unreported write count
+                // stays NULL.
+                assert_eq!(
+                    row.get::<_, Option<i64>>("provider_cache_read_tokens"),
+                    Some(3)
+                );
+                assert_eq!(
+                    row.get::<_, Option<i64>>("provider_cache_write_tokens"),
+                    None
+                );
                 assert_eq!(row.get::<_, i32>("latency_ms"), 42);
                 // ADR-0060 D-I / ruling E2: the row carries its admitted route, USER-paid.
                 assert_eq!(row.get::<_, Uuid>("profile_id"), profile_id);

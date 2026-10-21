@@ -1,0 +1,81 @@
+# §46.1 migration manifest. ADR-0081 D-A (D-RET-1), card T-RET-1a (§19.1): persist the provider's prompt-cache token
+# counts on `ops.model_call_ledger` so the cache hit rate H = sum(read) / sum(input_tokens) can be measured. Two
+# nullable outcome columns (`provider_cache_read_tokens`, `provider_cache_write_tokens`), a >= 0 CHECK on each, one
+# cross-column CHECK against `input_tokens`, and the two functions that enumerate the outcome columns by name
+# (`ops.model_call_ledger_guard_mutation()` from 0230, `ops.reasoning_model_call_validate()` from 0206). Same class as
+# 0168. No new table, no new role, no new GRANT, no RLS change, no DML. §46 forward-fix (EXPAND_CONTRACT, number 0257).
+
+migration_id = "0257_model_call_ledger_cache_tokens"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database that is not the partitioned ledger of 0230, that already has either column, or whose two guard
+# functions are missing.
+precheck = """
+select
+ -- 0230's RANGE-partitioned parent, with its input-side sibling column present
+ (select relkind='p' from pg_class where oid='ops.model_call_ledger'::regclass)
+ and (select count(*)=1 from information_schema.columns
+       where table_schema='ops' and table_name='model_call_ledger' and column_name='input_tokens')
+ and (select count(*)=0 from information_schema.columns
+       where table_schema='ops' and table_name='model_call_ledger'
+         and column_name in ('provider_cache_read_tokens','provider_cache_write_tokens'))
+ -- the two functions this migration rewrites are the ones currently installed (0168's output_tokens term included)
+ and (select prosrc like '%OLD.output_tokens IS NOT NULL%'
+      from pg_proc where oid=to_regprocedure('ops.model_call_ledger_guard_mutation()'))
+ and (select prosrc like '%NEW.output_tokens%'
+      from pg_proc where oid=to_regprocedure('ops.reasoning_model_call_validate()'))
+ as precheck_ok
+"""
+
+# Fails on: a column that is missing, not bigint or not nullable on the parent or on any leaf; either >= 0 CHECK
+# missing; a validator that does not count the new columns or that stopped being SECURITY DEFINER owned by the
+# migration owner; a guard that lost what it guarded before; and a changed RLS or grant surface. Two properties are
+# left to adapters::tests::model_call_ledger (G-RET-1 (b), the T-RET-1a red records) on purpose, so each fault reaches
+# its gate instead of stopping the migration (the 0256 convention): the cross-column CHECK against input_tokens
+# (r3 -> 23514) and the guard's set-once terms for the new columns (r4).
+postcheck = """
+select
+ -- both columns exist, nullable bigint, on the parent and on every leaf
+ (select count(*)=2 from information_schema.columns
+   where table_schema='ops' and table_name='model_call_ledger'
+     and column_name in ('provider_cache_read_tokens','provider_cache_write_tokens')
+     and data_type='bigint' and is_nullable='YES')
+ and not exists (select 1 from pg_inherits i, unnest(array['provider_cache_read_tokens','provider_cache_write_tokens']) as u(colname)
+                  where i.inhparent='ops.model_call_ledger'::regclass
+                    and not exists (select 1 from pg_attribute a
+                                     where a.attrelid=i.inhrelid and a.attname=u.colname and not a.attisdropped))
+ -- the two >= 0 CHECKs, by name, with their predicates
+ and (select count(*)=1 from pg_constraint
+       where conrelid='ops.model_call_ledger'::regclass and contype='c'
+         and conname='model_call_ledger_provider_cache_read_tokens_nonneg'
+         and pg_get_constraintdef(oid) like '%provider_cache_read_tokens >= 0%')
+ and (select count(*)=1 from pg_constraint
+       where conrelid='ops.model_call_ledger'::regclass and contype='c'
+         and conname='model_call_ledger_provider_cache_write_tokens_nonneg'
+         and pg_get_constraintdef(oid) like '%provider_cache_write_tokens >= 0%')
+ -- the validator counts each new column in BOTH reservation arms (private purposes, CONTRIBUTION_DEIDENTIFY): exactly
+ -- two occurrences, so neither one arm nor a comment can satisfy it (the guard's own set-once terms are G-RET-1 (b), see above)
+ and (select (length(prosrc) - length(replace(prosrc, 'NEW.provider_cache_read_tokens', '')))
+               / length('NEW.provider_cache_read_tokens') = 2
+         and (length(prosrc) - length(replace(prosrc, 'NEW.provider_cache_write_tokens', '')))
+               / length('NEW.provider_cache_write_tokens') = 2
+      from pg_proc where oid=to_regprocedure('ops.reasoning_model_call_validate()'))
+ -- guard_mutation kept everything it guarded before (append-only, frozen identity incl. 0230's model_call_id,
+ -- 0168's output_tokens, the USER-paid cost rule)
+ and (select prosrc like '%append-only%' and prosrc like '%OLD.model_call_id IS DISTINCT FROM NEW.model_call_id%'
+         and prosrc like '%OLD.output_tokens IS NOT NULL%' and prosrc like '%never record platform actual cost%'
+      from pg_proc where oid=to_regprocedure('ops.model_call_ledger_guard_mutation()'))
+ -- reasoning_model_call_validate is still SECURITY DEFINER owned by the migration owner
+ and (select p.prosecdef and pg_get_userbyid(p.proowner)='role_migration_owner'
+      from pg_proc p where p.oid=to_regprocedure('ops.reasoning_model_call_validate()'))
+ -- RLS posture and grant surface untouched by the ALTER
+ and (select relrowsecurity and relforcerowsecurity
+      from pg_class where oid='ops.model_call_ledger'::regclass)
+ and has_table_privilege('role_private_worker','ops.model_call_ledger','UPDATE')
+ and has_table_privilege('role_retrieval_worker','ops.model_call_ledger','UPDATE')
+ and not has_table_privilege('role_private_worker','ops.model_call_ledger','DELETE')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix after deployment. The columns are additive and nullable, so a revert is ALTER TABLE ops.model_call_ledger DROP COLUMN provider_cache_read_tokens, DROP COLUMN provider_cache_write_tokens (their three CHECKs go with them) plus restoring the two function bodies this migration replaced: ops.model_call_ledger_guard_mutation() with 0230's body and ops.reasoning_model_call_validate() with 0206's body (neither names a provider_cache_* column). But that DELETES recorded cache evidence, which is the opposite of what an append-only ledger is for. The honest revert is to stop writing the columns (revert the Rust leg in adapters::model_call_ledger and adapters::contribution_reasoner) and leave them in place holding NULL; nothing reads them except the cache hit rate rollup, which counts only rows where the read column is NOT NULL."
+backup_restore_requirement = "none: ADD COLUMN of two nullable columns with no default (no table rewrite in PostgreSQL 11+), a CHECK validated over rows whose new columns are all NULL, plus two CREATE OR REPLACE FUNCTION bodies that differ from the installed ones only by naming the two new columns. No row is read for its content, rewritten or deleted."
