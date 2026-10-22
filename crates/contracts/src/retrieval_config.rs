@@ -39,8 +39,9 @@ pub const RERANK_ENABLED: &str = "retrieval.profile.rerank_enabled";
 const RERANK_DEPTH: &str = "retrieval.profile.rerank_depth";
 /// ADR-0084 D-E: token cap of one (query, document) pair.
 const RERANK_MAX_LEN: &str = "retrieval.profile.rerank_max_len";
-/// ADR-0084 D-E: the gateway's wait for the rerank RPC, in milliseconds.
-const RERANK_TIMEOUT_MS: &str = "retrieval.profile.rerank_timeout_ms";
+/// ADR-0084 D-E: the gateway's wait for the rerank RPC, in milliseconds. Public so the gateway bootstrap derives the env
+/// name of this entry from the registry key instead of spelling it (T-RET-7d-2).
+pub const RERANK_TIMEOUT_MS: &str = "retrieval.profile.rerank_timeout_ms";
 /// ADR-0084 D-E: intra-op threads of the retrieval-worker's rerank session.
 pub const RERANK_THREADS: &str = "retrieval.profile.rerank_threads";
 

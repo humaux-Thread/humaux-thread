@@ -7,7 +7,7 @@
 //!   HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH, HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256,
 //!   HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED, HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_THREADS];
 //!   modules=[contracts::retrieval_config]
-//! Called-by: [retrieval-worker::main, retrieval-worker::rpc, tests]
+//! Called-by: [gateway::bootstrap, retrieval-worker::main, retrieval-worker::rpc, tests]
 //! Invariants: [the model and tokenizer files are sha256-checked against the deployment pin before ONNX Runtime is
 //!   loaded, and a mismatch is an error that names the object (G-RET-14); one session sits behind one mutex; a score is
 //!   the raw logit, one per document in request order, and a call returns every score or an error; no request text
@@ -54,13 +54,19 @@ const ATTENTION_MASK: &str = "attention_mask";
 /// of the pair template (V8) and one content token.
 pub const MIN_MAX_LEN: usize = RERANK_MAX_LEN_MIN as usize;
 
-const KEY_REPO: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_REPO";
-const KEY_REVISION: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_REVISION";
-const KEY_RECIPE: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_RECIPE";
+/// The deployment keys of the pinned identity (ADR-0084 D-E). Public so the gateway's twin check of its own pin against
+/// `values/retrieval-worker.env` reads them from here, their one declaration (T-RET-7d-2).
+pub const KEY_REPO: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_REPO";
+/// See [`KEY_REPO`].
+pub const KEY_REVISION: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_REVISION";
+/// See [`KEY_REPO`].
+pub const KEY_RECIPE: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_RECIPE";
 const KEY_MODEL_PATH: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_PATH";
-const KEY_MODEL_SHA256: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_SHA256";
+/// See [`KEY_REPO`].
+pub const KEY_MODEL_SHA256: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_SHA256";
 const KEY_TOKENIZER_PATH: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH";
-const KEY_TOKENIZER_SHA256: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256";
+/// See [`KEY_REPO`].
+pub const KEY_TOKENIZER_SHA256: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256";
 const KEY_ONNXRUNTIME_PATH: &str = "HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH";
 /// The two optional keys through which the registry's `rerank_enabled` and `rerank_threads` reach the worker (the
 /// gateway's naming rule: the registry name upper-cased, with the worker's prefix), each paired with its registry name.

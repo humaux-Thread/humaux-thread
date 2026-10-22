@@ -4,7 +4,7 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-telemetry, serde_json, tokio, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
@@ -47,7 +47,7 @@
 //!   gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
+//!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-worker::rerank, retrieval::rerank, telemetry::metrics]
 //! Called-by: [gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7
@@ -78,7 +78,7 @@ use humaux_contracts::config_registry::{
     ConfigEntry, effective_config_fingerprint, resolve_effective_config,
 };
 use humaux_contracts::retrieval_config::{
-    resolve_registered_retrieval_profile, retrieval_profile_registry,
+    RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
 };
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_infra_cell::{
@@ -914,7 +914,7 @@ fn check_rerank_timeout(
 ) -> Result<(), BootstrapError> {
     if rerank_enabled && Duration::from_millis(u64::from(rerank_timeout_ms)) >= handler_timeout {
         return Err(BootstrapError::new(
-            retrieval_env_key("retrieval.profile.rerank_timeout_ms"),
+            retrieval_env_key(RERANK_TIMEOUT_MS),
             "must be below HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS (ADR-0084 U7)",
         ));
     }
@@ -1611,6 +1611,10 @@ fn redacted_fingerprint(registry: &[ConfigEntry], effective: &BTreeMap<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humaux_contracts::retrieval_config::RERANK_ENABLED;
+    use humaux_retrieval_worker::rerank::{
+        KEY_MODEL_SHA256, KEY_RECIPE, KEY_REPO, KEY_REVISION, KEY_TOKENIZER_SHA256,
+    };
 
     fn raw() -> BTreeMap<String, String> {
         let tenant = Uuid::now_v7();
@@ -2208,10 +2212,7 @@ mod tests {
             "no pin is kept while the lane is off"
         );
 
-        values.insert(
-            retrieval_env_key("retrieval.profile.rerank_enabled"),
-            "true".into(),
-        );
+        values.insert(retrieval_env_key(RERANK_ENABLED), "true".into());
         assert!(
             GatewayBootstrap::from_raw(values.clone()).is_err(),
             "the lane is on and the pin is blank"
@@ -2272,16 +2273,10 @@ mod tests {
         ]) {
             values.insert(key.into(), value);
         }
-        values.insert(
-            retrieval_env_key("retrieval.profile.rerank_enabled"),
-            "true".into(),
-        );
+        values.insert(retrieval_env_key(RERANK_ENABLED), "true".into());
         GatewayBootstrap::from_raw(values.clone())
             .expect("the registered 4000 ms fits a 5 s handler");
-        values.insert(
-            retrieval_env_key("retrieval.profile.rerank_timeout_ms"),
-            "5000".into(),
-        );
+        values.insert(retrieval_env_key(RERANK_TIMEOUT_MS), "5000".into());
         assert!(GatewayBootstrap::from_raw(values).is_err());
     }
 
@@ -2297,19 +2292,17 @@ mod tests {
                 .unwrap_or_else(|| panic!("{key} is missing from its values file"))
                 .to_owned()
         };
-        // The worker's key names are assembled: this process reads none of them (dep-map's env scan).
-        let worker_prefix = ["HUMAUX", "RETRIEVAL", "WORKER", "RERANK"].join("_");
-        for (gateway_key, part) in RERANK_PIN_KEYS.into_iter().zip([
-            "REPO",
-            "REVISION",
-            "RECIPE",
-            "MODEL_SHA256",
-            "TOKENIZER_SHA256",
+        // `RERANK_PIN_KEYS` and the worker's `KEY_*` constants list the five parts in the same order.
+        for (gateway_key, worker_key) in RERANK_PIN_KEYS.into_iter().zip([
+            KEY_REPO,
+            KEY_REVISION,
+            KEY_RECIPE,
+            KEY_MODEL_SHA256,
+            KEY_TOKENIZER_SHA256,
         ]) {
-            let worker_key = format!("{worker_prefix}_{part}");
             assert_eq!(
                 value(gateway, gateway_key),
-                value(worker, &worker_key),
+                value(worker, worker_key),
                 "{gateway_key}"
             );
         }
