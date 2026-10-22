@@ -48,6 +48,7 @@ pub mod note_repo;
 pub mod openbao;
 pub mod operation_receipt;
 pub mod placement_repo;
+pub mod plan_repo;
 pub mod postgres;
 pub mod private_inference_rpc;
 pub mod private_projection_registry;

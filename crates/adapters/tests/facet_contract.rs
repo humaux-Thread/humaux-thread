@@ -1,11 +1,15 @@
 //! `adapters::tests::facet_contract` — §78.2 DB<->Rust contract for the §25.4.A(1)/(2) Mandatory facet projection,
-//!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045).
-//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any) r=[private.context_bindings, private.memory_records]];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::context, domain::memory, humaux-testkit]
+//!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045) and the plan catalogue's closed sets
+//!   (G-M04-14, migration 0262).
+//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any)
+//!   r=[control.plan_versions, private.context_bindings, private.memory_records] x=[control.issue_quota_window]];
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::context, domain::memory, domain::plan, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [judges the expression the database computes (pg_get_expr), round-trips both closed label sets by set
-//!   equality, and checks REGISTRY columns exist; missing DB goes through skip_or_fail]
-//! Spec: Baseline §25.4; §78.1; §79.2
+//!   equality, and checks REGISTRY columns exist; every closed set of control.plan_versions (currency, interval,
+//!   template keys, provider modes) and the quota issuer's period and charge-policy lists equal the domain::plan
+//!   vocabulary by set equality and by count; missing DB goes through skip_or_fail]
+//! Spec: Baseline §25.4; §71.1; §78.1; §78.2; §79.2; ADR-0072
 //!
 //! Three things are pinned here, each with a different failure mode:
 //!
@@ -29,6 +33,9 @@
 
 use humaux_domain::context::{REGISTRY, SelectorId};
 use humaux_domain::memory::{MandatoryContextFacet, MemoryType};
+use humaux_domain::plan::{
+    BillingInterval, ChargePolicy, Currency, EntitlementKey, ProviderMode, QuotaPeriod,
+};
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::{Client, NoTls};
 use std::collections::{BTreeMap, BTreeSet};
@@ -342,4 +349,111 @@ fn registry_required_columns_name_real_relations() {
             }
         }
     }
+}
+
+/// The quoted literals inside the first `ARRAY[ .. ]` of a deparsed CHECK, in order: the key list of a
+/// `jsonb - ARRAY[..]` closed-set CHECK, whose definition also quotes `'object'` and `'{}'` outside the brackets.
+fn array_literals(def: &str) -> Vec<String> {
+    let Some(start) = def.find("ARRAY[") else {
+        return Vec::new();
+    };
+    let inside = &def[start + "ARRAY[".len()..];
+    quoted_literals(&inside[..inside.find(']').unwrap_or(inside.len())])
+}
+
+/// The quoted literals of the `NOT IN (..)` list that follows `marker` in the issuer's source `src`.
+fn issuer_list(src: &str, marker: &str) -> Vec<String> {
+    let start = src
+        .find(marker)
+        .unwrap_or_else(|| panic!("the quota issuer no longer validates {marker}"));
+    let rest = &src[start + marker.len()..];
+    quoted_literals(&rest[..rest.find(')').expect("the issuer list is closed")])
+}
+
+/// The deparsed definition of one `control.plan_versions` constraint.
+fn plan_constraint_def(client: &mut Client, conname: &str) -> String {
+    client
+        .query_one(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conrelid = 'control.plan_versions'::regclass AND conname = $1",
+            &[&conname],
+        )
+        .unwrap_or_else(|e| panic!("{conname} must exist on control.plan_versions: {e}"))
+        .get(0)
+}
+
+/// Set equality plus a count, so a literal listed twice cannot hide behind the set.
+fn assert_same_closed_set(what: &str, literals: &[String], wires: &[&str]) {
+    let db: BTreeSet<&str> = literals.iter().map(String::as_str).collect();
+    let rust: BTreeSet<&str> = wires.iter().copied().collect();
+    assert_eq!(
+        db, rust,
+        "{what}: the DB literals and the Rust vocabulary drifted"
+    );
+    assert_eq!(
+        literals.len(),
+        wires.len(),
+        "{what}: a literal is listed twice"
+    );
+}
+
+/// G-M04-14 / §78.2: every closed set of `control.plan_versions` (currency, billing interval, entitlement-template keys,
+/// provider modes) is the `domain::plan` vocabulary, item by item; and the period and charge-policy lists the quota
+/// issuer validates (0113) are the ones a template may carry, so a template that parses can always be issued.
+/// Fault: a Rust variant without its CHECK literal (or the reverse) ⇒ the sets differ ⇒ red.
+#[test]
+fn plan_catalogue_closed_sets_equal_the_domain_vocabularies() {
+    let Some(mut client) = client() else { return };
+    let present: bool = client
+        .query_one(
+            "SELECT to_regclass('control.plan_versions') IS NOT NULL",
+            &[],
+        )
+        .expect("plan table probe")
+        .get(0);
+    if !present {
+        skip_or_fail(
+            NAME,
+            "missing object: control.plan_versions — run `cargo xtask migrate` (migrations/0262_plan_catalogue.sql)",
+            ExternalDep::Postgres,
+        );
+        return;
+    }
+    let currency = Currency::ALL.map(Currency::wire);
+    let interval = BillingInterval::ALL.map(BillingInterval::wire);
+    let keys = EntitlementKey::ALL.map(EntitlementKey::wire);
+    let modes = ProviderMode::ALL.map(ProviderMode::wire);
+
+    let def = plan_constraint_def(&mut client, "plan_versions_currency_v1_check");
+    assert_same_closed_set("currency", &quoted_literals(&def), &currency);
+    let def = plan_constraint_def(&mut client, "plan_versions_interval_v1_check");
+    assert_same_closed_set("billing_interval", &quoted_literals(&def), &interval);
+    let def = plan_constraint_def(&mut client, "plan_versions_template_keys_v1_check");
+    assert_same_closed_set("entitlement template keys", &array_literals(&def), &keys);
+    let def = plan_constraint_def(&mut client, "plan_versions_provider_modes_v1_check");
+    assert_same_closed_set("provider modes", &array_literals(&def), &modes);
+
+    let issuer: String = client
+        .query_one(
+            "SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('control.issue_quota_window(uuid,text)')",
+            &[],
+        )
+        .expect("the quota issuer (migration 0113) must exist")
+        .get(0);
+    let period = QuotaPeriod::ALL.map(QuotaPeriod::wire);
+    let charge = ChargePolicy::ALL.map(ChargePolicy::wire);
+    assert_same_closed_set(
+        "quota period",
+        &issuer_list(&issuer, "(policy ->> 'period') NOT IN ("),
+        &period,
+    );
+    assert_same_closed_set(
+        "charge policy",
+        &issuer_list(&issuer, "(policy ->> 'charge_policy') NOT IN ("),
+        &charge,
+    );
+    assert!(
+        issuer.contains(&format!("'{}'", EntitlementKey::PerPeriod.wire())),
+        "the issuer's one entitlement key is the template's per-period key"
+    );
 }

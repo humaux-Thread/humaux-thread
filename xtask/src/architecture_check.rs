@@ -2987,6 +2987,146 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
     )
 }
 
+// ============================================================================
+// M04 D2 / G-M04-1: plans are data. A plan name, a price and a lease block size are rows of the plan catalogue (seeded
+// from the values file), never Rust: no production source branches on a plan key or states a price (§71.1, §78.1).
+// ============================================================================
+
+/// The committed plan values file; its `plan_key`s are the names the scan looks for (the names are data, so the gate
+/// reads them from the data instead of repeating them).
+const M04_CATALOGUE_FILE: &str = "deploy/plans/plan_catalogue.json";
+
+/// Identifiers whose assignment, comparison or field initialisation with an integer literal spells a price or a lease
+/// block in Rust. Only the identifiers the plan catalogue owns: the scan is not a general number detector.
+const M04_BUSINESS_NUMBER_IDENTS: [&str; 2] = ["price_cents", "lease_block"];
+
+/// The `plan_key` of every row of the values file, or why the file cannot be read as one.
+fn m04_catalogue_plan_keys(text: &str) -> Result<BTreeSet<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|error| format!("{M04_CATALOGUE_FILE}: {error}"))?;
+    let rows = value
+        .get("plan_versions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("{M04_CATALOGUE_FILE}: no `plan_versions` array"))?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.get("plan_key").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// What follows an assignment-like operator (`:`, `=`, `==`, `!=`) at the start of `rest`; `None` for anything else,
+/// `::` (a path) and `<`/`>` comparisons included.
+fn m04_after_assignment(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start();
+    if rest.starts_with("::") {
+        return None;
+    }
+    ["==", "!=", ":", "="]
+        .iter()
+        .find_map(|operator| rest.strip_prefix(*operator))
+}
+
+/// Whether `line` gives the identifier `ident` an integer literal (`price_cents: 980`, `let lease_block = 16;`,
+/// `price_cents == 0`).
+fn m04_assigns_integer(line: &str, ident: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(relative) = line[from..].find(ident) {
+        let start = from + relative;
+        let end = start + ident.len();
+        from = end;
+        let whole_word = (start == 0 || !is_ident_byte(bytes[start - 1]))
+            && (end == bytes.len() || !is_ident_byte(bytes[end]));
+        if !whole_word {
+            continue;
+        }
+        let integer_follows = m04_after_assignment(&line[end..])
+            .and_then(|value| value.trim_start().bytes().next())
+            .is_some_and(|byte| byte.is_ascii_digit());
+        if integer_follows {
+            return true;
+        }
+    }
+    false
+}
+
+/// The plan-name literals and business-number assignments in one production file's text: a comment line is skipped, a
+/// plan key counts only as a whole literal (`"key"` or `'key'`, the second being a SQL string inside Rust).
+fn m04_plan_literal_hits(source: &str, plan_keys: &BTreeSet<String>) -> Vec<String> {
+    let mut hits = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for key in plan_keys {
+            for quote in ['"', '\''] {
+                if line.contains(&format!("{quote}{key}{quote}")) {
+                    hits.push(format!(
+                        "line {}: plan key {quote}{key}{quote} spelled as a literal",
+                        index + 1
+                    ));
+                }
+            }
+        }
+        for ident in M04_BUSINESS_NUMBER_IDENTS {
+            if m04_assigns_integer(line, ident) {
+                hits.push(format!(
+                    "line {}: `{ident}` given an integer literal",
+                    index + 1
+                ));
+            }
+        }
+    }
+    hits
+}
+
+/// M04 D2 / G-M04-1: production source under `crates/` and `bins/` (test trees and trailing `#[cfg(test)]` modules
+/// excluded, [`door_production_sources`]) holds no plan-key literal of the values file and gives neither `price_cents`
+/// nor `lease_block` an integer literal. `not_applicable` only while the values file does not exist, naming it (§57.1
+/// 第2条); a file that lists no plan key, or a scan that reads no source, is red: it would be blind.
+fn m04_1_plans_are_data(root: &Path) -> Verdict {
+    let Ok(text) = fs::read_to_string(root.join(M04_CATALOGUE_FILE)) else {
+        return Verdict::NotApplicable(format!(
+            "missing object: {M04_CATALOGUE_FILE} (the M04-1 plan values file) is not delivered yet"
+        ));
+    };
+    let plan_keys = match m04_catalogue_plan_keys(&text) {
+        Ok(keys) if !keys.is_empty() => keys,
+        Ok(_) => {
+            return Verdict::Fail(vec![format!(
+                "M04 D2 / G-M04-1: {M04_CATALOGUE_FILE} lists no plan_key, so the scan would be blind"
+            )]);
+        }
+        Err(problem) => return Verdict::Fail(vec![format!("M04 D2 / G-M04-1: {problem}")]),
+    };
+    let mut scanned = 0usize;
+    let mut problems = Vec::new();
+    for (disp, source) in door_production_sources(root) {
+        if !(disp.starts_with("crates/") || disp.starts_with("bins/")) {
+            continue;
+        }
+        scanned += 1;
+        for hit in m04_plan_literal_hits(&source, &plan_keys) {
+            problems.push(format!("{disp}: {hit}"));
+        }
+    }
+    if scanned == 0 {
+        return Verdict::Fail(vec![
+            "M04 D2 / G-M04-1: no production source under crates/ or bins/ was scanned, so the scan is blind".to_owned(),
+        ]);
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(vec![format!(
+            "M04 D2 / G-M04-1: plan names, prices and lease blocks are data, not Rust (§71.1, §78.1); production source \
+             spells {} of them: {problems:?}",
+            problems.len()
+        )])
+    }
+}
+
 /// Door statement of M29 T04c (design v0.2 §15, gate G-T04c-3): the §30.2 Evidence → task-run carrier INSERT is one
 /// statement in non-test code, in `remember::insert_evidence_task_run_in_txn`. This arm pins only that statement;
 /// `pub(crate)` pins the function's callers to the adapters crate, and the §6.2.2 grants (rls_check: INSERT for
@@ -9593,6 +9733,10 @@ pub fn run(_args: &[String]) -> i32 {
             m09_1_ticket_doors(&root),
         ),
         (
+            "M04 D2 / G-M04-1 (plans are data: no plan_key of the values file and no price_cents / lease_block integer literal in crates and bins non-test code)",
+            m04_1_plans_are_data(&root),
+        ),
+        (
             "M29 T04c / G-T04c-3 (private.evidence_task_runs INSERT: one statement, in remember.rs, non-test code)",
             t04c_3_carrier_door(&root),
         ),
@@ -13976,6 +14120,204 @@ async fn serving_version_in_txn() {}
         assert_eq!(m09_1_ticket_doors(&tmp), Verdict::Pass);
         assert_eq!(m07_1_insert_doors(&tmp), Verdict::Pass);
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M04 D2 / G-M04-1: plan names, prices and lease blocks are data ---------------------------
+
+    /// A values file naming two plans; the names exist only here, in the fixture.
+    const M04_CATALOGUE: &str =
+        r#"{"plan_versions":[{"plan_key":"tier_a"},{"plan_key":"tier_b"}]}"#;
+
+    /// A fixture tree: the values file, one clean production file (so the scan reads something), and `extra`.
+    fn m04_tree(label: &str, extra: &[(&str, &str)]) -> PathBuf {
+        let tmp = fresh_tmp(label);
+        m07_write(&tmp, M04_CATALOGUE_FILE, M04_CATALOGUE);
+        m07_write(&tmp, "crates/domain/src/plan.rs", "pub fn clean() {}\n");
+        for (rel, body) in extra {
+            m07_write(&tmp, rel, body);
+        }
+        tmp
+    }
+
+    /// The single red line of a failing tree.
+    fn m04_fail_line(root: &Path) -> String {
+        match m04_1_plans_are_data(root) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                lines.into_iter().next().unwrap()
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The tree as M04-1 leaves it: the real repo is green. 注错 (G-M04-1): a plan-key literal such as a `"pro"` branch,
+    /// or an integer given to `price_cents` or `lease_block`, in any `crates/` or `bins/` production file turns this red.
+    #[test]
+    fn m04_1_real_repo_passes() {
+        assert_eq!(m04_1_plans_are_data(&real_root()), Verdict::Pass);
+    }
+
+    /// Everything that must NOT count: a comment naming a plan, a test tree, a trailing `#[cfg(test)]` module, tooling
+    /// under `xtask/`, a literal that merely contains a plan key, and the shapes that mention the identifiers without
+    /// giving them an integer.
+    #[test]
+    fn m04_1_passes_and_ignores_comments_tests_tooling_and_look_alikes() {
+        let tmp = m04_tree(
+            "m04-1-green",
+            &[
+                (
+                    "crates/adapters/src/looks.rs",
+                    "// the plan \"tier_a\" is a row of the catalogue\n\
+                     fn f(price_cents: i64, lease_block: u32) -> bool {\n\
+                         let label = \"tier_ab\";\n\
+                         price_cents < 0 || lease_block >= 1 || label.is_empty()\n\
+                     }\n\
+                     #[cfg(test)]\n\
+                     mod tests { fn t() { let _ = (\"tier_a\", 5); let price_cents = 980; } }\n",
+                ),
+                (
+                    "crates/adapters/tests/seed.rs",
+                    "fn t() { let _ = \"tier_a\"; let lease_block = 16; }\n",
+                ),
+                (
+                    "xtask/src/tooling.rs",
+                    "fn t() { let _ = \"tier_a\"; let price_cents = 980; }\n",
+                ),
+            ],
+        );
+        assert_eq!(m04_1_plans_are_data(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a branch on a plan key, in double quotes, names the file and the line; removing it returns to green.
+    #[test]
+    fn m04_1_fails_on_a_plan_name_branch_and_recovers() {
+        let tmp = m04_tree(
+            "m04-1-red-name",
+            &[(
+                "bins/gateway/src/guard.rs",
+                "fn allowed(plan: &str) -> bool {\n    plan == \"tier_b\"\n}\n",
+            )],
+        );
+        let line = m04_fail_line(&tmp);
+        assert!(line.contains("bins/gateway/src/guard.rs: line 2"), "{line}");
+        assert!(line.contains("tier_b"), "{line}");
+        assert!(line.contains("spells 1 of them"), "{line}");
+        m07_write(
+            &tmp,
+            "bins/gateway/src/guard.rs",
+            "fn allowed(allowed: bool) -> bool {\n    allowed\n}\n",
+        );
+        assert_eq!(m04_1_plans_are_data(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a plan key inside a SQL string in single quotes is the same branch.
+    #[test]
+    fn m04_1_fails_on_a_plan_key_in_a_sql_literal() {
+        let tmp = m04_tree(
+            "m04-1-red-sql",
+            &[(
+                "crates/adapters/src/quota_repo.rs",
+                "const Q: &str = \"SELECT 1 WHERE plan_key = 'tier_a'\";\n",
+            )],
+        );
+        let line = m04_fail_line(&tmp);
+        assert!(
+            line.contains("crates/adapters/src/quota_repo.rs: line 1"),
+            "{line}"
+        );
+        assert!(line.contains("spells 1 of them"), "{line}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: a price or a lease block given an integer in Rust is red, one hit per spelled number.
+    #[test]
+    fn m04_1_fails_on_a_price_or_lease_block_literal() {
+        let tmp = m04_tree(
+            "m04-1-red-number",
+            &[(
+                "crates/domain/src/pricing.rs",
+                "pub struct P { price_cents: i64 }\n\
+                 pub fn p() -> P { P { price_cents: 980 } }\n\
+                 pub fn b() -> i32 { let lease_block = 16; lease_block }\n",
+            )],
+        );
+        let line = m04_fail_line(&tmp);
+        assert!(
+            line.contains("crates/domain/src/pricing.rs: line 2"),
+            "{line}"
+        );
+        assert!(
+            line.contains("crates/domain/src/pricing.rs: line 3"),
+            "{line}"
+        );
+        assert!(line.contains("spells 2 of them"), "{line}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing values file (§57.1 第2条); a file with no plan key, and a scan that reads no
+    /// production source, are red rather than a silent green.
+    #[test]
+    fn m04_1_is_not_applicable_without_the_file_and_red_when_blind() {
+        let tmp = fresh_tmp("m04-1-na");
+        m07_write(&tmp, "crates/domain/src/plan.rs", "pub fn clean() {}\n");
+        match m04_1_plans_are_data(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains(M04_CATALOGUE_FILE), "{detail}")
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        m07_write(&tmp, M04_CATALOGUE_FILE, r#"{"plan_versions":[]}"#);
+        assert!(m04_fail_line(&tmp).contains("lists no plan_key"));
+        m07_write(&tmp, M04_CATALOGUE_FILE, "not json");
+        assert!(m04_fail_line(&tmp).contains(M04_CATALOGUE_FILE));
+        fs::remove_dir_all(&tmp).ok();
+
+        let empty = fresh_tmp("m04-1-blind");
+        m07_write(&empty, M04_CATALOGUE_FILE, M04_CATALOGUE);
+        assert!(m04_fail_line(&empty).contains("scan is blind"));
+        fs::remove_dir_all(&empty).ok();
+    }
+
+    /// The plan keys come from the data, exactly.
+    #[test]
+    fn m04_1_reads_the_plan_keys_from_the_values_file() {
+        assert_eq!(
+            m04_catalogue_plan_keys(M04_CATALOGUE).unwrap(),
+            BTreeSet::from(["tier_a".to_owned(), "tier_b".to_owned()])
+        );
+        assert!(m04_catalogue_plan_keys("{}").is_err());
+    }
+
+    /// Which lines give an identifier an integer: `:`, `=`, `==` and `!=` followed by a digit, whole words only.
+    #[test]
+    fn m04_1_integer_assignment_scan_matches_exactly_these_shapes() {
+        let hits = [
+            "price_cents: 980,",
+            "price_cents:5",
+            "let price_cents = 5;",
+            "price_cents == 0",
+            "price_cents != 0",
+            "price_cents : 7",
+        ];
+        let misses = [
+            "price_cents: i64,",
+            "if price_cents < 0 {",
+            "price_cents >= 1",
+            "price_cents::MAX",
+            "my_price_cents: 5",
+            "price_cents_total: 5",
+            "price_cents => 5",
+            "price_cents,",
+        ];
+        for line in hits {
+            assert!(m04_assigns_integer(line, "price_cents"), "{line}");
+        }
+        for line in misses {
+            assert!(!m04_assigns_integer(line, "price_cents"), "{line}");
+        }
+        assert!(!m04_assigns_integer("price_cents: 980,", "lease_block"));
     }
 
     // -- M29 T04c / G-T04c-3: one INSERT INTO private.evidence_task_runs, in remember.rs ----------------
