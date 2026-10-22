@@ -11,7 +11,7 @@
 //!   domain::affect, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
 //!   domain::ids, domain::memory, domain::subject, humaux-local-secret-scan, infra-cell::permit,
 //!   infra-cell::transport, projection::card, projection::note_chunks, projection::serving, projection::stream]
-//! Called-by: [adapters::rebuild, maintenance::drill, retrieval-worker::main, tests]
+//! Called-by: [adapters::rebuild, gateway::recall, maintenance::drill, retrieval-worker::main, tests]
 //! Invariants: [run_claimed_pass claims across tenants by lease and processes one family's tickets sequentially in one
 //!   worker; every family a pass holds is lease-renewed while any of them is worked; per row: resolve bound memories,
 //!   upsert, verify search-visible, then settle; a transient failure returns the ticket to ISSUED with backoff

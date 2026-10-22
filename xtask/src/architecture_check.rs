@@ -2182,8 +2182,8 @@ fn g80_2_build_request_unique(root: &Path) -> Verdict {
 // ============================================================================
 
 /// §55.6 G55-6 ①: the names no caller-assignable `RetrievalRequest` field or `build_request` parameter may carry. The
-/// first five are the Baseline's set; the last four are ADR-0083 D-D's registry entries (T-RET-6c-1).
-const G55_6_FORBIDDEN_NAMES: [&str; 9] = [
+/// first five are the Baseline's set; the last five are ADR-0083 D-D's registry entries (T-RET-6c-1, T-RET-6c-2).
+const G55_6_FORBIDDEN_NAMES: [&str; 10] = [
     "limit",
     "top_k",
     "cand_k",
@@ -2193,6 +2193,7 @@ const G55_6_FORBIDDEN_NAMES: [&str; 9] = [
     "leg_depth",
     "rrf_k",
     "sparse_leg_enabled",
+    "sparse_timeout_ms",
 ];
 
 /// Whether `name` carries `forbidden` as a run of whole `_`-separated words: `top_k_override` carries `top_k` (the
@@ -8767,6 +8768,302 @@ fn m24_7_over_tree(root: &Path, exempt: &[(&str, &str)], ddl_exempt: &[(&str, &s
     }
 }
 
+// ============================================================================
+// T-LANG-1: no-python-in-system — the system is Rust; CI and test tooling may use Python
+// ============================================================================
+
+/// Owner rule (2026-10-22): the system itself — product code and the production runtime — is Rust, while Python may
+/// be used where it helps testing or CI. A path under one of these prefixes is tooling, never the system, so Python
+/// there is allowed: the CI workflows, helper scripts, the clean-node rehearsal's tooling (ADR-0066 §5), experiment
+/// territory and xtask's own tests. A rehearsal- or test-profile compose service is allowed by profile instead
+/// ([`NO_PYTHON_TOOLING_PROFILES`]). This is the whole allowlist (fail closed): anything else that is scanned and
+/// Python is red. §57.1 第2条 three-state, §80.1 (the gate exists only with its injected-fault record).
+const NO_PYTHON_ALLOWED_PREFIXES: [&str; 5] = [
+    ".github/workflows/",
+    "scripts/",
+    "deploy/rehearsal/",
+    "experiments/",
+    "xtask/tests/",
+];
+
+/// Directories whose `*.py` files are product code or product data. Scanned by extension, skipping
+/// target/.git/node_modules like [`walk_files`]; on a clean CI checkout that is exactly the tracked set. The repo-root
+/// `experiments/` and `scripts/` are not listed because they are allowed; `crates/`, `bins/`, `migrations/` and
+/// `config/` are the system.
+const NO_PYTHON_SOURCE_ROOTS: [&str; 4] = ["crates", "bins", "migrations", "config"];
+
+/// Where the product image Dockerfiles live: any Python in their build is the production runtime using Python.
+const NO_PYTHON_IMAGE_DIR: &str = "deploy/images";
+
+/// Where the compose files live (`deploy/compose/*.yml`); read as YAML text, no YAML crate (xtask takes no new
+/// dependency).
+const NO_PYTHON_COMPOSE_DIR: &str = "deploy";
+
+/// The compose profiles that mark a service as test / rehearsal tooling. A Python-image service must list profiles and
+/// every one of them must be here; a service with no `profiles:` key of its own (including one that would inherit it
+/// through a YAML merge) is not limited and is red.
+const NO_PYTHON_TOOLING_PROFILES: [&str; 2] = ["rehearsal", "test"];
+
+/// Whether `path` (repo-relative, `/`-separated) is in the allowed tooling territory.
+fn no_python_allowed(path: &str) -> bool {
+    NO_PYTHON_ALLOWED_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+/// `Dockerfile`, `Dockerfile.<suffix>` or `<name>.Dockerfile`.
+fn is_dockerfile_name(name: &str) -> bool {
+    name == "Dockerfile" || name.starts_with("Dockerfile.") || name.ends_with(".Dockerfile")
+}
+
+/// Every Dockerfile under `dir` (skipping target/.git/node_modules like [`walk_files`]).
+fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if !matches!(name, "target" | ".git" | "node_modules") {
+                walk_dockerfiles(&path, out);
+            }
+        } else if is_dockerfile_name(name) {
+            out.push(path);
+        }
+    }
+}
+
+/// Whether a Dockerfile line (comment lines are skipped by the caller) names Python: the word `python` anywhere
+/// (`python3`, `python:3.13-slim`, `python3-pip`) or the bare `pip` / `pip3` command.
+fn mentions_python(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("python")
+        || lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|token| token == "pip" || token == "pip3")
+}
+
+/// A YAML scalar without its trailing ` # comment` and surrounding quotes.
+fn yaml_scalar(raw: &str) -> &str {
+    raw.split(" #")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\''])
+}
+
+/// The names of a flow-style `[a, "b"]` list.
+fn yaml_flow_list(raw: &str) -> Vec<String> {
+    yaml_scalar(raw)
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|item| item.trim().trim_matches(['"', '\'']).to_owned())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// One compose service while its block is read line by line.
+#[derive(Default)]
+struct ComposeService {
+    name: String,
+    /// 1-based line and value of its own `image:` key.
+    image: Option<(usize, String)>,
+    /// Its own `profiles:` entries (flow or block style).
+    profiles: Vec<String>,
+    /// Indent of the keys directly under the service name, learnt from its first nested line.
+    key_indent: Option<usize>,
+    /// The previous key was a block-style `profiles:`, so `- item` lines are its entries.
+    in_profiles: bool,
+}
+
+impl ComposeService {
+    /// Reads one non-blank, non-comment line nested under the service name.
+    fn read_line(&mut self, line: usize, indent: usize, body: &str) {
+        if self.in_profiles
+            && let Some(item) = body.strip_prefix("- ")
+        {
+            self.profiles.push(yaml_scalar(item).to_owned());
+            return;
+        }
+        let key_indent = *self.key_indent.get_or_insert(indent);
+        if indent != key_indent {
+            return;
+        }
+        self.in_profiles = false;
+        if let Some(value) = body.strip_prefix("image:") {
+            self.image = Some((line, yaml_scalar(value).to_owned()));
+        } else if let Some(value) = body.strip_prefix("profiles:") {
+            let value = value.trim();
+            if value.is_empty() || value.starts_with('#') {
+                self.in_profiles = true;
+            } else {
+                self.profiles = yaml_flow_list(value);
+            }
+        }
+    }
+
+    /// `(service, image line, image)` when the service runs a Python image and is not limited to the tooling profiles.
+    fn python_outside_tooling(self) -> Option<(String, usize, String)> {
+        let (line, image) = self.image?;
+        let tooling = !self.profiles.is_empty()
+            && self
+                .profiles
+                .iter()
+                .all(|profile| NO_PYTHON_TOOLING_PROFILES.contains(&profile.as_str()));
+        (image.to_ascii_lowercase().contains("python") && !tooling)
+            .then_some((self.name, line, image))
+    }
+}
+
+/// The services of a compose document that run a Python image without being limited to the tooling profiles, as
+/// `(service, image line, image)`. Line-based: the keys of `services:` at one indent are the service names, and only a
+/// service's own `image:` / `profiles:` keys count.
+fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
+    let mut found = Vec::new();
+    let mut in_services = false;
+    let mut service_indent: Option<usize> = None;
+    let mut current: Option<ComposeService> = None;
+    for (idx, raw) in text.lines().enumerate() {
+        let body = raw.trim();
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        let indent = raw.len() - raw.trim_start().len();
+        if indent == 0 {
+            found.extend(
+                current
+                    .take()
+                    .and_then(ComposeService::python_outside_tooling),
+            );
+            in_services = body.strip_prefix("services:").is_some_and(|rest| {
+                let rest = rest.trim();
+                rest.is_empty() || rest.starts_with('#')
+            });
+            service_indent = None;
+            continue;
+        }
+        if !in_services {
+            continue;
+        }
+        if indent == *service_indent.get_or_insert(indent) {
+            found.extend(
+                current
+                    .take()
+                    .and_then(ComposeService::python_outside_tooling),
+            );
+            let name = body.split(':').next().unwrap_or("").trim();
+            current = Some(ComposeService {
+                name: name.trim_matches(['"', '\'']).to_owned(),
+                ..ComposeService::default()
+            });
+        } else if let Some(service) = current.as_mut() {
+            service.read_line(idx + 1, indent, body);
+        }
+    }
+    found.extend(
+        current
+            .take()
+            .and_then(ComposeService::python_outside_tooling),
+    );
+    found
+}
+
+/// The pure core of the gate, over repo-relative paths: Python source files, Dockerfiles and compose files as
+/// `(path, text)`. Paths in the tooling territory ([`NO_PYTHON_ALLOWED_PREFIXES`]) are skipped.
+fn no_python_problems(
+    py_files: &[String],
+    dockerfiles: &[(String, String)],
+    compose_files: &[(String, String)],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for path in py_files {
+        if !no_python_allowed(path) {
+            problems.push(format!(
+                "{path}: a Python source file in the system tree; the system is Rust, Python is allowed only as CI / test tooling (T-LANG-1)"
+            ));
+        }
+    }
+    for (path, text) in dockerfiles {
+        if no_python_allowed(path) {
+            continue;
+        }
+        for (idx, line) in text.lines().enumerate() {
+            if !line.trim_start().starts_with('#') && mentions_python(line) {
+                problems.push(format!(
+                    "{path}:{}: python in a product image build: {} (T-LANG-1)",
+                    idx + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    let tooling = NO_PYTHON_TOOLING_PROFILES.join("/");
+    for (path, text) in compose_files {
+        if no_python_allowed(path) {
+            continue;
+        }
+        for (service, line, image) in compose_python_services(text) {
+            problems.push(format!(
+                "{path}:{line}: compose service `{service}` runs the Python image `{image}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
+            ));
+        }
+    }
+    problems
+}
+
+/// Reads `paths` as `(repo-relative path, text)`. An unreadable file is a problem, never a silent skip: a file this
+/// gate cannot read cannot be shown Python-free (fail closed).
+fn read_for_no_python(
+    root: &Path,
+    paths: &[PathBuf],
+    problems: &mut Vec<String>,
+) -> Vec<(String, String)> {
+    let mut read = Vec::new();
+    for path in paths {
+        let shown = display(root, path);
+        match fs::read_to_string(path) {
+            Ok(text) => read.push((shown, text)),
+            Err(e) => problems.push(format!(
+                "{shown}: unreadable ({e}); a file this gate cannot read cannot be shown Python-free"
+            )),
+        }
+    }
+    read
+}
+
+/// T-LANG-1 / `no-python-in-system`: no `*.py` under `crates/` `bins/` `migrations/` `config/`; no `python` / `pip` in a
+/// `deploy/images/**` Dockerfile; no compose service on a Python image unless its own `profiles:` are rehearsal / test
+/// only. `not_applicable` only when none of the scanned directories exists, and it names them (§57.1 第2条).
+fn no_python_in_system(root: &Path) -> Verdict {
+    let dirs: Vec<&str> = NO_PYTHON_SOURCE_ROOTS
+        .iter()
+        .copied()
+        .chain([NO_PYTHON_COMPOSE_DIR])
+        .collect();
+    if !dirs.iter().any(|dir| root.join(dir).is_dir()) {
+        return Verdict::NotApplicable(dirs.join(", "));
+    }
+    let py_files: Vec<String> = NO_PYTHON_SOURCE_ROOTS
+        .iter()
+        .flat_map(|dir| walk_files(&root.join(dir), &["py"]))
+        .map(|path| display(root, &path))
+        .collect();
+    let mut docker_paths = Vec::new();
+    walk_dockerfiles(&root.join(NO_PYTHON_IMAGE_DIR), &mut docker_paths);
+    let compose_paths = walk_files(&root.join(NO_PYTHON_COMPOSE_DIR), &["yml", "yaml"]);
+    let mut problems = Vec::new();
+    let dockerfiles = read_for_no_python(root, &docker_paths, &mut problems);
+    let compose_files = read_for_no_python(root, &compose_paths, &mut problems);
+    problems.extend(no_python_problems(&py_files, &dockerfiles, &compose_files));
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
@@ -8962,6 +9259,10 @@ pub fn run(_args: &[String]) -> i32 {
             "M24-7 / G-M24-7 (§79, #101, #145: every test binary that carries a derived-job, outbox or provider-slot marker is in nextest's global-db group; shared-catalog DDL runs only in a lane(a:disposable) test; no stale binary_id or exemption)",
             m24_7_global_db_completeness(&root),
         ),
+        (
+            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in deploy/images Dockerfiles; a compose service on a Python image is limited to the rehearsal / test profiles; CI, scripts, rehearsal and experiments may use Python)",
+            no_python_in_system(&root),
+        ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
 
@@ -8981,6 +9282,127 @@ mod tests {
 
     fn real_root() -> PathBuf {
         workspace_root()
+    }
+
+    // -- T-LANG-1: no-python-in-system ----------------------------------------------------------
+
+    /// A compose document whose `sink` service runs a Python image with the given `profiles` text (one or two
+    /// lines, the second indented like a block-style entry). The `image:` line is line 8 when `profiles` is one line.
+    fn np_compose(profiles: &str) -> String {
+        format!(
+            "x-anchor: &a\n  restart: \"no\"\nservices:\n  gateway:\n    image: humaux-gateway:1\n  sink:\n    {profiles}\n    image: python:3.13-slim@sha256:abc # pin\n    command: [\"python3\", \"x.py\"]\nvolumes:\n  v: {{}}\n"
+        )
+    }
+
+    fn np_sink(line: usize) -> (String, usize, String) {
+        (
+            "sink".to_string(),
+            line,
+            "python:3.13-slim@sha256:abc".to_string(),
+        )
+    }
+
+    /// `run()` must list the gate exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_no_python_gate_exactly_once() {
+        assert_eq!(own_source_count("no_python_in_", "system(&root),"), 1);
+    }
+
+    /// The real tree is clean: its one Python image (`alert-sink`) is limited to the rehearsal profile.
+    #[test]
+    fn no_python_gate_passes_on_the_real_tree() {
+        assert_eq!(no_python_in_system(&real_root()), Verdict::Pass);
+    }
+
+    /// r1 shape: a `*.py` under a system root is a problem; the same file in the tooling territory is not.
+    #[test]
+    fn no_python_gate_flags_a_python_file_in_the_system_tree() {
+        let red = no_python_problems(&["crates/x/foo.py".to_string()], &[], &[]);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].starts_with("crates/x/foo.py:"), "{red:?}");
+        for allowed in [
+            "scripts/a.py",
+            "deploy/rehearsal/alert_sink.py",
+            ".github/workflows/x.py",
+            "experiments/a/b.py",
+            "xtask/tests/t.py",
+        ] {
+            let found = no_python_problems(&[allowed.to_string()], &[], &[]);
+            assert!(found.is_empty(), "{allowed}: {found:?}");
+        }
+    }
+
+    /// `python` or `pip` on a non-comment line of a product Dockerfile is a problem; `pipefail` and comments are not.
+    #[test]
+    fn no_python_gate_flags_python_in_a_product_image_build() {
+        let path = "deploy/images/humaux/Dockerfile".to_string();
+        let dirty = vec![(
+            path.clone(),
+            "# python is fine in a comment\nFROM debian\nRUN apt-get install -y python3-pip\nRUN pip install x\n"
+                .to_string(),
+        )];
+        let red = no_python_problems(&[], &dirty, &[]);
+        assert_eq!(red.len(), 2, "{red:?}");
+        assert!(
+            red[0].starts_with("deploy/images/humaux/Dockerfile:3:"),
+            "{red:?}"
+        );
+        let clean = vec![(path, "FROM scratch\nRUN set -o pipefail\n".to_string())];
+        assert!(no_python_problems(&[], &clean, &[]).is_empty());
+    }
+
+    /// r2 shape: a Python image on a service that is not limited to the rehearsal / test profiles is a problem.
+    #[test]
+    fn no_python_gate_flags_a_python_image_outside_tooling_profiles() {
+        let found = |profiles: &str| compose_python_services(&np_compose(profiles));
+        assert!(found("profiles: [rehearsal]").is_empty());
+        assert!(found("profiles: [\"rehearsal\", test]").is_empty());
+        assert!(found("profiles:\n      - rehearsal").is_empty());
+        assert_eq!(found("profiles: [rehearsal, ops]"), [np_sink(8)]);
+        assert_eq!(found("profiles: [ops]"), [np_sink(8)]);
+        assert_eq!(found("restart: \"no\""), [np_sink(8)]);
+        assert_eq!(found("profiles: []"), [np_sink(8)]);
+        assert_eq!(
+            found("profiles:\n      - rehearsal\n      - ops"),
+            [np_sink(10)]
+        );
+        let non_python = np_compose("restart: \"no\"").replace("python:3.13-slim", "alpine:3");
+        assert!(compose_python_services(&non_python).is_empty());
+    }
+
+    /// The rehearsal tooling territory is exempt by path, and a Python compose service elsewhere is still red.
+    #[test]
+    fn no_python_gate_exempts_the_tooling_paths_only() {
+        let text = np_compose("profiles: [ops]");
+        let files = vec![
+            ("deploy/compose/prod.yml".to_string(), text.clone()),
+            ("deploy/rehearsal/compose.yml".to_string(), text),
+        ];
+        let red = no_python_problems(&[], &[], &files);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].starts_with("deploy/compose/prod.yml:8:"), "{red:?}");
+    }
+
+    /// Three states over a scratch tree: no scanned directory is `not_applicable` and names them, a clean tree passes,
+    /// a planted `crates/x/foo.py` fails.
+    #[test]
+    fn no_python_gate_is_three_state_over_a_scratch_tree() {
+        let dir = std::env::temp_dir().join(format!("np-gate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            no_python_in_system(&dir),
+            Verdict::NotApplicable("crates, bins, migrations, config, deploy".to_string())
+        );
+        fs::create_dir_all(dir.join("crates/x")).unwrap();
+        assert_eq!(no_python_in_system(&dir), Verdict::Pass);
+        fs::write(dir.join("crates/x/foo.py"), "print(1)\n").unwrap();
+        let verdict = no_python_in_system(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("crates/x/foo.py:")),
+            "{verdict:?}"
+        );
     }
 
     fn w1_real_sources() -> (String, String, String) {
@@ -12234,7 +12656,7 @@ async fn serving_version_in_txn() {}
         );
     }
 
-    /// 注错 (T-RET-6c-1, ADR-0083 D-D): each of the four registry names, as a `build_request` parameter and as a
+    /// 注错 (T-RET-6c-1, T-RET-6c-2, ADR-0083 D-D): each of the five registry names, as a `build_request` parameter and as a
     /// plain-`pub` field, → 红. The list here is deliberately a second copy: dropping a name from
     /// [`G55_6_FORBIDDEN_NAMES`] makes its row red.
     #[test]
@@ -12244,6 +12666,7 @@ async fn serving_version_in_txn() {}
             "leg_depth",
             "rrf_k",
             "sparse_leg_enabled",
+            "sparse_timeout_ms",
         ] {
             assert!(
                 G55_6_FORBIDDEN_NAMES.contains(&name),

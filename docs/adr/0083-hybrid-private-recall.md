@@ -1,8 +1,9 @@
 # ADR-0083 — Hybrid private recall: a Qdrant built-in BM25 leg and memory-level RRF in the gateway
 
 - Status: Accepted (2026-10-22). Card T-RET-6a (docs only). Decisions D-A to D-F are the design lead's, taken from the
-  evidence of E-RET-PB2 and E-RET-PB5 (ADR-0081 D-E step 4, the BM25 + RRF step). The code lands in T-RET-6b and
-  T-RET-6c; until then every sentence below about behaviour is **planned**.
+  evidence of E-RET-PB2 and E-RET-PB5 (ADR-0081 D-E step 4, the BM25 + RRF step). T-RET-6b (indexing), T-RET-6c-1
+  (registry) and T-RET-6c-2 (recall, PR #157) are implemented: the sentences below describe behaviour as built, and the
+  U-rows carry what each one found.
 - Relates to: Baseline §17.1, §17.2, §17.6, §20.0, §23.3, §33, §52, §53, §55.6, §57.1, §78.1; ADR-0055 D-C (lane
   substitution); ADR-0064 (Qdrant rebuild as an in-place generation); ADR-0068 (grouped recall, in-place backfill);
   ADR-0081 D-E and T-RET-6.
@@ -83,12 +84,12 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
 
 | # | Not known today | Fallback | Resolved by |
 |---|---|---|---|
-| U1 | Whether a real server returns the expected groups for a Document query with `params.idf.corpus` and `group_by memory_id` (the source says it should, V2; nothing here has run it) | Fold the sparse leg client-side over `leg_depth` points on `POST /points/query`, the shape PB5 measured; this ADR is then amended to say so | T-RET-6c, G-RET-7 and G-RET-8 through a real Qdrant |
-| U2 | What a real server does with a query whose tokens are all dropped (empty sparse vector, V7) | A 2xx with zero groups is an empty leg; any non-2xx is a leg failure and shows as the D-C degradation, never silently | T-RET-6c reads it once and records the result here |
+| U1 | Whether a real server returns the expected groups for a Document query with `params.idf.corpus` and `group_by memory_id` (the source says it should, V2; nothing here has run it) | Fold the sparse leg client-side over `leg_depth` points on `POST /points/query`, the shape PB5 measured; this ADR is then amended to say so | T-RET-6c, G-RET-7 and G-RET-8 through a real Qdrant. **Settled (T-RET-6c-2):** the server accepts the grouped Document query with `params.idf.corpus` and `group_by memory_id` (200 from `/points/query/groups`, CI run 39757704567); the gateway's `QdrantReadOnly` allowlist lacked `/points/query/groups` and refused it (same run, `semantic_recall_wiring`), fixed in this PR (infra-cell `QDRANT_READ_ONLY_POST_SUFFIXES`, which also unblocks the grouped dense leg of ADR-0068 D-E); the sparse leg uses groups, no client-side fold |
+| U2 | What a real server does with a query whose tokens are all dropped (empty sparse vector, V7) | A 2xx with zero groups is an empty leg; any non-2xx is a leg failure and shows as the D-C degradation, never silently | T-RET-6c reads it once and records the result here. **Settled (T-RET-6c-2):** v1.19.0 answers a query whose tokens are all dropped (`2024 1999`, `the of and`) on the grouped endpoint with a 2xx and no groups, an empty leg (`qdrant_live`, CI run 39757704567) |
 | U4 | Where the policy value behind `SKIPPED_BY_POLICY` comes from: `build_sparse_lane` takes `local_text_processing_allowed` from its caller and only tests call it, so no policy value is read anywhere today | No source exists (checked: `control.egress_policies`, `TenantDataPolicy`, card `egress_disposition`); always allowed via `in_cell_text_processing_allowed`, the one decision the write path, the rebuild verifier and T-RET-6c's query path read; a later card adds a `TenantDataPolicy` field when a tenant needs it | T-RET-6b (settled) |
-| U5 | How a skipped sparse lane renders in the envelope: `LaneStatus` has `ok`, `failed`, `not_required` and nothing for "skipped by policy" | Render `not_required` (no wire change) unless that card's contract review asks for a new value | T-RET-6c |
+| U5 | How a skipped sparse lane renders in the envelope: `LaneStatus` has `ok`, `failed`, `not_required` and nothing for "skipped by policy" | Render `not_required` (no wire change) unless that card's contract review asks for a new value | T-RET-6c. **Settled (T-RET-6c-2):** `not_required`, no new `LaneStatus` value; `completeness.lanes` always lists `dense` and `sparse`, and `provenance.profile.lanes` lists `sparse` only once the leg ran |
 | U6 | What turns the sparse leg on for a stream: it must find `bm25` and `memory_id` on every point, or a memory missing either is silently never matched (dense-only quality, no error) | A registered flag, off by default, flipped after the T-RET-6b backfill reads zero missing and ADR-0068's `memory_id` backfill reads `strays = 0` | T-RET-6c |
-| U7 | The cost of the corpus-scoped IDF (V5) on a large authorized corpus, and of a grouped sparse search at depth 200 (up to ten rounds, V2) | Lower `leg_depth` through the registry (no code change); no cache is added before a number exists (ADR-0081 D-G) | T-RET-6c reads the sparse leg's own stage timing |
+| U7 | The cost of the corpus-scoped IDF (V5) on a large authorized corpus, and of a grouped sparse search at depth 200 (up to ten rounds, V2) | Lower `leg_depth` through the registry (no code change); no cache is added before a number exists (ADR-0081 D-G) | T-RET-6c reads the sparse leg's own stage timing. **Read (T-RET-6c-2):** `stage_ms` gains `qdrant_sparse` (the leg's own ms, a sub-timing contained in `qdrant`, present only when the leg ran); five-Memory CI fixture at depth 200: 3.3 ms of 6.0 ms `qdrant` (targeted run 39777328572); no production-size corpus number yet, so `leg_depth` stays 200 |
 
 ## Decisions
 
@@ -151,42 +152,48 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
   move.
 - **A sparse-leg failure answers from the dense leg with an explicit `DegradeCode`, `SparseLaneUnavailable`** (wire
   `SPARSE_LANE_UNAVAILABLE`). Failure means a transport error, a timeout, a non-2xx reply or a reply of unexpected
-  shape. The result is still returned, so by §52.3 Q1 it is a `DegradeCode` and no `ErrorCode` is added; the name
-  collides with no `ErrorCode` (G52-3 stays `{PROJECTION_LAG}`). It is emitted only through `abstain()` (§53.1), the
-  lane reads `failed` in `completeness.lanes`, and it is never silent. T-RET-6c makes the §53.2 edit (11 to 12 variants),
+  shape. The timeout is the sparse leg's own `sparse_timeout_ms` budget (D-D), applied to that leg alone: the
+  transport's timeout equals the handler's, so without it a hung sparse request would hold the join until the handler
+  deadline and fail the whole recall. The result is still returned, so by §52.3 Q1 it is a `DegradeCode` and no `ErrorCode` is added; the name
+  collides with no `ErrorCode` (G52-3 stays `{PROJECTION_LAG}`). It is emitted only through `abstain()` (§53.1), in
+  `retrieval::envelope::sparse_lane_unavailable` called from the envelope assembly beside `LANE_SUBSTITUTED` (never
+  before the hydrate gate, so a later error leaves no counted degrade without a finished retrieval), the lane reads
+  `failed` in `completeness.lanes`, and it is never silent. The completeness classifier judges the dense lane only: a
+  failed sparse lane degrades the answer, it does not move `completeness.class`. T-RET-6c makes the §53.2 edit (11 to 12 variants),
   adds `testkit/fault/sparse_lane_unavailable.rs` and its §53.4 entry, and keeps the §53.3 rule-2 equality at 12 / 12 / 12.
   A dense-leg failure is unchanged by this ADR; answering from the sparse leg alone is not decided here.
 
 ### D-D Configuration (§78.1)
 
-Four registered-profile entries, beside `top_k` in the §50 registry, none ever caller input (the fourth, `sparse_leg_enabled`, is U6's switch):
+Five registered-profile entries, beside `top_k` in the §50 registry, none ever caller input (`sparse_leg_enabled` is U6's switch; `sparse_timeout_ms` is the review round's addition):
 
 | Field | Default | Meaning |
 |---|---|---|
 | `cand_multiplier` | 5 (ADR-0081 D-E) | `cand_k = min(top_k × cand_multiplier, 200)`; replaces the constant `RETRIEVAL_CANDIDATE_MULTIPLIER` |
-| `leg_depth` | 200 | `limit` of each leg's grouped request (dense and sparse), in Memories; the fused list is then cut to `cand_k` |
+| `leg_depth` | 200 | `limit` of each leg's grouped request (dense and sparse), in Memories; the fused list is then cut to `cand_k`. Without a sparse leg there is nothing to fuse with and the dense request asks `cand_k` |
 | `rrf_k` | 60 | the constant in the D-C formula |
 | `sparse_leg_enabled` | false | turns the sparse leg on for the profile after the T-RET-6b backfill reads zero missing `bm25` (U6) |
+| `sparse_timeout_ms` | 1000 | wall-clock budget of the sparse leg alone, in ms (bounds 1 to 10000); its elapse is a sparse failure (D-C). dev-host start value, A5 re-measure required |
 
-All four enter `request_profile_fingerprint`; the multiplier also enters the envelope's `cand_k` check (§23.3 fixture assertions), so a change moves
+All five enter `request_profile_fingerprint`; the multiplier also enters the envelope's `cand_k` check (§23.3 fixture assertions), so a change moves
 `profile_fingerprint` and G23-4 refuses to pool runs across values. `cand_k_formula` renders the resolved multiplier.
-`RetrievalRequest` and `build_request` take no parameter for any of them (§55.1); T-RET-6c adds the four names to the
-G55-6 ① forbidden-name set, red-recorded by that card. Bounds are validated when the registry loads, and no literal of
-the four appears outside it.
+`RetrievalRequest` and `build_request` take no parameter for any of them (§55.1); T-RET-6c adds the names to the
+G55-6 ① forbidden-name set (four in T-RET-6c-1, the fifth in T-RET-6c-2). Bounds are validated when the registry loads,
+and no literal of the five appears outside it.
 
 ### D-E `projection::sparse`
 
-`build_sparse_lane` stays the **single** `SKIPPED_BY_POLICY` decision and the single source of the sparse filter. When
-T-RET-6c lands, the local IDF computation (`tenant_scoped_document_frequency`, `bm25_idf`, and whatever only they use;
-the card names the exact set) is deleted, because Qdrant computes IDF over `params.idf.corpus` (V5).
-
-- ponytail: the local IDF stays until T-RET-6c lands; it computes nothing the gateway uses (the module has no caller
-  outside tests), and the first card that sends a sparse query removes it. No upgrade path is needed: IDF is Qdrant's.
+`build_sparse_lane` stays the **single** `SKIPPED_BY_POLICY` decision and the single source of the sparse filter. The
+local IDF computation (`tenant_scoped_document_frequency`, `tenant_scoped_corpus_size`, `bm25_idf`, `CorpusDocument` and
+`in_authorized_corpus`) is deleted by T-RET-6c-2, because Qdrant computes IDF over `params.idf.corpus` (V5). The lane is
+now `build_sparse_lane(scope, narrow_by, allowed)`; the gateway reads it through the pure `sparse_corpus_filter(enabled,
+allowed, scope)`, whose 2x2 truth table is a unit test, and sends the unnarrowed filter as the IDF corpus.
 
 ### D-F Gates
 
-All are three-state (`pass` / `fail` / `not_applicable`, §57.1) and **all are planned**. Each gate exists only after its
-inject, red, fix, green record (§80.1) lands in the card that implements it, and that card adds the record to this ADR.
+All are three-state (`pass` / `fail` / `not_applicable`, §57.1) and **all are implemented by T-RET-6c-2**, with the
+records below. Each gate exists only after its inject, red, fix, green record (§80.1) lands in the card that
+implements it, and that card adds the record to this ADR.
 Module gate ids such as `G-RET-7` fall outside the §80.1 anchor grammar, like `G-RET-1` to `G-RET-6` of ADR-0081.
 A gate that runs before its object exists reports `not_applicable` and names that object (§57.1).
 
@@ -197,6 +204,22 @@ A gate that runs before its object exists reports `not_applicable` and names tha
 | G-RET-8 IDF corpus scoping | T-RET-6c | Through a real Qdrant, another principal's private document that carries the query term does not change principal A's ranking; a control adds the same document inside A's own scope and **does** change it, so the gate can fail | omit `params.idf.corpus` (global statistics) |
 | G-RET-9 deterministic fusion | T-RET-6c | The same leg lists give the same fused order on repeat and under permutation of equal-score entries, ties by `memory_id` ascending; a Memory found by one leg only is ordered by that one contribution | break ties by arrival order or hash-map iteration order |
 | G-RET-10 sparse failure is explicit | T-RET-6c | With the Qdrant sparse request failing (timeout, 5xx, malformed body) and the dense request succeeding, recall returns the dense-order result, `lanes.sparse` reads `failed`, `degradations` holds `SPARSE_LANE_UNAVAILABLE` and `degrade_total{code="SparseLaneUnavailable"}` rises by 1; a dense failure does not emit that code | swallow the sparse error and return the dense list without calling `abstain()` |
+
+Red-green records (T-RET-6c-2, PR #157). Each red is one mutation on a throwaway `red/*` branch run through `targeted.yml`
+and read in the run's log; the green is the PR's CI. Runs r1 to r5 were taken on head 960eefe, the rest on the head
+that carries `sparse_timeout_ms`:
+
+| Gate | Test | Injected fault | Red run |
+|---|---|---|---|
+| G-RET-7 | `semantic_recall_wiring::hybrid_recall_returns_a_lexical_only_memory_only_with_the_sparse_leg_on` | r1: the sparse leg dropped from fusion | 39766459316 |
+| G-RET-8 | `qdrant_live::sparse_leg_idf_corpus_is_scoped_to_what_the_caller_may_read` | r2: `params.idf.corpus` removed (score 1.6465 to 0.6290) | 39766473412 |
+| G-RET-8 (wiring half) | the request body assertion of the G-RET-7 test | corpus widened to the tenant clause only (visibility dropped) | 39780704016 |
+| G-RET-9 | `recall::tests::rrf_ties_order_by_memory_id_ascending_and_repeat_identically` | r3: ties by insertion order | 39766486888 |
+| G-RET-10 | `semantic_recall_wiring::a_failing_sparse_leg_answers_from_the_dense_leg_and_says_so` | r4: the sparse error propagates | 39766500531 |
+| G-RET-10 (budget) | the hung-request case of the same test | the `sparse_timeout_ms` wrapper removed | 39780672071 |
+| G-RET-3 | `semantic_recall_wiring::a_tombstoned_memory_the_sparse_leg_alone_found_never_passes_the_hydrate_gate` | r5: the hydrate gate skipped for sparse-only candidates | 39766515018 |
+| sparse decision | `recall::tests::sparse_corpus_filter_follows_the_flag_and_the_policy_and_is_the_authorization_predicate` | the policy input replaced with `true` | 39780688074 |
+| read-only allowlist | `infra-cell::transport::tests::read_only_permit_admits_post_points_query_groups_with_consistency_param` | `/points/query/groups` removed from `QDRANT_READ_ONLY_POST_SUFFIXES` | 39775314895 (the production-wiring failure it fixes: 39757704567) |
 
 T-RET-6b adds no new `G-RET-` id. It extends the provisioning sentinel (`collection_setup_puts` and
 `collection_generation` carry the sparse config) and the rebuild-verify test (a point without `bm25` is not
@@ -213,7 +236,7 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 | `adapters::provisioning` | `collection_setup_puts`, `collection_generation` and `ensure_collection` add and check `bm25` | T-RET-6b |
 | `adapters::projection_worker`, `adapters::rebuild` | the point write sends `bm25`; the verifier expects it | T-RET-6b |
 | `adapters::retrieve`, `gateway::recall` | the sparse leg runs beside the dense leg; RRF; lanes; `abstain()` on sparse failure | T-RET-6c |
-| `contracts::retrieval_config`, `retrieval::request` | the four registry entries; fingerprint; `cand_k_formula` | T-RET-6c |
+| `contracts::retrieval_config`, `retrieval::request` | the five registry entries; fingerprint; `cand_k_formula` | T-RET-6c |
 | `projection::sparse` | `build_sparse_lane` stays; local IDF deleted | T-RET-6c |
 | `telemetry::degrade`, `testkit/fault` | `DegradeCode::SparseLaneUnavailable` and its fault test (Baseline §53.2 and §53.4) | T-RET-6c |
 
@@ -223,7 +246,7 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 |---|---|---|
 | T-RET-6a | This ADR; Baseline §17.6, §23.3, §33, §55.6; the T-RET-6 row and the D-E checks of ADR-0081 (docs only) | none |
 | T-RET-6b | Indexing and backfill (D-B): collection body and generation, `collection ensure` adds `bm25`, named-vector upsert, rebuild backfill and verifier. **Before T-RET-6c.** Names the policy source (U4) | the provisioning sentinel and the rebuild-verify test, extended |
-| T-RET-6c | Recall, configuration and lanes (D-C to D-E): the four registry entries, the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables. **Split:** T-RET-6c-1 (registry entries, fingerprint, envelope check, G55-6 ① names, `SparseLaneUnavailable`; no recall wiring) is implemented; T-RET-6c-2 (the sparse leg, RRF, lanes, deleting the local IDF, the real-path fault test) is planned | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
+| T-RET-6c | Recall, configuration and lanes (D-C to D-E): the registry entries (four in T-RET-6c-1, `sparse_timeout_ms` in T-RET-6c-2), the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables. **Split:** T-RET-6c-1 (registry entries, fingerprint, envelope check, G55-6 ① names, `SparseLaneUnavailable`; no recall wiring) is implemented; T-RET-6c-2 (the sparse leg, RRF, lanes, deleting the local IDF, the real-path fault test, `sparse_timeout_ms`) is implemented (PR #157) | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
 
 ## Alternatives rejected
 

@@ -6,11 +6,11 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit,
 //!   serde_json, sqlx, tokio, uuid]; services=[Qdrant(*)]; env=[HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::qdrant, domain::authority,
 //!   domain::dataclass, domain::identity, domain::ids, domain::memory, humaux-testkit, infra-cell::permit,
-//!   infra-cell::resource, infra-cell::transport, projection::card]
+//!   infra-cell::resource, infra-cell::transport, projection::card, projection::dense, projection::sparse]
 //! Called-by: [cargo-test]
 //! Invariants: [§57.1 three-state gate: an unreachable Qdrant prints the missing object and returns not_applicable
 //!   via skip_or_fail (red under HUMAUX_REQUIRE_QDRANT); cross-tenant filters are proven against the real cluster]
-//! Spec: Baseline §57.1; ADR-0055
+//! Spec: Baseline §57.1; ADR-0055; ADR-0083
 //!
 //! §57.1: a three-state gate, not pass/fail — if Qdrant is unreachable at the configured loopback port this
 //! prints which object is missing and returns (`not_applicable`) instead of failing the suite.
@@ -27,8 +27,8 @@ use humaux_adapters::qdrant::{
     DenseQuery, DenseQueryVersions, Distance, IndexablePayload, PointId, QdrantOperation,
     QdrantPointPayload, ShardingMethod, TenantPlacementRow, VisibleCountFilter, count,
     create_collection_body, ha_profile_for, memory_id_index_body, query_dense, query_dense_groups,
-    query_dense_groups_bounded, scroll_by_ids, subject_index_body, tenant_index_body, upsert,
-    verify_visible_via_transport,
+    query_dense_groups_bounded, query_sparse_groups, scroll_by_ids, subject_index_body,
+    tenant_index_body, upsert, upsert_fenced, verify_visible_via_transport,
 };
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
@@ -41,6 +41,8 @@ use humaux_infra_cell::{
     authorize_cell_access,
 };
 use humaux_projection::card::EgressDisposition;
+use humaux_projection::dense::DenseQueryFilter;
+use humaux_projection::sparse::{SparseLane, build_sparse_lane};
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use sqlx::types::time::OffsetDateTime;
 use uuid::Uuid;
@@ -986,6 +988,273 @@ async fn bounded_group_search_is_refilled() {
             want[..6].to_vec(),
             "the refill recovers F and stays within the six-group budget"
         );
+    });
+    let primary = primary.await;
+    let cleanup = delete_test_collection(&transport, &permit, &collection).await;
+    match primary {
+        Ok(()) => cleanup.expect("test collection cleanup must succeed"),
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => panic!("qdrant live test task was cancelled: {error}"),
+    }
+}
+
+/// One private document: a dense vector no sparse query cares about, and the `bm25` text the sparse leg matches.
+async fn put_document(
+    transport: &HttpIntraCellTransport,
+    permit: &humaux_infra_cell::CellAccessPermit,
+    collection: &str,
+    tenant_id: TenantId,
+    owner: UserId,
+    memory_id: MemoryId,
+    text: &str,
+) {
+    let payload = QdrantPointPayload {
+        memory_id,
+        tenant_id,
+        workspace_id: WorkspaceId::new(),
+        visibility_class: VisibilityClass::UserPrivate,
+        visibility_user_id: Some(owner),
+        visibility_workspace_id: None,
+        object_type: "memory_record".to_string(),
+        memory_type: MemoryType::Note,
+        status: AuthorityStatus::Active,
+        authority: AuthorityClass::PrivateKnowledge,
+        created_at: OffsetDateTime::now_utc(),
+        effective_at: OffsetDateTime::now_utc(),
+        embedding_version: "v1".to_string(),
+        projection_version: "v1".to_string(),
+        source_stream_seq: 1,
+        data_class: DataClass::Internal,
+        egress_disposition: EgressDisposition::Allowed,
+    }
+    .into_indexable()
+    .expect("indexable");
+    upsert_fenced(
+        transport,
+        permit,
+        collection,
+        (
+            PointId::Uuid(Uuid::now_v7()),
+            &payload,
+            vec![1.0, 0.0, 0.0, 0.0],
+        ),
+        Some(text),
+        ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+    )
+    .await
+    .expect("document upsert");
+}
+
+/// The sparse leg's answer as `(memory, score)` in Qdrant's order.
+async fn sparse_scores(
+    transport: &HttpIntraCellTransport,
+    permit: &humaux_infra_cell::CellAccessPermit,
+    query: &DenseQuery,
+    corpus: &DenseQueryFilter,
+    text: &str,
+) -> Vec<(Option<Uuid>, f64)> {
+    query_sparse_groups(transport, permit, query, text, corpus)
+        .await
+        .expect("sparse grouped query")
+        .into_iter()
+        .map(|candidate| (candidate.memory_id, candidate.score))
+        .collect()
+}
+
+fn same_ranking(left: &[(Option<Uuid>, f64)], right: &[(Option<Uuid>, f64)]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(l, r)| l.0 == r.0 && (l.1 - r.1).abs() < 1e-6)
+}
+
+/// ADR-0083 gate G-RET-8 (D-A, V5) through a real Qdrant v1.19.0, with the U1 and U2 records. The sparse leg asks the
+/// grouped endpoint for a Document query with `params.idf.corpus` set to the caller's tenant + visibility predicate.
+/// Another principal's private documents carrying the query term are outside that corpus, so they do not change the
+/// caller's ranking or scores. The control adds one more such document INSIDE the caller's scope and does change the
+/// score, so the gate can fail (a corpus that no longer excludes anything cannot pass the first and the control).
+/// U1: the grouped endpoint answers a Document query with `params.idf.corpus` (run 39757704567). U2: queries whose
+/// tokens are all dropped (digits only, stopwords only) are answered with zero groups, an empty leg, not an error.
+/// Fault: omit `params.idf.corpus` (global statistics) ⇒ the other principal's four documents move df and N ⇒ red.
+// One spawned body (collection, documents, queries) so a panic still reaches the collection cleanup below.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn sparse_leg_idf_corpus_is_scoped_to_what_the_caller_may_read() {
+    if !qdrant_reachable() {
+        skip_or_fail(
+            "sparse_leg_idf_corpus_is_scoped_to_what_the_caller_may_read",
+            &format!("missing object: live Qdrant server at {}", qdrant_addr()),
+            ExternalDep::Qdrant,
+        );
+        return;
+    }
+    let registry = registry(
+        CellId(Uuid::now_v7()),
+        CallerId("qdrant-live-test".to_string()),
+    );
+    let transport = Arc::new(
+        HttpIntraCellTransport::new(
+            registry.clone(),
+            Duration::from_secs(10),
+            humaux_infra_cell::DEFAULT_MAX_RESPONSE_BYTES,
+        )
+        .expect("client builds"),
+    );
+    let permit = authorize_cell_access(
+        &registry,
+        IntraCellResource::QDRANT_REST,
+        Duration::from_secs(60),
+    )
+    .expect("same-cell, allowlisted caller must mint");
+    let collection = format!("c6c2_idf_{}", Uuid::now_v7().simple());
+    let (body_transport, body_registry, body_collection) =
+        (Arc::clone(&transport), registry.clone(), collection.clone());
+    let primary = tokio::spawn(async move {
+        let (transport, collection) = (body_transport, body_collection);
+        let permit = authorize_cell_access(
+            &body_registry,
+            IntraCellResource::QDRANT_REST,
+            Duration::from_secs(60),
+        )
+        .expect("body permit");
+        put_json(
+            &transport,
+            &permit,
+            format!("/collections/{collection}"),
+            create_collection_body(4, Distance::Cosine, 1, 1, 1, ShardingMethod::Auto),
+        )
+        .await;
+        for index in [tenant_index_body(), memory_id_index_body()] {
+            put_json(
+                &transport,
+                &permit,
+                format!("/collections/{collection}/index"),
+                index,
+            )
+            .await;
+        }
+        let tenant_id = TenantId::new();
+        let (user_a, user_b) = (UserId::new(), UserId::new());
+        let scope_a = AuthorizationScope::new(
+            tenant_id,
+            PrincipalId::new(),
+            Some(user_a),
+            BoundedSet::new(Vec::<WorkspaceId>::new()).expect("empty workspace set is valid"),
+        );
+        let placement = TenantPlacementRow {
+            tenant_id,
+            projection_family: humaux_adapters::qdrant::RetrievalFamily::PrivateMemoryV1,
+            collection_name: collection.clone(),
+            shard_key: None,
+            placement_class: humaux_adapters::qdrant::PlacementClass::SharedFallback,
+            point_count: 0,
+            bytes_estimate: 0,
+            promotion_state: humaux_adapters::qdrant::PromotionState::Stable,
+        };
+        let query = DenseQuery::new(
+            &scope_a,
+            &placement,
+            DenseQueryVersions {
+                projection: "v1",
+                embedding: "v1",
+            },
+            vec![1.0, 0.0, 0.0, 0.0],
+            10,
+            vec![],
+            ha_profile_for(QdrantOperation::ReadYourWriteStrict),
+        )
+        .expect("typed query");
+        let SparseLane::Executed { filter: corpus } = build_sparse_lane(&scope_a, &[], true) else {
+            panic!("the sparse lane runs for a tenant that allows in-Cell text processing");
+        };
+
+        // The caller's own three documents; exactly one carries the term.
+        let a1 = MemoryId::new();
+        let own_texts = [
+            (a1, "quokka habitat survey"),
+            (MemoryId::new(), "coastal weather field notes"),
+            (MemoryId::new(), "ledger of ordinary expenses"),
+        ];
+        for (memory_id, text) in own_texts {
+            put_document(
+                &transport,
+                &permit,
+                &collection,
+                tenant_id,
+                user_a,
+                memory_id,
+                text,
+            )
+            .await;
+        }
+        let base = sparse_scores(&transport, &permit, &query, &corpus, "quokka").await;
+        assert_eq!(
+            base.iter().map(|(group, _)| *group).collect::<Vec<_>>(),
+            vec![Some(a1.0)],
+            "U1: the grouped endpoint answers a Document query with params.idf.corpus and returns the one lexical match"
+        );
+
+        // Another principal's private documents, four of them carrying the term, are invisible to the caller.
+        for text in [
+            "quokka sightings log",
+            "quokka quokka quokka census",
+            "quokka rescue and quokka transport",
+            "quokka quokka feed schedule",
+        ] {
+            put_document(
+                &transport,
+                &permit,
+                &collection,
+                tenant_id,
+                user_b,
+                MemoryId::new(),
+                text,
+            )
+            .await;
+        }
+        let with_other = sparse_scores(&transport, &permit, &query, &corpus, "quokka").await;
+        assert!(
+            same_ranking(&base, &with_other),
+            "another principal's private documents moved the caller's ranking or scores: {base:?} then {with_other:?}"
+        );
+
+        // Control: one more document inside the caller's own scope changes the statistic, so the gate can fail.
+        put_document(
+            &transport,
+            &permit,
+            &collection,
+            tenant_id,
+            user_a,
+            MemoryId::new(),
+            "quokka adoption papers",
+        )
+        .await;
+        let with_own = sparse_scores(&transport, &permit, &query, &corpus, "quokka").await;
+        let a1_after = with_own
+            .iter()
+            .find(|(group, _)| *group == Some(a1.0))
+            .map(|(_, score)| *score)
+            .expect("the first match is still found");
+        assert_eq!(with_own.len(), 2, "{with_own:?}");
+        assert!(
+            (base[0].1 - a1_after).abs() > 1e-6,
+            "control: a document in the caller's own corpus must move the score: {base:?} then {with_own:?}"
+        );
+
+        // U2: all tokens dropped (the multilingual tokenizer drops pure-digit tokens, the default stopword list drops
+        // the rest) is an empty leg.
+        for text in ["2024 1999", "the of and"] {
+            let dropped =
+                query_sparse_groups(transport.as_ref(), &permit, &query, text, &corpus).await;
+            eprintln!(
+                "U2 (ADR-0083): query {text:?} with every token dropped answered {dropped:?}"
+            );
+            assert!(
+                matches!(&dropped, Ok(groups) if groups.is_empty()),
+                "U2: an all-dropped-token query is a 2xx with zero groups: {dropped:?}"
+            );
+        }
     });
     let primary = primary.await;
     let cleanup = delete_test_collection(&transport, &permit, &collection).await;

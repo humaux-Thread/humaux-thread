@@ -311,7 +311,7 @@ fn request_profile_fingerprint(profile: &RegisteredRetrievalProfile, cand_k: u32
         "candidate_cap".to_string(),
         RETRIEVAL_CANDIDATE_CAP.to_string(),
     );
-    // ADR-0083 D-D: all four registry entries identify the request; G23-4 refuses to pool runs across any of them.
+    // ADR-0083 D-D: all five registry entries identify the request; G23-4 refuses to pool runs across any of them.
     effective.insert(
         "candidate_multiplier".to_string(),
         profile.cand_multiplier().to_string(),
@@ -342,6 +342,10 @@ fn request_profile_fingerprint(profile: &RegisteredRetrievalProfile, cand_k: u32
     effective.insert(
         "rerank_threads".to_string(),
         profile.rerank_threads().to_string(),
+    );
+    effective.insert(
+        "sparse_timeout_ms".to_string(),
+        profile.sparse_timeout_ms().to_string(),
     );
     effective.insert("cand_k".to_string(), cand_k.to_string());
     effective.insert(
@@ -462,7 +466,7 @@ mod tests {
         request_from(&[(key, value)])
     }
 
-    /// G6c1-1: changing any one of the four ADR-0083 D-D entries changes the fingerprint, so G23-4 refuses to pool
+    /// G6c1-1: changing any one of the five ADR-0083 D-D entries changes the fingerprint, so G23-4 refuses to pool
     /// runs across it. `top_k = 100` saturates the cap (multipliers 5 and 6 both give `cand_k` 200), so `cand_k`
     /// cannot move the fingerprint and each row isolates its own key. Fault: leave one of them out of
     /// `request_profile_fingerprint` => its row goes red.
@@ -474,6 +478,7 @@ mod tests {
             ("leg_depth", "201"),
             ("rrf_k", "61"),
             ("sparse_leg_enabled", "true"),
+            ("sparse_timeout_ms", "1001"),
             // ADR-0084 D-E: the five rerank entries move it too.
             ("rerank_enabled", "true"),
             ("rerank_depth", "24"),
