@@ -8999,7 +8999,8 @@ impl ComposeService {
 }
 
 /// The services of a compose document that run a Python image without being limited to the tooling profiles, as
-/// `(service, image line, image)`.
+/// `(service, image line, image)`. Test-only view of [`compose_services`].
+#[cfg(test)]
 fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
     compose_services(text)
         .into_iter()
@@ -9008,7 +9009,8 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
 }
 
 /// The services whose own `command:` / `entrypoint:` names Python while not limited to the tooling profiles, as
-/// `(service, line, value)`.
+/// `(service, line, value)`. Test-only view of [`compose_services`].
+#[cfg(test)]
 fn compose_python_commands(text: &str) -> Vec<(String, usize, String)> {
     compose_services(text)
         .into_iter()
