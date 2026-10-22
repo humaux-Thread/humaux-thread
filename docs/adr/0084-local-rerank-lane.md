@@ -410,10 +410,11 @@ body or an unknown field is refused by the extractor (HTTP 4xx) before any outco
 
 ## T-RET-7d-1 record (2026-10-23)
 
-Recorded by CI (nothing ran locally). The code and the tests below landed in PR #204 (head 2f9c1ec, green run 39859048051);
-each red is one mutation on a throwaway `red/t-ret-7d-1-rN` branch run through `targeted.yml` on the test named, failing on
-that test's own assertion; the branches are deleted. T-RET-7d-1 adds no `G-RET-` id: these are the tests of the two
-contracts amended above (§80.1 inject, red, fix, green).
+Recorded by CI (nothing ran locally). The code and the tests below landed in PR #204: r1 to r5 on head 2f9c1ec (green run
+39859048051), r6 with the one-snapshot text read after the review of 2731a9c. Each red is one mutation on a throwaway
+`red/t-ret-7d-1-rN` branch run through `targeted.yml` on the test named, failing on that test's own assertion; the branches
+are deleted. T-RET-7d-1 adds no `G-RET-` id: these are the tests of the contracts amended above (§80.1 inject, red, fix,
+green).
 
 | Contract | Test | Injected fault | Red run |
 |---|---|---|---|
@@ -422,6 +423,7 @@ contracts amended above (§80.1 inject, red, fix, green).
 | D-C 3, slot from the registry row | `private_projection_registry::repeated_chunks_share_vector_not_point` | r3: the resolver reports ordinal 0 whatever the row says (both points read `Chunk { 0 }`) | 39861763939 |
 | D-C 3, the embedded card text | `projection::note_chunks::tests::rerank_document_is_the_card_text_of_the_slot` | r4: the document is always built from slot 0 | 39862116696 |
 | D-C 3, dense point, else sparse | `gateway::recall::tests::the_fused_candidate_is_the_dense_hit_else_the_sparse_hit` | r5: a later leg's point replaces the dense leg's for a Memory both legs found | 39862460586 |
+| G-RET-13, the text read is gated | `private_projection_registry::a_tombstoned_memory_never_has_its_text_read_for_rerank` | r6: read `private.memory_text_v` for every resolved candidate instead of the gated items (control and `Skip` pass; the tombstoned Memory's text is read: `([], [memory])`) | 39866008465 |
 
 The structural-breach test (`a_structural_breach_is_still_refused_as_internal`) and the G23-6 tests are unchanged by the
 split of `is_valid` and stay green.
