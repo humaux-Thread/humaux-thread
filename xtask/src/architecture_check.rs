@@ -9312,11 +9312,14 @@ fn action_input_default(action: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Readable pins keyed by sha input, plus the url inputs whose default or sha256 default is missing.
+type ActionPins = (Vec<(String, ArtifactPin)>, Vec<String>);
+
 /// Every readable pin `action` declares: each `inputs.<prefix>_url` default and its `<prefix>_sha256` default,
 /// keyed by the sha input (`ort_sha256` / `rerank_sha256`). The second element names a url input whose default or
 /// sha256 default is missing: with at least one readable pin those are `fail` lines, not `not_applicable`
 /// (§57.1 第2条). `Err` only when the action has no `_url` input at all.
-fn action_pins(action: &str) -> Result<(Vec<(String, ArtifactPin)>, Vec<String>), String> {
+fn action_pins(action: &str) -> Result<ActionPins, String> {
     let url_inputs: Vec<String> = action_input_names(action)
         .into_iter()
         .filter(|name| name.ends_with("_url"))
@@ -9399,7 +9402,7 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
                 continue;
             }
             problems.push(format!(
-                "{RERANK_DOCKERFILE}: no `ADD --checksum` pin for {} (action input {sha_key}) — the image and the parity test must fetch the same artifact",
+                "{RERANK_DOCKERFILE}: no `ADD --checksum` pin for {} (action input {sha_key} in {RERANK_PARITY_ACTION}) — the image and the parity test must fetch the same artifact",
                 pin.url
             ));
             continue;
