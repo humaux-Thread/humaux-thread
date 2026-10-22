@@ -5617,6 +5617,7 @@ modules:
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`

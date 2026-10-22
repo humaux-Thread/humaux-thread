@@ -3650,6 +3650,7 @@ written by:
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::ledger_append_only`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -11620,6 +11621,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::projection_claim`
@@ -11792,6 +11794,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`

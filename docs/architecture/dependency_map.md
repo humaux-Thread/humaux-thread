@@ -3508,6 +3508,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `telemetry::health`
 
+#### `telemetry::host`
+
 #### `telemetry::metrics`
 - service `HTTP(loopback)`
 
@@ -6110,6 +6112,7 @@ written by:
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::ledger_append_only`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -9986,6 +9989,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::projection_claim`
@@ -10107,6 +10111,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
@@ -11049,6 +11054,7 @@ executed by:
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
@@ -11177,6 +11183,7 @@ executed by:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_affects`
@@ -11364,6 +11371,7 @@ executed by:
 - `adapters::selection_repo`
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::private_projection_registry`
@@ -11686,6 +11694,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
@@ -11808,6 +11817,7 @@ modules naming it:
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -11997,6 +12007,7 @@ modules naming it:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::note_chunk_count_parity`
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
@@ -12402,6 +12413,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12515,6 +12527,7 @@ modules naming it:
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12693,6 +12706,7 @@ modules naming it:
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
@@ -12783,6 +12797,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
+- `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -13681,6 +13696,9 @@ modules naming it:
 - `testkit::tests::metrics::data_disclosures_reserved_unfinalized`
 - `testkit::tests::metrics::degrade_total`
 - `testkit::tests::metrics::dns_pin_deferred_total`
+- `testkit::tests::metrics::host_cpu_busy_ratio`
+- `testkit::tests::metrics::host_memory_available_bytes`
+- `testkit::tests::metrics::host_pressure_ratio`
 - `testkit::tests::metrics::jobs_dead`
 - `testkit::tests::metrics::jobs_pending`
 - `testkit::tests::metrics::jobs_processing`
@@ -16071,6 +16089,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/ledger_append_only.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/ledger_frontier.rs`
 db-bound (default run): yes
 
 services (computed):
