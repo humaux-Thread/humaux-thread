@@ -43,7 +43,7 @@ the reverse), exact p.
 | same, K 25, L 512 | 128 | 14 / 46, p 4.2e-5 | | |
 | gte-multilingual-reranker-base int8, K 25, L 256 | 141 | | 2.08 s | |
 | bge-reranker-base int8 | not significant | | | |
-| int8 against fp32, same model | not significant | | | |
+| gte int8 against gte fp32 (the only fp32 cells in the run) | not significant (K 25 L 256: 141 against 137) | | 2.08 s against 8.20 s | |
 
 The b / c rows for K 10 and L 512 are read from the same run's log. In the L 256 cells 61.5% of the pairs reach the
 256-token cap (mean pair 217.7 tokens); L 512 did not do better (128 against 130).
@@ -124,7 +124,7 @@ The model is an XLM-RoBERTa sequence classifier with one output and an identity 
 
 | # | Not known today | Fallback | Resolved by |
 |---|---|---|---|
-| U1 | Whether the int8 graph built by E-RET-5a's recipe loads and scores on `ort` rc.15 with the ONNX Runtime 1.30.0 tarball, and matches the Python scores (V5 shows operator support for two integer ops only) | T-RET-7c stops and reports; the same pin's fp32 export is the alternative (int8 against fp32 is not significant in accuracy; its N1 latency is unmeasured), and the owner decides | T-RET-7c, G-RET-11 |
+| U1 | Whether the int8 graph built by E-RET-5a's recipe loads and scores on `ort` rc.15 with the ONNX Runtime 1.30.0 tarball, and matches the Python scores (V5 shows operator support for two integer ops only) | T-RET-7c stops and reports; the same pin's fp32 export is the alternative, and the owner decides. fp32 was measured for gte only (K 25 L 256: 137 against int8's 141, 8.20 s against 2.08 s p50 on N2, about 4× slower); mmarco fp32 accuracy and latency are unmeasured. At about 4× the N1 int8 p50 (1.2 s) it would sit near 4.7 s, above `rerank_timeout_ms` 4000, so the fp32 fallback needs `rerank_depth` 10 or a re-measure before `rerank_enabled` | T-RET-7c, G-RET-11 |
 | U2 | Latency of the Rust path on N1: all N1 numbers came through Python (`onnxruntime` 1.30.0 wheel, `tokenizers` 0.22.2) | Re-run the bundle's method against the shipped library before `rerank_enabled` is set; if p50 or p95 moves materially, `rerank_depth` 10 is a registry change (D-E) | T-RET-7c |
 | U3 | Whether the tarball's `libonnxruntime.so` resolves all its shared-library needs on the runtime base `gcr.io/distroless/cc-debian13` (distroless's `cc/config.bzl` on `main` lists `libstdc++6`, `libgcc-s1`, `libgomp1`; the base digest the repo pins, 2026-10-07, was not inspected) | Copy the missing libraries from the Debian 13 builder into the image; or ship pyke's build with `libc++` (rejected on supply chain, D-B) | T-RET-7c, G-RET-11 run inside the image |
 | U4 | Resident memory of the loaded session in `retrieval-rpc` | Measure on the same-spec runner and set the compose memory limit (the §67.2 A5 rule) | T-RET-7c |
@@ -170,6 +170,13 @@ The model is an XLM-RoBERTa sequence classifier with one output and an identity 
   graph. The feasibility questions the documents leave open are U1 and U3; neither makes the shipped library
   infeasible.
 - **Threads.** `intra_op` threads are configurable, default 4 (`rerank_threads`); `inter_op` is 1, as measured.
+- **Shared fate.** The model runs inside `retrieval-rpc`, which also serves query embedding (the dense leg). An
+  out-of-memory kill or a fault in the release-candidate `ort` path takes query embedding down with it. Mitigation: the
+  compose restart policy, the U4 memory limit, and `rerank_enabled = false` as the operator's switch to unload the model.
+- **`deny.toml` exception for `paste`** (RUSTSEC-2024-0436, unmaintained, no patched version): accepted in T-RET-7c's PR
+  as an `[advisories].ignore` entry with this reason (a build-time proc-macro dependency of `tokenizers` 0.23.x; the
+  alternative is a pre-release crate family), an expiry of 2027-04-30 and the removal card "move to a `tokenizers`
+  release without `paste`". `unmaintained = "workspace"` stays rejected (it relaxes §78.5 for every crate).
 - **CPU isolation** (a deployment note, not code here): the `retrieval-rpc` service's compose CPU **weight** sits below
   PostgreSQL and Qdrant. That is the condition the N1 numbers were measured under (`--cpu-shares 512`); the compose
   files use `cpus:` caps today, which are a different mechanism.
@@ -301,15 +308,16 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | T-RET-7a | This ADR; Baseline §4.2, §7.2, §19 Rerank Provider Failover, §23.3, §50, §53.4, §67.2 and the opening list; the rerank lines of ADR-0083 and ADR-0081 (docs only) | none |
 | T-RET-7b | CI artifact pipeline (D-A) and the public parity fixtures (the public texts `PUB` in `local_rerank.py` at aae2ae4 are a seed, plus a pair longer than `rerank_max_len`) | none of its own (feeds G-RET-11) |
 | T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
-| T-RET-7d | Gateway wiring and registry (D-C to D-E); lands after T-RET-6c-2; settles U7 | G-RET-12, G-RET-13, G-RET-15 |
+| T-RET-7d | Gateway wiring and registry (D-C to D-E); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
 
 ## Alternatives rejected
 
 - **No rerank**: the owner's earlier decision of the same day (ADR-0083), replaced by this one.
 - **Cloud rerank** (E-RET-5d, E-RET-5f) and **Jev** (E-RET-5c): measured and not chosen; the numbers are in ADR-0083.
 - **gte-multilingual-reranker-base int8, K 25, L 256**: 141 against 130, at 2.08 s p50 on the N2 runner against 0.67 s.
-- **bge-reranker-base int8**: not significant against RRF; and **fp32** of the same model: not significantly different from
-  int8, so the cheaper precision stays.
+- **bge-reranker-base int8**: not significant against RRF.
+- **fp32 precision**: measured for gte only, not significantly different from int8 (137 against 141) at about 4× the
+  time, so the cheaper precision stays.
 - **K 10 as the default**: 115 against 130 for p50 about 0.5 s on N1. Kept as the registry fallback, not the default.
 - **L 512**: 128 against 130 in the same run, at about twice the padded tokens per pair (500 against 254 on average).
 - **The upstream repository's own `onnx/model_qint8_arm64.onnx`**: it exists at the pinned revision, but it is not the

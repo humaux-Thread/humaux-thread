@@ -192,8 +192,8 @@ changes at once**:
   gateway does not use server-side fusion (ADR-0083 V6, D-C). The Chinese tokenizer is `options.tokenizer =
   "multilingual"` (V3). Per-tenant IDF is `params.idf.corpus`, set to the authorization filter (V5, D-A). E-RET-PB2's
   Python BM25 only estimated the gain; E-RET-PB5 then measured Qdrant's own `qdrant/bm25` leg (ADR-0083 Evidence).
-- **Local rerank** (bge-reranker-v2-m3 against Qwen3-Reranker-0.6B) comes after recall and is chosen by p95 measured on
-  the target machine (E-RET-5). Running models on the local machine needs the owner's decision.
+- **Local rerank** comes after recall: the owner chose a local int8 `mmarco-mMiniLMv2-L12-H384` cross-encoder on the
+  top 25 of the hybrid pool (2026-10-22, E-RET-5g); see ADR-0084.
 
 ### D-F (D-RET-6) Rerank scores are cached per (query × single document) pair (no card yet; after E-RET-5)
 
@@ -275,7 +275,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 | E-CACHE-1 | Query-cache TTL / TTI | Replay the D-A log in time order once it is online (capacity, TTL / TTI and restarts simulated). The old capture file was polluted by evaluation replays and is an upper bound only: without its busiest day, 43.9% of queries repeat, nearly all within 5 minutes | Query-hash log (no plaintext) | 0 | Decides TTL against TTI (D-D); also decides whether to open the candidate-cache ADR (D-G) |
 | E-CACHE-2 | How much of a revised document's vector work can be reused? | Pilot done: 85 versions of the Baseline as of main `197e5f0` (84 adjacent revisions; the newest version has 4,238 paragraphs, about 0.87 MB). Prefix chain: 80.6% of bytes re-embedded, median per-revision reuse 11.6%. Paragraph hash against the previous version: 2.5%, median reuse 98.0%. Against all older versions: 2.2%, 98.4%. Heading path in the key: 1.65% (the denominator grows, the absolute volume is comparable). Limit: one document, written incrementally, so not representative of book revisions | Public (this repository's history); book revisions are retested on the E-KNOW-4 corpus (ADR-0080) | 0 | Pilot supports content addressing (D-C); the book retest repeats the comparison |
 | E-CACHE-3 | LLM prefix layout | MiniMax (M3.1-Flash), the same batch of 40 evidence items in both arms. Arm A = current text + variant-grouped warm-up. Arm B = fixed full-set schema and system text, with the allowed grades in the envelope. Measure H, over-grading rate, parse-failure rate and total cost per qualified output; pair by evidence | Not fixed by the design (UNKNOWN); the card that runs it declares it | at most USD 1 | Arm B is adopted only if over-grading and parse-failure rates are no worse than arm A's (paired, margin fixed beforehand) (D-B) |
-| E-RET-5 | Reranker | Done (E-RET-5a speed on public data; 5b/5d/5f accuracy on the encrypted development set; 5e speed on the N1 production host): see ADR-0083 Alternatives rejected | Private real data, aggregates only | Closed: the owner decided on 2026-10-22 to run without a reranker |
+| E-RET-5 | Reranker | Done (E-RET-5a speed on public data; 5b/5d/5f accuracy on the encrypted development set; 5e speed on the N1 production host): see ADR-0083 Alternatives rejected | Private real data, aggregates only | Closed: local int8 rerank chosen (owner, 2026-10-22), ADR-0084 |
 
 ## Cards
 
