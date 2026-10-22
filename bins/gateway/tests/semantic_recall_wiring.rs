@@ -1,7 +1,7 @@
 //! `gateway::tests::semantic_recall_wiring` — ADR-0012/ADR-0014 gateway semantic-recall wiring acceptance.
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval-provider,
-//!   humaux-retrieval-worker, humaux-testkit, postgres, serde_json, time, tokio, uuid];
+//!   humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, time, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[ops.retrieval_embedding_rpc_calls,
 //!   ops.retrieval_query_log, projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements],
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*),
@@ -15,10 +15,10 @@
 //!   gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
 //!   infra-cell::resource, infra-cell::transport, projection::card, protocol::mcp,
 //!   protocol::mcp_catalog,
-//!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc]
+//!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, telemetry::degrade]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures; a missing fixture fails the test rather than skipping it]
-//! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065; ADR-0081
+//! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065; ADR-0081; ADR-0083
 //!
 //! Drives `humaux_gateway::recall::search` directly (no HTTP/MCP layer — that surface is
 //! already covered by `tests/mcp_gateway.rs`'s native MCP acceptance tests) against a real
@@ -33,7 +33,10 @@
 //! transient query-embedding failure fails fast after one worker call (ADR-0065 D-G); (9) the query-hash log
 //! `ops.retrieval_query_log` (T-RET-1b, ADR-0081 D-A): one row per answered recall, the query only as a keyed per-tenant
 //! HMAC, insert-only and tenant-isolated for `role_gateway`, written off the answer path, and a failing or blocked insert
-//! never fails or delays the recall.
+//! never fails or delays the recall; (10) hybrid recall (T-RET-6c-2, ADR-0083): a lexical-only Memory is returned only
+//! with the sparse leg on (G-RET-7), a failing sparse request answers from the dense leg with `lanes.sparse = failed`
+//! and `SPARSE_LANE_UNAVAILABLE` (G-RET-10), and a tombstoned Memory only the sparse leg found never passes the hydrate
+//! gate (G-RET-3).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -60,7 +63,8 @@ use humaux_adapters::{
     postgres::RetrievalWorkerDbPool,
     qdrant::{
         Distance, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
-        create_collection_body, ha_profile_for, tenant_index_body, upsert,
+        create_collection_body, ha_profile_for, memory_id_index_body, tenant_index_body, upsert,
+        upsert_fenced,
     },
 };
 use humaux_application::retrieval_embedding_port::{
@@ -95,6 +99,7 @@ use humaux_retrieval_provider::{
         RerankScoreSemantics,
     },
 };
+use humaux_telemetry::degrade::{DegradeCode, degrade_total_count};
 use humaux_testkit::{DbIntegrationFixture, run_db_fixture};
 
 const DIMENSION: u32 = 4;
@@ -331,6 +336,10 @@ async fn create_collection(
             format!("/collections/{collection}/index"),
             tenant_index_body(),
         ),
+        (
+            format!("/collections/{collection}/index"),
+            memory_id_index_body(),
+        ),
     ] {
         let response = transport
             .execute(
@@ -455,8 +464,24 @@ fn payload(
     workspace_id: Uuid,
     source_updated_at: time::OffsetDateTime,
 ) -> humaux_adapters::qdrant::IndexablePayload {
+    payload_for_memory(
+        tenant_id,
+        workspace_id,
+        humaux_domain::authority::MemoryId::new(),
+        source_updated_at,
+    )
+}
+
+/// [`payload`] for a point that projects the given Memory: a grouped recall's group id is this payload copy, and the
+/// hydrate gate drops a point whose registry Memory differs from it (ADR-0068 D-E).
+fn payload_for_memory(
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    memory_id: humaux_domain::authority::MemoryId,
+    source_updated_at: time::OffsetDateTime,
+) -> humaux_adapters::qdrant::IndexablePayload {
     QdrantPointPayload {
-        memory_id: humaux_domain::authority::MemoryId::new(),
+        memory_id,
         tenant_id: TenantId(tenant_id),
         workspace_id: WorkspaceId(workspace_id),
         visibility_class: VisibilityClass::WorkspaceShared,
@@ -487,6 +512,12 @@ fn fixed_vector(text: &str) -> Vec<f32> {
 }
 
 fn context_bootstrap(handle: &Handle) -> ContextBootstrap {
+    bootstrap_with_profile(handle, &BTreeMap::new())
+}
+
+/// [`context_bootstrap`] over a registered profile resolved from `raw` (the §50 registry keys; empty = the shipped
+/// defaults).
+fn bootstrap_with_profile(handle: &Handle, raw: &BTreeMap<String, String>) -> ContextBootstrap {
     let policy = RememberPolicy::new(
         // ADR-0054 D-D: the family only — no default (tenant, workspace) pair.
         ProcessFamily::new("workspace", "knowledge", "ingest", "v1").expect("trusted family"),
@@ -498,10 +529,8 @@ fn context_bootstrap(handle: &Handle) -> ContextBootstrap {
     .expect("trusted wiring-test remember policy");
     ContextBootstrap::new(
         humaux_domain::context::ContextBudget::new(2_048, 1_024).expect("trusted budget"),
-        humaux_contracts::retrieval_config::resolve_registered_retrieval_profile(
-            &Default::default(),
-        )
-        .expect("registered default profile"),
+        humaux_contracts::retrieval_config::resolve_registered_retrieval_profile(raw)
+            .expect("registered profile"),
         &policy,
         std::time::Duration::from_secs(60),
     )
@@ -1896,4 +1925,516 @@ fn a_failing_log_insert_does_not_fail_the_recall() {
             env.teardown(&handle);
         },
     );
+}
+
+// ============================================================================
+// ADR-0083 hybrid recall (T-RET-6c-2): the sparse leg, memory-level RRF, lanes and the failure path
+// ============================================================================
+
+/// `top_k` of the hybrid fixtures' profile: small enough that a Memory the dense order puts last is outside the answer
+/// (`cand_k` = 10 still holds all five fixture Memories).
+const HYBRID_TOP_K: u32 = 2;
+/// Its tokens occur in the lexical target's text and in no other fixture text.
+const HYBRID_QUERY: &str = "ossuary lanternfish";
+/// The card texts the `bm25` Documents carry. The last Memory is the lexical target: its dense vector is orthogonal to
+/// the query's, so the dense order puts it last; the other four are dense neighbours, nearest first.
+const HYBRID_TEXTS: [&str; 5] = [
+    "ordinary filler note one",
+    "ordinary filler note two",
+    "ordinary filler note three",
+    "ordinary filler note four",
+    "the ossuary of the lanternfish colony",
+];
+
+/// The dense vector of fixture Memory `index` (see [`HYBRID_TEXTS`]); the query vector is `[1, 0, 0, 0]`.
+fn hybrid_vector(index: usize) -> Vec<f32> {
+    if index + 1 == HYBRID_TEXTS.len() {
+        vec![0.0, 0.0, 1.0, 0.0]
+    } else {
+        vec![1.0, 0.1 * (index as f32 + 1.0), 0.0, 0.0]
+    }
+}
+
+/// How a [`ShapedTransport`] bends the Qdrant traffic of one recall (G-RET-3 / G-RET-10); every request it does not name
+/// goes through to the real server.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// No bending: the real server answers both legs.
+    Real,
+    /// The sparse request (`using: bm25`) answers HTTP 500.
+    SparseStatus500,
+    /// The sparse request fails at the transport, as a timeout does.
+    SparseTimeout,
+    /// The sparse request answers 200 with a body that is not a grouped result.
+    SparseMalformed,
+    /// The dense request answers HTTP 500 while the sparse one is real.
+    DenseStatus500,
+    /// The dense reply loses this point, so a Memory only the sparse leg found reaches the PG gate.
+    DropDensePoint(Uuid),
+}
+
+struct ShapedTransport {
+    inner: Arc<HttpIntraCellTransport>,
+    shape: Shape,
+}
+
+fn is_sparse_query(request: &IntraCellRequest) -> bool {
+    request
+        .json_body
+        .as_ref()
+        .and_then(|body| body.get("using"))
+        .and_then(serde_json::Value::as_str)
+        == Some("bm25")
+}
+
+fn is_dense_query(request: &IntraCellRequest) -> bool {
+    request.path.contains("/points/query") && !is_sparse_query(request)
+}
+
+#[async_trait]
+impl IntraCellHttpTransport for ShapedTransport {
+    async fn execute(
+        &self,
+        permit: &CellAccessPermit,
+        request: IntraCellRequest,
+    ) -> Result<IntraCellResponse, IntraCellError> {
+        let status_500 = || {
+            Ok(IntraCellResponse {
+                status: 500,
+                json_body: Some(serde_json::json!({ "status": { "error": "injected" } })),
+            })
+        };
+        match self.shape {
+            Shape::SparseStatus500 if is_sparse_query(&request) => return status_500(),
+            Shape::SparseTimeout if is_sparse_query(&request) => {
+                return Err(IntraCellError::RequestFailed("injected timeout".to_owned()));
+            }
+            Shape::SparseMalformed if is_sparse_query(&request) => {
+                return Ok(IntraCellResponse {
+                    status: 200,
+                    json_body: Some(serde_json::json!({ "result": { "unexpected": true } })),
+                });
+            }
+            Shape::DenseStatus500 if is_dense_query(&request) => return status_500(),
+            _ => {}
+        }
+        let dense = is_dense_query(&request);
+        let mut response = self.inner.execute(permit, request).await?;
+        if let (Shape::DropDensePoint(point), true) = (self.shape, dense) {
+            let wire = serde_json::json!(point.to_string());
+            if let Some(points) = response
+                .json_body
+                .as_mut()
+                .and_then(|body| body.pointer_mut("/result/points"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                points.retain(|hit| hit["id"] != wire);
+            }
+        }
+        Ok(response)
+    }
+}
+
+/// The five hybrid fixture Memories of one tenant, indexed in a disposable Qdrant collection with their `bm25`
+/// Documents, behind a stub embedding port (no worker, no provider).
+struct HybridEnv {
+    /// PG memory ids in [`HYBRID_TEXTS`] order.
+    memories: Vec<Uuid>,
+    /// Their evidence ids, same order.
+    evidences: Vec<Uuid>,
+    /// Their Qdrant point ids, same order.
+    points: Vec<Uuid>,
+    pool: Arc<humaux_adapters::postgres::RuntimeDbPool>,
+    collection: String,
+    setup_registry: IntraCellResourceRegistry,
+    setup_transport: Arc<HttpIntraCellTransport>,
+    registry: IntraCellResourceRegistry,
+    transport: Arc<HttpIntraCellTransport>,
+}
+
+impl HybridEnv {
+    fn seed(handle: &mut Handle, tag: &str) -> Self {
+        let mut admin = handle.owner_client().expect("owner client for setup");
+        let (mut memories, mut evidences, mut points) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in HYBRID_TEXTS {
+            let row = handle.seed_workspace_visible_context_record();
+            let point = Uuid::new_v4();
+            seed_registry_row(
+                &mut admin,
+                handle.tenant_id,
+                handle.workspace_id,
+                row.memory_id,
+                point,
+            );
+            memories.push(row.memory_id);
+            evidences.push(row.evidence_id);
+            points.push(point);
+        }
+        seed_checkpoint(&mut admin, handle.tenant_id, handle.workspace_id);
+        let collection = format!("wiring_{tag}_{}", Uuid::now_v7().simple());
+        seed_tenant_placement(&mut admin, handle.tenant_id, &collection);
+        let cell = CellId(Uuid::now_v7());
+        let caller = CallerId("gateway-wiring-test".to_owned());
+        let setup_registry = setup_registry(cell, caller.clone());
+        let setup_transport = qdrant_transport(&setup_registry);
+        let registry = cell_registry(cell, caller);
+        let transport = qdrant_transport(&registry);
+        let (tenant_id, workspace_id) = (handle.tenant_id, handle.workspace_id);
+        let pool = handle.rt.block_on(async {
+            create_collection(&setup_transport, &setup_registry, &collection).await;
+            let permit = authorize_cell_access(
+                &setup_registry,
+                IntraCellResource::QDRANT_REST,
+                Duration::from_secs(60),
+            )
+            .expect("setup upsert permit");
+            for (index, text) in HYBRID_TEXTS.into_iter().enumerate() {
+                let point_payload = payload_for_memory(
+                    tenant_id,
+                    workspace_id,
+                    humaux_domain::authority::MemoryId(memories[index]),
+                    time::OffsetDateTime::now_utc(),
+                );
+                upsert_fenced(
+                    setup_transport.as_ref(),
+                    &permit,
+                    &collection,
+                    (
+                        PointId::Uuid(points[index]),
+                        &point_payload,
+                        hybrid_vector(index),
+                    ),
+                    Some(text),
+                    ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+                )
+                .await
+                .expect("real Qdrant upsert with a bm25 Document");
+            }
+            Arc::new(
+                // dep: PostgreSQL(role_gateway) — test fixture pool for the semantic recall wiring suite
+                humaux_adapters::postgres::RuntimeDbPool::connect(&required(
+                    "HUMAUX_GATEWAY_PG_DSN",
+                ))
+                .await
+                .expect("real role_gateway pool"),
+            )
+        });
+        Self {
+            memories,
+            evidences,
+            points,
+            pool,
+            collection,
+            setup_registry,
+            setup_transport,
+            registry,
+            transport,
+        }
+    }
+
+    /// One `recall::search` for [`HYBRID_QUERY`] with the sparse leg `sparse_leg` and Qdrant traffic bent by `shape`;
+    /// the structured envelope as the MCP layer would return it.
+    fn recall(
+        &self,
+        handle: &Handle,
+        shape: Shape,
+        sparse_leg: bool,
+    ) -> Result<serde_json::Value, ErrorCode> {
+        let port: Arc<dyn RetrievalEmbeddingPort> =
+            Arc::new(FixedOutcomePort::new(RetrievalEmbeddingOutcome::Embedded {
+                vector: vec![1.0, 0.0, 0.0, 0.0],
+                provider_id: "wiring-test-provider".to_owned(),
+                model_id: "wiring-test-embedding".to_owned(),
+                model_revision: "v1".to_owned(),
+                dimension: DIMENSION,
+            }));
+        let transport: Arc<dyn IntraCellHttpTransport> = Arc::new(ShapedTransport {
+            inner: self.transport.clone(),
+            shape,
+        });
+        let runtime = Arc::new(
+            SemanticRecallRuntime::new(
+                port,
+                transport,
+                self.registry.clone(),
+                SemanticRecallVersions {
+                    embedding_version: EMBEDDING_VERSION.to_owned(),
+                    dimension: DIMENSION,
+                },
+                Duration::from_secs(10),
+            )
+            .expect("trusted semantic runtime"),
+        );
+        handle
+            .rt
+            .block_on(recall::search(
+                Arc::clone(&self.pool),
+                runtime,
+                Arc::new(CanonicalCatalog::load().expect("catalog")),
+                handle.auth.clone(),
+                Uuid::now_v7(),
+                hybrid_bootstrap(handle, sparse_leg),
+                recall_request(HYBRID_QUERY, handle.workspace_id),
+            ))
+            .map(|pending| pending.finish().structured_content)
+    }
+
+    fn teardown(&self, handle: &Handle) {
+        handle.rt.block_on(delete_collection(
+            &self.setup_transport,
+            &self.setup_registry,
+            &self.collection,
+        ));
+        let mut admin = handle.owner_client().expect("owner client for cleanup");
+        admin
+            .execute(
+                "DELETE FROM projection.tenant_placements WHERE tenant_id=$1",
+                &[&handle.tenant_id],
+            )
+            .expect("cleanup seeded tenant placement row");
+    }
+}
+
+/// The registered profile of the hybrid fixtures: `top_k` [`HYBRID_TOP_K`] and the sparse leg switched as asked (the
+/// shipped default is off, ADR-0083 U6; a test enables it on its own profile).
+fn hybrid_bootstrap(handle: &Handle, sparse_leg: bool) -> ContextBootstrap {
+    bootstrap_with_profile(
+        handle,
+        &BTreeMap::from([
+            (
+                "retrieval.profile.top_k".to_owned(),
+                HYBRID_TOP_K.to_string(),
+            ),
+            (
+                "retrieval.profile.sparse_leg_enabled".to_owned(),
+                sparse_leg.to_string(),
+            ),
+        ]),
+    )
+}
+
+/// The returned Memory ids of a recall envelope, in answer order.
+fn returned_ids(output: &serde_json::Value) -> Vec<String> {
+    output["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .filter(|item| item["kind"] == "memory")
+        .map(|item| item["memory_id"].as_str().expect("memory id").to_owned())
+        .collect()
+}
+
+fn has_degradation(output: &serde_json::Value, wire: &str) -> bool {
+    output["completeness"]["degradations"]
+        .as_array()
+        .expect("degradations array")
+        .iter()
+        .any(|code| code.as_str() == Some(wire))
+}
+
+/// G-RET-7 (ADR-0083 D-C) and the lanes / U5 / U7 records, through a real Qdrant: the lexical target matches the query by
+/// its text alone and is the LAST dense neighbour, so with the sparse leg off it is outside `top_k`; with the leg on the
+/// fused list puts it first. The lanes read `dense: ok, sparse: not_required` with the leg off (U5) and `sparse: ok`
+/// with it on; `provenance.profile.lanes` names the legs that ran; `stage_ms` carries the sparse leg's own time only when
+/// it ran (U7).
+/// Fault: drop the sparse leg from the fusion ⇒ the target is not returned with the leg on ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture: five Memories → recall off → recall on.
+fn hybrid_recall_returns_a_lexical_only_memory_only_with_the_sparse_leg_on() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_hybrid_lexical", |mut handle| {
+        handle.assert_gateway_login();
+        let env = HybridEnv::seed(&mut handle, "lexical");
+        let target = env.memories[4].to_string();
+        let nearest = [env.memories[0].to_string(), env.memories[1].to_string()];
+
+        let off = env
+            .recall(&handle, Shape::Real, false)
+            .expect("dense-only recall");
+        assert_eq!(
+            returned_ids(&off),
+            nearest,
+            "the dense order, top_k 2: {off}"
+        );
+        assert_eq!(
+            off["completeness"]["lanes"],
+            serde_json::json!({ "dense": "ok", "sparse": "not_required" }),
+            "U5: a leg that does not run reads not_required: {off}"
+        );
+        assert_eq!(
+            off["provenance"]["profile"]["lanes"],
+            serde_json::json!(["dense"])
+        );
+        assert!(
+            off["provenance"]["stage_ms"].get("qdrant_sparse").is_none(),
+            "no sparse timing when the leg did not run: {off}"
+        );
+
+        let on = env
+            .recall(&handle, Shape::Real, true)
+            .expect("hybrid recall");
+        assert_eq!(
+            returned_ids(&on),
+            [target.clone(), nearest[0].clone()],
+            "the lexical-only memory leads the fused list: {on}"
+        );
+        assert_eq!(
+            on["completeness"]["lanes"],
+            serde_json::json!({ "dense": "ok", "sparse": "ok" }),
+            "{on}"
+        );
+        assert_eq!(
+            on["provenance"]["profile"]["lanes"],
+            serde_json::json!(["dense", "sparse"])
+        );
+        assert!(
+            !has_degradation(&on, "SPARSE_LANE_UNAVAILABLE"),
+            "a healthy sparse leg degrades nothing: {on}"
+        );
+        assert!(
+            on["provenance"]["stage_ms"]["qdrant_sparse"].is_f64(),
+            "U7: the sparse leg's own time rides in stage_ms: {on}"
+        );
+        eprintln!(
+            "U7 (ADR-0083): five-Memory fixture, depth 200 per leg, sparse leg own time: stage_ms={}",
+            on["provenance"]["stage_ms"]
+        );
+        env.teardown(&handle);
+    });
+}
+
+/// G-RET-10 (ADR-0083 D-C, §53.1) through a real Qdrant with the sparse request failing three ways (HTTP 500, a
+/// transport timeout, a 200 of the wrong shape) while the dense request succeeds: the recall answers with the dense
+/// order, `lanes.sparse` reads `failed`, `degradations` holds `SPARSE_LANE_UNAVAILABLE` and `degrade_total` for it rises
+/// by exactly 1. A dense-leg failure is the typed error as before and does not emit the code.
+/// Fault: let the sparse error propagate (or swallow it without the degradation) ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture: baseline → three sparse faults → one dense fault.
+fn a_failing_sparse_leg_answers_from_the_dense_leg_and_says_so() {
+    run_db_fixture::<Fixture, _>(
+        "semantic_recall_wiring_hybrid_sparse_failure",
+        |mut handle| {
+            handle.assert_gateway_login();
+            let env = HybridEnv::seed(&mut handle, "sparse_failure");
+            let dense_order = returned_ids(
+                &env.recall(&handle, Shape::Real, false)
+                    .expect("dense-only baseline"),
+            );
+            assert_eq!(dense_order.len(), HYBRID_TOP_K as usize);
+            let counter = || degrade_total_count(DegradeCode::SparseLaneUnavailable);
+
+            for (label, shape) in [
+                ("http 500", Shape::SparseStatus500),
+                ("transport timeout", Shape::SparseTimeout),
+                ("malformed body", Shape::SparseMalformed),
+            ] {
+                let before = counter();
+                let out = env.recall(&handle, shape, true).unwrap_or_else(|error| {
+                    panic!("{label}: the recall must still answer: {error:?}")
+                });
+                assert_eq!(
+                    returned_ids(&out),
+                    dense_order,
+                    "{label}: the dense order: {out}"
+                );
+                assert_eq!(
+                    out["completeness"]["lanes"],
+                    serde_json::json!({ "dense": "ok", "sparse": "failed" }),
+                    "{label}: {out}"
+                );
+                assert!(
+                    has_degradation(&out, "SPARSE_LANE_UNAVAILABLE"),
+                    "{label}: {out}"
+                );
+                assert_eq!(counter(), before + 1, "{label}: degrade_total +1");
+            }
+
+            let before = counter();
+            let dense_failure = env.recall(&handle, Shape::DenseStatus500, true);
+            assert_eq!(dense_failure.err(), Some(ErrorCode::DependencyUnavailable));
+            assert_eq!(
+                counter(),
+                before,
+                "a dense failure does not emit the sparse code"
+            );
+            env.teardown(&handle);
+        },
+    );
+}
+
+/// G-RET-3 extended (ADR-0083 D-F) through a real Qdrant and the real PG gate: a Memory that was live when indexed and
+/// is tombstoned afterwards is not returned when ONLY the sparse leg produced it (the dense reply is bent to lose its
+/// point), nor when both legs did. The tombstone is a `TOMBSTONED` stream row reached through the Memory's Evidence;
+/// the Qdrant overlay misses it on purpose (the point's `source_stream_seq` is not the tombstoned seq), so only the
+/// hydrate gate over the FUSED list can drop it. The control, before the tombstone, shows the sparse-only candidate is
+/// served, so the gate can fail.
+/// Fault: skip the hydrate gate for candidates only the sparse leg returned ⇒ the tombstoned Memory is served ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture: live control → tombstone → three recalls.
+fn a_tombstoned_memory_the_sparse_leg_alone_found_never_passes_the_hydrate_gate() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_hybrid_tombstone", |mut handle| {
+        handle.assert_gateway_login();
+        let env = HybridEnv::seed(&mut handle, "tombstone");
+        let target = env.memories[4].to_string();
+        let sparse_only = Shape::DropDensePoint(env.points[4]);
+
+        let live = env
+            .recall(&handle, sparse_only, true)
+            .expect("control recall");
+        assert_eq!(
+            returned_ids(&live).first(),
+            Some(&target),
+            "control: the sparse-only candidate is served while it is live: {live}"
+        );
+
+        let mut admin = handle
+            .owner_client()
+            .expect("owner client for the tombstone");
+        let commit_seq: i64 = admin
+            .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+            .expect("owner allocates a fixture commit sequence")
+            .get(0);
+        admin
+            .execute(
+                "INSERT INTO projection.stream_log \
+                   (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version, \
+                    stream_seq,commit_seq,state,settled_at) \
+                 VALUES($1,'workspace',$2,'knowledge','ingest','v1',1,$3,'TOMBSTONED',clock_timestamp())",
+                &[&handle.tenant_id, &handle.workspace_id, &commit_seq],
+            )
+            .expect("owner seeds the tombstoned stream row");
+        admin
+            .execute(
+                "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
+                 VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)",
+                &[&handle.tenant_id, &commit_seq, &env.evidences[4]],
+            )
+            .expect("owner links the tombstone to the target's Evidence");
+        admin
+            .execute(
+                "UPDATE projection.stream_checkpoints SET issued_highwater=1 \
+                 WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2 \
+                   AND domain='knowledge' AND projection_kind='ingest' AND projection_version='v1'",
+                &[&handle.tenant_id, &handle.workspace_id],
+            )
+            .expect("owner raises the issued highwater to the tombstoned seq");
+
+        for (label, shape) in [
+            ("sparse leg alone", sparse_only),
+            ("both legs", Shape::Real),
+        ] {
+            let out = env
+                .recall(&handle, shape, true)
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            assert!(
+                !returned_ids(&out).contains(&target),
+                "{label}: a tombstoned Memory was served: {out}"
+            );
+            assert_eq!(
+                returned_ids(&out),
+                [env.memories[0].to_string(), env.memories[1].to_string()],
+                "{label}: the live neighbours fill the answer: {out}"
+            );
+        }
+        env.teardown(&handle);
+    });
 }

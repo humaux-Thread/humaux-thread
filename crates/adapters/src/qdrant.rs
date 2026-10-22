@@ -14,7 +14,9 @@
 //!   worker's point writes and deletes are fenced on source_stream_seq (ADR-0057 D-I); the memory_id backfill
 //!   writes only the memory_id key, by has_id filter, and accepts only one completed result per operation
 //!   (ADR-0068 40d-2a); the bm25 Document is built by bm25_document alone, for the write and for the query, so both
-//!   send identical model and options (ADR-0083 D-A)]
+//!   send identical model and options (ADR-0083 D-A); the sparse leg sends the dense leg's filter value unchanged
+//!   (retrieval_filter_json) and sets `params.idf.corpus` to the tenant + visibility predicate alone, never a global
+//!   corpus (ADR-0083 D-A/D-C, §17.2)]
 //! Spec: Baseline §17; §17.5; §17.4; §17.6; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064; ADR-0068;
 //!   ADR-0083
 //!
@@ -1473,18 +1475,24 @@ pub fn dense_group_query_body(query: &DenseQuery) -> Value {
     body
 }
 
+/// The retrieval filter of one query as Qdrant JSON: the typed filter plus every overlay. The dense and the sparse leg
+/// both send exactly this value (ADR-0083 D-C: identical filter set), so a clause added here reaches both.
+fn retrieval_filter_json(query: &DenseQuery) -> Value {
+    seen_memory_filter(
+        tombstoned_seq_overlay_filter(
+            overlay_filter(condition_to_filter(&query.filter), &query.tombstoned),
+            &query.tombstoned_seqs,
+        ),
+        &query.seen_memories,
+    )
+}
+
 /// Qdrant's documented points/query dense-vector shape.
 /// Payloads and vectors are never returned: this is candidate discovery only.
 pub fn dense_query_body(query: &DenseQuery) -> Value {
     let mut body = json!({
         "query": query.vector,
-        "filter": seen_memory_filter(
-            tombstoned_seq_overlay_filter(
-                overlay_filter(condition_to_filter(&query.filter), &query.tombstoned),
-                &query.tombstoned_seqs,
-            ),
-            &query.seen_memories,
-        ),
+        "filter": retrieval_filter_json(query),
         "limit": query.limit,
         "with_payload": false,
         "with_vector": false,
@@ -1686,6 +1694,64 @@ pub async fn query_dense(
     )
     .await?;
     parse_dense_candidates(&result, query.limit)
+}
+
+/// ADR-0083 D-A / D-C: the sparse (BM25) leg's grouped query body. `query` is [`bm25_document`] of the exact query bytes
+/// (the same builder the write path uses, so model and options match, V3); `using` names the `bm25` vector; `filter` is
+/// the dense leg's filter value ([`retrieval_filter_json`]); and `params.idf.corpus` is `corpus`, the tenant + §6.1.2
+/// visibility predicate and nothing narrower (§17.2, V5), so another principal's private documents never enter the
+/// document frequencies. `limit` counts Memories (one hit per `memory_id` group), as in [`dense_group_query_body`].
+pub fn sparse_group_query_body(query: &DenseQuery, text: &str, corpus: &DenseQueryFilter) -> Value {
+    let mut body = json!({
+        "query": bm25_document(text),
+        "using": BM25_VECTOR_NAME,
+        "filter": retrieval_filter_json(query),
+        "params": { "idf": { "corpus": condition_to_filter(corpus) } },
+        "group_by": MEMORY_ID_FIELD,
+        "group_size": 1,
+        "limit": query.limit,
+        "with_payload": false,
+        "with_vector": false,
+    });
+    if let Some(shard_key) = &query.shard_key {
+        body.as_object_mut()
+            .expect("sparse query body is an object")
+            .insert("shard_key".to_owned(), json!(shard_key));
+    }
+    body
+}
+
+/// ADR-0083 D-C: the sparse leg — one `POST /collections/{c}/points/query/groups` for `text`, candidates only (the PG
+/// hydrate gate stays the authority). `query` supplies the collection, shard key, `limit`, read control and the
+/// retrieval filter, so both legs of one recall are scoped by the same value; `corpus` is the IDF corpus filter
+/// (`projection::sparse::build_sparse_lane`). Fewer groups than `limit`, including none, is a valid answer (V2); a
+/// transport error, a non-2xx reply or a reply of unexpected shape is the caller's leg failure (ADR-0083 D-C).
+pub async fn query_sparse_groups(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    query: &DenseQuery,
+    text: &str,
+    corpus: &DenseQueryFilter,
+) -> Result<Vec<DenseCandidate>, QdrantTransportError> {
+    if text.trim().is_empty() {
+        return Err(QdrantTransportError::InvalidDenseQuery(
+            "sparse query text is empty".to_owned(),
+        ));
+    }
+    let path = format!("/collections/{}/points/query/groups", query.collection);
+    let path = match query.ha_profile.read_control() {
+        Some(control) => qdrant_path(path, &[control]),
+        None => path,
+    };
+    let result = call(
+        transport,
+        permit,
+        IntraCellMethod::Post,
+        path,
+        Some(sparse_group_query_body(query, text, corpus)),
+    )
+    .await?;
+    parse_group_candidates(&result, query.limit)
 }
 
 /// §17's `PUT /collections/{name}/points` upsert, wired to a real [`IntraCellHttpTransport`].
@@ -2304,13 +2370,20 @@ mod lifecycle_prefilter_tests {
         }
     }
 
-    fn query() -> DenseQuery {
-        let scope = AuthorizationScope::new(
+    fn scope() -> AuthorizationScope {
+        AuthorizationScope::new(
             TenantId::new(),
             PrincipalId::new(),
             None,
             BoundedSet::new(Vec::<WorkspaceId>::new()).expect("empty workspace set"),
-        );
+        )
+    }
+
+    fn query() -> DenseQuery {
+        query_in(&scope())
+    }
+
+    fn query_in(scope: &AuthorizationScope) -> DenseQuery {
         let placement = TenantPlacementRow {
             tenant_id: scope.tenant_id(),
             projection_family: RetrievalFamily::PrivateMemoryV1,
@@ -2322,7 +2395,7 @@ mod lifecycle_prefilter_tests {
             promotion_state: PromotionState::Stable,
         };
         DenseQuery::new(
-            &scope,
+            scope,
             &placement,
             DenseQueryVersions {
                 projection: "v1",
@@ -2354,6 +2427,42 @@ mod lifecycle_prefilter_tests {
         assert_eq!(groups["group_size"], json!(1));
         assert_eq!(groups["limit"], points["limit"]);
         assert_eq!(groups["filter"], points["filter"]);
+    }
+
+    /// ADR-0083 D-A / D-C: the sparse body is the shared Document query on `bm25`, grouped by Memory with one hit each,
+    /// `limit` and `filter` exactly the dense leg's (one retrieval filter for both legs), and `params.idf.corpus` the
+    /// caller's tenant + visibility predicate ALONE: it names the tenant and carries none of the retrieval-only
+    /// clauses (servable, projection and embedding version, overlays), which would narrow the statistic below the
+    /// authorized universe.
+    /// Fault: drop `params` (global IDF), widen the corpus to the retrieval filter, or hand-build `filter` ⇒ red.
+    #[test]
+    fn sparse_body_pins_the_document_the_shared_filter_and_the_authorization_only_corpus() {
+        let scope = scope();
+        let query = query_in(&scope);
+        let corpus = build_dense_filter(&scope, &[]);
+        let sparse = sparse_group_query_body(&query, "exact query bytes ", &corpus);
+        let dense = dense_group_query_body(&query);
+        assert_eq!(sparse["query"], bm25_document("exact query bytes "));
+        assert_eq!(sparse["using"], json!(BM25_VECTOR_NAME));
+        assert_eq!(sparse["group_by"], json!(MEMORY_ID_FIELD));
+        assert_eq!(sparse["group_size"], json!(1));
+        assert_eq!(sparse["limit"], dense["limit"]);
+        assert_eq!(sparse["filter"], dense["filter"]);
+        assert_eq!(
+            sparse["params"]["idf"]["corpus"],
+            condition_to_filter(&corpus)
+        );
+        let corpus_wire = sparse["params"]["idf"]["corpus"].to_string();
+        assert!(
+            corpus_wire.contains(&scope.tenant_id().0.to_string()),
+            "the corpus names the tenant: {corpus_wire}"
+        );
+        assert!(
+            !corpus_wire.contains("projection_version")
+                && !corpus_wire.contains("embedding_version"),
+            "the corpus holds no retrieval-only clause: {corpus_wire}"
+        );
+        assert_ne!(sparse["params"]["idf"]["corpus"], sparse["filter"]);
     }
 
     /// ADR-0068 D-E: a refill asks for the remaining groups and folds one `must_not` on `memory_id` naming every
