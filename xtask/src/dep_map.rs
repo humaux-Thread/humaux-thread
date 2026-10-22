@@ -6359,10 +6359,11 @@ mod tests {
         if svc {
             services.push_str(", Qdrant(c)");
         }
-        let bin_env = if env { "HUMAUX_PROC_ENV" } else { "" };
+        // An existing name: a new one would leak from this fixture into the committed env_vars.md.
+        let bin_env = if env { "HUMAUX_TEST_PG_DSN" } else { "" };
         let bin_dep = format!("crates=[]; services=[{services}]; env=[{bin_env}]; modules=[]");
         let bin_read = if env {
-            "let _ = std::env::var(\"HUMAUX_PROC_ENV\"); "
+            "let _ = std::env::var(\"HUMAUX_TEST_PG_DSN\"); "
         } else {
             ""
         };
