@@ -15,7 +15,7 @@ use postgres::error::SqlState;
 use postgres::{Client, NoTls};
 
 /// The tables migration 0260 closes; `maintenance::rls_check` carries the same eight as §6.2.2 cells.
-const SECRET_TABLES: [&str; 8] = [
+const VERIFIER_TABLES: [&str; 8] = [
     "control.api_keys",
     "control.sessions",
     "control.email_challenges",
@@ -88,7 +88,7 @@ fn g_m02_1_only_gateway_and_maintenance_select_a_secret_table() {
     run_db_fixture::<GrantsFixture, _>(
         "g_m02_1_only_gateway_and_maintenance_select_a_secret_table",
         |mut h| {
-            for table in SECRET_TABLES {
+            for table in VERIFIER_TABLES {
                 for role in READERS {
                     assert_eq!(
                         select_as(&mut h.client, role, table),
@@ -119,7 +119,7 @@ fn g_m02_1_a_secret_table_acl_is_exactly_gateway_and_maintenance_select() {
                 .iter()
                 .map(|role| ((*role).to_owned(), "SELECT".to_owned()))
                 .collect();
-            for table in SECRET_TABLES {
+            for table in VERIFIER_TABLES {
                 let grants: Vec<(String, String)> = h
                     .client
                     .query(ACL_SQL, &[&table])

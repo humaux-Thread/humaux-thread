@@ -6931,7 +6931,7 @@ mod tests {
                 privilege_type: verb.to_owned(),
             }
         };
-        let secret_tables = [
+        let verifier_tables = [
             "control.api_keys",
             "control.sessions",
             "control.email_challenges",
@@ -6941,7 +6941,7 @@ mod tests {
             "control.recovery_codes",
             "control.team_invitations",
         ];
-        for table in secret_tables {
+        for table in verifier_tables {
             assert!(named_tables().contains(table), "{table} is §6.2.2-named");
             let mut grants = fetch_table_grants(&mut txn).expect("role_table_grants");
             let clean = mismatches(table, &grants);
