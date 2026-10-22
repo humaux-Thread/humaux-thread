@@ -39,6 +39,10 @@ tracing = "0.1.44"
 # sole request constructor every other caller uses (§55.1), not a worker-local shortcut.
 # why: retrieval request/envelope/planner (sole request constructor, §55.1); used-by: [retrieval-worker::rpc]
 humaux-retrieval = { path = "../../crates/retrieval" }
+# ADR-0084 D-E: the rerank registry entries (`rerank_enabled`, `rerank_threads`), `RERANK_MAX_LEN_MAX` and
+# `RETRIEVAL_CANDIDATE_CAP` are read from the one registry, never re-declared here.
+# why: rerank registry entries and the wire bounds derived from them; used-by: [retrieval-worker::rerank, retrieval-worker::rpc]
+humaux-contracts = { path = "../../crates/contracts" }
 # why: object-safe async traits for ports and transports; used-by: [retrieval-worker::main]
 async-trait = "0.1"
 # ADR-0012: `axum::serve` over a `tokio::net::UnixListener` (axum 0.8 native `Listener` impl)
@@ -47,8 +51,7 @@ async-trait = "0.1"
 axum = "0.8.9"
 # why: derive (de)serialization for wire/DTO types; used-by: [retrieval-worker::rpc]
 serde = { version = "1", features = ["derive"] }
-# dep-map: allow cargo-usedby — declared but named by no module today (removal is a code change, out of card 26 scope)
-# why: JSON payloads and envelopes; used-by: [none]
+# why: JSON payloads and envelopes; used-by: [tests]
 serde_json = "1"
 # Matches `crates/adapters`/`crates/local-secret-scan`'s existing sha2 0.11 pin — no second
 # independent version in the dependency graph.
@@ -56,6 +59,16 @@ serde_json = "1"
 sha2 = "0.11"
 # why: async runtime; used-by: [retrieval-worker::main, retrieval-worker::rpc]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+# ADR-0084 D-B: the rerank lane's ONNX Runtime binding, retrieval-worker only. Exact pin: the newest release is a
+# release candidate whose notes report over 30 fixed undefined-behaviour bugs, so a bump is a reviewed change. No
+# `download-binaries`: the shared library is the pinned tarball the image ships, loaded by path (`load-dynamic`);
+# `api-30` because that library is ONNX Runtime 1.30.0.
+# why: ONNX Runtime session that scores the rerank pairs; used-by: [retrieval-worker::rerank]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "tracing", "api-30"] }
+# ADR-0084 D-B / V8: `fancy-regex` (pure Rust) instead of the default `onig`, and none of the training-only defaults, so
+# loading `tokenizer.json` needs no C or C++ build.
+# why: Hugging Face tokenizer that encodes the (query, document) pairs; used-by: [retrieval-worker::rerank]
+tokenizers = { version = "=0.23.2", default-features = false, features = ["fancy-regex"] }
 # why: UUID ids (v7) and parsing; used-by: [retrieval-worker::main, retrieval-worker::rpc, tests]
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
 
