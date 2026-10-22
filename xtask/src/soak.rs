@@ -4,7 +4,7 @@
 //!   projection.processing_gaps, projection.stream_checkpoints, projection.stream_log], Qdrant(*), subprocess(ps),
 //!   subprocess(sh), HTTP(gateway)]; env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_SOAK_TEST_BEARER];
 //!   modules=[domain::ids, projection::serving, maintenance::switch_visible]
-//! Called-by: [xtask::e2e_onboard, xtask::load, xtask::main]
+//! Called-by: [xtask::e2e_onboard, xtask::load, xtask::load_open, xtask::main]
 //! Invariants: [continuous concurrent load against the real four-process deployment while a chaos hook kills/restarts a worker; every read is asserted live against the database]
 //! Spec: Baseline §15.1; §15.3; §15.5; §31; §61; §6.1; ADR-0037; ADR-0050; ADR-0052; ADR-0055; ADR-0065
 //!

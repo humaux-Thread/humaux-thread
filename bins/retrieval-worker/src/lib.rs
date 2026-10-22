@@ -5,10 +5,14 @@
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: [crate(humaux-gateway)]
 //! Invariants: []
-//! Spec: ADR-0012
+//! Spec: ADR-0012; ADR-0084
+//!
+//! ADR-0084 adds `rerank`, the local rerank engine: the binary boots it in `--serve-rpc` and `tests/rerank_parity.rs`
+//! drives it directly.
 //!
 //! The
 //! process entry point stays `src/main.rs`; Cargo builds both targets from this one package
 //! automatically once both `src/lib.rs` and `src/main.rs` exist.
 
+pub mod rerank;
 pub mod rpc;

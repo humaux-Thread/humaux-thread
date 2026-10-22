@@ -3,6 +3,13 @@
 - Status: Accepted (2026-10-22). Card T-RET-7a (docs only). Decisions D-A to D-G are the design lead's, taken from the
   owner's decision of 2026-10-22 and from E-RET-5g and the N1 timing; the facts under "What was verified" are this
   card's. The code lands in T-RET-7b to T-RET-7d; until then every sentence below about behaviour is **planned**.
+- Amended 2026-10-22 (card T-RET-7c, the lead's decision): **the five rerank registry entries (D-E) move from T-RET-7d to
+  T-RET-7c.** The worker needs `rerank_enabled` (load the model or not, D-B) and `rerank_threads` (the session build, D-B)
+  from its own registry read before any call, so the entries must exist when the worker lands. T-RET-7d keeps the gateway
+  client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set and the provenance constructor.
+- Amended 2026-10-22 (card ds-ret-189, #187 review): **the `rerank_depth <= cand_k` ceiling (D-C 1, D-E) applies only
+  while `rerank_enabled` is true** (#166), so a disabled lane keeps the registry default depth at any `cand_k`; the
+  values file leaves the two worker keys empty, and empty means unset so the registry defaults apply (#185).
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
 - Relates to: Baseline §7.2, §19 (Rerank Provider Failover), §23.1③, §23.3, §50, §51, §52.3, §53.2, §53.4, §57.1,
@@ -195,8 +202,9 @@ The model is an XLM-RoBERTa sequence classifier with one output and an identity 
 
 ### D-C Pipeline
 
-1. The RRF fused list (ADR-0083 D-C), cut to `cand_k`. `cand_k` must be at least `rerank_depth`; the registry load
-   refuses a profile that breaks that.
+1. The RRF fused list (ADR-0083 D-C), cut to `cand_k`. While `rerank_enabled` is true, `cand_k` must be at least
+   `rerank_depth` and the registry load refuses a profile that breaks that; while it is false the depth never acts, so
+   only `RERANK_FLOOR` applies (#166).
 2. The **unchanged** PostgreSQL hydrate gate.
 3. The rerank inputs for the first `rerank_depth` **visible** Memories: title + `"\n"` + best chunk. The best chunk is
    the Memory's chunk with the best leg rank, dense first, then sparse (the rule the experiments used). The legs ask Qdrant
@@ -245,8 +253,8 @@ Registry entries, beside `top_k` and the four of ADR-0083 D-D; none is ever call
 | Field | Default | Meaning | Checked when the registry loads |
 |---|---|---|---|
 | `rerank_enabled` | false | turns the lane on for the profile; flipped after the artifact is deployed and U2 is read | |
-| `rerank_depth` | 25 | most Memories scored per recall | 1 up to the profile's `cand_k` |
-| `rerank_max_len` | 256 | token cap of one (query, document) pair | up to the tokenizer's 512 |
+| `rerank_depth` | 25 | most Memories scored per recall | 1 up to the profile's `cand_k` while `rerank_enabled` is true; 1 or more when it is false (#166) |
+| `rerank_max_len` | 256 | token cap of one (query, document) pair | 5 (the four special tokens of a pair and one content token; amended by T-RET-7c) up to the tokenizer's 512 |
 | `rerank_timeout_ms` | 4000 | the gateway's wait for the RPC; chosen because p95 under contention on N1 reached 3.9 s | above 0 |
 | `rerank_threads` | 4 | intra-op threads of the worker's session | at least 1 |
 
@@ -255,7 +263,16 @@ runs across values. `RetrievalRequest` and `build_request` take no parameter for
 five names to the G55-6 ① forbidden-name set, red-recorded by that card. No literal of them appears outside the
 registry. Two values act inside the worker: `rerank_threads` when it builds the session and `rerank_max_len` on each call.
 How each reaches the worker (its own registry read, or the call) is a contract question for T-RET-7c and T-RET-7d; the
-registry stays the only source.
+registry stays the only source. **Resolved by T-RET-7c:** `rerank_enabled` and `rerank_threads` reach the worker through its
+own registry read at `--serve-rpc` boot: `rerank::rerank_profile` takes the two optional environment keys
+`HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED` and `..._RERANK_THREADS` (the gateway's rule, a registry name
+upper-cased with the worker's prefix), builds the raw map and calls the one `resolve_registered_retrieval_profile`, so the
+defaults and the bounds are the registry's and appear nowhere else. `rerank_max_len` rides on each call (`max_len`, 5 to 512:
+the registry's `RERANK_MAX_LEN_MIN`, one content token above the four special tokens of a pair, and the tokenizer's 512); `rerank_depth` and
+`rerank_timeout_ms` act in the gateway only (T-RET-7d). The two environment keys are optional in code and left empty in
+`deploy/env/values/retrieval-worker.env` (`KEY=`); empty means unset, so the registry defaults (`false` and `4`) apply
+and the values file carries no copy of them (§78.1, #185). An operator who flips the lane sets the same value on the
+gateway and on the worker.
 
 **The model pin is not in the registry.** It lives in deployment configuration beside the embedding provider's
 variables (`HUMAUX_RETRIEVAL_WORKER_EMBEDDING_*`): the D-A identity, the artifact location and the hashes. As with the
@@ -295,9 +312,11 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | Module | Change | Card |
 |---|---|---|
 | CI workflow and a script for the artifact | build the int8 ONNX from the pin, hash it and the tokenizer, publish the asset; public fixtures with Python reference scores | T-RET-7b |
-| `bins/retrieval-worker` (`rpc`, a rerank module, start-up check) | the `rerank` RPC, the session, the tokenizer, the hash check | T-RET-7c |
+| `bins/retrieval-worker` (`rpc`, `rerank`, start-up check) | the `rerank` RPC (`POST /v1/rerank`), the session, the tokenizer, the hash check | T-RET-7c |
+| `crates/infra-cell` (`IntraCellResource::RETRIEVAL_EMBEDDING_RPC`) | one rustdoc sentence (U6); no variant is added | T-RET-7c |
 | worker manifest, `deny.toml`, `deploy/images/humaux/Dockerfile`, `deploy/env/values/retrieval-worker.env` | the two crates; the RUSTSEC-2024-0436 ignore (V9); the library pin; the model pin variables | T-RET-7c |
-| `gateway::recall`, `retrieval::request`, `contracts::retrieval_config` | the client call, D-C steps 3 to 6, the five registry entries and the fingerprint | T-RET-7d |
+| `contracts::retrieval_config`, `retrieval::request` (the fingerprint) | the five registry entries and their bounds; all five in `request_profile_fingerprint` | T-RET-7c |
+| `gateway::recall`, `retrieval::request` | the client call and D-C steps 3 to 6 | T-RET-7d |
 | `retrieval::rerank` (a placeholder today) | the pure ordering step (D-C 5), so G-RET-15 needs no model | T-RET-7d |
 | `telemetry::degrade`, `testkit/fault`, `dormant.toml` | the rustdoc wording; both rerank fault tests become real-path (they drive the production function, not `abstain()`); the two M11 dormant rows are deleted | T-RET-7d |
 
@@ -307,8 +326,48 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 |---|---|---|
 | T-RET-7a | This ADR; Baseline §4.2, §7.2, §19 Rerank Provider Failover, §23.3, §50, §53.4, §67.2 and the opening list; the rerank lines of ADR-0083 and ADR-0081 (docs only) | none |
 | T-RET-7b | CI artifact pipeline (D-A) and the public parity fixtures (the public texts `PUB` in `local_rerank.py` at aae2ae4 are a seed, plus a pair longer than `rerank_max_len`) | none of its own (feeds G-RET-11) |
-| T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
-| T-RET-7d | Gateway wiring and registry (D-C to D-E); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
+| T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), **the five registry entries and the fingerprint (D-E, moved here from T-RET-7d)**, the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
+| T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
+
+## T-RET-7c record (2026-10-22)
+
+Everything below was measured or recorded by CI (nothing ran locally). Pins used: ONNX Runtime
+`onnxruntime-linux-aarch64-1.30.0.tgz` sha256 `e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da`; release
+`rerank-mmarco-int8-v1` tarball sha256 `cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f`, holding
+`model_quantized.onnx` (`b924df3444fb4fe511152c89ec312fa73b44b901c115456405da54503b4e7edf`) and `tokenizer.json`
+(`62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626`). Runtime base for the gate: `gcr.io/distroless/cc-debian13`
+at the Dockerfile's digest `e792ab3d…`. The route is `POST /v1/rerank` on the serve-rpc router.
+
+| # | Result | Evidence |
+|---|---|---|
+| U1 | **Yes, the int8 graph loads and matches.** `ort` 2.0.0-rc.15 with the 1.30.0 library loaded the CI-built graph; the Rust tokenizer reproduced `input_ids` and `attention_mask` of all 54 pairs exactly (6 cut at `max_len` 256, including the 150-token-query pair `longq-0-0`); scores against `score_int8_batch` (each group one batch): max abs difference **1.78e-15** over 54 pairs | run 39785216794, job `rerank-parity`, line `G-RET-11 U1` |
+| U2 (N2 runner only) | depth 25, `max_len` 256, batches of 8, 4 threads, 20 timed calls after 2 warm-ups, 16 of 25 pairs at the cap, mean pair 218.1 tokens (E-RET-5g: 61.5% at the cap, mean 217.7): **p50 0.690 s, p95 0.709 s**, against Python's N2 p50 0.67 s (+3%). The N1 re-run is the lead's, with the owner's approval | run 39785216794, test `rerank_latency` |
+| U3 | **Resolved: the library resolves all its needs on the pinned distroless `cc` base.** The parity and pin tests ran inside that image with the `.so` mounted; nothing was copied from the builder | run 39785216794 |
+| U4 | `VmRSS` of the test process: **452,512 kB after the load, 593,100 kB after 22 depth-25 calls** (N2 runner). The worker process adds its own baseline; no compose memory limit is changed here because `rerank_enabled` ships false | run 39785216794 |
+| U5 | tolerance stays `tolerance.abs` **1e-4**; the run-to-run spread over 3 parity runs of the 54 pairs was **0** (bit-identical), as in the fixture header | run 39785216794 |
+| U6 | **Resolved: the existing `IntraCellResource::RETRIEVAL_EMBEDDING_RPC` entry serves rerank.** The registry keys an endpoint (the socket and its peer gate); rerank is served on the same socket behind the same gate. One rustdoc sentence changed, no variant | `crates/infra-cell/src/resource.rs` |
+
+Other facts: cargo-deny passes with the `paste` ignore (RUSTSEC-2024-0436, expiry 2027-04-30 and the removal card in the
+reason string, because cargo-deny 0.20.2 has no expiry field); the registry gate bounds of D-E hold at load; no golden
+fingerprint changed; the first PR run (39780781716) was red only on `dep-map --check` (a `Called-by` line of `contracts`)
+and the gitleaks scan (the public tokenizer hash assigned to a variable whose name contains "token", now an exact-value
+allowlist entry), both fixed in the second run.
+
+### Gate records (§80.1: inject, red, fix, green)
+
+| Gate | Injected fault | Red | Green |
+|---|---|---|---|
+| G-RET-11 score parity | encode (document, query) instead of (query, document) (branch `red/t-ret-7c-a`, `b181f16`) | run 39789293901, job `rerank-parity`: `rust_path_matches_the_python_reference_scores` fails at `seed-0-0: input_ids` | run 39785216794 (head `e1f220d`) |
+| G-RET-11 score parity | truncation by `only_second` instead of `longest_first` (branch `red/t-ret-7c-b`, `96f1e46`) | run 39792222497: fails at **`longq-0-0: input_ids`**, the first pair of the fixture whose ids differ; every earlier over-length pair (short queries) is identical under both strategies, so the long-query group #159 added is what makes this injection red | run 39785216794 |
+| G-RET-14 artifact pin | skip the hash comparison in `verify_pinned` (same branch `red/t-ret-7c-a`) | run 39789293901: `a_file_that_differs_from_the_pin_refuses_boot_naming_the_object` fails; the control `matching_hashes_pass_the_pin_and_stop_later` stays green | run 39785216794 |
+| Peer layer on `/v1/rerank` (review P1-1, `rpc_readyz`) | merge `rerank_router` after the `.layer(require_gateway_uid)` in `router_with_rerank` (branch `red/t-ret-7c-r3`, `065d8d2`) | targeted run 39817917365: `a wrong peer uid is refused on /v1/rerank` fails with 200 | run 39807211139 (`rpc_readyz` and `rerank-parity` green with the new assertions) and the final PR run |
+| Truncation memo (review P1-2, `rerank_parity`) | the memo guard in `Engine::set_max_len` returns once any value is set (branch `red/t-ret-7c-r4`) | ci.yml run 39819641442, job `rerank-parity` (run cancelled after that job; targeted.yml cannot supply the artifacts): `longq-0-0 cut at 128` fails | run 39807211139, job `rerank-parity` |
+
+Wire notes: `rerank_max_len` and the call's `max_len` are bounded 5 to 512 by one constant (`RERANK_MAX_LEN_MIN`, a pair
+carries four special tokens and the tokenizer crate subtracts them from `max_len`, so 1 to 4 would underflow inside it): an
+operator value of 4 fails at registry load, a call with 4 is `invalid_request`. An undecodable
+body or an unknown field is refused by the extractor (HTTP 4xx) before any outcome exists; every semantic error is an
+`invalid_request` outcome with the call id.
 
 ## Alternatives rejected
 

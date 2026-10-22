@@ -34,6 +34,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8792,12 +8793,13 @@ const NO_PYTHON_ALLOWED_PREFIXES: [&str; 5] = [
 /// `config/` are the system.
 const NO_PYTHON_SOURCE_ROOTS: [&str; 4] = ["crates", "bins", "migrations", "config"];
 
-/// Where the product image Dockerfiles live: any Python in their build is the production runtime using Python.
-const NO_PYTHON_IMAGE_DIR: &str = "deploy/images";
-
 /// Where the compose files live (`deploy/compose/*.yml`); read as YAML text, no YAML crate (xtask takes no new
 /// dependency).
 const NO_PYTHON_COMPOSE_DIR: &str = "deploy";
+
+/// Roots whose files are scanned for a Python shebang regardless of extension. Dockerfiles are scanned from the repo
+/// root instead: a `Dockerfile` anywhere is a product image build.
+const NO_PYTHON_SHEBANG_ROOTS: [&str; 3] = ["crates", "bins", "deploy"];
 
 /// The compose profiles that mark a service as test / rehearsal tooling. A Python-image service must list profiles and
 /// every one of them must be here; a service with no `profiles:` key of its own (including one that would inherit it
@@ -8816,8 +8818,8 @@ fn is_dockerfile_name(name: &str) -> bool {
     name == "Dockerfile" || name.starts_with("Dockerfile.") || name.ends_with(".Dockerfile")
 }
 
-/// Every Dockerfile under `dir` (skipping target/.git/node_modules like [`walk_files`]).
-fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Every regular file under `dir` (skipping target/.git/node_modules like [`walk_files`]).
+fn walk_all_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -8826,12 +8828,21 @@ fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
             if !matches!(name, "target" | ".git" | "node_modules") {
-                walk_dockerfiles(&path, out);
+                walk_all_files(&path, out);
             }
-        } else if is_dockerfile_name(name) {
+        } else {
             out.push(path);
         }
     }
+}
+
+/// Every Dockerfile under `dir` (skipping target/.git/node_modules like [`walk_files`]).
+fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut files = Vec::new();
+    walk_all_files(dir, &mut files);
+    out.extend(files.into_iter().filter(|path| {
+        is_dockerfile_name(path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+    }));
 }
 
 /// Whether a Dockerfile line (comment lines are skipped by the caller) names Python: the word `python` anywhere
@@ -8842,6 +8853,14 @@ fn mentions_python(line: &str) -> bool {
         || lower
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|token| token == "pip" || token == "pip3")
+}
+
+/// Whether a compose `command:` / `entrypoint:` value has a whole-word `python`, `python3` or `pip` token.
+fn mentions_python_command(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "python" | "python3" | "pip"))
 }
 
 /// A YAML scalar without its trailing ` # comment` and surrounding quotes.
@@ -8864,6 +8883,14 @@ fn yaml_flow_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Which block-style value the following indented lines belong to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComposeBlock {
+    Profiles,
+    Command,
+    Entrypoint,
+}
+
 /// One compose service while its block is read line by line.
 #[derive(Default)]
 struct ComposeService {
@@ -8872,55 +8899,128 @@ struct ComposeService {
     image: Option<(usize, String)>,
     /// Its own `profiles:` entries (flow or block style).
     profiles: Vec<String>,
+    /// 1-based line and value of its own `command:` entries (flow, scalar or block style).
+    command: Vec<(usize, String)>,
+    /// 1-based line and value of its own `entrypoint:` entries (flow, scalar or block style).
+    entrypoint: Vec<(usize, String)>,
     /// Indent of the keys directly under the service name, learnt from its first nested line.
     key_indent: Option<usize>,
-    /// The previous key was a block-style `profiles:`, so `- item` lines are its entries.
-    in_profiles: bool,
+    /// The previous key opened a block-style value, so deeper lines are its entries.
+    block: Option<ComposeBlock>,
 }
 
 impl ComposeService {
     /// Reads one non-blank, non-comment line nested under the service name.
     fn read_line(&mut self, line: usize, indent: usize, body: &str) {
-        if self.in_profiles
-            && let Some(item) = body.strip_prefix("- ")
+        if let Some(block) = self.block
+            && indent > self.key_indent.unwrap_or(0)
         {
-            self.profiles.push(yaml_scalar(item).to_owned());
+            match block {
+                ComposeBlock::Profiles => {
+                    if let Some(item) = body.strip_prefix("- ") {
+                        self.profiles.push(yaml_scalar(item).to_owned());
+                    }
+                }
+                ComposeBlock::Command => self.command.push((
+                    line,
+                    yaml_scalar(body.strip_prefix("- ").unwrap_or(body)).to_owned(),
+                )),
+                ComposeBlock::Entrypoint => self.entrypoint.push((
+                    line,
+                    yaml_scalar(body.strip_prefix("- ").unwrap_or(body)).to_owned(),
+                )),
+            }
             return;
         }
+        self.block = None;
         let key_indent = *self.key_indent.get_or_insert(indent);
         if indent != key_indent {
             return;
         }
-        self.in_profiles = false;
         if let Some(value) = body.strip_prefix("image:") {
             self.image = Some((line, yaml_scalar(value).to_owned()));
         } else if let Some(value) = body.strip_prefix("profiles:") {
             let value = value.trim();
             if value.is_empty() || value.starts_with('#') {
-                self.in_profiles = true;
+                self.block = Some(ComposeBlock::Profiles);
             } else {
                 self.profiles = yaml_flow_list(value);
             }
+        } else if let Some(value) = body.strip_prefix("command:") {
+            self.read_value(line, ComposeBlock::Command, value);
+        } else if let Some(value) = body.strip_prefix("entrypoint:") {
+            self.read_value(line, ComposeBlock::Entrypoint, value);
         }
     }
 
-    /// `(service, image line, image)` when the service runs a Python image and is not limited to the tooling profiles.
-    fn python_outside_tooling(self) -> Option<(String, usize, String)> {
-        let (line, image) = self.image?;
-        let tooling = !self.profiles.is_empty()
+    /// Records a `command:` / `entrypoint:` value; a bare `|`, `>` or empty value opens a block.
+    fn read_value(&mut self, line: usize, block: ComposeBlock, raw: &str) {
+        let value = yaml_scalar(raw);
+        if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+            self.block = Some(block);
+            return;
+        }
+        match block {
+            ComposeBlock::Command => self.command.push((line, value.to_owned())),
+            ComposeBlock::Entrypoint => self.entrypoint.push((line, value.to_owned())),
+            ComposeBlock::Profiles => self.profiles.push(value.to_owned()),
+        }
+    }
+
+    /// Whether the service's own `profiles:` limits it to the test / rehearsal tooling (absent or empty = not limited).
+    fn limited_to_tooling(&self) -> bool {
+        !self.profiles.is_empty()
             && self
                 .profiles
                 .iter()
-                .all(|profile| NO_PYTHON_TOOLING_PROFILES.contains(&profile.as_str()));
-        (image.to_ascii_lowercase().contains("python") && !tooling)
-            .then_some((self.name, line, image))
+                .all(|profile| NO_PYTHON_TOOLING_PROFILES.contains(&profile.as_str()))
+    }
+
+    /// `(service, image line, image)` when the service runs a Python image and is not limited to the tooling profiles.
+    fn python_outside_tooling(&self) -> Option<(String, usize, String)> {
+        // ponytail: an image whose name does not contain `python` (for example `pytorch`) is not caught; upgrade by
+        // mapping known base images to their runtime instead of matching the image name.
+        let (line, image) = self.image.as_ref()?;
+        (image.to_ascii_lowercase().contains("python") && !self.limited_to_tooling())
+            .then(|| (self.name.clone(), *line, image.clone()))
+    }
+
+    /// `(service, line, value)` for the first `command:` / `entrypoint:` entry naming a Python command token.
+    fn python_commands_outside_tooling(&self) -> Option<(String, usize, String)> {
+        if self.limited_to_tooling() {
+            return None;
+        }
+        self.command
+            .iter()
+            .chain(self.entrypoint.iter())
+            .find(|(_, value)| mentions_python_command(value))
+            .map(|(line, value)| (self.name.clone(), *line, value.clone()))
     }
 }
 
 /// The services of a compose document that run a Python image without being limited to the tooling profiles, as
-/// `(service, image line, image)`. Line-based: the keys of `services:` at one indent are the service names, and only a
-/// service's own `image:` / `profiles:` keys count.
+/// `(service, image line, image)`. Test-only view of [`compose_services`].
+#[cfg(test)]
 fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
+    compose_services(text)
+        .into_iter()
+        .filter_map(|service| service.python_outside_tooling())
+        .collect()
+}
+
+/// The services whose own `command:` / `entrypoint:` names Python while not limited to the tooling profiles, as
+/// `(service, line, value)`. Test-only view of [`compose_services`].
+#[cfg(test)]
+fn compose_python_commands(text: &str) -> Vec<(String, usize, String)> {
+    compose_services(text)
+        .into_iter()
+        .filter_map(|service| service.python_commands_outside_tooling())
+        .collect()
+}
+
+/// Every service of a compose document. Line-based: the keys of `services:` at one indent are the service names, and
+/// only a service's own `image:` / `profiles:` / `command:` / `entrypoint:` keys count.
+fn compose_services(text: &str) -> Vec<ComposeService> {
     let mut found = Vec::new();
     let mut in_services = false;
     let mut service_indent: Option<usize> = None;
@@ -8932,11 +9032,7 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
         }
         let indent = raw.len() - raw.trim_start().len();
         if indent == 0 {
-            found.extend(
-                current
-                    .take()
-                    .and_then(ComposeService::python_outside_tooling),
-            );
+            found.extend(current.take());
             in_services = body.strip_prefix("services:").is_some_and(|rest| {
                 let rest = rest.trim();
                 rest.is_empty() || rest.starts_with('#')
@@ -8948,11 +9044,7 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
             continue;
         }
         if indent == *service_indent.get_or_insert(indent) {
-            found.extend(
-                current
-                    .take()
-                    .and_then(ComposeService::python_outside_tooling),
-            );
+            found.extend(current.take());
             let name = body.split(':').next().unwrap_or("").trim();
             current = Some(ComposeService {
                 name: name.trim_matches(['"', '\'']).to_owned(),
@@ -8962,20 +9054,18 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
             service.read_line(idx + 1, indent, body);
         }
     }
-    found.extend(
-        current
-            .take()
-            .and_then(ComposeService::python_outside_tooling),
-    );
+    found.extend(current.take());
     found
 }
 
-/// The pure core of the gate, over repo-relative paths: Python source files, Dockerfiles and compose files as
-/// `(path, text)`. Paths in the tooling territory ([`NO_PYTHON_ALLOWED_PREFIXES`]) are skipped.
+/// The pure core of the gate, over repo-relative paths: Python source files, Dockerfiles, compose files as
+/// `(path, text)`, and shebang candidates as `(path, first line)`. Paths in the tooling territory
+/// ([`NO_PYTHON_ALLOWED_PREFIXES`]) are skipped.
 fn no_python_problems(
     py_files: &[String],
     dockerfiles: &[(String, String)],
     compose_files: &[(String, String)],
+    shebang_files: &[(String, String)],
 ) -> Vec<String> {
     let mut problems = Vec::new();
     for path in py_files {
@@ -8999,15 +9089,33 @@ fn no_python_problems(
             }
         }
     }
+    for (path, first_line) in shebang_files {
+        if !no_python_allowed(path)
+            && first_line.starts_with("#!")
+            && first_line.to_ascii_lowercase().contains("python")
+        {
+            problems.push(format!(
+                "{path}:1: Python shebang in the system tree: {}; the system is Rust, Python is allowed only as CI / test tooling (T-LANG-1)",
+                first_line.trim()
+            ));
+        }
+    }
     let tooling = NO_PYTHON_TOOLING_PROFILES.join("/");
     for (path, text) in compose_files {
         if no_python_allowed(path) {
             continue;
         }
-        for (service, line, image) in compose_python_services(text) {
-            problems.push(format!(
-                "{path}:{line}: compose service `{service}` runs the Python image `{image}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
-            ));
+        for service in compose_services(text) {
+            if let Some((service, line, image)) = service.python_outside_tooling() {
+                problems.push(format!(
+                    "{path}:{line}: compose service `{service}` runs the Python image `{image}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
+                ));
+            } else if let Some((service, line, command)) = service.python_commands_outside_tooling()
+            {
+                problems.push(format!(
+                    "{path}:{line}: compose service `{service}` runs the Python command `{command}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
+                ));
+            }
         }
     }
     problems
@@ -9033,9 +9141,43 @@ fn read_for_no_python(
     read
 }
 
-/// T-LANG-1 / `no-python-in-system`: no `*.py` under `crates/` `bins/` `migrations/` `config/`; no `python` / `pip` in a
-/// `deploy/images/**` Dockerfile; no compose service on a Python image unless its own `profiles:` are rehearsal / test
-/// only. `not_applicable` only when none of the scanned directories exists, and it names them (§57.1 第2条).
+/// The first line of `path` (lossy: a non-UTF-8 first line cannot start with the ASCII `#!`).
+fn read_first_line(path: &Path) -> std::io::Result<String> {
+    let file = fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut buf = Vec::new();
+    reader.read_until(b'\n', &mut buf)?;
+    let line = String::from_utf8_lossy(&buf);
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+/// Reads the first line of `paths` as `(repo-relative path, first line)`, skipping the allowed tooling territory. An
+/// unreadable file is a problem, never a silent skip: a file this gate cannot read cannot be shown Python-free.
+fn read_for_shebang(
+    root: &Path,
+    paths: &[PathBuf],
+    problems: &mut Vec<String>,
+) -> Vec<(String, String)> {
+    let mut read = Vec::new();
+    for path in paths {
+        let shown = display(root, path);
+        if no_python_allowed(&shown) {
+            continue;
+        }
+        match read_first_line(path) {
+            Ok(line) => read.push((shown, line)),
+            Err(e) => problems.push(format!(
+                "{shown}: unreadable ({e}); a file this gate cannot read cannot be shown Python-free"
+            )),
+        }
+    }
+    read
+}
+
+/// T-LANG-1 / `no-python-in-system`: no `*.py` under `crates/` `bins/` `migrations/` `config/`; no `python` / `pip` in
+/// any `Dockerfile` or `*.Dockerfile` in the repo; a compose service fails on a Python image, `command:` or `entrypoint:`
+/// unless its own `profiles:` are rehearsal / test only; no Python shebang in `crates/`, `bins/` or `deploy/`.
+/// `not_applicable` only when none of the scanned directories exists, and it names them (§57.1 第2条).
 fn no_python_in_system(root: &Path) -> Verdict {
     let dirs: Vec<&str> = NO_PYTHON_SOURCE_ROOTS
         .iter()
@@ -9051,16 +9193,239 @@ fn no_python_in_system(root: &Path) -> Verdict {
         .map(|path| display(root, &path))
         .collect();
     let mut docker_paths = Vec::new();
-    walk_dockerfiles(&root.join(NO_PYTHON_IMAGE_DIR), &mut docker_paths);
+    walk_dockerfiles(root, &mut docker_paths);
     let compose_paths = walk_files(&root.join(NO_PYTHON_COMPOSE_DIR), &["yml", "yaml"]);
+    let mut shebang_paths = Vec::new();
+    for dir in NO_PYTHON_SHEBANG_ROOTS {
+        walk_all_files(&root.join(dir), &mut shebang_paths);
+    }
     let mut problems = Vec::new();
     let dockerfiles = read_for_no_python(root, &docker_paths, &mut problems);
     let compose_files = read_for_no_python(root, &compose_paths, &mut problems);
-    problems.extend(no_python_problems(&py_files, &dockerfiles, &compose_files));
+    let shebang_files = read_for_shebang(root, &shebang_paths, &mut problems);
+    problems.extend(no_python_problems(
+        &py_files,
+        &dockerfiles,
+        &compose_files,
+        &shebang_files,
+    ));
     if problems.is_empty() {
         Verdict::Pass
     } else {
         Verdict::Fail(problems)
+    }
+}
+
+/// ADR-0084 D-B: the release image's rerank / ONNX Runtime fetches. Since T-CI-4 (#190) their pins live in
+/// [`RERANK_PARITY_ACTION`], which both ci.yml's required `rerank-parity` job and targeted.yml's dispatch call; the
+/// image repeats them, and this gate is what refuses a drift between the two (otherwise parity could test an artifact
+/// other than the one production ships).
+const RERANK_DOCKERFILE: &str = "deploy/images/humaux/Dockerfile";
+/// The composite action that carries the one source of the pins (ADR-0084 D-G, T-CI-4).
+const RERANK_PARITY_ACTION: &str = ".github/actions/rerank-parity/action.yml";
+/// The Dockerfile build stage that fetches the two artifacts; only its `ADD --checksum` lines are pins.
+const RERANK_STAGE: &str = "rerank-fetch";
+
+/// One `ADD --checksum=sha256:<sha256> <url> …` pin: the artifact URL and the digest the image refuses to deviate from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtifactPin {
+    url: String,
+    sha256: String,
+}
+
+/// The text of the `rerank-fetch` stage: its `FROM … AS rerank-fetch` line up to the next `FROM`. `None` when the
+/// stage is gone — the caller reports the missing object, §57.1 第2条.
+fn rerank_fetch_stage(dockerfile: &str) -> Option<String> {
+    let mut stage = Vec::new();
+    let mut inside = false;
+    for line in dockerfile.lines() {
+        let body = line.trim_start();
+        if body.split_whitespace().next() == Some("FROM") {
+            if inside {
+                break;
+            }
+            inside = body.split_whitespace().last() == Some(RERANK_STAGE);
+        } else if inside {
+            stage.push(line);
+        }
+    }
+    inside.then(|| stage.join("\n"))
+}
+
+/// Every `ADD --checksum=sha256:<sha256> <url>` pin in `text`, in file order (comment lines are not pins).
+fn artifact_pins(text: &str) -> Vec<ArtifactPin> {
+    text.lines()
+        .filter_map(|line| {
+            let body = line.trim_start();
+            if body.starts_with('#') {
+                return None;
+            }
+            let rest = body.strip_prefix("ADD ")?;
+            let mut words = rest.split_whitespace();
+            let sha256 = words.next()?.strip_prefix("--checksum=sha256:")?;
+            let url = words.next()?;
+            Some(ArtifactPin {
+                url: url.to_owned(),
+                sha256: sha256.to_ascii_lowercase(),
+            })
+        })
+        .collect()
+}
+
+/// The input names an action declares, in order: the indent-2 `name:` lines under `inputs:`.
+fn action_input_names(action: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_inputs = false;
+    for line in action.lines() {
+        let body = line.trim_start();
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - body.len();
+        if indent == 0 {
+            in_inputs = body == "inputs:";
+        } else if in_inputs
+            && indent == 2
+            && let Some(name) = body.strip_suffix(':')
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+/// The `default:` value of input `name` in `action`, as a YAML scalar (the action's values are plain scalars).
+fn action_input_default(action: &str, name: &str) -> Option<String> {
+    let mut in_input = false;
+    for line in action.lines() {
+        let body = line.trim_start();
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - body.len();
+        if indent <= 2 {
+            in_input = indent == 2 && body.strip_suffix(':') == Some(name);
+        } else if in_input && let Some(value) = body.strip_prefix("default:") {
+            return Some(yaml_scalar(value).to_owned());
+        }
+    }
+    None
+}
+
+/// Every pin `action` declares: each `inputs.<prefix>_url` default and its `<prefix>_sha256` default, keyed by the
+/// sha input (`ort_sha256` / `rerank_sha256`). `Err` names the missing input: a pin that cannot be read is
+/// `not_applicable`, never a pass (§57.1 第2条).
+fn action_pins(action: &str) -> Result<Vec<(String, ArtifactPin)>, String> {
+    let url_inputs: Vec<String> = action_input_names(action)
+        .into_iter()
+        .filter(|name| name.ends_with("_url"))
+        .collect();
+    if url_inputs.is_empty() {
+        return Err(format!("{RERANK_PARITY_ACTION}: inputs.*_url"));
+    }
+    let mut pins = Vec::new();
+    for url_input in url_inputs {
+        let Some(url) = action_input_default(action, &url_input) else {
+            return Err(format!(
+                "{RERANK_PARITY_ACTION}: inputs.{url_input}.default"
+            ));
+        };
+        let prefix = url_input
+            .strip_suffix("_url")
+            .expect("filtered by ends_with(\"_url\")");
+        let sha_input = format!("{prefix}_sha256");
+        let Some(sha256) = action_input_default(action, &sha_input) else {
+            return Err(format!(
+                "{RERANK_PARITY_ACTION}: inputs.{sha_input}.default"
+            ));
+        };
+        pins.push((
+            sha_input,
+            ArtifactPin {
+                url,
+                sha256: sha256.to_ascii_lowercase(),
+            },
+        ));
+    }
+    Ok(pins)
+}
+
+/// Pins equal (`Ok` empty), a URL or sha256 differs (`Ok` one reason per differing pin, naming both files and the
+/// action input), or an object is missing (`Err`, naming it). The same sha256 under another URL is a URL difference,
+/// not a missing pin: §57.1 第2条 reserves `not_applicable` for an object that is absent. ADR-0084 D-B / T-CI-4: the
+/// image's `rerank-fetch` stage and `.github/actions/rerank-parity/action.yml` must fetch the same bytes, so
+/// G-RET-11/G-RET-14 and the release image cannot drift apart.
+fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, String> {
+    let Some(stage) = rerank_fetch_stage(dockerfile) else {
+        return Err(format!(
+            "{RERANK_DOCKERFILE}: `FROM … AS {RERANK_STAGE}` stage"
+        ));
+    };
+    let image = artifact_pins(&stage);
+    if image.is_empty() {
+        return Err(format!(
+            "{RERANK_DOCKERFILE}: `ADD --checksum=sha256:<sha256> <url>` pin in the {RERANK_STAGE} stage"
+        ));
+    }
+    let declared = action_pins(action)?;
+    let mut problems = Vec::new();
+    for (sha_key, pin) in &declared {
+        let matching: Vec<&ArtifactPin> =
+            image.iter().filter(|found| found.url == pin.url).collect();
+        if matching.is_empty() {
+            // Same bytes under another URL: the URL differs, the pin is not missing (§57.1 第2条).
+            if let Some(found) = image.iter().find(|found| found.sha256 == pin.sha256) {
+                problems.push(format!(
+                    "{RERANK_DOCKERFILE}: `ADD --checksum` for {} is sha256:{}, but {RERANK_PARITY_ACTION} inputs.{sha_key} pins the same sha256 at {} — the image and the parity test must fetch the same artifact",
+                    found.url, found.sha256, pin.url
+                ));
+                continue;
+            }
+            return Err(format!(
+                "{RERANK_DOCKERFILE}: `ADD --checksum` pin for {} (action input {sha_key})",
+                pin.url
+            ));
+        }
+        for found in matching {
+            if found.sha256 != pin.sha256 {
+                problems.push(format!(
+                    "{RERANK_DOCKERFILE}: `ADD --checksum` for {} is sha256:{}, but {RERANK_PARITY_ACTION} inputs.{sha_key} is {} — the image and the parity test must fetch the same artifact",
+                    pin.url, found.sha256, pin.sha256
+                ));
+            }
+        }
+    }
+    for pin in &image {
+        if declared.iter().any(|(_, found)| found.url == pin.url) {
+            continue;
+        }
+        // The URL difference was reported above while the bytes are still pinned; a sha256 that appears in neither
+        // file is a missing action input, not a differing value.
+        if declared.iter().any(|(_, found)| found.sha256 == pin.sha256) {
+            continue;
+        }
+        return Err(format!(
+            "{RERANK_PARITY_ACTION}: inputs.*_url default for {}",
+            pin.url
+        ));
+    }
+    Ok(problems)
+}
+
+/// `rerank-pin-parity` (ADR-0084 D-B, T-CI-4): the Dockerfile's rerank/ORT pins equal the parity action's inputs.
+/// Three states (§57.1 第2条): a missing file, stage or pin is `not_applicable` and names it; a differing URL or
+/// sha256 is `fail`, naming both files and the action input; equality passes.
+fn rerank_pin_parity(root: &Path) -> Verdict {
+    let Ok(dockerfile) = fs::read_to_string(root.join(RERANK_DOCKERFILE)) else {
+        return Verdict::NotApplicable(RERANK_DOCKERFILE.to_owned());
+    };
+    let Ok(action) = fs::read_to_string(root.join(RERANK_PARITY_ACTION)) else {
+        return Verdict::NotApplicable(RERANK_PARITY_ACTION.to_owned());
+    };
+    match rerank_pin_problems(&dockerfile, &action) {
+        Ok(problems) if problems.is_empty() => Verdict::Pass,
+        Ok(problems) => Verdict::Fail(problems),
+        Err(missing) => Verdict::NotApplicable(missing),
     }
 }
 
@@ -9260,8 +9625,12 @@ pub fn run(_args: &[String]) -> i32 {
             m24_7_global_db_completeness(&root),
         ),
         (
-            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in deploy/images Dockerfiles; a compose service on a Python image is limited to the rehearsal / test profiles; CI, scripts, rehearsal and experiments may use Python)",
+            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in any Dockerfile or *.Dockerfile; a compose service on a Python image, command or entrypoint is limited to the rehearsal / test profiles; no Python shebang under crates, bins, deploy; CI, scripts, rehearsal and experiments may use Python)",
             no_python_in_system(&root),
+        ),
+        (
+            "ADR-0084 D-B / T-CI-4 (the rerank image's rerank/ORT ADD pins equal .github/actions/rerank-parity/action.yml; a missing file, stage or pin is not_applicable naming it)",
+            rerank_pin_parity(&root),
         ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
@@ -9317,7 +9686,7 @@ mod tests {
     /// r1 shape: a `*.py` under a system root is a problem; the same file in the tooling territory is not.
     #[test]
     fn no_python_gate_flags_a_python_file_in_the_system_tree() {
-        let red = no_python_problems(&["crates/x/foo.py".to_string()], &[], &[]);
+        let red = no_python_problems(&["crates/x/foo.py".to_string()], &[], &[], &[]);
         assert_eq!(red.len(), 1, "{red:?}");
         assert!(red[0].starts_with("crates/x/foo.py:"), "{red:?}");
         for allowed in [
@@ -9327,7 +9696,7 @@ mod tests {
             "experiments/a/b.py",
             "xtask/tests/t.py",
         ] {
-            let found = no_python_problems(&[allowed.to_string()], &[], &[]);
+            let found = no_python_problems(&[allowed.to_string()], &[], &[], &[]);
             assert!(found.is_empty(), "{allowed}: {found:?}");
         }
     }
@@ -9341,14 +9710,52 @@ mod tests {
             "# python is fine in a comment\nFROM debian\nRUN apt-get install -y python3-pip\nRUN pip install x\n"
                 .to_string(),
         )];
-        let red = no_python_problems(&[], &dirty, &[]);
+        let red = no_python_problems(&[], &dirty, &[], &[]);
         assert_eq!(red.len(), 2, "{red:?}");
         assert!(
             red[0].starts_with("deploy/images/humaux/Dockerfile:3:"),
             "{red:?}"
         );
         let clean = vec![(path, "FROM scratch\nRUN set -o pipefail\n".to_string())];
-        assert!(no_python_problems(&[], &clean, &[]).is_empty());
+        assert!(no_python_problems(&[], &clean, &[], &[]).is_empty());
+    }
+
+    /// r1 shape widened: a `Dockerfile` outside `deploy/images/` is a product image build too; the tooling territory is
+    /// still exempt by path, and the real walk starts at the repo root.
+    #[test]
+    fn no_python_gate_walks_dockerfiles_outside_deploy_images() {
+        let dirty = vec![(
+            "bins/gateway/Dockerfile".to_string(),
+            "FROM debian\nRUN pip install x\n".to_string(),
+        )];
+        let red = no_python_problems(&[], &dirty, &[], &[]);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].starts_with("bins/gateway/Dockerfile:2:"), "{red:?}");
+        let clean = vec![(
+            "bins/gateway/Dockerfile".to_string(),
+            "FROM scratch\n".to_string(),
+        )];
+        assert!(no_python_problems(&[], &clean, &[], &[]).is_empty());
+        let tooling = vec![(
+            "scripts/Dockerfile".to_string(),
+            "FROM python:3.13-slim\n".to_string(),
+        )];
+        assert!(no_python_problems(&[], &tooling, &[], &[]).is_empty());
+
+        let dir = std::env::temp_dir().join(format!("np-docker-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bins/gateway")).unwrap();
+        fs::write(
+            dir.join("bins/gateway/Dockerfile"),
+            "FROM debian\nRUN pip install x\n",
+        )
+        .unwrap();
+        let verdict = no_python_in_system(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("bins/gateway/Dockerfile:2:")),
+            "{verdict:?}"
+        );
     }
 
     /// r2 shape: a Python image on a service that is not limited to the rehearsal / test profiles is a problem.
@@ -9370,6 +9777,39 @@ mod tests {
         assert!(compose_python_services(&non_python).is_empty());
     }
 
+    /// r1 shape widened: a Python `command:` / `entrypoint:` on a non-Python image is a problem unless the service is
+    /// limited to the tooling profiles; a command without a Python token is not.
+    #[test]
+    fn no_python_gate_flags_a_python_command_on_a_non_python_image() {
+        let text = np_compose("restart: \"no\"").replace("python:3.13-slim", "debian:13");
+        let command = "[\"python3\", \"x.py\"]";
+        assert_eq!(
+            compose_python_commands(&text),
+            [("sink".to_string(), 9, command.to_string())]
+        );
+        let red = no_python_problems(
+            &[],
+            &[],
+            &[("deploy/compose/prod.yml".to_string(), text.clone())],
+            &[],
+        );
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].contains("runs the Python command"), "{red:?}");
+
+        let entrypoint = text.replace(
+            "command: [\"python3\", \"x.py\"]",
+            "entrypoint: [\"/bin/sh\", \"-c\", \"pip install x\"]",
+        );
+        assert_eq!(compose_python_commands(&entrypoint).len(), 1);
+        let clean = text.replace(
+            "command: [\"python3\", \"x.py\"]",
+            "command: [\"sleep\", \"infinity\"]",
+        );
+        assert!(compose_python_commands(&clean).is_empty());
+        let tooling = np_compose("profiles: [rehearsal]").replace("python:3.13-slim", "debian:13");
+        assert!(compose_python_commands(&tooling).is_empty());
+    }
+
     /// The rehearsal tooling territory is exempt by path, and a Python compose service elsewhere is still red.
     #[test]
     fn no_python_gate_exempts_the_tooling_paths_only() {
@@ -9378,7 +9818,7 @@ mod tests {
             ("deploy/compose/prod.yml".to_string(), text.clone()),
             ("deploy/rehearsal/compose.yml".to_string(), text),
         ];
-        let red = no_python_problems(&[], &[], &files);
+        let red = no_python_problems(&[], &[], &files, &[]);
         assert_eq!(red.len(), 1, "{red:?}");
         assert!(red[0].starts_with("deploy/compose/prod.yml:8:"), "{red:?}");
     }
@@ -9402,6 +9842,174 @@ mod tests {
         assert!(
             matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("crates/x/foo.py:")),
             "{verdict:?}"
+        );
+    }
+
+    /// r1 shape widened: a Python shebang fails even without a `.py` extension; a non-Python shebang and the tooling
+    /// territory are not caught, and the real walk reads the first line of an extensionless file.
+    #[test]
+    fn no_python_gate_flags_a_python_shebang_without_a_py_extension() {
+        let dirty = vec![(
+            "bins/gateway/run".to_string(),
+            "#!/usr/bin/env python3".to_string(),
+        )];
+        let red = no_python_problems(&[], &[], &[], &dirty);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].starts_with("bins/gateway/run:1:"), "{red:?}");
+        let clean = vec![
+            ("bins/gateway/run".to_string(), "#!/bin/sh".to_string()),
+            (
+                "bins/gateway/README".to_string(),
+                "python is not a shebang here".to_string(),
+            ),
+            (
+                "scripts/tool".to_string(),
+                "#!/usr/bin/env python3".to_string(),
+            ),
+        ];
+        assert!(no_python_problems(&[], &[], &[], &clean).is_empty());
+
+        let dir = std::env::temp_dir().join(format!("np-shebang-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bins/gateway")).unwrap();
+        fs::write(dir.join("bins/gateway/run"), "#!/usr/bin/env python3\n").unwrap();
+        let verdict = no_python_in_system(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("bins/gateway/run:1:")),
+            "{verdict:?}"
+        );
+    }
+
+    // -- ADR-0084 D-B / T-CI-4: the image's rerank pins equal the parity action's -----------------
+
+    const RERANK_DOCKERFILE_FIXTURE: &str = "\
+FROM rust:1.99.0-slim-trixie@sha256:24e6 AS rerank-fetch
+ADD --checksum=sha256:e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da https://example.test/ort.tgz /fetch/ort.tgz
+ADD --checksum=sha256:cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f https://example.test/rerank.tar.gz /fetch/rerank.tar.gz
+FROM runtime AS gateway
+";
+
+    const RERANK_ACTION_FIXTURE: &str = "\
+name: rerank parity
+inputs:
+  ort_url:
+    description: o
+    required: false
+    default: https://example.test/ort.tgz
+  ort_sha256:
+    description: s
+    required: false
+    default: e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da
+  rerank_url:
+    description: o
+    required: false
+    default: https://example.test/rerank.tar.gz
+  rerank_sha256:
+    description: s
+    required: false
+    default: cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f
+  runtime_image:
+    description: i
+    required: false
+    default: gcr.io/distroless/cc-debian13@sha256:e792
+runs:
+  using: composite
+";
+
+    /// The real tree's image and parity action carry the same two pins; a drift would mean parity tests an artifact
+    /// other than the one production ships (ADR-0084 D-B).
+    #[test]
+    fn rerank_pin_gate_passes_on_the_real_tree() {
+        assert_eq!(rerank_pin_parity(&real_root()), Verdict::Pass);
+    }
+
+    /// `run()` must list the gate exactly once: a dropped call leaves it green forever (§57.1).
+    #[test]
+    fn run_wires_the_rerank_pin_gate_exactly_once() {
+        assert_eq!(own_source_count("rerank_pin_", "parity(&root),"), 1);
+    }
+
+    /// Equal pins pass; one differing sha256 fails, naming both files, the action input and the URL it belongs to.
+    #[test]
+    fn rerank_pin_gate_fails_when_one_sha_differs() {
+        assert!(
+            rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, RERANK_ACTION_FIXTURE)
+                .expect("both fixtures carry both pins")
+                .is_empty()
+        );
+        let mutant = RERANK_DOCKERFILE_FIXTURE.replace(
+            "cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f",
+            "cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c20",
+        );
+        let red = rerank_pin_problems(&mutant, RERANK_ACTION_FIXTURE)
+            .expect("a differing value is a failure, not a missing object");
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].contains(RERANK_DOCKERFILE), "{red:?}");
+        assert!(red[0].contains(RERANK_PARITY_ACTION), "{red:?}");
+        assert!(red[0].contains("inputs.rerank_sha256"), "{red:?}");
+        assert!(
+            red[0].contains("https://example.test/rerank.tar.gz"),
+            "{red:?}"
+        );
+        assert!(
+            red[0].contains("cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c20"),
+            "{red:?}"
+        );
+    }
+
+    /// The same sha256 under another URL is a URL difference: `fail`, naming both files and the action input, not
+    /// `not_applicable` (§57.1 第2条 keeps that for an absent object).
+    #[test]
+    fn rerank_pin_gate_fails_when_one_url_differs() {
+        let mutant = RERANK_ACTION_FIXTURE.replace(
+            "default: https://example.test/rerank.tar.gz",
+            "default: https://example.test/rerank-v2.tar.gz",
+        );
+        let red = rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, &mutant)
+            .expect("a differing URL is a failure, not a missing object");
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].contains(RERANK_DOCKERFILE), "{red:?}");
+        assert!(red[0].contains(RERANK_PARITY_ACTION), "{red:?}");
+        assert!(red[0].contains("inputs.rerank_sha256"), "{red:?}");
+        assert!(
+            red[0].contains("https://example.test/rerank.tar.gz"),
+            "{red:?}"
+        );
+        assert!(
+            red[0].contains("https://example.test/rerank-v2.tar.gz"),
+            "{red:?}"
+        );
+    }
+
+    /// A missing file, stage, pin or action input is `not_applicable` naming the object — never a silent pass (§57.1).
+    #[test]
+    fn rerank_pin_gate_is_not_applicable_when_an_object_is_missing() {
+        assert_eq!(
+            rerank_pin_parity(Path::new("/nonexistent-humaux-ds-ci-194")),
+            Verdict::NotApplicable(RERANK_DOCKERFILE.to_string())
+        );
+        let no_stage = RERANK_DOCKERFILE_FIXTURE.replace(" AS rerank-fetch", "");
+        assert_eq!(
+            rerank_pin_problems(&no_stage, RERANK_ACTION_FIXTURE).unwrap_err(),
+            format!("{RERANK_DOCKERFILE}: `FROM … AS {RERANK_STAGE}` stage")
+        );
+        let no_pin = RERANK_DOCKERFILE_FIXTURE
+            .lines()
+            .filter(|line| !line.contains("rerank.tar.gz"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let missing = rerank_pin_problems(&no_pin, RERANK_ACTION_FIXTURE).unwrap_err();
+        assert!(missing.contains(RERANK_DOCKERFILE), "{missing}");
+        assert!(
+            missing.contains("https://example.test/rerank.tar.gz"),
+            "{missing}"
+        );
+        let no_sha_input =
+            RERANK_ACTION_FIXTURE.replace("  rerank_sha256:", "  rerank_sha256_renamed:");
+        assert_eq!(
+            rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, &no_sha_input).unwrap_err(),
+            format!("{RERANK_PARITY_ACTION}: inputs.rerank_sha256.default")
         );
     }
 

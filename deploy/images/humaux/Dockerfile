@@ -26,6 +26,25 @@ FROM docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5
 # resolved 2026-10-07 (multi-arch index digest)
 FROM docker/compose-bin:v5.5.1@sha256:14162382692aae43977f79effa64a499d61de19d4645461881daaf88773f7e74 AS composebin
 
+# ADR-0084 D-B: the retrieval-worker's local rerank lane ships Microsoft's official ONNX Runtime 1.30.0 (aarch64) and
+# the int8 rerank artifact built and published by CI (release `rerank-mmarco-int8-v1`, docs/ops/runbook.md section 12).
+# Both are fetched by URL and refused on any checksum mismatch (`ADD --checksum`); the pins repeat the `ort_*` /
+# `rerank_*` inputs of .github/actions/rerank-parity/action.yml (the one source since T-CI-4, #190) and the model pin in
+# deploy/env/values/retrieval-worker.env; `cargo xtask architecture-check` fails when the image and that action drift
+# apart. The stage only downloads and unpacks (nothing compiles; the COPY-ONLY rule is about the binaries). It runs on
+# the Debian 13 base the release builder is pinned to (deploy/release/build.sh BUILDER); only three files leave it,
+# into the retrieval-worker target.
+FROM rust:1.99.0-slim-trixie@sha256:24e632c09342c20abf8312cf4f61430a911c01ed3a5e4c02b87292b1c39c5273 AS rerank-fetch
+ADD --checksum=sha256:e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-aarch64-1.30.0.tgz /fetch/onnxruntime.tgz
+ADD --checksum=sha256:cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f https://github.com/humaux/humaux-thread/releases/download/rerank-mmarco-int8-v1/rerank-mmarco-int8-v1.tar.gz /fetch/rerank.tar.gz
+RUN set -eu; \
+    mkdir -p /fetch/ort /fetch/rerank /out; \
+    tar -xzf /fetch/onnxruntime.tgz -C /fetch/ort; \
+    tar -xzf /fetch/rerank.tar.gz -C /fetch/rerank; \
+    cp /fetch/ort/onnxruntime-linux-aarch64-1.30.0/lib/libonnxruntime.so.1.30.0 /out/libonnxruntime.so.1.30.0; \
+    cp /fetch/rerank/rerank-mmarco-int8-v1/model_quantized.onnx /out/model_quantized.onnx; \
+    cp /fetch/rerank/rerank-mmarco-int8-v1/tokenizer.json /out/tokenizer.json
+
 FROM runtime AS gateway
 COPY bin/humaux-gateway /usr/local/bin/humaux-gateway
 USER 10101:10101
@@ -34,6 +53,11 @@ ENTRYPOINT ["/usr/local/bin/humaux-gateway"]
 FROM runtime AS retrieval-worker
 COPY bin/humaux-retrieval-worker /usr/local/bin/humaux-retrieval-worker
 COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
+# ADR-0084 D-B / D-E: the fixed paths deploy/env/values/retrieval-worker.env names; the worker checks both files'
+# sha256 against that pin before it loads them (G-RET-14).
+COPY --from=rerank-fetch /out/libonnxruntime.so.1.30.0 /usr/local/lib/libonnxruntime.so.1.30.0
+COPY --from=rerank-fetch /out/model_quantized.onnx /usr/local/share/humaux/rerank/model_quantized.onnx
+COPY --from=rerank-fetch /out/tokenizer.json /usr/local/share/humaux/rerank/tokenizer.json
 USER 10102:10201
 ENTRYPOINT ["/usr/local/bin/humaux-retrieval-worker"]
 

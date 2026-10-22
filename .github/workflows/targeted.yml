@@ -11,6 +11,9 @@ name: targeted
 # (`--ref`): the definition comes from that ref.
 #   gh workflow run targeted.yml --ref <branch> -f ref=<branch> -f regen_docs=true -f cargo_args=""
 #   then `gh run download <id> -n dep-map-regen` and `git apply dep-map-regen.patch`.
+# rerank_parity=true runs the G-RET-11/G-RET-14 parity job from .github/actions/rerank-parity (no live provider, no
+# database), so a mutation on that path gets a red record without ci.yml:
+#   gh workflow run targeted.yml --ref <branch-with-this-workflow> -f ref=<red branch> -f rerank_parity=true -f cargo_args=""
 # cargo_args reaches the shell only through an env var, split on spaces, never evaluated (no `${{ }}` in `run:`).
 on:
   workflow_dispatch:
@@ -19,11 +22,15 @@ on:
         description: branch, tag or sha to test
         required: true
       cargo_args:
-        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact"); may be empty when regen_docs
+        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact"); may be empty when regen_docs or rerank_parity
         required: false
         default: ""
       regen_docs:
         description: run no tests; render the dep-map patch and upload it as artifact dep-map-regen
+        type: boolean
+        default: false
+      rerank_parity:
+        description: run the rerank parity job (G-RET-11, G-RET-14) from .github/actions/rerank-parity; cargo_args may then be empty
         type: boolean
         default: false
       as_root:
@@ -49,6 +56,9 @@ env:
 jobs:
   targeted:
     name: targeted cargo test
+    # rerank_parity=true with no cargo selector is the rerank dispatch: skip this job rather than fail its empty-
+    # cargo_args guard. A rerank_parity=false dispatch with an empty selector still runs and exits 2 (bad input).
+    if: ${{ inputs.regen_docs || inputs.cargo_args != '' || !inputs.rerank_parity }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     services:
@@ -124,6 +134,8 @@ jobs:
             sudo apt-get install -y -qq lld
           fi
 
+      # This job's rust-cache key (`v0-rust-targeted-…`) is written only by targeted runs, and ci.yml never reads it.
+      # The job must save it: with `save_cache: false` the key lost its only writer, went stale and then built cold (#194).
       - uses: ./.github/actions/setup
 
       # Twin of ci.yml's "cargo xtask dep-map --check" step (same staging and diff lines): keep the two in step.
@@ -183,3 +195,32 @@ jobs:
           fi
           echo "TARGETED RESULT exit=$rc ref=$(git rev-parse HEAD)"
           exit $rc
+
+  # G-RET-11/G-RET-14 through the same composite action ci.yml's required job calls (T-CI-4). No services and no live
+  # provider: the artifacts come from the pinned tarballs, verified by sha256 inside the action.
+  rerank-parity:
+    name: rerank parity (G-RET-11, G-RET-14)
+    if: ${{ inputs.rerank_parity }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The action comes from the checked-out ref (like the setup action above): say so plainly on a ref that predates
+      # it instead of failing inside a missing action.
+      - name: the ref carries the rerank-parity action
+        shell: bash
+        run: |
+          test -f .github/actions/rerank-parity/action.yml || {
+            echo "ref $(git rev-parse HEAD) does not carry .github/actions/rerank-parity: not supported by this workflow"
+            exit 2
+          }
+
+      # Shares its rust-cache key with ci.yml's rerank-parity job, so it restores but never saves: only ci.yml writes
+      # that key (#194).
+      - uses: ./.github/actions/rerank-parity
+        with:
+          save_cache: false
