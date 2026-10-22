@@ -222,7 +222,7 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 |---|---|---|
 | T-RET-6a | This ADR; Baseline §17.6, §23.3, §33, §55.6; the T-RET-6 row and the D-E checks of ADR-0081 (docs only) | none |
 | T-RET-6b | Indexing and backfill (D-B): collection body and generation, `collection ensure` adds `bm25`, named-vector upsert, rebuild backfill and verifier. **Before T-RET-6c.** Names the policy source (U4) | the provisioning sentinel and the rebuild-verify test, extended |
-| T-RET-6c | Recall, configuration and lanes (D-C to D-E): the four registry entries, the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
+| T-RET-6c | Recall, configuration and lanes (D-C to D-E): the four registry entries, the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables. **Split:** T-RET-6c-1 (registry entries, fingerprint, envelope check, G55-6 ① names, `SparseLaneUnavailable`; no recall wiring) is implemented; T-RET-6c-2 (the sparse leg, RRF, lanes, deleting the local IDF, the real-path fault test) is planned | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
 
 ## Alternatives rejected
 

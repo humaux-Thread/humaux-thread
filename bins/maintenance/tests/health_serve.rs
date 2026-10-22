@@ -115,7 +115,7 @@ fn metrics_carry_every_family_and_follow_a_new_dead_job() {
     assert_eq!(code, 200, "{status}");
     let status: serde_json::Value = serde_json::from_str(&status).expect("/status is JSON");
     assert_eq!(status["process"], "humaux-maintenance");
-    assert_eq!(status["degrade"].as_object().map(|m| m.len()), Some(11));
+    assert_eq!(status["degrade"].as_object().map(|m| m.len()), Some(12));
 }
 
 /// T-M2 (the producer half of the HealthGaugesAbsent injection): EXECUTE revoked mid-run ⇒ `/metrics` answers

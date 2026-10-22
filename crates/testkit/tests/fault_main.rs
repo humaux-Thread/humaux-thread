@@ -1,5 +1,5 @@
 //! `testkit::tests::fault_main` — Cargo integration-test entry point for `tests/fault/` (§53.4).
-//! Depends-on: crates=[]; services=[]; env=[]; modules=[testkit::tests::fault::completeness_unknown, testkit::tests::fault::egress_denied, testkit::tests::fault::embed_provider_timeout, testkit::tests::fault::graph_expand_capped, testkit::tests::fault::lane_substituted, testkit::tests::fault::projection_invisible_loss, testkit::tests::fault::projection_lag, testkit::tests::fault::rerank_model_mismatch, testkit::tests::fault::rerank_provider_timeout, testkit::tests::fault::state_pin_ambiguous, testkit::tests::fault::state_pin_missing]
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[testkit::tests::fault::completeness_unknown, testkit::tests::fault::egress_denied, testkit::tests::fault::embed_provider_timeout, testkit::tests::fault::graph_expand_capped, testkit::tests::fault::lane_substituted, testkit::tests::fault::projection_invisible_loss, testkit::tests::fault::projection_lag, testkit::tests::fault::rerank_model_mismatch, testkit::tests::fault::rerank_provider_timeout, testkit::tests::fault::sparse_lane_unavailable, testkit::tests::fault::state_pin_ambiguous, testkit::tests::fault::state_pin_missing]
 //! Called-by: [cargo-test]
 //! Invariants: []
 //! Spec: none
@@ -29,6 +29,8 @@ mod projection_lag;
 mod rerank_model_mismatch;
 #[path = "fault/rerank_provider_timeout.rs"]
 mod rerank_provider_timeout;
+#[path = "fault/sparse_lane_unavailable.rs"]
+mod sparse_lane_unavailable;
 #[path = "fault/state_pin_ambiguous.rs"]
 mod state_pin_ambiguous;
 #[path = "fault/state_pin_missing.rs"]
