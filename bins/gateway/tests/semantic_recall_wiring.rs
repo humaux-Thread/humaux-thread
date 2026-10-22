@@ -14,7 +14,7 @@
 //!   contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error,
 //!   domain::identity, domain::ids, domain::memory, gateway::context, gateway::recall, gateway::remember,
 //!   gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
-//!   infra-cell::resource, infra-cell::transport, projection::card, protocol::mcp,
+//!   infra-cell::resource, infra-cell::transport, projection::card, projection::dense, protocol::mcp,
 //!   protocol::mcp_catalog,
 //!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, telemetry::degrade]
 //! Called-by: [cargo-test]
@@ -64,8 +64,8 @@ use humaux_adapters::{
     postgres::RetrievalWorkerDbPool,
     qdrant::{
         Distance, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
-        create_collection_body, ha_profile_for, memory_id_index_body, tenant_index_body, upsert,
-        upsert_fenced,
+        condition_to_filter, create_collection_body, ha_profile_for, memory_id_index_body,
+        tenant_index_body, upsert, upsert_fenced,
     },
 };
 use humaux_application::retrieval_embedding_port::{
@@ -91,7 +91,7 @@ use humaux_infra_cell::{
     IntraCellResourceRegistry, IntraCellResponse, ResourceEntry, authorize_cell_access,
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig};
-use humaux_projection::card::EgressDisposition;
+use humaux_projection::{card::EgressDisposition, dense::build_dense_filter};
 use humaux_protocol::mcp_catalog::CanonicalCatalog;
 use humaux_retrieval_provider::{
     adapters::TestDoubleProvider,
@@ -1968,6 +1968,9 @@ enum Shape {
     SparseTimeout,
     /// The sparse request answers 200 with a body that is not a grouped result.
     SparseMalformed,
+    /// The sparse request is held for three seconds, well past the registered `sparse_timeout_ms` (1000 ms by default),
+    /// then goes to the real server: a leg the budget must cut off.
+    SparseHang,
     /// The dense request answers HTTP 500 while the sparse one is real.
     DenseStatus500,
     /// The dense reply loses this point, so a Memory only the sparse leg found reaches the PG gate.
@@ -1977,6 +1980,8 @@ enum Shape {
 struct ShapedTransport {
     inner: Arc<HttpIntraCellTransport>,
     shape: Shape,
+    /// Every sparse request body this transport saw, in order (G-RET-8's wiring half reads them).
+    sparse_bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
 
 fn is_sparse_query(request: &IntraCellRequest) -> bool {
@@ -2005,7 +2010,18 @@ impl IntraCellHttpTransport for ShapedTransport {
                 json_body: Some(serde_json::json!({ "status": { "error": "injected" } })),
             })
         };
+        if is_sparse_query(&request)
+            && let Some(body) = &request.json_body
+        {
+            self.sparse_bodies
+                .lock()
+                .expect("sparse body capture lock")
+                .push(body.clone());
+        }
         match self.shape {
+            Shape::SparseHang if is_sparse_query(&request) => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
             Shape::SparseStatus500 if is_sparse_query(&request) => return status_500(),
             Shape::SparseTimeout if is_sparse_query(&request) => {
                 return Err(IntraCellError::RequestFailed("injected timeout".to_owned()));
@@ -2051,6 +2067,8 @@ struct HybridEnv {
     setup_transport: Arc<HttpIntraCellTransport>,
     registry: IntraCellResourceRegistry,
     transport: Arc<HttpIntraCellTransport>,
+    /// Shared with every [`ShapedTransport`] this fixture builds.
+    sparse_bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
 
 impl HybridEnv {
@@ -2130,6 +2148,7 @@ impl HybridEnv {
             setup_transport,
             registry,
             transport,
+            sparse_bodies: Arc::default(),
         }
     }
 
@@ -2152,6 +2171,7 @@ impl HybridEnv {
         let transport: Arc<dyn IntraCellHttpTransport> = Arc::new(ShapedTransport {
             inner: self.transport.clone(),
             shape,
+            sparse_bodies: Arc::clone(&self.sparse_bodies),
         });
         let runtime = Arc::new(
             SemanticRecallRuntime::new(
@@ -2291,6 +2311,29 @@ fn hybrid_recall_returns_a_lexical_only_memory_only_with_the_sparse_leg_on() {
             !has_degradation(&on, "SPARSE_LANE_UNAVAILABLE"),
             "a healthy sparse leg degrades nothing: {on}"
         );
+        // The wiring half of G-RET-8: the request the gateway sent names the caller's tenant + visibility predicate as the
+        // IDF corpus, exactly what `build_dense_filter` emits for the narrowed scope, and that is not the retrieval
+        // filter (which also carries servable, versions, the workspace stream and the overlays).
+        let bodies = env.sparse_bodies.lock().expect("sparse body capture lock");
+        let body = bodies.last().expect("the sparse request was sent");
+        let scope = handle
+            .auth
+            .narrow(WorkspaceId(handle.workspace_id))
+            .expect("the fixture workspace is granted");
+        assert_eq!(
+            body["params"]["idf"]["corpus"],
+            condition_to_filter(&build_dense_filter(&scope, &[])),
+            "the IDF corpus is the authorization predicate and nothing else: {body}"
+        );
+        assert_ne!(
+            body["params"]["idf"]["corpus"], body["filter"],
+            "the corpus is not the retrieval filter: {body}"
+        );
+        assert_eq!(
+            body["limit"], 200,
+            "leg_depth when the sparse leg runs: {body}"
+        );
+        drop(bodies);
         assert!(
             on["provenance"]["stage_ms"]["qdrant_sparse"].is_f64(),
             "U7: the sparse leg's own time rides in stage_ms: {on}"
@@ -2303,13 +2346,16 @@ fn hybrid_recall_returns_a_lexical_only_memory_only_with_the_sparse_leg_on() {
     });
 }
 
-/// G-RET-10 (ADR-0083 D-C, §53.1) through a real Qdrant with the sparse request failing three ways (HTTP 500, a
-/// transport timeout, a 200 of the wrong shape) while the dense request succeeds: the recall answers with the dense
-/// order, `lanes.sparse` reads `failed`, `degradations` holds `SPARSE_LANE_UNAVAILABLE` and `degrade_total` for it rises
-/// by exactly 1. A dense-leg failure is the typed error as before and does not emit the code.
-/// Fault: let the sparse error propagate (or swallow it without the degradation) ⇒ red.
+/// G-RET-10 (ADR-0083 D-C, §53.1) through a real Qdrant with the sparse request failing four ways (HTTP 500, a
+/// transport error, a 200 of the wrong shape, and a request held three seconds past the registered `sparse_timeout_ms`
+/// of 1000 ms) while the dense request succeeds: the recall answers with the dense order, `lanes.sparse` reads `failed`,
+/// `degradations` holds `SPARSE_LANE_UNAVAILABLE` and `degrade_total` for it rises by exactly 1, and the hung leg is cut
+/// off by its own budget instead of holding the answer. A dense-leg failure is the typed error as before and does not
+/// emit the code.
+/// Fault: let the sparse error propagate (or swallow it without the degradation) ⇒ red; drop the `sparse_timeout_ms`
+/// budget from the sparse leg ⇒ the hung request holds the recall for three seconds and reads `ok` ⇒ red.
 #[test]
-#[allow(clippy::too_many_lines)] // one fixture: baseline → three sparse faults → one dense fault.
+#[allow(clippy::too_many_lines)] // one fixture: baseline → four sparse faults → one dense fault.
 fn a_failing_sparse_leg_answers_from_the_dense_leg_and_says_so() {
     run_db_fixture::<Fixture, _>(
         "semantic_recall_wiring_hybrid_sparse_failure",
@@ -2327,11 +2373,18 @@ fn a_failing_sparse_leg_answers_from_the_dense_leg_and_says_so() {
                 ("http 500", Shape::SparseStatus500),
                 ("transport timeout", Shape::SparseTimeout),
                 ("malformed body", Shape::SparseMalformed),
+                ("hung past sparse_timeout_ms", Shape::SparseHang),
             ] {
                 let before = counter();
+                let started = std::time::Instant::now();
                 let out = env.recall(&handle, shape, true).unwrap_or_else(|error| {
                     panic!("{label}: the recall must still answer: {error:?}")
                 });
+                assert!(
+                    started.elapsed() < Duration::from_millis(2_500),
+                    "{label}: the sparse leg's budget must cut it off, took {:?}",
+                    started.elapsed()
+                );
                 assert_eq!(
                     returned_ids(&out),
                     dense_order,

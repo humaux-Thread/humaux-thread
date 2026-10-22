@@ -1,8 +1,8 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
 //! Called-by: [gateway::bootstrap, gateway::recall, retrieval::request, tests]
-//! Invariants: [the five depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`)
-//!   are read here and nowhere else; each is bounds-checked when the registry loads]
+//! Invariants: [the six depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`,
+//!   `sparse_timeout_ms`) are read here and nowhere else; each is bounds-checked when the registry loads]
 //! Spec: Baseline §50; §55.1; §55.6; ADR-0083 D-D
 //!
 //! This is the sole bootstrap boundary for retrieval depth. A request caller receives an
@@ -28,6 +28,10 @@ const LEG_DEPTH: &str = "retrieval.profile.leg_depth";
 const RRF_K: &str = "retrieval.profile.rrf_k";
 /// ADR-0083 D-D / U6: turns the sparse leg on for the profile once the bm25 backfill reads zero missing.
 const SPARSE_LEG_ENABLED: &str = "retrieval.profile.sparse_leg_enabled";
+/// ADR-0083 D-C / D-D: the wall-clock budget of the sparse leg, in milliseconds. When it elapses the leg is a sparse
+/// failure (`SPARSE_LANE_UNAVAILABLE`) and the dense leg answers, so a hung sparse request cannot spend the handler
+/// deadline. dev-host start value, A5 re-measure required.
+const SPARSE_TIMEOUT_MS: &str = "retrieval.profile.sparse_timeout_ms";
 
 /// §23.3 / §55.6: the most Memories the candidate pool (`cand_k`) can hold. The one definition: `retrieval::request`
 /// computes `cand_k` with it and the bounds below derive from it, so they cannot drift apart.
@@ -47,8 +51,13 @@ const LEG_DEPTH_MAX: u32 = 1000;
 const RRF_K_MIN: u32 = 1;
 /// At 1000 the weights across a 200-deep leg differ by under 20%: fusion degenerates into counting legs.
 const RRF_K_MAX: u32 = 1000;
+/// A budget of 0 would time every sparse request out before it is sent; 1 ms is the floor.
+const SPARSE_TIMEOUT_MS_MIN: u32 = 1;
+/// Cost guard: the handler deadline is seconds, so a sparse leg allowed more than 10 s could spend all of it.
+const SPARSE_TIMEOUT_MS_MAX: u32 = 10_000;
 /// ADR-0068 D-E: the most grouped dense calls one recall makes — the first plus at most two refills of the groups
-/// Qdrant's bounded group search left short of `cand_k`. The budget stays `cand_k` Memories across every call.
+/// Qdrant's bounded group search left short of the leg's `limit` (`cand_k`, or `leg_depth` when the sparse leg runs,
+/// ADR-0083 D-C). The budget stays that `limit` in Memories across every call.
 pub const RETRIEVAL_GROUP_QUERY_MAX_CALLS: u32 = 3;
 
 /// The transform that §55.1 places on a request after profile resolution.
@@ -71,6 +80,7 @@ pub struct RegisteredRetrievalProfile {
     leg_depth: u32,
     rrf_k: u32,
     sparse_leg_enabled: bool,
+    sparse_timeout_ms: u32,
     effective_config_fingerprint: String,
 }
 
@@ -114,6 +124,12 @@ impl RegisteredRetrievalProfile {
         self.sparse_leg_enabled
     }
 
+    /// ADR-0083 D-C / D-D: the sparse leg's wall-clock budget in milliseconds.
+    #[must_use]
+    pub fn sparse_timeout_ms(&self) -> u32 {
+        self.sparse_timeout_ms
+    }
+
     #[must_use]
     pub fn effective_config_fingerprint(&self) -> &str {
         &self.effective_config_fingerprint
@@ -132,6 +148,7 @@ pub enum RetrievalConfigError {
     InvalidLegDepth(String),
     InvalidRrfK(String),
     InvalidSparseLegEnabled(String),
+    InvalidSparseTimeoutMs(String),
     InvalidProductionEnabled(String),
     ProductionDisabled,
 }
@@ -164,6 +181,10 @@ impl fmt::Display for RetrievalConfigError {
             Self::InvalidSparseLegEnabled(value) => {
                 write!(f, "invalid retrieval profile sparse_leg_enabled {value:?}")
             }
+            Self::InvalidSparseTimeoutMs(value) => write!(
+                f,
+                "invalid retrieval profile sparse_timeout_ms {value:?} (allowed {SPARSE_TIMEOUT_MS_MIN}..={SPARSE_TIMEOUT_MS_MAX})"
+            ),
             Self::InvalidProductionEnabled(value) => {
                 write!(f, "invalid retrieval profile production_enabled {value:?}")
             }
@@ -191,6 +212,7 @@ pub fn retrieval_profile_registry() -> Vec<ConfigEntry> {
         entry(LEG_DEPTH, "u32", "200"),
         entry(RRF_K, "u32", "60"),
         entry(SPARSE_LEG_ENABLED, "bool", "false"),
+        entry(SPARSE_TIMEOUT_MS, "u32", "1000"),
         entry(PRODUCTION_ENABLED, "bool", "true"),
     ]
 }
@@ -244,6 +266,15 @@ pub fn resolve_registered_retrieval_profile(
                 required(&effective, SPARSE_LEG_ENABLED).to_string(),
             )
         })?;
+    let sparse_timeout_ms_text = required(&effective, SPARSE_TIMEOUT_MS);
+    let sparse_timeout_ms = parse_in(
+        sparse_timeout_ms_text,
+        SPARSE_TIMEOUT_MS_MIN,
+        SPARSE_TIMEOUT_MS_MAX,
+    )
+    .ok_or_else(|| {
+        RetrievalConfigError::InvalidSparseTimeoutMs(sparse_timeout_ms_text.to_string())
+    })?;
     let production_enabled = required(&effective, PRODUCTION_ENABLED)
         .parse::<bool>()
         .map_err(|_| {
@@ -262,6 +293,7 @@ pub fn resolve_registered_retrieval_profile(
         leg_depth,
         rrf_k,
         sparse_leg_enabled,
+        sparse_timeout_ms,
         effective_config_fingerprint: effective_config_fingerprint(&effective),
     })
 }
@@ -303,6 +335,7 @@ mod tests {
         assert_eq!(profile.leg_depth(), 200);
         assert_eq!(profile.rrf_k(), 60);
         assert!(!profile.sparse_leg_enabled());
+        assert_eq!(profile.sparse_timeout_ms(), 1000);
         assert_eq!(profile.effective_config_fingerprint().len(), 64);
     }
 
@@ -324,6 +357,11 @@ mod tests {
             (CAND_MULTIPLIER, CAND_MULTIPLIER_MIN, CAND_MULTIPLIER_MAX),
             (LEG_DEPTH, LEG_DEPTH_MIN, LEG_DEPTH_MAX),
             (RRF_K, RRF_K_MIN, RRF_K_MAX),
+            (
+                SPARSE_TIMEOUT_MS,
+                SPARSE_TIMEOUT_MS_MIN,
+                SPARSE_TIMEOUT_MS_MAX,
+            ),
         ];
         for (key, min, max) in rows {
             for outside in [
@@ -337,6 +375,9 @@ mod tests {
                         matches!(error, RetrievalConfigError::InvalidCandMultiplier(_))
                     }
                     LEG_DEPTH => matches!(error, RetrievalConfigError::InvalidLegDepth(_)),
+                    SPARSE_TIMEOUT_MS => {
+                        matches!(error, RetrievalConfigError::InvalidSparseTimeoutMs(_))
+                    }
                     _ => matches!(error, RetrievalConfigError::InvalidRrfK(_)),
                 };
                 assert!(named, "{key}={outside}: {error:?}");
@@ -359,7 +400,7 @@ mod tests {
         );
     }
 
-    /// G6c1-1 (registry half): each of the four entries moves the effective-config fingerprint on its own.
+    /// G6c1-1 (registry half): each of the five entries moves the effective-config fingerprint on its own.
     #[test]
     fn each_hybrid_entry_moves_the_effective_fingerprint() {
         let default = resolve_registered_retrieval_profile(&BTreeMap::new()).expect("defaults");
@@ -368,6 +409,7 @@ mod tests {
             (LEG_DEPTH, "201"),
             (RRF_K, "61"),
             (SPARSE_LEG_ENABLED, "true"),
+            (SPARSE_TIMEOUT_MS, "1001"),
         ] {
             let changed = resolve_one(key, value).expect(key);
             assert_ne!(
