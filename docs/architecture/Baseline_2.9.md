@@ -6231,7 +6231,7 @@ Exact，以及 schema/结算/审计失败的零指标对照；此入口不代表
 
 检索侧同理：`candidate_count 25` / `reranked_count 12` / `returned 5`。`RERANK_PROVIDER_TIMEOUT` 的含义是 25 个候选里只有 12 个真过了重排、其余走 fallback 序；**两个 count 相等的示例看不出降级发生过**，正是 §23.2 那条判据例要排除的形态（本示例先前写 `25 / 25` 却同时挂着这条降级，自己违反了自己立的标准，已改）。三个数的自洽关系即 §23.4 的夹具断言：`returned (5) == profile.top_k`、`reranked_count (12) <= candidate_count (25) == profile.cand_k == min(top_k × profile.cand_multiplier, 200)`（`cand_multiplier` 是注册 profile 的字段、默认 5、永不由调用方给：planned，T-RET-6c，此前乘数是常量 5；`cand_k_formula` 以解析后的乘数渲染，所以本例仍写 `min(top_k*5, 200)`；ADR-0081 D-E。hybrid 召回再带两个同级注册字段 `leg_depth`（默认 200）与 `rrf_k`（默认 60），三者同入 `profile_fingerprint`；ADR-0083 D-D）、`truncated = true` 因为 `candidate_count > returned`；且 `reranked_count == candidate_count` 时 `degradations` 不得含任何 rerank 类降级（重排全数完成 = 结果未被降级；重试后全数成功只记指标，不进 `degradations`），反之含该降级时 `reranked_count` 必须严格小于 `candidate_count`。
 
-**hybrid 候选管线（planned，T-RET-6c，ADR-0083 D-C）**：dense 腿与 sparse 腿（Qdrant 内置 `qdrant/bm25`）各按 `memory_id` 分组（组大小 1）取 `leg_depth` 个记忆，并发，带同一套 filter（tenant、可见性、subject、affect、tombstone overlay，§17.1 / §17.2）；两腿在 gateway 内按 memory 名次做 RRF（`Σ 1/(rrf_k + rank)`，并列按 `memory_id` 升序），融合列表截到 `cand_k`，再过未改动的 PostgreSQL hydrate 闸。本例 `lanes` 与 `profile.lanes` 里的 `sparse` 是这条管线交付后的形状；当前交付点见 §33。
+**hybrid 候选管线（已交付，T-RET-6c，ADR-0083 D-C / D-E）**：dense 腿与 sparse 腿（Qdrant 内置 `qdrant/bm25`）各按 `memory_id` 分组（组大小 1）取 `leg_depth` 个记忆，并发，带同一套 filter（tenant、可见性、subject、affect、tombstone overlay，§17.1 / §17.2）；两腿在 gateway 内按 memory 名次做 RRF（`Σ 1/(rrf_k + rank)`，并列按 `memory_id` 升序），融合列表截到 `cand_k`，再过未改动的 PostgreSQL hydrate 闸。sparse 腿是 live lane：本例 `lanes` 与 `profile.lanes` 里的 `sparse` 就是当前形状（ADR-0083 D-C / D-E；§33）。
 
 **本地 rerank 阶段（planned，T-RET-7d，ADR-0084 D-C / D-D）**：融合列表截到 `cand_k` 并过未改动的 hydrate 闸之后，对前 `rerank_depth` 个可见 Memory 以「title + 换行 + best chunk」构造 (query, document) 对（best chunk = 该 Memory 的 chunk 中 leg 名次最好者，dense 优先，其次 sparse），按 `rerank_max_len` token 由 tokenizer 截断，交本地 cross-encoder 打分，只发已授权、已 hydrate 的文本；按分数排序，并列按融合名次，超出 `rerank_depth` 的候选保持融合序、排在已打分者之后；其后才是 `top_k`、mood rerank、`limit`。rerank 只改序，不增不减。envelope 的读法：`reranked_count` 是实际打分的 Memory 数，任何降级时为 0（本地 worker 一次调用要么全部返回要么全无）；`degradations` 里的 `RERANK_PROVIDER_TIMEOUT` 表示 rerank 执行方（云端 route 或本地 worker）未在时限内返回分数或调用失败、结果按融合序，`RERANK_MODEL_MISMATCH` 表示作答的模型不是被钉的那个（§53.4）；`provenance.rerank_model_id`：打分完成为 `used`，`rerank_enabled` 为 false 或租户策略跳过为 `not_applicable`，超时、失败、身份不符为 `cannot_establish`（§23.1③：已选择的分支失败不得退写 `not_applicable`）。五个注册项 `rerank_enabled`、`rerank_depth`、`rerank_max_len`、`rerank_timeout_ms`、`rerank_threads` 不是调用方输入，进入 `profile_fingerprint`，定义见 §50 与 ADR-0084 D-E。上面示例里的 `qwen3-rerank@revision-1` 与 `reranked_count 12` 是云端 route 形状的夹具读数，不随本地 lane 改写。
 
@@ -8820,7 +8820,7 @@ completeness_request = required     未交付  bins/gateway/src/recall.rs:299 �
   只有显式 `mode` 指名未交付 lane 才拒绝，错误码仍是 `DEPENDENCY_UNAVAILABLE`（本节上表，不变）。
   原锚点 `recall.rs:255-261 ⇒ INVALID_INPUT` 作废。见证：
   `bins/gateway/tests/mcp_gateway.rs::recall_everyday_queries_are_answered_by_dense_with_lane_substituted`。
-- **planned（T-RET-6c，ADR-0083 D-C）**：已交付 lane 由 `{dense}` 变为 `{dense, sparse}` —— `semantic` 由 dense 与 sparse（Qdrant 内置 BM25，§17.6）两条 lane 并发作答，gateway 内按 memory 名次 RRF 融合。`LANE_SUBSTITUTED` 含义不变：只在 planner 选的 lane 仍未交付（如 literal、association）且调用方未带 `mode` 时出现；sparse 不是 `mode` 取值，所以 `x-humaux-v1-supported`、上表与下面那道闸都不动。sparse 腿失败由 dense 作答并带 `SparseLaneUnavailable`（§53.2 的第 12 个变体，由 T-RET-6c 加入）。**上文「唯一已交付 lane」与各 file:line 锚点描述的是当前交付点，T-RET-6c 落地时在同一张卡里改写。**
+- **已交付（T-RET-6c，ADR-0083 D-C / D-E）**：已交付 lane 是 `{dense, sparse}` —— `semantic` 由 dense 与 sparse（Qdrant 内置 BM25，§17.6）两条 live lane 并发作答，gateway 内按 memory 名次 RRF 融合。`LANE_SUBSTITUTED` 含义不变：只在 planner 选的 lane 仍未交付（如 literal、association）且调用方未带 `mode` 时出现；sparse 不是 `mode` 取值，所以 `x-humaux-v1-supported`、上表与下面那道闸都不动。sparse 腿失败由 dense 作答并带 `SparseLaneUnavailable`（§53.2 的第 12 个变体，由 T-RET-6c 加入）。**上文「唯一已交付 lane」与各 file:line 锚点描述的是 T-RET-6c 之前的交付点。**
 - 未交付的 lane 走 `DEPENDENCY_UNAVAILABLE`（§52：契约里有、这个部署没有实现），不是
   `INVALID_INPUT`（值非法）。合约 `contracts/mcp/recall.schema.json` 因此**保留** `mode` 的
   五值闭集 —— 把未交付值从 enum 里删掉会让这条 guard 变成不可达代码，拒绝路径也就不再可观察
@@ -11140,7 +11140,7 @@ pub enum DegradeCode {
 }
 ```
 
-共 12 个变体。`ProjectionInvisibleLoss` 由 §23.1② 的 A2 可见闭合断言引入，注错方式与读数变化登记在 §53.4。`LaneSubstituted` 由 §33 Tool 2 的车道替代引入（ADR-0055 D-C，card 30）：只经 `abstain()` 发出，结果照常返回（§52.3 Q1），注错测试同样登记在 §53.4。`SparseLaneUnavailable` 由 hybrid 召回的 sparse 腿失败引入（ADR-0083 D-C，T-RET-6c-1）：结果照常返回（§52.3 Q1），故是 `DegradeCode` 而不新增 `ErrorCode`；线格式 `SPARSE_LANE_UNAVAILABLE` 与任何 `ErrorCode` 线格式不相交（G52-3 的交集仍恰为 `{PROJECTION_LAG}`）；只经 `abstain()` 发出，`completeness.lanes.sparse` 同时读 `failed`。发出它的召回接线是 planned（T-RET-6c-2），在此之前它在 `dormant.toml` 登记。
+共 12 个变体。`ProjectionInvisibleLoss` 由 §23.1② 的 A2 可见闭合断言引入，注错方式与读数变化登记在 §53.4。`LaneSubstituted` 由 §33 Tool 2 的车道替代引入（ADR-0055 D-C，card 30）：只经 `abstain()` 发出，结果照常返回（§52.3 Q1），注错测试同样登记在 §53.4。`SparseLaneUnavailable` 由 hybrid 召回的 sparse 腿失败引入（ADR-0083 D-C，T-RET-6c-1）：结果照常返回（§52.3 Q1），故是 `DegradeCode` 而不新增 `ErrorCode`；线格式 `SPARSE_LANE_UNAVAILABLE` 与任何 `ErrorCode` 线格式不相交（G52-3 的交集仍恰为 `{PROJECTION_LAG}`）；只经 `abstain()` 发出，`completeness.lanes.sparse` 同时读 `failed`。发出它的召回接线已交付（T-RET-6c-2，ADR-0083 D-C / D-E）：`retrieval::envelope::sparse_lane_unavailable` 由 envelope 组装处调用，`dormant.toml` 里不再有这一行。
 
 可降级函数一律返回 `Outcome<T>`，不返回裸 `T`。
 
@@ -11200,8 +11200,8 @@ lane_substituted.rs            planner 判为非 SEMANTIC 类且请求未带 mod
 sparse_lane_unavailable.rs     sparse 腿的 Qdrant 请求超时 / 5xx / 回包畸形，而 dense 腿成功（ADR-0083 D-C，G-RET-10）：
                                仍返回 dense 序结果，degrade_total{code="SparseLaneUnavailable"} 0 → 1，
                                degradations[] 含 SPARSE_LANE_UNAVAILABLE，lanes.sparse 读 failed；dense 腿失败不触发
-                               （planned，T-RET-6c-2：召回接线之前无 emit 点，此文件是 dormant.toml 登记的合成注入、
-                               直接调 abstain()；接线后改为驱动生产函数并删去 dormant 行）
+                               （已交付，T-RET-6c-2，ADR-0083 D-C / D-E：此文件驱动生产函数
+                                `retrieval::envelope::sparse_lane_unavailable`，不再有 dormant.toml 行）
 ```
 
 **rerank 两个变体的含义（ADR-0084 D-D，planned，T-RET-7d）**：`RerankProviderTimeout` 的「provider」读作 rerank 执行方（云端 route 或本地 `retrieval-worker`）——时限内没有返回分数，或调用失败（传输错误、非 2xx、回包畸形、回包条数或下标与请求不符），结果按融合序作答；失败而非超时也用这一个变体，不新增变体，本 ADR 不新增变体（§52.3 Q1：结果照常返回，所以是 `DegradeCode`）。`RerankModelMismatch` 的含义是作答的模型不是被钉的那个：worker 回报的身份与部署 pin 不一致，分数丢弃、按融合序作答。T-RET-7d 把这两条注错测试换成驱动生产函数的真实路径版本，并删除 `dormant.toml` 里这两个 M11 行（账只缩不增）。`RerankModelMismatch` 的注入方式在此登记：
