@@ -7453,6 +7453,8 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::health_snapshot`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.wal_archive_failures`
 - kind: table

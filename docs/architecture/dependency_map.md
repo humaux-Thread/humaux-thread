@@ -693,6 +693,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.purge_terminal_jobs`
 - executes `ops.renew_lease`
 - executes `ops.requeue_dead_distill`
+- executes `ops.tenants_active_counts`
 - executes `private.assert_contribution_prepared_route_shape`
 - executes `private.assert_current_contribution_reservation_authority`
 - executes `private.commit_contribution_candidate`
@@ -3333,6 +3334,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.purge_terminal_jobs`
 - executes `ops.renew_lease`
 - executes `ops.requeue_dead_distill`
+- executes `ops.tenants_active_counts`
 - executes `private.assert_contribution_prepared_route_shape`
 - executes `private.assert_current_contribution_reservation_authority`
 - executes `private.commit_contribution_candidate`
@@ -7848,6 +7850,8 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::health_snapshot`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.wal_archive_failures`
 read by:
