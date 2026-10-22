@@ -95,7 +95,7 @@ Humaux Thread 不定义为“向量数据库”或“RAG 服务”，而定义�
 3. 用户自己的 LLM/VLM Key 对私人内容进行蒸馏；
 4. 用户知识经用户侧判断与脱敏后进入公共候选；
 5. 公共知识由企业 LLM Key 完成整理、冲突检测、补全、演化和递归合成；
-6. Hybrid Retrieval + Cloud Rerank；
+6. Hybrid Retrieval + 本地 Rerank（planned，ADR-0084）；
 7. 召回不仅返回“相关”，还分别表达相似性、相关性、关联性与完整性；
 8. 项目开发连续性（Project Continuity）；
 9. Memory Graph 与 Code Graph；
@@ -815,7 +815,7 @@ Adapters depend on Domain; Domain does not depend on Adapters.
 | `humaux-worker` | DB 写凭证 | — | — |
 | `humaux-private-worker` | **唯一**能解 BYOK 的进程 | — | — |
 | `humaux-consolidation-worker` | **不解密 BYOK**；仅 `role_consolidation_worker` DB pool；LLM 请求走 private-worker 的内部 `PrivateReasoningPort` | Dream 不能持有基础 Memory 写权限 | snapshot selection + LLM wait |
-| `humaux-retrieval-worker` | PLATFORM_RETRIEVAL provider credential ref | provider/API 故障与在线请求隔离 | Provider admission / cache / network I/O；**不加载模型权重** |
+| `humaux-retrieval-worker` | PLATFORM_RETRIEVAL provider credential ref | provider/API 故障与在线请求隔离；本地 rerank 推理的卡顿与崩溃不进入 gateway 进程（ADR-0084 D-B，planned） | Provider admission / cache / network I/O；**不加载 embedding 权重**；`--serve-rpc` 仅在 `rerank_enabled` 为真时常驻一个本地 int8 rerank 模型（ADR-0084，planned），其 CPU 与内存归这一格 |
 | `humaux-public-worker` | PLATFORM_PUBLIC key；仅匿名 public objects、direct provenance、aggregate trust 与获授权的 sanitized-envelope 列；无 private/protected-lineage/完整 staging-row 权限 | — | — |
 | `humaux-maintenance` | 备份/恢复凭证 | 恢复演练失败不得影响在线 | 备份 IO 尖峰 |
 | `parse-sandbox`（非常驻，worker spawn/exec） | **零凭证** | 不可信输入，崩溃即回收 | 见 4.3 上限 |
@@ -1552,17 +1552,19 @@ Rerank           -> SealedRetrievalQuery + bounded SealedRetrievalCards
 
 **Sparse/BM25 是本地 Retrieval lane**：标准自托管 Qdrant Cluster 可以在实例内部生成/query `qdrant/bm25` sparse vectors，不需要第三方 embedding API。shared multitenancy 时继续使用 §17 的 tenant-scoped IDF corpus。
 
-Humaux 标准部署**不提供内置神经 reranker/embedding 模型**。若租户禁止外部 Retrieval Egress且未配置 policy-compatible Customer Retrieval Endpoint：
+Humaux 标准部署**不提供内置 embedding 模型**。唯一的内置神经模型是**本地 int8 cross-encoder reranker**（planned，T-RET-7b 至 T-RET-7d，ADR-0084 D-A / D-B）：由 `retrieval-worker` 的 `--serve-rpc` 进程在 Cell 内加载，只给已授权、已 hydrate 的文本打分，不出境——没有 Processor、没有 EgressPermit、不经过 `seal_query()` / `seal_card()`，因此不属于上面的外部 route，也不是 `trait Reranker` 的实现。它由注册项 `rerank_enabled`（默认 false）显式开启，模型身份由部署配置钉死并在启动时核对哈希，不是静默加载。若租户禁止外部 Retrieval Egress且未配置 policy-compatible Customer Retrieval Endpoint：
 
 ```text
 Dense lane       SKIPPED_BY_POLICY
-Rerank           unavailable/degraded
+Rerank           cloud route unavailable; the local lane (ADR-0084) is not an egress and is unaffected
 BM25 sparse      available (local Qdrant)
 EXACT/LITERAL    available
 Association/Code according to their own readiness
 ```
 
-系统必须在 Completeness Envelope 中报告 lane 状态，禁止静默加载本地神经模型或换供应商。
+本地 rerank 与 sparse 腿同属 Cell 内文本处理：`in_cell_text_processing_allowed(tenant)` 为 false 时（§17.6）不选 rerank 分支，按融合序作答，不算降级（ADR-0084 D-D）。
+
+系统必须在 Completeness Envelope 中报告 lane 状态，禁止静默加载本地神经模型或换供应商；本地 rerank 的失败只走 §53 的显式降级（`RerankProviderTimeout` / `RerankModelMismatch`），不得改用云端 rerank 或另一个模型。
 
 ## 7.3 EgressPermit：唯一出口（拓扑，不是纪律）
 
@@ -4948,6 +4950,8 @@ threshold gate MUST stand down loudly
 
 禁止重新制造旧系统中“模型改了，阈值仍沿用导致闸静默失效”的问题。
 
+**本地 reranker（planned，ADR-0084）。** 本地 int8 cross-encoder 受同一条规则约束，它的模型身份是 `(repo, revision, recipe version, onnx sha256, tokenizer sha256)`，任一项变化就是新的 `calibration_profile`（ADR-0084 D-A）。当前不设相关性阈值（rerank 只改序，ADR-0084 D-F）；将来的阈值闸必须绑定该身份，未校准时 loud stand down。降级仍是请求级：超时或失败按融合序作答并报 `RerankProviderTimeout`；worker 回报的身份与部署 pin 不一致时丢弃分数、按融合序作答并报 `RerankModelMismatch`；两种情况都不换另一个模型，也不回落到云端 route（ADR-0084 D-D）。
+
 
 ## Provider Admission Controller
 
@@ -6228,6 +6232,8 @@ Exact，以及 schema/结算/审计失败的零指标对照；此入口不代表
 检索侧同理：`candidate_count 25` / `reranked_count 12` / `returned 5`。`RERANK_PROVIDER_TIMEOUT` 的含义是 25 个候选里只有 12 个真过了重排、其余走 fallback 序；**两个 count 相等的示例看不出降级发生过**，正是 §23.2 那条判据例要排除的形态（本示例先前写 `25 / 25` 却同时挂着这条降级，自己违反了自己立的标准，已改）。三个数的自洽关系即 §23.4 的夹具断言：`returned (5) == profile.top_k`、`reranked_count (12) <= candidate_count (25) == profile.cand_k == min(top_k × profile.cand_multiplier, 200)`（`cand_multiplier` 是注册 profile 的字段、默认 5、永不由调用方给：planned，T-RET-6c，此前乘数是常量 5；`cand_k_formula` 以解析后的乘数渲染，所以本例仍写 `min(top_k*5, 200)`；ADR-0081 D-E。hybrid 召回再带两个同级注册字段 `leg_depth`（默认 200）与 `rrf_k`（默认 60），三者同入 `profile_fingerprint`；ADR-0083 D-D）、`truncated = true` 因为 `candidate_count > returned`；且 `reranked_count == candidate_count` 时 `degradations` 不得含任何 rerank 类降级（重排全数完成 = 结果未被降级；重试后全数成功只记指标，不进 `degradations`），反之含该降级时 `reranked_count` 必须严格小于 `candidate_count`。
 
 **hybrid 候选管线（planned，T-RET-6c，ADR-0083 D-C）**：dense 腿与 sparse 腿（Qdrant 内置 `qdrant/bm25`）各按 `memory_id` 分组（组大小 1）取 `leg_depth` 个记忆，并发，带同一套 filter（tenant、可见性、subject、affect、tombstone overlay，§17.1 / §17.2）；两腿在 gateway 内按 memory 名次做 RRF（`Σ 1/(rrf_k + rank)`，并列按 `memory_id` 升序），融合列表截到 `cand_k`，再过未改动的 PostgreSQL hydrate 闸。本例 `lanes` 与 `profile.lanes` 里的 `sparse` 是这条管线交付后的形状；当前交付点见 §33。
+
+**本地 rerank 阶段（planned，T-RET-7d，ADR-0084 D-C / D-D）**：融合列表截到 `cand_k` 并过未改动的 hydrate 闸之后，对前 `rerank_depth` 个可见 Memory 以「title + 换行 + best chunk」构造 (query, document) 对（best chunk = 该 Memory 的 chunk 中 leg 名次最好者，dense 优先，其次 sparse），按 `rerank_max_len` token 由 tokenizer 截断，交本地 cross-encoder 打分，只发已授权、已 hydrate 的文本；按分数排序，并列按融合名次，超出 `rerank_depth` 的候选保持融合序、排在已打分者之后；其后才是 `top_k`、mood rerank、`limit`。rerank 只改序，不增不减。envelope 的读法：`reranked_count` 是实际打分的 Memory 数，任何降级时为 0（本地 worker 一次调用要么全部返回要么全无）；`degradations` 里的 `RERANK_PROVIDER_TIMEOUT` 表示 rerank 执行方（云端 route 或本地 worker）未在时限内返回分数或调用失败、结果按融合序，`RERANK_MODEL_MISMATCH` 表示作答的模型不是被钉的那个（§53.4）；`provenance.rerank_model_id`：打分完成为 `used`，`rerank_enabled` 为 false 或租户策略跳过为 `not_applicable`，超时、失败、身份不符为 `cannot_establish`（§23.1③：已选择的分支失败不得退写 `not_applicable`）。五个注册项 `rerank_enabled`、`rerank_depth`、`rerank_max_len`、`rerank_timeout_ms`、`rerank_threads` 不是调用方输入，进入 `profile_fingerprint`，定义见 §50 与 ADR-0084 D-E。上面示例里的 `qwen3-rerank@revision-1` 与 `reranked_count 12` 是云端 route 形状的夹具读数，不随本地 lane 改写。
 
 `degradations` 取代旧的 `degraded: bool`，字段名以本节为准、全文只此一个（§53.1 从之）；成员是 §53.2 `DegradeCode` 变体的**线格式**，即 `fold(变体名)` 得到的 SCREAMING_SNAKE 串，形式与映射冻结在 §53.2。本例的 `RERANK_PROVIDER_TIMEOUT` 对应变体 `RerankProviderTimeout`；早先此处写的 `RERANK_TIMEOUT_PARTIAL` 是同一件事的第二个名字（§41.1 R3 同物二名），已删，不留兼容期、不加别名。`profile_fingerprint` = §55 那个唯一构造函数输出的检索请求中实际生效的检索配置的规范序列化 sha256（`sha256:` 前缀）。
 
@@ -10886,6 +10892,8 @@ rollback target
 
 生产运行必须记录 effective config fingerprint，而不是只看 `.env`。
 
+检索 profile 的 rerank 注册项（planned，T-RET-7d，ADR-0084 D-E）：`rerank_enabled`（默认 false）、`rerank_depth`（25）、`rerank_max_len`（256）、`rerank_timeout_ms`（4000）、`rerank_threads`（4）。五项与 `top_k`、`cand_multiplier` 同属注册 profile，永不由调用方给，全部进 `profile_fingerprint`；加载时校验 `rerank_depth` 不大于 `cand_k`。本地模型的身份 pin 不在 registry 里，在部署配置里（与 embedding provider 的变量并列），每次请求在 `provenance.rerank_model_id` 自报。
+
 
 ## 50.1 Enterprise Feature Activation Registry
 
@@ -11172,13 +11180,13 @@ fold(x) = 在 x 的每个非首位大写字母前插 "_"，再整体大写
 testkit/fault/<variant_snake_case>.rs   —— 文件名 == lower(fold(变体名))，与变体一一对应
 ```
 
-当前 12 个变体 ⇒ 12 个文件。其中四条的注入方式不能从变体名直接读出，在此登记（其余照变体语义注入）：
+每个变体一个文件（个数以 §53.2 为准）。下列几条的注入方式不能从变体名直接读出，在此登记（其余照变体语义注入）：
 
 ```text
 projection_invisible_loss.rs   绕过 retention::tombstone 直接从 Qdrant 删 10 个 point（= §23.4 G23-2 注入 1）
                                visible 100 → 90，done 恒 100，deleted 恒 0，A2 违反
                                degrade_total{code="ProjectionInvisibleLoss"} 0 → 1
-rerank_provider_timeout.rs     rerank provider 注入读超时，按 §19 走 fallback ranking 仍返回结果
+rerank_provider_timeout.rs     rerank 执行方（provider 或本地 worker，ADR-0084 D-D）注入读超时，按 §19 走 fallback ranking 仍返回结果
                                degrade_total{code="RerankProviderTimeout"} 0 → 1，items 非空
                                （§23.3 示例早先写的 RERANK_TIMEOUT_PARTIAL 就是这一条，不是另一个变体）
 lane_substituted.rs            planner 判为非 SEMANTIC 类且请求未带 mode ⇒ dense 车道代答（ADR-0055 D-C）
@@ -11189,6 +11197,13 @@ sparse_lane_unavailable.rs     sparse 腿的 Qdrant 请求超时 / 5xx / 回包�
                                degradations[] 含 SPARSE_LANE_UNAVAILABLE，lanes.sparse 读 failed；dense 腿失败不触发
                                （planned，T-RET-6c-2：召回接线之前无 emit 点，此文件是 dormant.toml 登记的合成注入、
                                直接调 abstain()；接线后改为驱动生产函数并删去 dormant 行）
+```
+
+**rerank 两个变体的含义（ADR-0084 D-D，planned，T-RET-7d）**：`RerankProviderTimeout` 的「provider」读作 rerank 执行方（云端 route 或本地 `retrieval-worker`）——时限内没有返回分数，或调用失败（传输错误、非 2xx、回包畸形、回包条数或下标与请求不符），结果按融合序作答；失败而非超时也用这一个变体，不新增变体，本 ADR 不新增变体（§52.3 Q1：结果照常返回，所以是 `DegradeCode`）。`RerankModelMismatch` 的含义是作答的模型不是被钉的那个：worker 回报的身份与部署 pin 不一致，分数丢弃、按融合序作答。T-RET-7d 把这两条注错测试换成驱动生产函数的真实路径版本，并删除 `dormant.toml` 里这两个 M11 行（账只缩不增）。`RerankModelMismatch` 的注入方式在此登记：
+
+```text
+rerank_model_mismatch.rs       worker 回报的身份 ≠ 部署 pin ⇒ 分数丢弃，融合序作答，items 非空
+                               degrade_total{code="RerankModelMismatch"} 0 → 1，degradations[] 含 RERANK_MODEL_MISMATCH
 ```
 
 **从未被触发过的 reason 不许合并。** 53.3 规则 2 的等式把这句话变成 CI 事实：加了变体没加测试 ⇒ 三个数字不等 ⇒ 红。
@@ -12671,7 +12686,7 @@ OpenBao: dev stub 允许 —— production forbidden
 
 ```text
 旧 ONNX-based 内存预算作废：Managed Retrieval Provider 已冻结为标准路径，
-retrieval-worker 不再常驻模型权重。
+retrieval-worker 的 embedding 不常驻模型权重。**例外（planned，ADR-0084）**：`rerank_enabled` 为真时，`retrieval-rpc` 常驻一个本地 int8 rerank 模型（ONNX Runtime 与 tokenizer），其常驻内存与 CPU 权重尚未测（ADR-0084 U4），由 T-RET-7c 在同规格 runner 上测定后写入。
 
 硬约束：
 - OS + page cache + backup spike 预留 >= 4 GiB
@@ -12680,7 +12695,7 @@ retrieval-worker 不再常驻模型权重。
 - 全部服务 + 峰值 parse-sandbox 不得挤占上述 OS/恢复预留
 ```
 
-**A5 gate 更新**：在同规格 4 vCPU / 24 GiB ARM runner 上重新测量 Managed-Provider 架构后再冻结每进程 MiB 数值。旧 `retrieval-worker=4GB` 数据不得继续作为 2.2 参数，因为它测的是已经删除的内置神经 reranker 路径。
+**A5 gate 更新**：在同规格 4 vCPU / 24 GiB ARM runner 上重新测量 Managed-Provider 架构后再冻结每进程 MiB 数值。旧 `retrieval-worker=4GB` 数据不得继续作为 2.2 参数，因为它测的是已经删除的内置神经 reranker 路径；本地 rerank 的占用另测，不沿用该数。
 
 **禁止把 private 与 public 角色合并进同一生产进程。** 即使单机部署，也保持不同 OS process / DB role / OpenBao policy；GA 若 Public Evolution 未启用，则 `humaux-public-worker` 不启动。`maintenance` 也保持独立凭证边界。进程开销小于破坏 Key/DB 权限隔离带来的风险。
 
