@@ -38,6 +38,8 @@ pub enum IntraCellResource {
     /// external disclosure recipient; see `docs/adr/0003-…` for the full argument).
     QDRANT_REST,
 
+    /// The retrieval-worker's UDS RPC: query embedding (ADR-0012) and local rerank (ADR-0084).
+    ///
     /// ADR-0012: gateway → `humaux-retrieval-worker` query-embedding RPC. Same-Cell,
     /// same-legal-entity traffic (never an `ExternalProcessor`) — the transport is a Unix
     /// domain socket with kernel peer-credential authentication rather than

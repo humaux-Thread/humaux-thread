@@ -26,7 +26,7 @@ use humaux_retrieval_provider::contract::{
     CalibrationProfileId, EmbeddingModelDescriptor, ModelId, RerankModelDescriptor,
     RerankScoreSemantics,
 };
-use humaux_retrieval_worker::rpc::{PeerIdentity, RpcState, router};
+use humaux_retrieval_worker::rpc::{PeerIdentity, RERANK_ROUTE, RpcState, router};
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::{Client, NoTls};
 use uuid::Uuid;
@@ -218,6 +218,36 @@ async fn get(path: &str) -> (u16, String) {
     .expect("request thread")
 }
 
+/// One `POST` of a rerank request over the socket, blocking, off the runtime's workers.
+async fn post_rerank(path: &str) -> (u16, String) {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let body = r#"{"schema_version":1,"call_id":"00000000-0000-7000-8000-000000000001","query":"q","documents":["d"],"max_len":256}"#;
+        // dep: UDS(retrieval-worker) — the gateway's side of the rerank round trip
+        let mut stream = UnixStream::connect(&path).expect("dial worker rpc socket");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("read timeout");
+        write!(
+            stream,
+            "POST {RERANK_ROUTE} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write request");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("read response");
+        let code = raw
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .expect("status code");
+        let body = raw.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_owned();
+        (code, body)
+    })
+    .await
+    .expect("request thread")
+}
+
 /// T-W5: 200 while `role_retrieval_worker` connects; after CONNECT is revoked and its sessions are
 /// terminated on the scratch database, 503 naming `PostgreSQL as role_retrieval_worker`; a peer with
 /// the wrong uid gets 403 from the existing layer. Fault: answer 200 without connecting ⇒ red.
@@ -253,6 +283,11 @@ async fn readyz_answers_from_a_fresh_role_connection_and_names_it_when_refused()
     let path = serve(state(uid, calls)).await;
     let (code, body) = get(&path).await;
     assert_eq!(code, 200, "{body}");
+    // ADR-0084 D-B: the rerank route is on the same router; with the lane off (`router`) the right peer is answered
+    // `disabled` and no model, database or artifact is touched.
+    let (code, body) = post_rerank(&path).await;
+    assert_eq!(code, 200, "{body}");
+    assert!(body.contains(r#""outcome":"disabled""#), "{body}");
 
     ScratchDb::exec(
         &owner,
@@ -285,6 +320,13 @@ async fn readyz_answers_from_a_fresh_role_connection_and_names_it_when_refused()
     assert_eq!(
         code, 403,
         "a wrong peer uid is refused before the route: {body}"
+    );
+    // ADR-0084 D-B: the rerank route sits behind the same peer-credential layer: a wrong uid is refused before any
+    // body is read. Fault: merge `rerank_router` after the `.layer(..)` in `router_with_rerank` => red.
+    let (code, body) = post_rerank(&wrong).await;
+    assert_eq!(
+        code, 403,
+        "a wrong peer uid is refused on /v1/rerank: {body}"
     );
     let _ = std::fs::remove_file(&wrong);
 }
