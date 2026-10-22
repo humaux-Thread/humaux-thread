@@ -29,6 +29,9 @@ sha2 = "0.11"
 # trait (its own Cargo.toml doc explains the object-safety reason).
 # why: object-safe async traits for ports and transports; used-by: [domain::egress, domain::grounding]
 async-trait = "0.1"
+# §59.1 Authority.asserted_at: TIMESTAMPTZ-typed instant; pure value type, no I/O (same `time` the adapters resolve).
+# why: typed UTC instant for Authority.asserted_at; used-by: [domain::authority]
+time = "0.3"
 
 [dev-dependencies]
 # §7.3 T4.1 tests/ui/: proves `EgressPermit` has no construction path outside this crate
