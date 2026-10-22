@@ -2228,7 +2228,7 @@ fn g55_6_split_top_level(text: &str) -> Vec<&str> {
 fn g55_6_decl(part: &str) -> String {
     part.lines()
         .map(str::trim)
-        .filter(|line| !line.starts_with("//") && !line.starts_with("#["))
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
         .collect::<Vec<_>>()
         .join(" ")
 }
