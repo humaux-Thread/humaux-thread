@@ -43,6 +43,93 @@ const INSERT: &str = "INSERT INTO private.memory_records \
     (tenant_id, memory_type, content, visibility_class, authority_class, confidence, status, asserted_at) \
     VALUES ($1, 'NOTE', '{}'::jsonb, 'TENANT_SHARED', $2, $3, $4, $5)";
 
+// The confidence CHECK is declared inline/unnamed at 0004_private_evidence_memory.sql:130, so
+// PostgreSQL generates `<table>_<column>_check` for it. Pinning that exact name (not a
+// substring) keeps a later CHECK whose name also contains "confidence" from masking a dropped
+// bound (#175 item 1).
+const CONFIDENCE_CHECK: &str = "memory_records_confidence_check";
+
+/// The schema object a rejection must name — never inferred from the case label.
+enum Target {
+    Column(&'static str),
+    Constraint(&'static str),
+}
+
+/// One G59-5 injection: exactly one of the value fields is bad, as before.
+struct Injection {
+    label: &'static str,
+    class: Option<&'static str>,
+    confidence: Option<f32>,
+    status: Option<&'static str>,
+    asserted_at: Option<SystemTime>,
+    sqlstate: SqlState,
+    target: Target,
+}
+
+/// The six injected rows, in the order they run.
+fn injections(now: SystemTime) -> [Injection; 6] {
+    let ok_c = Some("PrivateKnowledge");
+    let ok_f = Some(0.5f32);
+    let ok_s = Some("active");
+    let ok_t = Some(now);
+    [
+        Injection {
+            label: "confidence=1.5",
+            class: ok_c,
+            confidence: Some(1.5),
+            status: ok_s,
+            asserted_at: ok_t,
+            sqlstate: SqlState::CHECK_VIOLATION,
+            target: Target::Constraint(CONFIDENCE_CHECK),
+        },
+        Injection {
+            label: "confidence=-0.5",
+            class: ok_c,
+            confidence: Some(-0.5),
+            status: ok_s,
+            asserted_at: ok_t,
+            sqlstate: SqlState::CHECK_VIOLATION,
+            target: Target::Constraint(CONFIDENCE_CHECK),
+        },
+        Injection {
+            label: "authority_class=NULL",
+            class: None,
+            confidence: ok_f,
+            status: ok_s,
+            asserted_at: ok_t,
+            sqlstate: SqlState::NOT_NULL_VIOLATION,
+            target: Target::Column("authority_class"),
+        },
+        Injection {
+            label: "confidence=NULL",
+            class: ok_c,
+            confidence: None,
+            status: ok_s,
+            asserted_at: ok_t,
+            sqlstate: SqlState::NOT_NULL_VIOLATION,
+            target: Target::Column("confidence"),
+        },
+        Injection {
+            label: "status=NULL",
+            class: ok_c,
+            confidence: ok_f,
+            status: None,
+            asserted_at: ok_t,
+            sqlstate: SqlState::NOT_NULL_VIOLATION,
+            target: Target::Column("status"),
+        },
+        Injection {
+            label: "asserted_at=NULL",
+            class: ok_c,
+            confidence: ok_f,
+            status: ok_s,
+            asserted_at: None,
+            sqlstate: SqlState::NOT_NULL_VIOLATION,
+            target: Target::Column("asserted_at"),
+        },
+    ]
+}
+
 #[test]
 fn g59_5_six_injections_are_rejected_by_the_schema() {
     run_db_fixture::<Fixture, _>("g59_5_six_injections", |mut handle| {
@@ -71,90 +158,7 @@ fn g59_5_six_injections_are_rejected_by_the_schema() {
         .expect("G59-5 positive control: a fully valid row must insert");
         sp.rollback().expect("rollback savepoint");
 
-        // The confidence CHECK is declared inline/unnamed at 0004_private_evidence_memory.sql:130,
-        // so PostgreSQL generates `<table>_<column>_check` for it. Pinning that exact name (not a
-        // substring) keeps a later CHECK whose name also contains "confidence" from masking a
-        // dropped bound (#175 item 1).
-        const CONFIDENCE_CHECK: &str = "memory_records_confidence_check";
-
-        /// The schema object a rejection must name — never inferred from the case label.
-        enum Target {
-            Column(&'static str),
-            Constraint(&'static str),
-        }
-
-        /// One injection row: exactly one of the value fields is bad, as before.
-        struct Injection {
-            label: &'static str,
-            class: Option<&'static str>,
-            confidence: Option<f32>,
-            status: Option<&'static str>,
-            asserted_at: Option<SystemTime>,
-            sqlstate: SqlState,
-            target: Target,
-        }
-
-        let ok_c = Some("PrivateKnowledge");
-        let ok_f = Some(0.5f32);
-        let ok_s = Some("active");
-        let ok_t = Some(now);
-        let cases = [
-            Injection {
-                label: "confidence=1.5",
-                class: ok_c,
-                confidence: Some(1.5),
-                status: ok_s,
-                asserted_at: ok_t,
-                sqlstate: SqlState::CHECK_VIOLATION,
-                target: Target::Constraint(CONFIDENCE_CHECK),
-            },
-            Injection {
-                label: "confidence=-0.5",
-                class: ok_c,
-                confidence: Some(-0.5),
-                status: ok_s,
-                asserted_at: ok_t,
-                sqlstate: SqlState::CHECK_VIOLATION,
-                target: Target::Constraint(CONFIDENCE_CHECK),
-            },
-            Injection {
-                label: "authority_class=NULL",
-                class: None,
-                confidence: ok_f,
-                status: ok_s,
-                asserted_at: ok_t,
-                sqlstate: SqlState::NOT_NULL_VIOLATION,
-                target: Target::Column("authority_class"),
-            },
-            Injection {
-                label: "confidence=NULL",
-                class: ok_c,
-                confidence: None,
-                status: ok_s,
-                asserted_at: ok_t,
-                sqlstate: SqlState::NOT_NULL_VIOLATION,
-                target: Target::Column("confidence"),
-            },
-            Injection {
-                label: "status=NULL",
-                class: ok_c,
-                confidence: ok_f,
-                status: None,
-                asserted_at: ok_t,
-                sqlstate: SqlState::NOT_NULL_VIOLATION,
-                target: Target::Column("status"),
-            },
-            Injection {
-                label: "asserted_at=NULL",
-                class: ok_c,
-                confidence: ok_f,
-                status: ok_s,
-                asserted_at: None,
-                sqlstate: SqlState::NOT_NULL_VIOLATION,
-                target: Target::Column("asserted_at"),
-            },
-        ];
-        for case in &cases {
+        for case in &injections(now) {
             let mut sp = txn.transaction().expect("savepoint");
             let err = sp
                 .execute(
