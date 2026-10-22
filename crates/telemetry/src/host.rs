@@ -5,7 +5,7 @@
 //!   readings; guest time is already included in user/nice; scrapes never read files]
 //! Spec: Baseline §41.2; §4.4; §78.1; ADR-0061 D-A
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use crate::metrics::{families, write_family};
@@ -88,7 +88,7 @@ impl HostSampler {
     }
 }
 
-fn read(path: &PathBuf) -> Option<String> {
+fn read(path: &Path) -> Option<String> {
     // dep: fs(proc) — missing/unreadable kernel interfaces are absent, not zero (§4.4).
     std::fs::read_to_string(path).ok()
 }
