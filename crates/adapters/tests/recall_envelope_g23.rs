@@ -54,9 +54,7 @@ use humaux_adapters::qdrant::{
 };
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus};
 use humaux_domain::dataclass::DataClass;
-use humaux_domain::identity::{
-    AuthorizationScope, BoundedSet, PrincipalId, VisibilityClass, VisibilityDescriptor,
-};
+use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId, VisibilityClass};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_domain::memory::MemoryType;
 use humaux_infra_cell::{
@@ -65,7 +63,7 @@ use humaux_infra_cell::{
     authorize_cell_access,
 };
 use humaux_projection::card::EgressDisposition;
-use humaux_projection::sparse::{CorpusDocument, build_sparse_lane};
+use humaux_projection::sparse::build_sparse_lane;
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::completeness::LedgerClosure;
 use humaux_retrieval::completeness::ledger::{self, LedgerReads};
@@ -835,24 +833,9 @@ fn g23_2_legal_deletion_contrast_stays_closed_across_four_lanes() {
     // supplies the real tenant/visibility filter, and the identical production
     // `qdrant::overlay_filter` folds the tombstone predicate into it, executed for real against
     // the same collection.
-    let sparse_lane = build_sparse_lane(
-        &scope,
-        &[],
-        &[CorpusDocument {
-            tenant_id: k.tenant_id,
-            visibility: VisibilityDescriptor {
-                class: VisibilityClass::UserPrivate,
-                user_id: Some(user_id),
-                workspace_id: None,
-            },
-            terms: vec!["placeholder".to_string()],
-        }],
-        &["placeholder".to_string()],
-        true,
-    );
+    let sparse_lane = build_sparse_lane(&scope, &[], true);
     let humaux_projection::sparse::SparseLane::Executed {
         filter: sparse_filter,
-        ..
     } = &sparse_lane
     else {
         panic!("sparse lane must actually run, not skip");

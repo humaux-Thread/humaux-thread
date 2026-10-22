@@ -6,8 +6,9 @@
 //!   counts (ADR-0057 D-A); build_projection_block is the only place completeness_ratio / current are computed
 //!   and the only producer of PROJECTION_INVISIBLE_LOSS / PROJECTION_LAG, composed loss-then-lag (ADR-0057 D-E);
 //!   PendingEnvelope::finish is the only path to both final retrieval metrics, a dropped pending records neither
-//!   (ADR-0061 D-C)]
-//! Spec: §23; §23.1; §41.2; ADR-0057; ADR-0061 D-C
+//!   (ADR-0061 D-C); sparse_lane_unavailable is the only producer of SPARSE_LANE_UNAVAILABLE and returns it with the
+//!   Failed lane status, so the two are never reported apart (ADR-0083 D-C)]
+//! Spec: §23; §23.1; §41.2; ADR-0057; ADR-0061 D-C; ADR-0083 D-C
 //!
 //! Assembles the five blocks
 //! (`pipeline` / `completeness` / `provenance` / `freshness` / `grounding`) and, most
@@ -676,6 +677,8 @@ pub fn dense_lane_outcome_block<T>(
 /// ADR-0055 D-C / §53.1: the one place `LANE_SUBSTITUTED` fires — through `abstain()` — when the
 /// planner's decision names a lane other than dense and the caller sent no `mode`. An explicit
 /// `mode` (only `semantic` reaches here) means the caller chose dense: nothing was substituted.
+/// ADR-0083 D-C: the sparse (BM25) leg is lexical recall inside the semantic answer, not the literal or
+/// association lane the planner may name, so its presence moves nothing here.
 pub fn dense_lane_substitution(
     decision: &PlannerDecision,
     explicit_mode: bool,
@@ -686,6 +689,20 @@ pub fn dense_lane_substitution(
     abstain(DegradeCode::LaneSubstituted, ())
         .degradations
         .into_vec()
+}
+
+/// ADR-0083 D-C / §53.1: the one place `SPARSE_LANE_UNAVAILABLE` fires — through `abstain()` — when the sparse leg
+/// failed (a transport error, a timeout, a non-2xx reply or a reply of unexpected shape) and the answer comes from
+/// the dense leg alone. It returns the lane's status together with the degradation so the two cannot be reported
+/// apart: a failed sparse lane is never silent, and the code never fires for a lane that did not fail. The answer is
+/// still returned, so by §52.3 Q1 this is a `DegradeCode` and no `ErrorCode`; a dense-leg failure is not routed here.
+pub fn sparse_lane_unavailable() -> (LaneStatus, Vec<DegradeCode>) {
+    (
+        LaneStatus::Failed,
+        abstain(DegradeCode::SparseLaneUnavailable, ())
+            .degradations
+            .into_vec(),
+    )
 }
 
 fn outcome_block_under<T>(

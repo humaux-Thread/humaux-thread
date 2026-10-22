@@ -50,8 +50,3 @@ reason = "Provisional owner: `state_pin` appears nowhere in code or spec outside
 variant = "StatePinAmbiguous"
 owner = "M14"
 reason = "Provisional owner, as StatePinMissing. Retirement candidate (ADR-0077): decide at the spec-maintenance ADR pass."
-
-[[dormant]]
-variant = "SparseLaneUnavailable"
-owner = "M11-RET6c2"
-reason = "No production emit site yet: the sparse leg is wired by T-RET-6c-2 (ADR-0083 D-C), which emits it through abstain(), deletes this row and rewrites the fault test to drive the production function (G-RET-10)."

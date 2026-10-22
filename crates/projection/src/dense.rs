@@ -1,7 +1,7 @@
 //! `projection::dense` — dense lane 查询构造：自动注入 `tenant + §6.1 AuthorizationScope visibility filter`（§17.1）。
 //! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::affect, domain::identity,
 //!   domain::ids, domain::subject]
-//! Called-by: [adapters::qdrant, adapters::rebuild, adapters::retrieve, projection::sparse, tests]
+//! Called-by: [adapters::qdrant, adapters::rebuild, adapters::retrieve, gateway::recall, projection::sparse, tests]
 //! Invariants: [DenseQueryFilter can only be built by build_dense_filter from a mandatory &AuthorizationScope, so
 //!   every private dense query carries the tenant + visibility filter (§17.1); servable() and in_workspace() only narrow (ADR-0055);
 //!   StreamCountFilter (ops-only, no visibility arm) is built only by build_stream_count_filter and is accepted

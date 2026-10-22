@@ -5,7 +5,7 @@
 //! Invariants: [execute takes a resource-relative path plus a CellAccessPermit, never a URL; paths are validated,
 //!   resolved addresses must be in-Cell and not metadata/link-local, redirects are refused; every failure is a typed
 //!   IntraCellError]
-//! Spec: Baseline §83.4; ADR-0003
+//! Spec: Baseline §83.4; ADR-0003; ADR-0068 D-E; ADR-0083 D-C
 //!
 //! [`IntraCellHttpTransport::execute`] takes an [`IntraCellRequest`] (a resource-relative
 //! path + optional JSON body) plus a [`CellAccessPermit`], not a bare URL. [`validate_path`]
@@ -222,13 +222,17 @@ fn is_dot_dot_segment(segment: &str) -> bool {
 }
 
 /// Qdrant REST path suffixes a [`CellAccessMode::QdrantReadOnly`] permit's `POST` may target —
-/// 2026-08-30 ruling's exact allowlist: search/query/scroll/count, never a mutating endpoint
-/// (`/points`, `/collections`, `/snapshots`, …). Matched by suffix, not exact equality, so a
-/// per-collection path (`/collections/{name}/points/search`) still matches.
-const QDRANT_READ_ONLY_POST_SUFFIXES: [&str; 5] = [
+/// 2026-08-30 ruling's allowlist of read-shaped endpoints: search/query/scroll/count, never a
+/// mutating endpoint (`/points`, `/collections`, `/snapshots`, …). The grouped query
+/// (`/points/query/groups`) is one of them: it reads exactly what `/points/query` reads, one hit
+/// per group, and both the grouped dense leg (ADR-0068 D-E) and the sparse leg (ADR-0083 D-C)
+/// post there. Matched by suffix, not exact equality, so a per-collection path
+/// (`/collections/{name}/points/search`) still matches.
+const QDRANT_READ_ONLY_POST_SUFFIXES: [&str; 6] = [
     "/points/search",
     "/points/search/batch",
     "/points/query",
+    "/points/query/groups",
     "/points/scroll",
     "/points/count",
 ];
@@ -1304,6 +1308,66 @@ mod tests {
             )
             .await;
         assert!(!matches!(result, Err(IntraCellError::WriteDenied)));
+    }
+
+    /// The grouped query is a read-shaped endpoint: ADR-0068 D-E's grouped dense leg and ADR-0083 D-C's sparse leg both
+    /// `POST /points/query/groups?consistency=…` through the production `QdrantReadOnly` permit, and a suffix list
+    /// without it denied both with `WriteDenied` (T-RET-6c-2, run 39757704567). Denial would surface as `WriteDenied`,
+    /// never a DNS error, since the resolver here always fails.
+    /// Fault: drop `"/points/query/groups"` from [`QDRANT_READ_ONLY_POST_SUFFIXES`] ⇒ red.
+    #[tokio::test]
+    async fn read_only_permit_admits_post_points_query_groups_with_consistency_param() {
+        let cell = CellId(uuid::Uuid::now_v7());
+        let registry = registry_read_only("10.0.0.0/8", cell);
+        let permit = permit_for(&registry);
+        struct AlwaysErr;
+        impl DnsResolve for AlwaysErr {
+            fn resolve(&self, host: &str, _port: u16) -> Result<Vec<IpAddr>, IntraCellError> {
+                Err(IntraCellError::DnsResolutionFailed(host.to_string()))
+            }
+        }
+        let transport = HttpIntraCellTransport::with_resolver(
+            registry,
+            Duration::from_secs(1),
+            DEFAULT_MAX_RESPONSE_BYTES,
+            Arc::new(AlwaysErr),
+        )
+        .unwrap();
+        let result = transport
+            .execute(
+                &permit,
+                request(
+                    IntraCellMethod::Post,
+                    "/collections/x/points/query/groups?consistency=quorum",
+                ),
+            )
+            .await;
+        assert!(!matches!(result, Err(IntraCellError::WriteDenied)));
+    }
+
+    /// The new suffix must not widen what a mutating endpoint can smuggle: `/points/delete` with the grouped-query
+    /// suffix in its query string stays refused (the path component alone is matched).
+    #[tokio::test]
+    async fn read_only_permit_denies_groups_suffix_smuggled_in_a_mutating_query_string() {
+        let cell = CellId(uuid::Uuid::now_v7());
+        let registry = registry_read_only("10.0.0.0/8", cell);
+        let permit = permit_for(&registry);
+        let transport = HttpIntraCellTransport::new(
+            registry,
+            Duration::from_secs(1),
+            DEFAULT_MAX_RESPONSE_BYTES,
+        )
+        .unwrap();
+        let result = transport
+            .execute(
+                &permit,
+                request(
+                    IntraCellMethod::Post,
+                    "/collections/x/points/delete?zz=/points/query/groups",
+                ),
+            )
+            .await;
+        assert_eq!(result, Err(IntraCellError::WriteDenied));
     }
 
     /// A mutating endpoint must not be able to smuggle an allowlisted suffix into its query

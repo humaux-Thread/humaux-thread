@@ -1,16 +1,16 @@
 //! `gateway::recall` — Native authenticated semantic recall wiring.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell,
-//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
+//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::sparse, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
-//! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for cand_k for this request's workspace stream only; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions answer() exhaustively and is reported only when every lap followed LAP_SEQUENCE; search() hands the query-hash log row to a bounded, supervised spawn after answer() returns, once per answered recall, and never awaits the insert, so no lap, no LAP_SEQUENCE entry, no response byte and no handler deadline depends on it, and a failed or dropped insert never fails the recall (ADR-0081 D-A)]
-//! Spec: Baseline §17.3; §19.1; §23.3; §33; §48.1; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056; ADR-0081
+//! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for leg_depth Memories per leg for this request's workspace stream only, the dense and the sparse leg concurrently with one filter (ADR-0083 D-C), and the memory-level RRF of the two legs is cut to cand_k before the PG gate, which runs on that fused list unchanged; the sparse leg alone is bounded by the registered sparse_timeout_ms and its elapse is a sparse failure; a sparse-leg failure answers from the dense leg through retrieval::envelope::sparse_lane_unavailable (emitted in accepted_output, never before the hydrate gate) and never fails the recall, a dense-leg failure is the typed error as before; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions answer() exhaustively and is reported only when every lap followed LAP_SEQUENCE, with qdrant_sparse as a sub-timing contained in qdrant (present only when the sparse leg ran); search() hands the query-hash log row to a bounded, supervised spawn after answer() returns, once per answered recall, and never awaits the insert, so no lap, no LAP_SEQUENCE entry, no response byte and no handler deadline depends on it, and a failed or dropped insert never fails the recall (ADR-0081 D-A)]
+//! Spec: Baseline §17.3; §17.6; §19.1; §23.3; §33; §48.1; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056; ADR-0081; ADR-0083
 //!
 //! This module composes the existing request builder, the retrieval-worker query embedding
 //! (which alone seals the query, ADR-0056 D-C), same-Cell Qdrant candidate lookup, and the sole
 //! PostgreSQL final hydration boundary. It owns no alternate search or body fallback.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -19,9 +19,11 @@ use humaux_adapters::{
     affect_repo,
     placement_repo::tenant_placement,
     postgres::RuntimeDbPool,
+    projection_worker::in_cell_text_processing_allowed,
     qdrant::{
-        DenseQuery, DenseQueryVersions, QdrantOperation, RetrievalFamily, ha_profile_for,
-        query_dense, query_dense_groups_bounded,
+        DenseCandidate, DenseQuery, DenseQueryVersions, PointId, QdrantOperation,
+        QdrantTransportError, RetrievalFamily, ha_profile_for, query_dense,
+        query_dense_groups_bounded, query_sparse_groups,
     },
     read_materialize::MaterializedItem,
     retrieval_query_log::QueryLogCounts,
@@ -53,7 +55,11 @@ use humaux_infra_cell::{
     CellAccessPermit, IntraCellHttpTransport, IntraCellResource, IntraCellResourceRegistry,
     authorize_cell_access,
 };
-use humaux_projection::stream::StreamKey;
+use humaux_projection::{
+    dense::DenseQueryFilter,
+    sparse::{SparseLane, build_sparse_lane},
+    stream::StreamKey,
+};
 use humaux_protocol::{
     mcp::{ToolName, ToolOutput},
     mcp_catalog::CanonicalCatalog,
@@ -64,7 +70,7 @@ use humaux_retrieval::{
         CompletenessBlock, CompletenessInputs, Envelope, FreshnessBlock, LaneStatus,
         MandatoryReport, PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock,
         ProvenanceBlock, ProvenanceValue, build_projection_block, dense_lane_outcome_block,
-        dense_lane_substitution, no_serving_projection_envelope,
+        dense_lane_substitution, no_serving_projection_envelope, sparse_lane_unavailable,
     },
     planner::QueryClass,
 };
@@ -251,7 +257,8 @@ enum Stage {
     Scan,
     /// the `embed_query` RPC (worker scan + provider + ledger).
     Embed,
-    /// tombstoned-seq read + the chunk policy read + `query_dense` / `query_dense_groups`.
+    /// tombstoned-seq read + the chunk policy read + the dense and the sparse leg (concurrently, ADR-0083 D-C) + their
+    /// memory-level RRF.
     Qdrant,
     /// `materialize_private_read_serving_about` (the PG gate).
     Hydrate,
@@ -281,6 +288,11 @@ const LAP_SEQUENCE: [Stage; 9] = [
     Stage::Assemble,
 ];
 
+/// ADR-0083 U7: the sparse leg's own wall time, reported beside the eight stages. It is a sub-timing CONTAINED in
+/// `qdrant` (the two legs run concurrently, so no lap can own it), not a ninth stage: it joins no sum of the stages and
+/// is present only when the leg ran.
+const SPARSE_SUB_TIMING: &str = "qdrant_sparse";
+
 /// Monotonic lap clock over [`Stage`]; a stage entered twice (route) accumulates.
 struct StageClock {
     start: Instant,
@@ -288,6 +300,8 @@ struct StageClock {
     ms: [f64; 8],
     /// Laps taken so far, or `None` once a lap broke [`LAP_SEQUENCE`].
     laps: Option<usize>,
+    /// The sparse leg's own duration (ms), when it ran.
+    sparse_ms: Option<f64>,
 }
 
 impl StageClock {
@@ -298,7 +312,13 @@ impl StageClock {
             last: now,
             ms: [0.0; 8],
             laps: Some(0),
+            sparse_ms: None,
         }
+    }
+
+    /// Records how long the sparse leg took on its own (ADR-0083 U7); it never moves a lap.
+    fn note_sparse(&mut self, elapsed: Duration) {
+        self.sparse_ms = Some(elapsed.as_secs_f64() * 1_000.0);
     }
 
     fn lap(&mut self, stage: Stage) {
@@ -311,7 +331,8 @@ impl StageClock {
             .map(|n| n + 1);
     }
 
-    /// `{route, …, assemble, total}` in ms at 0.1 ms resolution; `total` = entry → now.
+    /// `{route, …, assemble, total}` (plus [`SPARSE_SUB_TIMING`] when the sparse leg ran) in ms at 0.1 ms resolution;
+    /// `total` = entry → now.
     /// A clock whose laps did not follow [`LAP_SEQUENCE`] exactly reports `total` only: its
     /// per-stage split would misattribute time, and a missing key is what the stage tests and
     /// the soak's `recall.stage.*` sampler refuse (no fake zeros).
@@ -321,6 +342,9 @@ impl StageClock {
         if self.laps == Some(LAP_SEQUENCE.len()) {
             for (name, ms) in STAGE_NAMES.iter().zip(self.ms) {
                 map.insert((*name).to_owned(), json!(round(ms)));
+            }
+            if let Some(ms) = self.sparse_ms {
+                map.insert(SPARSE_SUB_TIMING.to_owned(), json!(round(ms)));
             }
         } else {
             eprintln!(
@@ -649,9 +673,25 @@ async fn answer(
             eprintln!("humaux-gateway: recall request_id={request_id} tombstone_read_failed");
             ErrorCode::DependencyUnavailable
         })?;
-    // §23.3 / ADR-0055 D-A: ask Qdrant for `cand_k`, not `top_k` — the PG gate below drops
+    // §23.3 / ADR-0055 D-A: the candidate pool is `cand_k`, not `top_k` — the PG gate below drops
     // archived/superseded/secret/tombstoned rows, and truncation to the returned depth happens
-    // only after it and the mood rerank.
+    // only after it and the mood rerank. ADR-0083 D-C: each leg asks Qdrant for `leg_depth` Memories and the fused list
+    // is cut to `cand_k` (below), so the fusion sees the depth the experiments measured.
+    //
+    // ADR-0083 D-C: the sparse leg runs only when the profile enables it and tenant policy allows in-Cell text
+    // processing (`build_sparse_lane`, the one SKIPPED_BY_POLICY decision); otherwise its lane is `not_required` (U5)
+    // and nothing is sent. Decided before the dense query is built: without a sparse leg there is nothing to fuse with,
+    // so the dense leg asks for `cand_k` Memories as before and a grouped refill is not spent on a depth nobody reads.
+    let sparse_corpus = sparse_corpus_filter(
+        bootstrap.profile.sparse_leg_enabled(),
+        in_cell_text_processing_allowed(authorization.tenant_id()),
+        &authorization,
+    );
+    let leg_limit = if sparse_corpus.is_some() {
+        bootstrap.profile.leg_depth()
+    } else {
+        retrieval.cand_k()
+    };
     let dense = DenseQuery::new(
         &authorization,
         &placement,
@@ -660,7 +700,7 @@ async fn answer(
             embedding: &runtime.embedding_version,
         },
         vector,
-        retrieval.cand_k(),
+        leg_limit,
         Vec::new(),
         ha_profile_for(QdrantOperation::ReadYourWriteStrict),
     )
@@ -678,18 +718,21 @@ async fn answer(
         ErrorCode::DependencyUnavailable
     })?;
     let permit = runtime.qdrant_permit()?;
-    let candidates = if grouped {
-        query_dense_groups_bounded(
+    // ADR-0083 D-C: the dense and the sparse leg run concurrently, both scoped by `dense`'s one filter; the sparse leg
+    // alone is bounded by the registered `sparse_timeout_ms`, so a hung sparse request degrades instead of spending the
+    // handler deadline.
+    let (dense_outcome, sparse_outcome) = tokio::join!(
+        dense_leg(runtime.qdrant.as_ref(), &permit, &dense, grouped),
+        sparse_leg(
             runtime.qdrant.as_ref(),
             &permit,
             &dense,
-            RETRIEVAL_GROUP_QUERY_MAX_CALLS,
-        )
-        .await
-    } else {
-        query_dense(runtime.qdrant.as_ref(), &permit, &dense).await
-    };
-    let candidates = candidates.map_err(|error| {
+            trusted_query.text(),
+            sparse_corpus.as_ref(),
+            Duration::from_millis(u64::from(bootstrap.profile.sparse_timeout_ms())),
+        ),
+    );
+    let dense_candidates = dense_outcome.map_err(|error| {
         // ADR-0014: a `WriteDenied` here means the registered `QDRANT_REST` entry itself is
         // misconfigured (a read-only permit rejected a request `query_dense` never should
         // have shaped as a write) — a Forbidden, not a transient dependency failure a
@@ -707,6 +750,34 @@ async fn answer(
             ErrorCode::DependencyUnavailable
         }
     })?;
+    // ADR-0083 D-C: a sparse-leg failure never fails the recall — the answer comes from the dense leg, the sparse lane
+    // reads `failed` and `SPARSE_LANE_UNAVAILABLE` is reported (never silent). The code itself is emitted in
+    // `accepted_output`, beside LANE_SUBSTITUTED, so a later error never leaves a counted degrade without a finished
+    // retrieval. A dense-leg failure was refused above.
+    let mut sparse_candidates = Vec::new();
+    let mut sparse = SparseLeg::NotRun;
+    if let Some((outcome, elapsed)) = sparse_outcome {
+        clock.note_sparse(elapsed);
+        match outcome {
+            Ok(found) => {
+                sparse_candidates = found;
+                sparse = SparseLeg::Answered;
+            }
+            Err(error) => {
+                eprintln!(
+                    "humaux-gateway: recall request_id={request_id} sparse_leg_failed class={}",
+                    sparse_failure_class(&error)
+                );
+                sparse = SparseLeg::Failed;
+            }
+        }
+    }
+    let candidates = fuse_rrf(
+        [dense_candidates.as_slice(), sparse_candidates.as_slice()],
+        bootstrap.profile.rrf_k(),
+        grouped,
+        retrieval.cand_k() as usize,
+    );
     clock.lap(Stage::Qdrant);
     let mut materialized = materialize_private_read_serving_about(
         &pool,
@@ -817,8 +888,147 @@ async fn answer(
         &catalog,
         visible,
         input.mode.is_some(),
+        sparse,
         clock,
     )
+}
+
+/// The dense leg (unchanged request shape, ADR-0083 D-C): grouped by Memory when the serving projection chunks long
+/// notes (ADR-0068 D-E), plain points otherwise; `query` carries `leg_depth` as its limit.
+async fn dense_leg(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    query: &DenseQuery,
+    grouped: bool,
+) -> Result<Vec<DenseCandidate>, QdrantTransportError> {
+    if grouped {
+        query_dense_groups_bounded(transport, permit, query, RETRIEVAL_GROUP_QUERY_MAX_CALLS).await
+    } else {
+        query_dense(transport, permit, query).await
+    }
+}
+
+/// Why a sparse leg that ran did not answer (ADR-0083 D-C): the registered budget elapsed, or Qdrant failed.
+enum SparseFailure {
+    Timeout,
+    Qdrant(QdrantTransportError),
+}
+
+/// A sparse leg that ran: its candidates or its failure, and its own wall time (ADR-0083 U7).
+type SparseLegRun = (Result<Vec<DenseCandidate>, SparseFailure>, Duration);
+
+/// The sparse leg (ADR-0083 D-C): `None` when it does not run, otherwise its [`SparseLegRun`]. Sends the exact query
+/// bytes (§20.0) under the dense leg's filter and `corpus` as the IDF corpus. Only this leg is bounded by `budget`
+/// (the registered `sparse_timeout_ms`): the transport's own timeout equals the handler's, so without it a hung sparse
+/// request would hold the join until the handler deadline fires and fail the whole recall.
+async fn sparse_leg(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    query: &DenseQuery,
+    text: &str,
+    corpus: Option<&DenseQueryFilter>,
+    budget: Duration,
+) -> Option<SparseLegRun> {
+    let corpus = corpus?;
+    let started = Instant::now();
+    let outcome = match tokio::time::timeout(
+        budget,
+        query_sparse_groups(transport, permit, query, text, corpus),
+    )
+    .await
+    {
+        Ok(answered) => answered.map_err(SparseFailure::Qdrant),
+        Err(_elapsed) => Err(SparseFailure::Timeout),
+    };
+    Some((outcome, started.elapsed()))
+}
+
+/// ADR-0083 D-A / D-E, U5 / U6: the IDF-corpus filter of the sparse leg, or `None` when the leg does not run — the
+/// profile has not enabled it (U6: after the T-RET-6b backfill reads zero missing) or tenant policy forbids in-Cell
+/// text processing (`SKIPPED_BY_POLICY`, §17.6). Pure over its three inputs so the 2x2 decision is testable; the caller
+/// reads `enabled` from the registered profile and `text_processing_allowed` from the one function the write path uses.
+fn sparse_corpus_filter(
+    enabled: bool,
+    text_processing_allowed: bool,
+    scope: &AuthorizationScope,
+) -> Option<DenseQueryFilter> {
+    if !enabled {
+        return None;
+    }
+    match build_sparse_lane(scope, &[], text_processing_allowed) {
+        SparseLane::Executed { filter } => Some(filter),
+        SparseLane::SkippedByPolicy => None,
+    }
+}
+
+/// What the sparse leg did in one recall (ADR-0083 D-C, U5). The lane status and the degradation are derived from it in
+/// [`accepted_output`], where `LANE_SUBSTITUTED` is emitted too.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SparseLeg {
+    /// It did not run: `not_required`.
+    NotRun,
+    Answered,
+    Failed,
+}
+
+/// The error class only, for the operator line: never a body, a URL or any part of the query (ADR-0014).
+fn sparse_failure_class(failure: &SparseFailure) -> &'static str {
+    match failure {
+        SparseFailure::Timeout => "timeout",
+        SparseFailure::Qdrant(QdrantTransportError::Transport(_)) => "transport",
+        SparseFailure::Qdrant(QdrantTransportError::NonSuccessStatus { .. }) => "non_2xx",
+        SparseFailure::Qdrant(QdrantTransportError::UnexpectedResponseShape(_)) => {
+            "unexpected_shape"
+        }
+        SparseFailure::Qdrant(
+            QdrantTransportError::InvalidCollectionName(_)
+            | QdrantTransportError::InvalidDenseQuery(_),
+        ) => "invalid_query",
+    }
+}
+
+/// The identity two legs agree on: the Memory when the dense leg is grouped by Memory, the point otherwise (a plain
+/// dense hit carries no `memory_id`, and one point is one Memory there). A `Num` point id never occurs in a private
+/// projection (the hydrate gate refuses it); it maps to a distinct key so it is neither merged nor dropped.
+fn fusion_key(candidate: &DenseCandidate, by_memory: bool) -> Uuid {
+    match (by_memory, candidate.memory_id, candidate.point_id) {
+        (true, Some(memory_id), _) => memory_id,
+        (_, _, PointId::Uuid(point)) => point,
+        (_, _, PointId::Num(number)) => Uuid::from_u128(u128::from(number)),
+    }
+}
+
+/// ADR-0083 D-C: reciprocal-rank fusion of the two legs over Memory ranks, in the gateway.
+/// `score(m) = sum 1 / (rrf_k + rank)` over the legs that returned `m`, ranks 1-based; ties break by the identity
+/// ([`fusion_key`], the `memory_id` when grouped) ascending, never by arrival order. The result is cut to `cap`
+/// (`cand_k`) and each candidate's `score` is its fused score; with an empty leg it is the other leg's order.
+/// Which candidate (point) stands for a Memory seen by both legs is the dense leg's: the PG gate resolves any of a
+/// Memory's points to the same Memory.
+fn fuse_rrf(
+    legs: [&[DenseCandidate]; 2],
+    rrf_k: u32,
+    by_memory: bool,
+    cap: usize,
+) -> Vec<DenseCandidate> {
+    let mut slot: HashMap<Uuid, usize> = HashMap::new();
+    let mut fused: Vec<(Uuid, DenseCandidate)> = Vec::new();
+    for leg in legs {
+        for (index, candidate) in leg.iter().enumerate() {
+            let key = fusion_key(candidate, by_memory);
+            let share = 1.0 / (f64::from(rrf_k) + (index + 1) as f64);
+            let at = *slot.entry(key).or_insert(fused.len());
+            if at == fused.len() {
+                let mut first = candidate.clone();
+                first.score = share;
+                fused.push((key, first));
+            } else {
+                fused[at].1.score += share;
+            }
+        }
+    }
+    fused.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then_with(|| a.0.cmp(&b.0)));
+    fused.truncate(cap);
+    fused.into_iter().map(|(_, candidate)| candidate).collect()
 }
 
 /// ADR-0055 D-A: keeps the first `keep` memory items (current order) and every overlay item
@@ -879,6 +1089,7 @@ fn accepted_output(
     catalog: &CanonicalCatalog,
     visible: Option<u64>,
     explicit_mode: bool,
+    sparse: SparseLeg,
     mut clock: StageClock,
 ) -> Result<(PendingEnvelope<ToolOutput>, QueryLogCounts), ErrorCode> {
     let items = render_items(materialized.bodies.items);
@@ -913,9 +1124,15 @@ fn accepted_output(
             top_k: request.top_k(),
             cand_k: request.cand_k(),
             cand_k_formula: request.cand_k_formula(),
-            lanes: vec!["dense".to_owned()],
+            // The legs this answer ran: the sparse leg is a profile lane once it ran, `ok` or `failed` (ADR-0083 D-C).
+            lanes: std::iter::once("dense")
+                .chain((sparse != SparseLeg::NotRun).then_some("sparse"))
+                .map(str::to_owned)
+                .collect(),
         },
     };
+    // The classifier judges the lane whose answer this is (dense); a failed sparse leg degrades, it does not make the
+    // answer unestablishable (ADR-0083 D-C, §52.3 Q1).
     let lane_status = LaneStatus::Ok;
     let census = CensusResult::ok_without_enumeration();
     let planner_class = request
@@ -923,6 +1140,22 @@ fn accepted_output(
         .wire_class()
         .map_or("CANNOT_ESTABLISH", QueryClass::as_wire_name);
     let substituted = dense_lane_substitution(request.planner_decision(), explicit_mode);
+    // ADR-0083 D-C / §53.1: a failed sparse leg is counted here, with `LANE_SUBSTITUTED`, once the answer is being
+    // assembled — never before the hydrate gate, where a later error would leave a counted degrade without a retrieval.
+    let (sparse_lane, sparse_degradations) = match sparse {
+        SparseLeg::NotRun => (LaneStatus::NotRequired, Vec::new()),
+        SparseLeg::Answered => (LaneStatus::Ok, Vec::new()),
+        SparseLeg::Failed => {
+            let (lane, codes) = sparse_lane_unavailable();
+            (
+                lane,
+                codes
+                    .into_iter()
+                    .map(|code| code.line_format())
+                    .collect::<Vec<String>>(),
+            )
+        }
+    };
     // The object the answer reports as `provenance.stage_ms`, kept for the query-hash log (ADR-0081 D-A).
     let mut stage_ms = None;
     let pending = dense_lane_outcome_block(
@@ -946,7 +1179,10 @@ fn accepted_output(
                     reason: outcome.reason,
                     exact: outcome.exact,
                     known_lower_bound: outcome.known_lower_bound,
-                    lanes: std::collections::BTreeMap::from([("dense".to_owned(), lane_status)]),
+                    lanes: std::collections::BTreeMap::from([
+                        ("dense".to_owned(), lane_status),
+                        ("sparse".to_owned(), sparse_lane),
+                    ]),
                     candidate_count,
                     reranked_count,
                     returned,
@@ -956,6 +1192,7 @@ fn accepted_output(
                         .iter()
                         .chain(&substituted)
                         .map(|code| code.line_format())
+                        .chain(sparse_degradations.iter().cloned())
                         .collect(),
                 },
                 pipeline: pipeline.clone(),
@@ -1043,6 +1280,8 @@ fn render_items(items: Vec<MaterializedItem>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humaux_domain::identity::{BoundedSet, PrincipalId};
+    use humaux_projection::dense::build_dense_filter;
 
     fn clock_after(laps: &[Stage]) -> Value {
         let mut clock = StageClock::start();
@@ -1084,5 +1323,155 @@ mod tests {
                 "{label}: {broken}"
             );
         }
+    }
+
+    fn scope() -> AuthorizationScope {
+        AuthorizationScope::new(
+            TenantId::new(),
+            PrincipalId::new(),
+            None,
+            BoundedSet::new(Vec::<WorkspaceId>::new()).expect("empty workspace set"),
+        )
+    }
+
+    /// ADR-0083 U5 / U6 / D-A, the gateway's sparse decision as a 2x2 truth table: the leg runs only when the profile
+    /// enables it AND tenant policy allows in-Cell text processing, and then its corpus filter is exactly the
+    /// unnarrowed tenant + visibility predicate (`build_dense_filter` with no narrowing), never anything wider.
+    /// Fault: ignore the policy input (pass `true` on to `build_sparse_lane`), ignore `enabled`, or build the corpus
+    /// from anything but the scope's own predicate ⇒ red.
+    #[test]
+    fn sparse_corpus_filter_follows_the_flag_and_the_policy_and_is_the_authorization_predicate() {
+        let scope = scope();
+        for (enabled, allowed, runs) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let corpus = sparse_corpus_filter(enabled, allowed, &scope);
+            assert_eq!(
+                corpus.is_some(),
+                runs,
+                "enabled={enabled} allowed={allowed}"
+            );
+            if let Some(corpus) = corpus {
+                assert_eq!(
+                    corpus.as_condition(),
+                    build_dense_filter(&scope, &[]).as_condition()
+                );
+            }
+        }
+    }
+
+    /// ADR-0083 U7: the sparse leg's own time is a sub-timing beside the eight stages: present only when the leg ran
+    /// (and the laps were whole), never one of the eight, and it moves no lap.
+    #[test]
+    fn sparse_sub_timing_rides_beside_the_stages_only_when_the_leg_ran() {
+        let mut clock = StageClock::start();
+        for stage in LAP_SEQUENCE {
+            clock.lap(stage);
+        }
+        assert!(clock.to_json().get(SPARSE_SUB_TIMING).is_none());
+        clock.note_sparse(Duration::from_millis(7));
+        let report = clock.to_json();
+        assert_eq!(report[SPARSE_SUB_TIMING], json!(7.0));
+        for name in STAGE_NAMES {
+            assert!(report[name].is_f64(), "{name} missing: {report}");
+        }
+        assert!(
+            !STAGE_NAMES.contains(&SPARSE_SUB_TIMING),
+            "a sub-timing is not a stage"
+        );
+    }
+
+    fn leg(entries: &[(u128, Option<u128>)]) -> Vec<DenseCandidate> {
+        entries
+            .iter()
+            .map(|(point, memory)| DenseCandidate {
+                point_id: PointId::Uuid(Uuid::from_u128(*point)),
+                score: 0.0,
+                memory_id: memory.map(Uuid::from_u128),
+            })
+            .collect()
+    }
+
+    fn fused_memories(fused: &[DenseCandidate]) -> Vec<u128> {
+        fused
+            .iter()
+            .map(|c| c.memory_id.expect("grouped fixture").as_u128())
+            .collect()
+    }
+
+    /// G-RET-9 (ADR-0083 D-C): `score(m) = sum 1 / (rrf_k + rank)` over the legs that returned `m`, ranks 1-based. A
+    /// Memory both legs found outranks one a single leg found at the same depth, and a Memory only the sparse leg found
+    /// is ordered by that one contribution.
+    /// Fault: drop a leg from the sum, or count ranks from 0 ⇒ red.
+    #[test]
+    fn rrf_sums_reciprocal_ranks_over_the_legs_that_found_the_memory() {
+        // dense: 1, 2, 3 ; sparse: 3, 4 — 3 is found by both (ranks 3 and 1).
+        let dense = leg(&[(11, Some(1)), (12, Some(2)), (13, Some(3))]);
+        let sparse = leg(&[(23, Some(3)), (24, Some(4))]);
+        let fused = fuse_rrf([&dense, &sparse], 60, true, 10);
+        // 3 leads on 1/63 + 1/61; 1 is 1/61; 2 (dense rank 2) and 4 (sparse rank 2) tie on 1/62, 2 first by id.
+        assert_eq!(fused_memories(&fused), [3, 1, 2, 4]);
+        let expected = 1.0 / 63.0 + 1.0 / 61.0;
+        assert!(
+            (fused[0].score - expected).abs() < 1e-12,
+            "{}",
+            fused[0].score
+        );
+        assert!(
+            (fused[3].score - 1.0 / 62.0).abs() < 1e-12,
+            "one leg, rank 2"
+        );
+        // The dense leg's point stands for a Memory both legs found.
+        assert_eq!(fused[0].point_id, PointId::Uuid(Uuid::from_u128(13)));
+        // The cut keeps the best `cap`.
+        assert_eq!(
+            fused_memories(&fuse_rrf([&dense, &sparse], 60, true, 2)),
+            [3, 1]
+        );
+    }
+
+    /// G-RET-9 (ADR-0083 D-C): equal scores order by `memory_id` ascending, never by arrival: the same two legs given in
+    /// either order, and with the tied entries permuted inside their legs, give one list.
+    /// Fault: break ties by insertion order (a stable sort on the score alone) ⇒ red.
+    #[test]
+    fn rrf_ties_order_by_memory_id_ascending_and_repeat_identically() {
+        // Memory 9 is dense rank 1, memory 2 is sparse rank 1, memory 5 is dense rank 2 and sparse rank 2 is memory 7:
+        // 9 ties 2 (1/61) and 5 ties 7 (1/62).
+        let dense = leg(&[(19, Some(9)), (15, Some(5))]);
+        let sparse = leg(&[(22, Some(2)), (27, Some(7))]);
+        let forward = fuse_rrf([&dense, &sparse], 60, true, 10);
+        assert_eq!(fused_memories(&forward), [2, 9, 5, 7]);
+        let swapped = fuse_rrf([&sparse, &dense], 60, true, 10);
+        assert_eq!(
+            fused_memories(&swapped),
+            [2, 9, 5, 7],
+            "leg order is not a tie-break"
+        );
+        assert_eq!(forward, fuse_rrf([&dense, &sparse], 60, true, 10), "repeat");
+    }
+
+    /// ADR-0083 D-C: a plain (ungrouped) dense leg carries no `memory_id`, so the legs agree on the point; a sparse hit
+    /// of the same point merges into it. With one empty leg the fusion is the other leg's order.
+    #[test]
+    fn rrf_keys_plain_dense_hits_by_point_and_passes_one_leg_through() {
+        let dense = leg(&[(31, None), (32, None)]);
+        let sparse = leg(&[(32, Some(302))]);
+        let fused = fuse_rrf([&dense, &sparse], 60, false, 10);
+        assert_eq!(
+            fused.iter().map(|c| c.point_id).collect::<Vec<_>>(),
+            [
+                PointId::Uuid(Uuid::from_u128(32)),
+                PointId::Uuid(Uuid::from_u128(31))
+            ],
+            "the point both legs found leads"
+        );
+        let only_dense = fuse_rrf([&dense, &[]], 60, false, 10);
+        assert_eq!(
+            only_dense.iter().map(|c| c.point_id).collect::<Vec<_>>(),
+            dense.iter().map(|c| c.point_id).collect::<Vec<_>>(),
+        );
     }
 }

@@ -2182,8 +2182,8 @@ fn g80_2_build_request_unique(root: &Path) -> Verdict {
 // ============================================================================
 
 /// §55.6 G55-6 ①: the names no caller-assignable `RetrievalRequest` field or `build_request` parameter may carry. The
-/// first five are the Baseline's set; the last four are ADR-0083 D-D's registry entries (T-RET-6c-1).
-const G55_6_FORBIDDEN_NAMES: [&str; 9] = [
+/// first five are the Baseline's set; the last five are ADR-0083 D-D's registry entries (T-RET-6c-1, T-RET-6c-2).
+const G55_6_FORBIDDEN_NAMES: [&str; 10] = [
     "limit",
     "top_k",
     "cand_k",
@@ -2193,6 +2193,7 @@ const G55_6_FORBIDDEN_NAMES: [&str; 9] = [
     "leg_depth",
     "rrf_k",
     "sparse_leg_enabled",
+    "sparse_timeout_ms",
 ];
 
 /// Whether `name` carries `forbidden` as a run of whole `_`-separated words: `top_k_override` carries `top_k` (the
@@ -12655,7 +12656,7 @@ async fn serving_version_in_txn() {}
         );
     }
 
-    /// 注错 (T-RET-6c-1, ADR-0083 D-D): each of the four registry names, as a `build_request` parameter and as a
+    /// 注错 (T-RET-6c-1, T-RET-6c-2, ADR-0083 D-D): each of the five registry names, as a `build_request` parameter and as a
     /// plain-`pub` field, → 红. The list here is deliberately a second copy: dropping a name from
     /// [`G55_6_FORBIDDEN_NAMES`] makes its row red.
     #[test]
@@ -12665,6 +12666,7 @@ async fn serving_version_in_txn() {}
             "leg_depth",
             "rrf_k",
             "sparse_leg_enabled",
+            "sparse_timeout_ms",
         ] {
             assert!(
                 G55_6_FORBIDDEN_NAMES.contains(&name),

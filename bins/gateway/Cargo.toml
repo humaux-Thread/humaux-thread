@@ -29,7 +29,7 @@ humaux-cache = { path = "../../crates/cache" }
 # why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls; used-by: [gateway::bootstrap, gateway::recall, gateway::retrieval_embedding_client, tests]
 humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0061 D-A/D-B: the §41.2 family table, text encoder and loopback ops listener (no metrics crate).
-# why: metrics exposition, degrade counters, the loopback ops listener and the version line `binary_build` reuses; used-by: [gateway::context, gateway::guard, gateway::main, gateway::status]
+# why: metrics exposition, degrade counters, the loopback ops listener and the version line `binary_build` reuses; used-by: [gateway::context, gateway::guard, gateway::main, gateway::status, tests]
 humaux-telemetry = { path = "../../crates/telemetry" }
 # why: object-safe async traits for ports and transports; used-by: [gateway::mcp_application, gateway::retrieval_embedding_client, tests]
 async-trait = "0.1"
