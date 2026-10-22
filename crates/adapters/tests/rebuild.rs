@@ -2949,3 +2949,65 @@ fn a_rebuild_backfills_bm25_in_place_and_verify_names_a_point_without_it() {
         },
     );
 }
+
+/// T-RET-6b review #150 P1 (ADR-0083 D-B): the resident `--serve` pass starts before anyone can run `collection
+/// ensure`, and a point that names a vector the collection lacks is a permanent Qdrant 400. Against a collection that
+/// predates `bm25`, the claimed pass therefore probes the collection once and writes dense-only: both tickets settle
+/// DONE, none FAILS (`qdrant_upsert_rejected`), the points hold no `bm25`, and verify counts them
+/// (`bm25_missing_points` = 2, `e6:bm25_missing=2`) for the rebuild backfill to fix.
+/// Fault: send `bm25` regardless of the probe ⇒ Qdrant answers 400 ⇒ both tickets FAIL ⇒ red.
+#[test]
+fn an_old_collection_is_written_dense_only_and_no_ticket_fails() {
+    run_db_fixture::<S3Fixture, _>(
+        "an_old_collection_is_written_dense_only_and_no_ticket_fails",
+        |mut s| {
+            let port = s.port;
+            let h = &mut s.h;
+            prepare(h);
+            let ws = h.workspace();
+            h.fan_out(ws, "c6b old collection", 2);
+            settle_distill(h);
+            make_old_collection(h);
+
+            let shared = counting(h, Arc::new(CountingEmbedder::default()));
+            let pass =
+                h.rt.block_on(run_claimed_pass(&shared, &pass_cfg()))
+                    .expect("pass");
+            assert_eq!(
+                (pass.done, pass.failed, pass.retried),
+                (2, 0, 0),
+                "{pass:?}"
+            );
+            let failed = count(
+                &mut h.admin,
+                "SELECT count(*) FROM projection.stream_log WHERE tenant_id = $1 AND state = 'FAILED'",
+                &[&h.tenant_id],
+            );
+            assert_eq!(failed, 0, "no ticket FAILED against the old collection");
+
+            serve(h, ws);
+            let stream = stream_of(h, ws);
+            let points = scrolled(h, port, &stream);
+            assert_eq!(points.label.len(), 2, "both memories are in the index");
+            assert!(
+                points.label.values().all(|p| !p.has_bm25),
+                "dense-only writes"
+            );
+            let report = verify(h, port, &stream, None);
+            assert_eq!(report.verdict, Verdict::NotEquivalent, "{}", report.json);
+            assert_eq!(
+                report.json["bm25_missing_points"],
+                json!(2),
+                "{}",
+                report.json
+            );
+            assert!(
+                report.json["reasons"]
+                    .to_string()
+                    .contains("e6:bm25_missing=2"),
+                "{}",
+                report.json
+            );
+        },
+    );
+}

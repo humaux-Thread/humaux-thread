@@ -2137,6 +2137,43 @@ pub async fn collection_status(
         })
 }
 
+/// Whether a `GET /collections/{c}` body names a vector `name`, sparse (`config.params.sparse_vectors`) or in a named
+/// dense map (`config.params.vectors`); `None` = the body has no `result.config.params` at all, so nothing is known.
+fn body_names_vector(body: &Value, name: &str) -> Option<bool> {
+    let params = body.get("result")?.get("config")?.get("params")?;
+    let holds = |member: &str| {
+        params
+            .get(member)
+            .and_then(|vectors| vectors.get(name))
+            .is_some_and(|config| !config.is_null())
+    };
+    Some(holds("sparse_vectors") || holds("vectors"))
+}
+
+/// ADR-0083 D-B: whether `collection` already holds the vector `vector_name` (`bm25`), one `GET /collections/{c}`.
+/// A point write that names a vector the collection lacks is a permanent Qdrant 400, so the projection pass asks
+/// before it writes and sends dense-only to a collection that predates the sparse vector. An unreadable answer is an
+/// error, never a guess.
+pub async fn collection_has_vector(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    collection: &str,
+    vector_name: &str,
+) -> Result<bool, QdrantTransportError> {
+    validate_collection(collection)?;
+    let body = call(
+        transport,
+        permit,
+        IntraCellMethod::Get,
+        format!("/collections/{collection}"),
+        None,
+    )
+    .await?;
+    body_names_vector(&body, vector_name).ok_or_else(|| {
+        QdrantTransportError::UnexpectedResponseShape("missing result.config.params".to_string())
+    })
+}
+
 /// [`verify_visible`] wired to a real [`scroll_by_ids`] call: fetches the actually-observed ids
 /// over the transport, then hands them to the existing pure decision function unchanged —
 /// [`verify_visible`]'s own `all_confirmed`/superset handling stays the single place that logic
@@ -2468,6 +2505,23 @@ mod lifecycle_prefilter_tests {
             bm25_vector_body(),
             json!({ "sparse": { "modifier": "idf" } })
         );
+    }
+
+    /// ADR-0083 D-B: the pre-write probe reads the collection's own config: `bm25` is present only as a named sparse
+    /// (or named dense) vector, an old collection (unnamed dense only) lacks it, and a body without a config is
+    /// unknown, not "absent". Fault: answer `true` for an old collection ⇒ red.
+    #[test]
+    fn a_collection_body_names_its_vectors() {
+        let old = json!({ "result": { "config": { "params": { "vectors": { "size": 4, "distance": "Cosine" } } } } });
+        assert_eq!(body_names_vector(&old, "bm25"), Some(false));
+        let new = json!({ "result": { "config": { "params": {
+            "vectors": { "size": 4, "distance": "Cosine" },
+            "sparse_vectors": { "bm25": { "modifier": "idf" } },
+        } } } });
+        assert_eq!(body_names_vector(&new, "bm25"), Some(true));
+        assert_eq!(body_names_vector(&new, "other"), Some(false));
+        assert_eq!(body_names_vector(&json!({ "result": {} }), "bm25"), None);
+        assert_eq!(body_names_vector(&json!({}), "bm25"), None);
     }
 
     /// ADR-0083 D-B: a scrolled point reads back bare (dense only) or as a name-keyed map; only the map's `bm25` key

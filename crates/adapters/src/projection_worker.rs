@@ -351,10 +351,18 @@ struct RowCtx<'a> {
     dimension: u32,
     /// ADR-0068 D-I: the projection's note chunk policy, read once per pass ([`pass_policy`]).
     policy: NoteChunkPolicy,
+    /// ADR-0083 D-B: the placement's collection already holds the `bm25` sparse vector, read once per pass
+    /// ([`collections_with_bm25`]). `false` = it predates the vector (`collection ensure` has not run yet): the write
+    /// goes dense-only, because a point that names a vector the collection lacks is a permanent Qdrant 400.
+    collection_has_bm25: bool,
 }
 
 impl<'a> RowCtx<'a> {
-    fn of(deps: &'a ProjectionWorkerDeps, policy: NoteChunkPolicy) -> Self {
+    fn of(
+        deps: &'a ProjectionWorkerDeps,
+        policy: NoteChunkPolicy,
+        collection_has_bm25: bool,
+    ) -> Self {
         Self {
             pool: &deps.pool,
             embedder: deps.embedder.as_ref(),
@@ -367,6 +375,7 @@ impl<'a> RowCtx<'a> {
             projection_version: &deps.projection_version,
             dimension: deps.dimension,
             policy,
+            collection_has_bm25,
         }
     }
 }
@@ -1579,9 +1588,12 @@ async fn finish_row(
             input_sha256: slot.input_sha256,
             vector: slot.vector.clone(),
         });
-        // ADR-0083 D-B: the sparse vector rides every slot's write — rebuild generation tickets included, which is
-        // how an existing point gains it in place — unless the tenant's policy forbids in-cell text processing.
-        let bm25_text = in_cell_text_processing_allowed(ctx.family.tenant_id)
+        // ADR-0083 D-B: the sparse vector rides every slot's write — rebuild generation tickets included (a rebuild
+        // runs `ensure_collection` first), which is how an existing point gains it in place — unless the tenant's
+        // policy forbids in-cell text processing or the collection predates the vector (dense-only; the verifier's E6
+        // counts the point and a rebuild backfills it).
+        let bm25_text = (in_cell_text_processing_allowed(ctx.family.tenant_id)
+            && ctx.collection_has_bm25)
             .then_some(slot.card_text.as_str());
         if let Err(failure) = write_slot(
             ctx,
@@ -1953,7 +1965,22 @@ pub async fn run_once(
         &deps.projection_version,
     )
     .await?;
-    let ctx = RowCtx::of(deps, policy);
+    // ADR-0083 D-B: one probe per call; an unreadable answer is a dependency outage, not "absent".
+    let collection_has_bm25 = qdrant::collection_has_vector(
+        deps.transport.as_ref(),
+        &deps.permit,
+        &deps.placement.collection_name,
+        qdrant::BM25_VECTOR_NAME,
+    )
+    .await
+    .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    if !collection_has_bm25 {
+        eprintln!(
+            "{}",
+            collection_lacks_bm25_line(&deps.placement.collection_name)
+        );
+    }
+    let ctx = RowCtx::of(deps, policy, collection_has_bm25);
 
     let rows = fetch_issued_rows(&deps.pool, &key, batch as i64).await?;
     let mut outcome = RunOnceOutcome::default();
@@ -2102,11 +2129,13 @@ async fn claimed_pass(
         ))
     });
     let families: Vec<&[ClaimedTicket]> = claimed.chunk_by(|a, b| a.key == b.key).collect();
+    // ADR-0083 D-B: after the claim, one probe per collection the claimed tickets write to.
+    let bm25 = collections_with_bm25(shared, &claimed).await;
     // ponytail: families run one after another inside a pass; run them concurrently if the
     // projection-lag p95 (ADR-0052 measurements) says a pass is the bottleneck.
     let work = async {
         for family in &families {
-            run_family(shared, cfg, policy, family, &mut outcome).await;
+            run_family(shared, cfg, policy, &bm25, family, &mut outcome).await;
         }
     };
     // Review 2026-09-29 P0: every family this pass holds is renewed while ANY of them is being
@@ -2187,6 +2216,53 @@ async fn claim_for_pass(
     })
 }
 
+/// ADR-0083 D-B: whether each collection a pass writes to already holds the `bm25` sparse vector; `None` = the probe
+/// failed (or the registry refused a permit), so that collection's tickets retry like any Qdrant outage rather than
+/// guess in either direction.
+type Bm25Presence = HashMap<String, Option<bool>>;
+
+/// The operator line for a collection that predates the sparse vector: named, no query or card content.
+fn collection_lacks_bm25_line(collection: &str) -> String {
+    format!(
+        "projection_worker: collection lacks bm25 collection={collection} (run collection ensure; a rebuild \
+         backfills); writing dense-only"
+    )
+}
+
+/// One `GET /collections/{c}` per distinct collection of the claimed `tickets`, after the claim (ADR-0083 D-B): the
+/// projection pass starts (`--serve`) before anyone can run `collection ensure`, and a point that names a vector the
+/// collection lacks is a permanent Qdrant 400 (`qdrant_upsert_rejected`), so a collection without `bm25` is written
+/// dense-only until `ensure` and a rebuild catch it up. One line per pass per such collection.
+async fn collections_with_bm25(
+    shared: &SharedProjectionDeps,
+    tickets: &[ClaimedTicket],
+) -> Bm25Presence {
+    let mut found = Bm25Presence::new();
+    let permit = (shared.mint_permit)();
+    for ticket in tickets {
+        let collection = &ticket.placement.collection_name;
+        if found.contains_key(collection) {
+            continue;
+        }
+        let present = match &permit {
+            Some(permit) => qdrant::collection_has_vector(
+                shared.transport.as_ref(),
+                permit,
+                collection,
+                qdrant::BM25_VECTOR_NAME,
+            )
+            .await
+            .ok(),
+            None => None,
+        };
+        if present == Some(false) {
+            eprintln!("{}", collection_lacks_bm25_line(collection));
+        }
+        found.insert(collection.clone(), present);
+    }
+    found
+}
+
 /// Awaits the claim alone and records its wall time in `claim_ms`.
 async fn timed<T>(outcome: &mut PassOutcome, claim: impl Future<Output = T>) -> T {
     let started = std::time::Instant::now();
@@ -2219,6 +2295,7 @@ async fn run_family(
     shared: &SharedProjectionDeps,
     cfg: &PassConfig,
     policy: NoteChunkPolicy,
+    bm25: &Bm25Presence,
     tickets: &[ClaimedTicket],
     outcome: &mut PassOutcome,
 ) {
@@ -2257,7 +2334,7 @@ async fn run_family(
             outcome.lost_lease += (tickets.len() - index) as u64;
             break;
         }
-        process_and_write(shared, cfg, policy, &family, ticket, fence, outcome).await;
+        process_and_write(shared, cfg, policy, bm25, &family, ticket, outcome).await;
     }
     // One watermark move per family (j). A failure here is logged: the next pass over this
     // family (or the next write) moves it, and the settled rows above stay settled.
@@ -2275,15 +2352,24 @@ async fn process_and_write(
     shared: &SharedProjectionDeps,
     cfg: &PassConfig,
     policy: NoteChunkPolicy,
+    bm25: &Bm25Presence,
     family: &StreamFamily,
     ticket: &ClaimedTicket,
-    fence: TicketFence<'_>,
     outcome: &mut PassOutcome,
 ) {
     let key = &ticket.key;
-    // A permit the cell registry refused is a Qdrant-side outage of this ticket like any other.
-    let (terminal, class) = match (shared.mint_permit)() {
-        Some(permit) => {
+    let fence = TicketFence {
+        lease_owner: Some(&cfg.lease_owner),
+        attempts: ticket.attempts,
+    };
+    // A permit the cell registry refused, or a collection whose `bm25` probe failed (ADR-0083 D-B), is a Qdrant-side
+    // outage of this ticket like any other: it retries, nothing is written on a guess.
+    let probe = bm25
+        .get(&ticket.placement.collection_name)
+        .copied()
+        .flatten();
+    let (terminal, class) = match ((shared.mint_permit)(), probe) {
+        (Some(permit), Some(collection_has_bm25)) => {
             let ctx = RowCtx {
                 pool: &shared.pool,
                 embedder: shared.embedder.as_ref(),
@@ -2296,10 +2382,11 @@ async fn process_and_write(
                 projection_version: &key.projection_version,
                 dimension: shared.dimension,
                 policy,
+                collection_has_bm25,
             };
             process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await
         }
-        None => (RowTerminal::Retry, "qdrant_upsert_failed"),
+        _ => (RowTerminal::Retry, "qdrant_upsert_failed"),
     };
     if terminal == RowTerminal::Done {
         // Every dependency answered: the next outage failure is charged again.
@@ -2452,17 +2539,14 @@ mod bm25_policy_tests {
     use humaux_domain::ids::TenantId;
 
     /// ADR-0083 U4 / G6b-4 (T-RET-6b): the gate "a tenant whose policy forbids in-cell text processing gets no `bm25`
-    /// and verify does not count it as missing" is `not_applicable: no tenant policy field for in-cell text
-    /// processing (TenantDataPolicy / control.egress_policies)` (§57.1) — no such field exists, so the seam answers
-    /// `true` for every tenant. This test pins that answer and is the tripwire: the card that adds a policy field
-    /// changes the seam, must change this assertion, and with it owns the real gate (a forbidding tenant's write
-    /// carries no `bm25` and the verifier's missing count skips it). Fault: return `false` ⇒ red.
+    /// and verify does not count it as missing" is `not_applicable` (§57.1): no tenant policy field for in-cell text
+    /// processing exists (TenantDataPolicy has none, `control.egress_policies` carries only the external-retrieval
+    /// switch), so the seam answers `true` for every tenant. The missing object is in this test's name, where libtest
+    /// and the junit report show it. It is also the tripwire: the card that adds a policy field changes the seam, must
+    /// change this assertion, and with it owns the real gate (a forbidding tenant's write carries no `bm25` and the
+    /// verifier's missing count skips it). Fault: return `false` ⇒ red.
     #[test]
-    fn the_in_cell_text_processing_seam_is_always_allowed_until_a_policy_field_exists() {
-        eprintln!(
-            "G6b-4 not_applicable: no tenant policy field for in-cell text processing \
-             (TenantDataPolicy / egress_policies column)"
-        );
+    fn not_applicable_no_tenant_policy_field_for_in_cell_text_processing() {
         for _ in 0..3 {
             assert!(in_cell_text_processing_allowed(TenantId::new()));
         }

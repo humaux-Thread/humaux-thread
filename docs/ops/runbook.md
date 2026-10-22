@@ -583,7 +583,12 @@ More workspaces and users: `onboard workspace --tenant <id> --name <n> --owner <
 created before card 24 lacks the `subject_ids` index, and one created before card 40d-1c-i lacks the `memory_id` keyword
 index (ADR-0068 D-E); `collection ensure` PUTs every index idempotently. Until it does, the collection's generation
 reads `collection_misconfigured` (a rebuild verify's E1 and onboarding both refuse), so run it once after deploying
-40d-1c-i.
+40d-1c-i. The same holds for the `bm25` sparse vector (ADR-0083 D-B, T-RET-6b): run `humaux-maintenance collection
+ensure` after deploying that change (it adds the vector with `PUT /collections/{c}/vectors/bm25`, idempotent). Until
+then the retrieval worker writes dense-only and logs `collection lacks bm25 collection=<name> (run collection
+ensure; a rebuild backfills)` once per pass; afterwards `projection rebuild` (or `projection verify`) re-projects the
+dense-only points in place and its receipt's `bm25_missing_points` reads 0 (a verify reports `e6:bm25_missing=N`
+until it does).
 
 ## 4. Environment
 
