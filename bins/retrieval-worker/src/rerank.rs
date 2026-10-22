@@ -7,7 +7,7 @@
 //!   HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH, HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256,
 //!   HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED, HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_THREADS];
 //!   modules=[contracts::retrieval_config]
-//! Called-by: [gateway::bootstrap, retrieval-worker::main, retrieval-worker::rpc, tests]
+//! Called-by: [retrieval-worker::main, retrieval-worker::rpc, tests]
 //! Invariants: [the model and tokenizer files are sha256-checked against the deployment pin before ONNX Runtime is
 //!   loaded, and a mismatch is an error that names the object (G-RET-14); one session sits behind one mutex; a score is
 //!   the raw logit, one per document in request order, and a call returns every score or an error; no request text

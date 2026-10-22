@@ -47,7 +47,7 @@
 //!   gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-worker::rerank, retrieval::rerank, telemetry::metrics]
+//!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
 //! Called-by: [gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7
