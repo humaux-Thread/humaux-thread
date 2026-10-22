@@ -9402,7 +9402,7 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
                 continue;
             }
             problems.push(format!(
-                "{RERANK_DOCKERFILE}: no `ADD --checksum` pin for {} (action input {sha_key} in {RERANK_PARITY_ACTION}) — the image and the parity test must fetch the same artifact",
+                "{RERANK_DOCKERFILE}: no `ADD --checksum` pin for {} (action input {RERANK_PARITY_ACTION} inputs.{sha_key}) — the image and the parity test must fetch the same artifact",
                 pin.url
             ));
             continue;
