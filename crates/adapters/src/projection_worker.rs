@@ -351,18 +351,12 @@ struct RowCtx<'a> {
     dimension: u32,
     /// ADR-0068 D-I: the projection's note chunk policy, read once per pass ([`pass_policy`]).
     policy: NoteChunkPolicy,
-    /// ADR-0083 D-B: the placement's collection already holds the `bm25` sparse vector, read once per pass
-    /// ([`collections_with_bm25`]). `false` = it predates the vector (`collection ensure` has not run yet): the write
-    /// goes dense-only, because a point that names a vector the collection lacks is a permanent Qdrant 400.
-    collection_has_bm25: bool,
+    /// ADR-0083 D-B: this pass's answers to "does the collection already hold `bm25`" ([`Bm25Probes`]).
+    bm25: &'a Bm25Probes,
 }
 
 impl<'a> RowCtx<'a> {
-    fn of(
-        deps: &'a ProjectionWorkerDeps,
-        policy: NoteChunkPolicy,
-        collection_has_bm25: bool,
-    ) -> Self {
+    fn of(deps: &'a ProjectionWorkerDeps, policy: NoteChunkPolicy, bm25: &'a Bm25Probes) -> Self {
         Self {
             pool: &deps.pool,
             embedder: deps.embedder.as_ref(),
@@ -375,8 +369,53 @@ impl<'a> RowCtx<'a> {
             projection_version: &deps.projection_version,
             dimension: deps.dimension,
             policy,
-            collection_has_bm25,
+            bm25,
         }
+    }
+}
+
+/// ADR-0083 D-B: one pass's answers to "does this collection already hold the `bm25` sparse vector", one
+/// `GET /collections/{c}` per collection per pass, asked only when a row reaches its first Qdrant write (a row that
+/// fails or skips earlier never touches Qdrant). `--serve` starts before anyone can run `collection ensure`, and a
+/// point that names a vector the collection lacks is a permanent Qdrant 400 (`qdrant_upsert_rejected`); so a
+/// collection without `bm25` is written dense-only until `ensure` and a rebuild catch it up. An unreadable answer is
+/// remembered for the pass as `None` and its rows retry like any Qdrant outage: nothing is written on a guess.
+#[derive(Default)]
+struct Bm25Probes(Mutex<HashMap<String, Option<bool>>>);
+
+impl Bm25Probes {
+    /// `Some(true)`: write the `bm25` Document; `Some(false)`: write dense-only (one named operator line per pass);
+    /// `None`: the probe failed.
+    async fn holds(&self, ctx: &RowCtx<'_>) -> Option<bool> {
+        let collection = &ctx.placement.collection_name;
+        let known = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(collection)
+            .copied();
+        if let Some(known) = known {
+            return known;
+        }
+        let probed = qdrant::collection_has_vector(
+            ctx.transport,
+            ctx.permit,
+            collection,
+            qdrant::BM25_VECTOR_NAME,
+        )
+        .await
+        .ok();
+        if probed == Some(false) {
+            eprintln!(
+                "projection_worker: collection lacks bm25 collection={collection} (run collection ensure; a rebuild \
+                 backfills); writing dense-only"
+            );
+        }
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(collection.clone(), probed);
+        probed
     }
 }
 
@@ -903,7 +942,20 @@ async fn process_row(
         }
     }
     for live in prepared.live {
-        match finish_row(ctx, stream_seq, workspace_id, live, prepared.fingerprint).await {
+        // ADR-0083 D-B: asked here, at the first write of the pass to this collection, not at the claim.
+        let Some(collection_has_bm25) = ctx.bm25.holds(ctx).await else {
+            return (RowTerminal::Retry, "qdrant_upsert_failed");
+        };
+        let fingerprint = prepared.fingerprint;
+        match finish_row(
+            ctx,
+            stream_seq,
+            workspace_id,
+            live,
+            (fingerprint, collection_has_bm25),
+        )
+        .await
+        {
             (RowTerminal::Done, _) => any_done = true,
             (RowTerminal::SkippedByPolicy, class) => {
                 skipped = Some((RowTerminal::SkippedByPolicy, class));
@@ -1547,7 +1599,7 @@ async fn finish_row(
     stream_seq: i64,
     workspace_id: WorkspaceId,
     live: LiveMemory,
-    fingerprint: Option<[u8; 32]>,
+    (fingerprint, collection_has_bm25): (Option<[u8; 32]>, bool),
 ) -> (RowTerminal, &'static str) {
     let LiveMemory {
         memory,
@@ -1593,7 +1645,7 @@ async fn finish_row(
         // policy forbids in-cell text processing or the collection predates the vector (dense-only; the verifier's E6
         // counts the point and a rebuild backfills it).
         let bm25_text = (in_cell_text_processing_allowed(ctx.family.tenant_id)
-            && ctx.collection_has_bm25)
+            && collection_has_bm25)
             .then_some(slot.card_text.as_str());
         if let Err(failure) = write_slot(
             ctx,
@@ -1965,22 +2017,8 @@ pub async fn run_once(
         &deps.projection_version,
     )
     .await?;
-    // ADR-0083 D-B: one probe per call; an unreadable answer is a dependency outage, not "absent".
-    let collection_has_bm25 = qdrant::collection_has_vector(
-        deps.transport.as_ref(),
-        &deps.permit,
-        &deps.placement.collection_name,
-        qdrant::BM25_VECTOR_NAME,
-    )
-    .await
-    .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    if !collection_has_bm25 {
-        eprintln!(
-            "{}",
-            collection_lacks_bm25_line(&deps.placement.collection_name)
-        );
-    }
-    let ctx = RowCtx::of(deps, policy, collection_has_bm25);
+    let probes = Bm25Probes::default();
+    let ctx = RowCtx::of(deps, policy, &probes);
 
     let rows = fetch_issued_rows(&deps.pool, &key, batch as i64).await?;
     let mut outcome = RunOnceOutcome::default();
@@ -2129,8 +2167,8 @@ async fn claimed_pass(
         ))
     });
     let families: Vec<&[ClaimedTicket]> = claimed.chunk_by(|a, b| a.key == b.key).collect();
-    // ADR-0083 D-B: after the claim, one probe per collection the claimed tickets write to.
-    let bm25 = collections_with_bm25(shared, &claimed).await;
+    // ADR-0083 D-B: one pass, one set of probe answers.
+    let bm25 = Bm25Probes::default();
     // ponytail: families run one after another inside a pass; run them concurrently if the
     // projection-lag p95 (ADR-0052 measurements) says a pass is the bottleneck.
     let work = async {
@@ -2216,53 +2254,6 @@ async fn claim_for_pass(
     })
 }
 
-/// ADR-0083 D-B: whether each collection a pass writes to already holds the `bm25` sparse vector; `None` = the probe
-/// failed (or the registry refused a permit), so that collection's tickets retry like any Qdrant outage rather than
-/// guess in either direction.
-type Bm25Presence = HashMap<String, Option<bool>>;
-
-/// The operator line for a collection that predates the sparse vector: named, no query or card content.
-fn collection_lacks_bm25_line(collection: &str) -> String {
-    format!(
-        "projection_worker: collection lacks bm25 collection={collection} (run collection ensure; a rebuild \
-         backfills); writing dense-only"
-    )
-}
-
-/// One `GET /collections/{c}` per distinct collection of the claimed `tickets`, after the claim (ADR-0083 D-B): the
-/// projection pass starts (`--serve`) before anyone can run `collection ensure`, and a point that names a vector the
-/// collection lacks is a permanent Qdrant 400 (`qdrant_upsert_rejected`), so a collection without `bm25` is written
-/// dense-only until `ensure` and a rebuild catch it up. One line per pass per such collection.
-async fn collections_with_bm25(
-    shared: &SharedProjectionDeps,
-    tickets: &[ClaimedTicket],
-) -> Bm25Presence {
-    let mut found = Bm25Presence::new();
-    let permit = (shared.mint_permit)();
-    for ticket in tickets {
-        let collection = &ticket.placement.collection_name;
-        if found.contains_key(collection) {
-            continue;
-        }
-        let present = match &permit {
-            Some(permit) => qdrant::collection_has_vector(
-                shared.transport.as_ref(),
-                permit,
-                collection,
-                qdrant::BM25_VECTOR_NAME,
-            )
-            .await
-            .ok(),
-            None => None,
-        };
-        if present == Some(false) {
-            eprintln!("{}", collection_lacks_bm25_line(collection));
-        }
-        found.insert(collection.clone(), present);
-    }
-    found
-}
-
 /// Awaits the claim alone and records its wall time in `claim_ms`.
 async fn timed<T>(outcome: &mut PassOutcome, claim: impl Future<Output = T>) -> T {
     let started = std::time::Instant::now();
@@ -2295,7 +2286,7 @@ async fn run_family(
     shared: &SharedProjectionDeps,
     cfg: &PassConfig,
     policy: NoteChunkPolicy,
-    bm25: &Bm25Presence,
+    bm25: &Bm25Probes,
     tickets: &[ClaimedTicket],
     outcome: &mut PassOutcome,
 ) {
@@ -2352,7 +2343,7 @@ async fn process_and_write(
     shared: &SharedProjectionDeps,
     cfg: &PassConfig,
     policy: NoteChunkPolicy,
-    bm25: &Bm25Presence,
+    bm25: &Bm25Probes,
     family: &StreamFamily,
     ticket: &ClaimedTicket,
     outcome: &mut PassOutcome,
@@ -2362,14 +2353,9 @@ async fn process_and_write(
         lease_owner: Some(&cfg.lease_owner),
         attempts: ticket.attempts,
     };
-    // A permit the cell registry refused, or a collection whose `bm25` probe failed (ADR-0083 D-B), is a Qdrant-side
-    // outage of this ticket like any other: it retries, nothing is written on a guess.
-    let probe = bm25
-        .get(&ticket.placement.collection_name)
-        .copied()
-        .flatten();
-    let (terminal, class) = match ((shared.mint_permit)(), probe) {
-        (Some(permit), Some(collection_has_bm25)) => {
+    // A permit the cell registry refused is a Qdrant-side outage of this ticket like any other.
+    let (terminal, class) = match (shared.mint_permit)() {
+        Some(permit) => {
             let ctx = RowCtx {
                 pool: &shared.pool,
                 embedder: shared.embedder.as_ref(),
@@ -2382,11 +2368,11 @@ async fn process_and_write(
                 projection_version: &key.projection_version,
                 dimension: shared.dimension,
                 policy,
-                collection_has_bm25,
+                bm25,
             };
             process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await
         }
-        _ => (RowTerminal::Retry, "qdrant_upsert_failed"),
+        None => (RowTerminal::Retry, "qdrant_upsert_failed"),
     };
     if terminal == RowTerminal::Done {
         // Every dependency answered: the next outage failure is charged again.

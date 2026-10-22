@@ -2952,10 +2952,11 @@ fn a_rebuild_backfills_bm25_in_place_and_verify_names_a_point_without_it() {
 
 /// T-RET-6b review #150 P1 (ADR-0083 D-B): the resident `--serve` pass starts before anyone can run `collection
 /// ensure`, and a point that names a vector the collection lacks is a permanent Qdrant 400. Against a collection that
-/// predates `bm25`, the claimed pass therefore probes the collection once and writes dense-only: both tickets settle
-/// DONE, none FAILS (`qdrant_upsert_rejected`), the points hold no `bm25`, and verify counts them
+/// predates `bm25`, the claimed pass therefore probes the collection once and writes dense-only: the ticket (it
+/// carries both memories) settles DONE, none FAILS (`qdrant_upsert_rejected`), the points hold no `bm25`, and verify
+/// counts them
 /// (`bm25_missing_points` = 2, `e6:bm25_missing=2`) for the rebuild backfill to fix.
-/// Fault: send `bm25` regardless of the probe ⇒ Qdrant answers 400 ⇒ both tickets FAIL ⇒ red.
+/// Fault: send `bm25` regardless of the probe ⇒ Qdrant answers 400 ⇒ the ticket FAILs ⇒ red.
 #[test]
 fn an_old_collection_is_written_dense_only_and_no_ticket_fails() {
     run_db_fixture::<S3Fixture, _>(
@@ -2974,9 +2975,9 @@ fn an_old_collection_is_written_dense_only_and_no_ticket_fails() {
                 h.rt.block_on(run_claimed_pass(&shared, &pass_cfg()))
                     .expect("pass");
             assert_eq!(
-                (pass.done, pass.failed, pass.retried),
-                (2, 0, 0),
-                "{pass:?}"
+                (pass.claimed, pass.done, pass.failed, pass.retried),
+                (1, 1, 0, 0),
+                "one ticket carries both memories: {pass:?}"
             );
             let failed = count(
                 &mut h.admin,
