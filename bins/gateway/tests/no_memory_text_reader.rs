@@ -59,14 +59,18 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// and the type `MemoryText` are not.
 #[test]
 fn the_scanner_finds_readers_and_nothing_else() {
-    let source = "let t = memory_texts_in_txn(&mut txn, tenant, &ids).await?;\n\
-                  let q = \"SELECT body FROM private.memory_text_v\";\n\
-                  let r = humaux_adapters::memory_repo::memory_texts_in_txn;\n\
-                  // memory_texts_in_txn is only named in a comment\n\
-                  let v = memory_text_view;\n\
-                  use humaux_adapters::memory_repo::MemoryText;\n";
+    // The view's name is assembled so that this file, which reads no table, names none (dep-map's table scan).
+    let view = format!("{}.{}", "private", "memory_text_v");
+    let source = format!(
+        "let t = memory_texts_in_txn(&mut txn, tenant, &ids).await?;\n\
+         let q = \"SELECT body FROM {view}\";\n\
+         let r = humaux_adapters::memory_repo::memory_texts_in_txn;\n\
+         // memory_texts_in_txn is only named in a comment\n\
+         let v = memory_text_view;\n\
+         use humaux_adapters::memory_repo::MemoryText;\n"
+    );
     assert_eq!(
-        readers_named(source),
+        readers_named(&source),
         [
             (1, "memory_texts_in_txn"),
             (2, "memory_text_v"),

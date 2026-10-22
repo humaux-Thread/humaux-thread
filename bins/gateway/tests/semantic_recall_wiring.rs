@@ -1,7 +1,7 @@
 //! `gateway::tests::semantic_recall_wiring` — ADR-0012/ADR-0014 gateway semantic-recall wiring acceptance.
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval-provider,
-//!   humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, time, tokio, uuid];
+//!   humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval,
+//!   humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, time, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway) r=[ops.commit_seq_seq, private.memory_records] w=[ops.outbox,
 //!   ops.retrieval_embedding_rpc_calls, ops.retrieval_query_log, projection.private_memory_points,
 //!   projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
@@ -13,13 +13,14 @@
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
 //!   contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error,
 //!   domain::identity, domain::ids, domain::memory, gateway::context, gateway::recall, gateway::remember,
-//!   gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
+//!   gateway::rerank_client, gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-testkit, infra-cell::permit,
 //!   infra-cell::resource, infra-cell::transport, projection::card, projection::dense, protocol::mcp,
 //!   protocol::mcp_catalog,
-//!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, telemetry::degrade]
+//!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, retrieval::rerank,
+//!   telemetry::degrade]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures; a missing fixture fails the test rather than skipping it]
-//! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065; ADR-0081; ADR-0083
+//! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065; ADR-0081; ADR-0083; ADR-0084
 //!
 //! Drives `humaux_gateway::recall::search` directly (no HTTP/MCP layer — that surface is
 //! already covered by `tests/mcp_gateway.rs`'s native MCP acceptance tests) against a real
