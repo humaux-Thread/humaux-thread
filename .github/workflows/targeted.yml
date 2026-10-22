@@ -134,10 +134,9 @@ jobs:
             sudo apt-get install -y -qq lld
           fi
 
-      # A targeted run restores the shared rust-cache but never saves it: only ci.yml writes the cache (#194).
+      # This job's rust-cache key (`v0-rust-targeted-…`) is written only by targeted runs, and ci.yml never reads it.
+      # The job must save it: with `save_cache: false` the key lost its only writer, went stale and then built cold (#194).
       - uses: ./.github/actions/setup
-        with:
-          save_cache: false
 
       # Twin of ci.yml's "cargo xtask dep-map --check" step (same staging and diff lines): keep the two in step.
       - name: regen docs (cargo xtask dep-map --write)
@@ -220,7 +219,8 @@ jobs:
             exit 2
           }
 
-      # Restores the shared rust-cache, never saves it: only ci.yml writes the cache (#194).
+      # Shares its rust-cache key with ci.yml's rerank-parity job, so it restores but never saves: only ci.yml writes
+      # that key (#194).
       - uses: ./.github/actions/rerank-parity
         with:
           save_cache: false

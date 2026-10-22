@@ -9350,10 +9350,11 @@ fn action_pins(action: &str) -> Result<Vec<(String, ArtifactPin)>, String> {
     Ok(pins)
 }
 
-/// Pins equal (`Ok` empty), a value differs (`Ok` one reason per differing pin, naming both files and the action
-/// input), or an object is missing (`Err`, naming it). ADR-0084 D-B / T-CI-4: the image's `rerank-fetch` stage and
-/// `.github/actions/rerank-parity/action.yml` must fetch the same bytes, so G-RET-11/G-RET-14 and the release image
-/// cannot drift apart.
+/// Pins equal (`Ok` empty), a URL or sha256 differs (`Ok` one reason per differing pin, naming both files and the
+/// action input), or an object is missing (`Err`, naming it). The same sha256 under another URL is a URL difference,
+/// not a missing pin: §57.1 第2条 reserves `not_applicable` for an object that is absent. ADR-0084 D-B / T-CI-4: the
+/// image's `rerank-fetch` stage and `.github/actions/rerank-parity/action.yml` must fetch the same bytes, so
+/// G-RET-11/G-RET-14 and the release image cannot drift apart.
 fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, String> {
     let Some(stage) = rerank_fetch_stage(dockerfile) else {
         return Err(format!(
@@ -9372,6 +9373,14 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
         let matching: Vec<&ArtifactPin> =
             image.iter().filter(|found| found.url == pin.url).collect();
         if matching.is_empty() {
+            // Same bytes under another URL: the URL differs, the pin is not missing (§57.1 第2条).
+            if let Some(found) = image.iter().find(|found| found.sha256 == pin.sha256) {
+                problems.push(format!(
+                    "{RERANK_DOCKERFILE}: `ADD --checksum` for {} is sha256:{}, but {RERANK_PARITY_ACTION} inputs.{sha_key} pins the same sha256 at {} — the image and the parity test must fetch the same artifact",
+                    found.url, found.sha256, pin.url
+                ));
+                continue;
+            }
             return Err(format!(
                 "{RERANK_DOCKERFILE}: `ADD --checksum` pin for {} (action input {sha_key})",
                 pin.url
@@ -9387,12 +9396,18 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
         }
     }
     for pin in &image {
-        if !declared.iter().any(|(_, found)| found.url == pin.url) {
-            return Err(format!(
-                "{RERANK_PARITY_ACTION}: inputs.*_url default for {}",
-                pin.url
-            ));
+        if declared.iter().any(|(_, found)| found.url == pin.url) {
+            continue;
         }
+        // The URL difference was reported above while the bytes are still pinned; a sha256 that appears in neither
+        // file is a missing action input, not a differing value.
+        if declared.iter().any(|(_, found)| found.sha256 == pin.sha256) {
+            continue;
+        }
+        return Err(format!(
+            "{RERANK_PARITY_ACTION}: inputs.*_url default for {}",
+            pin.url
+        ));
     }
     Ok(problems)
 }
@@ -9939,6 +9954,30 @@ runs:
         );
         assert!(
             red[0].contains("cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c20"),
+            "{red:?}"
+        );
+    }
+
+    /// The same sha256 under another URL is a URL difference: `fail`, naming both files and the action input, not
+    /// `not_applicable` (§57.1 第2条 keeps that for an absent object).
+    #[test]
+    fn rerank_pin_gate_fails_when_one_url_differs() {
+        let mutant = RERANK_ACTION_FIXTURE.replace(
+            "default: https://example.test/rerank.tar.gz",
+            "default: https://example.test/rerank-v2.tar.gz",
+        );
+        let red = rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, &mutant)
+            .expect("a differing URL is a failure, not a missing object");
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].contains(RERANK_DOCKERFILE), "{red:?}");
+        assert!(red[0].contains(RERANK_PARITY_ACTION), "{red:?}");
+        assert!(red[0].contains("inputs.rerank_sha256"), "{red:?}");
+        assert!(
+            red[0].contains("https://example.test/rerank.tar.gz"),
+            "{red:?}"
+        );
+        assert!(
+            red[0].contains("https://example.test/rerank-v2.tar.gz"),
             "{red:?}"
         );
     }

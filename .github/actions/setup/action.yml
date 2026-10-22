@@ -3,12 +3,13 @@ name: humaux-thread setup
 # cache, the gitleaks fixture the tests pin, and the runbook §2 provisioning of the throwaway postgres service
 # (roles rotate --create-missing → migrate → rotate role_admin). The caller sets the DB env
 # (HUMAUX_TEST_PG_DSN / HUMAUX_MIGRATOR_PG_DSN) and declares the services; this action
-# only runs steps against them. `save_cache` exists so a targeted dispatch restores the shared rust-cache without
-# writing it: only ci.yml saves (issue #194).
+# only runs steps against them. `save_cache` exists so a caller whose rust-cache key ci.yml also writes can restore it
+# without saving; targeted.yml's rerank-parity job sets it false (#194). Its `targeted` job keeps the default: that key
+# has no other writer.
 description: Pinned Rust toolchain, cache, gitleaks fixture, runbook §2 cluster provisioning
 inputs:
   save_cache:
-    description: save this run's target dir to the rust-cache; false still restores. targeted.yml passes false (#194)
+    description: save this run's target dir to the rust-cache; false still restores. targeted.yml's rerank-parity job passes false, because ci.yml writes that key too (#194)
     required: false
     default: "true"
 runs:
@@ -31,7 +32,7 @@ runs:
 
     # Only the workspace's own target dir: auto-detection also picked up `tests/` and the metrics witness probe's
     # generated manifests and logged ENOENT errors for their (absent) target dirs on every restore.
-    # `save-if: false` still restores the cache; only ci.yml writes it (issue #194).
+    # `save-if: false` still restores the cache; a caller whose key ci.yml also writes passes it (issue #194).
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: ". -> target"
