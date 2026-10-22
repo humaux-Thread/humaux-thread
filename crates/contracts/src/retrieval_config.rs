@@ -65,7 +65,12 @@ const RRF_K_MAX: u32 = 1000;
 /// ADR-0084 D-E: the tokenizer's own pair limit (`tokenizer_config.json`); `rerank_max_len` and the worker's per-call
 /// `max_len` both stop here, so one definition bounds registry and wire.
 pub const RERANK_MAX_LEN_MAX: u32 = 512;
-/// ADR-0084 D-E: the registry floor for `rerank_max_len` and `rerank_threads`.
+/// ADR-0084 D-E: the smallest `rerank_max_len` (and the worker's per-call `max_len`): the (query, document) pair
+/// template adds four special tokens and the tokenizer subtracts them from `max_len` before truncating, so 4 or less
+/// leaves no content token (and underflows inside the tokenizer crate). One definition: the worker's `MIN_MAX_LEN` reuses
+/// it, so an operator value under it fails at registry load, not on every call.
+pub const RERANK_MAX_LEN_MIN: u32 = 5;
+/// ADR-0084 D-E: the registry floor for `rerank_timeout_ms` and `rerank_threads`.
 const RERANK_FLOOR: u32 = 1;
 /// A budget of 0 would time every sparse request out before it is sent; 1 ms is the floor.
 const SPARSE_TIMEOUT_MS_MIN: u32 = 1;
@@ -250,7 +255,7 @@ impl fmt::Display for RetrievalConfigError {
             ),
             Self::InvalidRerankMaxLen(value) => write!(
                 f,
-                "invalid retrieval profile rerank_max_len {value:?} (allowed {RERANK_FLOOR}..={RERANK_MAX_LEN_MAX})"
+                "invalid retrieval profile rerank_max_len {value:?} (allowed {RERANK_MAX_LEN_MIN}..={RERANK_MAX_LEN_MAX})"
             ),
             Self::InvalidRerankTimeoutMs(value) => write!(
                 f,
@@ -408,7 +413,7 @@ fn resolve_rerank(
     let depth = parse_in(depth_text, RERANK_FLOOR, cand_k)
         .ok_or_else(|| RetrievalConfigError::InvalidRerankDepth(depth_text.to_string()))?;
     let max_len_text = required(effective, RERANK_MAX_LEN);
-    let max_len = parse_in(max_len_text, RERANK_FLOOR, RERANK_MAX_LEN_MAX)
+    let max_len = parse_in(max_len_text, RERANK_MAX_LEN_MIN, RERANK_MAX_LEN_MAX)
         .ok_or_else(|| RetrievalConfigError::InvalidRerankMaxLen(max_len_text.to_string()))?;
     let timeout_text = required(effective, RERANK_TIMEOUT_MS);
     let timeout_ms = parse_in(timeout_text, RERANK_FLOOR, u32::MAX)
@@ -586,7 +591,7 @@ mod tests {
             (RERANK_DEPTH, ["0", "26"], "25", |e| {
                 matches!(e, RetrievalConfigError::InvalidRerankDepth(_))
             }),
-            (RERANK_MAX_LEN, ["0", "513"], "512", |e| {
+            (RERANK_MAX_LEN, ["4", "513"], "512", |e| {
                 matches!(e, RetrievalConfigError::InvalidRerankMaxLen(_))
             }),
             (RERANK_TIMEOUT_MS, ["0", "x"], "1", |e| {
@@ -603,6 +608,10 @@ mod tests {
             }
             assert!(resolve_one(key, inside).is_ok(), "{key}={inside}");
         }
+        assert!(
+            resolve_one(RERANK_MAX_LEN, "5").is_ok(),
+            "the floor itself resolves"
+        );
         // The depth bound is the profile's own `cand_k`: 26 fits only once `top_k * cand_multiplier` reaches 26.
         assert!(resolve_pairs(&[(TOP_K, "6"), (RERANK_DEPTH, "26")]).is_ok());
         assert!(resolve_pairs(&[(TOP_K, "5"), (RERANK_DEPTH, "26")]).is_err());

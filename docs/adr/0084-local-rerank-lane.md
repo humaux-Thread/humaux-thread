@@ -250,7 +250,7 @@ Registry entries, beside `top_k` and the four of ADR-0083 D-D; none is ever call
 |---|---|---|---|
 | `rerank_enabled` | false | turns the lane on for the profile; flipped after the artifact is deployed and U2 is read | |
 | `rerank_depth` | 25 | most Memories scored per recall | 1 up to the profile's `cand_k` |
-| `rerank_max_len` | 256 | token cap of one (query, document) pair | up to the tokenizer's 512 |
+| `rerank_max_len` | 256 | token cap of one (query, document) pair | 5 (the four special tokens of a pair and one content token; amended by T-RET-7c) up to the tokenizer's 512 |
 | `rerank_timeout_ms` | 4000 | the gateway's wait for the RPC; chosen because p95 under contention on N1 reached 3.9 s | above 0 |
 | `rerank_threads` | 4 | intra-op threads of the worker's session | at least 1 |
 
@@ -263,10 +263,11 @@ registry stays the only source. **Resolved by T-RET-7c:** `rerank_enabled` and `
 own registry read at `--serve-rpc` boot: `rerank::rerank_profile` takes the two optional environment keys
 `HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED` and `..._RERANK_THREADS` (the gateway's rule, a registry name
 upper-cased with the worker's prefix), builds the raw map and calls the one `resolve_registered_retrieval_profile`, so the
-defaults and the bounds are the registry's and appear nowhere else. `rerank_max_len` rides on each call (`max_len`, 1 to 512
-by the registry's own bound, and at least 5 because a pair carries four special tokens); `rerank_depth` and
-`rerank_timeout_ms` act in the gateway only (T-RET-7d). The environment keys are optional and absent from the deployment
-values files, as the gateway's profile keys are: an operator who flips the lane sets the same value on both processes.
+defaults and the bounds are the registry's and appear nowhere else. `rerank_max_len` rides on each call (`max_len`, 5 to 512:
+the registry's `RERANK_MAX_LEN_MIN`, one content token above the four special tokens of a pair, and the tokenizer's 512); `rerank_depth` and
+`rerank_timeout_ms` act in the gateway only (T-RET-7d). The two environment keys are optional in code and stated in
+`deploy/env/values/retrieval-worker.env` (`false` and `4`, the registry defaults); an operator who flips the lane sets the same
+value on the gateway and on the worker.
 
 **The model pin is not in the registry.** It lives in deployment configuration beside the embedding provider's
 variables (`HUMAUX_RETRIEVAL_WORKER_EMBEDDING_*`): the D-A identity, the artifact location and the hashes. As with the
@@ -355,8 +356,9 @@ allowlist entry), both fixed in the second run.
 | G-RET-11 score parity | truncation by `only_second` instead of `longest_first` (branch `red/t-ret-7c-b`, `96f1e46`) | run 39792222497: fails at **`longq-0-0: input_ids`**, the first pair of the fixture whose ids differ; every earlier over-length pair (short queries) is identical under both strategies, so the long-query group #159 added is what makes this injection red | run 39785216794 |
 | G-RET-14 artifact pin | skip the hash comparison in `verify_pinned` (same branch `red/t-ret-7c-a`) | run 39789293901: `a_file_that_differs_from_the_pin_refuses_boot_naming_the_object` fails; the control `matching_hashes_pass_the_pin_and_stop_later` stays green | run 39785216794 |
 
-Wire notes: a `max_len` under 5 is `invalid_request` (a pair carries four special tokens and the tokenizer crate subtracts
-them from `max_len`, so 1 to 4 would underflow inside it); the card's 1 to 512 bound is otherwise unchanged. An undecodable
+Wire notes: `rerank_max_len` and the call's `max_len` are bounded 5 to 512 by one constant (`RERANK_MAX_LEN_MIN`, a pair
+carries four special tokens and the tokenizer crate subtracts them from `max_len`, so 1 to 4 would underflow inside it): an
+operator value of 4 fails at registry load, a call with 4 is `invalid_request`. An undecodable
 body or an unknown field is refused by the extractor (HTTP 4xx) before any outcome exists; every semantic error is an
 `invalid_request` outcome with the call id.
 

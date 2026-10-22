@@ -22,6 +22,7 @@
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use humaux_retrieval_worker::rerank::{
@@ -200,6 +201,24 @@ fn assert_encodings(reranker: &Reranker, fixture: &Fixture) {
     assert!(cut > 0, "the fixture must carry over-length pairs");
 }
 
+/// The tokenizer's truncation is re-set only when `max_len` changes: the 150-token-query pair `longq-0-0` cut at 128,
+/// then 256, then 128 again comes out 128, 256, 128 tokens long. Fault: make the guard in `Engine::set_max_len` return
+/// once any value is set => the first change of `max_len` keeps the old cut.
+fn assert_truncation_memo(reranker: &Reranker, fixture: &Fixture) {
+    let pair = fixture
+        .pairs
+        .iter()
+        .find(|p| p.id == "longq-0-0")
+        .expect("the long-query pair");
+    for max_len in [128, 256, 128] {
+        let (ids, mask) = reranker
+            .encode_pair(&pair.query, &pair.passage, max_len)
+            .expect("encode");
+        assert_eq!(ids.len(), max_len, "longq-0-0 cut at {max_len}");
+        assert_eq!(mask.len(), max_len, "longq-0-0 mask cut at {max_len}");
+    }
+}
+
 /// Scores every group as ONE batch; returns the scores in file order.
 fn score_groups(reranker: &Reranker, fixture: &Fixture) -> Vec<f64> {
     let mut all = Vec::with_capacity(fixture.pairs.len());
@@ -213,6 +232,12 @@ fn score_groups(reranker: &Reranker, fixture: &Fixture) -> Vec<f64> {
                 documents.len(),
             )
             .expect("score");
+        assert_eq!(
+            scores.len(),
+            documents.len(),
+            "{}: one score per document",
+            group[0].group
+        );
         all.extend(scores.into_iter().map(f64::from));
     }
     all
@@ -239,9 +264,43 @@ fn post(addr: SocketAddr, body: &Value) -> String {
         .expect("response body")
 }
 
+/// POSTs one rerank request for `documents` against `query` and returns the reply and its scores.
+fn route_scores(
+    addr: SocketAddr,
+    fixture: &Fixture,
+    query: &str,
+    documents: &[&str],
+) -> (Value, Vec<f64>) {
+    let body = json!({
+        "schema_version": 1,
+        "call_id": "00000000-0000-7000-8000-000000000001",
+        "query": query,
+        "documents": documents,
+        "max_len": fixture.max_len,
+    });
+    let reply: Value = serde_json::from_str(&post(addr, &body)).expect("json reply");
+    assert_eq!(reply["outcome"], "scored", "{reply}");
+    let scores = reply["scores"]
+        .as_array()
+        .expect("scores")
+        .iter()
+        .map(|s| s.as_f64().expect("number"))
+        .collect();
+    (reply, scores)
+}
+
+fn assert_close(got: &[f64], want: &[f64], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: score count");
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        assert!((g - w).abs() <= 1e-6, "{what} {i}: {g} against {w}");
+    }
+}
+
 /// The production path end to end: the real route over a loopback port with the loaded lane scores the first group
-/// (one batch, like the direct call) and reports the pinned identity.
+/// (one batch, like the direct call), reports the pinned identity, and answers eleven documents (a batch of 8 and a
+/// batch of 3) with the two batches' scores in request order.
 fn assert_route(lane: RerankLane, fixture: &Fixture, expected: &[f64]) {
+    let reranker = Arc::clone(lane.reranker().expect("the lane is enabled"));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     listener
         .set_nonblocking(true)
@@ -262,34 +321,35 @@ fn assert_route(lane: RerankLane, fixture: &Fixture, expected: &[f64]) {
         "the first group is one worker batch"
     );
     let documents: Vec<&str> = group.iter().map(|p| p.passage.as_str()).collect();
-    let body = json!({
-        "schema_version": 1,
-        "call_id": "00000000-0000-7000-8000-000000000001",
-        "query": group[0].query,
-        "documents": documents,
-        "max_len": fixture.max_len,
-    });
-    let reply: Value = serde_json::from_str(&post(addr, &body)).expect("json reply");
-    assert_eq!(reply["outcome"], "scored", "{reply}");
-    let routed: Vec<f64> = reply["scores"]
-        .as_array()
-        .expect("scores")
-        .iter()
-        .map(|s| s.as_f64().expect("number"))
-        .collect();
-    assert_eq!(routed.len(), group.len());
-    for (i, (got, want)) in routed.iter().zip(expected).enumerate() {
-        assert!(
-            (got - want).abs() <= 1e-6,
-            "route score {i}: {got} against {want}"
-        );
-    }
+    let (reply, routed) = route_scores(addr, fixture, &group[0].query, &documents);
+    assert_close(&routed, expected, "route group");
     assert_eq!(reply["model"]["repo"], fixture.identity.repo);
     assert_eq!(reply["model"]["onnx_sha256"], fixture.identity.onnx_sha256);
     assert_eq!(
         reply["model"]["tokenizer_sha256"],
         fixture.identity.tokenizer_sha256
     );
+
+    // More than one worker batch: the route's scores are the first 8 documents' batch followed by the last 3's, in
+    // request order (a reversed or re-ordered chunk-extend would break this).
+    let query = fixture.pairs[0].query.as_str();
+    let many: Vec<&str> = fixture
+        .pairs
+        .iter()
+        .take(BATCH_SIZE + 3)
+        .map(|p| p.passage.as_str())
+        .collect();
+    let owned: Vec<String> = many.iter().map(|d| (*d).to_owned()).collect();
+    let mut per_batch: Vec<f64> = Vec::new();
+    for chunk in owned.chunks(BATCH_SIZE) {
+        let scores = reranker
+            .score(query, chunk, fixture.max_len, chunk.len())
+            .expect("per-batch score");
+        per_batch.extend(scores.into_iter().map(f64::from));
+    }
+    let (_, routed_many) = route_scores(addr, fixture, query, &many);
+    assert_eq!(routed_many.len(), BATCH_SIZE + 3);
+    assert_close(&routed_many, &per_batch, "route eleven documents");
 }
 
 /// G-RET-11: token ids identical, scores within `tolerance.abs` of `score_int8_batch`, group order equal to the
@@ -304,7 +364,16 @@ fn rust_path_matches_the_python_reference_scores() {
         return;
     };
     assert_eq!(reranker.identity(), &fixture.identity);
+    // The fixture and its header, so the loops below cannot pass over a shrunken or loosened input.
+    assert!(
+        fixture.tolerance <= 1e-4,
+        "tolerance.abs {} is looser than 1e-4",
+        fixture.tolerance
+    );
+    assert_eq!(fixture.pairs.len(), 54, "pairs");
+    assert_eq!(groups(&fixture).len(), 16, "groups");
     assert_encodings(&reranker, &fixture);
+    assert_truncation_memo(&reranker, &fixture);
 
     let runs: Vec<Vec<f64>> = (0..PARITY_RUNS)
         .map(|_| score_groups(&reranker, &fixture))
@@ -312,6 +381,7 @@ fn rust_path_matches_the_python_reference_scores() {
     let reference: Vec<f64> = fixture.pairs.iter().map(|p| p.reference_batch).collect();
     let mut max_delta = 0.0_f64;
     for scores in &runs {
+        assert_eq!(scores.len(), reference.len(), "one score per fixture pair");
         for (pair, (got, want)) in fixture.pairs.iter().zip(scores.iter().zip(&reference)) {
             let delta = (got - want).abs();
             max_delta = max_delta.max(delta);

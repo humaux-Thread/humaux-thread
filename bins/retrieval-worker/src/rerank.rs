@@ -4,7 +4,8 @@
 //!   env=[HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH, HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_PATH,
 //!   HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_SHA256, HUMAUX_RETRIEVAL_WORKER_RERANK_RECIPE,
 //!   HUMAUX_RETRIEVAL_WORKER_RERANK_REPO, HUMAUX_RETRIEVAL_WORKER_RERANK_REVISION,
-//!   HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH, HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256];
+//!   HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH, HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256,
+//!   HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED, HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_THREADS];
 //!   modules=[contracts::retrieval_config]
 //! Called-by: [retrieval-worker::main, retrieval-worker::rpc, tests]
 //! Invariants: [the model and tokenizer files are sha256-checked against the deployment pin before ONNX Runtime is
@@ -31,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use humaux_contracts::retrieval_config::{
-    RERANK_ENABLED, RERANK_THREADS, RegisteredRetrievalProfile,
+    RERANK_ENABLED, RERANK_MAX_LEN_MIN, RERANK_THREADS, RegisteredRetrievalProfile,
     resolve_registered_retrieval_profile,
 };
 use ort::session::Session;
@@ -49,11 +50,9 @@ const INPUT_IDS: &str = "input_ids";
 /// The second graph input of the same export.
 const ATTENTION_MASK: &str = "attention_mask";
 
-/// The pair template `<s> A </s> </s> B </s>` adds four special tokens (V8); the tokenizer subtracts them from
-/// `max_len` before truncating, so a `max_len` at or under this number would underflow inside the crate.
-const PAIR_SPECIAL_TOKENS: usize = 4;
-/// The smallest `max_len` a call may carry: the four special tokens and one content token.
-pub const MIN_MAX_LEN: usize = PAIR_SPECIAL_TOKENS + 1;
+/// The smallest `max_len` a call may carry: the registry's own floor (`RERANK_MAX_LEN_MIN`), the four special tokens
+/// of the pair template (V8) and one content token.
+pub const MIN_MAX_LEN: usize = RERANK_MAX_LEN_MIN as usize;
 
 const KEY_REPO: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_REPO";
 const KEY_REVISION: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_REVISION";
@@ -63,6 +62,18 @@ const KEY_MODEL_SHA256: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_SHA256";
 const KEY_TOKENIZER_PATH: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH";
 const KEY_TOKENIZER_SHA256: &str = "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256";
 const KEY_ONNXRUNTIME_PATH: &str = "HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH";
+/// The two optional keys through which the registry's `rerank_enabled` and `rerank_threads` reach the worker (the
+/// gateway's naming rule: the registry name upper-cased, with the worker's prefix), each paired with its registry name.
+const PROFILE_KEYS: [(&str, &str); 2] = [
+    (
+        "HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED",
+        RERANK_ENABLED,
+    ),
+    (
+        "HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_THREADS",
+        RERANK_THREADS,
+    ),
+];
 
 /// ADR-0084 D-A: the model identity `(repo, revision, recipe, onnx sha256, tokenizer sha256)`, reported on every
 /// reply so the gateway's single constructor can render `provenance.rerank_model_id`. The hashes are lowercase hex
@@ -114,6 +125,14 @@ impl RerankConfig {
                 ))
             }
         };
+        let onnxruntime_path = PathBuf::from(get(KEY_ONNXRUNTIME_PATH)?);
+        if !onnxruntime_path.is_absolute() {
+            // `ort` would resolve a relative path against the executable's directory first, then the working
+            // directory: a library found by search is not a pinned one.
+            return Err(format!(
+                "invalid configuration: {KEY_ONNXRUNTIME_PATH} (an absolute path)"
+            ));
+        }
         Ok(Self {
             identity: ModelIdentity {
                 repo: get(KEY_REPO)?,
@@ -124,30 +143,21 @@ impl RerankConfig {
             },
             model_path: get(KEY_MODEL_PATH)?.into(),
             tokenizer_path: get(KEY_TOKENIZER_PATH)?.into(),
-            onnxruntime_path: get(KEY_ONNXRUNTIME_PATH)?.into(),
+            onnxruntime_path,
         })
     }
 }
 
-/// The environment key a registry entry reaches the worker under, the gateway's rule with the worker's prefix:
-/// `retrieval.profile.rerank_enabled` becomes `HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED`.
-fn profile_env_key(registry_name: &str) -> String {
-    format!(
-        "HUMAUX_RETRIEVAL_WORKER_{}",
-        registry_name.replace('.', "_").to_ascii_uppercase()
-    )
-}
-
 /// ADR-0084 D-E: the worker's own registry read. Only the two entries that act inside the worker
 /// (`rerank_enabled`: load the model or not; `rerank_threads`: the session build) can be set, each from its
-/// [`profile_env_key`] and optional; the other entries keep the registry default, and the registry bounds-checks every
+/// [`PROFILE_KEYS`] entry and optional; the other entries keep the registry default, and the registry bounds-checks every
 /// value. The defaults live in the registry and nowhere else (§78.1).
 pub fn rerank_profile(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<RegisteredRetrievalProfile, String> {
     let mut raw = BTreeMap::new();
-    for registry_name in [RERANK_ENABLED, RERANK_THREADS] {
-        if let Some(value) = lookup(&profile_env_key(registry_name)).filter(|v| !v.is_empty()) {
+    for (env_key, registry_name) in PROFILE_KEYS {
+        if let Some(value) = lookup(env_key).filter(|v| !v.is_empty()) {
             raw.insert(registry_name.to_owned(), value);
         }
     }
@@ -528,6 +538,20 @@ mod tests {
         }
     }
 
+    /// ADR-0084 D-B: the ONNX Runtime library is loaded by an explicit absolute path; a relative one is refused naming
+    /// the key. Fault: drop the `is_absolute` check => red.
+    #[test]
+    fn a_relative_library_path_is_refused() {
+        let mut env = deployment(ABC_SHA256, ABC_SHA256);
+        env.insert(
+            KEY_ONNXRUNTIME_PATH.to_owned(),
+            "lib/libonnxruntime.so".to_owned(),
+        );
+        let error = RerankConfig::from_lookup(|name| env.get(name).cloned())
+            .expect_err("a relative library path is refused");
+        assert!(error.contains(KEY_ONNXRUNTIME_PATH), "{error}");
+    }
+
     /// ADR-0084 D-D / G-RET-14 (function half): a file whose hash differs from the pin is an error naming the object
     /// with both hashes; the matching hash passes. Fault: skip the comparison => the mismatch row is red.
     #[test]
@@ -565,16 +589,8 @@ mod tests {
                 .is_none()
         );
 
-        let enabled_key = profile_env_key(RERANK_ENABLED);
-        // The key operators set: the worker prefix plus the registry name's upper-cased form (built in two pieces so
-        // this test names no environment variable the module does not read).
-        assert_eq!(
-            enabled_key,
-            format!(
-                "HUMAUX_RETRIEVAL_WORKER_{}",
-                "RETRIEVAL_PROFILE_RERANK_ENABLED"
-            )
-        );
+        let enabled_key = PROFILE_KEYS[0].0;
+        assert_eq!(PROFILE_KEYS[0].1, RERANK_ENABLED);
         let on = |name: &str| (name == enabled_key).then(|| "true".to_owned());
         let error = boot(on).expect_err("enabled without the pin is refused");
         assert!(error.contains(KEY_REPO), "{error}");
@@ -582,7 +598,7 @@ mod tests {
         let path = abc_file("boot");
         let mut env = deployment(OTHER_SHA256, ABC_SHA256);
         env.insert(KEY_MODEL_PATH.to_owned(), path.display().to_string());
-        env.insert(enabled_key.clone(), "true".to_owned());
+        env.insert(enabled_key.to_owned(), "true".to_owned());
         let error = boot(|name| env.get(name).cloned()).expect_err("a wrong model pin is refused");
         std::fs::remove_file(&path).expect("remove the fixture file");
         assert!(
@@ -595,7 +611,8 @@ mod tests {
     /// through the registry's own error, and leaves the other entries at their registry defaults.
     #[test]
     fn rerank_profile_applies_the_registry_bounds() {
-        let threads_key = profile_env_key(RERANK_THREADS);
+        let threads_key = PROFILE_KEYS[1].0;
+        assert_eq!(PROFILE_KEYS[1].1, RERANK_THREADS);
         let profile = rerank_profile(|name| (name == threads_key).then(|| "2".to_owned()))
             .expect("two threads");
         assert_eq!(profile.rerank_threads(), 2);

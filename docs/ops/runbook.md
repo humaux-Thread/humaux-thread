@@ -1837,8 +1837,8 @@ node or a developer machine) from a public model pinned by commit, and published
   before it touches ONNX Runtime and exits 2 naming `rerank model` or `rerank tokenizer` with the expected and the actual
   hash on any mismatch (G-RET-14); with `rerank_enabled` false (the default) it reads none of these keys and answers the route
   `disabled`. The registry's `rerank_enabled` and `rerank_threads` reach the worker through two optional keys,
-  `HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED` and `..._RERANK_THREADS`, absent from the values file like the
-  gateway's profile keys: set the same value on the gateway and on the worker when the lane is turned on. Enabling the lane
+  `HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED` and `..._RERANK_THREADS`, stated in the values file with the
+  registry defaults (`false`, `4`): set the same value on the gateway and on the worker when the lane is turned on. Enabling the lane
   makes a wrong artifact a start-up failure of the whole `retrieval-rpc` service, query embedding included.
 - **Changing it.** Any change to the identity is a new `calibration_profile` (Baseline §19, Rerank Provider Failover): publish
   it under a new tag, never over this one.
