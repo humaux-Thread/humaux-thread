@@ -4153,6 +4153,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::public_evolve`
 
+#### `contracts::config_registry`
+
 #### `domain::affect`
 
 #### `domain::authority`
@@ -11883,7 +11885,9 @@ why: shared contract types for the mechanism-observation adapter
 
 modules naming it:
 - `adapters::mechanism_observation`
+- `adapters::qdrant`
 - `adapters::tests::mechanism_observation`
+- `adapters::tests::qdrant_contract`
 - `tests`
 
 ### humaux-adapters → `humaux-retrieval` (normal)
