@@ -9906,7 +9906,7 @@ backup_budget_headroom_bytes.limit         repo_max | free_floor（`telemetry::d
 partition_horizon_months.table             model_call_ledger | stage_runs | messages | maintenance_receipts | events | audit_events | retrieval_query_log
                                            （ADR-0063 D-C table_key 闭集的小写形，`PartitionTable::label` 逐字）
 maintenance_task_runs_total.outcome        ok | failed
-degrade_total.code                         §53.2 `DegradeCode` 全部变体的 PascalCase 变体名逐字（当前 11 个），
+degrade_total.code                         §53.2 `DegradeCode` 全部变体的 PascalCase 变体名逐字（个数以 §53.2 为准），
                                            一一对应，不多不少；SCREAMING_SNAKE 线格式只用于 §23 envelope，
                                            不得出现在本 label —— 两种形式并存会让 §53.3 规则 2 的
                                            「标签基数」翻倍（形式与映射冻结在 §53.2）
@@ -11123,10 +11123,11 @@ pub enum DegradeCode {
     CompletenessUnknown, ProjectionLag, GraphExpandCapped,
     ProjectionInvisibleLoss,   // §23.1② A2：账本说结清、索引里没有
     LaneSubstituted,           // §33 Tool 2（ADR-0055 D-C）：planner 选的车道未交付且调用方未带 mode，dense 代答
+    SparseLaneUnavailable,     // ADR-0083 D-C：sparse 腿失败（传输错误、超时、非 2xx、回包形状不符），dense 腿单独作答
 }
 ```
 
-共 11 个变体。`ProjectionInvisibleLoss` 由 §23.1② 的 A2 可见闭合断言引入，注错方式与读数变化登记在 §53.4。`LaneSubstituted` 由 §33 Tool 2 的车道替代引入（ADR-0055 D-C，card 30）：只经 `abstain()` 发出，结果照常返回（§52.3 Q1），注错测试同样登记在 §53.4。
+共 12 个变体。`ProjectionInvisibleLoss` 由 §23.1② 的 A2 可见闭合断言引入，注错方式与读数变化登记在 §53.4。`LaneSubstituted` 由 §33 Tool 2 的车道替代引入（ADR-0055 D-C，card 30）：只经 `abstain()` 发出，结果照常返回（§52.3 Q1），注错测试同样登记在 §53.4。`SparseLaneUnavailable` 由 hybrid 召回的 sparse 腿失败引入（ADR-0083 D-C，T-RET-6c-1）：结果照常返回（§52.3 Q1），故是 `DegradeCode` 而不新增 `ErrorCode`；线格式 `SPARSE_LANE_UNAVAILABLE` 与任何 `ErrorCode` 线格式不相交（G52-3 的交集仍恰为 `{PROJECTION_LAG}`）；只经 `abstain()` 发出，`completeness.lanes.sparse` 同时读 `failed`。发出它的召回接线是 planned（T-RET-6c-2），在此之前它在 `dormant.toml` 登记。
 
 可降级函数一律返回 `Outcome<T>`，不返回裸 `T`。
 
@@ -11156,6 +11157,7 @@ fold(x) = 在 x 的每个非首位大写字母前插 "_"，再整体大写
 规则 1  返回 Outcome<_> 的函数体内出现 unwrap_or_default() / unwrap_or( /
         Ok(Vec::new()) / Ok(None) 且不在 abstain() 调用链上          ⇒ 红
 规则 2  |DegradeCode 变体| == |DEGRADE_TOTAL 标签基数| == |注错测试数|   ⇒ 不等即红
+        （当前 12 == 12 == 12）
 规则 3  正哨兵：testkit/sentinels/ 下 3 个【本该命中】的样本文件，
         每次 check 必须恰好命中 3 次；命中数 != 3                      ⇒ 红
 ```
@@ -11170,7 +11172,7 @@ fold(x) = 在 x 的每个非首位大写字母前插 "_"，再整体大写
 testkit/fault/<variant_snake_case>.rs   —— 文件名 == lower(fold(变体名))，与变体一一对应
 ```
 
-当前 11 个变体 ⇒ 11 个文件。其中三条的注入方式不能从变体名直接读出，在此登记（其余照变体语义注入）：
+当前 12 个变体 ⇒ 12 个文件。其中四条的注入方式不能从变体名直接读出，在此登记（其余照变体语义注入）：
 
 ```text
 projection_invisible_loss.rs   绕过 retention::tombstone 直接从 Qdrant 删 10 个 point（= §23.4 G23-2 注入 1）
@@ -11182,6 +11184,11 @@ rerank_provider_timeout.rs     rerank provider 注入读超时，按 §19 走 fa
 lane_substituted.rs            planner 判为非 SEMANTIC 类且请求未带 mode ⇒ dense 车道代答（ADR-0055 D-C）
                                degrade_total{code="LaneSubstituted"} 0 → 1，degradations[] 含 LANE_SUBSTITUTED；
                                显式 mode:"semantic" 不触发（只记 planner_class）
+sparse_lane_unavailable.rs     sparse 腿的 Qdrant 请求超时 / 5xx / 回包畸形，而 dense 腿成功（ADR-0083 D-C，G-RET-10）：
+                               仍返回 dense 序结果，degrade_total{code="SparseLaneUnavailable"} 0 → 1，
+                               degradations[] 含 SPARSE_LANE_UNAVAILABLE，lanes.sparse 读 failed；dense 腿失败不触发
+                               （planned，T-RET-6c-2：召回接线之前无 emit 点，此文件是 dormant.toml 登记的合成注入、
+                               直接调 abstain()；接线后改为驱动生产函数并删去 dormant 行）
 ```
 
 **从未被触发过的 reason 不许合并。** 53.3 规则 2 的等式把这句话变成 CI 事实：加了变体没加测试 ⇒ 三个数字不等 ⇒ 红。
@@ -11478,7 +11485,8 @@ pool recall 高、final recall 明显更低        -> 池够深，问题在 rera
 ```text
 G55-6  诊断轴闸
        ① architecture-check：`RetrievalRequest` 字段名 ∪ `build_request` 形参名中
-          **caller 可直接赋值**的那部分 ∩ {limit, top_k, cand_k, depth, max_candidates}
+          **caller 可直接赋值**的那部分 ∩ {limit, top_k, cand_k, depth, max_candidates,
+          cand_multiplier, leg_depth, rrf_k, sparse_leg_enabled}
           必须为空集 —— 这几个值只能由 profile 解析得出，解析结果由 §23
           `provenance.profile` 自报，不由调用方给
        ② profile 注册表中每个 profile 必须带 production_enabled = true

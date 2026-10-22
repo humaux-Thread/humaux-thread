@@ -615,7 +615,7 @@ fn status_never_carries_a_secret_value() {
     }
     assert_eq!(
         doc["degrade"].as_object().map(|o| o.len()),
-        Some(11),
+        Some(12),
         "{doc}"
     );
     let (_, _, metrics) = get(ops, "/metrics").expect("ops answers");
