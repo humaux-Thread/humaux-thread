@@ -1018,6 +1018,10 @@ pub struct PrivateReadServingCandidates {
     pub serving_version: Option<String>,
 }
 
+/// ADR-0084 D-C 3: the card slot of the best candidate point of each Memory a hydrate resolved; `None` as a value is a
+/// point whose profile this build does not know.
+pub type PointSlots = BTreeMap<Uuid, Option<CardSlot>>;
+
 /// One private semantic result whose bodies, ledger closure, and conservative grounding report
 /// were all produced under the same PostgreSQL repeatable-read snapshot.
 #[derive(Debug, Clone)]
@@ -1027,7 +1031,7 @@ pub struct MaterializedPrivateReadServing {
     /// resolved to it (the caller's candidate order is the leg order, so that is the best leg hit), from the same
     /// registry read that gated the point. `None` as a value: the point's profile is unknown to this build. A Memory
     /// the hydrate gate then dropped is still listed; the caller looks up only the Memories of `bodies`.
-    pub point_slots: BTreeMap<Uuid, Option<CardSlot>>,
+    pub point_slots: PointSlots,
     pub ledger: LedgerClosure,
     /// §23.3④ `stream_ledger` pipeline readings for the same six-column `StreamKey` the ledger
     /// closed on, taken in the same snapshot (ADR-0041 D-H). Not an `Option`: no census travels
@@ -1217,7 +1221,7 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
-) -> Result<(MaterializedBodies, BTreeMap<Uuid, Option<CardSlot>>), RetrieveError> {
+) -> Result<(MaterializedBodies, PointSlots), RetrieveError> {
     let envelope = match consistency_token {
         Some(token) => recall_with_overlay_in_txn(txn, token, authorization, family).await?,
         None => {
@@ -1297,7 +1301,7 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
 fn stand_in_points(
     resolved: Vec<ResolvedPrivateMemoryPoint>,
     groups: &HashMap<Uuid, Uuid>,
-) -> (Vec<Uuid>, BTreeMap<Uuid, Option<CardSlot>>) {
+) -> (Vec<Uuid>, PointSlots) {
     let mut seen = HashSet::new();
     let mut point_slots = BTreeMap::new();
     let memory_ids: Vec<Uuid> = resolved
