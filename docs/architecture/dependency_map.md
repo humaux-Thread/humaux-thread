@@ -4808,6 +4808,7 @@ read by:
 - process(humaux-maintenance): `adapters::provisioning`
 
 written by:
+- (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -4815,6 +4816,7 @@ written by:
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::health_serve`
 
 executed by:
 
@@ -7838,6 +7840,14 @@ written by:
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
 
 executed by:
+
+### `ops.tenants_active_counts`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::health_snapshot`
 
 ### `ops.wal_archive_failures`
 read by:
@@ -13707,6 +13717,8 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::tenants_active_1d`
+- `testkit::tests::metrics::tenants_active_7d`
 - `testkit::tests::metrics::wal_archive_failing`
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
