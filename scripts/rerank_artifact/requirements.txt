@@ -1,7 +1,7 @@
 # CI-only pins for scripts/rerank_artifact/build.py (ADR-0084 D-A, T-RET-7b); Python 3.12, linux aarch64 (ubuntu-24.04-arm).
 # Every line is exact. The set is the `pip freeze` of the eret-local grid job that measured this model (run 39724084843,
 # 2026-10-22) plus pyarrow, which that experiment's bundle job pinned at the same version for the same dataset file.
-# ponytail: no --require-hashes; add hashes if this tool ever builds anything that is not pinned by the published sha256.
+# ponytail: installed without --require-hashes, so the published tarball sha256 pins the output, not the toolchain; upgrade path: a hash-locked file (pip-compile --generate-hashes).
 certifi==2026.10.19
 charset-normalizer==3.5.2
 filelock==4.2.4

@@ -12,7 +12,7 @@
 #   G7b-2 fixture self-consistency  re-scoring the committed parity fixtures with the packaged artifact reproduces the stored
 #                               scores within the tolerance the fixture header states (not_applicable, naming the file, if the
 #                               fixtures are not committed yet; a failure when publishing)
-# Publish job: the only job with contents: write. It re-checks the sha256 and manifest, then creates the prerelease
+# Publish job: the only job with contents: write, so its two actions are pinned by commit SHA. It re-checks the sha256 and manifest, then creates the prerelease
 # rerank-mmarco-int8-v1 and refuses to overwrite an existing one (deployment pins the tarball sha256).
 # Never pull_request / pull_request_target; no secrets are used.
 name: rerank-artifact
@@ -56,7 +56,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # ponytail: no --require-hashes (CI-only, read-only token); add hashes if this tool ever builds anything not pinned by the published sha256
+          # ponytail: pip installs without --require-hashes, so a swapped wheel would be built into the artifact and the published tarball sha256 would pin that output,
+          # not the toolchain; upgrade path: a hash-locked requirements file (pip-compile --generate-hashes)
           python -m pip install -r scripts/rerank_artifact/requirements.txt
           python -m pip freeze
       - name: build 1 (pin and licence checked first; export; E-RET-5a int8 recipe)
@@ -117,10 +118,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: rerank-artifact
           path: art

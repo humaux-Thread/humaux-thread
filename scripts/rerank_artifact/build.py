@@ -50,7 +50,10 @@ ADR_TOK_SHA256 = "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb756
 MAX_LEN = 256  # rerank_max_len default (ADR-0084 D-E)
 INTRA_OP_THREADS = 4  # rerank_threads default (ADR-0084 D-E); inter_op is 1
 MAX_PAIRS = 64
+TRUNCATION = "longest_first"  # ADR-0084 D-C; G7b-2 takes this from here, never from the fixture it checks
 DEFAULT_TOLERANCE = 1e-4  # card default when two identical runs are bit-identical
+TOLERANCE_CAP = 1e-3  # G7b-2 refuses a fixture whose header asks for a looser tolerance than this
+LONGQ_MIN_TOKENS = 140  # the long-query group's query must exceed this, so longest_first cuts it and only_second does not (max_len 256 leaves 126 per side)
 VERSION_PACKAGES = ("onnxruntime", "optimum", "optimum-onnx", "onnx", "torch", "transformers", "tokenizers", "huggingface-hub", "protobuf", "numpy", "pyarrow")
 
 # Public C-MTEB/T2Reranking at the revision E-RET-5a pinned (same file hash as n1-bench-bundle). The HF mirror card states no licence;
@@ -81,6 +84,29 @@ MIXED = (
      "Mount Fuji is the highest mountain in Japan.", "这家 café 的拿铁很好喝，价格也不贵。"),
     ("how to say 谢谢 in English", "“谢谢”在英语里是 thank you，更口语的说法是 thanks。",
      "The annual report is due at the end of the quarter.", "明天下午三点开会，请准时参加。"),
+)
+# One English group whose query alone exceeds 128 tokens and whose first passage is long: longest_first cuts both sides, only_second cuts only the passage,
+# so the two strategies give different ids. The query is the shortest prefix of these sentences that exceeds LONGQ_MIN_TOKENS. Written for this card.
+LONGQ = (
+    "I am planning a three-week trip through the north of Japan in early autumn with my elderly parents.",
+    "They cannot walk long distances or climb many stairs, so every transfer has to be easy and every hotel has to have a lift.",
+    "We want to see the autumn leaves, soak in a hot spring and eat fresh local seafood.",
+    "None of us speaks Japanese, and we would rather avoid the most crowded tourist routes.",
+    "Which cities and regions should we choose, and in which order should we visit them?",
+    "How should we move between them by train and by bus, and what should we reserve in advance?",
+    "How much luggage can we realistically carry when we change trains several times?",
+    "Which festivals or holiday weeks should we avoid because the hotels are fully booked and the prices double?",
+    "What documents, insurance and vaccinations do older travellers need, and how should we handle medicine and emergencies?",
+    "Please explain the plan step by step.",
+)
+LONGP = (
+    "For older travellers, the north of Japan is best explored from a few comfortable bases rather than a long chain of one-night stops.",
+    "Sendai, Morioka and Aomori are connected by the Tohoku Shinkansen, whose stations have lifts and where staff can help with luggage, so most transfers are short and flat.",
+    "In Hokkaido, a reserved seat on the limited express from Sapporo makes the hot-spring towns of Noboribetsu and Jozankei easy to reach without a long walk.",
+    "Autumn leaves peak from late September in the mountains and move down to the coast by early November, so a route from north to south follows the colour.",
+    "Reserve the train seats and the hotel rooms at least two months ahead, choose rooms on the ground floor or with a western-style bed, and send large suitcases ahead with the luggage-forwarding service so that each person carries only a small bag.",
+    "Avoid Silver Week in September and the long holiday weekends of October and November, when trains and inns are full and prices rise sharply.",
+    "Carry a printed list of medicines, check that the travel insurance covers hospital treatment abroad, and keep the number of the local emergency service and a card with the hotel address in Japanese.",
 )
 
 
@@ -179,6 +205,8 @@ def cmd_build(a) -> int:
         die("tokenizer.json missing from the pinned snapshot")
     shutil.copy2(snap / "README.md", files / "MODEL_CARD.md")
     tok_sha = sha256_file(files / "tokenizer.json")
+    if tok_sha != ADR_TOK_SHA256:
+        die(f"tokenizer.json sha256 {tok_sha} differs from the ADR-0084 pin {ADR_TOK_SHA256}: refusing to build")
     info = {"pin": pin, "versions": versions(), "export_seconds": export_s, "onnx": onnx_facts(files / ONNX_NAME),
             "fp32_onnx_sha256": sha256_file(work / "fp32" / "model.onnx"), "tokenizer_sha256": tok_sha,
             "tokenizer_sha256_matches_adr_0084": tok_sha == ADR_TOK_SHA256}
@@ -429,6 +457,16 @@ def build_cases(tok) -> list:
     for kind, rows in (("short", short), ("long", long_)):
         for gi, (idx, q, ps) in enumerate(rows):
             add(f"t2r-{kind}-{gi}", "zh", f"{DATASET_REPO}@{DATASET_REV[:8]} row {idx}", q, ps)
+    q = ""
+    for sentence in LONGQ:
+        q = f"{q} {sentence}".strip()
+        n_q = len(tok.encode(q, add_special_tokens=False).ids)
+        if n_q > LONGQ_MIN_TOKENS:
+            break
+    if not LONGQ_MIN_TOKENS < n_q <= MAX_LEN - 26:
+        die(f"long-query group: the query has {n_q} tokens, need more than {LONGQ_MIN_TOKENS} and at most {MAX_LEN - 26}")
+    add("longq-0", "en", "authored for T-RET-7b, public (query over 128 tokens)", q,
+        [(" ".join(LONGP), True), (SEED[3][3], False), (SEED[5][3], False)])
     if len(cases) > MAX_PAIRS:
         die(f"{len(cases)} pairs exceed the card's maximum of {MAX_PAIRS}")
     return cases
@@ -462,11 +500,14 @@ def cmd_fixtures_generate(a) -> int:
     pairs = build_cases(tok)
     only_second_differs = 0
     for p in pairs:
-        ids, mask = encode(tok, p["query"], p["passage"], "longest_first")
+        ids, mask = encode(tok, p["query"], p["passage"], TRUNCATION)
         p["n_tokens"] = len(encode(tok, p["query"], p["passage"], None)[0])
         p["truncated"] = p["n_tokens"] > MAX_LEN
         p["input_ids"], p["attention_mask"] = ids, mask
-        only_second_differs += encode(tok, p["query"], p["passage"], "only_second")[0] != ids
+        differs = encode(tok, p["query"], p["passage"], "only_second")[0] != ids
+        only_second_differs += differs
+        if p["id"] == "longq-0-0" and not differs:
+            die("long-query pair: longest_first and only_second gave the same ids")
     s1, b1 = Scorer(art / ONNX_NAME, INTRA_OP_THREADS).score(pairs, pad_id)
     s2, b2 = Scorer(art / ONNX_NAME, INTRA_OP_THREADS).score(pairs, pad_id)
     st1, bt1 = Scorer(art / ONNX_NAME, 1).score(pairs, pad_id)
@@ -477,6 +518,8 @@ def cmd_fixtures_generate(a) -> int:
     gaps = [min_gap(s1[lo:hi]) for lo, hi in ranges]
     run_to_run = max(max_diff(s1, s2), max_diff(b1, b2))
     tol = tolerance_for(run_to_run)
+    if tol > TOLERANCE_CAP:
+        die(f"run-to-run spread {run_to_run:g} gives tolerance {tol:g}, above the cap {TOLERANCE_CAP:g} that G7b-2 enforces")
     for p, x, y in zip(pairs, s1, b1):
         p["score_int8"], p["score_int8_batch"] = x, y
     fp32_agree = sum(rank_of(s1[lo:hi]) == rank_of(sf[lo:hi]) for lo, hi in ranges)
@@ -487,13 +530,18 @@ def cmd_fixtures_generate(a) -> int:
         "purpose": "G-RET-11 input (ADR-0084 D-G): the Rust tokenizer must reproduce input_ids / attention_mask exactly and the Rust int8 session the scores within tolerance.abs",
         "generator": {"script": "scripts/rerank_artifact/build.py fixtures-generate", "github_run_id": os.environ.get("GITHUB_RUN_ID"), "github_sha": os.environ.get("GITHUB_SHA")},
         "model": {"repo": REPO, "revision": REVISION, "recipe": RECIPE, "onnx_sha256": digest(art / ONNX_NAME), "tokenizer_sha256": digest(art / "tokenizer.json")},
-        "encoding": {"max_len": MAX_LEN, "truncation": "longest_first", "special_tokens_counted": True, "pair_order": "(query, passage)",
+        "encoding": {"max_len": MAX_LEN, "truncation": TRUNCATION, "special_tokens_counted": True, "pair_order": "(query, passage)",
                      "input_ids_are_unpadded": True, "pad_id": pad_id, "pairs_where_only_second_would_differ": only_second_differs,
                      "tokenizer": f"tokenizers {v['tokenizers']} on tokenizer.json (same file the Rust crate reads)"},
         "scores": {"unit": "raw logit (no sigmoid)", "provider": "CPUExecutionProvider", "intra_op_threads": INTRA_OP_THREADS, "inter_op_threads": 1,
                    "onnxruntime": v["onnxruntime"],
                    "score_int8": "one pair per session run (batch of 1, no padding)",
-                   "score_int8_batch": "the pairs of one group in file order as one batch, right-padded to the longest with pad_id and attention_mask 0 (the shape the worker runs)"},
+                   "score_int8_batch": ("each group (3 or 4 pairs, in file order) is scored as ONE batch, input_ids right-padded to the longest member with pad_id "
+                                        f"({pad_id}) and attention_mask 0. T-RET-7c's parity test must batch exactly by group. This is a parity shape, not the worker's: "
+                                        "the worker batches 8 (ADR-0084 D-C 4)"),
+                   "batch_dependence": (f"dynamic int8 quantisation scales activations per tensor, so a score depends on the batch it is computed in: the measured maximum "
+                                        f"|score_int8 - score_int8_batch| is {max_diff(s1, b1):.2f} logit over these {len(pairs)} pairs (onnxruntime {v['onnxruntime']}, "
+                                        f"{INTRA_OP_THREADS} threads)")},
         "tolerance": {"abs": tol, "applies_to": ["score_int8", "score_int8_batch"], "compare_like_with_like": True,
                       "rule": f"{DEFAULT_TOLERANCE:g} absolute when two identical runs are bit-identical, else the next power of ten at or above 10x the observed spread",
                       "measured": {"run_to_run_max_abs": run_to_run, "runs_bit_identical": run_to_run == 0,
@@ -508,7 +556,7 @@ def cmd_fixtures_generate(a) -> int:
                    "by_lang": {k: sum(p["lang"] == k for p in pairs) for k in ("en", "zh", "mixed")}},
         "data": {"dataset": {"repo": DATASET_REPO, "revision": DATASET_REV, "file": DATASET_FILE, "sha256": DATASET_SHA256, "licence": DATASET_LICENCE,
                              "selection": "first 3 rows (file order) whose 4 passages all fit in max_len and first 3 with an over-length pair; passages = first positive + first 3 negatives"},
-                 "authored": "seed-* (E-RET-PB7 public texts) and mixed-* (this card) are written by the project and are public under the repository licence"},
+                 "authored": "seed-* (E-RET-PB7 public texts), mixed-* and longq-* (this card) are written by the project and are public under the repository licence"},
     }
     keys = ("id", "group", "lang", "source", "relevant", "query", "passage", "n_tokens", "truncated", "input_ids", "attention_mask", "score_int8", "score_int8_batch")
     text = ('{\n"header": ' + json.dumps(header, ensure_ascii=False, indent=1) + ',\n"pairs": [\n'
@@ -516,6 +564,28 @@ def cmd_fixtures_generate(a) -> int:
     Path(a.out).write_text(text, encoding="utf-8")
     print("fixtures", json.dumps({"counts": header["counts"], "tolerance": header["tolerance"], "order": header["order"], "encoding": header["encoding"]}), flush=True)
     return 0
+
+
+def header_problems(h: dict, pad_id: int, n_pairs: int, n_truncated: int, n_over: int, n_groups: int) -> list:
+    """What G7b-2 checks about the fixture header. The header is the data under test, never the source of a limit: the tolerance cap, max_len,
+    truncation and thread count are constants of this file, and every count must equal what the pairs give."""
+    out: list = []
+    tol, enc, sc, cnt = h["tolerance"]["abs"], h["encoding"], h["scores"], h["counts"]
+    if not (isinstance(tol, (int, float)) and 0 < tol <= TOLERANCE_CAP):
+        out.append(f"header tolerance.abs {tol!r} is not in (0, {TOLERANCE_CAP:g}]")
+    if enc["max_len"] != MAX_LEN:
+        out.append(f"header encoding.max_len {enc['max_len']!r} is not {MAX_LEN}")
+    if enc["truncation"] != TRUNCATION:
+        out.append(f"header encoding.truncation {enc['truncation']!r} is not {TRUNCATION!r}")
+    if enc["pad_id"] != pad_id:
+        out.append(f"header encoding.pad_id {enc['pad_id']!r} is not the tokenizer's {pad_id}")
+    if sc["intra_op_threads"] != INTRA_OP_THREADS:
+        out.append(f"header scores.intra_op_threads {sc['intra_op_threads']!r} is not {INTRA_OP_THREADS}")
+    for what, key, got in (("pairs", "pairs", n_pairs), ("groups", "groups", n_groups), ("pairs flagged truncated", "over_max_len", n_truncated),
+                           ("pairs recomputed over max_len", "over_max_len", n_over)):
+        if cnt[key] != got:
+            out.append(f"header counts.{key} is {cnt[key]!r}, the fixture has {got} {what}")
+    return out
 
 
 def cmd_fixtures_verify(a) -> int:
@@ -528,7 +598,6 @@ def cmd_fixtures_verify(a) -> int:
         return 0
     fx = json.loads(fx_path.read_text(encoding="utf-8"))
     h, pairs = fx["header"], fx["pairs"]
-    tol = h["tolerance"]["abs"]
     art = Path(a.artifact)
     tok = load_tok(art / "tokenizer.json")
     pad_id = tok.token_to_id("<pad>")
@@ -537,15 +606,23 @@ def cmd_fixtures_verify(a) -> int:
         problems.append(f"{len(pairs)} pairs exceed {MAX_PAIRS}")
     if digest(art / "tokenizer.json") != h["model"]["tokenizer_sha256"]:
         problems.append("tokenizer.json sha256 differs from the fixture header")
+    if h["model"]["onnx_sha256"] != digest(art / ONNX_NAME):
+        problems.append("header model.onnx_sha256 differs from the built artifact: regenerate the fixtures from this artifact")
+    n_over = 0
     for p in pairs:
-        ids, mask = encode(tok, p["query"], p["passage"], h["encoding"]["truncation"])
+        ids, mask = encode(tok, p["query"], p["passage"], TRUNCATION)
+        n_tokens = len(encode(tok, p["query"], p["passage"], None)[0])
+        n_over += n_tokens > MAX_LEN
         if ids != p["input_ids"] or mask != p["attention_mask"]:
             problems.append(f"{p['id']}: token ids or mask differ from the pinned tokenizer")
-    single, batch = Scorer(art / ONNX_NAME, h["scores"]["intra_op_threads"]).score(pairs, pad_id)
+        if n_tokens != p["n_tokens"] or (n_tokens > MAX_LEN) != p["truncated"]:
+            problems.append(f"{p['id']}: n_tokens / truncated differ from the pinned tokenizer ({n_tokens} tokens)")
+    problems += header_problems(h, pad_id, len(pairs), sum(bool(p["truncated"]) for p in pairs), n_over, len(group_ranges(pairs)))
+    tol = min(h["tolerance"]["abs"], TOLERANCE_CAP) if isinstance(h["tolerance"]["abs"], (int, float)) else TOLERANCE_CAP
+    single, batch = Scorer(art / ONNX_NAME, INTRA_OP_THREADS).score(pairs, pad_id)
     for field, got in (("score_int8", single), ("score_int8_batch", batch)):
         for i in out_of_tolerance([p[field] for p in pairs], got, tol):
             problems.append(f"{pairs[i]['id']}: {field} stored {pairs[i][field]!r}, re-scored {got[i]!r}, |delta| {abs(pairs[i][field] - got[i]):.3g} > tolerance {tol:g}")
-    same = h["model"]["onnx_sha256"] == digest(art / ONNX_NAME)
     if problems:
         print(f"G7b-2 fixture self-consistency: fail ({len(problems)} problem(s))")
         for p in problems[:20]:
@@ -553,7 +630,7 @@ def cmd_fixtures_verify(a) -> int:
         return 1
     worst = (max_diff([p["score_int8"] for p in pairs], single), max_diff([p["score_int8_batch"] for p in pairs], batch))
     print(f"G7b-2 fixture self-consistency: pass ({len(pairs)} pairs; ids identical; worst |delta| {worst[0]:.3g} single, {worst[1]:.3g} batch; "
-          f"tolerance {tol:g}; fixture onnx sha256 equals the built one: {'yes' if same else 'no'})")
+          f"tolerance {tol:g}; header counts, max_len, truncation and the onnx sha256 agree with the built artifact)")
     return 0
 
 
@@ -599,7 +676,17 @@ def cmd_selftest(a) -> int:
     assert tolerance_for(0.0) == 1e-4 and tolerance_for(2e-5) == 1e-3 and tolerance_for(1e-9) == 1e-4
     assert out_of_tolerance([1.0, 2.0], [1.0, 2.0 + 5e-5], 1e-4) == [] and out_of_tolerance([1.0, 2.0], [1.0, 2.5], 1e-4) == [1]
     assert first_difference(__file__, __file__) is None
-    print("selftest ok: manifest corruption and extra file are caught, tolerance rule and comparison behave")
+    good = {"tolerance": {"abs": 1e-4}, "encoding": {"max_len": MAX_LEN, "truncation": TRUNCATION, "pad_id": 1}, "scores": {"intra_op_threads": INTRA_OP_THREADS},
+            "counts": {"pairs": 54, "groups": 16, "over_max_len": 6}}
+    assert header_problems(good, 1, 54, 6, 6, 16) == [], "a consistent header must pass"
+    for path, val, args in ((("tolerance", "abs"), 1e-2, (54, 6, 6, 16)), (("encoding", "max_len"), 512, (54, 6, 6, 16)), (("encoding", "truncation"), "only_second", (54, 6, 6, 16)),
+                            (("counts", "pairs"), 53, (54, 6, 6, 16)), (("counts", "over_max_len"), 5, (54, 6, 6, 16)), (("encoding", "pad_id"), 0, (54, 6, 6, 16)),
+                            (("scores", "intra_op_threads"), 1, (54, 6, 6, 16)), (("counts", "groups"), 15, (54, 6, 6, 16)), (None, None, (54, 6, 5, 16)), (None, None, (54, 5, 6, 16))):
+        h = json.loads(json.dumps(good))
+        if path:
+            h[path[0]][path[1]] = val
+        assert header_problems(h, 1, *args), f"header fault {path}={val!r} {args} must be caught"
+    print("selftest ok: manifest corruption and extra file are caught, tolerance rule and comparison behave, fixture header faults are caught")
     return 0
 
 

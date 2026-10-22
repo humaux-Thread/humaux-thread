@@ -1827,6 +1827,8 @@ node or a developer machine) from a public model pinned by commit, and published
   the export is not byte-deterministic (the manifest says), the published file is the only pin. The worker refuses to start on a
   mismatch (G-RET-14). T-RET-7c wires the fetch into the image; until then nothing on a node reads this artifact and
   `rerank_enabled` stays false.
+- **Scores are batch-dependent.** Int8 scores depend on the batch they are computed in (the parity fixture header measures it), so any
+  absolute cut-off or cross-batch comparison (ADR-0084 D-F) must be calibrated under production batching.
 - **Changing it.** Any change to the identity is a new `calibration_profile` (Baseline §19, Rerank Provider Failover): publish
   it under a new tag, never over this one.
 
