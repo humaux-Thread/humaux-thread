@@ -1,6 +1,6 @@
 //! `adapters::tests::authority_g59_5` — G-M07-9 / §59.1 G59-5: the four required Authority columns of
 //!   `private.memory_records` are enforced by the schema, not only by `Authority::new`.
-//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, uuid]; services=[PostgreSQL(any)
+//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any)
 //!   w=[control.tenants, private.memory_records]]; env=[HUMAUX_TEST_PG_DSN]; modules=[domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [one all-valid INSERT must succeed so each rejection is attributable to the injected value; all seven

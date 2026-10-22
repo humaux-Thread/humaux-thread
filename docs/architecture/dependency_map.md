@@ -1295,7 +1295,7 @@
 | humaux-domain | `uuid` | normal | UUID ids (v7) and parsing | [domain::affect, domain::audit, domain::authority, domain::context, domain::continuity, domain::coordination, domain::egress, domain::identity, domain::ids, domain::lifecycle, domain::note, domain::relation, domain::selection, domain::subject, tests] |
 | humaux-domain | `sha2` | normal | sha256 digests for hashes, fingerprints and scope_hash | [domain::audit, domain::confirm, domain::context, domain::egress, domain::evidence, domain::note, domain::selection] |
 | humaux-domain | `async-trait` | normal | object-safe async traits for ports and transports | [domain::egress, domain::grounding] |
-| humaux-domain | `time` | normal | typed UTC instant for Authority.asserted_at | [domain::authority] |
+| humaux-domain | `time` | normal | typed UTC instant for Authority.asserted_at | [domain::authority, tests] |
 | humaux-domain | `trybuild` | dev | compile-fail UI tests for typestate/authorization guarantees | [domain::tests::consolidate_typestate, domain::tests::context_authorize, domain::tests::egress_topology_ui, tests] |
 | humaux-infra-cell | `humaux-infra-network` | normal | humaux-infra-network dependency | [infra-cell::transport] |
 | humaux-infra-cell | `humaux-domain` | normal | humaux-domain dependency | [infra-cell::resource, tests] |
