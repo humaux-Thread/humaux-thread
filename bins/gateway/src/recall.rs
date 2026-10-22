@@ -43,9 +43,7 @@ use humaux_application::{
     },
     retrieve::{RetrievalIntent, prepare_request},
 };
-use humaux_contracts::retrieval_config::{
-    RETRIEVAL_GROUP_QUERY_MAX_CALLS, RegisteredRetrievalProfile,
-};
+use humaux_contracts::retrieval_config::RETRIEVAL_GROUP_QUERY_MAX_CALLS;
 use humaux_domain::{
     affect::{AffectFilter, MoodPoint},
     error::ErrorCode,
