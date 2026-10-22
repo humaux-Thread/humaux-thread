@@ -18,11 +18,13 @@
 //! Per level it prints and records: scheduled / issued / dropped iterations, outcomes, p50/p95/p99 per op class
 //! (admitted 2xx only, after warm-up), and the database deltas per answered call: commits (txns/op), WAL bytes,
 //! `pg_stat_statements` calls and `total_exec_time` (executor wall time, not CPU: the extension has no CPU column).
-//! The deltas cover warm-up too and the denominator is every answered call. Backends report statistics at most once a
-//! second (PG `PGSTAT_MIN_INTERVAL`) and an idle one defers up to 10 s, so `--settle-secs` (validated >= 1) is slept
-//! after connecting (one throwaway snapshot first, so level 1 starts from flushed counters) and again before each
+//! The deltas cover warm-up too and the denominator is every call that received an answer: a NoAnswer (reset, EOF or
+//! socket timeout) is not an answer, so it stays out of the denominator (§57.1). Backends report statistics at most
+//! once a second (PG `PGSTAT_MIN_INTERVAL`) and an idle one defers up to 10 s, so `--settle-secs` (validated >= 1) is
+//! slept after connecting (one throwaway snapshot first, so level 1 starts from flushed counters) and again before each
 //! level's second snapshot; set it to 10 when the gateway pool idles. The first snapshot's own commits land inside
-//! the delta and are subtracted for commits, left in for statements. A negative delta prints NA, never a number.
+//! the delta and are subtracted for commits, left in for statements. A negative delta or zero answered calls prints NA
+//! with an `XBASE_NOT_APPLICABLE` line naming the cause, never a number.
 //!
 //! The HTTP client, credential and request builder are `xtask::load`'s (visibility-only change, card M03-1).
 //! Ops are the two the closed-loop harness uses (`memory.enumerate`, `tools/list`): neither reaches a provider, the
@@ -418,6 +420,80 @@ fn pg_snap(db: &mut Client) -> Result<PgSnap, String> {
     })
 }
 
+/// Calls that got an answer. `Outcome::Dropped` is a NoAnswer (reset, EOF, socket timeout), not an answer, so it is
+/// excluded from the denominator and from the `answered` field (§57.1: an NA is not a value).
+fn answered_count(t: &Tally) -> u64 {
+    t.recs
+        .iter()
+        .filter(|r| r.answer != Outcome::Dropped)
+        .count() as u64
+}
+
+/// A counter delta per answered call. `None` when no call got an answer (never divide by zero) or the counter moved
+/// backwards (stats reset or eviction); both print NA with their cause (§57.1).
+fn per_call(delta: f64, answered: u64) -> Option<f64> {
+    if answered == 0 || delta < 0.0 {
+        return None;
+    }
+    Some(delta / answered as f64)
+}
+
+/// One level's database deltas per answered call, plus the `XBASE_NOT_APPLICABLE` lines its NAs require.
+struct PgCost {
+    txns: Option<f64>,
+    wal: Option<f64>,
+    stmts: (Option<f64>, Option<f64>),
+    na: Vec<String>,
+}
+
+fn pg_cost(a: &PgSnap, b: &PgSnap, answered: u64) -> PgCost {
+    let mut na = Vec::new();
+    // The first snapshot's own commit (and its statements query, when it succeeded) lands inside the delta.
+    let own = 1 + i64::from(a.stmts.is_ok());
+    let txns = per_call((b.commits - a.commits - own) as f64, answered);
+    let wal = per_call(b.wal_bytes - a.wal_bytes, answered);
+    if answered == 0 {
+        na.push(
+            "XBASE_NOT_APPLICABLE pg_stat_database: answered=0 (no answer to divide by; NoAnswer is not answered, §57.1)"
+                .to_string(),
+        );
+    } else if txns.is_none() || wal.is_none() {
+        na.push(format!(
+            "XBASE_NOT_APPLICABLE pg_stat_database: negative delta (stats reset or a standby), commits {} -> {}",
+            a.commits, b.commits
+        ));
+    }
+    let stmts = match (&a.stmts, &b.stmts) {
+        (Ok(x), Ok(y)) => {
+            if answered == 0 {
+                na.push(
+                    "XBASE_NOT_APPLICABLE pg_stat_statements: answered=0 (no answer to divide by, §57.1)"
+                        .to_string(),
+                );
+            }
+            let calls = per_call(y.0 - x.0, answered);
+            let exec = per_call(y.1 - x.1, answered);
+            if answered > 0 && (calls.is_none() || exec.is_none()) {
+                na.push(format!(
+                    "XBASE_NOT_APPLICABLE pg_stat_statements: negative delta (stats reset or eviction), calls {} -> {}, exec_ms {} -> {}",
+                    x.0, y.0, x.1, y.1
+                ));
+            }
+            (calls, exec)
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            na.push(format!("XBASE_NOT_APPLICABLE pg_stat_statements: {e}"));
+            (None, None)
+        }
+    };
+    PgCost {
+        txns,
+        wal,
+        stmts,
+        na,
+    }
+}
+
 fn quant(mut v: Vec<f64>) -> (usize, f64, f64, f64) {
     v.sort_by(f64::total_cmp);
     (
@@ -461,11 +537,10 @@ fn report_level(
         count(|o| matches!(o, Outcome::Dropped)),
     );
     let dropped = t.scheduled - t.issued;
+    let answered = answered_count(t);
     println!(
-        "XBASE_LEVEL users={users} {tag} scheduled={} issued={} dropped_iterations={dropped} answered={} ok={ok} refused_503={refused} failed={failed} no_answer={none} host={host} measured_at_unix={at}",
-        t.scheduled,
-        t.issued,
-        t.recs.len()
+        "XBASE_LEVEL users={users} {tag} scheduled={} issued={} dropped_iterations={dropped} answered={answered} ok={ok} refused_503={refused} failed={failed} no_answer={none} host={host} measured_at_unix={at}",
+        t.scheduled, t.issued
     );
     let mut ops = serde_json::Map::new();
     for (i, name) in OPS.iter().enumerate() {
@@ -488,37 +563,21 @@ fn report_level(
             serde_json::json!({"n": n, "p50": p50, "p95": p95, "p99": p99, "service_p95": svc95, "unit": "ms"}),
         );
     }
-    let answered = t.recs.len().max(1) as f64;
     let pg_json = match pg {
         Ok((a, b)) => {
-            // The first snapshot's own commit (and its statements query, when it succeeded) lands inside the delta.
-            let own = 1 + i64::from(a.stmts.is_ok());
-            let nn = |x: f64| (x >= 0.0).then_some(x);
-            let txns = nn((b.commits - a.commits - own) as f64 / answered);
-            let wal = nn((b.wal_bytes - a.wal_bytes) / answered);
-            let stmts = match (&a.stmts, &b.stmts) {
-                (Ok(x), Ok(y)) => Ok((nn((y.0 - x.0) / answered), nn((y.1 - x.1) / answered))),
-                (Err(e), _) | (_, Err(e)) => Err(e.clone()),
-            };
-            if let Err(e) = &stmts {
-                println!("XBASE_NOT_APPLICABLE pg_stat_statements: {e}");
+            let cost = pg_cost(a, b, answered);
+            for line in &cost.na {
+                println!("{line}");
             }
-            if txns.is_none() || wal.is_none() {
-                println!(
-                    "XBASE_NOT_APPLICABLE pg_stat_database: negative delta (stats reset or a standby), commits {} -> {}",
-                    a.commits, b.commits
-                );
-            }
-            let (sc, sm) = stmts.as_ref().map_or((None, None), |&(c, m)| (c, m));
+            let (sc, sm) = cost.stmts;
             println!(
-                "XBASE_PG users={users} {tag} txns_per_op={} wal_bytes_per_op={} pg_stmts_per_op={} pg_exec_ms_per_op={} n={} host={host} measured_at_unix={at}",
-                na(txns),
-                na(wal),
+                "XBASE_PG users={users} {tag} txns_per_op={} wal_bytes_per_op={} pg_stmts_per_op={} pg_exec_ms_per_op={} n={answered} host={host} measured_at_unix={at}",
+                na(cost.txns),
+                na(cost.wal),
                 na(sc),
-                na(sm),
-                t.recs.len()
+                na(sm)
             );
-            serde_json::json!({"txns_per_op": txns, "wal_bytes_per_op": wal,
+            serde_json::json!({"txns_per_op": cost.txns, "wal_bytes_per_op": cost.wal,
                 "pg_stmts_per_op": sc, "pg_exec_ms_per_op": sm})
         }
         Err(e) => {
@@ -528,7 +587,7 @@ fn report_level(
     };
     serde_json::json!({
         "users": users, "mode": cfg.mode.label(), "self_test_only": closed, "scheduled": t.scheduled, "issued": t.issued,
-        "dropped_iterations": dropped, "answered": t.recs.len(), "ok": ok, "refused_503": refused,
+        "dropped_iterations": dropped, "answered": answered, "ok": ok, "refused_503": refused,
         "failed": failed, "no_answer": none, "ops": ops, "pg_per_answered_call": pg_json, "measured_at_unix": at,
     })
 }
@@ -659,6 +718,89 @@ mod tests {
     fn slow(_: &mut Conn, _: &Arrival) -> Outcome {
         std::thread::sleep(Duration::from_millis(25));
         Outcome::Ok
+    }
+
+    fn snap(commits: i64, wal_bytes: f64, stmts: Result<(f64, f64), String>) -> PgSnap {
+        PgSnap {
+            commits,
+            wal_bytes,
+            stmts,
+        }
+    }
+
+    /// §57.1: a NoAnswer is not an answer. With N records of which K are NoAnswer, the per-response DB cost divides by
+    /// N-K, not by N.
+    #[test]
+    fn load_open_denominator_excludes_no_answer() {
+        let mut t = Tally {
+            scheduled: 10,
+            issued: 10,
+            recs: Vec::new(),
+        };
+        for i in 0..10 {
+            t.recs.push(Rec {
+                op: 0,
+                warm: false,
+                intended_ms: 1.0,
+                service_ms: 1.0,
+                answer: if i < 3 { Outcome::Dropped } else { Outcome::Ok },
+            });
+        }
+        assert_eq!(answered_count(&t), 7, "3 NoAnswer records are not answered");
+        let a = snap(100, 0.0, Ok((0.0, 0.0)));
+        let b = snap(109, 700.0, Ok((14.0, 140.0)));
+        let cost = pg_cost(&a, &b, answered_count(&t));
+        assert_eq!(cost.txns, Some(1.0));
+        assert_eq!(cost.wal, Some(100.0));
+        assert_eq!(cost.stmts, (Some(2.0), Some(20.0)));
+        assert!(
+            cost.na.is_empty(),
+            "a positive delta has no NA: {:?}",
+            cost.na
+        );
+    }
+
+    /// Zero answered calls prints NA with its cause and never divides by zero.
+    #[test]
+    fn load_open_zero_answered_prints_na_cause() {
+        let a = snap(100, 0.0, Ok((0.0, 0.0)));
+        let b = snap(109, 700.0, Ok((14.0, 140.0)));
+        let cost = pg_cost(&a, &b, 0);
+        assert_eq!(cost.txns, None);
+        assert_eq!(cost.wal, None);
+        assert_eq!(cost.stmts, (None, None));
+        assert!(
+            cost.na
+                .iter()
+                .any(|l| l.contains("answered=0") && l.contains("pg_stat_database")),
+            "pg_stat_database NA names its cause: {:?}",
+            cost.na
+        );
+        assert!(
+            cost.na
+                .iter()
+                .any(|l| l.contains("answered=0") && l.contains("pg_stat_statements")),
+            "pg_stat_statements NA names its cause: {:?}",
+            cost.na
+        );
+    }
+
+    /// A negative `pg_stat_statements` delta prints NA and an `XBASE_NOT_APPLICABLE` line naming the cause, like the
+    /// txns and WAL deltas do.
+    #[test]
+    fn load_open_negative_statement_delta_prints_na_cause() {
+        let a = snap(100, 0.0, Ok((100.0, 50.0)));
+        let b = snap(104, 40.0, Ok((99.0, 60.0)));
+        let cost = pg_cost(&a, &b, 4);
+        assert_eq!(cost.stmts.0, None, "calls moved backwards");
+        assert_eq!(cost.stmts.1, Some(10.0 / 4.0));
+        assert!(
+            cost.na
+                .iter()
+                .any(|l| l.starts_with("XBASE_NOT_APPLICABLE pg_stat_statements: negative delta")),
+            "the NA names its cause: {:?}",
+            cost.na
+        );
     }
 
     /// The card's self-test: a server that cannot keep up with the schedule makes the closed loop report dropped

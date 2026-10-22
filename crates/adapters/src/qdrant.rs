@@ -1,6 +1,6 @@
 //! `adapters::qdrant` — Qdrant multitenant placement adapter (§17, T5.4+T5.6).
-//! Depends-on: crates=[humaux-domain, humaux-infra-cell, humaux-projection, serde_json, sqlx, uuid];
-//!   services=[Qdrant(*)]; env=[]; modules=[domain::affect, domain::authority, domain::dataclass, domain::identity,
+//! Depends-on: crates=[humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, serde_json, sqlx, uuid];
+//!   services=[Qdrant(*)]; env=[]; modules=[contracts::config_registry, domain::affect, domain::authority, domain::dataclass, domain::identity,
 //!   domain::ids, domain::memory, domain::subject, domain::ticket_family, infra-cell::permit, infra-cell::transport,
 //!   projection::card, projection::dense]
 //! Called-by: [adapters::placement_repo, adapters::projection_worker, adapters::provisioning,
@@ -16,9 +16,11 @@
 //!   (ADR-0068 40d-2a); the bm25 Document is built by bm25_document alone, for the write and for the query, so both
 //!   send identical model and options (ADR-0083 D-A); the sparse leg sends the dense leg's filter value unchanged
 //!   (retrieval_filter_json) and sets `params.idf.corpus` to the tenant + visibility predicate alone, never a global
-//!   corpus (ADR-0083 D-A/D-C, §17.2)]
-//! Spec: Baseline §17; §17.5; §17.4; §17.6; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064; ADR-0068;
-//!   ADR-0083
+//!   corpus (ADR-0083 D-A/D-C, §17.2); a collection body carries a datatype or HNSW knob only when the resolved
+//!   config differs from Qdrant's own default, so the default spec's body is `create_collection_body` unchanged
+//!   (ADR-0086 D-B)]
+//! Spec: Baseline §17; §17.5; §17.4; §17.6; §17.7; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064;
+//!   ADR-0068; ADR-0083; ADR-0086
 //!
 //! Implements every part of §17: collection/index request-body shaping, payload encoding, the
 //! [`Condition`](humaux_projection::dense::Condition) → Qdrant filter JSON translation, the
@@ -45,6 +47,10 @@
 //! §3/§78.3: this crate sits below Domain in the dependency direction (adapters wraps HTTP/
 //! SQL, Domain never imports either) — not a boundary violation.
 
+use humaux_contracts::config_registry::{
+    CollectionConfig, CollectionConfigError, CollectionDatatype, HnswConfig,
+    resolve_collection_config,
+};
 use humaux_domain::affect::{AffectAnnotation, AffectFilter, BasisPoints, EmotionLabel};
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
@@ -220,6 +226,102 @@ pub fn create_collection_body(
         obj.insert("sharding_method".into(), json!("custom"));
     }
     Value::Object(obj)
+}
+
+/// `PUT /collections/{name}` body for one collection generation: [`create_collection_body`] (cosine, the unnamed
+/// dense vector of `dimension`, the `bm25` sparse vector, one shard, one replica) plus the datatype and HNSW knobs of
+/// `config` — each only when it differs from Qdrant's own default (ADR-0086 D-B), so the default config yields the
+/// body this function's callers sent before `CollectionConfig` existed. `hnsw_config` is the collection-level one:
+/// it governs the unnamed dense vector, and the sparse vector has no HNSW graph.
+pub fn collection_create_body(dimension: u32, config: &CollectionConfig) -> Value {
+    // §17.5: shard/replica/consistency values are frozen by fault injection and load tests (not by this card);
+    // they are the values `provisioning` always sent.
+    let mut body = create_collection_body(
+        dimension.into(),
+        Distance::Cosine,
+        1,
+        1,
+        1,
+        ShardingMethod::Auto,
+    );
+    if config.datatype != CollectionDatatype::Float32 {
+        body["vectors"]["datatype"] = json!(config.datatype.as_wire());
+    }
+    if config.hnsw != HnswConfig::QDRANT_DEFAULT {
+        let mut hnsw = serde_json::Map::new();
+        hnsw.insert("m".into(), json!(config.hnsw.m));
+        if let Some(payload_m) = config.hnsw.payload_m {
+            hnsw.insert("payload_m".into(), json!(payload_m));
+        }
+        hnsw.insert("ef_construct".into(), json!(config.hnsw.ef_construct));
+        body["hnsw_config"] = Value::Object(hnsw);
+    }
+    body
+}
+
+/// [`collection_create_body`] of the default config: the body for a collection named by a bare string, which has no
+/// family or generation (the `humaux-maintenance collection ensure` entry point).
+pub fn default_collection_create_body(dimension: u32) -> Value {
+    collection_create_body(dimension, &CollectionConfig::default())
+}
+
+/// One embedding generation of one retrieval family (§17.7): the family, the embedding dimension and the
+/// [`CollectionConfig`] knobs. The collection name and the create body are both derived from it, so a generation is
+/// never half-described. Changing the datatype, the dimension or the embedding model is a new `CollectionSpec`
+/// (a new collection plus a rebuild), never an in-place mutation of a live collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionSpec {
+    family: RetrievalFamily,
+    dimension: u32,
+    config: CollectionConfig,
+}
+
+impl CollectionSpec {
+    /// A spec from an already-resolved config.
+    pub fn new(family: RetrievalFamily, dimension: u32, config: CollectionConfig) -> Self {
+        Self {
+            family,
+            dimension,
+            config,
+        }
+    }
+
+    /// A spec from the raw §50 key/value map (fail-loud on garbage; unset keys take Qdrant's defaults).
+    pub fn resolve(
+        family: RetrievalFamily,
+        dimension: u32,
+        raw: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, CollectionConfigError> {
+        Ok(Self::new(
+            family,
+            dimension,
+            resolve_collection_config(raw)?,
+        ))
+    }
+
+    /// The Qdrant collection name: the bare family name for the unlabelled first generation (the name every
+    /// existing deployment already uses), `{family}_{label}` for a labelled one.
+    pub fn collection_name(&self) -> String {
+        match &self.config.generation_label {
+            None => self.family.collection_name().to_owned(),
+            Some(label) => format!("{}_{label}", self.family.collection_name()),
+        }
+    }
+
+    /// The embedding dimension of the unnamed dense vector.
+    pub fn dimension(&self) -> u32 {
+        self.dimension
+    }
+
+    /// The resolved knobs.
+    pub fn config(&self) -> &CollectionConfig {
+        &self.config
+    }
+
+    /// The `PUT /collections/{name}` body, see [`collection_create_body`].
+    pub fn create_body(&self) -> Value {
+        collection_create_body(self.dimension, &self.config)
+    }
 }
 
 /// `PUT /collections/{name}/shards` request body — required once per shard key before any

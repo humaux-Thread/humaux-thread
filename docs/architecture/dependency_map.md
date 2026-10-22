@@ -485,13 +485,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `maintenance::rls_check`
 - reads `control.anonymous_claim_trust_authorities`
 - reads `control.anonymous_source_lineage`
+- reads `control.api_keys`
 - reads `control.audit_event_identity`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.credential_pepper_state`
+- reads `control.email_challenges`
+- reads `control.email_change_requests`
 - reads `control.memberships`
 - reads `control.operation_receipts`
 - reads `control.partition_registry`
+- reads `control.password_credentials`
+- reads `control.password_reset_challenges`
 - reads `control.processor_models`
 - reads `control.provider_accounts`
 - reads `control.provider_billing_accounts`
@@ -507,7 +512,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.reasoning_route_domain_receipts`
 - reads `control.reasoning_route_policies`
 - reads `control.reasoning_route_profile_receipts`
+- reads `control.recovery_codes`
 - reads `control.retention_policies`
+- reads `control.sessions`
+- reads `control.team_invitations`
 - reads `control.usage_reservations`
 - reads `control.workspace_memberships`
 - reads `control.workspaces`
@@ -693,6 +701,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.purge_terminal_jobs`
 - executes `ops.renew_lease`
 - executes `ops.requeue_dead_distill`
+- executes `ops.tenants_active_counts`
 - executes `private.assert_contribution_prepared_route_shape`
 - executes `private.assert_current_contribution_reservation_authority`
 - executes `private.commit_contribution_candidate`
@@ -3125,13 +3134,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `maintenance::rls_check`
 - reads `control.anonymous_claim_trust_authorities`
 - reads `control.anonymous_source_lineage`
+- reads `control.api_keys`
 - reads `control.audit_event_identity`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.credential_pepper_state`
+- reads `control.email_challenges`
+- reads `control.email_change_requests`
 - reads `control.memberships`
 - reads `control.operation_receipts`
 - reads `control.partition_registry`
+- reads `control.password_credentials`
+- reads `control.password_reset_challenges`
 - reads `control.processor_models`
 - reads `control.provider_accounts`
 - reads `control.provider_billing_accounts`
@@ -3147,7 +3161,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.reasoning_route_domain_receipts`
 - reads `control.reasoning_route_policies`
 - reads `control.reasoning_route_profile_receipts`
+- reads `control.recovery_codes`
 - reads `control.retention_policies`
+- reads `control.sessions`
+- reads `control.team_invitations`
 - reads `control.usage_reservations`
 - reads `control.workspace_memberships`
 - reads `control.workspaces`
@@ -3333,6 +3350,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.purge_terminal_jobs`
 - executes `ops.renew_lease`
 - executes `ops.requeue_dead_distill`
+- executes `ops.tenants_active_counts`
 - executes `private.assert_contribution_prepared_route_shape`
 - executes `private.assert_current_contribution_reservation_authority`
 - executes `private.commit_contribution_candidate`
@@ -4153,6 +4171,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::public_evolve`
 
+#### `contracts::config_registry`
+
 #### `domain::affect`
 
 #### `domain::authority`
@@ -4802,12 +4822,16 @@ executed by:
 
 ### `control.api_keys`
 read by:
+- (no process): `adapters::tests::credential_grants`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(humaux-maintenance): `adapters::provisioning`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -4815,6 +4839,7 @@ written by:
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::health_serve`
 
 executed by:
 
@@ -5130,6 +5155,26 @@ written by:
 
 executed by:
 
+### `control.email_challenges`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.email_change_requests`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
 ### `control.ensure_admission_tier`
 read by:
 
@@ -5431,6 +5476,26 @@ written by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+executed by:
+
+### `control.password_credentials`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.password_reset_challenges`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
 
 executed by:
 
@@ -5910,6 +5975,16 @@ executed by:
 - process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.recovery_codes`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
 ### `control.register_reasoning_profile`
 read by:
 
@@ -6042,6 +6117,16 @@ executed by:
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.sessions`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
 ### `control.set_reasoning_profile_enabled`
 read by:
 
@@ -6078,6 +6163,16 @@ executed by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::confirm_token_repo`
 - process(humaux-retrieval-worker): `adapters::confirm_token_repo`
+
+### `control.team_invitations`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
 
 ### `control.tenants`
 read by:
@@ -7838,6 +7933,16 @@ written by:
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
 
 executed by:
+
+### `ops.tenants_active_counts`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::health_snapshot`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.wal_archive_failures`
 read by:
@@ -10185,6 +10290,7 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - process(cargo-xtask): `adapters::stream_repo`
@@ -10987,6 +11093,7 @@ executed by:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::email_outbox`
 - `adapters::tests::exact_completeness_eval`
@@ -11883,7 +11990,9 @@ why: shared contract types for the mechanism-observation adapter
 
 modules naming it:
 - `adapters::mechanism_observation`
+- `adapters::qdrant`
 - `adapters::tests::mechanism_observation`
+- `adapters::tests::qdrant_contract`
 - `tests`
 
 ### humaux-adapters → `humaux-retrieval` (normal)
@@ -12514,6 +12623,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -12693,6 +12803,7 @@ modules naming it:
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13707,6 +13818,8 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::tenants_active_1d`
+- `testkit::tests::metrics::tenants_active_7d`
 - `testkit::tests::metrics::wal_archive_failing`
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
@@ -15973,6 +16086,15 @@ services (computed):
 default run:
 
 ### `crates/adapters/tests/coord_task_run.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/credential_grants.rs`
 db-bound (default run): yes
 
 services (computed):

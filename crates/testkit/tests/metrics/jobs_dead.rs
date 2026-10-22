@@ -33,6 +33,8 @@ fn fixture() -> HealthSnapshot {
             (DisclosureOutcome::Failed, 37),
             (DisclosureOutcome::Denied, 41),
         ],
+        tenants_active_1d: 43,
+        tenants_active_7d: 47,
     }
 }
 
