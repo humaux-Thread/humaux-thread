@@ -146,10 +146,14 @@ fn host_pressure_truth() {
         }
         fixture.write(resource, pressure);
     }
+    fallback_truth(&fixture, &paths, &mut sampler);
+}
+
+fn fallback_truth(fixture: &Fixture, paths: &HostPaths, sampler: &mut HostSampler) {
     for resource in ["cpu", "memory", "io"] {
         fixture.remove(resource);
     }
-    let fallback = exposition(&mut sampler, &paths);
+    let fallback = exposition(sampler, paths);
     assert!(!fallback.contains("host_pressure_ratio"));
     assert!(fallback.contains("host_memory_available_bytes"));
     for malformed in [
@@ -160,31 +164,31 @@ fn host_pressure_truth() {
         "MemTotal: 18446744073709551615 kB\nMemAvailable: 250 kB\n",
     ] {
         fixture.write("meminfo", malformed);
-        assert!(!exposition(&mut sampler, &paths).contains("host_memory_available_bytes"));
+        assert!(!exposition(sampler, paths).contains("host_memory_available_bytes"));
     }
     fixture.remove("meminfo");
     fixture.write("stat", "cpu 10 0 0 10 0 0 0 0\n");
     assert!(
-        !exposition(&mut sampler, &paths).contains("host_cpu_busy_ratio"),
+        !exposition(sampler, paths).contains("host_cpu_busy_ratio"),
         "counter rollback must be absent"
     );
     for malformed in ["cpu x 0 0 10\n", "cpu0 1 2 3 4\n", "cpu 1 2 3\n"] {
         fixture.write("stat", malformed);
-        assert!(!exposition(&mut sampler, &paths).contains("host_cpu_busy_ratio"));
+        assert!(!exposition(sampler, paths).contains("host_cpu_busy_ratio"));
     }
     fixture.write("stat", "cpu 20 0 0 20 0 0 0 0\n");
     assert!(
-        !exposition(&mut sampler, &paths).contains("host_cpu_busy_ratio"),
+        !exposition(sampler, paths).contains("host_cpu_busy_ratio"),
         "invalid sample breaks the delta chain"
     );
     fixture.write("stat", "cpu 30 0 0 30 0 0 0 0\n");
     assert_eq!(
-        value(&exposition(&mut sampler, &paths), "host_cpu_busy_ratio"),
+        value(&exposition(sampler, paths), "host_cpu_busy_ratio"),
         Some(0.5)
     );
     fixture.remove("stat");
     assert!(
-        exposition(&mut sampler, &paths).is_empty(),
+        exposition(sampler, paths).is_empty(),
         "all missing families are absent"
     );
 }
