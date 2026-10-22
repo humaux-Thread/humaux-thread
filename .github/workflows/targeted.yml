@@ -10,7 +10,7 @@ name: targeted
 # so a card fixes dep-map drift before its first full CI round (T-CI-2). Dispatch with the card branch as the workflow ref
 # (`--ref`): the definition comes from that ref.
 #   gh workflow run targeted.yml --ref <branch> -f ref=<branch> -f regen_docs=true -f cargo_args=""
-#   then `gh run download <id> -n dep-map-regen` and `git apply dep-map-drift.patch`.
+#   then `gh run download <id> -n dep-map-regen` and `git apply dep-map-regen.patch`.
 # cargo_args reaches the shell only through an env var, split on spaces, never evaluated (no `${{ }}` in `run:`).
 on:
   workflow_dispatch:
@@ -131,7 +131,7 @@ jobs:
         if: ${{ inputs.regen_docs }}
         shell: bash
         run: |
-          cargo xtask dep-map --write || true
+          cargo xtask dep-map --write
           git add -A -- docs/architecture deploy/env
           git diff --cached --binary -- docs/architecture deploy/env > "$RUNNER_TEMP/dep-map-regen.patch" || true
           git diff --cached --stat -- docs/architecture deploy/env
