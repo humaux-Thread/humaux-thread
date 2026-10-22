@@ -6,10 +6,9 @@
 //!   source leaves its series (or whole family) out and is never written as 0; render() writes nothing before the
 //!   first publish while declare_families() writes only the HELP/TYPE headers (#193); the CPU busy ratio is the
 //!   delta of two readable /proc/stat samples, absent for the first sample and for a zero total delta; publish()
-//!   holds exactly one `.set(` per family]
-//! Invariant (#193): the read paths (`/proc/pressure/{cpu,memory,io}`, `/proc/meminfo`, `/proc/stat`) are fixed kernel
-//!   interfaces, not business configuration: §78.1 does not apply, so they stay as [`HostSources::default()`]
-//!   constants and tests inject their own paths. No config key and no env var.
+//!   holds exactly one `.set(` per family; the read paths (`/proc/pressure/{cpu,memory,io}`, `/proc/meminfo`,
+//!   `/proc/stat`) are fixed kernel interfaces, not business configuration (§78.1 does not apply), so they stay
+//!   [`HostSources::default()`] constants and tests inject their own paths, with no config key and no env var (#193)]
 //! Spec: Baseline §41.2; §4.4; §78.1; §78.3
 //!
 //! §4.4: "not scanned" is not "none". A host without PSI (kernel < 4.20, `psi=0`, no `full` line on older CPU
