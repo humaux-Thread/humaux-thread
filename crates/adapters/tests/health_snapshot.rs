@@ -178,9 +178,9 @@ impl Db {
             .get(0)
     }
 
-    /// One tenant in `state` holding one API key per entry of `keys`: `Some(h)` = last used `h` hours ago,
+    /// One tenant in `state` holding one ACTIVE API key per entry of `keys`: `Some(m)` = last used `m` minutes ago,
     /// `None` = never used (M22-2).
-    fn tenant_with_keys(&mut self, name: &str, state: &str, keys: &[Option<i32>]) {
+    fn tenant_with_keys(&mut self, name: &str, state: &str, keys: &[Option<i32>]) -> Uuid {
         let tenant: Uuid = self
             .sql()
             .query_one(
@@ -189,16 +189,22 @@ impl Db {
             )
             .expect("seed tenant")
             .get(0);
-        for used_hours_ago in keys {
-            self.sql()
-                .execute(
-                    "INSERT INTO control.api_keys (tenant_id, prefix, key_hash, status, last_used_at) \
-                     VALUES ($1, md5(gen_random_uuid()::text), sha256('m22-2'::bytea), 'ACTIVE', \
-                       now() - make_interval(hours => $2))",
-                    &[&tenant, used_hours_ago],
-                )
-                .expect("seed api key");
+        for used_minutes_ago in keys {
+            self.api_key(tenant, "ACTIVE", *used_minutes_ago);
         }
+        tenant
+    }
+
+    /// One API key of `tenant` in `status` (a REVOKED key also gets `revoked_at`), last used `Some(m)` minutes ago.
+    fn api_key(&mut self, tenant: Uuid, status: &str, used_minutes_ago: Option<i32>) {
+        self.sql()
+            .execute(
+                "INSERT INTO control.api_keys (tenant_id, prefix, key_hash, status, revoked_at, last_used_at) \
+                 VALUES ($1, md5(gen_random_uuid()::text), sha256('m22-2'::bytea), $2, \
+                   CASE WHEN $2 = 'REVOKED' THEN now() END, now() - make_interval(mins => $3))",
+                &[&tenant, &status, &used_minutes_ago],
+            )
+            .expect("seed api key");
     }
 
     /// One `ops.jobs` row; `lease` = Some(true) an expired lease, Some(false) a live one.
@@ -570,27 +576,35 @@ fn the_owner_is_not_widened_on_the_reader_tables() {
     );
 }
 
-/// M22-2: `tenants_active_*` count distinct ACTIVE tenants with an API key used inside the window. Two keys of one
-/// tenant count once; a key unused for longer than the window, a never-used key and a non-ACTIVE tenant count in
-/// neither column. Shown load-bearing the way T-D3 does: without 0112's owner SELECT policy on `api_keys` the inner
-/// door reads no key.
+/// M22-2: `tenants_active_*` count distinct ACTIVE tenants with an API key used inside the window. The edges are
+/// pinned a minute either side (24 h and 168 h); two keys of one tenant count once; a key revoked after its use still
+/// counts its tenant (§41.2); a never-used key and a non-ACTIVE tenant count in neither column. Shown load-bearing the
+/// way T-D3 does: without 0112's owner SELECT policy on `api_keys` the inner door reads no key.
 #[test]
 fn tenants_active_counts_distinct_active_tenants_with_a_key_used_in_the_window() {
     const T: &str = "tenants_active_counts_distinct_active_tenants_with_a_key_used_in_the_window";
     let Some(mut db) = fixture(T) else { return };
-    db.tenant_with_keys("m22-in-1d", "ACTIVE", &[Some(1)]);
-    db.tenant_with_keys("m22-in-3d", "ACTIVE", &[Some(72), None]);
-    db.tenant_with_keys("m22-in-10d", "ACTIVE", &[Some(240)]);
-    db.tenant_with_keys("m22-two-keys", "ACTIVE", &[Some(2), Some(3)]);
+    // Minutes since the last use. Slack of one minute at each edge covers the seconds between seeding and the read.
+    let (h24, h168) = (24 * 60, 168 * 60);
+    db.tenant_with_keys("m22-1h", "ACTIVE", &[Some(60)]);
+    db.tenant_with_keys("m22-23h59", "ACTIVE", &[Some(h24 - 1)]);
+    db.tenant_with_keys("m22-24h01", "ACTIVE", &[Some(h24 + 1)]);
+    db.tenant_with_keys("m22-167h59", "ACTIVE", &[Some(h168 - 1)]);
+    db.tenant_with_keys("m22-168h01", "ACTIVE", &[Some(h168 + 1)]);
+    db.tenant_with_keys("m22-72h-and-unused", "ACTIVE", &[Some(72 * 60), None]);
+    db.tenant_with_keys("m22-240h", "ACTIVE", &[Some(240 * 60)]);
+    db.tenant_with_keys("m22-two-keys", "ACTIVE", &[Some(120), Some(180)]);
     db.tenant_with_keys("m22-never-used", "ACTIVE", &[None]);
-    db.tenant_with_keys("m22-deleted", "DELETED", &[Some(1)]);
+    let revoked = db.tenant_with_keys("m22-revoked-key", "ACTIVE", &[]);
+    db.api_key(revoked, "REVOKED", Some(30));
+    db.tenant_with_keys("m22-deleted", "DELETED", &[Some(60)]);
     let Some(s) = maintenance_read(&db, T, epoch()) else {
         return;
     };
     assert_eq!(
         (s.tenants_active_1d, s.tenants_active_7d),
-        (2, 3),
-        "1d = the 1 h tenant and the two-key tenant; 7d adds the 72 h tenant"
+        (4, 7),
+        "1d = 1 h, 23 h 59 m, two-key and revoked-key tenants; 7d adds 24 h 01 m, 167 h 59 m and 72 h"
     );
 
     let row = db.read_under_fault(

@@ -16,7 +16,11 @@
 -- The return shape of ops.health_snapshot changes, which CREATE OR REPLACE cannot do, so it is dropped and
 -- re-created in this one transaction (0200 precedent): same name and argument, owner role_health_reader, SECURITY
 -- DEFINER, pinned search_path, EXECUTE role_maintenance only. The 15 columns of 0210 keep their order and the two new
--- ones are appended, so a `health serve` built before this migration (it reads columns by name) keeps working.
+-- ones are appended.
+--
+-- Deploy order: apply this migration with `health serve` stopped, or restart it right after. A process that stayed
+-- up may hold a cached prepared `SELECT * FROM ops.health_snapshot($1)`, which PostgreSQL rejects with "cached plan
+-- must not change result type", so `/metrics` answers 503 until that connection is recycled (runbook, upgrade U4-U7).
 
 -- Windows are fixed hours, not calendar days: the session time zone never moves them across a DST change.
 -- ponytail: O(api_keys) scan per sample, no last_used_at index, because every authenticated request rewrites that

@@ -1226,6 +1226,12 @@ for c in $(docker ps -aq --filter "label=com.docker.compose.project=$HUMAUX_NODE
 done
 ```
 
+U5 applies the migrations while the writers are stopped. Migration 0261 (M22-2) re-creates `ops.health_snapshot` with two more
+columns, so a `maintenance-health` process left running across it can hold a cached prepared
+`SELECT * FROM ops.health_snapshot($1)` and answer `/metrics` 503 (`cached plan must not change result type`) until its
+connections recycle. U4 stops it and U7 starts it, so this procedure needs nothing more; after any `migrate` run outside
+U1-U8, restart it (`$C restart maintenance-health`).
+
 <!-- step: U5 expect: 0 match: migrate: pass ( -->
 ```sh
 C="sh deploy/release/compose.sh"
