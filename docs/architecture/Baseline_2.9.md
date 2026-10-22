@@ -11180,7 +11180,7 @@ fold(x) = 在 x 的每个非首位大写字母前插 "_"，再整体大写
 testkit/fault/<variant_snake_case>.rs   —— 文件名 == lower(fold(变体名))，与变体一一对应
 ```
 
-当前 12 个变体 ⇒ 12 个文件。其中四条的注入方式不能从变体名直接读出，在此登记（其余照变体语义注入）：
+每个变体一个文件（个数以 §53.2 为准）。下列几条的注入方式不能从变体名直接读出，在此登记（其余照变体语义注入）：
 
 ```text
 projection_invisible_loss.rs   绕过 retention::tombstone 直接从 Qdrant 删 10 个 point（= §23.4 G23-2 注入 1）
@@ -11199,7 +11199,7 @@ sparse_lane_unavailable.rs     sparse 腿的 Qdrant 请求超时 / 5xx / 回包�
                                直接调 abstain()；接线后改为驱动生产函数并删去 dormant 行）
 ```
 
-**rerank 两个变体的含义（ADR-0084 D-D，planned，T-RET-7d）**：`RerankProviderTimeout` 的「provider」读作 rerank 执行方（云端 route 或本地 `retrieval-worker`）——时限内没有返回分数，或调用失败（传输错误、非 2xx、回包畸形、回包条数或下标与请求不符），结果按融合序作答；失败而非超时也用这一个变体，不新增变体，变体数仍是 11（§52.3 Q1：结果照常返回，所以是 `DegradeCode`）。`RerankModelMismatch` 的含义是作答的模型不是被钉的那个：worker 回报的身份与部署 pin 不一致，分数丢弃、按融合序作答。T-RET-7d 把这两条注错测试换成驱动生产函数的真实路径版本，并删除 `dormant.toml` 里这两个 M11 行（账只缩不增）。`RerankModelMismatch` 的注入方式在此登记：
+**rerank 两个变体的含义（ADR-0084 D-D，planned，T-RET-7d）**：`RerankProviderTimeout` 的「provider」读作 rerank 执行方（云端 route 或本地 `retrieval-worker`）——时限内没有返回分数，或调用失败（传输错误、非 2xx、回包畸形、回包条数或下标与请求不符），结果按融合序作答；失败而非超时也用这一个变体，不新增变体，本 ADR 不新增变体（§52.3 Q1：结果照常返回，所以是 `DegradeCode`）。`RerankModelMismatch` 的含义是作答的模型不是被钉的那个：worker 回报的身份与部署 pin 不一致，分数丢弃、按融合序作答。T-RET-7d 把这两条注错测试换成驱动生产函数的真实路径版本，并删除 `dormant.toml` 里这两个 M11 行（账只缩不增）。`RerankModelMismatch` 的注入方式在此登记：
 
 ```text
 rerank_model_mismatch.rs       worker 回报的身份 ≠ 部署 pin ⇒ 分数丢弃，融合序作答，items 非空

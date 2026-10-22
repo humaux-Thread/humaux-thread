@@ -226,7 +226,7 @@ string built by one constructor in T-RET-7d, which differs whenever any part of 
 - Both codes are emitted only through `abstain()` (§53.1), so each is logged, counted in `degrade_total` and listed in
   `completeness.degradations`; the result is still returned, so by §52.3 Q1 they are `DegradeCode`s and no `ErrorCode` is
   added. Never silent, and never a switch to another model or to a cloud route.
-- **Meaning, §53.** The variant set stays at 11 and no variant is added. `RerankProviderTimeout` means: the rerank
+- **Meaning, §53.** This ADR adds no variant (the set is as §53.2 lists it). `RerankProviderTimeout` means: the rerank
   executor, a cloud provider route or this local worker, returned no scores within the timeout or at all, and the result
   is in fallback order. "Provider" in §53.4 and in the rustdoc reads that way; a failure that is not a timeout shares the
   variant. `RerankModelMismatch` means the model that answered is not the model pinned. Baseline §53.4 is amended to say
