@@ -140,7 +140,8 @@ static MEMORY_PRESENT: AtomicBool = AtomicBool::new(false);
 static HOST_CPU_BUSY_RATIO: Gauges<1> = Gauges::new();
 static CPU_PRESENT: AtomicBool = AtomicBool::new(false);
 /// The empty label set of the two unlabeled families.
-const NO_LABELS: &[&'static str] = &[];
+// no `'static`: a const's reference and its `&str` elements are already 'static (clippy::redundant_static_lifetimes).
+const NO_LABELS: &[&str] = &[];
 
 /// Publishes one reading: every slot the reading carries is set, every other slot loses its sample, so a source
 /// that stopped being readable stops being scraped instead of leaving a stale or invented value (§4.4).
