@@ -3,6 +3,10 @@
 - Status: Accepted (2026-10-22). Card T-RET-7a (docs only). Decisions D-A to D-G are the design lead's, taken from the
   owner's decision of 2026-10-22 and from E-RET-5g and the N1 timing; the facts under "What was verified" are this
   card's. The code lands in T-RET-7b to T-RET-7d; until then every sentence below about behaviour is **planned**.
+- Amended 2026-10-22 (card T-RET-7c, the lead's decision): **the five rerank registry entries (D-E) move from T-RET-7d to
+  T-RET-7c.** The worker needs `rerank_enabled` (load the model or not, D-B) and `rerank_threads` (the session build, D-B)
+  from its own registry read before any call, so the entries must exist when the worker lands. T-RET-7d keeps the gateway
+  client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set and the provenance constructor.
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
 - Relates to: Baseline §7.2, §19 (Rerank Provider Failover), §23.1③, §23.3, §50, §51, §52.3, §53.2, §53.4, §57.1,
@@ -255,7 +259,14 @@ runs across values. `RetrievalRequest` and `build_request` take no parameter for
 five names to the G55-6 ① forbidden-name set, red-recorded by that card. No literal of them appears outside the
 registry. Two values act inside the worker: `rerank_threads` when it builds the session and `rerank_max_len` on each call.
 How each reaches the worker (its own registry read, or the call) is a contract question for T-RET-7c and T-RET-7d; the
-registry stays the only source.
+registry stays the only source. **Resolved by T-RET-7c:** `rerank_enabled` and `rerank_threads` reach the worker through its
+own registry read at `--serve-rpc` boot: `rerank::rerank_profile` takes the two optional environment keys
+`HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED` and `..._RERANK_THREADS` (the gateway's rule, a registry name
+upper-cased with the worker's prefix), builds the raw map and calls the one `resolve_registered_retrieval_profile`, so the
+defaults and the bounds are the registry's and appear nowhere else. `rerank_max_len` rides on each call (`max_len`, 1 to 512
+by the registry's own bound, and at least 5 because a pair carries four special tokens); `rerank_depth` and
+`rerank_timeout_ms` act in the gateway only (T-RET-7d). The environment keys are optional and absent from the deployment
+values files, as the gateway's profile keys are: an operator who flips the lane sets the same value on both processes.
 
 **The model pin is not in the registry.** It lives in deployment configuration beside the embedding provider's
 variables (`HUMAUX_RETRIEVAL_WORKER_EMBEDDING_*`): the D-A identity, the artifact location and the hashes. As with the
@@ -295,9 +306,11 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | Module | Change | Card |
 |---|---|---|
 | CI workflow and a script for the artifact | build the int8 ONNX from the pin, hash it and the tokenizer, publish the asset; public fixtures with Python reference scores | T-RET-7b |
-| `bins/retrieval-worker` (`rpc`, a rerank module, start-up check) | the `rerank` RPC, the session, the tokenizer, the hash check | T-RET-7c |
+| `bins/retrieval-worker` (`rpc`, `rerank`, start-up check) | the `rerank` RPC (`POST /v1/rerank`), the session, the tokenizer, the hash check | T-RET-7c |
+| `crates/infra-cell` (`IntraCellResource::RETRIEVAL_EMBEDDING_RPC`) | one rustdoc sentence (U6); no variant is added | T-RET-7c |
 | worker manifest, `deny.toml`, `deploy/images/humaux/Dockerfile`, `deploy/env/values/retrieval-worker.env` | the two crates; the RUSTSEC-2024-0436 ignore (V9); the library pin; the model pin variables | T-RET-7c |
-| `gateway::recall`, `retrieval::request`, `contracts::retrieval_config` | the client call, D-C steps 3 to 6, the five registry entries and the fingerprint | T-RET-7d |
+| `contracts::retrieval_config`, `retrieval::request` (the fingerprint) | the five registry entries and their bounds; all five in `request_profile_fingerprint` | T-RET-7c |
+| `gateway::recall`, `retrieval::request` | the client call and D-C steps 3 to 6 | T-RET-7d |
 | `retrieval::rerank` (a placeholder today) | the pure ordering step (D-C 5), so G-RET-15 needs no model | T-RET-7d |
 | `telemetry::degrade`, `testkit/fault`, `dormant.toml` | the rustdoc wording; both rerank fault tests become real-path (they drive the production function, not `abstain()`); the two M11 dormant rows are deleted | T-RET-7d |
 
@@ -307,8 +320,8 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 |---|---|---|
 | T-RET-7a | This ADR; Baseline §4.2, §7.2, §19 Rerank Provider Failover, §23.3, §50, §53.4, §67.2 and the opening list; the rerank lines of ADR-0083 and ADR-0081 (docs only) | none |
 | T-RET-7b | CI artifact pipeline (D-A) and the public parity fixtures (the public texts `PUB` in `local_rerank.py` at aae2ae4 are a seed, plus a pair longer than `rerank_max_len`) | none of its own (feeds G-RET-11) |
-| T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
-| T-RET-7d | Gateway wiring and registry (D-C to D-E); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
+| T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), **the five registry entries and the fingerprint (D-E, moved here from T-RET-7d)**, the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
+| T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
 
 ## Alternatives rejected
 

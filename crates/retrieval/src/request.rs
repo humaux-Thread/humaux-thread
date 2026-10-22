@@ -322,6 +322,27 @@ fn request_profile_fingerprint(profile: &RegisteredRetrievalProfile, cand_k: u32
         "sparse_leg_enabled".to_string(),
         profile.sparse_leg_enabled().to_string(),
     );
+    // ADR-0084 D-E: the five rerank entries identify the request the same way.
+    effective.insert(
+        "rerank_enabled".to_string(),
+        profile.rerank_enabled().to_string(),
+    );
+    effective.insert(
+        "rerank_depth".to_string(),
+        profile.rerank_depth().to_string(),
+    );
+    effective.insert(
+        "rerank_max_len".to_string(),
+        profile.rerank_max_len().to_string(),
+    );
+    effective.insert(
+        "rerank_timeout_ms".to_string(),
+        profile.rerank_timeout_ms().to_string(),
+    );
+    effective.insert(
+        "rerank_threads".to_string(),
+        profile.rerank_threads().to_string(),
+    );
     effective.insert("cand_k".to_string(), cand_k.to_string());
     effective.insert(
         "query_transform".to_string(),
@@ -453,6 +474,12 @@ mod tests {
             ("leg_depth", "201"),
             ("rrf_k", "61"),
             ("sparse_leg_enabled", "true"),
+            // ADR-0084 D-E: the five rerank entries move it too.
+            ("rerank_enabled", "true"),
+            ("rerank_depth", "24"),
+            ("rerank_max_len", "255"),
+            ("rerank_timeout_ms", "3999"),
+            ("rerank_threads", "3"),
         ] {
             let changed = request_from(&[("top_k", "100"), (key, value)]);
             assert_eq!(

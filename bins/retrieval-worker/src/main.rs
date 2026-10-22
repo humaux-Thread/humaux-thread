@@ -21,7 +21,7 @@
 //!   adapters::stream_repo, domain::egress,
 //!   domain::error, domain::ids, humaux-local-secret-scan, humaux-telemetry, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, infra-cell::uds, retrieval-provider::adapters, retrieval-provider::contract, retrieval-provider::metrics,
-//!   retrieval-worker::rpc, telemetry::metrics]
+//!   retrieval-worker::rerank, retrieval-worker::rpc, telemetry::metrics]
 //! Called-by: [process(humaux-retrieval-worker)]
 //! Invariants: [the UDS server binds only the configured socket path; a peer without kernel peer-credential auth is
 //!   refused before any request is read; --serve / --run-once read no tenant, workspace or collection from the
@@ -31,8 +31,9 @@
 //!   open no listener; --metrics-families reads no configuration; --serve / --run-once bind
 //!   HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION to the configured model's fingerprint before the first pass and exit 2
 //!   when the label is bound to another one (ADR-0064 D-C), and exit 2 when the projection's card profile policy row
-//!   is missing or names a profile this build does not know (ADR-0068 D-I)]
-//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0068 D-I
+//!   is missing or names a profile this build does not know (ADR-0068 D-I); only --serve-rpc reads the rerank keys or
+//!   loads ONNX Runtime, and it does so before the socket binds (ADR-0084 D-B)]
+//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0068 D-I; ADR-0084 D-B
 //!
 //! §4.2 (line 818): the owning process of `humaux_adapters::projection_worker::run_once` —
 //! there is no separate `projection-worker` process. Env wiring mirrors
@@ -829,7 +830,8 @@ mod rpc_mode {
         Outcome, SERVE_RPC_METRICS_ADDR, build_embedding_provider, build_scanner, ops_listener,
         parse, required,
     };
-    use humaux_retrieval_worker::rpc::{RpcState, router};
+    use humaux_retrieval_worker::rerank;
+    use humaux_retrieval_worker::rpc::{RpcState, router_with_rerank};
 
     pub async fn run() -> Result<(), Outcome> {
         let _ops = ops_listener(SERVE_RPC_METRICS_ADDR, "serve-rpc")?;
@@ -859,6 +861,17 @@ mod rpc_mode {
                 .ok()
                 .as_deref(),
         )?;
+        // ADR-0084 D-B / G-RET-14: the rerank artifact is checked and loaded before any connection is opened and before
+        // the socket binds, so a wrong file refuses boot (exit 2, the object named) instead of serving. With the
+        // registry's `rerank_enabled` false (the default) nothing is read and no model is loaded.
+        let rerank_lane = rerank::boot(|name| std::env::var(name).ok())?;
+        if let Some(reranker) = rerank_lane.reranker() {
+            let model = reranker.identity();
+            eprintln!(
+                "humaux-retrieval-worker: rerank lane on: {}@{} {} onnx={} tokenizer={}",
+                model.repo, model.revision, model.recipe, model.onnx_sha256, model.tokenizer_sha256
+            );
+        }
         let socket_path = required("HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH")?;
         let dsn = required("HUMAUX_RETRIEVAL_WORKER_PG_DSN")?;
 
@@ -916,7 +929,7 @@ mod rpc_mode {
         };
         axum::serve(
             listener,
-            router(state)
+            router_with_rerank(state, rerank_lane)
                 .into_make_service_with_connect_info::<humaux_retrieval_worker::rpc::PeerIdentity>(
                 ),
         )

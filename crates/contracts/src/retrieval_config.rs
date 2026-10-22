@@ -1,9 +1,10 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
-//! Called-by: [gateway::bootstrap, gateway::recall, retrieval::request, tests]
+//! Called-by: [gateway::bootstrap, gateway::recall, retrieval-worker::rerank, retrieval-worker::rpc, retrieval::request, tests]
 //! Invariants: [the five depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`)
-//!   are read here and nowhere else; each is bounds-checked when the registry loads]
-//! Spec: Baseline §50; §55.1; §55.6; ADR-0083 D-D
+//!   and the five rerank values (`rerank_enabled`, `rerank_depth`, `rerank_max_len`, `rerank_timeout_ms`,
+//!   `rerank_threads`) are read here and nowhere else; each is bounds-checked when the registry loads]
+//! Spec: Baseline §50; §55.1; §55.6; ADR-0083 D-D; ADR-0084 D-E
 //!
 //! This is the sole bootstrap boundary for retrieval depth. A request caller receives an
 //! already-resolved [`RegisteredRetrievalProfile`] and therefore cannot turn a request-local
@@ -28,6 +29,16 @@ const LEG_DEPTH: &str = "retrieval.profile.leg_depth";
 const RRF_K: &str = "retrieval.profile.rrf_k";
 /// ADR-0083 D-D / U6: turns the sparse leg on for the profile once the bm25 backfill reads zero missing.
 const SPARSE_LEG_ENABLED: &str = "retrieval.profile.sparse_leg_enabled";
+/// ADR-0084 D-E: turns the local rerank lane on for the profile once the artifact is deployed and U2 is read.
+pub const RERANK_ENABLED: &str = "retrieval.profile.rerank_enabled";
+/// ADR-0084 D-E: the most visible Memories scored per recall.
+const RERANK_DEPTH: &str = "retrieval.profile.rerank_depth";
+/// ADR-0084 D-E: token cap of one (query, document) pair.
+const RERANK_MAX_LEN: &str = "retrieval.profile.rerank_max_len";
+/// ADR-0084 D-E: the gateway's wait for the rerank RPC, in milliseconds.
+const RERANK_TIMEOUT_MS: &str = "retrieval.profile.rerank_timeout_ms";
+/// ADR-0084 D-E: intra-op threads of the retrieval-worker's rerank session.
+pub const RERANK_THREADS: &str = "retrieval.profile.rerank_threads";
 
 /// §23.3 / §55.6: the most Memories the candidate pool (`cand_k`) can hold. The one definition: `retrieval::request`
 /// computes `cand_k` with it and the bounds below derive from it, so they cannot drift apart.
@@ -47,6 +58,11 @@ const LEG_DEPTH_MAX: u32 = 1000;
 const RRF_K_MIN: u32 = 1;
 /// At 1000 the weights across a 200-deep leg differ by under 20%: fusion degenerates into counting legs.
 const RRF_K_MAX: u32 = 1000;
+/// ADR-0084 D-E: the tokenizer's own pair limit (`tokenizer_config.json`); `rerank_max_len` and the worker's per-call
+/// `max_len` both stop here, so one definition bounds registry and wire.
+pub const RERANK_MAX_LEN_MAX: u32 = 512;
+/// ADR-0084 D-E: the registry floor for `rerank_max_len` and `rerank_threads`.
+const RERANK_FLOOR: u32 = 1;
 /// ADR-0068 D-E: the most grouped dense calls one recall makes — the first plus at most two refills of the groups
 /// Qdrant's bounded group search left short of `cand_k`. The budget stays `cand_k` Memories across every call.
 pub const RETRIEVAL_GROUP_QUERY_MAX_CALLS: u32 = 3;
@@ -71,6 +87,11 @@ pub struct RegisteredRetrievalProfile {
     leg_depth: u32,
     rrf_k: u32,
     sparse_leg_enabled: bool,
+    rerank_enabled: bool,
+    rerank_depth: u32,
+    rerank_max_len: u32,
+    rerank_timeout_ms: u32,
+    rerank_threads: u32,
     effective_config_fingerprint: String,
 }
 
@@ -114,6 +135,36 @@ impl RegisteredRetrievalProfile {
         self.sparse_leg_enabled
     }
 
+    /// ADR-0084 D-E: whether the local rerank lane runs for this profile.
+    #[must_use]
+    pub fn rerank_enabled(&self) -> bool {
+        self.rerank_enabled
+    }
+
+    /// ADR-0084 D-E: the most visible Memories scored per recall (at most the profile's `cand_k`).
+    #[must_use]
+    pub fn rerank_depth(&self) -> u32 {
+        self.rerank_depth
+    }
+
+    /// ADR-0084 D-E: the token cap of one (query, document) pair.
+    #[must_use]
+    pub fn rerank_max_len(&self) -> u32 {
+        self.rerank_max_len
+    }
+
+    /// ADR-0084 D-E: how long the gateway waits for the rerank RPC, in milliseconds (never 0).
+    #[must_use]
+    pub fn rerank_timeout_ms(&self) -> u32 {
+        self.rerank_timeout_ms
+    }
+
+    /// ADR-0084 D-E: intra-op threads of the worker's rerank session (never 0).
+    #[must_use]
+    pub fn rerank_threads(&self) -> u32 {
+        self.rerank_threads
+    }
+
     #[must_use]
     pub fn effective_config_fingerprint(&self) -> &str {
         &self.effective_config_fingerprint
@@ -132,6 +183,11 @@ pub enum RetrievalConfigError {
     InvalidLegDepth(String),
     InvalidRrfK(String),
     InvalidSparseLegEnabled(String),
+    InvalidRerankEnabled(String),
+    InvalidRerankDepth(String),
+    InvalidRerankMaxLen(String),
+    InvalidRerankTimeoutMs(String),
+    InvalidRerankThreads(String),
     InvalidProductionEnabled(String),
     ProductionDisabled,
 }
@@ -164,6 +220,25 @@ impl fmt::Display for RetrievalConfigError {
             Self::InvalidSparseLegEnabled(value) => {
                 write!(f, "invalid retrieval profile sparse_leg_enabled {value:?}")
             }
+            Self::InvalidRerankEnabled(value) => {
+                write!(f, "invalid retrieval profile rerank_enabled {value:?}")
+            }
+            Self::InvalidRerankDepth(value) => write!(
+                f,
+                "invalid retrieval profile rerank_depth {value:?} (allowed {RERANK_FLOOR}..=cand_k of the profile)"
+            ),
+            Self::InvalidRerankMaxLen(value) => write!(
+                f,
+                "invalid retrieval profile rerank_max_len {value:?} (allowed {RERANK_FLOOR}..={RERANK_MAX_LEN_MAX})"
+            ),
+            Self::InvalidRerankTimeoutMs(value) => write!(
+                f,
+                "invalid retrieval profile rerank_timeout_ms {value:?} (allowed at least 1)"
+            ),
+            Self::InvalidRerankThreads(value) => write!(
+                f,
+                "invalid retrieval profile rerank_threads {value:?} (allowed at least {RERANK_FLOOR})"
+            ),
             Self::InvalidProductionEnabled(value) => {
                 write!(f, "invalid retrieval profile production_enabled {value:?}")
             }
@@ -191,6 +266,11 @@ pub fn retrieval_profile_registry() -> Vec<ConfigEntry> {
         entry(LEG_DEPTH, "u32", "200"),
         entry(RRF_K, "u32", "60"),
         entry(SPARSE_LEG_ENABLED, "bool", "false"),
+        entry(RERANK_ENABLED, "bool", "false"),
+        entry(RERANK_DEPTH, "u32", "25"),
+        entry(RERANK_MAX_LEN, "u32", "256"),
+        entry(RERANK_TIMEOUT_MS, "u32", "4000"),
+        entry(RERANK_THREADS, "u32", "4"),
         entry(PRODUCTION_ENABLED, "bool", "true"),
     ]
 }
@@ -244,6 +324,7 @@ pub fn resolve_registered_retrieval_profile(
                 required(&effective, SPARSE_LEG_ENABLED).to_string(),
             )
         })?;
+    let rerank = resolve_rerank(&effective, top_k.saturating_mul(cand_multiplier))?;
     let production_enabled = required(&effective, PRODUCTION_ENABLED)
         .parse::<bool>()
         .map_err(|_| {
@@ -262,7 +343,53 @@ pub fn resolve_registered_retrieval_profile(
         leg_depth,
         rrf_k,
         sparse_leg_enabled,
+        rerank_enabled: rerank.enabled,
+        rerank_depth: rerank.depth,
+        rerank_max_len: rerank.max_len,
+        rerank_timeout_ms: rerank.timeout_ms,
+        rerank_threads: rerank.threads,
         effective_config_fingerprint: effective_config_fingerprint(&effective),
+    })
+}
+
+/// The five ADR-0084 D-E values after their bounds were checked.
+struct RerankSettings {
+    enabled: bool,
+    depth: u32,
+    max_len: u32,
+    timeout_ms: u32,
+    threads: u32,
+}
+
+/// ADR-0084 D-E / D-C 1: `rerank_depth` may not exceed the profile's `cand_k` (`min(top_k * cand_multiplier, cap)`),
+/// or the rerank window would be wider than the pool it reorders.
+fn resolve_rerank(
+    effective: &BTreeMap<String, String>,
+    pool: u32,
+) -> Result<RerankSettings, RetrievalConfigError> {
+    let cand_k = pool.min(RETRIEVAL_CANDIDATE_CAP);
+    let enabled_text = required(effective, RERANK_ENABLED);
+    let enabled = enabled_text
+        .parse::<bool>()
+        .map_err(|_| RetrievalConfigError::InvalidRerankEnabled(enabled_text.to_string()))?;
+    let depth_text = required(effective, RERANK_DEPTH);
+    let depth = parse_in(depth_text, RERANK_FLOOR, cand_k)
+        .ok_or_else(|| RetrievalConfigError::InvalidRerankDepth(depth_text.to_string()))?;
+    let max_len_text = required(effective, RERANK_MAX_LEN);
+    let max_len = parse_in(max_len_text, RERANK_FLOOR, RERANK_MAX_LEN_MAX)
+        .ok_or_else(|| RetrievalConfigError::InvalidRerankMaxLen(max_len_text.to_string()))?;
+    let timeout_text = required(effective, RERANK_TIMEOUT_MS);
+    let timeout_ms = parse_in(timeout_text, RERANK_FLOOR, u32::MAX)
+        .ok_or_else(|| RetrievalConfigError::InvalidRerankTimeoutMs(timeout_text.to_string()))?;
+    let threads_text = required(effective, RERANK_THREADS);
+    let threads = parse_in(threads_text, RERANK_FLOOR, u32::MAX)
+        .ok_or_else(|| RetrievalConfigError::InvalidRerankThreads(threads_text.to_string()))?;
+    Ok(RerankSettings {
+        enabled,
+        depth,
+        max_len,
+        timeout_ms,
+        threads,
     })
 }
 
@@ -316,6 +443,17 @@ mod tests {
         )]))
     }
 
+    fn resolve_pairs(
+        entries: &[(&str, &str)],
+    ) -> Result<RegisteredRetrievalProfile, RetrievalConfigError> {
+        resolve_registered_retrieval_profile(
+            &entries
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        )
+    }
+
     /// G6c1-2: a value one step outside either bound is refused at load with that entry's own error, and the
     /// bound itself resolves. Fault: drop one bound from `parse_in`'s callers => the matching row goes red.
     #[test]
@@ -342,8 +480,16 @@ mod tests {
                 assert!(named, "{key}={outside}: {error:?}");
             }
             for inside in [min, max] {
+                // A multiplier of 1 leaves `cand_k` at 5, under the default `rerank_depth` (ADR-0084 D-C 1), so the
+                // depth moves with it; every other row keeps the default.
+                let depth = if key == CAND_MULTIPLIER && inside == min {
+                    "1"
+                } else {
+                    "25"
+                };
+                let text = inside.to_string();
                 assert!(
-                    resolve_one(key, &inside.to_string()).is_ok(),
+                    resolve_pairs(&[(key, text.as_str()), (RERANK_DEPTH, depth)]).is_ok(),
                     "{key}={inside}"
                 );
             }
@@ -368,6 +514,68 @@ mod tests {
             (LEG_DEPTH, "201"),
             (RRF_K, "61"),
             (SPARSE_LEG_ENABLED, "true"),
+        ] {
+            let changed = resolve_one(key, value).expect(key);
+            assert_ne!(
+                default.effective_config_fingerprint(),
+                changed.effective_config_fingerprint(),
+                "{key}"
+            );
+        }
+    }
+
+    /// ADR-0084 D-E: the five rerank defaults, then each entry one step outside its bound is refused at load with
+    /// its own named error and the bound itself resolves. Fault: drop one bound from `resolve_rerank` => its row
+    /// goes red.
+    #[test]
+    fn rerank_entries_are_bounds_checked_at_load_with_a_named_error() {
+        let defaults = resolve_registered_retrieval_profile(&BTreeMap::new()).expect("defaults");
+        assert!(!defaults.rerank_enabled());
+        assert_eq!(defaults.rerank_depth(), 25);
+        assert_eq!(defaults.rerank_max_len(), 256);
+        assert_eq!(defaults.rerank_timeout_ms(), 4000);
+        assert_eq!(defaults.rerank_threads(), 4);
+
+        type Named = fn(&RetrievalConfigError) -> bool;
+        let rows: [(&str, [&str; 2], &str, Named); 5] = [
+            (RERANK_ENABLED, ["yes", "x"], "true", |e| {
+                matches!(e, RetrievalConfigError::InvalidRerankEnabled(_))
+            }),
+            (RERANK_DEPTH, ["0", "26"], "25", |e| {
+                matches!(e, RetrievalConfigError::InvalidRerankDepth(_))
+            }),
+            (RERANK_MAX_LEN, ["0", "513"], "512", |e| {
+                matches!(e, RetrievalConfigError::InvalidRerankMaxLen(_))
+            }),
+            (RERANK_TIMEOUT_MS, ["0", "x"], "1", |e| {
+                matches!(e, RetrievalConfigError::InvalidRerankTimeoutMs(_))
+            }),
+            (RERANK_THREADS, ["0", "x"], "1", |e| {
+                matches!(e, RetrievalConfigError::InvalidRerankThreads(_))
+            }),
+        ];
+        for (key, outside, inside, named) in rows {
+            for value in outside {
+                let error = resolve_one(key, value).expect_err(key);
+                assert!(named(&error), "{key}={value}: {error:?}");
+            }
+            assert!(resolve_one(key, inside).is_ok(), "{key}={inside}");
+        }
+        // The depth bound is the profile's own `cand_k`: 26 fits only once `top_k * cand_multiplier` reaches 26.
+        assert!(resolve_pairs(&[(TOP_K, "6"), (RERANK_DEPTH, "26")]).is_ok());
+        assert!(resolve_pairs(&[(TOP_K, "5"), (RERANK_DEPTH, "26")]).is_err());
+    }
+
+    /// ADR-0084 D-E: each of the five entries moves the effective-config fingerprint on its own.
+    #[test]
+    fn each_rerank_entry_moves_the_effective_fingerprint() {
+        let default = resolve_registered_retrieval_profile(&BTreeMap::new()).expect("defaults");
+        for (key, value) in [
+            (RERANK_ENABLED, "true"),
+            (RERANK_DEPTH, "24"),
+            (RERANK_MAX_LEN, "255"),
+            (RERANK_TIMEOUT_MS, "3999"),
+            (RERANK_THREADS, "3"),
         ] {
             let changed = resolve_one(key, value).expect(key);
             assert_ne!(
