@@ -6,6 +6,11 @@ name: targeted
 # Exit 3 = no test matched (also what `--no-run` / `-- --list` give, by design); exit 2 = bad input or a ref older than
 # the setup action.
 #   gh workflow run targeted.yml -f ref=red/40a-g07 -f cargo_args="-p humaux-adapters --test note_put g07"
+# regen_docs=true runs no tests: it renders `cargo xtask dep-map --write` and uploads the patch as artifact dep-map-regen,
+# so a card fixes dep-map drift before its first full CI round (T-CI-2). Dispatch with the card branch as the workflow ref
+# (`--ref`): the definition comes from that ref.
+#   gh workflow run targeted.yml --ref <branch> -f ref=<branch> -f regen_docs=true -f cargo_args=""
+#   then `gh run download <id> -n dep-map-regen` and `git apply dep-map-regen.patch`.
 # cargo_args reaches the shell only through an env var, split on spaces, never evaluated (no `${{ }}` in `run:`).
 on:
   workflow_dispatch:
@@ -14,8 +19,13 @@ on:
         description: branch, tag or sha to test
         required: true
       cargo_args:
-        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact")
-        required: true
+        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact"); may be empty when regen_docs
+        required: false
+        default: ""
+      regen_docs:
+        description: run no tests; render the dep-map patch and upload it as artifact dep-map-regen
+        type: boolean
+        default: false
       as_root:
         description: run under sudo with umask 000 and the loop-mounted scratch (humaux-maintenance's needs)
         type: boolean
@@ -116,7 +126,28 @@ jobs:
 
       - uses: ./.github/actions/setup
 
+      # Twin of ci.yml's "cargo xtask dep-map --check" step (same staging and diff lines): keep the two in step.
+      - name: regen docs (cargo xtask dep-map --write)
+        if: ${{ inputs.regen_docs }}
+        shell: bash
+        run: |
+          cargo xtask dep-map --write
+          git add -A -- docs/architecture deploy/env
+          git diff --cached --binary -- docs/architecture deploy/env > "$RUNNER_TEMP/dep-map-regen.patch" || true
+          git diff --cached --stat -- docs/architecture deploy/env
+          if [ -s "$RUNNER_TEMP/dep-map-regen.patch" ]; then echo "REGEN: patch written"; else echo "REGEN: no drift"; fi
+
+      - name: upload the dep-map regen patch
+        if: ${{ inputs.regen_docs }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dep-map-regen
+          path: ${{ runner.temp }}/dep-map-regen.patch
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: cargo test <cargo_args>
+        if: ${{ !inputs.regen_docs }}
         timeout-minutes: 40
         shell: bash
         env:
@@ -127,6 +158,7 @@ jobs:
           # line instead of ending the step at `cargo test` (PR #6 Codex P2).
           set -uo pipefail
           set +e
+          [ -n "$CARGO_ARGS" ] || { echo "cargo_args is empty (only regen_docs may omit it)"; exit 2; }
           case "$CARGO_ARGS" in *[!A-Za-z0-9_:./=\ -]*) echo "cargo_args holds characters outside [A-Za-z0-9_:./= -]"; exit 2 ;; esac
           echo "ref=$(git rev-parse HEAD) cargo test $CARGO_ARGS"
           OUT="$RUNNER_TEMP/targeted.out"
