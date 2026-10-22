@@ -289,7 +289,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 | T-RET-4 | D-B: prefix-grouped warm-up scheduling; fixed prefix only if E-CACHE-3 passes | G-RET-2 |
 | T-RET-5 | D-C: vector reuse (same batch as T-DOC-2, ADR-0079) | G-RET-5 |
 | T-RET-6 | After E-RET-1 / 3, split by ADR-0083: T-RET-6a (docs: ADR-0083 and its Baseline edits), T-RET-6b (indexing and backfill of the `bm25` vector), T-RET-6c (recall: `cand_multiplier`, `leg_depth`, `rrf_k`, the BM25 leg, RRF, lanes). `cand_multiplier` ships with T-RET-6c | G-RET-3, extended to every leg by T-RET-6c (ADR-0083 D-F) |
-| Later | Rerank and the D-F pair cache: not pursued (owner, 2026-10-22, ADR-0083); reopen only with a new owner decision | |
+| Later | Rerank: a local int8 lane, ADR-0084 (owner, 2026-10-22; it replaced the same day's no-rerank record of ADR-0083; cards T-RET-7a to T-RET-7d). The D-F pair cache: not pursued; reopen only with a new owner decision | G-RET-11 to G-RET-15 (ADR-0084 D-G, planned) |
 
 Code state behind the T-RET-1 split (design §19.5 note, 2026-10-20): `byok` has one reply protocol, OpenAI-compatible, so
 T-RET-1a normalises only that one; the Anthropic-compatible and DeepSeek samples are `not_applicable` in G-RET-1 until
