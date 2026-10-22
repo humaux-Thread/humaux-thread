@@ -7935,7 +7935,7 @@ const SHARED_CATALOG_DDL_EXEMPT: &[(&str, &str)] = &[
     ),
     (
         "humaux-gateway::mcp_gateway",
-        "OPEN HAZARD, not a safety claim: the five native_mcp_*_final_metric_* tests call assert_local_read_final_metric_after_settlement, whose barrier holds LOCK TABLE private.memory_records IN ACCESS EXCLUSIVE MODE on the shared database against ungrouped readers; they belong in lane(a:disposable) and mcp_gateway.rs was outside the files of the card that added this gate (#145). Drop the row when they move",
+        "OPEN HAZARD, not a safety claim: the five native_mcp_*_final_metric_* tests call assert_local_read_final_metric_after_settlement, whose barrier holds LOCK TABLE private.memory_records IN ACCESS EXCLUSIVE MODE on the shared database against ungrouped readers; they belong in lane(a:disposable) and mcp_gateway.rs was outside the files of the card that added this gate (#145); follow-up humaux/humaux-thread#149. Drop the row when they move",
     ),
     (
         "humaux-maintenance::backup",
@@ -8078,15 +8078,26 @@ fn module_declaration(item: &str) -> Option<&str> {
         .then_some(name)
 }
 
-/// What `code` (the comment-blanked text of `file`) pulls in, as `(existing files, declarations that resolve to no
+/// A file a test binary pulls in, with whether it owns its directory (a crate root, a `mod.rs`, a `#[path]`-loaded or
+/// `include!`-loaded file: its nested `mod x;` sit beside it) or not (a plain `mod x;` loaded from `x.rs`: they sit
+/// under `<stem>/`).
+type LoadedFiles = Vec<(PathBuf, bool)>;
+
+/// What `code` (the comment-blanked text of `file`) pulls in, as `(files that exist, declarations that resolve to no
 /// file)`: `mod x;`, `#[path = ".."] mod x;` and `include!("..")`. A `#[path]` and an `include!` path are relative to the
-/// directory of the file that holds them; a plain `mod x;` is looked up the way rustc does, `x.rs` and `x/mod.rs` beside
-/// a crate root or a `mod.rs`, `<stem>/x.rs` and `<stem>/x/mod.rs` beside any other module file (all four are tried
-/// whichever kind `file` is). A declaration that finds nothing, and an `include!` whose argument is not a string literal,
-/// come back unresolved: the binary's sources are then unreadable and a marker in them would go unseen.
-fn declared_module_files(file: &Path, code: &str) -> (Vec<PathBuf>, Vec<String>) {
+/// directory of the file that holds them. A plain `mod x;` is looked up by the kind of `file`, the way rustc does:
+/// beside a file that owns its directory (`owns_dir`) it is `x.rs`, then `x/mod.rs`; beside any other file it is
+/// `<stem>/x.rs`, then `<stem>/x/mod.rs` and nothing else, so an unrelated sibling `x.rs` is never read for it. A
+/// declaration that finds nothing, and an `include!` whose argument is not a string literal, come back unresolved: the
+/// binary's sources are then unreadable and a marker in them would go unseen.
+fn declared_module_files(file: &Path, owns_dir: bool, code: &str) -> (LoadedFiles, Vec<String>) {
     let dir = file.parent().unwrap_or_else(|| Path::new("."));
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let nested = if owns_dir {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
     let mut found = Vec::new();
     let mut unresolved = Vec::new();
     let mut path_attr: Option<String> = None;
@@ -8094,7 +8105,7 @@ fn declared_module_files(file: &Path, code: &str) -> (Vec<PathBuf>, Vec<String>)
         if let Some((_, arg)) = line.split_once("include!(") {
             let arg = arg.trim_start();
             match arg.strip_prefix('"').and_then(|a| a.split_once('"')) {
-                Some((path, _)) if dir.join(path).is_file() => found.push(dir.join(path)),
+                Some((path, _)) if dir.join(path).is_file() => found.push((dir.join(path), true)),
                 _ => unresolved.push(format!(
                     "include!({})",
                     arg.split(')').next().unwrap_or("").trim()
@@ -8117,17 +8128,19 @@ fn declared_module_files(file: &Path, code: &str) -> (Vec<PathBuf>, Vec<String>)
             path_attr = None;
             continue;
         };
+        let loaded_by_path = path_attr.is_some();
         let candidates = match path_attr.take() {
             Some(path) => vec![dir.join(path)],
             None => vec![
-                dir.join(format!("{name}.rs")),
-                dir.join(name).join("mod.rs"),
-                dir.join(stem).join(format!("{name}.rs")),
-                dir.join(stem).join(name).join("mod.rs"),
+                nested.join(format!("{name}.rs")),
+                nested.join(name).join("mod.rs"),
             ],
         };
         match candidates.into_iter().find(|c| c.is_file()) {
-            Some(module) => found.push(module),
+            Some(module) => {
+                let owns = loaded_by_path || module.file_name().is_some_and(|n| n == "mod.rs");
+                found.push((module, owns));
+            }
             None => unresolved.push(format!("mod {name};")),
         }
     }
@@ -8145,23 +8158,23 @@ type Unresolved = Vec<(PathBuf, String)>;
 /// the declarations that resolve to no file, as `(declaring file, declaration)` ([`declared_module_files`]).
 fn test_binary_sources(entry: &Path) -> (CodeFiles, Unresolved) {
     let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let mut files = vec![entry.to_path_buf()];
+    let mut files = vec![(entry.to_path_buf(), true)];
     let mut seen = BTreeSet::from([canonical(entry)]);
     let mut out = Vec::new();
     let mut unresolved = Vec::new();
     let mut next = 0;
     while next < files.len() {
-        let path = files[next].clone();
+        let (path, owns_dir) = files[next].clone();
         next += 1;
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
         let code = code_without_comments(&text);
-        let (modules, missing) = declared_module_files(&path, &code);
+        let (modules, missing) = declared_module_files(&path, owns_dir, &code);
         unresolved.extend(missing.into_iter().map(|decl| (path.clone(), decl)));
-        for module in modules {
+        for (module, owns) in modules {
             if seen.insert(canonical(module.as_path())) {
-                files.push(module);
+                files.push((module, owns));
             }
         }
         out.push((path, code));
@@ -16314,11 +16327,11 @@ async fn serving_version_in_txn() {}
         m07_write(
             &tmp,
             "t/a.rs",
-            "#[path = \"support/fx.rs\"]\nmod fx;\ninclude!(\"support/inc.rs\");\nmod missing;\n\
+            "mod fx;\ninclude!(\"support/inc.rs\");\nmod missing;\n\
              include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\ninclude!(\"support/none.rs\");\n",
         );
-        m07_write(&tmp, "t/support/fx.rs", "mod deep;\n");
-        m07_write(&tmp, "t/support/fx/deep/mod.rs", "fn deep() {}\n");
+        m07_write(&tmp, "t/fx.rs", "mod deep;\n");
+        m07_write(&tmp, "t/fx/deep/mod.rs", "fn deep() {}\n");
         m07_write(&tmp, "t/support/inc.rs", "fn inc() {}\n");
         let (sources, unresolved) = test_binary_sources(&tmp.join("t/a.rs"));
         assert_eq!(
@@ -16335,6 +16348,51 @@ async fn serving_version_in_txn() {}
             ]
         );
         assert!(unresolved.iter().all(|(file, _)| file.ends_with("t/a.rs")));
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// P2-1 of the #146 review: a plain `mod x;` is looked up by the kind of the file that holds it. Beside a file that
+    /// owns its directory (the crate root, a `mod.rs`, a `#[path]`-loaded file) it is `x.rs` then `x/mod.rs`; beside any
+    /// other file only `<stem>/x.rs` then `<stem>/x/mod.rs`, so an unrelated sibling `child.rs` is not read for
+    /// `support.rs`'s `mod child;` and the declaration is unresolved until its own file exists.
+    #[test]
+    fn m24_7_reads_nested_modules_by_the_kind_of_their_file() {
+        let tmp = fresh_tmp("m24-7-kinds");
+        m07_write(
+            &tmp,
+            "t/root.rs",
+            "mod support;\n#[path = \"loaded/l.rs\"]\nmod l;\nmod owned;\n",
+        );
+        m07_write(&tmp, "t/support.rs", "mod child;\n");
+        m07_write(&tmp, "t/child.rs", "fn sibling_of_support() {}\n");
+        m07_write(&tmp, "t/loaded/l.rs", "mod peer;\n");
+        m07_write(&tmp, "t/loaded/peer.rs", "fn peer() {}\n");
+        m07_write(&tmp, "t/owned/mod.rs", "mod twin;\n");
+        m07_write(&tmp, "t/owned/twin.rs", "fn twin() {}\n");
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/root.rs"));
+        assert_eq!(
+            m24_7_file_names(&sources),
+            [
+                "l.rs",
+                "mod.rs",
+                "peer.rs",
+                "root.rs",
+                "support.rs",
+                "twin.rs"
+            ]
+        );
+        let declared: Vec<&str> = unresolved.iter().map(|(_, decl)| decl.as_str()).collect();
+        assert_eq!(declared, ["mod child;"]);
+        assert!(unresolved[0].0.ends_with("t/support.rs"), "{unresolved:?}");
+        m07_write(&tmp, "t/support/child.rs", "fn child() {}\n");
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/root.rs"));
+        assert!(unresolved.is_empty(), "{unresolved:?}");
+        let paths: Vec<&PathBuf> = sources.iter().map(|(path, _)| path).collect();
+        assert!(
+            paths.contains(&&tmp.join("t/support/child.rs")),
+            "{paths:?}"
+        );
+        assert!(!paths.contains(&&tmp.join("t/child.rs")), "{paths:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 
