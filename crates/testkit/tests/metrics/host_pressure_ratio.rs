@@ -11,7 +11,7 @@
 //! The read paths are `HostSources` values, so the same sampler runs against fixture files instead of `/proc`.
 //! Compiled and run standalone by `cargo xtask metrics-registry` (`run_witness_probe`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use humaux_telemetry::host::{HostSampler, HostSources, Resource, publish, render};
 
@@ -22,11 +22,31 @@ const PSI: [&str; 3] = [
     "some avg10=1.00 avg60=75.00 avg300=9.00 total=10\nfull avg10=0.00 avg60=100.00 avg300=0.00 total=7\n",
 ];
 
-fn fixture() -> (PathBuf, HostSources) {
-    let dir = std::env::temp_dir().join(format!("witness-host-pressure-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("fixture dir");
+/// A fixture directory removed when its owner leaves scope, including while a failed assertion unwinds (#193).
+struct FixtureDir(PathBuf);
+
+impl FixtureDir {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("witness-host-pressure-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for FixtureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fixture() -> (FixtureDir, HostSources) {
+    let dir = FixtureDir::new("host_pressure_ratio");
     let sources = HostSources {
-        pressure: Resource::ALL.map(|r| dir.join(r.as_str())),
+        pressure: Resource::ALL.map(|r| dir.path().join(r.as_str())),
         ..HostSources::default()
     };
     for (path, text) in sources.pressure.iter().zip(PSI) {
@@ -58,7 +78,7 @@ fn line(resource: &str, kind: &str, value: &str) -> String {
 /// Present, missing, malformed and `full`-less sources each render exactly what could be read.
 #[test]
 fn host_pressure_ratio() {
-    let (dir, sources) = fixture();
+    let (_dir, sources) = fixture();
 
     let all = vec![
         line("cpu", "some", "0.25"),
@@ -90,6 +110,4 @@ fn host_pressure_ratio() {
         let _ = std::fs::remove_file(path);
     }
     assert!(series(&sources).is_empty(), "all missing");
-
-    let _ = std::fs::remove_dir_all(dir);
 }
