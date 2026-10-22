@@ -18,14 +18,17 @@
 //! Per level it prints and records: scheduled / issued / dropped iterations, outcomes, p50/p95/p99 per op class
 //! (admitted 2xx only, after warm-up), and the database deltas per answered call: commits (txns/op), WAL bytes,
 //! `pg_stat_statements` calls and `total_exec_time` (executor wall time, not CPU: the extension has no CPU column).
-//! The deltas cover warm-up too, the denominator is every answered call, and `--settle-secs` waits out the
-//! statistics flush interval of idle pool connections before the second snapshot. The sampler's own queries add a
-//! constant that is subtracted for commits and left in for statements.
+//! The deltas cover warm-up too and the denominator is every answered call. Backends report statistics at most once a
+//! second (PG `PGSTAT_MIN_INTERVAL`) and an idle one defers up to 10 s, so `--settle-secs` (validated >= 1) is slept
+//! after connecting (one throwaway snapshot first, so level 1 starts from flushed counters) and again before each
+//! level's second snapshot; set it to 10 when the gateway pool idles. The first snapshot's own commits land inside
+//! the delta and are subtracted for commits, left in for statements. A negative delta prints NA, never a number.
 //!
 //! The HTTP client, credential and request builder are `xtask::load`'s (visibility-only change, card M03-1).
 //! Ops are the two the closed-loop harness uses (`memory.enumerate`, `tools/list`): neither reaches a provider, the
 //! outbox or Qdrant, so a run spends no money. `--ops enumerate|tools_list` runs one class alone for per-class
-//! txns/op. §78.1: every number is a flag; the identities and the report are files.
+//! txns/op. §78.1: every number is a flag (the 7/10 enumerate share of `mixed` included); the identities and the
+//! report are files.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -41,12 +44,11 @@ use crate::soak::percentile;
 const USAGE: &str = "usage: cargo xtask load-open \
 --gateway-url http://HOST:PORT/mcp --identities <tsv> --users <n,n,..> --identities-per-user <n> \
 --rate-per-user <calls/s> --warmup-secs <n> --secs <n> --settle-secs <n> --workers <n> --queue <n> \
---io-timeout-secs <n> --mode <open|closed> --ops <mixed|enumerate|tools_list> --pg-dsn-env <VAR> --report <path> \
+--io-timeout-secs <n> --enumerate-tenths <0..=10> --mode <open|closed> --ops <mixed|enumerate|tools_list> --pg-dsn-env <VAR> --report <path> \
 [--host-class <name>]";
 
-/// Op classes by index; `mixed` sends `enumerate` for 7 of every 10 arrivals, as the closed-loop harness does.
+/// Op classes by index; `mixed` sends `enumerate` for `--enumerate-tenths` of every 10 arrivals (7 matches `xtask::load`).
 const OPS: [&str; 2] = ["enumerate", "tools_list"];
-const ENUMERATE_TENTHS: u64 = 7;
 
 /// Arrival discipline: `Open` schedules on the clock; `Closed` sends the next call when the last returned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,6 +75,7 @@ struct Config {
     warmup: Duration,
     window: Duration,
     settle: Duration,
+    enumerate_tenths: u64,
     workers: usize,
     queue: usize,
     mode: Mode,
@@ -165,6 +168,13 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
     {
         return Err("--users, --identities-per-user, --workers, --queue and --rate-per-user must be positive".to_string());
     }
+    let settle_secs: u64 = flag(args, "--settle-secs")?;
+    let enumerate_tenths: u64 = flag(args, "--enumerate-tenths")?;
+    if settle_secs < 1 || enumerate_tenths > 10 {
+        return Err(
+            "--settle-secs must be >= 1 (PG stats flush) and --enumerate-tenths <= 10".to_string(),
+        );
+    }
     let id_path: String = flag(args, "--identities")?;
     let ids = parse_identities(
         &std::fs::read_to_string(&id_path).map_err(|e| format!("--identities {id_path}: {e}"))?,
@@ -201,7 +211,8 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
         rate_per_user,
         warmup: Duration::from_secs(flag(args, "--warmup-secs")?),
         window: Duration::from_secs(flag(args, "--secs")?),
-        settle: Duration::from_secs(flag(args, "--settle-secs")?),
+        settle: Duration::from_secs(settle_secs),
+        enumerate_tenths,
         workers,
         queue,
         mode,
@@ -236,6 +247,8 @@ struct Plan<'a> {
     users: usize,
     per_user: usize,
     only: Option<usize>,
+    /// `mixed` sends `enumerate` for this many arrivals of every 10.
+    enumerate_tenths: u64,
     target: &'a Target,
 }
 
@@ -269,7 +282,7 @@ fn arrival(p: &Plan, k: u64, at: Instant) -> Arrival {
         at,
         op: p
             .only
-            .unwrap_or_else(|| usize::from(k % 10 >= ENUMERATE_TENTHS)),
+            .unwrap_or_else(|| usize::from(k % 10 >= p.enumerate_tenths)),
         user: (k % users) as usize,
         ident: ((k / users) % p.per_user as u64) as usize,
         warm: k < p.warm_n,
@@ -365,11 +378,13 @@ where
 // Database counters and report
 // ---------------------------------------------------------------------------------------------
 
-/// Counters at one instant; `stmts` = (`pg_stat_statements` calls, `total_exec_time` ms) when the extension answers.
+/// Counters at one instant; `stmts` = (`pg_stat_statements` calls, `total_exec_time` ms), or why it did not answer.
+// ponytail: `xact_commit` is database-wide, so autovacuum, other sessions and background jobs add to txns/op; upgrade
+// to per-role `pg_stat_statements` deltas or a dedicated database for the run.
 struct PgSnap {
     commits: i64,
     wal_bytes: f64,
-    stmts: Option<(f64, f64)>,
+    stmts: Result<(f64, f64), String>,
 }
 
 const SNAP_SQL: &str = "select xact_commit, pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::float8 \
@@ -394,8 +409,8 @@ fn pg_snap(db: &mut Client) -> Result<PgSnap, String> {
     // dep: PostgreSQL(any) — pg_stat_statements when installed; absent is reported, never guessed.
     let stmts = db
         .query_one(STMT_SQL, &[])
-        .ok()
-        .map(|r| (r.get::<_, f64>(0), r.get::<_, f64>(1)));
+        .map(|r| (r.get::<_, f64>(0), r.get::<_, f64>(1)))
+        .map_err(|e| format!("pg_stat_statements: {e}"));
     Ok(PgSnap {
         commits: row.get(0),
         wal_bytes: row.get(1),
@@ -428,10 +443,16 @@ fn report_level(
     cfg: &Config,
     users: usize,
     t: &Tally,
-    pg: Option<(&PgSnap, &PgSnap)>,
+    pg: Result<(&PgSnap, &PgSnap), String>,
     host: &str,
 ) -> serde_json::Value {
     let at = unix_now();
+    let closed = cfg.mode == Mode::Closed;
+    let tag = if closed {
+        "mode=closed self-test-only"
+    } else {
+        "mode=open"
+    };
     let count = |f: fn(&Outcome) -> bool| t.recs.iter().filter(|r| f(&r.answer)).count();
     let (ok, refused, failed, none) = (
         count(|o| matches!(o, Outcome::Ok)),
@@ -441,8 +462,7 @@ fn report_level(
     );
     let dropped = t.scheduled - t.issued;
     println!(
-        "XBASE_LEVEL users={users} mode={} scheduled={} issued={} dropped_iterations={dropped} answered={} ok={ok} refused_503={refused} failed={failed} no_answer={none} host={host} measured_at_unix={at}",
-        cfg.mode.label(),
+        "XBASE_LEVEL users={users} {tag} scheduled={} issued={} dropped_iterations={dropped} answered={} ok={ok} refused_503={refused} failed={failed} no_answer={none} host={host} measured_at_unix={at}",
         t.scheduled,
         t.issued,
         t.recs.len()
@@ -460,7 +480,7 @@ fn report_level(
         let (_, _, svc95, _) = quant(pick(|r| r.service_ms));
         if n > 0 {
             println!(
-                "XBASE users={users} op={name} n={n} p50={p50:.1}ms p95={p95:.1}ms p99={p99:.1}ms service_p95={svc95:.1}ms host={host} measured_at_unix={at}"
+                "XBASE users={users} {tag} op={name} n={n} p50={p50:.1}ms p95={p95:.1}ms p99={p99:.1}ms service_p95={svc95:.1}ms host={host} measured_at_unix={at}"
             );
         }
         ops.insert(
@@ -470,38 +490,44 @@ fn report_level(
     }
     let answered = t.recs.len().max(1) as f64;
     let pg_json = match pg {
-        Some((a, b)) => {
+        Ok((a, b)) => {
             // The first snapshot's own commit (and its statements query, when it succeeded) lands inside the delta.
-            let own = 1 + i64::from(a.stmts.is_some());
-            let txns = (b.commits - a.commits - own) as f64 / answered;
-            let wal = (b.wal_bytes - a.wal_bytes) / answered;
-            let stmts = a
-                .stmts
-                .zip(b.stmts)
-                .map(|(x, y)| ((y.0 - x.0) / answered, (y.1 - x.1) / answered));
-            if stmts.is_none() {
+            let own = 1 + i64::from(a.stmts.is_ok());
+            let nn = |x: f64| (x >= 0.0).then_some(x);
+            let txns = nn((b.commits - a.commits - own) as f64 / answered);
+            let wal = nn((b.wal_bytes - a.wal_bytes) / answered);
+            let stmts = match (&a.stmts, &b.stmts) {
+                (Ok(x), Ok(y)) => Ok((nn((y.0 - x.0) / answered), nn((y.1 - x.1) / answered))),
+                (Err(e), _) | (_, Err(e)) => Err(e.clone()),
+            };
+            if let Err(e) = &stmts {
+                println!("XBASE_NOT_APPLICABLE pg_stat_statements: {e}");
+            }
+            if txns.is_none() || wal.is_none() {
                 println!(
-                    "XBASE_NOT_APPLICABLE pg_stat_statements: not installed or not readable by this role"
+                    "XBASE_NOT_APPLICABLE pg_stat_database: negative delta (stats reset or a standby), commits {} -> {}",
+                    a.commits, b.commits
                 );
             }
+            let (sc, sm) = stmts.as_ref().map_or((None, None), |&(c, m)| (c, m));
             println!(
-                "XBASE_PG users={users} txns_per_op={txns:.2} wal_bytes_per_op={wal:.0} pg_stmts_per_op={} pg_exec_ms_per_op={} n={} host={host} measured_at_unix={at}",
-                na(stmts.map(|s| s.0)),
-                na(stmts.map(|s| s.1)),
+                "XBASE_PG users={users} {tag} txns_per_op={} wal_bytes_per_op={} pg_stmts_per_op={} pg_exec_ms_per_op={} n={} host={host} measured_at_unix={at}",
+                na(txns),
+                na(wal),
+                na(sc),
+                na(sm),
                 t.recs.len()
             );
             serde_json::json!({"txns_per_op": txns, "wal_bytes_per_op": wal,
-                "pg_stmts_per_op": stmts.map(|s| s.0), "pg_exec_ms_per_op": stmts.map(|s| s.1)})
+                "pg_stmts_per_op": sc, "pg_exec_ms_per_op": sm})
         }
-        None => {
-            println!(
-                "XBASE_NOT_APPLICABLE pg_stat_database: counter snapshot unavailable (session or role)"
-            );
+        Err(e) => {
+            println!("XBASE_NOT_APPLICABLE pg_stat_database: {e}");
             serde_json::Value::Null
         }
     };
     serde_json::json!({
-        "users": users, "mode": cfg.mode.label(), "scheduled": t.scheduled, "issued": t.issued,
+        "users": users, "mode": cfg.mode.label(), "self_test_only": closed, "scheduled": t.scheduled, "issued": t.issued,
         "dropped_iterations": dropped, "answered": t.recs.len(), "ok": ok, "refused_503": refused,
         "failed": failed, "no_answer": none, "ops": ops, "pg_per_answered_call": pg_json, "measured_at_unix": at,
     })
@@ -515,9 +541,21 @@ fn execute(cfg: &Config) -> i32 {
             .as_ref()
             .map_or_else(String::new, |c| format!("{c}-"))
     );
-    let mut db = pg_connect(&cfg.pg_dsn)
-        .map_err(|e| eprintln!("load-open: {e}"))
-        .ok();
+    let mut db = pg_connect(&cfg.pg_dsn);
+    match &mut db {
+        Ok(c) => {
+            // Throwaway snapshot, then a flush interval: level 1's first snapshot must start from flushed counters.
+            if let Err(e) = pg_snap(c) {
+                eprintln!("load-open: throwaway snapshot: {e}");
+            }
+            std::thread::sleep(cfg.settle);
+        }
+        Err(e) => eprintln!("load-open: no counter session: {e}"),
+    }
+    let snap = |db: &mut Result<Client, String>| match db {
+        Ok(c) => pg_snap(c),
+        Err(e) => Err(format!("no counter session: {e}")),
+    };
     let mut levels = Vec::new();
     for &users in &cfg.users {
         let rate = users as f64 * cfg.rate_per_user;
@@ -531,9 +569,10 @@ fn execute(cfg: &Config) -> i32 {
             users,
             per_user: cfg.per_user,
             only: cfg.only,
+            enumerate_tenths: cfg.enumerate_tenths,
             target: &cfg.target,
         };
-        let before = db.as_mut().and_then(|c| pg_snap(c).ok());
+        let before = snap(&mut db);
         let tally = drive(&plan, &|conn: &mut Conn, a: &Arrival| {
             // One `Forwarded` /64 per user (`2001:db8:<user>::1`, documentation range): a user's identities share an IP.
             let wire = request(
@@ -550,20 +589,18 @@ fn execute(cfg: &Config) -> i32 {
                 .map_or(Outcome::Dropped, |r| outcome_of(&r))
         });
         std::thread::sleep(cfg.settle);
-        let after = db.as_mut().and_then(|c| pg_snap(c).ok());
-        levels.push(report_level(
-            cfg,
-            users,
-            &tally,
-            before.as_ref().zip(after.as_ref()),
-            &host,
-        ));
+        let after = snap(&mut db);
+        let pg = match (&before, &after) {
+            (Ok(a), Ok(b)) => Ok((a, b)),
+            (Err(e), _) | (_, Err(e)) => Err(e.clone()),
+        };
+        levels.push(report_level(cfg, users, &tally, pg, &host));
     }
     let report = serde_json::json!({"host": host, "unit_note": "latency ms from intended start, nearest rank, admitted 2xx after warm-up", "levels": levels});
-    match std::fs::write(
-        &cfg.report_path,
-        serde_json::to_string_pretty(&report).unwrap_or_default(),
-    ) {
+    match serde_json::to_string_pretty(&report)
+        .map_err(|e| e.to_string())
+        .and_then(|text| std::fs::write(&cfg.report_path, text).map_err(|e| e.to_string()))
+    {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("load-open: cannot write {}: {e}", cfg.report_path);
@@ -615,6 +652,7 @@ mod tests {
             users: 2,
             per_user: 3,
             only: None,
+            enumerate_tenths: 7,
         }
     }
 
@@ -628,14 +666,31 @@ mod tests {
     #[test]
     fn closed_loop_reports_dropped_iterations_at_overload() {
         let t = drive(&plan(&target(), Mode::Closed, 200.0, 200, 1, 1), &slow);
-        assert_ne!(
-            t.scheduled - t.issued,
-            0,
+        // 1 s of schedule at 25 ms per call: > 0 issued rules out a worker that does nothing (vacuous pass),
+        // >= 20 leaves 2x slack for a loaded runner, < scheduled is the overload itself.
+        assert!(
+            t.issued >= 20 && t.issued < t.scheduled,
             "issued {} of {}",
             t.issued,
             t.scheduled
         );
+        assert_ne!(t.scheduled - t.issued, 0);
         assert_eq!(t.recs.len() as u64, t.issued);
+    }
+
+    /// Open loop at overload with `queue = 1`: arrivals that find no room are dropped at their scheduled time, so the
+    /// level takes about `total / rate` however slow the service is. A scheduler that blocks on a full queue
+    /// (`send` for `try_send`) would take `total x 25 ms` = 5 s here; the 2.5 s bound leaves a loaded runner 4x slack.
+    #[test]
+    fn open_loop_overload_drops_without_slipping_the_schedule() {
+        let tg = target();
+        let began = Instant::now();
+        let t = drive(&plan(&tg, Mode::Open, 400.0, 200, 1, 1), &slow);
+        let took = began.elapsed();
+        let dropped = t.scheduled - t.issued;
+        assert!(dropped > 0, "issued {} of {}", t.issued, t.scheduled);
+        assert_eq!(t.recs.len() as u64 + dropped, t.scheduled);
+        assert!(took < Duration::from_millis(2500), "level took {took:?}");
     }
 
     /// Open loop measures from the intended start: with one 25 ms worker under a 100/s schedule the backlog shows
