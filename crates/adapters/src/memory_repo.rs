@@ -1,6 +1,6 @@
 //! `adapters::memory_repo` — the sole `INSERT INTO private.memory_records` door (M07 D9, gate G-M07-1): one authorized Memory plus its PRIMARY
 //!   `memory_evidence` link, written in the caller's transaction.
-//! Depends-on: crates=[async-trait, hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.memory_text_v] w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
 //! Called-by: [adapters::attribution_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::remember, tests]
 //! Invariants: [every non-test Memory INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
 //!   Memory row and its PRIMARY `memory_evidence` link are written together, because 0004's deferred `memory_records_requires_evidence` trigger
@@ -8,13 +8,17 @@
 //!   `AuthorizedAuthority`, never the raw candidate class; the deterministic subject resolve hook runs here exactly once per Memory;
 //!   the attribution port runs here exactly once per Memory, after the subject hook, and is a required argument (ADR-0078 D-D,
 //!   xtask G-M29-5(a)); this module never imports its M29 implementation (no L3 -> L4 edge);
-//!   the statement runs inside the caller's transaction and never commits; this module imports no Distill-hop code, the hop imports it]
-//! Spec: Baseline §8.6; §6.1.3; §6.1.4; §10.1; ADR-0016; ADR-0028; ADR-0067; ADR-0078
+//!   the statement runs inside the caller's transaction and never commits; this module imports no Distill-hop code, the hop imports it;
+//!   this module reads a Memory's canonical text only through `private.memory_text_v` ([`memory_texts_in_txn`], M07 D1)]
+//! Spec: Baseline §8.5; §8.6; §6.1.3; §6.1.4; §10.1; ADR-0016; ADR-0028; ADR-0067; ADR-0078; ADR-0085
 //!
 //! [`insert_memory_in_txn`] writes one Memory (ADR-0016 D4 visibility copy, ADR-0067 D-J note lineage, ADR-0028 subject hook) from the two
 //! types it takes: [`NewMemory`] (what to write) and [`LoadedEvidence`] (the Evidence row it is grounded on and inherits visibility from).
 //! Callers are the Distill confirm path, the private worker's write leg (through `distill_repo`'s re-exports), `memory.correct` and
 //! `memory.note_put`; each passes the [`MemoryAttribution`] its process's composition root built.
+//!
+//! [`memory_texts_in_txn`] is the Rust half of the one place a Memory's text is resolved (M07 D1, ADR-0085): it selects from
+//! `private.memory_text_v`; SQL readers join that view.
 
 use humaux_domain::authority::AuthorityClass;
 use humaux_domain::evidence::EvidenceOriginClass;
@@ -202,4 +206,49 @@ pub async fn insert_memory_in_txn(
         .link_memory_projects(txn, tenant_id, memory_id, attribution_evidence_id)
         .await?;
     Ok(memory_id)
+}
+
+/// One row of `private.memory_text_v`: the canonical text of one Memory (M07 D1, ADR-0085 D-A). `None` is SQL NULL: a Memory
+/// whose `content` has no `title` / `key_claim` (a non-note kind), or an identity note whose Evidence payload is not a JSON
+/// string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryText {
+    /// The Memory this text belongs to.
+    pub memory_id: Uuid,
+    /// `content ->> 'title'`.
+    pub title: Option<String>,
+    /// The identity note's Evidence payload text, or `content ->> 'key_claim'` for any other Memory (ADR-0085 D-A).
+    pub body: Option<String>,
+}
+
+/// Reads the canonical text of `memory_ids` from `private.memory_text_v` in the caller's transaction, ordered by `memory_id`.
+/// The view is `security_invoker`, so a Memory the caller's role and RLS context cannot read is absent from the result, never
+/// returned with a NULL body. Empty input runs no query.
+///
+/// # Errors
+/// Any `sqlx::Error` from the statement; the caller owns the transaction and its mapping.
+pub async fn memory_texts_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    memory_ids: &[Uuid],
+) -> Result<Vec<MemoryText>, sqlx::Error> {
+    if memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT memory_id, title, body FROM private.memory_text_v \
+          WHERE tenant_id = $1 AND memory_id = ANY($2) ORDER BY memory_id",
+    )
+    .bind(tenant_id)
+    .bind(memory_ids)
+    .fetch_all(&mut **txn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(memory_id, title, body)| MemoryText {
+            memory_id,
+            title,
+            body,
+        })
+        .collect())
 }
