@@ -63,6 +63,7 @@ same column list.
 | gate | location | injected fault | expected red |
 |---|---|---|---|
 | G-M07-3, view half | `crates/adapters/tests/note_text_once.rs::g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | the view returns the title as the body of a non-identity Memory (`ELSE m.content ->> 'title'`) | the legacy twin reads its title instead of the rewritten `key_claim` (`note_text_once.rs:268`, `left == right`) |
+| G-M07-3, no fallback on the identity branch (and the `jsonb_typeof` guard) | same test | the identity branch is `COALESCE(ev.payload #>> '{}', m.content->>'key_claim')` | an identity note whose payload is a JSON object reads the JSON text instead of NULL (`note_text_once.rs:254`) |
 
 The test writes two notes through the real `memory.note_put` transaction, reads them through the accessor as
 `role_gateway` with the member's RLS context, then reshapes them as the owner: the identity note loses its `key_claim`
@@ -71,6 +72,7 @@ The test writes two notes through the real `memory.note_put` transaction, reads 
 payload, or the title fails one of the three reads.
 
 Red record: `red/m07-2-r1` (this branch plus the single mutation above, deleted after recording), targeted run 39811915711: FAILED on `note_text_once.rs:268`, the legacy twin's body assertion (left: its title, right: the rewritten `key_claim`), not on setup. Green: the PR's CI on the unmutated branch.
+Red record r2: `red/m07-2-r2` (this branch plus the single mutation in the table, deleted after recording), targeted run 39817674703: FAILED on `note_text_once.rs:254` (left: `Some("{\"not\": \"a string\"}")`, right: `None`), the new non-string-payload assertion, not on setup.
 
 ## Consequences
 
