@@ -134,6 +134,26 @@ jobs:
       - name: cargo clippy --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # #162 / §57.1: the no-python gate judges the Compose model Compose itself resolves, not a hand-written YAML
+      # subset. `--no-interpolate` keeps ${...} expressions and reads no env file or secret, while anchors, `<<`
+      # merges, `extends`, flow style, quoted keys and every profile still render (service selection is only applied
+      # by a full project load, never by `config --no-interpolate`). The gate reads
+      # target/no-python-compose/<path>.json and names a file whose JSON is absent, so it is never a silent pass.
+      - name: render compose files for the no-python gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose version
+          out="$PWD/target/no-python-compose"
+          rm -rf "$out"
+          find deploy/compose -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
+            while IFS= read -r -d '' f; do
+              mkdir -p "$out/$(dirname "$f")"
+              docker compose -f "$f" config --format json --no-interpolate > "$out/$f.json"
+              test -s "$out/$f.json"
+            done
+          echo "rendered $(find "$out" -type f -name '*.json' | wc -l) compose file(s) to $out"
+
       - name: cargo xtask architecture-check
         run: cargo xtask architecture-check
 
