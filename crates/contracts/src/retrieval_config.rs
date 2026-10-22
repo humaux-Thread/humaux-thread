@@ -156,7 +156,8 @@ impl RegisteredRetrievalProfile {
         self.rerank_enabled
     }
 
-    /// ADR-0084 D-E: the most visible Memories scored per recall (at most the profile's `cand_k`).
+    /// ADR-0084 D-E: the most visible Memories scored per recall (bounded by the profile's `cand_k` only while the
+    /// lane runs).
     #[must_use]
     pub fn rerank_depth(&self) -> u32 {
         self.rerank_depth
@@ -398,8 +399,10 @@ struct RerankSettings {
     threads: u32,
 }
 
-/// ADR-0084 D-E / D-C 1: `rerank_depth` may not exceed the profile's `cand_k` (`min(top_k * cand_multiplier, cap)`),
-/// or the rerank window would be wider than the pool it reorders.
+/// ADR-0084 D-E / D-C 1: while the lane runs, `rerank_depth` may not exceed the profile's `cand_k`
+/// (`min(top_k * cand_multiplier, cap)`), or the rerank window would be wider than the pool it reorders. A disabled
+/// lane is not bounded by the pool: its depth never acts, so the registry default must not refuse an existing
+/// small-candidate-pool profile (§78.1: the default lives in the registry, not in every deployment's file).
 fn resolve_rerank(
     effective: &BTreeMap<String, String>,
     pool: u32,
@@ -409,8 +412,11 @@ fn resolve_rerank(
     let enabled = enabled_text
         .parse::<bool>()
         .map_err(|_| RetrievalConfigError::InvalidRerankEnabled(enabled_text.to_string()))?;
+    // ADR-0084 D-C 1: the pool-relative ceiling applies only to the profile that turns the lane on; `RERANK_FLOOR`
+    // still applies to both states.
+    let depth_max = if enabled { cand_k } else { u32::MAX };
     let depth_text = required(effective, RERANK_DEPTH);
-    let depth = parse_in(depth_text, RERANK_FLOOR, cand_k)
+    let depth = parse_in(depth_text, RERANK_FLOOR, depth_max)
         .ok_or_else(|| RetrievalConfigError::InvalidRerankDepth(depth_text.to_string()))?;
     let max_len_text = required(effective, RERANK_MAX_LEN);
     let max_len = parse_in(max_len_text, RERANK_MAX_LEN_MIN, RERANK_MAX_LEN_MAX)
@@ -526,18 +532,10 @@ mod tests {
                 assert!(named, "{key}={outside}: {error:?}");
             }
             for inside in [min, max] {
-                // A multiplier of 1 leaves `cand_k` at 5, under the default `rerank_depth` (ADR-0084 D-C 1), so the
-                // depth moves with it; every other row keeps the default.
-                let depth = if key == CAND_MULTIPLIER && inside == min {
-                    "1"
-                } else {
-                    "25"
-                };
+                // ADR-0084 D-C 1: with rerank off (the default), `cand_multiplier=1` leaves `cand_k` at 5 while the
+                // registry's `rerank_depth` stays 25; the pool-relative depth bound does not apply.
                 let text = inside.to_string();
-                assert!(
-                    resolve_pairs(&[(key, text.as_str()), (RERANK_DEPTH, depth)]).is_ok(),
-                    "{key}={inside}"
-                );
+                assert!(resolve_one(key, &text).is_ok(), "{key}={inside}");
             }
         }
         assert!(matches!(
@@ -602,19 +600,64 @@ mod tests {
             }),
         ];
         for (key, outside, inside, named) in rows {
+            // ADR-0084 D-C 1: the depth ceiling is the profile's own `cand_k` and only applies while the lane runs,
+            // so that row is resolved with rerank on; the other four bounds are absolute.
+            let resolve_row = |value: &str| {
+                if key == RERANK_DEPTH {
+                    resolve_pairs(&[(RERANK_ENABLED, "true"), (key, value)])
+                } else {
+                    resolve_one(key, value)
+                }
+            };
             for value in outside {
-                let error = resolve_one(key, value).expect_err(key);
+                let error = resolve_row(value).expect_err(key);
                 assert!(named(&error), "{key}={value}: {error:?}");
             }
-            assert!(resolve_one(key, inside).is_ok(), "{key}={inside}");
+            assert!(resolve_row(inside).is_ok(), "{key}={inside}");
         }
         assert!(
             resolve_one(RERANK_MAX_LEN, "5").is_ok(),
             "the floor itself resolves"
         );
-        // The depth bound is the profile's own `cand_k`: 26 fits only once `top_k * cand_multiplier` reaches 26.
-        assert!(resolve_pairs(&[(TOP_K, "6"), (RERANK_DEPTH, "26")]).is_ok());
-        assert!(resolve_pairs(&[(TOP_K, "5"), (RERANK_DEPTH, "26")]).is_err());
+        // ADR-0084 D-C 1: 26 fits only once `top_k * cand_multiplier` reaches 26, and only while rerank runs.
+        assert!(
+            resolve_pairs(&[(RERANK_ENABLED, "true"), (TOP_K, "6"), (RERANK_DEPTH, "26")]).is_ok()
+        );
+        assert!(
+            resolve_pairs(&[(RERANK_ENABLED, "true"), (TOP_K, "5"), (RERANK_DEPTH, "26")]).is_err()
+        );
+    }
+
+    /// #166 / ADR-0084 D-C 1: the pool-relative depth ceiling applies only to a profile that turns rerank on. A
+    /// disabled lane keeps the registry default depth at any `cand_k`, so an existing small pool still loads.
+    #[test]
+    fn rerank_disabled_does_not_bound_depth_by_the_candidate_pool() {
+        // The reported shape: `cand_multiplier=1`, default `top_k=5` => `cand_k=5`, default depth 25.
+        let multiplier_one =
+            resolve_pairs(&[(CAND_MULTIPLIER, "1")]).expect("disabled rerank, cand_k 5");
+        assert!(!multiplier_one.rerank_enabled());
+        assert_eq!(multiplier_one.rerank_depth(), 25);
+        // The smallest pool: `top_k=1`, `cand_multiplier=1` => `cand_k=1`.
+        let smallest = resolve_pairs(&[(TOP_K, "1"), (CAND_MULTIPLIER, "1")])
+            .expect("disabled rerank, cand_k 1");
+        assert!(!smallest.rerank_enabled());
+        assert_eq!(smallest.rerank_depth(), 25);
+    }
+
+    /// #166 / ADR-0084 D-C 1: with the lane on, a depth above `cand_k` is still refused, and the error is the same
+    /// `InvalidRerankDepth` with the same text as before the pool-relative bound became conditional.
+    #[test]
+    fn rerank_enabled_still_rejects_depth_above_cand_k() {
+        let error = resolve_pairs(&[(RERANK_ENABLED, "true"), (RERANK_DEPTH, "26")])
+            .expect_err("depth above cand_k with rerank on");
+        assert_eq!(
+            error,
+            RetrievalConfigError::InvalidRerankDepth("26".to_string())
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid retrieval profile rerank_depth \"26\" (allowed 1..=cand_k of the profile)"
+        );
     }
 
     /// ADR-0084 D-E: each of the five entries moves the effective-config fingerprint on its own.
