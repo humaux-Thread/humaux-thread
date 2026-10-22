@@ -64,7 +64,8 @@ const NOT_YET_PRODUCED: &[(&str, &str)] = &[];
 /// D7 / D8(c): families a process declares (`# TYPE`) whose zero-state render deliberately has no sample, because
 /// absence is their failure signal and a §42 `absent()` rule reads it, or because a sample before the first visit
 /// would be a made-up value. Only these count as exported from the header alone; any other header-only family stays
-/// unexported (ADR-0061 review-fix 3, F10).
+/// unexported (ADR-0061 review-fix 3, F10). EX reads the same list: a listed family may also be missing from a live
+/// scrape, which is what a host without `/proc` (the macOS rehearsal) serves (#193).
 const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
     (
         "partition_horizon_months",
@@ -74,7 +75,27 @@ const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
         "quota_window_horizon_seconds",
         "ADR-0072 D-D: no sample until QUOTA_RENEWAL visited a renewing tenant; a failing call is MaintenanceTaskFailing",
     ),
+    // §41.2 M22-1 (#193): the host gauges are read from `/proc` every sample and a missing source is
+    // absent, never 0 (G-M22-1). `--metrics-families` declares them header-only
+    // (`telemetry::host::declare_families`); the rehearsal host has no `/proc` at all.
+    (
+        "host_pressure_ratio",
+        "M22-1 G-M22-1/#193: no sample until a readable /proc/pressure line exists; absent, never 0",
+    ),
+    (
+        "host_memory_available_bytes",
+        "M22-1 G-M22-1/#193: no sample until /proc/meminfo is readable; absent, never 0",
+    ),
+    (
+        "host_cpu_busy_ratio",
+        "M22-1 G-M22-1/#193: absent for the first /proc/stat sample and while its total delta is 0",
+    ),
 ];
+
+/// True for a family whose zero-state declaration deliberately has no sample: [`ABSENT_UNTIL_FIRST_RUN`].
+fn may_be_absent(name: &str) -> bool {
+    ABSENT_UNTIL_FIRST_RUN.iter().any(|(n, _)| *n == name)
+}
 
 /// §41.2 R4 (ADR-0061 addendum, D-M): families whose one `.inc(` sits in a `pub` helper so a DB-free
 /// witness can drive it. The helper's production call sites are the real emit sites, so D5 also
@@ -1196,10 +1217,7 @@ fn check_d7(
                 let sampled: Vec<String> = exp
                     .families
                     .into_iter()
-                    .filter(|(name, f)| {
-                        !f.samples.is_empty()
-                            || ABSENT_UNTIL_FIRST_RUN.iter().any(|(n, _)| n == name)
-                    })
+                    .filter(|(name, f)| !f.samples.is_empty() || may_be_absent(name))
                     .map(|(name, _)| name)
                     .collect();
                 per_process.push(format!("{process}={}", sampled.len()));
@@ -1571,8 +1589,9 @@ fn read_rule_files(dir: &Path) -> Vec<(String, String)> {
 // ---------------------------------------------------------------------------
 
 /// EX: each scraped file `(process, path, content or read error)` carries exactly its
-/// process's `--metrics-families` family set, every family has ≥1 sample, and the D7
-/// R / R6 / kind leg holds.
+/// process's `--metrics-families` family set, every family has ≥1 sample unless
+/// [`ABSENT_UNTIL_FIRST_RUN`] names it (such a family may also be absent from the scrape entirely,
+/// as on a host without `/proc`), and the D7 R / R6 / kind leg holds.
 fn check_expositions(
     registry: &[RegistryEntry],
     files: &[(String, String, Result<String, String>)],
@@ -1591,7 +1610,7 @@ fn check_expositions(
         let exp = parse_exposition(text);
         problems.extend(registry_problems(path, &exp, &index));
         for (name, fam) in &exp.families {
-            if fam.samples.is_empty() {
+            if fam.samples.is_empty() && !may_be_absent(name) {
                 problems.push(format!("{path}: `{name}` has zero samples"));
             }
         }
@@ -1600,7 +1619,10 @@ fn check_expositions(
                 let want: BTreeSet<String> =
                     parse_exposition(expected).families.into_keys().collect();
                 let got: BTreeSet<String> = exp.families.keys().cloned().collect();
-                let missing: Vec<&String> = want.difference(&got).collect();
+                let missing: Vec<&String> = want
+                    .difference(&got)
+                    .filter(|name| !may_be_absent(name.as_str()))
+                    .collect();
                 let extra: Vec<&String> = got.difference(&want).collect();
                 if !missing.is_empty() || !extra.is_empty() {
                     problems.push(format!(
@@ -1619,7 +1641,7 @@ fn check_expositions(
     };
     let detail = if problems.is_empty() {
         format!(
-            "{} scrape(s) match their process's --metrics-families, every family sampled, R/R6 hold",
+            "{} scrape(s) match their process's --metrics-families, every family sampled unless declared absent, R/R6 hold",
             files.len()
         )
     } else {
@@ -2184,6 +2206,18 @@ pub fn gateway_respond() {
         out
     }
 
+    /// #193 / M22-1: the `--metrics-families` declaration of the three host families, HELP/TYPE only.
+    fn host_declarations() -> String {
+        [
+            "host_pressure_ratio",
+            "host_memory_available_bytes",
+            "host_cpu_busy_ratio",
+        ]
+        .into_iter()
+        .map(|f| format!("# HELP {f} h\n# TYPE {f} gauge\n"))
+        .collect()
+    }
+
     fn d7_of(text: &str) -> DCheck {
         check_d7(
             &real_registry(),
@@ -2237,6 +2271,25 @@ pub fn gateway_respond() {
             "{exported:?}"
         );
         assert!(!exported.contains("jobs_dead"), "{exported:?}");
+    }
+
+    /// #193: the host families are declared header-only and named in [`ABSENT_UNTIL_FIRST_RUN`], so
+    /// D7 counts them exported from the declaration alone; an M22-3 rule may then reference them.
+    #[test]
+    fn d7_counts_the_host_families_as_exported() {
+        let text = host_declarations();
+        let (check, exported) = check_d7(&real_registry(), &[("maintenance".into(), Ok(text))]);
+        assert_eq!(check.status, GateStatus::Pass, "{}", check.detail);
+        for family in [
+            "host_pressure_ratio",
+            "host_memory_available_bytes",
+            "host_cpu_busy_ratio",
+        ] {
+            assert!(
+                exported.contains(family),
+                "{family} missing from {exported:?}"
+            );
+        }
     }
 
     /// T-H1: an exported family that §41.2 does not register is a D7 fail naming it.
@@ -2607,6 +2660,43 @@ pub fn gateway_respond() {
         let red = check_expositions(&registry, &file(short), &families_of);
         assert!(
             red.detail.contains("missing [\"degrade_total\"]"),
+            "{}",
+            red.detail
+        );
+    }
+
+    /// #193: a listed family is accepted with zero samples and when it is missing from the scrape
+    /// entirely (the macOS rehearsal); an unlisted family with zero samples stays red (#193).
+    #[test]
+    fn ex_honours_the_may_be_absent_list() {
+        let registry = real_registry();
+        let declared = host_declarations();
+        let families_of =
+            BTreeMap::from([("maintenance".to_string(), Ok::<_, String>(declared.clone()))]);
+        let file = |text: String| {
+            vec![(
+                "maintenance".to_string(),
+                "m.prom".to_string(),
+                Ok::<_, String>(text),
+            )]
+        };
+
+        // (a) the scrape declares the host families but carries no sample for them.
+        let green = check_expositions(&registry, &file(declared.clone()), &families_of);
+        assert_eq!(green.status, GateStatus::Pass, "{}", green.detail);
+
+        // (b) a host without /proc serves none of them at all.
+        let green = check_expositions(&registry, &file(String::new()), &families_of);
+        assert_eq!(green.status, GateStatus::Pass, "{}", green.detail);
+
+        // (c) an unlisted family with zero samples is still a fail.
+        let unlisted = "# HELP jobs_dead h\n# TYPE jobs_dead gauge\n".to_string();
+        let families_of =
+            BTreeMap::from([("maintenance".to_string(), Ok::<_, String>(unlisted.clone()))]);
+        let red = check_expositions(&registry, &file(unlisted), &families_of);
+        assert_eq!(red.status, GateStatus::Fail);
+        assert!(
+            red.detail.contains("`jobs_dead` has zero samples"),
             "{}",
             red.detail
         );

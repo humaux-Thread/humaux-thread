@@ -25,7 +25,7 @@ const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR";
 const SAMPLE_SECONDS: &str = "HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS";
 /// The test's sample interval; every "within 2 intervals" bound below is derived from it.
 const INTERVAL: Duration = Duration::from_secs(1);
-const FAMILIES: [&str; 9] = [
+const FAMILIES: [&str; 12] = [
     "jobs_pending",
     "jobs_processing",
     "jobs_waiting_key",
@@ -35,6 +35,9 @@ const FAMILIES: [&str; 9] = [
     "processing_gap_count",
     "data_disclosures_finalized_total",
     "data_disclosures_reserved_unfinalized",
+    "host_pressure_ratio",
+    "host_memory_available_bytes",
+    "host_cpu_busy_ratio",
 ];
 
 fn value(metrics: &str, series: &str) -> Option<f64> {
@@ -227,15 +230,16 @@ fn sigterm_exits_zero_and_closes_the_port() {
     );
 }
 
-/// T-M5: `--metrics-families` needs no environment and prints the nine families at zero state.
+/// T-M5: `--metrics-families` needs no environment and prints the twelve families at zero state
+/// (nine SQL gauges plus the three host families declared header-only, #193).
 #[test]
-fn metrics_families_prints_nine_families_without_env() {
+fn metrics_families_prints_twelve_families_without_env() {
     let out = run(&["--metrics-families"], &[]);
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         text.lines().filter(|l| l.starts_with("# TYPE ")).count(),
-        9,
+        12,
         "{text}"
     );
     for family in FAMILIES {
