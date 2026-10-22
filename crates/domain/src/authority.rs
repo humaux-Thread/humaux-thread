@@ -1,6 +1,6 @@
 //! `domain::authority` — `Authority` value object, its four-tier adjudication order, and the `AuthorityClass` /
 //!   `AuthorityStatus` / `Confidence` types it is built from (§59 / §59.1).
-//! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error, domain::evidence, domain::ids, domain::memory]
+//! Depends-on: crates=[time, uuid]; services=[]; env=[]; modules=[domain::error, domain::evidence, domain::ids, domain::memory]
 //! Called-by: [adapters::affect_repo, adapters::attribution_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::contribution_entry_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant, adapters::read_gate, adapters::read_materialize, application::confirm, application::consolidate, application::correct, application::pin, application::supersede, domain::attribution, domain::consolidate, domain::context, domain::lifecycle, domain::note, domain::policy, domain::public, gateway::mcp_application, gateway::memory, humaux-consolidation-worker, private-worker::distill, private-worker::main, projection::card, retrieval::compiler, retrieval::request, tests]
 //! Invariants: []
 //! Spec: Baseline §8.7; §10; §10.1
@@ -10,13 +10,9 @@
 //! expression — `AuthorityClass`'s discriminants 0→6 map item-for-item, low to high, onto
 //! §10's table.
 //!
-//! `asserted_at` uses `std::time::SystemTime` rather than the §59.1 frozen field table's
-//! `DateTime<Utc>` — no crate in this workspace depends on `chrono`/`time` yet. `SystemTime`
-//! is stdlib and totally ordered (`Ord`), satisfying I1's "asserted_at 晚者优先" tier, but is
-//! unsuitable as `TIMESTAMPTZ`'s wire type (no defined line format, can underflow
-//! `UNIX_EPOCH` on some platforms). ADR for this deviation is pending (`docs/adr/` is outside
-//! this task's assigned file scope); whichever task wires §59.1 G59-5's Postgres column must
-//! either write it or pick the wire conversion.
+//! `asserted_at` is a `time::OffsetDateTime` (the instant `TIMESTAMPTZ` stores; `Ord` compares
+//! the UTC instant, so an offset never changes I1's "asserted_at later wins" tier). Pure value
+//! type: no I/O, no ENV (§3, §78.3).
 //!
 //! `MemoryId` / `EvidenceId` are minted here rather than in `domain::ids`: they are not among
 //! that module's fixed seven §59 core types, and this module is their first consumer
@@ -28,7 +24,7 @@
 
 use crate::error::ErrorCode;
 use std::cmp::Ordering;
-use std::time::SystemTime;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Typed expression of §10's priority chain, a closed set of 7 variants (§59).
@@ -219,7 +215,7 @@ pub struct Authority {
     class: AuthorityClass,
     confidence: Confidence,
     status: AuthorityStatus,
-    asserted_at: SystemTime,
+    asserted_at: OffsetDateTime,
     evidence: NonEmptyVec<EvidenceId>,
     superseded_by: Option<MemoryId>,
 }
@@ -243,7 +239,7 @@ impl Authority {
         class: AuthorityClass,
         confidence: Confidence,
         status: AuthorityStatus,
-        asserted_at: SystemTime,
+        asserted_at: OffsetDateTime,
         evidence: NonEmptyVec<EvidenceId>,
         superseded_by: Option<MemoryId>,
     ) -> Result<Self, ErrorCode> {
@@ -466,7 +462,7 @@ mod i4_status_superseded_by_consistency {
             AuthorityClass::PrivateKnowledge,
             Confidence::new(0.5).expect("0.5 is in range"),
             AuthorityStatus::Superseded,
-            SystemTime::UNIX_EPOCH,
+            OffsetDateTime::UNIX_EPOCH,
             one_evidence(),
             None,
         );
@@ -480,7 +476,7 @@ mod i4_status_superseded_by_consistency {
             AuthorityClass::PrivateKnowledge,
             Confidence::new(0.5).expect("0.5 is in range"),
             AuthorityStatus::Active,
-            SystemTime::UNIX_EPOCH,
+            OffsetDateTime::UNIX_EPOCH,
             one_evidence(),
             Some(MemoryId::new()),
         );
@@ -494,7 +490,7 @@ mod i4_status_superseded_by_consistency {
             AuthorityClass::PrivateKnowledge,
             Confidence::new(0.5).expect("0.5 is in range"),
             AuthorityStatus::Superseded,
-            SystemTime::UNIX_EPOCH,
+            OffsetDateTime::UNIX_EPOCH,
             one_evidence(),
             Some(MemoryId::new()),
         );
@@ -507,7 +503,7 @@ mod i4_status_superseded_by_consistency {
             AuthorityClass::PrivateKnowledge,
             Confidence::new(0.5).expect("0.5 is in range"),
             AuthorityStatus::Active,
-            SystemTime::UNIX_EPOCH,
+            OffsetDateTime::UNIX_EPOCH,
             one_evidence(),
             None,
         );
@@ -524,7 +520,6 @@ mod i4_status_superseded_by_consistency {
 #[cfg(test)]
 mod g59_1_resolve_total_order {
     use super::*;
-    use std::time::Duration;
 
     const CLASSES: [AuthorityClass; 7] = [
         AuthorityClass::PublicKnowledge,
@@ -535,18 +530,18 @@ mod g59_1_resolve_total_order {
         AuthorityClass::ProjectConstraint,
         AuthorityClass::ExplicitTaskContext,
     ];
-    const TIMES_SECS: [u64; 3] = [0, 1, 2];
+    const TIMES_SECS: [i64; 3] = [0, 1, 2];
     const CONFIDENCES: [f32; 3] = [0.1, 0.5, 0.9];
 
     /// The 7×3×3 = 63-value domain, as (class, asserted_at, confidence) triples.
-    fn combos() -> Vec<(AuthorityClass, SystemTime, f32)> {
+    fn combos() -> Vec<(AuthorityClass, OffsetDateTime, f32)> {
         let mut out = Vec::with_capacity(63);
         for &class in &CLASSES {
             for &secs in &TIMES_SECS {
                 for &conf in &CONFIDENCES {
                     out.push((
                         class,
-                        SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+                        OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(secs),
                         conf,
                     ));
                 }
@@ -622,7 +617,7 @@ mod g59_1_resolve_total_order {
                     AuthorityClass::PrivateKnowledge,
                     Confidence::new(i as f32 / 200.0).expect("i/200 is in [0,1) for i < 200"),
                     AuthorityStatus::Active,
-                    SystemTime::UNIX_EPOCH + Duration::from_nanos(i as u64),
+                    OffsetDateTime::UNIX_EPOCH + time::Duration::nanoseconds(i as i64),
                     NonEmptyVec::new(vec![EvidenceId::new()]).expect("one element is non-empty"),
                     None,
                 )
@@ -745,7 +740,7 @@ mod i3_non_active_excluded_from_adjudication {
             class,
             Confidence::new(0.5).expect("0.5 is in range"),
             status,
-            SystemTime::UNIX_EPOCH,
+            OffsetDateTime::UNIX_EPOCH,
             NonEmptyVec::new(vec![EvidenceId::new()]).expect("one element is non-empty"),
             superseded_by,
         )
@@ -823,7 +818,7 @@ mod g59_2_public_does_not_override {
             // Must be Active: a Superseded fixture would be excluded by I3 before the
             // judgment-order tier is ever reached, testing I3 instead of I1 (§59.1 G59-2).
             AuthorityStatus::Active,
-            SystemTime::UNIX_EPOCH,
+            OffsetDateTime::UNIX_EPOCH,
             NonEmptyVec::new(vec![EvidenceId::new()]).expect("one element is non-empty"),
             None,
         )
