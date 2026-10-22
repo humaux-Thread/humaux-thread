@@ -323,6 +323,43 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), **the five registry entries and the fingerprint (D-E, moved here from T-RET-7d)**, the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
 | T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
 
+## T-RET-7c record (2026-10-22)
+
+Everything below was measured or recorded by CI (nothing ran locally). Pins used: ONNX Runtime
+`onnxruntime-linux-aarch64-1.30.0.tgz` sha256 `e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da`; release
+`rerank-mmarco-int8-v1` tarball sha256 `cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f`, holding
+`model_quantized.onnx` (`b924df3444fb4fe511152c89ec312fa73b44b901c115456405da54503b4e7edf`) and `tokenizer.json`
+(`62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626`). Runtime base for the gate: `gcr.io/distroless/cc-debian13`
+at the Dockerfile's digest `e792ab3d…`. The route is `POST /v1/rerank` on the serve-rpc router.
+
+| # | Result | Evidence |
+|---|---|---|
+| U1 | **Yes, the int8 graph loads and matches.** `ort` 2.0.0-rc.15 with the 1.30.0 library loaded the CI-built graph; the Rust tokenizer reproduced `input_ids` and `attention_mask` of all 54 pairs exactly (6 cut at `max_len` 256, including the 150-token-query pair `longq-0-0`); scores against `score_int8_batch` (each group one batch): max abs difference **1.78e-15** over 54 pairs | run 39785216794, job `rerank-parity`, line `G-RET-11 U1` |
+| U2 (N2 runner only) | depth 25, `max_len` 256, batches of 8, 4 threads, 20 timed calls after 2 warm-ups, 16 of 25 pairs at the cap, mean pair 218.1 tokens (E-RET-5g: 61.5% at the cap, mean 217.7): **p50 0.690 s, p95 0.709 s**, against Python's N2 p50 0.67 s (+3%). The N1 re-run is the lead's, with the owner's approval | run 39785216794, test `rerank_latency` |
+| U3 | **Resolved: the library resolves all its needs on the pinned distroless `cc` base.** The parity and pin tests ran inside that image with the `.so` mounted; nothing was copied from the builder | run 39785216794 |
+| U4 | `VmRSS` of the test process: **452,512 kB after the load, 593,100 kB after 22 depth-25 calls** (N2 runner). The worker process adds its own baseline; no compose memory limit is changed here because `rerank_enabled` ships false | run 39785216794 |
+| U5 | tolerance stays `tolerance.abs` **1e-4**; the run-to-run spread over 3 parity runs of the 54 pairs was **0** (bit-identical), as in the fixture header | run 39785216794 |
+| U6 | **Resolved: the existing `IntraCellResource::RETRIEVAL_EMBEDDING_RPC` entry serves rerank.** The registry keys an endpoint (the socket and its peer gate); rerank is served on the same socket behind the same gate. One rustdoc sentence changed, no variant | `crates/infra-cell/src/resource.rs` |
+
+Other facts: cargo-deny passes with the `paste` ignore (RUSTSEC-2024-0436, expiry 2027-04-30 and the removal card in the
+reason string, because cargo-deny 0.20.2 has no expiry field); the registry gate bounds of D-E hold at load; no golden
+fingerprint changed; the first PR run (39780781716) was red only on `dep-map --check` (a `Called-by` line of `contracts`)
+and the gitleaks scan (the public tokenizer hash assigned to a variable whose name contains "token", now an exact-value
+allowlist entry), both fixed in the second run.
+
+### Gate records (§80.1: inject, red, fix, green)
+
+| Gate | Injected fault | Red | Green |
+|---|---|---|---|
+| G-RET-11 score parity | encode (document, query) instead of (query, document) (branch `red/t-ret-7c-a`, `b181f16`) | run 39789293901, job `rerank-parity`: `rust_path_matches_the_python_reference_scores` fails at `seed-0-0: input_ids` | run 39785216794 (head `e1f220d`) |
+| G-RET-11 score parity | truncation by `only_second` instead of `longest_first` (branch `red/t-ret-7c-b`, `96f1e46`) | run 39792222497: fails at **`longq-0-0: input_ids`**, the first pair of the fixture whose ids differ; every earlier over-length pair (short queries) is identical under both strategies, so the long-query group #159 added is what makes this injection red | run 39785216794 |
+| G-RET-14 artifact pin | skip the hash comparison in `verify_pinned` (same branch `red/t-ret-7c-a`) | run 39789293901: `a_file_that_differs_from_the_pin_refuses_boot_naming_the_object` fails; the control `matching_hashes_pass_the_pin_and_stop_later` stays green | run 39785216794 |
+
+Wire notes: a `max_len` under 5 is `invalid_request` (a pair carries four special tokens and the tokenizer crate subtracts
+them from `max_len`, so 1 to 4 would underflow inside it); the card's 1 to 512 bound is otherwise unchanged. An undecodable
+body or an unknown field is refused by the extractor (HTTP 4xx) before any outcome exists; every semantic error is an
+`invalid_request` outcome with the call id.
+
 ## Alternatives rejected
 
 - **No rerank**: the owner's earlier decision of the same day (ADR-0083), replaced by this one.
