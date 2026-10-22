@@ -1,6 +1,6 @@
 //! `gateway::recall` — Native authenticated semantic recall wiring.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell,
-//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::sparse, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
+//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::sparse, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
 //! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for leg_depth Memories per leg for this request's workspace stream only, the dense and the sparse leg concurrently with one filter (ADR-0083 D-C), and the memory-level RRF of the two legs is cut to cand_k before the PG gate, which runs on that fused list unchanged; a sparse-leg failure answers from the dense leg through retrieval::envelope::sparse_lane_unavailable and never fails the recall, a dense-leg failure is the typed error as before; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions answer() exhaustively and is reported only when every lap followed LAP_SEQUENCE, with qdrant_sparse as a sub-timing contained in qdrant (present only when the sparse leg ran); search() hands the query-hash log row to a bounded, supervised spawn after answer() returns, once per answered recall, and never awaits the insert, so no lap, no LAP_SEQUENCE entry, no response byte and no handler deadline depends on it, and a failed or dropped insert never fails the recall (ADR-0081 D-A)]
 //! Spec: Baseline §17.3; §17.6; §19.1; §23.3; §33; §48.1; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056; ADR-0081; ADR-0083
@@ -23,7 +23,7 @@ use humaux_adapters::{
     qdrant::{
         DenseCandidate, DenseQuery, DenseQueryVersions, PointId, QdrantOperation,
         QdrantTransportError, RetrievalFamily, ha_profile_for, query_dense,
-        query_dense_groups_bounded, query_sparse_groups,
+        query_dense_groups_bounded, query_sparse,
     },
     read_materialize::MaterializedItem,
     retrieval_query_log::QueryLogCounts,
@@ -893,18 +893,21 @@ async fn dense_leg(
     }
 }
 
-/// The sparse leg (ADR-0083 D-C): `None` when it does not run, otherwise its outcome and its own wall time (U7). Sends
-/// the exact query bytes (§20.0) under the dense leg's filter and `corpus` as the IDF corpus.
+/// A sparse leg that ran: its candidates or its failure, and its own wall time (ADR-0083 U7).
+type SparseLegRun = (Result<Vec<DenseCandidate>, QdrantTransportError>, Duration);
+
+/// The sparse leg (ADR-0083 D-C): `None` when it does not run, otherwise its [`SparseLegRun`]. Sends the exact query
+/// bytes (§20.0) under the dense leg's filter and `corpus` as the IDF corpus.
 async fn sparse_leg(
     transport: &dyn IntraCellHttpTransport,
     permit: &CellAccessPermit,
     query: &DenseQuery,
     text: &str,
     corpus: Option<&DenseQueryFilter>,
-) -> Option<(Result<Vec<DenseCandidate>, QdrantTransportError>, Duration)> {
+) -> Option<SparseLegRun> {
     let corpus = corpus?;
     let started = Instant::now();
-    let outcome = query_sparse_groups(transport, permit, query, text, corpus).await;
+    let outcome = query_sparse(transport, permit, query, text, corpus).await;
     Some((outcome, started.elapsed()))
 }
 

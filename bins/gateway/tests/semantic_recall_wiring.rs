@@ -2,8 +2,9 @@
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval-provider,
 //!   humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, time, tokio, uuid];
-//!   services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[ops.retrieval_embedding_rpc_calls,
-//!   ops.retrieval_query_log, projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements],
+//!   services=[PostgreSQL(role_gateway) r=[ops.commit_seq_seq, private.memory_records] w=[ops.outbox,
+//!   ops.retrieval_embedding_rpc_calls, ops.retrieval_query_log, projection.private_memory_points,
+//!   projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*),
 //!   UDS(retrieval-worker), UDS(serve)]; env=[CARGO_MANIFEST_DIR, HUMAUX_GATEWAY_PG_DSN,
 //!   HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
