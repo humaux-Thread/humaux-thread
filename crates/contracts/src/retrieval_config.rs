@@ -1,6 +1,6 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
-//! Called-by: [gateway::bootstrap, gateway::recall, retrieval::request, tests]
+//! Called-by: [gateway::bootstrap, gateway::recall, tests]
 //! Invariants: [the five depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`)
 //!   are read here and nowhere else; each is bounds-checked when the registry loads]
 //! Spec: Baseline §50; §55.1; §55.6; ADR-0083 D-D
