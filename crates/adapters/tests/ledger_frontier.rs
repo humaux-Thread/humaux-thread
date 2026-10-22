@@ -270,6 +270,7 @@ fn frontier_in_txn_reads_as_role_gateway_in_a_read_only_snapshot() {
                 h.rt.block_on(sqlx::Pool::<sqlx::Postgres>::connect(&gateway_dsn))
                     .expect("connect role_gateway");
             let via_gateway = h.rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — transaction entry for the `memory.get`-shaped snapshot
                 let mut txn = gateway.begin().await?;
                 sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                     .execute(&mut *txn)
