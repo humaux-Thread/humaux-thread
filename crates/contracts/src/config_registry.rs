@@ -423,14 +423,24 @@ mod tests {
             (HNSW_M, "65"),
             (HNSW_M, "-1"),
             (HNSW_PAYLOAD_M, "0"),
+            (HNSW_PAYLOAD_M, "65"),
             (HNSW_EF_CONSTRUCT, "3"),
+            (HNSW_EF_CONSTRUCT, "1001"),
         ] {
-            assert!(
-                matches!(
-                    resolve_collection_config(&collection_raw(&[(key, value)])),
-                    Err(CollectionConfigError::Invalid { .. })
-                ),
-                "{key}={value} must be rejected"
+            let expected = CollectionConfigError::Invalid {
+                key,
+                value: value.to_string(),
+            };
+            let err = resolve_collection_config(&collection_raw(&[(key, value)]))
+                .expect_err("garbage must be rejected");
+            assert_eq!(
+                err, expected,
+                "{key}={value} must fail with its own variant"
+            );
+            assert_eq!(
+                err.to_string(),
+                format!("invalid collection config {key} {value:?}"),
+                "{key}={value} must name the offending key and value"
             );
         }
         assert_eq!(
@@ -440,6 +450,27 @@ mod tests {
                 entry_name: "qdrant.collection.nope".to_string(),
                 reason: "value present for key not declared in registry".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn collection_config_accepts_the_upper_bounds_of_m_and_ef_construct() {
+        let config = resolve_collection_config(&collection_raw(&[
+            (HNSW_M, "64"),
+            (HNSW_EF_CONSTRUCT, "1000"),
+        ]))
+        .expect("m = 64 and ef_construct = 1000 are inside the bounds");
+        assert_eq!(
+            config,
+            CollectionConfig {
+                generation_label: None,
+                datatype: CollectionDatatype::Float32,
+                hnsw: HnswConfig {
+                    m: 64,
+                    payload_m: None,
+                    ef_construct: 1000,
+                },
+            }
         );
     }
 
