@@ -1064,6 +1064,42 @@ fn private_point_registry_fails_closed_for_identity_and_permissions() {
     });
 }
 
+/// ADR-0084 D-C 3: the resolver reports the card slot each point stands for, read from its registry row, in the
+/// candidate's order. Fault: report `Chunk { ordinal: 0 }` whatever the row says ⇒ the first element goes red.
+fn assert_chunk_points_report_their_slots(
+    handle: &Handle,
+    slots: &[PrivateMemoryPointRegistration; 2],
+) {
+    let resolved = handle
+        .rt
+        .block_on(resolve_private_memory_points(
+            &handle.runtime,
+            &handle.authorization,
+            &handle.family,
+            "private-v1",
+            "embed-v1",
+            &[slots[1].point_id, slots[0].point_id],
+        ))
+        .expect("resolve the chunk points");
+    assert_eq!(
+        resolved
+            .iter()
+            .map(|point| (point.memory_id, point.slot))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                MemoryId(handle.memory_id),
+                Some(CardSlot::Chunk { ordinal: 1 })
+            ),
+            (
+                MemoryId(handle.memory_id),
+                Some(CardSlot::Chunk { ordinal: 0 })
+            ),
+        ],
+        "one registry row per point, slot = (profile, ordinal)"
+    );
+}
+
 /// (point_id, card_profile_hash, chunk_ordinal, fingerprint_sha256, input_sha256) of one registry slot.
 type SlotRow = (Uuid, String, i32, Vec<u8>, Vec<u8>);
 
@@ -1165,35 +1201,6 @@ fn repeated_chunks_share_vector_not_point() {
             .expect("count the vector rows")
             .get(0);
         assert_eq!(vectors, 1, "duplicate chunk text shares one vector row");
-        // ADR-0084 D-C 3: the resolver reports the card slot each point stands for, read from its registry row, in the
-        // candidate's order. Fault: report `Chunk { ordinal: 0 }` whatever the row says ⇒ the first element goes red.
-        let resolved = handle
-            .rt
-            .block_on(resolve_private_memory_points(
-                &handle.runtime,
-                &handle.authorization,
-                &handle.family,
-                "private-v1",
-                "embed-v1",
-                &[slots[1].point_id, slots[0].point_id],
-            ))
-            .expect("resolve the chunk points");
-        assert_eq!(
-            resolved
-                .iter()
-                .map(|point| (point.memory_id, point.slot))
-                .collect::<Vec<_>>(),
-            vec![
-                (
-                    MemoryId(handle.memory_id),
-                    Some(CardSlot::Chunk { ordinal: 1 })
-                ),
-                (
-                    MemoryId(handle.memory_id),
-                    Some(CardSlot::Chunk { ordinal: 0 })
-                ),
-            ],
-            "one registry row per point, slot = (profile, ordinal)"
-        );
+        assert_chunk_points_report_their_slots(&handle, &slots);
     });
 }
