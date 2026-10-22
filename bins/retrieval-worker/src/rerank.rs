@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(PROFILE_KEYS[0].1, RERANK_ENABLED);
         let on = |name: &str| (name == enabled_key).then(|| "true".to_owned());
         let error = boot(on).expect_err("enabled without the pin is refused");
-        assert!(error.contains(KEY_REPO), "{error}");
+        assert!(error.contains("missing required configuration"), "{error}");
 
         let path = abc_file("boot");
         let mut env = deployment(OTHER_SHA256, ABC_SHA256);
