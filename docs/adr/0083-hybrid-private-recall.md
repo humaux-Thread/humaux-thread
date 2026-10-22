@@ -53,8 +53,8 @@ Caveats that bound these numbers:
 1. The 198 questions are a **development set**: they tuned the old system. They justify building the leg; they do not
    confirm it. The sealed set of ADR-0081 (Experiments, common rules) re-measures later.
 2. The measured fusions took **200 points from each leg** and folded them to Memories on the client; the dense leg was
-   an exact search. Production asks Qdrant for grouped Memories, and the dense leg is an approximate search at `cand_k`
-   (see U3).
+   an exact search. Production asks Qdrant for grouped Memories, `leg_depth` (200) per leg, so both legs keep the measured
+   depth; the dense leg is an approximate (HNSW) search, which PB5 measured within one hit of exact (65 against 64).
 3. PB5 had one tenant, so cross-principal IDF scoping was not exercised there (G-RET-8 does).
 
 ## Qdrant v1.19.0: what was verified
@@ -80,9 +80,9 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
 
 | # | Not known today | Fallback | Resolved by |
 |---|---|---|---|
-| U1 | Whether a real server returns the expected groups for a Document query with `params.idf.corpus` and `group_by memory_id` (the source says it should, V2; nothing here has run it) | Fold the sparse leg client-side over `sparse_leg_depth` points on `POST /points/query`, the shape PB5 measured; this ADR is then amended to say so | T-RET-6c, G-RET-7 and G-RET-8 through a real Qdrant |
+| U1 | Whether a real server returns the expected groups for a Document query with `params.idf.corpus` and `group_by memory_id` (the source says it should, V2; nothing here has run it) | Fold the sparse leg client-side over `leg_depth` points on `POST /points/query`, the shape PB5 measured; this ADR is then amended to say so | T-RET-6c, G-RET-7 and G-RET-8 through a real Qdrant |
 | U2 | What a real server does with a query whose tokens are all dropped (empty sparse vector, V7) | A 2xx with zero groups is an empty leg; any non-2xx is a leg failure and shows as the D-C degradation, never silently | T-RET-6c reads it once and records the result here |
-| U3 | The effect of the dense leg's depth on the fused ranking: the measured fusions used 200 points per leg, D-C leaves the dense leg at `cand_k` | T-RET-6c runs one paired comparison, dense at `cand_k` against dense at `sparse_leg_depth`, same RRF; if the deeper leg wins, this ADR is amended and the registry gains a `dense_leg_depth` field | T-RET-6c |
+| U3 | Resolved by the lead (2026-10-22): both legs ask for `leg_depth` Memories, the depth the fusions were measured at; `cand_k` cuts only the fused list | — | — |
 | U4 | Where the policy value behind `SKIPPED_BY_POLICY` comes from: `build_sparse_lane` takes `local_text_processing_allowed` from its caller and only tests call it, so no policy value is read anywhere today | The write path and the query path read one decision (D-E); T-RET-6b names the source before the write path ships | T-RET-6b |
 | U5 | How a skipped sparse lane renders in the envelope: `LaneStatus` has `ok`, `failed`, `not_required` and nothing for "skipped by policy" | Render `not_required` (no wire change) unless that card's contract review asks for a new value | T-RET-6c |
 | U6 | What turns the sparse leg on for a stream: it must find `bm25` and `memory_id` on every point, or a memory missing either is silently never matched (dense-only quality, no error) | A registered flag, off by default, flipped after the T-RET-6b backfill reads zero missing and ADR-0068's `memory_id` backfill reads `strays = 0` | T-RET-6c |
@@ -131,9 +131,10 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
 
 ### D-C Recall
 
-- The gateway issues the dense leg and the sparse leg **concurrently**. The dense leg is unchanged. The sparse leg is
+- The gateway issues the dense leg and the sparse leg **concurrently**. The dense leg keeps its request shape and asks for
+  `leg_depth` grouped Memories instead of `cand_k`. The sparse leg is
   `POST /collections/{name}/points/query/groups` (V2) with the D-A Document query, `using: bm25`, `group_by` set to
-  `memory_id`, group size 1, and `limit` = `sparse_leg_depth`. Both legs carry the **identical filter set**: tenant,
+  `memory_id`, group size 1, and `limit` = `leg_depth`. Both legs carry the **identical filter set**: tenant,
   visibility, subject, affect, and the tombstone overlay (§17.1, §37).
 - **Fusion** is reciprocal-rank fusion over Memory ranks, in the gateway: `score(m) = Σ 1 / (rrf_k + rank)` over the
   legs that returned `m`, ranks 1-based, ties broken by `memory_id` ascending. The fused list is cut to `cand_k` and
@@ -161,7 +162,7 @@ Three registered-profile fields, beside `top_k` in the §50 registry, none ever 
 | Field | Default | Meaning |
 |---|---|---|
 | `cand_multiplier` | 5 (ADR-0081 D-E) | `cand_k = min(top_k × cand_multiplier, 200)`; replaces the constant `RETRIEVAL_CANDIDATE_MULTIPLIER` |
-| `sparse_leg_depth` | 200 | `limit` of the grouped sparse request, in Memories |
+| `leg_depth` | 200 | `limit` of each leg's grouped request (dense and sparse), in Memories; the fused list is then cut to `cand_k` |
 | `rrf_k` | 60 | the constant in the D-C formula |
 
 All three enter `request_profile_fingerprint` and the envelope validation (§23.3 fixture assertions), so a change moves
@@ -234,7 +235,10 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
   authorized-corpus code where §17.6 and Qdrant already provide both.
 - **Adding the sparse vector with `PATCH /collections/{name}`**: it cannot create one (V1).
 - **A `projection_version` bump for the backfill**: it would move every Memory's fingerprint and point id (ADR-0068 D-I).
-- **Rerank on top of the fused pool now**: not significant (100 to 106, p .50); T-RET-7.
+- **Rerank in production**: the owner decided on 2026-10-22 to run hybrid recall without a reranker. For the record,
+  E-RET-5f (run 39629912275, `exp/e-ret-pb-rrf-rerank`) measured, on the fused pool of the same 198 questions, a cloud
+  reranker at 140 (from 96, p 3.7e-11) and local int8 at 111 (p .077); local int8 takes 6.4 s per query on the N1
+  production host (Baseline §67.2). T-RET-7 is not pursued; the data stays for a later decision.
 
 ## Deferred items
 
@@ -242,7 +246,6 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 |---|---|
 | Sealed-set confirmation of the fused ranking | The sealed set of ADR-0081 exists; re-measure dense, fused and the rerank arm on it |
 | Tuning `k`, `b`, `avg_len` or the language options | A paired experiment shows a gain; every stored sparse vector is rewritten, so it is a new rebuild generation (V7) |
-| `dense_leg_depth` as a registry field | U3's paired comparison favours the deeper dense leg |
 | Pinning the serving version into the IDF corpus | A G-RET-8-style measurement shows a rank change during a backfill window |
 | Answering from the sparse leg alone when the dense leg fails | The dense leg's failure rate makes dense-only recall the dominant outage |
 

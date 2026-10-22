@@ -288,7 +288,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 | T-RET-3 | D-D after E-RET-2: query role and fingerprint | G-RET-4 |
 | T-RET-4 | D-B: prefix-grouped warm-up scheduling; fixed prefix only if E-CACHE-3 passes | G-RET-2 |
 | T-RET-5 | D-C: vector reuse (same batch as T-DOC-2, ADR-0079) | G-RET-5 |
-| T-RET-6 | After E-RET-1 / 3, split by ADR-0083: T-RET-6a (docs: ADR-0083 and its Baseline edits), T-RET-6b (indexing and backfill of the `bm25` vector), T-RET-6c (recall: `cand_multiplier`, `sparse_leg_depth`, `rrf_k`, the BM25 leg, RRF, lanes). `cand_multiplier` ships with T-RET-6c | G-RET-3, extended to every leg by T-RET-6c (ADR-0083 D-F) |
+| T-RET-6 | After E-RET-1 / 3, split by ADR-0083: T-RET-6a (docs: ADR-0083 and its Baseline edits), T-RET-6b (indexing and backfill of the `bm25` vector), T-RET-6c (recall: `cand_multiplier`, `leg_depth`, `rrf_k`, the BM25 leg, RRF, lanes). `cand_multiplier` ships with T-RET-6c | G-RET-3, extended to every leg by T-RET-6c (ADR-0083 D-F) |
 | Later | Local rerank and the D-F pair cache, after E-RET-5; no card yet | |
 
 Code state behind the T-RET-1 split (design §19.5 note, 2026-10-20): `byok` has one reply protocol, OpenAI-compatible, so
