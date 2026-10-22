@@ -1,7 +1,7 @@
 //! `adapters::stream_repo` — §15 `projection.stream_log` / `stream_checkpoints` SQL: T3.3's `advance_prefix`
 //!   (three/four independent reads + monotonic watermark write, both through [`RetrievalWorkerDbPool`]), T3.4's
 //!   `ISSUED -> LOST` patrol (through [`MaintenanceDbPool`]) and the sole private-evidence ticket door
-//!   [`issue_ticket_in_txn`] (on the caller's transaction, M09 D1).
+//!   [`issue_ticket_in_txn`] (on the caller's transaction, M09 D1) and the O(1) [`ledger_frontier`] read (M09 D3).
 //! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, sqlx, tokio];
 //!   services=[PostgreSQL(any)
 //!   r=[ops.commit_seq_seq, ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets,
@@ -28,7 +28,7 @@
 //!   INSERT and `ops.commit_seq_seq` allocation (architecture-check G-M09-1; the SQL-side issuers in migrations are
 //!   outside it, ADR-0075 D-C), the ticket door runs on the caller's transaction in §60's statement order and never
 //!   commits]
-//! Spec: Baseline §6.2.0; §11; §15.1; §15.2; §23.1②; §60; ADR-0052; ADR-0057; ADR-0062; ADR-0064; ADR-0075
+//! Spec: Baseline §6.2.0; §11; §15.1; §15.2; §15.3; §23.1②; §23.3; §60; ADR-0052; ADR-0057; ADR-0062; ADR-0064; ADR-0075
 //!
 //! The consistency arithmetic itself lives in
 //! `humaux_projection::stream` (no IO, unit-tested there); this module only fetches the
@@ -495,6 +495,61 @@ pub async fn fetch_ledger_closure(
     let closure = close_ledger_in_txn(&mut txn, key, authorization).await?;
     txn.commit().await?;
     Ok(closure)
+}
+
+/// §15.3: the four highwaters and the read-routing flags of one stream, as one `stream_checkpoints` row holds them.
+/// Deliberately has no `visible` and no per-state count: the row cannot supply them, and §23.3④ forbids filling
+/// 0 or a substitute (those come from [`fetch_ledger_closure`], M13's call which reader an envelope uses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frontier {
+    /// `issued_highwater` — A1's `expected` (§15.4).
+    pub issued_hw: u64,
+    /// `evidence_highwater` — written by the census owner (M13); 0 until it writes.
+    pub evidence_hw: u64,
+    /// `knowledge_highwater` — written by the census owner (M13); 0 until it writes.
+    pub knowledge_hw: u64,
+    /// `projection_highwater` — the §15.4 contiguous-done prefix [`advance_prefix`] last stored.
+    pub projection_hw: u64,
+    /// `serving` — the §15.3 read-routing flag.
+    pub serving: bool,
+    /// The row's last-write time (`stream_checkpoints_touch_updated_at`, DB clock).
+    pub updated_at: sqlx::types::time::OffsetDateTime,
+}
+
+/// M09 D3: the O(1) hot-path read of a stream's frontier — one primary-key lookup on `stream_checkpoints`, never
+/// `stream_log` and never the point ledger (so unlike [`fetch_ledger_closure`] it cannot cost O(stream)). `None` =
+/// no checkpoint row, i.e. nothing was ever issued for the key; the caller decides what that means rather than
+/// receiving a fabricated zero frontier (§23.3④). Read-only; no caller switches to it in this card.
+pub async fn ledger_frontier(
+    pool: &RetrievalWorkerDbPool,
+    key: &StreamKey,
+) -> Result<Option<Frontier>, StreamRepoError> {
+    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for `ledger_frontier`
+    let mut txn = pool.pool().begin().await?;
+    set_tenant_local(&mut txn, key.tenant_id.0).await?;
+    let row = bind_key(
+        sqlx::query(&format!(
+            "SELECT issued_highwater, evidence_highwater, knowledge_highwater, projection_highwater, \
+                    serving, updated_at \
+               FROM projection.stream_checkpoints WHERE {KEY_WHERE}"
+        )),
+        key,
+    )
+    .fetch_optional(&mut *txn)
+    .await?;
+    txn.commit().await?;
+    row.map(|row| {
+        Ok::<_, sqlx::Error>(Frontier {
+            issued_hw: row.try_get::<i64, _>("issued_highwater")? as u64,
+            evidence_hw: row.try_get::<i64, _>("evidence_highwater")? as u64,
+            knowledge_hw: row.try_get::<i64, _>("knowledge_highwater")? as u64,
+            projection_hw: row.try_get::<i64, _>("projection_highwater")? as u64,
+            serving: row.try_get("serving")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    })
+    .transpose()
+    .map_err(StreamRepoError::Db)
 }
 
 /// §15.4 `advance_prefix`: fetches the independent snapshot, validates it
