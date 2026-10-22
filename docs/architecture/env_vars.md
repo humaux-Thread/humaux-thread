@@ -1375,6 +1375,19 @@ processes:
 modules:
 - `gateway::bootstrap`
 
+### `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_EMBEDDING_DIMENSION`
 - witness: literal
 - registry: gateway
