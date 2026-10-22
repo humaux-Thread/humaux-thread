@@ -198,6 +198,7 @@ fn row(rows: &[MemoryText], id: Uuid) -> MemoryText {
 /// M07-3 will write (no `key_claim`), the other into the legacy shape (no identity contract, a `key_claim` that differs from
 /// its Evidence payload). The view must give each its own text, byte for byte, with its own `title`.
 #[test]
+#[allow(clippy::too_many_lines)] // one causal chain: three notes, each reshaped and re-read through the same view
 fn g_m07_3_the_view_resolves_identity_and_legacy_text_alike() {
     run_db_fixture::<Fixture, _>(
         "g_m07_3_the_view_resolves_identity_and_legacy_text_alike",
