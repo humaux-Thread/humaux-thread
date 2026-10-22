@@ -5265,6 +5265,13 @@ mod tests {
         assert_eq!(found, strs(&["HUMAUX_X_Y", "HUMAUX_Z9"]));
     }
 
+    /// The `env_vars.md` block (T-CI-3 layout) of a variable that only `humaux-a` names: registry `raw`, no process.
+    fn env_block(name: &str, kind: &str, witness: &str) -> String {
+        format!(
+            "### `{name}`\n- witness: {witness}\n- registry: raw\n\nkind:\n- {kind}\n\nprocesses:\n\nmodules:\n- `humaux-a`\n"
+        )
+    }
+
     #[test]
     fn env_brace_expansion_and_declared_only_witness() {
         let (d, _) =
@@ -5297,11 +5304,11 @@ mod tests {
         assert!(an.violations().0.is_empty(), "{:?}", an.violations().0);
         let doc = an.render_env_vars();
         assert!(
-            doc.contains("| `HUMAUX_LIT` | runtime | — | `humaux-a` | literal | raw |"),
+            doc.contains(&env_block("HUMAUX_LIT", "runtime", "literal")),
             "{doc}"
         );
         assert!(
-            doc.contains("| `HUMAUX_BUILT_B` | runtime | — | `humaux-a` | declared-only | raw |"),
+            doc.contains(&env_block("HUMAUX_BUILT_B", "runtime", "declared-only")),
             "{doc}"
         );
     }
@@ -5328,11 +5335,11 @@ mod tests {
         assert!(an.violations().0.is_empty(), "{:?}", an.violations().0);
         let doc = an.render_env_vars();
         assert!(
-            doc.contains("| `HUMAUX_A_GONE` | refused-at-boot | — | `humaux-a` | literal | raw |"),
+            doc.contains(&env_block("HUMAUX_A_GONE", "refused-at-boot", "literal")),
             "{doc}"
         );
         assert!(
-            doc.contains("| `HUMAUX_A_LIVE` | runtime | — | `humaux-a` | literal | raw |"),
+            doc.contains(&env_block("HUMAUX_A_LIVE", "runtime", "literal")),
             "{doc}"
         );
     }
@@ -5358,11 +5365,11 @@ mod tests {
         assert!(an.violations().0.is_empty(), "{:?}", an.violations().0);
         let doc = an.render_env_vars();
         assert!(
-            doc.contains("| `A_OLD` | deprecated-alias | — | `humaux-a` | literal | raw |"),
+            doc.contains(&env_block("A_OLD", "deprecated-alias", "literal")),
             "{doc}"
         );
         assert!(
-            doc.contains("| `HUMAUX_A_NEW` | runtime | — | `humaux-a` | literal | raw |"),
+            doc.contains(&env_block("HUMAUX_A_NEW", "runtime", "literal")),
             "{doc}"
         );
     }
