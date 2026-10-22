@@ -25,7 +25,7 @@ const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR";
 const SAMPLE_SECONDS: &str = "HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS";
 /// The test's sample interval; every "within 2 intervals" bound below is derived from it.
 const INTERVAL: Duration = Duration::from_secs(1);
-const FAMILIES: [&str; 12] = [
+const FAMILIES: [&str; 9] = [
     "jobs_pending",
     "jobs_processing",
     "jobs_waiting_key",
@@ -35,6 +35,10 @@ const FAMILIES: [&str; 12] = [
     "processing_gap_count",
     "data_disclosures_finalized_total",
     "data_disclosures_reserved_unfinalized",
+];
+/// The M22-1 host families, declared by `--metrics-families` but not guaranteed to have a sample
+/// at the first scrape (the CPU ratio needs two `/proc/stat` readings, #193).
+const HOST_FAMILIES: [&str; 3] = [
     "host_pressure_ratio",
     "host_memory_available_bytes",
     "host_cpu_busy_ratio",
@@ -242,7 +246,7 @@ fn metrics_families_prints_twelve_families_without_env() {
         12,
         "{text}"
     );
-    for family in FAMILIES {
+    for family in FAMILIES.into_iter().chain(HOST_FAMILIES) {
         assert!(text.contains(&format!("# TYPE {family} ")), "{family}");
     }
 }
