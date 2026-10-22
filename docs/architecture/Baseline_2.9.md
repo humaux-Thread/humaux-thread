@@ -95,7 +95,7 @@ Humaux Thread 不定义为“向量数据库”或“RAG 服务”，而定义�
 3. 用户自己的 LLM/VLM Key 对私人内容进行蒸馏；
 4. 用户知识经用户侧判断与脱敏后进入公共候选；
 5. 公共知识由企业 LLM Key 完成整理、冲突检测、补全、演化和递归合成；
-6. Hybrid Retrieval + Cloud Rerank；
+6. Hybrid Retrieval + 本地 Rerank（planned，ADR-0084）；
 7. 召回不仅返回“相关”，还分别表达相似性、相关性、关联性与完整性；
 8. 项目开发连续性（Project Continuity）；
 9. Memory Graph 与 Code Graph；
@@ -815,7 +815,7 @@ Adapters depend on Domain; Domain does not depend on Adapters.
 | `humaux-worker` | DB 写凭证 | — | — |
 | `humaux-private-worker` | **唯一**能解 BYOK 的进程 | — | — |
 | `humaux-consolidation-worker` | **不解密 BYOK**；仅 `role_consolidation_worker` DB pool；LLM 请求走 private-worker 的内部 `PrivateReasoningPort` | Dream 不能持有基础 Memory 写权限 | snapshot selection + LLM wait |
-| `humaux-retrieval-worker` | PLATFORM_RETRIEVAL provider credential ref | provider/API 故障与在线请求隔离 | Provider admission / cache / network I/O；**不加载模型权重** |
+| `humaux-retrieval-worker` | PLATFORM_RETRIEVAL provider credential ref | provider/API 故障与在线请求隔离；本地 rerank 推理的卡顿与崩溃不进入 gateway 进程（ADR-0084 D-B，planned） | Provider admission / cache / network I/O；**不加载 embedding 权重**；`--serve-rpc` 仅在 `rerank_enabled` 为真时常驻一个本地 int8 rerank 模型（ADR-0084，planned），其 CPU 与内存归这一格 |
 | `humaux-public-worker` | PLATFORM_PUBLIC key；仅匿名 public objects、direct provenance、aggregate trust 与获授权的 sanitized-envelope 列；无 private/protected-lineage/完整 staging-row 权限 | — | — |
 | `humaux-maintenance` | 备份/恢复凭证 | 恢复演练失败不得影响在线 | 备份 IO 尖峰 |
 | `parse-sandbox`（非常驻，worker spawn/exec） | **零凭证** | 不可信输入，崩溃即回收 | 见 4.3 上限 |
@@ -12678,7 +12678,7 @@ OpenBao: dev stub 允许 —— production forbidden
 
 ```text
 旧 ONNX-based 内存预算作废：Managed Retrieval Provider 已冻结为标准路径，
-retrieval-worker 不再常驻模型权重。
+retrieval-worker 的 embedding 不常驻模型权重。**例外（planned，ADR-0084）**：`rerank_enabled` 为真时，`retrieval-rpc` 常驻一个本地 int8 rerank 模型（ONNX Runtime 与 tokenizer），其常驻内存与 CPU 权重尚未测（ADR-0084 U4），由 T-RET-7c 在同规格 runner 上测定后写入。
 
 硬约束：
 - OS + page cache + backup spike 预留 >= 4 GiB
@@ -12687,7 +12687,7 @@ retrieval-worker 不再常驻模型权重。
 - 全部服务 + 峰值 parse-sandbox 不得挤占上述 OS/恢复预留
 ```
 
-**A5 gate 更新**：在同规格 4 vCPU / 24 GiB ARM runner 上重新测量 Managed-Provider 架构后再冻结每进程 MiB 数值。旧 `retrieval-worker=4GB` 数据不得继续作为 2.2 参数，因为它测的是已经删除的内置神经 reranker 路径。
+**A5 gate 更新**：在同规格 4 vCPU / 24 GiB ARM runner 上重新测量 Managed-Provider 架构后再冻结每进程 MiB 数值。旧 `retrieval-worker=4GB` 数据不得继续作为 2.2 参数，因为它测的是已经删除的内置神经 reranker 路径；本地 rerank 的占用另测，不沿用该数。
 
 **禁止把 private 与 public 角色合并进同一生产进程。** 即使单机部署，也保持不同 OS process / DB role / OpenBao policy；GA 若 Public Evolution 未启用，则 `humaux-public-worker` 不启动。`maintenance` 也保持独立凭证边界。进程开销小于破坏 Key/DB 权限隔离带来的风险。
 
