@@ -2,7 +2,8 @@
 //!   primary-key read and reports no count its row cannot supply.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(owner) w=[control.tenants, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN];
+//!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker) x=[projection.stream_point_ledger]];
+//!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::postgres, adapters::stream_repo, adapters::tests::support::throwaway_db, domain::egress,
 //!   domain::identity, domain::ids, humaux-testkit, projection::stream]
 //! Called-by: [cargo-test]
@@ -351,6 +352,7 @@ fn frontier_does_not_read_another_tenants_checkpoint() {
                     .expect("connect role_retrieval_worker");
             let (frontier, visible_b) =
                 h.rt.block_on(async {
+                    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for the cross-tenant read
                     let mut txn = worker.begin().await?;
                     let frontier = stream_repo::ledger_frontier_in_txn(&mut txn, &a).await?;
                     // Deliberately no tenant predicate: only RLS can hide B's row from A's SET LOCAL.
