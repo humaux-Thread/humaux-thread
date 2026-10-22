@@ -8977,17 +8977,16 @@ impl ComposeService {
     }
 
     /// `(service, image line, image)` when the service runs a Python image and is not limited to the tooling profiles.
-    fn python_outside_tooling(self) -> Option<(String, usize, String)> {
-        let tooling = self.limited_to_tooling();
-        let (line, image) = self.image?;
+    fn python_outside_tooling(&self) -> Option<(String, usize, String)> {
         // ponytail: an image whose name does not contain `python` (for example `pytorch`) is not caught; upgrade by
         // mapping known base images to their runtime instead of matching the image name.
-        (image.to_ascii_lowercase().contains("python") && !tooling)
-            .then_some((self.name, line, image))
+        let (line, image) = self.image.as_ref()?;
+        (image.to_ascii_lowercase().contains("python") && !self.limited_to_tooling())
+            .then(|| (self.name.clone(), *line, image.clone()))
     }
 
     /// `(service, line, value)` for the first `command:` / `entrypoint:` entry naming a Python command token.
-    fn python_commands_outside_tooling(self) -> Option<(String, usize, String)> {
+    fn python_commands_outside_tooling(&self) -> Option<(String, usize, String)> {
         if self.limited_to_tooling() {
             return None;
         }
@@ -8995,7 +8994,7 @@ impl ComposeService {
             .iter()
             .chain(self.entrypoint.iter())
             .find(|(_, value)| mentions_python_command(value))
-            .map(|(line, value)| (self.name, *line, value.clone()))
+            .map(|(line, value)| (self.name.clone(), *line, value.clone()))
     }
 }
 
@@ -9004,7 +9003,7 @@ impl ComposeService {
 fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
     compose_services(text)
         .into_iter()
-        .filter_map(ComposeService::python_outside_tooling)
+        .filter_map(|service| service.python_outside_tooling())
         .collect()
 }
 
@@ -9013,7 +9012,7 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
 fn compose_python_commands(text: &str) -> Vec<(String, usize, String)> {
     compose_services(text)
         .into_iter()
-        .filter_map(ComposeService::python_commands_outside_tooling)
+        .filter_map(|service| service.python_commands_outside_tooling())
         .collect()
 }
 
