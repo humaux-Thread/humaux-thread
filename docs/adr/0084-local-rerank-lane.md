@@ -401,6 +401,24 @@ operator value of 4 fails at registry load, a call with 4 is `invalid_request`. 
 body or an unknown field is refused by the extractor (HTTP 4xx) before any outcome exists; every semantic error is an
 `invalid_request` outcome with the call id.
 
+## T-RET-7d-1 record (2026-10-23)
+
+Recorded by CI (nothing ran locally). The code and the tests below landed in PR #204 (head 2f9c1ec, green run 39859048051);
+each red is one mutation on a throwaway `red/t-ret-7d-1-rN` branch run through `targeted.yml` on the test named, failing on
+that test's own assertion; the branches are deleted. T-RET-7d-1 adds no `G-RET-` id: these are the tests of the two
+contracts amended above (§80.1 inject, red, fix, green).
+
+| Contract | Test | Injected fault | Red run |
+|---|---|---|---|
+| D-D serve rule | `retrieval::envelope::tests::a_cannot_establish_component_is_served_with_its_diagnostic_and_is_never_valid` | r1: `outcome_block_under` refuses every `!is_valid` provenance (the old gate): fails at "a structurally sound block is served: Internal" | 39861103125 |
+| D-C 3, first point per Memory | `adapters::retrieve::stand_in_tests::the_first_candidate_point_of_a_memory_fixes_its_slot` | r2: a later candidate point overwrites the Memory's slot (Memory 10 reads `Chunk { 0 }`, expected `Chunk { 2 }`) | 39861417814 |
+| D-C 3, slot from the registry row | `private_projection_registry::repeated_chunks_share_vector_not_point` | r3: the resolver reports ordinal 0 whatever the row says (both points read `Chunk { 0 }`) | 39861763939 |
+| D-C 3, the embedded card text | `projection::note_chunks::tests::rerank_document_is_the_card_text_of_the_slot` | r4: the document is always built from slot 0 | 39862116696 |
+| D-C 3, dense point, else sparse | `gateway::recall::tests::the_fused_candidate_is_the_dense_hit_else_the_sparse_hit` | r5: a later leg's point replaces the dense leg's for a Memory both legs found | 39862460586 |
+
+The structural-breach test (`a_structural_breach_is_still_refused_as_internal`) and the G23-6 tests are unchanged by the
+split of `is_valid` and stay green.
+
 ## Alternatives rejected
 
 - **No rerank**: the owner's earlier decision of the same day (ADR-0083), replaced by this one.
