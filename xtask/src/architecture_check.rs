@@ -8291,9 +8291,10 @@ fn nextest_binaries(root: &Path) -> Result<Vec<NextestBinary>, String> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(format!(
-                    "M24-7: {package}::{name} pulls in {list}, which resolve to no file (tried x.rs, x/mod.rs, <stem>/x.rs, \
-                     <stem>/x/mod.rs, the `#[path]`, a string-literal `include!`): its sources cannot be read, so a marker or \
-                     DDL statement in them would go unseen. Fix the declaration, or teach declared_module_files the form"
+                    "M24-7: {package}::{name} pulls in {list}, which resolve to no file (tried x.rs then x/mod.rs beside a \
+                     crate root, a mod.rs or a `#[path]`-loaded file, <stem>/x.rs then <stem>/x/mod.rs beside any other file, the \
+                     `#[path]` itself, a string-literal `include!`): its sources cannot be read, so a marker or DDL statement in \
+                     them would go unseen. Fix the declaration, or teach declared_module_files the form"
                 ));
             }
             out.push(NextestBinary {
