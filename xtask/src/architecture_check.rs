@@ -34,6 +34,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8792,12 +8793,13 @@ const NO_PYTHON_ALLOWED_PREFIXES: [&str; 5] = [
 /// `config/` are the system.
 const NO_PYTHON_SOURCE_ROOTS: [&str; 4] = ["crates", "bins", "migrations", "config"];
 
-/// Where the product image Dockerfiles live: any Python in their build is the production runtime using Python.
-const NO_PYTHON_IMAGE_DIR: &str = "deploy/images";
-
 /// Where the compose files live (`deploy/compose/*.yml`); read as YAML text, no YAML crate (xtask takes no new
 /// dependency).
 const NO_PYTHON_COMPOSE_DIR: &str = "deploy";
+
+/// Roots whose files are scanned for a Python shebang regardless of extension. Dockerfiles are scanned from the repo
+/// root instead: a `Dockerfile` anywhere is a product image build.
+const NO_PYTHON_SHEBANG_ROOTS: [&str; 3] = ["crates", "bins", "deploy"];
 
 /// The compose profiles that mark a service as test / rehearsal tooling. A Python-image service must list profiles and
 /// every one of them must be here; a service with no `profiles:` key of its own (including one that would inherit it
@@ -8816,8 +8818,8 @@ fn is_dockerfile_name(name: &str) -> bool {
     name == "Dockerfile" || name.starts_with("Dockerfile.") || name.ends_with(".Dockerfile")
 }
 
-/// Every Dockerfile under `dir` (skipping target/.git/node_modules like [`walk_files`]).
-fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Every regular file under `dir` (skipping target/.git/node_modules like [`walk_files`]).
+fn walk_all_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -8826,12 +8828,21 @@ fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
             if !matches!(name, "target" | ".git" | "node_modules") {
-                walk_dockerfiles(&path, out);
+                walk_all_files(&path, out);
             }
-        } else if is_dockerfile_name(name) {
+        } else {
             out.push(path);
         }
     }
+}
+
+/// Every Dockerfile under `dir` (skipping target/.git/node_modules like [`walk_files`]).
+fn walk_dockerfiles(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut files = Vec::new();
+    walk_all_files(dir, &mut files);
+    out.extend(files.into_iter().filter(|path| {
+        is_dockerfile_name(path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+    }));
 }
 
 /// Whether a Dockerfile line (comment lines are skipped by the caller) names Python: the word `python` anywhere
@@ -8842,6 +8853,14 @@ fn mentions_python(line: &str) -> bool {
         || lower
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|token| token == "pip" || token == "pip3")
+}
+
+/// Whether a compose `command:` / `entrypoint:` value has a whole-word `python`, `python3` or `pip` token.
+fn mentions_python_command(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "python" | "python3" | "pip"))
 }
 
 /// A YAML scalar without its trailing ` # comment` and surrounding quotes.
@@ -8864,6 +8883,14 @@ fn yaml_flow_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Which block-style value the following indented lines belong to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComposeBlock {
+    Profiles,
+    Command,
+    Entrypoint,
+}
+
 /// One compose service while its block is read line by line.
 #[derive(Default)]
 struct ComposeService {
@@ -8872,55 +8899,127 @@ struct ComposeService {
     image: Option<(usize, String)>,
     /// Its own `profiles:` entries (flow or block style).
     profiles: Vec<String>,
+    /// 1-based line and value of its own `command:` entries (flow, scalar or block style).
+    command: Vec<(usize, String)>,
+    /// 1-based line and value of its own `entrypoint:` entries (flow, scalar or block style).
+    entrypoint: Vec<(usize, String)>,
     /// Indent of the keys directly under the service name, learnt from its first nested line.
     key_indent: Option<usize>,
-    /// The previous key was a block-style `profiles:`, so `- item` lines are its entries.
-    in_profiles: bool,
+    /// The previous key opened a block-style value, so deeper lines are its entries.
+    block: Option<ComposeBlock>,
 }
 
 impl ComposeService {
     /// Reads one non-blank, non-comment line nested under the service name.
     fn read_line(&mut self, line: usize, indent: usize, body: &str) {
-        if self.in_profiles
-            && let Some(item) = body.strip_prefix("- ")
+        if let Some(block) = self.block
+            && indent > self.key_indent.unwrap_or(0)
         {
-            self.profiles.push(yaml_scalar(item).to_owned());
+            match block {
+                ComposeBlock::Profiles => {
+                    if let Some(item) = body.strip_prefix("- ") {
+                        self.profiles.push(yaml_scalar(item).to_owned());
+                    }
+                }
+                ComposeBlock::Command => self.command.push((
+                    line,
+                    yaml_scalar(body.strip_prefix("- ").unwrap_or(body)).to_owned(),
+                )),
+                ComposeBlock::Entrypoint => self.entrypoint.push((
+                    line,
+                    yaml_scalar(body.strip_prefix("- ").unwrap_or(body)).to_owned(),
+                )),
+            }
             return;
         }
+        self.block = None;
         let key_indent = *self.key_indent.get_or_insert(indent);
         if indent != key_indent {
             return;
         }
-        self.in_profiles = false;
         if let Some(value) = body.strip_prefix("image:") {
             self.image = Some((line, yaml_scalar(value).to_owned()));
         } else if let Some(value) = body.strip_prefix("profiles:") {
             let value = value.trim();
             if value.is_empty() || value.starts_with('#') {
-                self.in_profiles = true;
+                self.block = Some(ComposeBlock::Profiles);
             } else {
                 self.profiles = yaml_flow_list(value);
             }
+        } else if let Some(value) = body.strip_prefix("command:") {
+            self.read_value(line, ComposeBlock::Command, value);
+        } else if let Some(value) = body.strip_prefix("entrypoint:") {
+            self.read_value(line, ComposeBlock::Entrypoint, value);
         }
+    }
+
+    /// Records a `command:` / `entrypoint:` value; a bare `|`, `>` or empty value opens a block.
+    fn read_value(&mut self, line: usize, block: ComposeBlock, raw: &str) {
+        let value = yaml_scalar(raw);
+        if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+            self.block = Some(block);
+            return;
+        }
+        match block {
+            ComposeBlock::Command => self.command.push((line, value.to_owned())),
+            ComposeBlock::Entrypoint => self.entrypoint.push((line, value.to_owned())),
+            ComposeBlock::Profiles => self.profiles.push(value.to_owned()),
+        }
+    }
+
+    /// Whether the service's own `profiles:` limits it to the test / rehearsal tooling (absent or empty = not limited).
+    fn limited_to_tooling(&self) -> bool {
+        !self.profiles.is_empty()
+            && self
+                .profiles
+                .iter()
+                .all(|profile| NO_PYTHON_TOOLING_PROFILES.contains(&profile.as_str()))
     }
 
     /// `(service, image line, image)` when the service runs a Python image and is not limited to the tooling profiles.
     fn python_outside_tooling(self) -> Option<(String, usize, String)> {
+        let tooling = self.limited_to_tooling();
         let (line, image) = self.image?;
-        let tooling = !self.profiles.is_empty()
-            && self
-                .profiles
-                .iter()
-                .all(|profile| NO_PYTHON_TOOLING_PROFILES.contains(&profile.as_str()));
+        // ponytail: an image whose name does not contain `python` (for example `pytorch`) is not caught; upgrade by
+        // mapping known base images to their runtime instead of matching the image name.
         (image.to_ascii_lowercase().contains("python") && !tooling)
             .then_some((self.name, line, image))
+    }
+
+    /// `(service, line, value)` for the first `command:` / `entrypoint:` entry naming a Python command token.
+    fn python_commands_outside_tooling(self) -> Option<(String, usize, String)> {
+        if self.limited_to_tooling() {
+            return None;
+        }
+        self.command
+            .iter()
+            .chain(self.entrypoint.iter())
+            .find(|(_, value)| mentions_python_command(value))
+            .map(|(line, value)| (self.name, *line, value.clone()))
     }
 }
 
 /// The services of a compose document that run a Python image without being limited to the tooling profiles, as
-/// `(service, image line, image)`. Line-based: the keys of `services:` at one indent are the service names, and only a
-/// service's own `image:` / `profiles:` keys count.
+/// `(service, image line, image)`.
 fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
+    compose_services(text)
+        .into_iter()
+        .filter_map(ComposeService::python_outside_tooling)
+        .collect()
+}
+
+/// The services whose own `command:` / `entrypoint:` names Python while not limited to the tooling profiles, as
+/// `(service, line, value)`.
+fn compose_python_commands(text: &str) -> Vec<(String, usize, String)> {
+    compose_services(text)
+        .into_iter()
+        .filter_map(ComposeService::python_commands_outside_tooling)
+        .collect()
+}
+
+/// Every service of a compose document. Line-based: the keys of `services:` at one indent are the service names, and
+/// only a service's own `image:` / `profiles:` / `command:` / `entrypoint:` keys count.
+fn compose_services(text: &str) -> Vec<ComposeService> {
     let mut found = Vec::new();
     let mut in_services = false;
     let mut service_indent: Option<usize> = None;
@@ -8932,11 +9031,7 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
         }
         let indent = raw.len() - raw.trim_start().len();
         if indent == 0 {
-            found.extend(
-                current
-                    .take()
-                    .and_then(ComposeService::python_outside_tooling),
-            );
+            found.extend(current.take());
             in_services = body.strip_prefix("services:").is_some_and(|rest| {
                 let rest = rest.trim();
                 rest.is_empty() || rest.starts_with('#')
@@ -8948,11 +9043,7 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
             continue;
         }
         if indent == *service_indent.get_or_insert(indent) {
-            found.extend(
-                current
-                    .take()
-                    .and_then(ComposeService::python_outside_tooling),
-            );
+            found.extend(current.take());
             let name = body.split(':').next().unwrap_or("").trim();
             current = Some(ComposeService {
                 name: name.trim_matches(['"', '\'']).to_owned(),
@@ -8962,20 +9053,18 @@ fn compose_python_services(text: &str) -> Vec<(String, usize, String)> {
             service.read_line(idx + 1, indent, body);
         }
     }
-    found.extend(
-        current
-            .take()
-            .and_then(ComposeService::python_outside_tooling),
-    );
+    found.extend(current.take());
     found
 }
 
-/// The pure core of the gate, over repo-relative paths: Python source files, Dockerfiles and compose files as
-/// `(path, text)`. Paths in the tooling territory ([`NO_PYTHON_ALLOWED_PREFIXES`]) are skipped.
+/// The pure core of the gate, over repo-relative paths: Python source files, Dockerfiles, compose files as
+/// `(path, text)`, and shebang candidates as `(path, first line)`. Paths in the tooling territory
+/// ([`NO_PYTHON_ALLOWED_PREFIXES`]) are skipped.
 fn no_python_problems(
     py_files: &[String],
     dockerfiles: &[(String, String)],
     compose_files: &[(String, String)],
+    shebang_files: &[(String, String)],
 ) -> Vec<String> {
     let mut problems = Vec::new();
     for path in py_files {
@@ -8999,15 +9088,33 @@ fn no_python_problems(
             }
         }
     }
+    for (path, first_line) in shebang_files {
+        if !no_python_allowed(path)
+            && first_line.starts_with("#!")
+            && first_line.to_ascii_lowercase().contains("python")
+        {
+            problems.push(format!(
+                "{path}:1: Python shebang in the system tree: {}; the system is Rust, Python is allowed only as CI / test tooling (T-LANG-1)",
+                first_line.trim()
+            ));
+        }
+    }
     let tooling = NO_PYTHON_TOOLING_PROFILES.join("/");
     for (path, text) in compose_files {
         if no_python_allowed(path) {
             continue;
         }
-        for (service, line, image) in compose_python_services(text) {
-            problems.push(format!(
-                "{path}:{line}: compose service `{service}` runs the Python image `{image}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
-            ));
+        for service in compose_services(text) {
+            if let Some((service, line, image)) = service.python_outside_tooling() {
+                problems.push(format!(
+                    "{path}:{line}: compose service `{service}` runs the Python image `{image}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
+                ));
+            } else if let Some((service, line, command)) = service.python_commands_outside_tooling()
+            {
+                problems.push(format!(
+                    "{path}:{line}: compose service `{service}` runs the Python command `{command}` but its own `profiles:` is not limited to {tooling}; the system is Rust (T-LANG-1)"
+                ));
+            }
         }
     }
     problems
@@ -9033,9 +9140,43 @@ fn read_for_no_python(
     read
 }
 
-/// T-LANG-1 / `no-python-in-system`: no `*.py` under `crates/` `bins/` `migrations/` `config/`; no `python` / `pip` in a
-/// `deploy/images/**` Dockerfile; no compose service on a Python image unless its own `profiles:` are rehearsal / test
-/// only. `not_applicable` only when none of the scanned directories exists, and it names them (§57.1 第2条).
+/// The first line of `path` (lossy: a non-UTF-8 first line cannot start with the ASCII `#!`).
+fn read_first_line(path: &Path) -> std::io::Result<String> {
+    let file = fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut buf = Vec::new();
+    reader.read_until(b'\n', &mut buf)?;
+    let line = String::from_utf8_lossy(&buf);
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+/// Reads the first line of `paths` as `(repo-relative path, first line)`, skipping the allowed tooling territory. An
+/// unreadable file is a problem, never a silent skip: a file this gate cannot read cannot be shown Python-free.
+fn read_for_shebang(
+    root: &Path,
+    paths: &[PathBuf],
+    problems: &mut Vec<String>,
+) -> Vec<(String, String)> {
+    let mut read = Vec::new();
+    for path in paths {
+        let shown = display(root, path);
+        if no_python_allowed(&shown) {
+            continue;
+        }
+        match read_first_line(path) {
+            Ok(line) => read.push((shown, line)),
+            Err(e) => problems.push(format!(
+                "{shown}: unreadable ({e}); a file this gate cannot read cannot be shown Python-free"
+            )),
+        }
+    }
+    read
+}
+
+/// T-LANG-1 / `no-python-in-system`: no `*.py` under `crates/` `bins/` `migrations/` `config/`; no `python` / `pip` in
+/// any `Dockerfile` or `*.Dockerfile` in the repo; a compose service fails on a Python image, `command:` or `entrypoint:`
+/// unless its own `profiles:` are rehearsal / test only; no Python shebang in `crates/`, `bins/` or `deploy/`.
+/// `not_applicable` only when none of the scanned directories exists, and it names them (§57.1 第2条).
 fn no_python_in_system(root: &Path) -> Verdict {
     let dirs: Vec<&str> = NO_PYTHON_SOURCE_ROOTS
         .iter()
@@ -9051,12 +9192,22 @@ fn no_python_in_system(root: &Path) -> Verdict {
         .map(|path| display(root, &path))
         .collect();
     let mut docker_paths = Vec::new();
-    walk_dockerfiles(&root.join(NO_PYTHON_IMAGE_DIR), &mut docker_paths);
+    walk_dockerfiles(root, &mut docker_paths);
     let compose_paths = walk_files(&root.join(NO_PYTHON_COMPOSE_DIR), &["yml", "yaml"]);
+    let mut shebang_paths = Vec::new();
+    for dir in NO_PYTHON_SHEBANG_ROOTS {
+        walk_all_files(&root.join(dir), &mut shebang_paths);
+    }
     let mut problems = Vec::new();
     let dockerfiles = read_for_no_python(root, &docker_paths, &mut problems);
     let compose_files = read_for_no_python(root, &compose_paths, &mut problems);
-    problems.extend(no_python_problems(&py_files, &dockerfiles, &compose_files));
+    let shebang_files = read_for_shebang(root, &shebang_paths, &mut problems);
+    problems.extend(no_python_problems(
+        &py_files,
+        &dockerfiles,
+        &compose_files,
+        &shebang_files,
+    ));
     if problems.is_empty() {
         Verdict::Pass
     } else {
@@ -9260,7 +9411,7 @@ pub fn run(_args: &[String]) -> i32 {
             m24_7_global_db_completeness(&root),
         ),
         (
-            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in deploy/images Dockerfiles; a compose service on a Python image is limited to the rehearsal / test profiles; CI, scripts, rehearsal and experiments may use Python)",
+            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in any Dockerfile or *.Dockerfile; a compose service on a Python image, command or entrypoint is limited to the rehearsal / test profiles; no Python shebang under crates, bins, deploy; CI, scripts, rehearsal and experiments may use Python)",
             no_python_in_system(&root),
         ),
     ];
@@ -9317,7 +9468,7 @@ mod tests {
     /// r1 shape: a `*.py` under a system root is a problem; the same file in the tooling territory is not.
     #[test]
     fn no_python_gate_flags_a_python_file_in_the_system_tree() {
-        let red = no_python_problems(&["crates/x/foo.py".to_string()], &[], &[]);
+        let red = no_python_problems(&["crates/x/foo.py".to_string()], &[], &[], &[]);
         assert_eq!(red.len(), 1, "{red:?}");
         assert!(red[0].starts_with("crates/x/foo.py:"), "{red:?}");
         for allowed in [
@@ -9327,7 +9478,7 @@ mod tests {
             "experiments/a/b.py",
             "xtask/tests/t.py",
         ] {
-            let found = no_python_problems(&[allowed.to_string()], &[], &[]);
+            let found = no_python_problems(&[allowed.to_string()], &[], &[], &[]);
             assert!(found.is_empty(), "{allowed}: {found:?}");
         }
     }
@@ -9341,14 +9492,52 @@ mod tests {
             "# python is fine in a comment\nFROM debian\nRUN apt-get install -y python3-pip\nRUN pip install x\n"
                 .to_string(),
         )];
-        let red = no_python_problems(&[], &dirty, &[]);
+        let red = no_python_problems(&[], &dirty, &[], &[]);
         assert_eq!(red.len(), 2, "{red:?}");
         assert!(
             red[0].starts_with("deploy/images/humaux/Dockerfile:3:"),
             "{red:?}"
         );
         let clean = vec![(path, "FROM scratch\nRUN set -o pipefail\n".to_string())];
-        assert!(no_python_problems(&[], &clean, &[]).is_empty());
+        assert!(no_python_problems(&[], &clean, &[], &[]).is_empty());
+    }
+
+    /// r1 shape widened: a `Dockerfile` outside `deploy/images/` is a product image build too; the tooling territory is
+    /// still exempt by path, and the real walk starts at the repo root.
+    #[test]
+    fn no_python_gate_walks_dockerfiles_outside_deploy_images() {
+        let dirty = vec![(
+            "bins/gateway/Dockerfile".to_string(),
+            "FROM debian\nRUN pip install x\n".to_string(),
+        )];
+        let red = no_python_problems(&[], &dirty, &[], &[]);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].starts_with("bins/gateway/Dockerfile:2:"), "{red:?}");
+        let clean = vec![(
+            "bins/gateway/Dockerfile".to_string(),
+            "FROM scratch\n".to_string(),
+        )];
+        assert!(no_python_problems(&[], &clean, &[], &[]).is_empty());
+        let tooling = vec![(
+            "scripts/Dockerfile".to_string(),
+            "FROM python:3.13-slim\n".to_string(),
+        )];
+        assert!(no_python_problems(&[], &tooling, &[], &[]).is_empty());
+
+        let dir = std::env::temp_dir().join(format!("np-docker-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bins/gateway")).unwrap();
+        fs::write(
+            dir.join("bins/gateway/Dockerfile"),
+            "FROM debian\nRUN pip install x\n",
+        )
+        .unwrap();
+        let verdict = no_python_in_system(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("bins/gateway/Dockerfile:2:")),
+            "{verdict:?}"
+        );
     }
 
     /// r2 shape: a Python image on a service that is not limited to the rehearsal / test profiles is a problem.
@@ -9370,6 +9559,39 @@ mod tests {
         assert!(compose_python_services(&non_python).is_empty());
     }
 
+    /// r1 shape widened: a Python `command:` / `entrypoint:` on a non-Python image is a problem unless the service is
+    /// limited to the tooling profiles; a command without a Python token is not.
+    #[test]
+    fn no_python_gate_flags_a_python_command_on_a_non_python_image() {
+        let text = np_compose("restart: \"no\"").replace("python:3.13-slim", "debian:13");
+        let command = "[\"python3\", \"x.py\"]";
+        assert_eq!(
+            compose_python_commands(&text),
+            [("sink".to_string(), 9, command.to_string())]
+        );
+        let red = no_python_problems(
+            &[],
+            &[],
+            &[("deploy/compose/prod.yml".to_string(), text.clone())],
+            &[],
+        );
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].contains("runs the Python command"), "{red:?}");
+
+        let entrypoint = text.replace(
+            "command: [\"python3\", \"x.py\"]",
+            "entrypoint: [\"/bin/sh\", \"-c\", \"pip install x\"]",
+        );
+        assert_eq!(compose_python_commands(&entrypoint).len(), 1);
+        let clean = text.replace(
+            "command: [\"python3\", \"x.py\"]",
+            "command: [\"sleep\", \"infinity\"]",
+        );
+        assert!(compose_python_commands(&clean).is_empty());
+        let tooling = np_compose("profiles: [rehearsal]").replace("python:3.13-slim", "debian:13");
+        assert!(compose_python_commands(&tooling).is_empty());
+    }
+
     /// The rehearsal tooling territory is exempt by path, and a Python compose service elsewhere is still red.
     #[test]
     fn no_python_gate_exempts_the_tooling_paths_only() {
@@ -9378,7 +9600,7 @@ mod tests {
             ("deploy/compose/prod.yml".to_string(), text.clone()),
             ("deploy/rehearsal/compose.yml".to_string(), text),
         ];
-        let red = no_python_problems(&[], &[], &files);
+        let red = no_python_problems(&[], &[], &files, &[]);
         assert_eq!(red.len(), 1, "{red:?}");
         assert!(red[0].starts_with("deploy/compose/prod.yml:8:"), "{red:?}");
     }
@@ -9401,6 +9623,42 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
         assert!(
             matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("crates/x/foo.py:")),
+            "{verdict:?}"
+        );
+    }
+
+    /// r1 shape widened: a Python shebang fails even without a `.py` extension; a non-Python shebang and the tooling
+    /// territory are not caught, and the real walk reads the first line of an extensionless file.
+    #[test]
+    fn no_python_gate_flags_a_python_shebang_without_a_py_extension() {
+        let dirty = vec![(
+            "bins/gateway/run".to_string(),
+            "#!/usr/bin/env python3".to_string(),
+        )];
+        let red = no_python_problems(&[], &[], &[], &dirty);
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(red[0].starts_with("bins/gateway/run:1:"), "{red:?}");
+        let clean = vec![
+            ("bins/gateway/run".to_string(), "#!/bin/sh".to_string()),
+            (
+                "bins/gateway/README".to_string(),
+                "python is not a shebang here".to_string(),
+            ),
+            (
+                "scripts/tool".to_string(),
+                "#!/usr/bin/env python3".to_string(),
+            ),
+        ];
+        assert!(no_python_problems(&[], &[], &[], &clean).is_empty());
+
+        let dir = std::env::temp_dir().join(format!("np-shebang-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bins/gateway")).unwrap();
+        fs::write(dir.join("bins/gateway/run"), "#!/usr/bin/env python3\n").unwrap();
+        let verdict = no_python_in_system(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("bins/gateway/run:1:")),
             "{verdict:?}"
         );
     }
