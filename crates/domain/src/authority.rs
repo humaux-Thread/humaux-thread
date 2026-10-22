@@ -554,14 +554,10 @@ mod authority_asserted_at_utc {
             let b = MemoryId::new();
             if a < b { (a, b) } else { (b, a) }
         };
-        assert_eq!(
-            resolve(&(low, west_authority), &(high, east_authority)),
-            Ordering::Less
-        );
-        assert_eq!(
-            resolve(&(high, west_authority), &(low, east_authority)),
-            Ordering::Greater
-        );
+        let west_pair = (low, west_authority);
+        let east_pair = (high, east_authority);
+        assert_eq!(resolve(&west_pair, &east_pair), Ordering::Less);
+        assert_eq!(resolve(&east_pair, &west_pair), Ordering::Greater);
     }
 }
 
