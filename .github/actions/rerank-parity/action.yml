@@ -8,7 +8,8 @@ name: rerank parity (G-RET-11, G-RET-14)
 # this action, so a mutation on this path is red-proven without ci.yml (whose `live` job spends provider money). The
 # caller checks out the ref and supplies the runner; this action needs the workspace at that ref and no services.
 # The pins below repeat deploy/images/humaux/Dockerfile's `ADD --checksum` lines and docs/ops/runbook.md section 12:
-# change all three together.
+# change all three together. The Dockerfile pair is also gated: `cargo xtask architecture-check` fails on any drift
+# between this action's `ort_*` / `rerank_*` inputs and the image (#194).
 description: G-RET-11 score parity and G-RET-14 artifact pin inside the pinned distroless runtime image
 inputs:
   ort_url:
@@ -31,6 +32,10 @@ inputs:
     description: gcr.io/distroless/cc-debian13:nonroot, the `runtime` stage of deploy/images/humaux/Dockerfile (resolved 2026-10-07)
     required: false
     default: gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
+  save_cache:
+    description: save this run's target dir to the rust-cache; false still restores. targeted.yml passes false (#194)
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -49,6 +54,7 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: ". -> target"
+        save-if: ${{ inputs.save_cache }}
 
     # The two tarballs are cached by their sha256 (a changed pin is a new key); the checksum is verified on every run,
     # a cache hit included, so a poisoned cache cannot pass.

@@ -1,10 +1,16 @@
 name: humaux-thread setup
-# Shared by every job of ci.yml (lint, test-a, test-b, serial-lane, live): pinned toolchain, cargo cache, the gitleaks
-# fixture the tests pin, and the runbook §2 provisioning of the throwaway postgres service
+# Shared by every job of ci.yml (lint, test-a, test-b, serial-lane, live) and by targeted.yml: pinned toolchain, cargo
+# cache, the gitleaks fixture the tests pin, and the runbook §2 provisioning of the throwaway postgres service
 # (roles rotate --create-missing → migrate → rotate role_admin). The caller sets the DB env
 # (HUMAUX_TEST_PG_DSN / HUMAUX_MIGRATOR_PG_DSN) and declares the services; this action
-# only runs steps against them.
+# only runs steps against them. `save_cache` exists so a targeted dispatch restores the shared rust-cache without
+# writing it: only ci.yml saves (issue #194).
 description: Pinned Rust toolchain, cache, gitleaks fixture, runbook §2 cluster provisioning
+inputs:
+  save_cache:
+    description: save this run's target dir to the rust-cache; false still restores. targeted.yml passes false (#194)
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -25,9 +31,11 @@ runs:
 
     # Only the workspace's own target dir: auto-detection also picked up `tests/` and the metrics witness probe's
     # generated manifests and logged ENOENT errors for their (absent) target dirs on every restore.
+    # `save-if: false` still restores the cache; only ci.yml writes it (issue #194).
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: ". -> target"
+        save-if: ${{ inputs.save_cache }}
 
     - name: Install pinned Gitleaks fixture (v8.30.1, linux/arm64)
       shell: bash

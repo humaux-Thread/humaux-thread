@@ -134,7 +134,10 @@ jobs:
             sudo apt-get install -y -qq lld
           fi
 
+      # A targeted run restores the shared rust-cache but never saves it: only ci.yml writes the cache (#194).
       - uses: ./.github/actions/setup
+        with:
+          save_cache: false
 
       # Twin of ci.yml's "cargo xtask dep-map --check" step (same staging and diff lines): keep the two in step.
       - name: regen docs (cargo xtask dep-map --write)
@@ -217,4 +220,7 @@ jobs:
             exit 2
           }
 
+      # Restores the shared rust-cache, never saves it: only ci.yml writes the cache (#194).
       - uses: ./.github/actions/rerank-parity
+        with:
+          save_cache: false
