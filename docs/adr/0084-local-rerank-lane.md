@@ -7,6 +7,9 @@
   T-RET-7c.** The worker needs `rerank_enabled` (load the model or not, D-B) and `rerank_threads` (the session build, D-B)
   from its own registry read before any call, so the entries must exist when the worker lands. T-RET-7d keeps the gateway
   client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set and the provenance constructor.
+- Amended 2026-10-22 (card ds-ret-189, #187 review): **the `rerank_depth <= cand_k` ceiling (D-C 1, D-E) applies only
+  while `rerank_enabled` is true** (#166), so a disabled lane keeps the registry default depth at any `cand_k`; the
+  values file leaves the two worker keys empty, and empty means unset so the registry defaults apply (#185).
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
 - Relates to: Baseline §7.2, §19 (Rerank Provider Failover), §23.1③, §23.3, §50, §51, §52.3, §53.2, §53.4, §57.1,
@@ -199,8 +202,9 @@ The model is an XLM-RoBERTa sequence classifier with one output and an identity 
 
 ### D-C Pipeline
 
-1. The RRF fused list (ADR-0083 D-C), cut to `cand_k`. `cand_k` must be at least `rerank_depth`; the registry load
-   refuses a profile that breaks that.
+1. The RRF fused list (ADR-0083 D-C), cut to `cand_k`. While `rerank_enabled` is true, `cand_k` must be at least
+   `rerank_depth` and the registry load refuses a profile that breaks that; while it is false the depth never acts, so
+   only `RERANK_FLOOR` applies (#166).
 2. The **unchanged** PostgreSQL hydrate gate.
 3. The rerank inputs for the first `rerank_depth` **visible** Memories: title + `"\n"` + best chunk. The best chunk is
    the Memory's chunk with the best leg rank, dense first, then sparse (the rule the experiments used). The legs ask Qdrant
@@ -249,7 +253,7 @@ Registry entries, beside `top_k` and the four of ADR-0083 D-D; none is ever call
 | Field | Default | Meaning | Checked when the registry loads |
 |---|---|---|---|
 | `rerank_enabled` | false | turns the lane on for the profile; flipped after the artifact is deployed and U2 is read | |
-| `rerank_depth` | 25 | most Memories scored per recall | 1 up to the profile's `cand_k` |
+| `rerank_depth` | 25 | most Memories scored per recall | 1 up to the profile's `cand_k` while `rerank_enabled` is true; 1 or more when it is false (#166) |
 | `rerank_max_len` | 256 | token cap of one (query, document) pair | 5 (the four special tokens of a pair and one content token; amended by T-RET-7c) up to the tokenizer's 512 |
 | `rerank_timeout_ms` | 4000 | the gateway's wait for the RPC; chosen because p95 under contention on N1 reached 3.9 s | above 0 |
 | `rerank_threads` | 4 | intra-op threads of the worker's session | at least 1 |
@@ -265,9 +269,10 @@ own registry read at `--serve-rpc` boot: `rerank::rerank_profile` takes the two 
 upper-cased with the worker's prefix), builds the raw map and calls the one `resolve_registered_retrieval_profile`, so the
 defaults and the bounds are the registry's and appear nowhere else. `rerank_max_len` rides on each call (`max_len`, 5 to 512:
 the registry's `RERANK_MAX_LEN_MIN`, one content token above the four special tokens of a pair, and the tokenizer's 512); `rerank_depth` and
-`rerank_timeout_ms` act in the gateway only (T-RET-7d). The two environment keys are optional in code and stated in
-`deploy/env/values/retrieval-worker.env` (`false` and `4`, the registry defaults); an operator who flips the lane sets the same
-value on the gateway and on the worker.
+`rerank_timeout_ms` act in the gateway only (T-RET-7d). The two environment keys are optional in code and left empty in
+`deploy/env/values/retrieval-worker.env` (`KEY=`); empty means unset, so the registry defaults (`false` and `4`) apply
+and the values file carries no copy of them (§78.1, #185). An operator who flips the lane sets the same value on the
+gateway and on the worker.
 
 **The model pin is not in the registry.** It lives in deployment configuration beside the embedding provider's
 variables (`HUMAUX_RETRIEVAL_WORKER_EMBEDDING_*`): the D-A identity, the artifact location and the hashes. As with the

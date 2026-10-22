@@ -621,4 +621,17 @@ mod tests {
             .expect_err("zero threads is refused");
         assert!(error.contains("rerank_threads"), "{error}");
     }
+
+    /// §78.1 / ADR-0084 D-E: an empty value is unset, not a value. The values file writes `KEY=` for the two
+    /// worker keys, so boot passes `Some("")`; the registry defaults must apply instead of the registry refusing `""`.
+    #[test]
+    fn rerank_profile_treats_empty_values_as_unset() {
+        let enabled_key = PROFILE_KEYS[0].0;
+        let threads_key = PROFILE_KEYS[1].0;
+        let profile =
+            rerank_profile(|name| (name == enabled_key || name == threads_key).then(String::new))
+                .expect("empty values are unset");
+        assert!(!profile.rerank_enabled(), "registry default false");
+        assert_eq!(profile.rerank_threads(), 4, "registry default 4");
+    }
 }

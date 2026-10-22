@@ -660,6 +660,26 @@ mod tests {
         );
     }
 
+    /// #166 / ADR-0084 D-C 1: a disabled lane is not bounded by `cand_k`, but `RERANK_FLOOR` and the parser still
+    /// apply; `"0"` and `"abc"` keep the same `InvalidRerankDepth` value and Display text as before #166.
+    #[test]
+    fn rerank_disabled_still_rejects_depth_below_the_floor_or_unparsable() {
+        for value in ["0", "abc"] {
+            let error = resolve_pairs(&[(RERANK_ENABLED, "false"), (RERANK_DEPTH, value)])
+                .expect_err("a disabled profile still checks depth");
+            assert_eq!(
+                error,
+                RetrievalConfigError::InvalidRerankDepth(value.to_string())
+            );
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "invalid retrieval profile rerank_depth \"{value}\" (allowed 1..=cand_k of the profile)"
+                )
+            );
+        }
+    }
+
     /// ADR-0084 D-E: each of the five entries moves the effective-config fingerprint on its own.
     #[test]
     fn each_rerank_entry_moves_the_effective_fingerprint() {
