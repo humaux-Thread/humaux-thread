@@ -21,23 +21,30 @@
 
 ### D-A  `private.memory_text_v (tenant_id, memory_id, title, body)` is the one place text is resolved
 Migration 0259, `security_invoker = true`, owner `role_migration_owner`, over `memory_records` LEFT JOIN
-`identity_note_materializations` (tenant, output memory) LEFT JOIN `events` (by `event_id`):
+`identity_note_materializations` (tenant, output memory) LEFT JOIN `evidence_objects` (tenant, evidence) LEFT JOIN
+`events` (by `event_id`; `events` has no tenant column, so the tenant leg is the `evidence_objects` join):
 
 - `title` is `content ->> 'title'`.
 - `body` of a Memory with an identity contract is its Evidence's `payload #>> '{}'` when the payload is a JSON string,
-  else NULL. There is no fallback to `key_claim` on that branch: an identity note whose Evidence the caller cannot read
-  reads NULL, never a second copy of the text.
+  else NULL. There is no fallback to `key_claim` on that branch: an identity note whose Evidence the caller cannot read,
+  or whose payload is not a JSON string, reads NULL. The only way an identity note reaches the `key_claim` branch is RLS
+  hiding its contract row, which cannot happen while a Memory carries its Evidence's visibility (ADR-0016 D4); M07-3
+  strips `key_claim`, after which that case reads NULL as well.
 - `body` of any other Memory is `content ->> 'key_claim'` (distilled, confirmed and corrected Memories).
 
 Until M07-3 the writer stores a `key_claim` equal to the payload text, so both branches agree for every existing row.
 The view carries no derived-title rule; the fallback for a stripped title belongs to the writer change (M07-3).
 
 ### D-B  Access is the invoker's, SELECT only, two roles
-`security_invoker` gives a reader exactly the privileges and RLS of the three tables under its own role; a Memory the
+`security_invoker` gives a reader exactly the privileges and RLS of the four tables it joins under its own role; a Memory the
 caller cannot read is absent from the view. SELECT is granted to `role_gateway` and `role_private_worker`, the two
-runtime roles that already read all three tables; no other role, no write privilege, nothing for PUBLIC. A reader card
+runtime roles that already read all four tables; no other role, no write privilege, nothing for PUBLIC. A reader card
 that needs another role extends the grant in its own migration after the table grants are confirmed. `rls-check` carries
 the two cells; absence is "no grant".
+
+The projection worker runs as `role_retrieval_worker`, which holds no SELECT on `private.events`. Card M10-6 must grant
+that role SELECT on the view and on `private.events`; widening read access to raw Evidence payloads is a security
+decision for that card, not this one.
 
 ### D-C  The Rust accessor is `memory_repo::memory_texts_in_txn`
 `(txn, tenant_id, &[memory_id]) -> Vec<MemoryText { memory_id, title: Option<String>, body: Option<String> }>`, ordered

@@ -9,17 +9,22 @@
 --     with the writer change; this view only reads what the row holds.
 --
 -- Until card M07-3 the writer still stores `key_claim` on an identity note, equal to its payload text, so both branches
--- agree for every row that exists. The identity branch does NOT fall back to `key_claim` when the Evidence is unreadable:
--- an identity note whose Evidence the caller cannot read reads NULL, not a second copy of the text.
+-- agree for every row that exists. The identity branch does NOT fall back to `key_claim` when the Evidence is unreadable
+-- or its payload is not a JSON string: it reads NULL. The one way to reach the `key_claim` branch with an identity note is
+-- RLS hiding its contract row, which cannot happen while a Memory carries its Evidence's visibility (ADR-0016 D4); M07-3
+-- strips `key_claim`, after which that case reads NULL too.
 --
 -- security_invoker: a reader gets exactly the RLS and privileges of memory_records, identity_note_materializations and
 -- events under its own role (the 0255 view's rule). A Memory the caller cannot read is absent, not NULL.
--- Grants: SELECT to role_gateway (memory.get / grep / enumerate readers) and role_private_worker (the projection card
--- and chunk readers), the two roles that already read all three tables; nothing else, no INSERT/UPDATE/DELETE.
+-- Grants: SELECT to role_gateway (memory.get / grep / enumerate readers) and role_private_worker, the two runtime roles
+-- that already read all four tables the view joins; nothing else, no INSERT/UPDATE/DELETE. The projection worker runs as
+-- role_retrieval_worker, which has no SELECT on private.events; granting it the view and the table is card M10-6's
+-- decision (ADR-0085 D-B), not this card's.
 --
 -- No DML, no table or policy altered. Locks: none beyond the catalog rows of one new view.
--- ponytail: the events lookup is by event_id alone (the partition key recorded_at is not on the contract), so it probes each
--- monthly leaf's primary key; add recorded_at to the contract if a page of 200 notes ever shows it.
+-- ponytail: events has no tenant_id, so the tenant leg runs through evidence_objects. The events lookup is by event_id
+-- alone (the partition key recorded_at is not on the contract), so it probes each monthly leaf's primary key; add
+-- recorded_at to the contract if a page of 200 notes ever shows it.
 
 CREATE VIEW private.memory_text_v WITH (security_invoker = true) AS
   SELECT m.tenant_id,
@@ -32,8 +37,10 @@ CREATE VIEW private.memory_text_v WITH (security_invoker = true) AS
     FROM private.memory_records m
     LEFT JOIN private.identity_note_materializations n
       ON n.tenant_id = m.tenant_id AND n.output_memory_id = m.memory_id
+    LEFT JOIN private.evidence_objects eo
+      ON eo.tenant_id = n.tenant_id AND eo.evidence_id = n.evidence_id
     LEFT JOIN private.events ev
-      ON ev.event_id = n.evidence_id;
+      ON ev.event_id = eo.evidence_id;
 
 ALTER VIEW private.memory_text_v OWNER TO role_migration_owner;
 REVOKE ALL ON private.memory_text_v

@@ -1626,8 +1626,8 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
     // memory_records.superseded_by, so it alone runs the A3' trigger with invoker rights; the two revocation definers
     // read the view as its owner. Every other non-owner role — (absence == no grant).
     cell!("private.memory_projects_live", "role_gateway", ["SELECT"]),
-    // 0259 (ADR-0085 D-A, M07-2): the canonical-text view. security_invoker, so each reader needs SELECT on the three tables
-    // it joins; gateway and private worker are the two runtime roles that hold all three. Every other non-owner role —
+    // 0259 (ADR-0085 D-A, M07-2): the canonical-text view. security_invoker, so each reader needs SELECT on the four tables
+    // it joins; gateway and private worker are the two runtime roles that hold all four. Every other non-owner role —
     // (absence == no grant).
     cell!("private.memory_text_v", "role_gateway", ["SELECT"]),
     cell!("private.memory_text_v", "role_private_worker", ["SELECT"]),

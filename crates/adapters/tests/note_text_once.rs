@@ -2,7 +2,7 @@
 //!   note's body from its Evidence payload and any other Memory's body from `content.key_claim`, and the Rust accessor
 //!   returns exactly that, against a real PostgreSQL and an actual `role_gateway` role.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) w=[private.identity_note_materializations, private.memory_records], PostgreSQL(role_gateway)];
+//!   services=[PostgreSQL(owner) w=[private.events, private.identity_note_materializations, private.memory_records], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::memory_repo, adapters::operation_receipt,
 //!   adapters::note_repo, adapters::remember, adapters::tests::support::operation_receipt_fixture, domain::audit,
 //!   domain::evidence, domain::ids, domain::note, domain::subject, humaux-testkit]
@@ -15,7 +15,7 @@
 //!
 //! | test | gate | injected fault that turns it red |
 //! |---|---|---|
-//! | `g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | G-M07-3 (view half) | the view returns the title as the body |
+//! | `g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | G-M07-3 (view half) | the view returns the title as the body of a non-identity Memory; the identity branch falls back to `key_claim` / drops the `jsonb_typeof` guard |
 //!
 //! called-by: `cargo test -p humaux-adapters --test note_text_once`.
 
@@ -46,6 +46,9 @@ use operation_receipt_fixture::{DOMAIN, Fixture, Handle, PROJECTION_KIND, PROJEC
 /// Longer than the 80-scalar derived-title cut, with a newline, quotes, a backslash, a non-BMP scalar, and leading and
 /// trailing blanks: every byte must survive the JSON string round trip through `events.payload`, and title and body differ.
 const IDENTITY_BODY: &str = "  First line with \"quotes\", a back\\slash and a \u{1F4A1} emoji, padded well past the eighty-scalar derived-title cut so title and body differ.\n\tSecond line, indented, trailing blanks   \n";
+/// A third note, whose Evidence payload the test turns into a JSON object.
+const GUARDED_BODY: &str =
+    "Guarded note: the writer stored this text as key_claim and as the payload string.";
 /// The legacy twin's body as the note put wrote it.
 const LEGACY_PUT_BODY: &str =
     "Legacy twin, as the writer stored it: the body is also the key_claim.";
@@ -221,6 +224,37 @@ fn g_m07_3_the_view_resolves_identity_and_legacy_text_alike() {
             assert_eq!(
                 row(&rows, legacy).title.as_deref(),
                 Some(legacy_title.as_str())
+            );
+
+            // No fallback on the identity branch: a payload that is not a JSON string reads NULL although `key_claim` holds
+            // the text. This also gates the view's `jsonb_typeof` guard.
+            let guarded = put(&handle, GUARDED_BODY, NoteKind::Note);
+            let guarded_s = guarded.to_string();
+            let tenant_s = handle.tenant_id;
+            handle
+                .admin
+                .batch_execute(&format!(
+                    "SET session_replication_role = replica; \
+                     UPDATE private.events SET payload = '{{\"not\": \"a string\"}}'::jsonb \
+                      WHERE event_id = (SELECT evidence_id FROM private.identity_note_materializations \
+                                         WHERE tenant_id = '{tenant_s}' AND output_memory_id = '{guarded_s}'); \
+                     SET session_replication_role = DEFAULT;"
+                ))
+                .expect("make the guarded note's Evidence payload a JSON object");
+            let kept: bool = handle
+                .admin
+                .query_one(
+                    "SELECT content ? 'key_claim' FROM private.memory_records WHERE memory_id = $1",
+                    &[&guarded],
+                )
+                .expect("owner reads the guarded note")
+                .get(0);
+            assert!(kept, "the fixture must leave key_claim in place");
+            let rows = texts(&handle, &[guarded]);
+            assert_eq!(
+                row(&rows, guarded).body,
+                None,
+                "a non-string payload must read NULL, not key_claim and not the JSON text"
             );
 
             // The identity note without its `key_claim`: the body can only come from the Evidence payload.
