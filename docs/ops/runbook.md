@@ -1809,6 +1809,27 @@ IP address; and how much space the share has (about two full backups plus a day 
 keep). Also confirm that the backup password is written down away from the server. Card 37d then wires the NAS copy,
 and until it is done nothing on the server will call any copy "offsite".
 
+## 12. Rerank model artifact — build, publish, pin (ADR-0084 D-A, card T-RET-7b)
+
+The local rerank lane loads one int8 cross-encoder from files. The files are built **only in GitHub Actions** (never on a
+node or a developer machine) from a public model pinned by commit, and published as one release asset.
+
+- **What it is.** The prerelease `rerank-mmarco-int8-v1` holds `rerank-mmarco-int8-v1.tar.gz` and its `.sha256`. The tarball
+  holds `model_quantized.onnx`, `tokenizer.json` and the tokenizer config files, `MODEL_CARD.md` and `manifest.json`. The
+  manifest carries the model identity (repo, revision, recipe version, onnx sha256, tokenizer sha256), the licence read from the
+  pinned model card, the tool versions, the graph's operator list, and whether two builds in one job were byte-identical.
+- **Build and publish.** `gh workflow run rerank-artifact.yml --ref <branch> -f publish=false` builds twice, packages, and runs
+  the two gates: G7b-1 (the tarball's files match `manifest.json`) and G7b-2 (re-scoring the committed parity fixtures with
+  the packaged model reproduces the stored scores within the tolerance in the fixture header). `-f publish=true` also creates
+  the prerelease from the same run. The build job's token is read-only; only the publish job can write, and it refuses to
+  overwrite an existing release. The build refuses to start unless the pinned model card's licence is Apache-2.0 or MIT.
+- **Deploy pins the tarball sha256** (the `.sha256` asset, repeated in the release notes), not the tag and not the recipe: if
+  the export is not byte-deterministic (the manifest says), the published file is the only pin. The worker refuses to start on a
+  mismatch (G-RET-14). T-RET-7c wires the fetch into the image; until then nothing on a node reads this artifact and
+  `rerank_enabled` stays false.
+- **Changing it.** Any change to the identity is a new `calibration_profile` (Baseline §19, Rerank Provider Failover): publish
+  it under a new tag, never over this one.
+
 ## Appendix A. The step log and the improvisation rule
 
 The executor (`deploy/release/deploy_rehearsal.sh`) is the only way a step runs. Before the block it asserts, in the
