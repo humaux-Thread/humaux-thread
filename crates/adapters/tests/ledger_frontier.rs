@@ -2,17 +2,19 @@
 //!   primary-key read and reports no count its row cannot supply.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(owner) w=[control.tenants, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN];
+//!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker) x=[projection.stream_point_ledger]];
+//!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::postgres, adapters::stream_repo, adapters::tests::support::throwaway_db, domain::egress,
 //!   domain::identity, domain::ids, humaux-testkit, projection::stream]
 //! Called-by: [cargo-test]
-//! Invariants: [runs in its own throwaway database because it REVOKEs role_retrieval_worker's `stream_log` SELECT,
-//!   which proves the O(1) claim by construction: a frontier that touched `stream_log` (or the closure) would fail
-//!   with permission denied; no DSN or unreachable DB is a visible SKIP]
-//! Spec: Baseline §15.3; §23.3; §79.2; M09 D3
+//! Invariants: [runs in its own throwaway database because it REVOKEs role_retrieval_worker's `stream_log` SELECT
+//!   and `projection.stream_point_ledger` EXECUTE, which proves the O(1) claim by construction: a frontier that
+//!   touched `stream_log`, the closure, or the point ledger would fail with permission denied; a checkpoint in
+//!   another tenant is invisible under the reader's SET LOCAL (§79.3); no DSN or unreachable DB is a visible SKIP]
+//! Spec: Baseline §15.3; §23.3; §79.2; §79.3; M09 D3
 //!
-//! The red record for G-M09-3 is the same file with `ledger_frontier` implemented through
-//! `close_ledger_in_txn` (see the PR body for the run id).
+//! The red record for the point-ledger arm is this file with `ledger_frontier_in_txn` also calling
+//! `projection.stream_point_ledger(...)`, so the EXECUTE revoke denies the read (see the PR body for the run id).
 
 use std::time::SystemTime;
 
@@ -198,9 +200,16 @@ fn frontier_matches_the_closure_and_reads_only_the_checkpoint_row() {
             assert_eq!(prefix, 3, "the pending ticket 4 stops the prefix at 3");
             assert!(serving, "seeded serving = true");
 
+            // §23.1② / ADR-0057 D-L: the closure also reads points through this owner definer, so revoking only
+            // `stream_log` would leave a second O(stream) path open.
             h.admin
-                .batch_execute("REVOKE ALL ON projection.stream_log FROM role_retrieval_worker")
-                .expect("revoke");
+                .batch_execute(
+                    "REVOKE ALL ON projection.stream_log FROM role_retrieval_worker; \
+                     REVOKE EXECUTE ON FUNCTION \
+                       projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[]) \
+                     FROM role_retrieval_worker",
+                )
+                .expect("revoke stream_log and stream_point_ledger");
             let still_readable: bool = h
                 .admin
                 .query_one(
@@ -213,6 +222,20 @@ fn frontier_matches_the_closure_and_reads_only_the_checkpoint_row() {
                 still_readable,
                 "precondition: the worker role cannot read stream_log any more"
             );
+            let ledger_revoked: bool = h
+                .admin
+                .query_one(
+                    "SELECT NOT has_function_privilege('role_retrieval_worker', \
+                       'projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[])', \
+                       'EXECUTE')",
+                    &[],
+                )
+                .expect("function privilege probe")
+                .get(0);
+            assert!(
+                ledger_revoked,
+                "precondition: the worker role cannot execute stream_point_ledger any more"
+            );
             let denied = h.rt.block_on(stream_repo::fetch_ledger_closure(
                 &h.retrieval,
                 &k,
@@ -224,9 +247,12 @@ fn frontier_matches_the_closure_and_reads_only_the_checkpoint_row() {
                 "the O(stream) closure needs stream_log, so the revoke has teeth (SQLSTATE 42501): {denied:?}"
             );
             let after =
-                h.rt.block_on(stream_repo::ledger_frontier(&h.retrieval, &k))
-                    .expect("frontier without any stream_log right")
-                    .expect("row");
+                h.rt.block_on(stream_repo::ledger_frontier(&h.retrieval, &k));
+            assert!(
+                after.is_ok(),
+                "the frontier must not need stream_log or stream_point_ledger EXECUTE: {after:?}"
+            );
+            let after = after.expect("frontier").expect("row");
             assert_eq!(after, before);
         },
     );
@@ -285,6 +311,82 @@ fn frontier_in_txn_reads_as_role_gateway_in_a_read_only_snapshot() {
             assert_eq!(
                 (frontier.issued_hw, frontier.projection_hw, frontier.serving),
                 (4, 3, true)
+            );
+        },
+    );
+}
+
+/// §79.3 cross-tenant: tenant B's checkpoint is invisible under tenant A's `SET LOCAL`, so the same scope key
+/// answers `None` for A while B still reads its own row.
+#[test]
+fn frontier_does_not_read_another_tenants_checkpoint() {
+    run_db_fixture::<FrontierFixture, _>(
+        "frontier_does_not_read_another_tenants_checkpoint",
+        |mut h| {
+            let other_tenant: Uuid = h
+                .admin
+                .query_one(
+                    "INSERT INTO control.tenants (name) \
+                     VALUES ('ledger_frontier.rs cross-tenant tenant') RETURNING tenant_id",
+                    &[],
+                )
+                .expect("create the other tenant")
+                .get(0);
+            let a = key(&h);
+            // Same scope identity, different tenant: B's row is the one A must not see.
+            let b = StreamKey::new(
+                TenantId(other_tenant),
+                a.scope_kind.clone(),
+                a.scope_id,
+                a.domain.clone(),
+                a.projection_kind.clone(),
+                a.projection_version.clone(),
+            );
+            seed_settled_stream(&mut h.admin, &b);
+
+            let sep = if h.dsn.contains('?') { '&' } else { '?' };
+            let worker_dsn = format!("{}{sep}options=-c%20role%3Drole_retrieval_worker", h.dsn);
+            // dep: PostgreSQL(role_retrieval_worker) — a bare pool for the explicit cross-tenant transaction
+            let worker =
+                h.rt.block_on(sqlx::Pool::<sqlx::Postgres>::connect(&worker_dsn))
+                    .expect("connect role_retrieval_worker");
+            let (frontier, visible_b) =
+                h.rt.block_on(async {
+                    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for the cross-tenant read
+                    let mut txn = worker.begin().await?;
+                    let frontier = stream_repo::ledger_frontier_in_txn(&mut txn, &a).await?;
+                    // Deliberately no tenant predicate: only RLS can hide B's row from A's SET LOCAL.
+                    let visible_b: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM projection.stream_checkpoints WHERE tenant_id = $1",
+                    )
+                    .bind(other_tenant)
+                    .fetch_one(&mut *txn)
+                    .await?;
+                    txn.rollback().await?;
+                    Ok::<_, sqlx::Error>((frontier, visible_b))
+                })
+                .expect("tenant A read");
+            assert_eq!(
+                frontier, None,
+                "§79.3: tenant B's checkpoint is not a frontier for tenant A"
+            );
+            assert_eq!(
+                visible_b, 0,
+                "§79.3: RLS hides tenant B's checkpoint under tenant A's SET LOCAL"
+            );
+
+            let b_frontier =
+                h.rt.block_on(stream_repo::ledger_frontier(&h.retrieval, &b))
+                    .expect("tenant B read")
+                    .expect("tenant B's own checkpoint");
+            assert_eq!(
+                (
+                    b_frontier.issued_hw,
+                    b_frontier.projection_hw,
+                    b_frontier.serving
+                ),
+                (4, 2, true),
+                "positive control: B reads the row A cannot see"
             );
         },
     );

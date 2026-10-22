@@ -1,8 +1,9 @@
 //! `contracts::config_registry` — Typed Config Registry + effective config fingerprint (§50).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[]
-//! Called-by: [contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
-//! Invariants: []
-//! Spec: Baseline §50; §50.1; §78
+//! Called-by: [adapters::qdrant, contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
+//! Invariants: [the Qdrant collection knobs (datatype, HNSW, generation label) are read here and nowhere else; the
+//!   unset configuration resolves to Qdrant's own defaults, so a default collection body carries none of them]
+//! Spec: Baseline §50; §50.1; §17.7; §78; §78.1
 //!
 //! §50: 所有配置集中 typed registry，字段 name/type/default/scope/secret?/reloadability/owner
 //! module；垃圾值 fail-loud；生产运行必须记录 effective config fingerprint，而不是只看 `.env`。
@@ -111,6 +112,219 @@ pub fn effective_config_fingerprint(effective: &BTreeMap<String, String>) -> Str
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// ============================================================================
+// Qdrant collection knobs (§17.7, §78.1) — the typed half of `adapters::qdrant::CollectionSpec`
+// ============================================================================
+
+const GENERATION_LABEL: &str = "qdrant.collection.generation_label";
+const DATATYPE: &str = "qdrant.collection.datatype";
+const HNSW_M: &str = "qdrant.collection.hnsw_m";
+const HNSW_PAYLOAD_M: &str = "qdrant.collection.hnsw_payload_m";
+const HNSW_EF_CONSTRUCT: &str = "qdrant.collection.hnsw_ef_construct";
+
+/// Longest generation label: a label becomes part of a Qdrant collection name and of tenant placement rows.
+const GENERATION_LABEL_MAX_LEN: usize = 32;
+/// Upper bound of `m` and `payload_m`: above it the graph's memory cost is out of proportion to any recall gain.
+const HNSW_LINKS_MAX: u32 = 64;
+/// Qdrant rejects an `ef_construct` below 4.
+const HNSW_EF_CONSTRUCT_MIN: u32 = 4;
+/// Cost guard: index build time grows with `ef_construct`.
+const HNSW_EF_CONSTRUCT_MAX: u32 = 1000;
+
+/// The dense vector storage type of a collection (§17.7). A datatype is a property of the collection, never of a
+/// point: changing it is a new generation plus a rebuild, never an in-place mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionDatatype {
+    /// Qdrant's default storage; the wire body omits it.
+    Float32,
+    /// Native half precision (2 bytes per dimension, no original kept).
+    Float16,
+    /// Qdrant 1.19 4-bit TurboQuant as the only representation: no float copy, no rescoring.
+    Turbo4,
+}
+
+impl CollectionDatatype {
+    /// Qdrant's `vectors.datatype` spelling.
+    #[must_use]
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Float32 => "float32",
+            Self::Float16 => "float16",
+            Self::Turbo4 => "turbo4",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        [Self::Float32, Self::Float16, Self::Turbo4]
+            .into_iter()
+            .find(|d| d.as_wire() == text)
+    }
+}
+
+/// A collection-level HNSW configuration. `m = 0` builds no global graph; the per-payload graphs of
+/// `payload_m` then serve every tenant-filtered query (§17.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HnswConfig {
+    /// Links per node of the global graph; `0` disables it.
+    pub m: u32,
+    /// Links per node of the payload-indexed (tenant) graphs; `None` leaves Qdrant's behaviour of reusing `m`.
+    pub payload_m: Option<u32>,
+    /// Candidate list size while building.
+    pub ef_construct: u32,
+}
+
+impl HnswConfig {
+    /// Qdrant's own defaults (`m` 16, `ef_construct` 100, no `payload_m`). The registry defaults are these values, so
+    /// an unconfigured deployment is byte-for-byte the collection body it had before this registry existed.
+    pub const QDRANT_DEFAULT: HnswConfig = HnswConfig {
+        m: 16,
+        payload_m: None,
+        ef_construct: 100,
+    };
+}
+
+/// The resolved collection knobs. Build it only through [`resolve_collection_config`] (bounds checked) or take
+/// [`CollectionConfig::default`]; `adapters::qdrant::CollectionSpec` adds family and dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionConfig {
+    /// Suffix of the collection name (`{family}_{label}`); `None` is the unlabelled first generation, whose name is
+    /// the bare family name.
+    pub generation_label: Option<String>,
+    /// Dense vector storage type.
+    pub datatype: CollectionDatatype,
+    /// Collection-level HNSW parameters.
+    pub hnsw: HnswConfig,
+}
+
+impl Default for CollectionConfig {
+    fn default() -> Self {
+        Self {
+            generation_label: None,
+            datatype: CollectionDatatype::Float32,
+            hnsw: HnswConfig::QDRANT_DEFAULT,
+        }
+    }
+}
+
+/// A collection knob failed its bounds (§50: garbage values fail loud).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionConfigError {
+    /// The registry rejected the raw map (missing value, undeclared key).
+    Registry(ConfigResolveError),
+    /// `key` holds `value`, which is outside what the registry accepts.
+    Invalid {
+        /// The registry key.
+        key: &'static str,
+        /// The offending text.
+        value: String,
+    },
+    /// `m = 0` with no `payload_m` leaves a collection with no vector index at all (every query a full scan).
+    NoIndexGraph,
+}
+
+impl fmt::Display for CollectionConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Registry(error) => error.fmt(f),
+            Self::Invalid { key, value } => write!(f, "invalid collection config {key} {value:?}"),
+            Self::NoIndexGraph => write!(
+                f,
+                "collection config {HNSW_M}=0 requires {HNSW_PAYLOAD_M}: no graph would exist"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CollectionConfigError {}
+
+/// The registry declaration of the collection knobs. An empty `generation_label` or `hnsw_payload_m` means unset.
+#[must_use]
+pub fn collection_config_registry() -> Vec<ConfigEntry> {
+    let d = HnswConfig::QDRANT_DEFAULT;
+    let entry = |name: &str, type_name: &str, default: String| ConfigEntry {
+        name: name.to_string(),
+        type_name: type_name.to_string(),
+        default: Some(default),
+        scope: "process".to_string(),
+        secret: false,
+        reloadability: "static".to_string(),
+        owner_module: "projection".to_string(),
+    };
+    vec![
+        entry(GENERATION_LABEL, "string", String::new()),
+        entry(
+            DATATYPE,
+            "enum:float32|float16|turbo4",
+            CollectionDatatype::Float32.as_wire().to_string(),
+        ),
+        entry(HNSW_M, "u32", d.m.to_string()),
+        entry(
+            HNSW_PAYLOAD_M,
+            "u32",
+            d.payload_m.map(|v| v.to_string()).unwrap_or_default(),
+        ),
+        entry(HNSW_EF_CONSTRUCT, "u32", d.ef_construct.to_string()),
+    ]
+}
+
+/// Resolves the raw key/value map into a bounds-checked [`CollectionConfig`] (§50 fail-loud, §17.7).
+pub fn resolve_collection_config(
+    raw: &BTreeMap<String, String>,
+) -> Result<CollectionConfig, CollectionConfigError> {
+    let effective = resolve_effective_config(&collection_config_registry(), raw)
+        .map_err(CollectionConfigError::Registry)?;
+    let get = |key: &'static str| {
+        effective
+            .get(key)
+            .expect("collection registry resolves every declared key")
+            .as_str()
+    };
+    let invalid = |key: &'static str, value: &str| CollectionConfigError::Invalid {
+        key,
+        value: value.to_string(),
+    };
+    let parse_in = |key: &'static str, text: &str, min: u32, max: u32| {
+        text.parse::<u32>()
+            .ok()
+            .filter(|v| (min..=max).contains(v))
+            .ok_or_else(|| invalid(key, text))
+    };
+
+    let label = get(GENERATION_LABEL);
+    let label_ok = label.len() <= GENERATION_LABEL_MAX_LEN
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if !label_ok {
+        return Err(invalid(GENERATION_LABEL, label));
+    }
+    let datatype =
+        CollectionDatatype::parse(get(DATATYPE)).ok_or_else(|| invalid(DATATYPE, get(DATATYPE)))?;
+    let m = parse_in(HNSW_M, get(HNSW_M), 0, HNSW_LINKS_MAX)?;
+    let payload_m = match get(HNSW_PAYLOAD_M) {
+        "" => None,
+        text => Some(parse_in(HNSW_PAYLOAD_M, text, 1, HNSW_LINKS_MAX)?),
+    };
+    let ef_construct = parse_in(
+        HNSW_EF_CONSTRUCT,
+        get(HNSW_EF_CONSTRUCT),
+        HNSW_EF_CONSTRUCT_MIN,
+        HNSW_EF_CONSTRUCT_MAX,
+    )?;
+    if m == 0 && payload_m.is_none() {
+        return Err(CollectionConfigError::NoIndexGraph);
+    }
+    Ok(CollectionConfig {
+        generation_label: (!label.is_empty()).then(|| label.to_string()),
+        datatype,
+        hnsw: HnswConfig {
+            m,
+            payload_m,
+            ef_construct,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +381,73 @@ mod tests {
         assert_ne!(
             effective_config_fingerprint(&a),
             effective_config_fingerprint(&b)
+        );
+    }
+
+    fn collection_raw(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn unset_collection_config_is_qdrants_own_default() {
+        let config = resolve_collection_config(&BTreeMap::new()).expect("defaults");
+        assert_eq!(config, CollectionConfig::default());
+        assert_eq!(config.hnsw, HnswConfig::QDRANT_DEFAULT);
+    }
+
+    #[test]
+    fn collection_config_reads_every_knob() {
+        let config = resolve_collection_config(&collection_raw(&[
+            (GENERATION_LABEL, "g2"),
+            (DATATYPE, "turbo4"),
+            (HNSW_M, "0"),
+            (HNSW_PAYLOAD_M, "16"),
+            (HNSW_EF_CONSTRUCT, "100"),
+        ]))
+        .expect("tenant-local graphs");
+        assert_eq!(config.generation_label.as_deref(), Some("g2"));
+        assert_eq!(config.datatype, CollectionDatatype::Turbo4);
+        assert_eq!(config.hnsw.m, 0);
+        assert_eq!(config.hnsw.payload_m, Some(16));
+    }
+
+    #[test]
+    fn garbage_collection_config_is_fail_loud() {
+        for (key, value) in [
+            (GENERATION_LABEL, "Has Space"),
+            (GENERATION_LABEL, "x234567890123456789012345678901234"),
+            (DATATYPE, "int8"),
+            (HNSW_M, "65"),
+            (HNSW_M, "-1"),
+            (HNSW_PAYLOAD_M, "0"),
+            (HNSW_EF_CONSTRUCT, "3"),
+        ] {
+            assert!(
+                matches!(
+                    resolve_collection_config(&collection_raw(&[(key, value)])),
+                    Err(CollectionConfigError::Invalid { .. })
+                ),
+                "{key}={value} must be rejected"
+            );
+        }
+        assert_eq!(
+            resolve_collection_config(&collection_raw(&[("qdrant.collection.nope", "1")]))
+                .unwrap_err(),
+            CollectionConfigError::Registry(ConfigResolveError {
+                entry_name: "qdrant.collection.nope".to_string(),
+                reason: "value present for key not declared in registry".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn no_graph_at_all_is_rejected() {
+        assert_eq!(
+            resolve_collection_config(&collection_raw(&[(HNSW_M, "0")])).unwrap_err(),
+            CollectionConfigError::NoIndexGraph
         );
     }
 }

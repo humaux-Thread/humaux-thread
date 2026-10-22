@@ -161,7 +161,6 @@ executed by:
 - created in: 0037_edge_security
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -172,18 +171,17 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(humaux-maintenance): `adapters::provisioning`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -191,7 +189,6 @@ written by:
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
-- (no process): `maintenance::tests::health_serve`
 
 executed by:
 
@@ -965,7 +962,6 @@ executed by:
 - created in: 0035_email_auth_identity
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -976,11 +972,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -994,7 +990,6 @@ executed by:
 - created in: 0035_email_auth_identity
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -1005,11 +1000,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -1778,7 +1773,6 @@ executed by:
 - created in: 0035_email_auth_identity
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -1789,11 +1783,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -1807,7 +1801,6 @@ executed by:
 - created in: 0035_email_auth_identity
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -1818,11 +1811,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -2995,7 +2988,6 @@ executed by:
 - created in: 0035_email_auth_identity
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -3006,11 +2998,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -3451,7 +3443,6 @@ executed by:
 - created in: 0035_email_auth_identity
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -3462,11 +3453,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -3576,7 +3567,6 @@ executed by:
 - created in: 0032_invitation_referral
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
 - role_gateway: SELECT
 - role_maintenance: SELECT
 - role_migration_owner: DELETE
@@ -3587,11 +3577,11 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
@@ -7435,26 +7425,6 @@ written by:
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
 
 executed by:
-
-### `ops.tenants_active_counts`
-- kind: function (SECURITY DEFINER)
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0261_health_snapshot_tenants_active
-
-grants (runtime roles):
-- role_health_reader: EXECUTE
-- role_migration_owner: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::health_snapshot`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.wal_archive_failures`
 - kind: table
@@ -11928,6 +11898,7 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - process(cargo-xtask): `adapters::stream_repo`
