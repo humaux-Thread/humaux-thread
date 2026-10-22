@@ -10,7 +10,30 @@
 //!
 //! Compiled and run standalone by `cargo xtask metrics-registry` (`run_witness_probe`).
 
+use std::path::{Path, PathBuf};
+
 use humaux_telemetry::host::{HostSampler, HostSources, publish, render};
+
+/// A fixture directory removed when its owner leaves scope, including while a failed assertion unwinds (#193).
+struct FixtureDir(PathBuf);
+
+impl FixtureDir {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("witness-host-cpu-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for FixtureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// total 1000, busy 200.
 const STAT_1: &str = "cpu  100 0 100 800 0 0 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0 0 0\n";
@@ -30,9 +53,8 @@ fn next(sampler: &mut HostSampler) -> Option<String> {
 /// First sample, zero delta and unreadable file are absent; a real delta is 0.5.
 #[test]
 fn host_cpu_busy_ratio() {
-    let dir = std::env::temp_dir().join(format!("witness-host-cpu-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("fixture dir");
-    let stat = dir.join("stat");
+    let dir = FixtureDir::new("host_cpu_busy_ratio");
+    let stat = dir.path().join("stat");
     let mut sampler = HostSampler::new(HostSources {
         stat: stat.clone(),
         ..HostSources::default()
@@ -51,6 +73,4 @@ fn host_cpu_busy_ratio() {
     assert_eq!(next(&mut sampler), None, "first sample again after an unreadable one");
     std::fs::write(&stat, STAT_2).expect("stat 2 again");
     assert_eq!(next(&mut sampler), half, "delta again");
-
-    let _ = std::fs::remove_dir_all(dir);
 }
