@@ -4,7 +4,7 @@
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
 //!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
 //!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
-//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, tests]
+//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, telemetry::host, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
 //! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B
@@ -370,6 +370,32 @@ pub mod families {
     pub const WAL_ARCHIVE_FAILING: Family = f(
         "wal_archive_failing",
         "1 while a WAL archive failure is latched (until a later VERIFIED full) or archiving fails now, else 0.",
+        Kind::Gauge,
+        &[],
+    );
+
+    // §41.2: host gauges of `humaux-maintenance health serve`, read from /proc each sample (M22-1; emit
+    // `telemetry::host::publish`). A source that is missing or unparsable leaves the series out, never 0.
+    /// `host_pressure_ratio{resource,kind}`.
+    pub const HOST_PRESSURE_RATIO: Family = f(
+        "host_pressure_ratio",
+        "Host PSI stall share (avg60 / 100) by resource and kind; a series is absent while its /proc/pressure line is unreadable.",
+        Kind::Gauge,
+        &["resource", "kind"],
+    );
+    // §41.2: the same sample, /proc/meminfo (M22-1).
+    /// `host_memory_available_bytes`.
+    pub const HOST_MEMORY_AVAILABLE_BYTES: Family = f(
+        "host_memory_available_bytes",
+        "Host MemAvailable in bytes; absent while /proc/meminfo is unreadable.",
+        Kind::Gauge,
+        &[],
+    );
+    // §41.2: the same sample, the delta of two /proc/stat readings (M22-1).
+    /// `host_cpu_busy_ratio`.
+    pub const HOST_CPU_BUSY_RATIO: Family = f(
+        "host_cpu_busy_ratio",
+        "Host CPU busy share between the two latest samples; absent until two readable samples exist.",
         Kind::Gauge,
         &[],
     );
