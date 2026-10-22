@@ -43,7 +43,9 @@ rerank_provider_timeout.rs     rerank provider 注入读超时
 有生产 emit 点     非测试代码里有 abstain(<路径>::X, ..) 或 .also(<路径>::X)（限定路径、别名、glob、turbofish 都算）
                    → 本目录里的测试必须驱动发出它的生产函数，文件里不得出现 `abstain` 或 `.also`
                    （当前三个：projection_lag / projection_invisible_loss / lane_substituted，
-                    经 retrieval::envelope 的 build_projection_block / dense_lane_substitution）
+                    经 retrieval::envelope 的 build_projection_block / dense_lane_substitution；
+                    sparse_lane_unavailable 经 retrieval::envelope::sparse_lane_unavailable；
+                    rerank_provider_timeout / rerank_model_mismatch 经 retrieval::rerank::settle + degradations）
 无生产 emit 点     → 必须是 dormant.toml 的一行（variant + owner 卡 + reason），测试保留合成注入
                    （直接调用 abstain()）；该变体一旦有了 emit 点，这一行必须删掉，账本只减不增
 ```

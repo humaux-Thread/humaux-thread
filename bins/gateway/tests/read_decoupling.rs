@@ -220,6 +220,7 @@ fn gateway(handle: &Handle) -> Gateway {
             dimension: DIMENSION,
         },
         Duration::from_secs(10),
+        None,
     )
     .expect("semantic runtime");
     let app = GatewayMcpApplication::new(

@@ -12,16 +12,6 @@
 # Row keys: variant (DegradeCode variant, PascalCase), owner (module card, M<nn> or M<nn>-<card>), reason (required).
 
 [[dormant]]
-variant = "RerankModelMismatch"
-owner = "M11"
-reason = "No rerank provider call exists (crates/retrieval/src/rerank.rs is a placeholder); the emit site and its real-path fault test arrive with the rerank lane (M11 card 52 / D4)."
-
-[[dormant]]
-variant = "RerankProviderTimeout"
-owner = "M11"
-reason = "Same as RerankModelMismatch: the registered injection (rerank provider read timeout, fallback ranking keeps items non-empty) needs the rerank lane (M11 card 52 / D4)."
-
-[[dormant]]
 variant = "EmbedProviderTimeout"
 owner = "M11"
 reason = "No production emit site yet; the embed provider fallback that emits it belongs to M11 (M01 design D4)."

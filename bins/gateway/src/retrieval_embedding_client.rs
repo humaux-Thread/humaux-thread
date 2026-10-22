@@ -4,7 +4,7 @@
 //!   serde_json, sha2, tokio, uuid]; services=[UDS(retrieval-worker)]; env=[]; modules=[adapters::postgres,
 //!   adapters::retrieval_embedding_rpc, application::retrieval_embedding_port, domain::error, infra-cell::permit,
 //!   infra-cell::resource, infra-cell::uds]
-//! Called-by: [gateway::bootstrap, gateway::status, tests]
+//! Called-by: [gateway::bootstrap, gateway::rerank_client, gateway::status, tests]
 //! Invariants: [the RPC still flows through the one closed IntraCellResource::RETRIEVAL_EMBEDDING_RPC registry/permit even though the dial bypasses IntraCellHttpTransport (a UDS path plus kernel peer-credential auth)]
 //! Spec: Baseline §2; §83.4; ADR-0012
 //!
@@ -269,7 +269,7 @@ impl GatewayRetrievalEmbeddingClient {
 /// [`GatewayRetrievalEmbeddingClient::exchange`] without the client: the dial is verified before any byte is
 /// written (ADR-0066 D-L). A wrong serving uid is a TRANSPORT failure that names `retrieval rpc peer uid`
 /// (readiness shows it); every other dial failure stays the bare `TRANSPORT` class.
-async fn exchange_on(
+pub(crate) async fn exchange_on(
     socket_path: &str,
     expected_server_uid: u32,
     method: &str,
@@ -347,7 +347,7 @@ impl GatewayRetrievalEmbeddingClient {
 
 /// Splits one fixed-shape `HTTP/1.1 <status> ...\r\n...\r\n\r\n<body>` response into its status
 /// code and body.
-fn split_http_response(raw: &[u8]) -> Result<(u16, &[u8]), String> {
+pub(crate) fn split_http_response(raw: &[u8]) -> Result<(u16, &[u8]), String> {
     let header_end = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

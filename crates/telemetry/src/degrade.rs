@@ -1,7 +1,7 @@
 //! `telemetry::degrade` — `DegradeCode`, `Outcome<T>`, and `abstain()`: the single fail-open topology for the whole
 //!   workspace (§53).
 //! Depends-on: crates=[humaux-domain, smallvec, tracing]; services=[]; env=[]; modules=[domain::error, telemetry::metrics]
-//! Called-by: [admin::ops_status, gateway::status, maintenance::resident, retrieval::envelope, telemetry::metrics, tests]
+//! Called-by: [admin::ops_status, gateway::status, maintenance::resident, retrieval::envelope, retrieval::rerank, telemetry::metrics, tests]
 //! Invariants: [abstain() is the only writer of a non-empty degradations; Outcome::also joins codes through it;
 //!   abstain() holds the one `degrade_total` increment and the last-fired store]
 //! Spec: Baseline §53.3; §41.2; ADR-0057; ADR-0061 D-A
@@ -50,9 +50,13 @@ macro_rules! degrade_code {
 }
 
 degrade_code! {
-    /// Rerank model actually used differs from the one requested.
+    /// The model that answered a rerank call is not the pinned one (ADR-0084 D-D): its scores are discarded and the
+    /// result keeps the fused order. Emitted by `retrieval::rerank::degradations`.
     RerankModelMismatch,
-    /// Rerank provider call timed out; fell back to unranked/heuristic order (§53.4).
+    /// The rerank executor, a cloud provider route or the local worker (ADR-0084 D-D), returned no scores within the
+    /// timeout or at all (a timeout, a transport error, a non-success, malformed or unusable reply), so the result is in
+    /// fallback (fused) order (§53.4). "Provider" reads this way; a failure that is not a timeout shares the variant.
+    /// Emitted by `retrieval::rerank::degradations`.
     RerankProviderTimeout,
     /// Embedding provider call timed out.
     EmbedProviderTimeout,

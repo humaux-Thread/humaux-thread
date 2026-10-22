@@ -15,5 +15,6 @@ pub mod mcp_application;
 mod memory;
 pub mod recall;
 pub mod remember;
+pub mod rerank_client;
 pub mod retrieval_embedding_client;
 pub mod status;

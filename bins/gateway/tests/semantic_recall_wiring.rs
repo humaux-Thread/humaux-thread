@@ -83,6 +83,7 @@ use humaux_gateway::{
     context::ContextBootstrap,
     recall::{self, RecallSearchRequest, SemanticRecallRuntime, SemanticRecallVersions},
     remember::{ProcessFamily, RememberPolicy},
+    rerank_client::{GatewayRerankClient, RerankAnswer, RerankCall, RerankLane, RerankPort},
     retrieval_embedding_client::GatewayRetrievalEmbeddingClient,
 };
 use humaux_infra_cell::{
@@ -93,6 +94,7 @@ use humaux_infra_cell::{
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig};
 use humaux_projection::{card::EgressDisposition, dense::build_dense_filter};
 use humaux_protocol::mcp_catalog::CanonicalCatalog;
+use humaux_retrieval::rerank::ModelIdentity;
 use humaux_retrieval_provider::{
     adapters::TestDoubleProvider,
     contract::{
@@ -637,6 +639,7 @@ fn happy_path_placement_and_point_hit() {
                         dimension: DIMENSION,
                     },
                     Duration::from_secs(10),
+                    None,
                 )
                 .expect("trusted semantic runtime"),
             );
@@ -721,6 +724,7 @@ fn tenant_with_no_placement_degrades_closed_without_calling_qdrant() {
                         dimension: DIMENSION,
                     },
                     Duration::from_secs(10),
+                    None,
                 )
                 .expect("trusted semantic runtime"),
             );
@@ -904,6 +908,7 @@ fn wrong_dimension_vector_from_port_is_never_hydrated() {
                         dimension: DIMENSION,
                     },
                     Duration::from_secs(10),
+                    None,
                 )
                 .expect("trusted semantic runtime"),
             );
@@ -1039,6 +1044,7 @@ fn recall_stage_ms_cover_at_least_ninety_percent_of_in_process_search_time() {
                         dimension: DIMENSION,
                     },
                     Duration::from_secs(10),
+                    None,
                 )
                 .expect("trusted semantic runtime"),
             );
@@ -1250,6 +1256,7 @@ fn a_transient_query_embedding_failure_fails_fast_with_one_worker_call() {
                         dimension: DIMENSION,
                     },
                     handler_timeout,
+                    None,
                 )
                 .expect("trusted semantic runtime"),
             );
@@ -1423,6 +1430,7 @@ impl LogEnv {
                     dimension: DIMENSION,
                 },
                 Duration::from_secs(10),
+                None,
             )
             .expect("trusted semantic runtime"),
         )
@@ -2075,8 +2083,11 @@ impl HybridEnv {
     fn seed(handle: &mut Handle, tag: &str) -> Self {
         let mut admin = handle.owner_client().expect("owner client for setup");
         let (mut memories, mut evidences, mut points) = (Vec::new(), Vec::new(), Vec::new());
-        for _ in HYBRID_TEXTS {
-            let row = handle.seed_workspace_visible_context_record();
+        for (index, text) in HYBRID_TEXTS.into_iter().enumerate() {
+            // ADR-0085: `title` and `key_claim` are what `private.memory_text_v` resolves; the rerank tests read them.
+            let row = handle.seed_workspace_visible_context_record_with_content(
+                &serde_json::json!({ "title": format!("fixture {index}"), "key_claim": text }),
+            );
             let point = Uuid::new_v4();
             seed_registry_row(
                 &mut admin,
@@ -2160,6 +2171,19 @@ impl HybridEnv {
         shape: Shape,
         sparse_leg: bool,
     ) -> Result<serde_json::Value, ErrorCode> {
+        self.recall_with(handle, shape, sparse_leg, None, &[])
+    }
+
+    /// [`Self::recall`] with a rerank lane and extra registered-profile entries (`rerank_enabled` and its timeout, for
+    /// the ADR-0084 tests).
+    fn recall_with(
+        &self,
+        handle: &Handle,
+        shape: Shape,
+        sparse_leg: bool,
+        rerank: Option<RerankLane>,
+        profile: &[(&str, &str)],
+    ) -> Result<serde_json::Value, ErrorCode> {
         let port: Arc<dyn RetrievalEmbeddingPort> =
             Arc::new(FixedOutcomePort::new(RetrievalEmbeddingOutcome::Embedded {
                 vector: vec![1.0, 0.0, 0.0, 0.0],
@@ -2183,6 +2207,7 @@ impl HybridEnv {
                     dimension: DIMENSION,
                 },
                 Duration::from_secs(10),
+                rerank,
             )
             .expect("trusted semantic runtime"),
         );
@@ -2194,7 +2219,7 @@ impl HybridEnv {
                 Arc::new(CanonicalCatalog::load().expect("catalog")),
                 handle.auth.clone(),
                 Uuid::now_v7(),
-                hybrid_bootstrap(handle, sparse_leg),
+                hybrid_bootstrap_with(handle, sparse_leg, profile),
                 recall_request(HYBRID_QUERY, handle.workspace_id),
             ))
             .map(|pending| pending.finish().structured_content)
@@ -2216,22 +2241,28 @@ impl HybridEnv {
     }
 }
 
-/// The registered profile of the hybrid fixtures: `top_k` [`HYBRID_TOP_K`] and the sparse leg switched as asked (the
-/// shipped default is off, ADR-0083 U6; a test enables it on its own profile).
-fn hybrid_bootstrap(handle: &Handle, sparse_leg: bool) -> ContextBootstrap {
-    bootstrap_with_profile(
-        handle,
-        &BTreeMap::from([
-            (
-                "retrieval.profile.top_k".to_owned(),
-                HYBRID_TOP_K.to_string(),
-            ),
-            (
-                "retrieval.profile.sparse_leg_enabled".to_owned(),
-                sparse_leg.to_string(),
-            ),
-        ]),
-    )
+/// The registered profile of the hybrid fixtures: `top_k` [`HYBRID_TOP_K`], the sparse leg switched as asked (the shipped
+/// default is off, ADR-0083 U6; a test enables it on its own profile) and further registered-profile entries
+/// (`retrieval.profile.<name>` = value).
+fn hybrid_bootstrap_with(
+    handle: &Handle,
+    sparse_leg: bool,
+    extra: &[(&str, &str)],
+) -> ContextBootstrap {
+    let mut raw = BTreeMap::from([
+        (
+            "retrieval.profile.top_k".to_owned(),
+            HYBRID_TOP_K.to_string(),
+        ),
+        (
+            "retrieval.profile.sparse_leg_enabled".to_owned(),
+            sparse_leg.to_string(),
+        ),
+    ]);
+    for (name, value) in extra {
+        raw.insert(format!("retrieval.profile.{name}"), (*value).to_owned());
+    }
+    bootstrap_with_profile(handle, &raw)
 }
 
 /// The returned Memory ids of a recall envelope, in answer order.
@@ -2491,5 +2522,363 @@ fn a_tombstoned_memory_the_sparse_leg_alone_found_never_passes_the_hydrate_gate(
             );
         }
         env.teardown(&handle);
+    });
+}
+
+// ============================================================================
+// ADR-0084 (T-RET-7d-2): the local rerank lane through a real Qdrant and the real PG gate
+// ============================================================================
+
+/// The pinned model of the rerank fixtures.
+fn rerank_pin() -> ModelIdentity {
+    ModelIdentity::new(
+        "org/model",
+        "rev1",
+        "recipe-v1",
+        &"a".repeat(64),
+        &"b".repeat(64),
+    )
+    .expect("a valid identity")
+}
+
+/// How the scripted rerank port answers.
+#[derive(Clone, Copy)]
+enum Rerank {
+    /// Scores the pinned model's way: a document that mentions `lanternfish` high, any other 0.
+    Healthy,
+    /// Holds the answer this long (past `rerank_timeout_ms`), then answers as `Healthy` would.
+    Stall(Duration),
+    /// A failed answer.
+    Fail,
+    /// Scores that would reorder the list, from a model other than the pinned one.
+    OtherModel,
+}
+
+/// Every document list a [`ScriptedRerank`] was sent, one entry per call.
+type SentDocuments = Arc<std::sync::Mutex<Vec<Vec<String>>>>;
+
+struct ScriptedRerank {
+    sent: SentDocuments,
+    mode: Rerank,
+}
+
+#[async_trait]
+impl RerankPort for ScriptedRerank {
+    async fn rerank(&self, call: RerankCall<'_>) -> RerankAnswer {
+        self.sent
+            .lock()
+            .expect("recorded documents")
+            .push(call.documents.to_vec());
+        let scores: Vec<f32> = call
+            .documents
+            .iter()
+            .map(|document| {
+                if document.contains("lanternfish") {
+                    9.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        match self.mode {
+            Rerank::Healthy => RerankAnswer::Scored {
+                scores,
+                model: rerank_pin(),
+            },
+            Rerank::Stall(wait) => {
+                tokio::time::sleep(wait).await;
+                RerankAnswer::Scored {
+                    scores,
+                    model: rerank_pin(),
+                }
+            }
+            Rerank::Fail => RerankAnswer::Failed { class: "transport" },
+            Rerank::OtherModel => RerankAnswer::Scored {
+                scores,
+                model: ModelIdentity::new(
+                    "org/model",
+                    "rev2",
+                    "recipe-v1",
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                )
+                .expect("a valid identity"),
+            },
+        }
+    }
+}
+
+/// A lane over a [`ScriptedRerank`] in `mode`, and the documents it will have been sent.
+fn scripted_lane(mode: Rerank) -> (RerankLane, SentDocuments) {
+    let sent = SentDocuments::default();
+    let port = Arc::new(ScriptedRerank {
+        sent: Arc::clone(&sent),
+        mode,
+    });
+    (RerankLane::new(port, rerank_pin()), sent)
+}
+
+/// The registered-profile entries that turn the lane on: depth 5 (`cand_k` is 10), a short wait.
+const RERANK_ON: [(&str, &str); 3] = [
+    ("rerank_enabled", "true"),
+    ("rerank_depth", "5"),
+    ("rerank_timeout_ms", "300"),
+];
+
+/// Every document sent over all calls, flattened.
+fn sent_documents(sent: &SentDocuments) -> Vec<String> {
+    sent.lock()
+        .expect("recorded documents")
+        .iter()
+        .flatten()
+        .cloned()
+        .collect()
+}
+
+/// G-RET-12 (ADR-0084 D-D, §53.1) through a real Qdrant and the real PG gate. With the lane off the answer is the fused
+/// order and `rerank_model_id` reads `not_applicable`; with a healthy worker the lexical target is lifted to the front,
+/// `reranked_count` equals `candidate_count`, `rerank_model_id` is the pinned model and nothing degrades. A worker that
+/// stalls past `rerank_timeout_ms`, fails, or answers as another model each give the fused order, `reranked_count` 0
+/// below `candidate_count`, `rerank_model_id` `cannot_establish`, the matching degradation and `degrade_total` +1, and
+/// the stalled call is cut off by its own budget instead of holding the answer.
+/// Fault: swallow the failure without emitting the degradation (return the fallback without `abstain()`) ⇒ the counter
+/// does not rise ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture: baseline → healthy control → three faults.
+fn a_failing_or_stalled_rerank_answers_in_the_fused_order_and_says_so() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_rerank_failure", |mut handle| {
+        handle.assert_gateway_login();
+        let env = HybridEnv::seed(&mut handle, "rerank_failure");
+        let baseline = env
+            .recall(&handle, Shape::Real, false)
+            .expect("lane-off baseline");
+        let fused = returned_ids(&baseline);
+        assert_eq!(fused.len(), HYBRID_TOP_K as usize);
+        assert_eq!(
+            baseline["provenance"]["rerank_model_id"],
+            serde_json::json!({ "status": "not_applicable" }),
+            "the lane is off: {baseline}"
+        );
+
+        let (lane, sent) = scripted_lane(Rerank::Healthy);
+        let healthy = env
+            .recall_with(&handle, Shape::Real, false, Some(lane), &RERANK_ON)
+            .expect("healthy rerank");
+        assert_eq!(
+            returned_ids(&healthy),
+            [env.memories[4].to_string(), fused[0].clone()],
+            "control: the lexical target leads after the rerank: {healthy}"
+        );
+        let completeness = &healthy["completeness"];
+        assert_eq!(
+            completeness["reranked_count"],
+            completeness["candidate_count"]
+        );
+        assert_eq!(completeness["reranked_count"], HYBRID_TEXTS.len());
+        assert_eq!(
+            healthy["provenance"]["rerank_model_id"],
+            serde_json::json!({ "status": "used", "id": rerank_pin().model_id().as_str() }),
+            "{healthy}"
+        );
+        assert!(
+            !has_degradation(&healthy, "RERANK_PROVIDER_TIMEOUT"),
+            "{healthy}"
+        );
+        assert_eq!(
+            sent.lock().expect("recorded documents").len(),
+            1,
+            "one call"
+        );
+
+        for (label, mode, wire, code) in [
+            (
+                "stalled past rerank_timeout_ms",
+                Rerank::Stall(Duration::from_secs(3)),
+                "RERANK_PROVIDER_TIMEOUT",
+                DegradeCode::RerankProviderTimeout,
+            ),
+            (
+                "failed",
+                Rerank::Fail,
+                "RERANK_PROVIDER_TIMEOUT",
+                DegradeCode::RerankProviderTimeout,
+            ),
+            (
+                "another model answered",
+                Rerank::OtherModel,
+                "RERANK_MODEL_MISMATCH",
+                DegradeCode::RerankModelMismatch,
+            ),
+        ] {
+            let (lane, _) = scripted_lane(mode);
+            let before = degrade_total_count(code);
+            let started = std::time::Instant::now();
+            let out = env
+                .recall_with(&handle, Shape::Real, false, Some(lane), &RERANK_ON)
+                .unwrap_or_else(|error| panic!("{label}: the recall must still answer: {error:?}"));
+            assert!(
+                started.elapsed() < Duration::from_millis(2_500),
+                "{label}: the wait is bounded by rerank_timeout_ms, took {:?}",
+                started.elapsed()
+            );
+            assert_eq!(returned_ids(&out), fused, "{label}: the fused order: {out}");
+            assert!(has_degradation(&out, wire), "{label}: {out}");
+            assert_eq!(
+                degrade_total_count(code),
+                before + 1,
+                "{label}: degrade_total +1"
+            );
+            let completeness = &out["completeness"];
+            assert_eq!(completeness["reranked_count"], 0, "{label}: {out}");
+            assert!(
+                completeness["reranked_count"].as_u64() < completeness["candidate_count"].as_u64(),
+                "{label}: a rerank degradation needs reranked_count below candidate_count: {out}"
+            );
+            assert_eq!(
+                out["provenance"]["rerank_model_id"],
+                serde_json::json!({ "status": "cannot_establish" }),
+                "{label}: {out}"
+            );
+        }
+        env.teardown(&handle);
+    });
+}
+
+/// G-RET-13 (ADR-0084 D-C 3) end to end: a Memory that was live when indexed and is tombstoned afterwards is not among
+/// the texts sent to the rerank worker, and not in the answer. The control, before the tombstone, sends all five
+/// documents, so the assertion can fail. The tombstone is a `TOMBSTONED` stream row reached through the Memory's Evidence,
+/// which the Qdrant overlay misses on purpose, so only the hydrate gate can drop it, and the texts are read inside that
+/// transaction for the Memories that passed it.
+/// Fault: read the texts for every resolved candidate instead of the Memories the gate returned ⇒ the tombstoned text is
+/// sent ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture: live control → tombstone → second recall.
+fn a_tombstoned_memory_is_never_sent_to_the_rerank_worker() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_rerank_tombstone", |mut handle| {
+        handle.assert_gateway_login();
+        let env = HybridEnv::seed(&mut handle, "rerank_tombstone");
+        let victim = 1;
+
+        let (lane, sent) = scripted_lane(Rerank::Healthy);
+        let live = env
+            .recall_with(&handle, Shape::Real, false, Some(lane), &RERANK_ON)
+            .expect("control recall");
+        let documents = sent_documents(&sent);
+        assert_eq!(
+            documents.len(),
+            HYBRID_TEXTS.len(),
+            "control: {documents:?}"
+        );
+        assert!(
+            documents
+                .iter()
+                .any(|document| document.contains(HYBRID_TEXTS[victim])),
+            "control: a live Memory's text is sent: {documents:?}"
+        );
+        assert_eq!(live["completeness"]["reranked_count"], HYBRID_TEXTS.len());
+
+        let mut admin = handle
+            .owner_client()
+            .expect("owner client for the tombstone");
+        let commit_seq: i64 = admin
+            .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+            .expect("owner allocates a fixture commit sequence")
+            .get(0);
+        admin
+            .execute(
+                "INSERT INTO projection.stream_log \
+                   (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version, \
+                    stream_seq,commit_seq,state,settled_at) \
+                 VALUES($1,'workspace',$2,'knowledge','ingest','v1',1,$3,'TOMBSTONED',clock_timestamp())",
+                &[&handle.tenant_id, &handle.workspace_id, &commit_seq],
+            )
+            .expect("owner seeds the tombstoned stream row");
+        admin
+            .execute(
+                "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
+                 VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)",
+                &[&handle.tenant_id, &commit_seq, &env.evidences[victim]],
+            )
+            .expect("owner links the tombstone to the victim's Evidence");
+        admin
+            .execute(
+                "UPDATE projection.stream_checkpoints SET issued_highwater=1 \
+                 WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2 \
+                   AND domain='knowledge' AND projection_kind='ingest' AND projection_version='v1'",
+                &[&handle.tenant_id, &handle.workspace_id],
+            )
+            .expect("owner raises the issued highwater to the tombstoned seq");
+
+        let (lane, sent) = scripted_lane(Rerank::Healthy);
+        let after = env
+            .recall_with(&handle, Shape::Real, false, Some(lane), &RERANK_ON)
+            .expect("recall after the tombstone");
+        let documents = sent_documents(&sent);
+        assert!(
+            !documents
+                .iter()
+                .any(|document| document.contains(HYBRID_TEXTS[victim])),
+            "a tombstoned Memory's text reached the rerank worker: {documents:?}"
+        );
+        assert_eq!(documents.len(), HYBRID_TEXTS.len() - 1, "{documents:?}");
+        assert!(
+            !returned_ids(&after).contains(&env.memories[victim].to_string()),
+            "a tombstoned Memory was served: {after}"
+        );
+        assert_eq!(
+            after["completeness"]["reranked_count"],
+            HYBRID_TEXTS.len() - 1
+        );
+        env.teardown(&handle);
+    });
+}
+
+/// ADR-0084 D-B: the gateway's client speaks the worker's wire. The real worker app (rerank lane off, so no model) accepts
+/// the request, which `deny_unknown_fields` on its side proves the field set of, and answers `disabled`, which the
+/// client reads as a failed answer; a wrong serving uid is refused before any byte is written.
+/// Fault: add a field to the client's request body ⇒ the extractor refuses it (HTTP 4xx) ⇒ `non_2xx` ⇒ red.
+#[test]
+fn the_rerank_client_speaks_the_workers_wire() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_rerank_wire", |handle| {
+        handle.assert_gateway_login();
+        let registry = cell_registry(
+            CellId(Uuid::now_v7()),
+            CallerId("gateway-wiring-test".to_owned()),
+        );
+        handle.rt.block_on(async {
+            let uid = own_uid().await;
+            let socket = spawn_worker(uid).await;
+            let documents = vec!["one".to_owned(), "two".to_owned()];
+            let call = || RerankCall {
+                call_id: Uuid::now_v7(),
+                query: "q",
+                documents: &documents,
+                max_len: 256,
+            };
+            let client = GatewayRerankClient::new(
+                socket.clone(),
+                uid,
+                registry.clone(),
+                Duration::from_secs(30),
+            );
+            assert_eq!(
+                client.rerank(call()).await,
+                RerankAnswer::Failed {
+                    class: "not_scored"
+                },
+                "the worker accepted the request and said the lane is disabled"
+            );
+            let wrong_uid = GatewayRerankClient::new(
+                socket,
+                uid.wrapping_add(1),
+                registry,
+                Duration::from_secs(30),
+            );
+            assert_eq!(
+                wrong_uid.rerank(call()).await,
+                RerankAnswer::Failed { class: "transport" },
+                "a wrong serving uid is refused at the dial"
+            );
+        });
     });
 }
