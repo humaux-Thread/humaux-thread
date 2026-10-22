@@ -2381,9 +2381,10 @@ fn a_tombstoned_memory_the_sparse_leg_alone_found_never_passes_the_hydrate_gate(
         let live = env
             .recall(&handle, sparse_only, true)
             .expect("control recall");
-        assert_eq!(
-            returned_ids(&live).first(),
-            Some(&target),
+        // With the dense reply bent, the target is sparse rank 1 only and ties the nearest dense neighbour (1/61 each,
+        // order by point id), so it is in the top 2 either way; membership is what the control can pin.
+        assert!(
+            returned_ids(&live).contains(&target),
             "control: the sparse-only candidate is served while it is live: {live}"
         );
 
