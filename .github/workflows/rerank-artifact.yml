@@ -1,0 +1,153 @@
+# T-RET-7b (ADR-0084 D-A): build the local rerank model artifact from its pin in CI, check it, and optionally publish it.
+# Public model and public data only (cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 at a pinned commit, C-MTEB/T2Reranking at a pinned
+# revision); no secret, no corpus. Nothing here runs on a developer machine.
+#
+#   gh workflow run rerank-artifact.yml --ref <branch> -f publish=true
+#   Before this file is on main, gh needs the workflow id instead of the file name (HTTP 404 "not found on the default branch" otherwise);
+#   the id exists once one run has happened on a branch. publish=false, the default: build and gates only.
+#
+# Build job: read-only token. It exports and int8-quantises the model twice in the same job (byte-determinism result goes into
+# manifest.json), packages tarball + manifest.json + sha256, and runs both gates:
+#   G7b-1 manifest integrity    the extracted tarball's files match manifest.json sha256 and size
+#   G7b-2 fixture self-consistency  re-scoring the committed parity fixtures with the packaged artifact reproduces the stored
+#                               scores within the tolerance the fixture header states (not_applicable, naming the file, if the
+#                               fixtures are not committed yet; a failure when publishing)
+# Publish job: the only job with contents: write, so its two actions are pinned by commit SHA. It re-checks the sha256 and manifest, then creates the prerelease
+# rerank-mmarco-int8-v1 and refuses to overwrite an existing one (deployment pins the tarball sha256).
+# Never pull_request / pull_request_target; no secrets are used.
+name: rerank-artifact
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: create the prerelease rerank-mmarco-int8-v1 (fails if it exists); false = build and gates only
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: rerank-artifact
+  cancel-in-progress: false
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '4'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  TOOL: scripts/rerank_artifact/build.py
+  FIXTURES: bins/retrieval-worker/tests/fixtures/rerank/parity.v1.json
+  TARBALL: rerank-mmarco-int8-v1.tar.gz
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: syntax and selftest (stdlib only, no model, no network)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$TOOL"
+          python "$TOOL" selftest
+      - name: install pinned deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: pip installs without --require-hashes, so a swapped wheel would be built into the artifact and the published tarball sha256 would pin that output,
+          # not the toolchain; upgrade path: a hash-locked requirements file (pip-compile --generate-hashes)
+          python -m pip install -r scripts/rerank_artifact/requirements.txt
+          python -m pip freeze
+      - name: build 1 (pin and licence checked first; export; E-RET-5a int8 recipe)
+        shell: bash
+        run: python "$TOOL" build --out "$RUNNER_TEMP/b1"
+      - name: build 2 (same pin, new process)
+        shell: bash
+        run: python "$TOOL" build --out "$RUNNER_TEMP/b2"
+      - name: byte-determinism of the int8 export
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          python "$TOOL" compare "$RUNNER_TEMP/b1" "$RUNNER_TEMP/b2" --out "$RUNNER_TEMP/out/determinism.json"
+      - name: package (manifest.json, tarball, sha256)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$TOOL" package --build "$RUNNER_TEMP/b1" --determinism "$RUNNER_TEMP/out/determinism.json" --out "$RUNNER_TEMP/out"
+          cat "$RUNNER_TEMP/out/manifest.json"
+      - name: G7b-1 manifest integrity
+        shell: bash
+        run: python "$TOOL" verify-manifest "$RUNNER_TEMP/out/$TARBALL" --sha-file "$RUNNER_TEMP/out/$TARBALL.sha256" --extract-to "$RUNNER_TEMP/x"
+      - name: fixtures, regenerated from the packaged artifact (uploaded; commit them only on purpose)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fx"
+          python "$TOOL" fixtures-generate --artifact "$RUNNER_TEMP/x/rerank-mmarco-int8-v1" --fp32 "$RUNNER_TEMP/b1/work/fp32/model.onnx" --out "$RUNNER_TEMP/fx/parity.generated.json"
+      - name: G7b-2 fixture self-consistency
+        shell: bash
+        env:
+          REQUIRE: ${{ inputs.publish && '--require' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          python "$TOOL" fixtures-verify --artifact "$RUNNER_TEMP/x/rerank-mmarco-int8-v1" --fixtures "$FIXTURES" $REQUIRE
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: rerank-fixtures
+          path: ${{ runner.temp }}/fx/parity.generated.json
+          retention-days: 7
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: rerank-artifact
+          path: ${{ runner.temp }}/out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rerank-artifact
+          path: art
+      - name: re-check the sha256 and the manifest (stdlib only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          find art -type f | sort
+          D="$(dirname "$(find art -name "$TARBALL" -print -quit)")"
+          (cd "$D" && sha256sum -c "$TARBALL.sha256")
+          python3 "$TOOL" verify-manifest "$D/$TARBALL" --sha-file "$D/$TARBALL.sha256" --extract-to "$RUNNER_TEMP/x"
+      - name: create the prerelease (never overwrites)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: rerank-mmarco-int8-v1
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "release $TAG exists: a pinned artifact is never overwritten (new identity = new tag)" >&2
+            exit 1
+          fi
+          D="$(dirname "$(find art -name "$TARBALL" -print -quit)")"
+          SHA="$(cut -d' ' -f1 "$D/$TARBALL.sha256")"
+          python3 "$TOOL" notes --manifest "$D/manifest.json" --sha "$SHA" > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" "$D/$TARBALL" "$D/$TARBALL.sha256" --prerelease --target "$GITHUB_SHA" \
+            --title "Local rerank model artifact: mmarco-mMiniLMv2-L12 int8 (ADR-0084, public model)" --notes-file "$RUNNER_TEMP/notes.md"
+          gh release view "$TAG" --json url,isPrerelease,assets --jq '{url, prerelease: .isPrerelease, assets: [.assets[] | {name, size}]}'
