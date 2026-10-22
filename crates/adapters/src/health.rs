@@ -11,6 +11,9 @@
 //!
 //! Both functions are owned by the NOLOGIN `role_health_reader` (migration 0210), whose `_health_reader_read`
 //! policies are what let one call see every tenant; the caller's own role never gains a table grant.
+//!
+//! M22-2 (migration 0261): the same `ops.health_snapshot` call also returns `tenants_active_1d` / `tenants_active_7d`,
+//! counted inside the database by `ops.tenants_active_counts()`; this module reads them like any other column.
 
 use std::fmt;
 
@@ -70,6 +73,10 @@ pub struct HealthSample {
     pub reserved_gt_60s: u64,
     /// Rows with `since < finalized_at <= as_of`, per outcome (outcomes with none are absent).
     pub finalized_since: Vec<(DisclosureOutcome, u64)>,
+    /// ACTIVE tenants with an API key used in the last 24 hours, counted per tenant (M22-2).
+    pub tenants_active_1d: u64,
+    /// The same over the last 168 hours (7 days).
+    pub tenants_active_7d: u64,
 }
 
 /// One stream family's rows of `ops.admin_probe_snapshot()`.
@@ -184,6 +191,8 @@ pub async fn read_health_snapshot(
         reserved_le_60s: count(&row, "reserved_le_60s")?,
         reserved_gt_60s: count(&row, "reserved_gt_60s")?,
         finalized_since,
+        tenants_active_1d: count(&row, "tenants_active_1d")?,
+        tenants_active_7d: count(&row, "tenants_active_7d")?,
     })
 }
 

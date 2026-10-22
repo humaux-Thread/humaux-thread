@@ -400,6 +400,24 @@ pub mod families {
         &[],
     );
 
+    // §41.2: ACTIVE tenants with an API key used in the window, one SQL count per sample (ops.health_snapshot) —
+    // maintenance health serve (M22-2; emit `telemetry::health::publish`). An exact count: 0 is a real value.
+    /// `tenants_active_1d`.
+    pub const TENANTS_ACTIVE_1D: Family = f(
+        "tenants_active_1d",
+        "ACTIVE tenants with an API key used in the last 24 hours.",
+        Kind::Gauge,
+        &[],
+    );
+    // §41.2: the same sample over 168 hours (M22-2).
+    /// `tenants_active_7d`.
+    pub const TENANTS_ACTIVE_7D: Family = f(
+        "tenants_active_7d",
+        "ACTIVE tenants with an API key used in the last 7 days.",
+        Kind::Gauge,
+        &[],
+    );
+
     // §41.2: §51 cache layer — emitted by `telemetry::cache` (M12).
     /// `cache_requests_total{cache,result}`.
     pub const CACHE_REQUESTS_TOTAL: Family = f(

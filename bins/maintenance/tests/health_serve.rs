@@ -2,7 +2,7 @@
 //!   throwaway PostgreSQL (ADR-0061 D-D process side, D-B): samples, the 503-on-failure rule, required keys,
 //!   SIGTERM, `--metrics-families`.
 //! Depends-on: crates=[serde_json]; services=[PostgreSQL(owner)
-//!   w=[control.tenants, ops.jobs] x=[ops.health_snapshot], HTTP(loopback), subprocess(humaux-maintenance), subprocess(kill)];
+//!   w=[control.api_keys, control.tenants, ops.jobs] x=[ops.health_snapshot], HTTP(loopback), subprocess(humaux-maintenance), subprocess(kill)];
 //!   env=[HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR];
 //!   modules=[maintenance::tests::support::throwaway]
 //! Called-by: [cargo-test]
@@ -25,7 +25,7 @@ const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR";
 const SAMPLE_SECONDS: &str = "HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS";
 /// The test's sample interval; every "within 2 intervals" bound below is derived from it.
 const INTERVAL: Duration = Duration::from_secs(1);
-const FAMILIES: [&str; 9] = [
+const FAMILIES: [&str; 11] = [
     "jobs_pending",
     "jobs_processing",
     "jobs_waiting_key",
@@ -35,6 +35,8 @@ const FAMILIES: [&str; 9] = [
     "processing_gap_count",
     "data_disclosures_finalized_total",
     "data_disclosures_reserved_unfinalized",
+    "tenants_active_1d",
+    "tenants_active_7d",
 ];
 
 fn value(metrics: &str, series: &str) -> Option<f64> {
@@ -72,7 +74,7 @@ fn spawn(db: &Db) -> (Serve, SocketAddr) {
     (serve, addr)
 }
 
-/// T-M1: all nine families carry samples; a DEAD job inserted later shows within two intervals, so the process
+/// T-M1: all eleven families carry samples; a DEAD job inserted later shows within two intervals, so the process
 /// samples continuously (sampling once only ⇒ `jobs_dead` stays 0, or the snapshot goes stale ⇒ 503 ⇒ red).
 #[test]
 fn metrics_carry_every_family_and_follow_a_new_dead_job() {
@@ -99,17 +101,36 @@ fn metrics_carry_every_family_and_follow_a_new_dead_job() {
          INSERT INTO ops.jobs (tenant_id, job_type, status, idempotency_key, payload) \
          SELECT tenant_id, 'C34_HEALTH_SERVE_TEST', 'DEAD', gen_random_uuid()::text, '{}'::jsonb FROM t",
     );
+    // M22-2: one ACTIVE tenant whose key was just used and one whose key was last used 72 h ago (7-day window only), so a
+    // swap of the two counts anywhere between SQL and exposition is red.
+    db.sql(
+        "WITH t AS (INSERT INTO control.tenants (name, state) VALUES ('m22-hs-fresh', 'ACTIVE'), \
+                      ('m22-hs-stale', 'ACTIVE') RETURNING tenant_id, name) \
+         INSERT INTO control.api_keys (tenant_id, prefix, key_hash, status, last_used_at) \
+         SELECT tenant_id, md5(gen_random_uuid()::text), sha256('m22-2'::bytea), 'ACTIVE', \
+                CASE name WHEN 'm22-hs-fresh' THEN now() ELSE now() - interval '72 hours' END FROM t",
+    );
     let after = poll(
         addr,
         "/metrics",
         2 * INTERVAL + INTERVAL / 2,
-        |(code, b)| *code == 200 && value(b, "jobs_dead") == Some(1.0),
+        |(code, b)| {
+            *code == 200
+                && value(b, "jobs_dead") == Some(1.0)
+                && value(b, "tenants_active_1d") == Some(1.0)
+                && value(b, "tenants_active_7d") == Some(2.0)
+        },
     );
     let (code, body) = after.expect("/metrics after the insert");
     assert_eq!(
-        (code, value(&body, "jobs_dead")),
-        (200, Some(1.0)),
-        "jobs_dead did not follow the inserted DEAD job within 2 intervals\n{body}"
+        (
+            code,
+            value(&body, "jobs_dead"),
+            value(&body, "tenants_active_1d"),
+            value(&body, "tenants_active_7d")
+        ),
+        (200, Some(1.0), Some(1.0), Some(2.0)),
+        "jobs_dead / tenants_active_* did not follow the inserted rows within 2 intervals\n{body}"
     );
     let (code, status) = get(addr, "/status").expect("/status");
     assert_eq!(code, 200, "{status}");
@@ -227,15 +248,15 @@ fn sigterm_exits_zero_and_closes_the_port() {
     );
 }
 
-/// T-M5: `--metrics-families` needs no environment and prints the nine families at zero state.
+/// T-M5: `--metrics-families` needs no environment and prints the eleven families at zero state.
 #[test]
-fn metrics_families_prints_nine_families_without_env() {
+fn metrics_families_prints_eleven_families_without_env() {
     let out = run(&["--metrics-families"], &[]);
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         text.lines().filter(|l| l.starts_with("# TYPE ")).count(),
-        9,
+        11,
         "{text}"
     );
     for family in FAMILIES {

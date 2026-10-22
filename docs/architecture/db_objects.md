@@ -182,6 +182,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -189,6 +190,7 @@ written by:
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::health_serve`
 
 executed by:
 
@@ -7425,6 +7427,26 @@ written by:
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
 
 executed by:
+
+### `ops.tenants_active_counts`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0261_health_snapshot_tenants_active
+
+grants (runtime roles):
+- role_health_reader: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::health_snapshot`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.wal_archive_failures`
 - kind: table
