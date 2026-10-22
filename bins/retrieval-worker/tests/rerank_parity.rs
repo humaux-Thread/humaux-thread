@@ -384,22 +384,28 @@ fn rerank_latency() {
     };
     let rss_loaded = vm_rss_kb();
     let query = fixture.pairs[0].query.clone();
-    let mut passages: Vec<&Pair> = fixture.pairs.iter().collect();
-    passages.sort_by_key(|p| !p.truncated);
-    let documents: Vec<String> = passages
+    // 16 of 25 documents reach the cap (E-RET-5g: 61.5% of the pairs did): the over-length passages cycled, then the
+    // longest ones that fit.
+    let over: Vec<&Pair> = fixture.pairs.iter().filter(|p| p.truncated).collect();
+    let mut fitting: Vec<&Pair> = fixture.pairs.iter().filter(|p| !p.truncated).collect();
+    fitting.sort_by_key(|p| std::cmp::Reverse(p.ids.len()));
+    let documents: Vec<String> = over
         .iter()
         .cycle()
-        .take(25)
+        .take(16)
+        .chain(fitting.iter().cycle().take(9))
         .map(|p| p.passage.clone())
         .collect();
-    let capped = documents
+    let lengths: Vec<usize> = documents
         .iter()
-        .filter(|d| {
+        .map(|d| {
             reranker
                 .encode_pair(&query, d, fixture.max_len)
-                .is_ok_and(|(ids, _)| ids.len() == fixture.max_len)
+                .map_or(0, |(ids, _)| ids.len())
         })
-        .count();
+        .collect();
+    let capped = lengths.iter().filter(|&&n| n == fixture.max_len).count();
+    let mean_tokens = lengths.iter().sum::<usize>() as f64 / lengths.len() as f64;
     for _ in 0..2 {
         reranker
             .score(&query, &documents, fixture.max_len, BATCH_SIZE)
@@ -416,7 +422,7 @@ fn rerank_latency() {
         .collect();
     seconds.sort_by(f64::total_cmp);
     println!(
-        "U2 rerank_latency depth=25 max_len={} batch={BATCH_SIZE} threads={THREADS} reps=20 capped_pairs={capped}/25 \
+        "U2 rerank_latency depth=25 max_len={} batch={BATCH_SIZE} threads={THREADS} reps=20 capped_pairs={capped}/25 mean_pair_tokens={mean_tokens:.1} \
          p50_s={:.3} p95_s={:.3} U4 vmrss_after_load_kb={rss_loaded} vmrss_after_calls_kb={}",
         fixture.max_len,
         nearest_rank(&seconds, 0.50),
