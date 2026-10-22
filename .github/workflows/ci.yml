@@ -663,125 +663,15 @@ jobs:
           PY
 
   # ADR-0084 D-G (T-RET-7c): G-RET-11 score parity and G-RET-14 artifact pin on the pinned rerank files, run INSIDE the
-  # runtime base image (U3): the test binaries, the ONNX Runtime library and the artifacts are mounted read-only into
-  # gcr.io/distroless/cc-debian13 at the Dockerfile's digest, so a library the base does not resolve fails here, not on
-  # a node. No services (the tests need no database). The pins below repeat deploy/images/humaux/Dockerfile's
-  # `ADD --checksum` lines and docs/ops/runbook.md section 12: change all three together.
+  # runtime base image (U3). The steps and pins live in .github/actions/rerank-parity so targeted.yml's rerank dispatch
+  # runs the same gate (T-CI-4); this job keeps its name, runner and no services (the tests need no database).
   rerank-parity:
     name: rerank parity (G-RET-11, G-RET-14)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
-    env:
-      ORT_URL: https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-aarch64-1.30.0.tgz
-      ORT_SHA256: e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da
-      RERANK_URL: https://github.com/humaux/humaux-thread/releases/download/rerank-mmarco-int8-v1/rerank-mmarco-int8-v1.tar.gz
-      RERANK_SHA256: cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f
-      # gcr.io/distroless/cc-debian13:nonroot, the `runtime` stage of deploy/images/humaux/Dockerfile (resolved 2026-10-07).
-      RUNTIME_IMAGE: gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
     steps:
       - uses: actions/checkout@v4
-
-      # The composite setup action also provisions a PostgreSQL cluster this job does not have; only its toolchain steps
-      # are needed here.
-      - name: Install pinned Rust toolchain
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.99.0 --profile minimal -c clippy -c rustfmt
-          rustup default 1.99.0
-          rustc --version | grep -F 'rustc 1.99.0'
-          if [ "$(uname -m)" = aarch64 ] && ! command -v ld.lld >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq lld
-          fi
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      # The two tarballs are cached by their sha256 (a changed pin is a new key); the checksum is verified on every run,
-      # a cache hit included, so a poisoned cache cannot pass.
-      - uses: actions/cache@v4
-        with:
-          path: ~/rerank-downloads
-          key: rerank-artifacts-${{ env.ORT_SHA256 }}-${{ env.RERANK_SHA256 }}
-
-      - name: fetch and verify the ONNX Runtime library and the rerank artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          dl="$HOME/rerank-downloads"
-          mkdir -p "$dl"
-          fetch() { # url sha256 file
-            [ -f "$dl/$3" ] || curl --fail --location --silent --show-error "$1" -o "$dl/$3"
-            printf '%s  %s\n' "$2" "$dl/$3" | sha256sum --check --strict
-          }
-          fetch "$ORT_URL" "$ORT_SHA256" ort.tgz
-          fetch "$RERANK_URL" "$RERANK_SHA256" rerank.tar.gz
-          art="$RUNNER_TEMP/rerank-artifacts"
-          mkdir -p "$art"
-          tar -xzf "$dl/ort.tgz" -C "$art"
-          tar -xzf "$dl/rerank.tar.gz" -C "$art"
-          lib="$(find "$art" -name 'libonnxruntime.so.1.30.0' -type f | head -n1)"
-          model="$(find "$art" -name 'model_quantized.onnx' -type f | head -n1)"
-          tok="$(find "$art" -name 'tokenizer.json' -type f | head -n1)"
-          test -n "$lib" && test -n "$model" && test -n "$tok"
-          sha256sum "$lib" "$model" "$tok"
-          {
-            echo "HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH=$lib"
-            echo "HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_PATH=$model"
-            echo "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH=$tok"
-            echo "ARTIFACT_DIR=$art"
-          } >> "$GITHUB_ENV"
-
-      - name: build the test binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test -p humaux-retrieval-worker --test rerank_parity --test rerank_pin --no-run --message-format=json > "$RUNNER_TEMP/build.json"
-          jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | "\(.target.name) \(.executable)"' "$RUNNER_TEMP/build.json" | tee "$RUNNER_TEMP/test-binaries.txt"
-          grep -q '^rerank_parity ' "$RUNNER_TEMP/test-binaries.txt"
-          grep -q '^rerank_pin ' "$RUNNER_TEMP/test-binaries.txt"
-
-      - name: pull the runtime base image
-        run: docker pull "$RUNTIME_IMAGE"
-
-      # Entrypoint = the test binary. The workspace is mounted at its own path, read-only: the binaries bake in absolute
-      # paths (CARGO_BIN_EXE_*) and rerank_pin spawns the worker binary from there. HUMAUX_REQUIRE_RERANK_MODEL=1 turns a
-      # missing artifact into a failure, never a SKIP (§79.2).
-      - name: G-RET-11 and G-RET-14 inside the runtime image
-        shell: bash
-        run: |
-          set -uo pipefail
-          run_in_image() { # test-name binary args...
-            local bin; bin="$(awk -v n="$1" '$1 == n {print $2}' "$RUNNER_TEMP/test-binaries.txt")"
-            shift
-            docker run --rm --read-only --tmpfs /tmp:rw --user "$(id -u):$(id -g)" \
-              -v "$PWD:$PWD:ro" -v "$ARTIFACT_DIR:$ARTIFACT_DIR:ro" -w "$PWD" \
-              -e HUMAUX_REQUIRE_RERANK_MODEL=1 \
-              -e HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH -e HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_PATH \
-              -e HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH \
-              --entrypoint "$bin" "$RUNTIME_IMAGE" "$@"
-          }
-          # Both run even when the first is red, so a fault injected into one gate shows in the log next to the other
-          # gate's verdict.
-          rc=0
-          run_in_image rerank_pin --nocapture || rc=1
-          run_in_image rerank_parity --nocapture || rc=1
-          exit "$rc"
-
-      # U2 (N2 runner) and U4: one depth-25 call at max_len 256, 20 timed calls after 2 warm-ups, p50 / p95, and VmRSS.
-      - name: U2 / U4 latency and memory inside the runtime image
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin="$(awk '$1 == "rerank_parity" {print $2}' "$RUNNER_TEMP/test-binaries.txt")"
-          docker run --rm --read-only --tmpfs /tmp:rw --user "$(id -u):$(id -g)" \
-            -v "$PWD:$PWD:ro" -v "$ARTIFACT_DIR:$ARTIFACT_DIR:ro" -w "$PWD" \
-            -e HUMAUX_REQUIRE_RERANK_MODEL=1 \
-            -e HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH -e HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_PATH \
-            -e HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_PATH \
-            --entrypoint "$bin" "$RUNTIME_IMAGE" --ignored --nocapture rerank_latency
+      - uses: ./.github/actions/rerank-parity
 
   # The required check (branch protection names it): green only when every part above is green; a skipped or
   # cancelled part is red, never a quiet pass (§79.2).
