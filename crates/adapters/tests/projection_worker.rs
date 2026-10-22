@@ -23,7 +23,7 @@
 //! Invariants: [uses a throwaway tenant and Qdrant collection cleaned up on Drop; a ticket is marked done only after
 //!   search-visible confirmation; no DSN, unreachable PG/Qdrant or no local gitleaks is a visible SKIP; the global
 //!   card profile policy row is read or flipped only under one process-wide lock and restored on drop (ADR-0068 D-I)]
-//! Spec: Baseline §17.4; §15.7; §79.2; ADR-0052; ADR-0055; ADR-0056; ADR-0057; ADR-0068
+//! Spec: Baseline §17.4; §15.7; §79.2; ADR-0052; ADR-0055; ADR-0056; ADR-0057; ADR-0068; ADR-0083 D-B
 //!
 //! Same convention as `outbox_batch_remember.rs`/`stream_repo.rs`: throwaway
 //! `control.tenants` row + throwaway Qdrant collection, cleaned up on `Drop`.
@@ -852,6 +852,116 @@ fn happy_path_indexes_and_advances_checkpoint() {
                 .expect("registry query")
                 .get(0);
             assert_eq!(registered, 1, "exactly one point registered");
+        },
+    );
+}
+
+/// One raw `POST /collections/{fixture collection}/{tail}`; the reply must be 2xx.
+fn qdrant_post(
+    handle: &Handle,
+    permit: &CellAccessPermit,
+    tail: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let response = handle
+        .rt
+        .block_on(handle.transport.execute(
+            permit,
+            // dep: Qdrant(*) — Qdrant wire call for this fixture
+            IntraCellRequest {
+                method: IntraCellMethod::Post,
+                path: format!("/collections/{}/{tail}", handle.collection),
+                json_body: Some(body),
+                headers: Vec::new(),
+            },
+        ))
+        .expect("Qdrant call succeeds");
+    assert!(
+        (200..300).contains(&response.status),
+        "{tail}: {} {:?}",
+        response.status,
+        response.json_body
+    );
+    response.json_body.expect("Qdrant reply has a JSON body")
+}
+
+/// T-RET-6b G6b-2 (ADR-0083 D-B, D-A): a memory the worker projects holds a non-empty `bm25` sparse vector next to its
+/// dense one, and a `qdrant/bm25` query with the shared `multilingual` options, for a token of its card, returns that
+/// point. Real Qdrant v1.19.0 computes the sparse vector from the card text (nothing is sent to a provider for it).
+/// Fault: the projector sends no `bm25` ⇒ the retrieved point has no sparse vector ⇒ red; its options differ from the
+/// query's ⇒ the pin test `bm25_document_options_are_pinned_byte_for_byte` (qdrant.rs) is the red.
+#[test]
+fn a_projected_point_holds_a_bm25_vector_its_card_text_can_be_queried_by() {
+    run_db_fixture::<Fixture, _>(
+        "a_projected_point_holds_a_bm25_vector_its_card_text_can_be_queried_by",
+        |mut handle| {
+            let scope_id = Uuid::new_v4();
+            let (_, memory_id) = seed_memory_with_visibility(
+                &mut handle,
+                scope_id,
+                "zorblax lexical needle",
+                "TENANT_SHARED",
+                None,
+                None,
+            );
+            let provider = Arc::new(TestDoubleProvider::new(
+                embedding_model(),
+                unused_rerank_model(),
+            ));
+            let deps = handle.rt.block_on(deps_for(&handle, scope_id, provider));
+            let outcome = handle
+                .rt
+                .block_on(run_once(&deps, 10))
+                .expect("run_once succeeds");
+            assert_eq!(outcome.done, 1);
+            let point = point_id_for_memory(&mut handle, memory_id);
+            let permit = admin_permit(&handle);
+
+            let retrieved = qdrant_post(
+                &handle,
+                &permit,
+                "points",
+                serde_json::json!({
+                    "ids": [point.to_string()],
+                    "with_payload": false,
+                    "with_vector": ["bm25"],
+                }),
+            );
+            let sparse = &retrieved["result"][0]["vector"]["bm25"];
+            let indices = sparse["indices"].as_array().map(Vec::len).unwrap_or(0);
+            assert!(
+                indices > 0,
+                "the point holds a non-empty bm25 vector: {retrieved}"
+            );
+            assert_eq!(
+                sparse["values"].as_array().map(Vec::len),
+                Some(indices),
+                "{retrieved}"
+            );
+
+            let found = qdrant_post(
+                &handle,
+                &permit,
+                "points/query",
+                serde_json::json!({
+                    "query": {
+                        "text": "zorblax",
+                        "model": "qdrant/bm25",
+                        "options": { "tokenizer": "multilingual" },
+                    },
+                    "using": "bm25",
+                    "limit": 5,
+                    "with_payload": false,
+                }),
+            );
+            let ids: Vec<&str> = found["result"]["points"]
+                .as_array()
+                .map(|points| points.iter().filter_map(|p| p["id"].as_str()).collect())
+                .unwrap_or_default();
+            assert!(
+                ids.contains(&point.to_string().as_str()),
+                "a token of the card finds the point by bm25: {found}"
+            );
         },
     );
 }

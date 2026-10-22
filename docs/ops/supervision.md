@@ -339,7 +339,12 @@ Rules:
 4. Order within the derived layer is otherwise free: the two derived workers discover work
    cross-tenant through `ops.claim_derived_work` and hold no start-time tenant binding
    (ADR-0036).
-5. A supervisor that cannot express ordering can start everything at once and rely on restart:
+5. **`collection ensure` after deploying ADR-0083 (T-RET-6b).** `--serve` starts before anyone can run
+   `humaux-maintenance collection ensure`, so a collection that predates the `bm25` sparse vector is written
+   dense-only: each pass probes `GET /collections/{c}` once per collection and logs `collection lacks bm25
+   collection=<name> (run collection ensure; a rebuild backfills)`. No ticket fails for it. Run `collection ensure`
+   once after the deploy, then `projection rebuild` to backfill the dense-only points (runbook §3).
+6. A supervisor that cannot express ordering can start everything at once and rely on restart:
    the client's first calls fail, the job's lease releases it, and the next pass succeeds. That
    is correct but noisy — prefer readiness-gated ordering.
 

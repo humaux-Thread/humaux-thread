@@ -665,6 +665,19 @@ impl IntraCellHttpTransport for AckTransport {
                 json_body: Some(serde_json::json!({ "result": { "points": points } })),
             });
         }
+        // ADR-0083 D-B: the projection asks the collection whether it holds `bm25` before it writes; this stub is a
+        // current collection (dense plus the `bm25` sparse vector), as `collection ensure` leaves it.
+        if request.path.starts_with("/collections/") && !request.path.contains("/points") {
+            return Ok(IntraCellResponse {
+                status: 200,
+                json_body: Some(
+                    serde_json::json!({ "result": { "status": "green", "config": { "params": {
+                    "vectors": { "size": DIMENSION, "distance": "Cosine" },
+                    "sparse_vectors": { "bm25": { "modifier": "idf" } },
+                } } }, "status": "ok" }),
+                ),
+            });
+        }
         if let Some(body) = request.json_body {
             self.upserted.lock().expect("upserted").push(body);
         }

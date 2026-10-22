@@ -13,8 +13,10 @@
 //!   (scroll_stream_points, ADR-0064 D-F), never search (ADR-0057 D-C); the projection
 //!   worker's point writes and deletes are fenced on source_stream_seq (ADR-0057 D-I); the memory_id backfill
 //!   writes only the memory_id key, by has_id filter, and accepts only one completed result per operation
-//!   (ADR-0068 40d-2a)]
-//! Spec: Baseline §17; §17.5; §17.4; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064; ADR-0068
+//!   (ADR-0068 40d-2a); the bm25 Document is built by bm25_document alone, for the write and for the query, so both
+//!   send identical model and options (ADR-0083 D-A)]
+//! Spec: Baseline §17; §17.5; §17.4; §17.6; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064; ADR-0068;
+//!   ADR-0083
 //!
 //! Implements every part of §17: collection/index request-body shaping, payload encoding, the
 //! [`Condition`](humaux_projection::dense::Condition) → Qdrant filter JSON translation, the
@@ -148,12 +150,45 @@ pub enum ShardingMethod {
     Custom,
 }
 
+/// ADR-0083 D-A: the named sparse vector every `private_memory_v1` collection carries beside its unnamed dense
+/// vector (§17.6). The name is the write key, the query's `using`, and the `PUT .../vectors/{name}` path segment.
+pub const BM25_VECTOR_NAME: &str = "bm25";
+
+/// ADR-0083 V4: the sparse vector's `modifier` on the wire (`none` | `idf`); the schema, not Qdrant's `"Idf"` doc
+/// comment, is the authority. `idf` makes Qdrant weight terms by `params.idf.corpus` at query time (V5).
+pub const BM25_MODIFIER: &str = "idf";
+
+/// ADR-0083 V3/V8: the Document `model` Qdrant routes to its built-in local BM25 (inside the Data Cell, §17.6).
+pub const BM25_MODEL: &str = "qdrant/bm25";
+
+/// ADR-0083 D-A/V3: the one Document `options.tokenizer` value. It is a property of each request, not of the
+/// collection, so a write and a query that differ here silently stop matching (V3); any change rewrites every stored
+/// sparse vector (V7) and is therefore a new rebuild generation (ADR-0064), never a toggle.
+pub const BM25_TOKENIZER: &str = "multilingual";
+
+/// ADR-0083 D-A: THE Document builder — the write path ([`upsert_fenced`]) and T-RET-6c's query path both call it, so
+/// the bytes Qdrant tokenizes at index time and at query time carry identical `model` and `options` (V3). `text` is
+/// the card text the dense vector embeds on a write, the exact query bytes (§20.0) on a read.
+pub fn bm25_document(text: &str) -> Value {
+    json!({
+        "text": text,
+        "model": BM25_MODEL,
+        "options": { "tokenizer": BM25_TOKENIZER },
+    })
+}
+
+/// ADR-0083 V1b: the `PUT /collections/{name}/vectors/bm25` body — how an existing collection gains the sparse vector
+/// (`PATCH /collections/{name}` cannot, V1). Idempotent for the same config.
+pub fn bm25_vector_body() -> Value {
+    json!({ "sparse": { "modifier": BM25_MODIFIER } })
+}
+
 /// `PUT /collections/{name}` request body for one [`RetrievalFamily`] — dense-vector config
-/// plus the §17.3/§17.5 collection-level placement/consistency parameters. None of
+/// plus the ADR-0083 D-B `bm25` sparse vector (§17.6) and the §17.3/§17.5 collection-level
+/// placement/consistency parameters. None of
 /// `shard_number`/`replication_factor`/`write_consistency_factor` are hardcoded (§78.1):
 /// §17.5's own closing line is "具体值通过故障注入和压测冻结", so the caller's config supplies
-/// them. §17.6's sparse/BM25 collection config is a separate, not-yet-frozen piece of this
-/// same request body and is deliberately left out.
+/// them.
 pub fn create_collection_body(
     vector_size: u64,
     distance: Distance,
@@ -167,6 +202,12 @@ pub fn create_collection_body(
         "vectors".into(),
         json!({ "size": vector_size, "distance": distance.as_str() }),
     );
+    let mut sparse = serde_json::Map::new();
+    sparse.insert(
+        BM25_VECTOR_NAME.to_owned(),
+        json!({ "modifier": BM25_MODIFIER }),
+    );
+    obj.insert("sparse_vectors".into(), Value::Object(sparse));
     obj.insert("shard_number".into(), json!(shard_number));
     obj.insert("replication_factor".into(), json!(replication_factor));
     obj.insert(
@@ -1660,7 +1701,18 @@ pub async fn upsert(
     points: &[(PointId, &IndexablePayload, Vec<f32>)],
     ha_profile: HaConsistencyProfile,
 ) -> Result<(), QdrantTransportError> {
-    put_points(transport, permit, collection, points, ha_profile, None).await
+    // ponytail: the unfenced write is dense-only (a probe/test seam; the projection worker writes through
+    // `upsert_fenced`). Give it a `bm25_text` parameter if a non-worker writer ever needs recall by sparse leg.
+    let writes: Vec<PointWrite<'_>> = points
+        .iter()
+        .map(|(id, payload, vector)| PointWrite {
+            id: *id,
+            payload,
+            vector: vector.clone(),
+            bm25_text: None,
+        })
+        .collect();
+    put_points(transport, permit, collection, &writes, ha_profile, None).await
 }
 
 /// ADR-0057 D-I: the projection worker's point write — one point, fenced on its own payload's
@@ -1669,19 +1721,30 @@ pub async fn upsert(
 /// the same home stream already wrote it — is left untouched; an absent point is inserted. Qdrant
 /// still answers `completed` on a refusal, so the refusal is silent by design: the newer state is
 /// the right one and the caller has nothing to do.
+///
+/// ADR-0083 D-B: `bm25_text` is the card text this point's dense `point.2` was embedded from; `Some` writes the
+/// `bm25` Document beside the dense vector (Qdrant tokenizes it in the Cell), `None` writes the point without one.
+/// The caller decides by `projection_worker::in_cell_text_processing_allowed`, never by passing a flag through here.
 pub async fn upsert_fenced(
     transport: &dyn IntraCellHttpTransport,
     permit: &CellAccessPermit,
     collection: &str,
     point: (PointId, &IndexablePayload, Vec<f32>),
+    bm25_text: Option<&str>,
     ha_profile: HaConsistencyProfile,
 ) -> Result<(), QdrantTransportError> {
     let fence = seq_fence(point.1.payload.source_stream_seq);
+    let write = PointWrite {
+        id: point.0,
+        payload: point.1,
+        vector: point.2,
+        bm25_text,
+    };
     put_points(
         transport,
         permit,
         collection,
-        &[point],
+        &[write],
         ha_profile,
         Some(fence),
     )
@@ -1700,22 +1763,49 @@ fn seq_fence(seq: i64) -> Value {
     ] })
 }
 
+/// One point of a [`put_points`] call: its id, payload, dense vector and — ADR-0083 D-B — the card text its `bm25`
+/// Document is built from (`None` = no sparse vector on this point).
+struct PointWrite<'a> {
+    id: PointId,
+    payload: &'a IndexablePayload,
+    vector: Vec<f32>,
+    bm25_text: Option<&'a str>,
+}
+
+/// The `vector` member of a point write. Without `bm25_text` it is the bare dense array (the layout every earlier
+/// writer sent). With it, ADR-0083 D-B's named form: `""` is the collection's unnamed dense vector and `bm25` the
+/// Document of [`bm25_document`] — the unnamed-dense-plus-named-sparse layout E-RET-PB5 ran on Qdrant v1.19.0.
+fn point_vector_value(vector: &[f32], bm25_text: Option<&str>) -> Value {
+    match bm25_text {
+        None => json!(vector),
+        Some(text) => {
+            let mut named = serde_json::Map::new();
+            named.insert(String::new(), json!(vector));
+            named.insert(BM25_VECTOR_NAME.to_owned(), bm25_document(text));
+            Value::Object(named)
+        }
+    }
+}
+
 async fn put_points(
     transport: &dyn IntraCellHttpTransport,
     permit: &CellAccessPermit,
     collection: &str,
-    points: &[(PointId, &IndexablePayload, Vec<f32>)],
+    points: &[PointWrite<'_>],
     ha_profile: HaConsistencyProfile,
     update_filter: Option<Value>,
 ) -> Result<(), QdrantTransportError> {
     validate_collection(collection)?;
     let points_json: Vec<Value> = points
         .iter()
-        .map(|(id, payload, vector)| {
-            let mut body = upsert_point_body(*id, payload);
+        .map(|write| {
+            let mut body = upsert_point_body(write.id, write.payload);
             body.as_object_mut()
                 .expect("upsert_point_body always returns an object")
-                .insert("vector".into(), json!(vector));
+                .insert(
+                    "vector".into(),
+                    point_vector_value(&write.vector, write.bm25_text),
+                );
             body
         })
         .collect();
@@ -1905,12 +1995,51 @@ pub async fn count(
 }
 
 /// One point of a [`scroll_stream_points`] page: its id, its stored payload object and, when asked for,
-/// its stored vector (Qdrant's copy, normalised on upload for Cosine).
+/// its stored dense vector (Qdrant's copy, normalised on upload for Cosine) and whether it holds a `bm25` sparse
+/// vector.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrolledPoint {
     pub id: PointId,
     pub payload: serde_json::Map<String, Value>,
     pub vector: Option<Vec<f32>>,
+    /// ADR-0083 D-B: the point holds a [`BM25_VECTOR_NAME`] vector. Presence only — the sparse values are Qdrant's
+    /// computation and cannot be derived from PostgreSQL, and an empty sparse vector is a legal value (V7), so the
+    /// verifier compares nothing else. `false` also when the scroll did not ask for vectors.
+    pub has_bm25: bool,
+}
+
+/// A JSON array of numbers as a dense vector, `None` when any element is not a number.
+fn dense_from_json(values: &[Value]) -> Option<Vec<f32>> {
+    values
+        .iter()
+        .map(|v| v.as_f64().map(|f| f as f32))
+        .collect()
+}
+
+/// A scrolled point's `vector` member as `(dense vector, holds bm25)`. A point holding only its unnamed dense vector
+/// reads back as a bare array; once it also holds a named vector (ADR-0083 `bm25`) Qdrant answers a map keyed by
+/// vector name, the unnamed one under `""`. A missing member (the scroll did not ask for vectors) is `(None, false)`.
+fn parse_scrolled_vector(
+    member: Option<&Value>,
+) -> Result<(Option<Vec<f32>>, bool), QdrantTransportError> {
+    let non_numeric =
+        || QdrantTransportError::UnexpectedResponseShape("non-numeric vector".to_owned());
+    match member {
+        Some(Value::Array(values)) => Ok((
+            Some(dense_from_json(values).ok_or_else(non_numeric)?),
+            false,
+        )),
+        Some(Value::Object(named)) => {
+            let dense = match named.get("") {
+                Some(Value::Array(values)) => {
+                    Some(dense_from_json(values).ok_or_else(non_numeric)?)
+                }
+                _ => None,
+            };
+            Ok((dense, named.contains_key(BM25_VECTOR_NAME)))
+        }
+        _ => Ok((None, false)),
+    }
 }
 
 /// One page of [`scroll_stream_points`]; `next` is Qdrant's `next_page_offset` (`None` = last page).
@@ -1968,20 +2097,12 @@ pub async fn scroll_stream_points(
             .and_then(|p| p.as_object())
             .cloned()
             .unwrap_or_default();
-        let vector = match point.get("vector") {
-            Some(Value::Array(values)) => Some(
-                values
-                    .iter()
-                    .map(|v| v.as_f64().map(|f| f as f32))
-                    .collect::<Option<Vec<f32>>>()
-                    .ok_or_else(|| shape("non-numeric vector"))?,
-            ),
-            _ => None,
-        };
+        let (vector, has_bm25) = parse_scrolled_vector(point.get("vector"))?;
         points.push(ScrolledPoint {
             id,
             payload,
             vector,
+            has_bm25,
         });
     }
     let next = result
@@ -2014,6 +2135,43 @@ pub async fn collection_status(
         .ok_or_else(|| {
             QdrantTransportError::UnexpectedResponseShape("missing result.status".to_string())
         })
+}
+
+/// Whether a `GET /collections/{c}` body names a vector `name`, sparse (`config.params.sparse_vectors`) or in a named
+/// dense map (`config.params.vectors`); `None` = the body has no `result.config.params` at all, so nothing is known.
+fn body_names_vector(body: &Value, name: &str) -> Option<bool> {
+    let params = body.get("result")?.get("config")?.get("params")?;
+    let holds = |member: &str| {
+        params
+            .get(member)
+            .and_then(|vectors| vectors.get(name))
+            .is_some_and(|config| !config.is_null())
+    };
+    Some(holds("sparse_vectors") || holds("vectors"))
+}
+
+/// ADR-0083 D-B: whether `collection` already holds the vector `vector_name` (`bm25`), one `GET /collections/{c}`.
+/// A point write that names a vector the collection lacks is a permanent Qdrant 400, so the projection pass asks
+/// before it writes and sends dense-only to a collection that predates the sparse vector. An unreadable answer is an
+/// error, never a guess.
+pub async fn collection_has_vector(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    collection: &str,
+    vector_name: &str,
+) -> Result<bool, QdrantTransportError> {
+    validate_collection(collection)?;
+    let body = call(
+        transport,
+        permit,
+        IntraCellMethod::Get,
+        format!("/collections/{collection}"),
+        None,
+    )
+    .await?;
+    body_names_vector(&body, vector_name).ok_or_else(|| {
+        QdrantTransportError::UnexpectedResponseShape("missing result.config.params".to_string())
+    })
 }
 
 /// [`verify_visible`] wired to a real [`scroll_by_ids`] call: fetches the actually-observed ids
@@ -2303,6 +2461,96 @@ mod lifecycle_prefilter_tests {
         );
         assert_eq!(fields.remove(CHUNK_ORDINAL_FIELD), Some(json!(3)));
         assert_eq!(stripped, legacy["payload"]);
+    }
+
+    /// ADR-0083 D-A/V3: write and query must send byte-identical Document `model` and `options`, so both go through
+    /// [`bm25_document`] and this pins its bytes: a write that drops or changes `options` tokenizes with Qdrant's
+    /// default `word` tokenizer while the query uses `multilingual`, and recall degrades with no error.
+    /// Fault: omit `options` (or change the tokenizer) in `bm25_document` ⇒ red.
+    #[test]
+    fn bm25_document_options_are_pinned_byte_for_byte() {
+        assert_eq!(
+            bm25_document("t").to_string(),
+            r#"{"model":"qdrant/bm25","options":{"tokenizer":"multilingual"},"text":"t"}"#
+        );
+        assert_eq!(
+            bm25_document("t"),
+            json!({ "text": "t", "model": "qdrant/bm25", "options": { "tokenizer": "multilingual" } })
+        );
+    }
+
+    /// ADR-0083 D-B: the point write names its vectors — `""` for the dense one, `bm25` for the shared Document — and
+    /// a point without text keeps the bare dense array. Fault: send the Document without going through
+    /// `bm25_document`, or key it other than `bm25` ⇒ red.
+    #[test]
+    fn point_vector_names_dense_and_bm25_or_stays_bare() {
+        assert_eq!(point_vector_value(&[0.5, 0.25], None), json!([0.5, 0.25]));
+        let named = point_vector_value(&[0.5, 0.25], Some("card text"));
+        assert_eq!(named[""], json!([0.5, 0.25]));
+        assert_eq!(named[BM25_VECTOR_NAME], bm25_document("card text"));
+        assert_eq!(named.as_object().map(serde_json::Map::len), Some(2));
+    }
+
+    /// ADR-0083 D-B: a fresh collection carries the `bm25` sparse vector with `modifier: idf` beside the unnamed dense
+    /// vector, and the existing-collection route's body names the same config. Fault: drop `sparse_vectors` ⇒ red.
+    #[test]
+    fn collection_body_declares_bm25_idf_beside_the_unnamed_dense_vector() {
+        let body = create_collection_body(4, Distance::Cosine, 1, 1, 1, ShardingMethod::Auto);
+        assert_eq!(body["vectors"]["size"], json!(4));
+        assert_eq!(
+            body["sparse_vectors"],
+            json!({ "bm25": { "modifier": "idf" } })
+        );
+        assert_eq!(
+            bm25_vector_body(),
+            json!({ "sparse": { "modifier": "idf" } })
+        );
+    }
+
+    /// ADR-0083 D-B: the pre-write probe reads the collection's own config: `bm25` is present only as a named sparse
+    /// (or named dense) vector, an old collection (unnamed dense only) lacks it, and a body without a config is
+    /// unknown, not "absent". Fault: answer `true` for an old collection ⇒ red.
+    #[test]
+    fn a_collection_body_names_its_vectors() {
+        let old = json!({ "result": { "config": { "params": { "vectors": { "size": 4, "distance": "Cosine" } } } } });
+        assert_eq!(body_names_vector(&old, "bm25"), Some(false));
+        let new = json!({ "result": { "config": { "params": {
+            "vectors": { "size": 4, "distance": "Cosine" },
+            "sparse_vectors": { "bm25": { "modifier": "idf" } },
+        } } } });
+        assert_eq!(body_names_vector(&new, "bm25"), Some(true));
+        assert_eq!(body_names_vector(&new, "other"), Some(false));
+        assert_eq!(body_names_vector(&json!({ "result": {} }), "bm25"), None);
+        assert_eq!(body_names_vector(&json!({}), "bm25"), None);
+    }
+
+    /// ADR-0083 D-B: a scrolled point reads back bare (dense only) or as a name-keyed map; only the map's `bm25` key
+    /// counts as holding the sparse vector, and an empty sparse vector still counts (V7). Fault: report `has_bm25`
+    /// from the dense array, or drop the map arm ⇒ red.
+    #[test]
+    fn scrolled_vector_shapes_report_dense_and_bm25_presence() {
+        let bare = json!([0.5, 0.25]);
+        assert_eq!(
+            parse_scrolled_vector(Some(&bare)).expect("bare"),
+            (Some(vec![0.5_f32, 0.25_f32]), false)
+        );
+        let with_sparse = json!({ "": [0.5, 0.25], "bm25": { "indices": [3], "values": [1.5] } });
+        assert_eq!(
+            parse_scrolled_vector(Some(&with_sparse)).expect("named"),
+            (Some(vec![0.5_f32, 0.25_f32]), true)
+        );
+        let empty_sparse = json!({ "": [0.5], "bm25": { "indices": [], "values": [] } });
+        assert_eq!(
+            parse_scrolled_vector(Some(&empty_sparse)).expect("empty sparse"),
+            (Some(vec![0.5_f32]), true)
+        );
+        let dense_only_map = json!({ "": [0.5] });
+        assert_eq!(
+            parse_scrolled_vector(Some(&dense_only_map)).expect("dense map"),
+            (Some(vec![0.5_f32]), false)
+        );
+        assert_eq!(parse_scrolled_vector(None).expect("absent"), (None, false));
+        assert!(parse_scrolled_vector(Some(&json!(["x"]))).is_err());
     }
 
     #[test]
