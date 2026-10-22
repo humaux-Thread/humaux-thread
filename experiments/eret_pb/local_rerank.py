@@ -463,10 +463,11 @@ def fake_pk() -> dict:
 
 def env_info() -> dict:
     d = {"machine": platform.machine(), "cpus": os.cpu_count(), "python": sys.version.split()[0]}
-    for mod in ("torch", "transformers", "tokenizers", "onnxruntime", "optimum", "numpy"):
+    from importlib.metadata import PackageNotFoundError, version
+    for mod in ("torch", "transformers", "tokenizers", "onnxruntime", "optimum", "optimum-onnx", "numpy"):
         try:
-            d[mod] = __import__(mod).__version__
-        except Exception:  # noqa: BLE001
+            d[mod] = version(mod)
+        except PackageNotFoundError:
             d[mod] = None
     try:
         d["cpu_model"] = next((ln.split(":", 1)[1].strip() for ln in subprocess.run(["lscpu"], capture_output=True, text=True, timeout=10).stdout.splitlines()
