@@ -5604,6 +5604,7 @@ modules:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
