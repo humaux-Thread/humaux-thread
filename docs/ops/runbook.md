@@ -1010,7 +1010,7 @@ down — do **not** restart the gateway for it; its loopback `/status` names the
 
 Every resident mode serves `/metrics` and `/status` on its own loopback ops listener (`127.0.0.1:19101-19108`
 inside the shared namespace, supervision.md §1); Prometheus scrapes exactly those eight (R10). `/status` names
-`process`, `mode`, `git_sha` and the 11 degrade codes.
+`process`, `mode`, `git_sha` and every degrade code.
 
 - The Watchdog receipt (the sink or the external healthchecks service) carries `labels.git_sha` equal to the sha the
   `admin` one-shot's `version` prints. A receipt that says `__HUMAUX_GIT_SHA__` means the render (R8 / U7) was skipped:

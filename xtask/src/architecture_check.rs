@@ -2224,21 +2224,33 @@ fn g55_6_split_top_level(text: &str) -> Vec<&str> {
     parts
 }
 
+/// One field or parameter declaration with its comment and attribute lines dropped.
+fn g55_6_decl(part: &str) -> String {
+    part.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//") && !line.starts_with("#["))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The names a caller can assign directly: the plain-`pub` fields of `pub struct RetrievalRequest` and every
 /// parameter of `pub fn build_request` found in `source` (§55.1). A private or `pub(crate)` field is not caller input.
 ///
-/// ponytail: text scan like its siblings (no `syn`); a field or parameter split over lines with a comment inside is
-/// read by its first line only. Upgrade to `syn` if the request type ever grows macro-generated fields.
+/// ponytail: text scan like its siblings (no `syn`); a field or parameter declared through a macro is invisible to
+/// it. [`g55_6_1_caller_depth_names`] fails closed on a spelling this scan cannot read. Upgrade to `syn` if the
+/// request type ever grows macro-generated fields.
 fn g55_6_caller_assignable_names(source: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    if let Some(at) = source.find("pub struct RetrievalRequest {")
-        && let Some(close) = matching_brace_end(source, at + "pub struct RetrievalRequest ".len())
-    {
-        for line in source[at..close].lines() {
-            if let Some(field) = line.trim().strip_prefix("pub ")
-                && let Some((name, _)) = field.split_once(':')
-            {
-                names.insert(name.trim().to_string());
+    if let Some(at) = source.find("pub struct RetrievalRequest {") {
+        let open = at + "pub struct RetrievalRequest ".len();
+        if let Some(close) = matching_brace_end(source, open) {
+            for part in g55_6_split_top_level(&source[open + 1..close - 1]) {
+                let decl = g55_6_decl(part);
+                if let Some(field) = decl.strip_prefix("pub ")
+                    && let Some((name, _)) = field.split_once(':')
+                {
+                    names.insert(name.trim().to_string());
+                }
             }
         }
     }
@@ -2261,9 +2273,10 @@ fn g55_6_caller_assignable_names(source: &str) -> BTreeSet<String> {
         }
         if let Some(close) = close {
             for param in g55_6_split_top_level(&source[open + 1..close]) {
-                let name = param.split(':').next().unwrap_or("").trim();
+                let decl = g55_6_decl(param);
+                let name = decl.split(':').next().unwrap_or("").trim();
                 let name = name.strip_prefix("mut ").unwrap_or(name).trim();
-                if !name.is_empty() && !name.starts_with("//") {
+                if !name.is_empty() {
                     names.insert(name.to_string());
                 }
             }
@@ -2288,14 +2301,33 @@ fn g55_6_offenders(source: &str) -> Vec<String> {
 
 /// §55.6 G55-6 ① over the workspace: `RetrievalRequest` fields ∪ `build_request` parameters, restricted to what a
 /// caller can assign, ∩ [`G55_6_FORBIDDEN_NAMES`] must be empty. Depth comes from the registered profile only.
+///
+/// Fail closed: a file that spells the type or the constructor in a form [`g55_6_caller_assignable_names`] cannot read
+/// (`pub(crate) struct RetrievalRequest`, `pub async fn build_request(`) would make the gate silently blind to its own
+/// object, so that is red, not `not_applicable` and not a pass.
 fn g55_6_1_caller_depth_names(root: &Path) -> Verdict {
     let files = walk_workspace_rs(root);
-    if !files.iter().any(|(_, s)| {
-        s.contains("pub struct RetrievalRequest {") || s.contains("pub fn build_request(")
-    }) {
+    let loose_type = |s: &str| s.contains("struct RetrievalRequest");
+    let loose_fn = |s: &str| s.contains("fn build_request(");
+    if !files.iter().any(|(_, s)| loose_type(s) || loose_fn(s)) {
         return Verdict::NotApplicable(
             "missing object: retrieval::build_request / RetrievalRequest (§55.1)".to_string(),
         );
+    }
+    let unreadable: Vec<String> = files
+        .iter()
+        .filter(|(_, s)| {
+            (loose_type(s) && !s.contains("pub struct RetrievalRequest {"))
+                || (loose_fn(s) && !s.contains("pub fn build_request("))
+        })
+        .map(|(path, _)| display(root, path))
+        .collect();
+    if !unreadable.is_empty() {
+        return Verdict::Fail(vec![format!(
+            "§55.6 G55-6 ①: {unreadable:?} spell `struct RetrievalRequest` or `fn build_request(` in a form the gate \
+             cannot read (it reads `pub struct RetrievalRequest {{` and `pub fn build_request(`): it would be blind \
+             to its own object. Use that spelling or extend the matcher."
+        )]);
     }
     let offenders: Vec<String> = files
         .iter()
@@ -12224,6 +12256,76 @@ async fn serving_version_in_txn() {}
                 G55_6_COMPLIANT.replace("    top_k: u32,", &format!("    pub {name}: u32,"));
             assert_eq!(g55_6_offenders(&as_field).len(), 1, "{name} as a pub field");
         }
+    }
+
+    fn g55_6_tree(label: &str, lib_rs: Option<&str>) -> PathBuf {
+        let tmp = fresh_tmp(label);
+        fs::create_dir_all(&tmp).unwrap();
+        if let Some(source) = lib_rs {
+            let dir = tmp.join("crates/retrieval/src");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("lib.rs"), source).unwrap();
+        }
+        tmp
+    }
+
+    /// G55-6 ① `Fail` branch, over a fixture tree like G80-2's: a caller-assignable `top_k_override` parameter in a
+    /// `build_request` → red, naming the parameter and the file.
+    #[test]
+    fn g55_6_1_fails_on_a_caller_assignable_depth_parameter_in_a_tree() {
+        let tmp = g55_6_tree(
+            "g55-6-red",
+            Some(
+                "pub struct RetrievalRequest {\n    intent: u8,\n}\npub fn build_request(\n    intent: u8,\n    top_k_override: Option<usize>,\n) -> RetrievalRequest {\n    RetrievalRequest { intent }\n}\n",
+            ),
+        );
+        match g55_6_1_caller_depth_names(&tmp) {
+            Verdict::Fail(lines) => assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("top_k_override") && l.contains("lib.rs")),
+                "{lines:?}"
+            ),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// G55-6 ① `NotApplicable` branch: a tree with no request type and no constructor → not applicable, naming
+    /// the missing object (§57.1 第2条).
+    #[test]
+    fn g55_6_1_is_not_applicable_on_an_empty_tree_and_names_the_missing_object() {
+        let tmp = g55_6_tree("g55-6-na", None);
+        match g55_6_1_caller_depth_names(&tmp) {
+            Verdict::NotApplicable(object) => assert!(
+                object.contains("RetrievalRequest") && object.contains("build_request"),
+                "{object}"
+            ),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// G55-6 ① fails closed: the type exists but only as `pub(crate) struct RetrievalRequest`, a spelling the matcher
+    /// does not read → red naming the file, never `not_applicable` and never a pass.
+    #[test]
+    fn g55_6_1_fails_closed_when_the_request_type_is_spelled_beyond_the_matcher() {
+        let tmp = g55_6_tree(
+            "g55-6-loose",
+            Some(
+                "pub(crate) struct RetrievalRequest {\n    pub top_k: u32,\n}\npub fn build_request() {}\n",
+            ),
+        );
+        match g55_6_1_caller_depth_names(&tmp) {
+            Verdict::Fail(lines) => assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("lib.rs") && l.contains("cannot read")),
+                "{lines:?}"
+            ),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// Card 21 widened the 口径: the compliant fixture now carries BOTH legs — the hasher and

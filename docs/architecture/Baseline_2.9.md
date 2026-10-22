@@ -9906,7 +9906,7 @@ backup_budget_headroom_bytes.limit         repo_max | free_floor（`telemetry::d
 partition_horizon_months.table             model_call_ledger | stage_runs | messages | maintenance_receipts | events | audit_events | retrieval_query_log
                                            （ADR-0063 D-C table_key 闭集的小写形，`PartitionTable::label` 逐字）
 maintenance_task_runs_total.outcome        ok | failed
-degrade_total.code                         §53.2 `DegradeCode` 全部变体的 PascalCase 变体名逐字（当前 11 个），
+degrade_total.code                         §53.2 `DegradeCode` 全部变体的 PascalCase 变体名逐字（个数以 §53.2 为准），
                                            一一对应，不多不少；SCREAMING_SNAKE 线格式只用于 §23 envelope，
                                            不得出现在本 label —— 两种形式并存会让 §53.3 规则 2 的
                                            「标签基数」翻倍（形式与映射冻结在 §53.2）
@@ -11485,7 +11485,8 @@ pool recall 高、final recall 明显更低        -> 池够深，问题在 rera
 ```text
 G55-6  诊断轴闸
        ① architecture-check：`RetrievalRequest` 字段名 ∪ `build_request` 形参名中
-          **caller 可直接赋值**的那部分 ∩ {limit, top_k, cand_k, depth, max_candidates}
+          **caller 可直接赋值**的那部分 ∩ {limit, top_k, cand_k, depth, max_candidates,
+          cand_multiplier, leg_depth, rrf_k, sparse_leg_enabled}
           必须为空集 —— 这几个值只能由 profile 解析得出，解析结果由 §23
           `provenance.profile` 自报，不由调用方给
        ② profile 注册表中每个 profile 必须带 production_enabled = true

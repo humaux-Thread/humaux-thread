@@ -1,6 +1,6 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
-//! Called-by: [gateway::bootstrap, gateway::recall, tests]
+//! Called-by: [gateway::bootstrap, gateway::recall, retrieval::request, tests]
 //! Invariants: [the five depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`)
 //!   are read here and nowhere else; each is bounds-checked when the registry loads]
 //! Spec: Baseline §50; §55.1; §55.6; ADR-0083 D-D
@@ -29,13 +29,18 @@ const RRF_K: &str = "retrieval.profile.rrf_k";
 /// ADR-0083 D-D / U6: turns the sparse leg on for the profile once the bm25 backfill reads zero missing.
 const SPARSE_LEG_ENABLED: &str = "retrieval.profile.sparse_leg_enabled";
 
+/// §23.3 / §55.6: the most Memories the candidate pool (`cand_k`) can hold. The one definition: `retrieval::request`
+/// computes `cand_k` with it and the bounds below derive from it, so they cannot drift apart.
+pub const RETRIEVAL_CANDIDATE_CAP: u32 = 200;
+
 // Bounds, checked when the registry loads (ADR-0083 D-D). The defaults sit inside every range.
 /// Below 1 `cand_k < top_k`: the pool could not hold the answer, breaking §23.3 `candidate_count >= returned`.
 const CAND_MULTIPLIER_MIN: u32 = 1;
-/// `cand_k` is capped at 200 (`retrieval::request`), and `top_k >= 1`, so a multiplier above 200 changes nothing.
-const CAND_MULTIPLIER_MAX: u32 = 200;
-/// 0 asks each leg for nothing.
-const LEG_DEPTH_MIN: u32 = 1;
+/// `cand_k` is capped at [`RETRIEVAL_CANDIDATE_CAP`] and `top_k >= 1`, so a multiplier above the cap changes nothing.
+const CAND_MULTIPLIER_MAX: u32 = RETRIEVAL_CANDIDATE_CAP;
+/// Each leg must be at least as deep as any `cand_k` (which never exceeds the cap): a shallower leg could not fill
+/// the candidate pool, so `candidate_count` would fall below `cand_k` and break the §23.3 invariant.
+const LEG_DEPTH_MIN: u32 = RETRIEVAL_CANDIDATE_CAP;
 /// Cost guard (ADR-0083 U7): the fused list is cut to `cand_k <= 200`, so five times that already over-fetches.
 const LEG_DEPTH_MAX: u32 = 1000;
 /// RRF ranks are 1-based, so 0 is legal arithmetic but weights rank 1 a hundredfold over rank 100; 1 is the floor.
@@ -360,7 +365,7 @@ mod tests {
         let default = resolve_registered_retrieval_profile(&BTreeMap::new()).expect("defaults");
         for (key, value) in [
             (CAND_MULTIPLIER, "6"),
-            (LEG_DEPTH, "199"),
+            (LEG_DEPTH, "201"),
             (RRF_K, "61"),
             (SPARSE_LEG_ENABLED, "true"),
         ] {

@@ -55,6 +55,7 @@
 | `contracts::config_registry` | r=[] w=[] x=[] | [] | [] |
 | `contracts::feature_registry` | r=[] w=[] x=[] | [] | [] |
 | `contracts::mechanism_registry` | r=[public.consensus_ready] w=[] x=[] | [] | [PostgreSQL(any)] |
+| `contracts::retrieval_config` | r=[] w=[] x=[] | [] | [] |
 | `domain::affect` | r=[] w=[] x=[] | [] | [] |
 | `domain::attribution` | r=[] w=[] x=[] | [] | [] |
 | `domain::audit` | r=[] w=[] x=[] | [] | [] |
@@ -239,6 +240,7 @@
 | `consolidation-worker::inference_client` | r=[] w=[] x=[] | [] | [UDS(private-worker)] |
 | `consolidation-worker::main` | r=[] w=[] x=[] | [CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_CONSOLIDATION_WORKER_BATCH, HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS, HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS, HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS, HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS, HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS, HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS, HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH, HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR] | [HTTP(loopback), PostgreSQL(role_consolidation_worker), UDS(private-worker)] |
 | `contracts::config_registry` | r=[] w=[] x=[] | [] | [] |
+| `contracts::retrieval_config` | r=[] w=[] x=[] | [] | [] |
 | `domain::affect` | r=[] w=[] x=[] | [] | [] |
 | `domain::attribution` | r=[] w=[] x=[] | [] | [] |
 | `domain::audit` | r=[] w=[] x=[] | [] | [] |
@@ -474,6 +476,7 @@
 | `application::pin` | r=[] w=[] x=[] | [] | [] |
 | `application::supersede` | r=[] w=[] x=[] | [] | [] |
 | `contracts::config_registry` | r=[] w=[] x=[] | [] | [] |
+| `contracts::retrieval_config` | r=[] w=[] x=[] | [] | [] |
 | `domain::affect` | r=[] w=[] x=[] | [] | [] |
 | `domain::attribution` | r=[] w=[] x=[] | [] | [] |
 | `domain::audit` | r=[] w=[] x=[] | [] | [] |
@@ -601,6 +604,7 @@
 | `application::pin` | r=[] w=[] x=[] | [] | [] |
 | `application::supersede` | r=[] w=[] x=[] | [] | [] |
 | `contracts::config_registry` | r=[] w=[] x=[] | [] | [] |
+| `contracts::retrieval_config` | r=[] w=[] x=[] | [] | [] |
 | `domain::affect` | r=[] w=[] x=[] | [] | [] |
 | `domain::attribution` | r=[] w=[] x=[] | [] | [] |
 | `domain::audit` | r=[] w=[] x=[] | [] | [] |
@@ -742,6 +746,7 @@
 | `application::pin` | r=[] w=[] x=[] | [] | [] |
 | `application::supersede` | r=[] w=[] x=[] | [] | [] |
 | `contracts::config_registry` | r=[] w=[] x=[] | [] | [] |
+| `contracts::retrieval_config` | r=[] w=[] x=[] | [] | [] |
 | `domain::affect` | r=[] w=[] x=[] | [] | [] |
 | `domain::attribution` | r=[] w=[] x=[] | [] | [] |
 | `domain::audit` | r=[] w=[] x=[] | [] | [] |

@@ -1,6 +1,6 @@
 //! `retrieval::request` — Retrieval request construction (§55.1): one typed path shared by every future lane.
 //! Depends-on: crates=[humaux-contracts, humaux-domain, serde]; services=[];
-//!   env=[]; modules=[contracts::config_registry, domain::authority, domain::selection, retrieval::planner, retrieval::predicate_registry]
+//!   env=[]; modules=[contracts::config_registry, contracts::retrieval_config, domain::authority, domain::selection, retrieval::planner, retrieval::predicate_registry]
 //! Called-by: [application::retrieve, gateway::context, gateway::memory, gateway::recall, humaux-local-secret-scan, retrieval-worker::rpc, retrieval::completeness, retrieval::envelope, tests]
 //! Invariants: [build_request records which RetrievalIntent constructor ran as a closed IntentKind; nothing else
 //!   sets it]
@@ -11,6 +11,7 @@ use std::fmt;
 
 use serde::Serialize;
 
+use humaux_contracts::retrieval_config::RETRIEVAL_CANDIDATE_CAP;
 pub use humaux_contracts::retrieval_config::{
     QueryTransform, RegisteredRetrievalProfile, RetrievalConfigError,
     resolve_registered_retrieval_profile,
@@ -20,12 +21,12 @@ use humaux_domain::authority::MemoryId;
 use crate::planner::{self, PlannerDecision};
 use crate::predicate_registry::PredicateEntry;
 
-const CANDIDATE_CAP: u32 = 200;
-
-/// §55.6 / ADR-0083 D-D: `cand_k = min(top_k * cand_multiplier, CANDIDATE_CAP)`. The one place the formula is
+/// §55.6 / ADR-0083 D-D: `cand_k = min(top_k * cand_multiplier, RETRIEVAL_CANDIDATE_CAP)`. The one place the formula is
 /// computed, shared by [`build_request`] and the envelope's §23.3 consistency check so the two cannot drift.
 pub(crate) fn candidate_depth(top_k: u32, cand_multiplier: u32) -> u32 {
-    top_k.saturating_mul(cand_multiplier).min(CANDIDATE_CAP)
+    top_k
+        .saturating_mul(cand_multiplier)
+        .min(RETRIEVAL_CANDIDATE_CAP)
 }
 
 /// Effective request identity, minted only by build_request. No raw-string or deserialization
@@ -217,7 +218,10 @@ impl RetrievalRequest {
 
     #[must_use]
     pub fn cand_k_formula(&self) -> String {
-        format!("min(top_k*{}, {CANDIDATE_CAP})", self.cand_multiplier)
+        format!(
+            "min(top_k*{}, {RETRIEVAL_CANDIDATE_CAP})",
+            self.cand_multiplier
+        )
     }
 
     #[must_use]
@@ -303,7 +307,10 @@ pub fn build_request(
 
 fn request_profile_fingerprint(profile: &RegisteredRetrievalProfile, cand_k: u32) -> String {
     let mut effective = BTreeMap::new();
-    effective.insert("candidate_cap".to_string(), CANDIDATE_CAP.to_string());
+    effective.insert(
+        "candidate_cap".to_string(),
+        RETRIEVAL_CANDIDATE_CAP.to_string(),
+    );
     // ADR-0083 D-D: all four registry entries identify the request; G23-4 refuses to pool runs across any of them.
     effective.insert(
         "candidate_multiplier".to_string(),
@@ -421,24 +428,38 @@ mod tests {
         assert_eq!(text.profile_fingerprint(), context.profile_fingerprint());
     }
 
-    fn request_with(key: &str, value: &str) -> RetrievalRequest {
-        let raw = BTreeMap::from([(format!("retrieval.profile.{key}"), value.to_string())]);
+    fn request_from(entries: &[(&str, &str)]) -> RetrievalRequest {
+        let raw: BTreeMap<String, String> = entries
+            .iter()
+            .map(|(key, value)| (format!("retrieval.profile.{key}"), value.to_string()))
+            .collect();
         let profile = resolve_registered_retrieval_profile(&raw).expect("registered value");
         build_request(intent("same query"), &profile).expect("request")
     }
 
+    fn request_with(key: &str, value: &str) -> RetrievalRequest {
+        request_from(&[(key, value)])
+    }
+
     /// G6c1-1: changing any one of the four ADR-0083 D-D entries changes the fingerprint, so G23-4 refuses to pool
-    /// runs across it. Fault: leave one of them out of `request_profile_fingerprint` => its row goes red.
+    /// runs across it. `top_k = 100` saturates the cap (multipliers 5 and 6 both give `cand_k` 200), so `cand_k`
+    /// cannot move the fingerprint and each row isolates its own key. Fault: leave one of them out of
+    /// `request_profile_fingerprint` => its row goes red.
     #[test]
     fn each_hybrid_registry_entry_moves_the_request_fingerprint() {
-        let base = build_request(intent("same query"), &profile()).expect("request");
+        let base = request_from(&[("top_k", "100")]);
         for (key, value) in [
             ("cand_multiplier", "6"),
-            ("leg_depth", "199"),
+            ("leg_depth", "201"),
             ("rrf_k", "61"),
             ("sparse_leg_enabled", "true"),
         ] {
-            let changed = request_with(key, value);
+            let changed = request_from(&[("top_k", "100"), (key, value)]);
+            assert_eq!(
+                base.cand_k(),
+                changed.cand_k(),
+                "{key}: cand_k must not be what moves it"
+            );
             assert_ne!(
                 base.profile_fingerprint(),
                 changed.profile_fingerprint(),

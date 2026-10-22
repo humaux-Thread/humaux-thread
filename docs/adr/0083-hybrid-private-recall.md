@@ -167,7 +167,7 @@ Four registered-profile entries, beside `top_k` in the §50 registry, none ever 
 | `rrf_k` | 60 | the constant in the D-C formula |
 | `sparse_leg_enabled` | false | turns the sparse leg on for the profile after the T-RET-6b backfill reads zero missing `bm25` (U6) |
 
-All four enter `request_profile_fingerprint` and the envelope validation (§23.3 fixture assertions), so a change moves
+All four enter `request_profile_fingerprint`; the multiplier also enters the envelope's `cand_k` check (§23.3 fixture assertions), so a change moves
 `profile_fingerprint` and G23-4 refuses to pool runs across values. `cand_k_formula` renders the resolved multiplier.
 `RetrievalRequest` and `build_request` take no parameter for any of them (§55.1); T-RET-6c adds the four names to the
 G55-6 ① forbidden-name set, red-recorded by that card. Bounds are validated when the registry loads, and no literal of
