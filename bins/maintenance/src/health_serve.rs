@@ -104,6 +104,8 @@ fn snapshot(s: &HealthSample) -> HealthSnapshot {
             .iter()
             .map(|(o, n)| (outcome(o), *n))
             .collect(),
+        tenants_active_1d: s.tenants_active_1d,
+        tenants_active_7d: s.tenants_active_7d,
     }
 }
 
