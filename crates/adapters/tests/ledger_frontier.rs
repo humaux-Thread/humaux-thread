@@ -2,7 +2,7 @@
 //!   primary-key read and reports no count its row cannot supply.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(owner) w=[control.tenants, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN];
+//!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::postgres, adapters::stream_repo, adapters::tests::support::throwaway_db, domain::egress,
 //!   domain::identity, domain::ids, humaux-testkit, projection::stream]
 //! Called-by: [cargo-test]
@@ -35,6 +35,8 @@ struct Handle {
     rt: tokio::runtime::Runtime,
     retrieval: RetrievalWorkerDbPool,
     admin: Client,
+    /// Owner-database DSN; the gateway-role test opens its own pool from it.
+    dsn: String,
     tenant_id: Uuid,
     /// Dropped last: it drops the whole database.
     _db: ThrowawayDb,
@@ -72,6 +74,7 @@ impl DbIntegrationFixture for FrontierFixture {
             rt,
             retrieval,
             admin,
+            dsn,
             tenant_id,
             _db: db,
         })
@@ -89,13 +92,15 @@ fn key(h: &Handle) -> StreamKey {
     )
 }
 
-/// Three `DONE` tickets under a checkpoint that issued exactly three: a settled stream.
+/// Three `DONE` tickets plus one `ISSUED` under a checkpoint that issued four, `projection_highwater` seeded to 2 and
+/// `serving` true, so `issued_hw` (4), `projection_hw` (3 once advanced) and `serving` are all distinguishable and a
+/// column swap in the SELECT goes red.
 fn seed_settled_stream(admin: &mut Client, k: &StreamKey) {
     admin
         .execute(
             "INSERT INTO projection.stream_checkpoints \
                (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
-                issued_highwater) VALUES ($1,$2,$3,$4,$5,$6,3)",
+                issued_highwater, projection_highwater, serving) VALUES ($1,$2,$3,$4,$5,$6,4,2,true)",
             &[
                 &k.tenant_id.0,
                 &k.scope_kind,
@@ -127,6 +132,21 @@ fn seed_settled_stream(admin: &mut Client, k: &StreamKey) {
             )
             .expect("seed stream_log row");
     }
+    admin
+        .execute(
+            "INSERT INTO projection.stream_log \
+               (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
+                stream_seq, commit_seq, state) VALUES ($1,$2,$3,$4,$5,$6,4,4,'ISSUED')",
+            &[
+                &k.tenant_id.0,
+                &k.scope_kind,
+                &k.scope_id,
+                &k.domain,
+                &k.projection_kind,
+                &k.projection_version,
+            ],
+        )
+        .expect("seed pending stream_log row");
 }
 
 fn reader(h: &Handle) -> AuthorizationScope {
@@ -169,15 +189,14 @@ fn frontier_matches_the_closure_and_reads_only_the_checkpoint_row() {
             // Compile-time: every field is named, so a `visible` (or any count) added to `Frontier` breaks this.
             let Frontier {
                 issued_hw,
-                evidence_hw,
-                knowledge_hw,
                 projection_hw,
                 serving,
                 updated_at: _,
             } = before;
             assert_eq!(issued_hw, closure.counts().expected());
-            assert_eq!(projection_hw, prefix);
-            assert_eq!((evidence_hw, knowledge_hw, serving), (0, 0, false));
+            assert_eq!((projection_hw, issued_hw), (prefix, 4));
+            assert_eq!(prefix, 3, "the pending ticket 4 stops the prefix at 3");
+            assert!(serving, "seeded serving = true");
 
             h.admin
                 .batch_execute("REVOKE ALL ON projection.stream_log FROM role_retrieval_worker")
@@ -194,14 +213,15 @@ fn frontier_matches_the_closure_and_reads_only_the_checkpoint_row() {
                 still_readable,
                 "precondition: the worker role cannot read stream_log any more"
             );
+            let denied = h.rt.block_on(stream_repo::fetch_ledger_closure(
+                &h.retrieval,
+                &k,
+                &reader(&h),
+            ));
             assert!(
-                h.rt.block_on(stream_repo::fetch_ledger_closure(
-                    &h.retrieval,
-                    &k,
-                    &reader(&h)
-                ))
-                .is_err(),
-                "the O(stream) closure needs stream_log, so the revoke has teeth"
+                matches!(&denied, Err(stream_repo::StreamRepoError::Db(sqlx::Error::Database(e)))
+                    if e.code().as_deref() == Some("42501")),
+                "the O(stream) closure needs stream_log, so the revoke has teeth (SQLSTATE 42501): {denied:?}"
             );
             let after =
                 h.rt.block_on(stream_repo::ledger_frontier(&h.retrieval, &k))
@@ -222,4 +242,49 @@ fn frontier_of_a_never_issued_stream_is_none() {
                 .expect("frontier");
         assert_eq!(frontier, None);
     });
+}
+
+/// C6: `memory.get` (M13) reads the frontier on the gateway pool inside its REPEATABLE READ READ ONLY snapshot, so the
+/// `_in_txn` form must work as `role_gateway` there and return the same row the worker-pool form does.
+#[test]
+fn frontier_in_txn_reads_as_role_gateway_in_a_read_only_snapshot() {
+    run_db_fixture::<FrontierFixture, _>(
+        "frontier_in_txn_reads_as_role_gateway_in_a_read_only_snapshot",
+        |mut h| {
+            let k = key(&h);
+            seed_settled_stream(&mut h.admin, &k);
+            h.rt.block_on(stream_repo::advance_prefix(
+                &h.retrieval,
+                &k,
+                ProcessorId(Uuid::from_u128(0x0902)),
+            ))
+            .expect("advance");
+            let via_worker =
+                h.rt.block_on(stream_repo::ledger_frontier(&h.retrieval, &k))
+                    .expect("worker-pool frontier");
+
+            let sep = if h.dsn.contains('?') { '&' } else { '?' };
+            let gateway_dsn = format!("{}{sep}options=-c%20role%3Drole_gateway", h.dsn);
+            // dep: PostgreSQL(role_gateway) — the role `memory.get` runs as; a bare pool because `RuntimeDbPool::pool()` is crate-private
+            let gateway =
+                h.rt.block_on(sqlx::Pool::<sqlx::Postgres>::connect(&gateway_dsn))
+                    .expect("connect role_gateway");
+            let via_gateway = h.rt.block_on(async {
+                let mut txn = gateway.begin().await?;
+                sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    .execute(&mut *txn)
+                    .await?;
+                let frontier = stream_repo::ledger_frontier_in_txn(&mut txn, &k).await?;
+                txn.commit().await?;
+                Ok::<_, sqlx::Error>(frontier)
+            });
+            let via_gateway = via_gateway.expect("frontier as role_gateway");
+            assert_eq!(via_gateway, via_worker);
+            let frontier = via_gateway.expect("row");
+            assert_eq!(
+                (frontier.issued_hw, frontier.projection_hw, frontier.serving),
+                (4, 3, true)
+            );
+        },
+    );
 }

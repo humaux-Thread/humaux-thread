@@ -1,7 +1,8 @@
 //! `adapters::stream_repo` — §15 `projection.stream_log` / `stream_checkpoints` SQL: T3.3's `advance_prefix`
 //!   (three/four independent reads + monotonic watermark write, both through [`RetrievalWorkerDbPool`]), T3.4's
 //!   `ISSUED -> LOST` patrol (through [`MaintenanceDbPool`]) and the sole private-evidence ticket door
-//!   [`issue_ticket_in_txn`] (on the caller's transaction, M09 D1) and the O(1) [`ledger_frontier`] read (M09 D3).
+//!   [`issue_ticket_in_txn`] (on the caller's transaction, M09 D1) and the O(1) frontier read (M09 D3, C6): [`ledger_frontier_in_txn`] on the caller's transaction (the gateway-role form `memory.get`
+//!   uses inside its REPEATABLE READ READ ONLY snapshot) and its worker-pool wrapper [`ledger_frontier`].
 //! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, sqlx, tokio];
 //!   services=[PostgreSQL(any)
 //!   r=[ops.commit_seq_seq, ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets,
@@ -497,17 +498,15 @@ pub async fn fetch_ledger_closure(
     Ok(closure)
 }
 
-/// §15.3: the four highwaters and the read-routing flags of one stream, as one `stream_checkpoints` row holds them.
-/// Deliberately has no `visible` and no per-state count: the row cannot supply them, and §23.3④ forbids filling
-/// 0 or a substitute (those come from [`fetch_ledger_closure`], M13's call which reader an envelope uses).
+/// §15.3: the frontier of one stream as its `stream_checkpoints` row holds it. Carries only what has a writer on main
+/// (`issued_highwater` by the ticket door, `projection_highwater` by [`advance_prefix`], `serving` by the maintenance
+/// switch); `evidence_highwater` / `knowledge_highwater` are absent until M13 gives them one, because exposing a
+/// column nobody writes would present a fabricated 0 (§23.3④). No `visible`, no per-state count either: those come
+/// from [`fetch_ledger_closure`], and which reader an envelope uses is M13's ruling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frontier {
     /// `issued_highwater` — A1's `expected` (§15.4).
     pub issued_hw: u64,
-    /// `evidence_highwater` — written by the census owner (M13); 0 until it writes.
-    pub evidence_hw: u64,
-    /// `knowledge_highwater` — written by the census owner (M13); 0 until it writes.
-    pub knowledge_hw: u64,
     /// `projection_highwater` — the §15.4 contiguous-done prefix [`advance_prefix`] last stored.
     pub projection_hw: u64,
     /// `serving` — the §15.3 read-routing flag.
@@ -516,40 +515,46 @@ pub struct Frontier {
     pub updated_at: sqlx::types::time::OffsetDateTime,
 }
 
-/// M09 D3: the O(1) hot-path read of a stream's frontier — one primary-key lookup on `stream_checkpoints`, never
-/// `stream_log` and never the point ledger (so unlike [`fetch_ledger_closure`] it cannot cost O(stream)). `None` =
-/// no checkpoint row, i.e. nothing was ever issued for the key; the caller decides what that means rather than
-/// receiving a fabricated zero frontier (§23.3④). Read-only; no caller switches to it in this card.
-pub async fn ledger_frontier(
-    pool: &RetrievalWorkerDbPool,
+/// M09 D3 / C6: the O(1) frontier read on the caller's transaction — tenant GUC plus one primary-key SELECT on
+/// `stream_checkpoints`, never `stream_log` and never the point ledger. It is the form `memory.get` (M13) uses inside
+/// its REPEATABLE READ READ ONLY snapshot on the gateway pool; `role_gateway` and `role_retrieval_worker` both hold
+/// SELECT on the table (0011). `None` = no checkpoint row, i.e. nothing was ever issued for the key; the caller
+/// decides what that means rather than receiving a fabricated zero frontier (§23.3④). Nothing here commits.
+pub async fn ledger_frontier_in_txn(
+    txn: &mut Txn<'_>,
     key: &StreamKey,
-) -> Result<Option<Frontier>, StreamRepoError> {
-    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for `ledger_frontier`
-    let mut txn = pool.pool().begin().await?;
-    set_tenant_local(&mut txn, key.tenant_id.0).await?;
+) -> Result<Option<Frontier>, sqlx::Error> {
+    set_tenant_local(txn, key.tenant_id.0).await?;
     let row = bind_key(
         sqlx::query(&format!(
-            "SELECT issued_highwater, evidence_highwater, knowledge_highwater, projection_highwater, \
-                    serving, updated_at \
+            "SELECT issued_highwater, projection_highwater, serving, updated_at \
                FROM projection.stream_checkpoints WHERE {KEY_WHERE}"
         )),
         key,
     )
-    .fetch_optional(&mut *txn)
+    .fetch_optional(&mut **txn)
     .await?;
-    txn.commit().await?;
     row.map(|row| {
-        Ok::<_, sqlx::Error>(Frontier {
+        Ok(Frontier {
             issued_hw: row.try_get::<i64, _>("issued_highwater")? as u64,
-            evidence_hw: row.try_get::<i64, _>("evidence_highwater")? as u64,
-            knowledge_hw: row.try_get::<i64, _>("knowledge_highwater")? as u64,
             projection_hw: row.try_get::<i64, _>("projection_highwater")? as u64,
             serving: row.try_get("serving")?,
             updated_at: row.try_get("updated_at")?,
         })
     })
     .transpose()
-    .map_err(StreamRepoError::Db)
+}
+
+/// [`ledger_frontier_in_txn`] in its own transaction on the retrieval-worker pool, for out-of-band readers.
+pub async fn ledger_frontier(
+    pool: &RetrievalWorkerDbPool,
+    key: &StreamKey,
+) -> Result<Option<Frontier>, StreamRepoError> {
+    // dep: PostgreSQL(role_retrieval_worker) — transaction entry for `ledger_frontier`
+    let mut txn = pool.pool().begin().await?;
+    let frontier = ledger_frontier_in_txn(&mut txn, key).await?;
+    txn.commit().await?;
+    Ok(frontier)
 }
 
 /// §15.4 `advance_prefix`: fetches the independent snapshot, validates it
