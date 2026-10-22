@@ -4169,6 +4169,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::public_evolve`
 
+#### `contracts::config_registry`
+
 #### `domain::affect`
 
 #### `domain::authority`
@@ -10274,6 +10276,7 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - process(cargo-xtask): `adapters::stream_repo`
@@ -11973,7 +11976,9 @@ why: shared contract types for the mechanism-observation adapter
 
 modules naming it:
 - `adapters::mechanism_observation`
+- `adapters::qdrant`
 - `adapters::tests::mechanism_observation`
+- `adapters::tests::qdrant_contract`
 - `tests`
 
 ### humaux-adapters → `humaux-retrieval` (normal)

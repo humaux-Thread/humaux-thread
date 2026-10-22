@@ -8822,7 +8822,7 @@ completeness_request = required     未交付  bins/gateway/src/recall.rs:299 �
   只有显式 `mode` 指名未交付 lane 才拒绝，错误码仍是 `DEPENDENCY_UNAVAILABLE`（本节上表，不变）。
   原锚点 `recall.rs:255-261 ⇒ INVALID_INPUT` 作废。见证：
   `bins/gateway/tests/mcp_gateway.rs::recall_everyday_queries_are_answered_by_dense_with_lane_substituted`。
-- **已交付（T-RET-6c，ADR-0083 D-C / D-E）**：已交付 lane 是 `{dense, sparse}` —— `sparse_leg_enabled=true` 时 `semantic` 由 dense 与 sparse（Qdrant 内置 BM25，§17.6）两条 live lane 并发作答，gateway 内按 memory 名次 RRF 融合；注册默认 `false`（ADR-0083 D-D），默认 `semantic` 只由 dense 腿作答，`profile.lanes` 只有 `dense`。`LANE_SUBSTITUTED` 含义不变：只在 planner 选的 lane 仍未交付（如 literal、association）且调用方未带 `mode` 时出现；sparse 不是 `mode` 取值，所以 `x-humaux-v1-supported`、上表与下面那道闸都不动。sparse 腿失败由 dense 作答并带 `SparseLaneUnavailable`（§53.2 的第 12 个变体，由 T-RET-6c 加入）。**上文「唯一已交付 lane」与各 file:line 锚点描述的是 T-RET-6c 之前的交付点。**
+- **已交付（T-RET-6c，ADR-0083 D-C / D-E）**：已交付 lane 是 `{dense, sparse}` —— 仅当 `sparse_leg_enabled=true` 且租户的 in-Cell 策略允许文本处理（`in_cell_text_processing_allowed`，`bins/gateway/src/recall.rs:687`；ADR-0083 D-A/D-E）时，`semantic` 才由 dense 与 sparse（Qdrant 内置 BM25，§17.6）两条 live lane 并发作答，gateway 内按 memory 名次 RRF 融合；注册默认 `false`（ADR-0083 D-D），默认 `semantic` 只由 dense 腿作答，`profile.lanes` 只有 `dense`。`LANE_SUBSTITUTED` 含义不变：只在 planner 选的 lane 仍未交付（如 literal、association）且调用方未带 `mode` 时出现；sparse 不是 `mode` 取值，所以 `x-humaux-v1-supported`、上表与下面那道闸都不动。sparse 腿失败由 dense 作答并带 `SparseLaneUnavailable`（§53.2 的第 12 个变体，由 T-RET-6c 加入）。**上文「唯一已交付 lane」与各 file:line 锚点描述的是 T-RET-6c 之前的交付点。**
 - 未交付的 lane 走 `DEPENDENCY_UNAVAILABLE`（§52：契约里有、这个部署没有实现），不是
   `INVALID_INPUT`（值非法）。合约 `contracts/mcp/recall.schema.json` 因此**保留** `mode` 的
   五值闭集 —— 把未交付值从 enum 里删掉会让这条 guard 变成不可达代码，拒绝路径也就不再可观察
@@ -12204,7 +12204,7 @@ pub struct Authority {
     class: AuthorityClass,
     confidence: Confidence,
     status: AuthorityStatus,
-    asserted_at: DateTime<Utc>,
+    asserted_at: time::OffsetDateTime, // UTC，构造时归一化；ADR-0087
     evidence: NonEmpty<EvidenceId>,
     superseded_by: Option<MemoryId>,
 }
@@ -12215,7 +12215,7 @@ impl Authority {
         class: AuthorityClass,
         confidence: Confidence,
         status: AuthorityStatus,
-        asserted_at: DateTime<Utc>,
+        asserted_at: time::OffsetDateTime,
         evidence: NonEmpty<EvidenceId>,
         superseded_by: Option<MemoryId>,
     ) -> Result<Self, DomainError>;
@@ -12275,7 +12275,7 @@ pub struct Scope {
 | `class` | `AuthorityClass` | 是 | §10 优先级链的类型化表达，闭集 7 个 |
 | `confidence` | `Confidence` | 是 | 只在**同 class 内**做 tie-break，永不跨 class 生效 |
 | `status` | `AuthorityStatus` | 是 | 非 `Active` 的行不参与裁决 |
-| `asserted_at` | `DateTime<Utc>` | 是 | 同 class 内第一 tie-break |
+| `asserted_at` | `time::OffsetDateTime`（UTC，构造时归一化；ADR-0087） | 是 | 同 class 内第一 tie-break |
 | `evidence` | `NonEmpty<EvidenceId>` | 是 | 至少一条 Evidence（§11） |
 | `superseded_by` | `Option<MemoryId>` | 条件必填 | 见 I4 |
 
