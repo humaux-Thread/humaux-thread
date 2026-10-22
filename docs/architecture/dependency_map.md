@@ -10187,6 +10187,7 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - process(cargo-xtask): `adapters::stream_repo`
