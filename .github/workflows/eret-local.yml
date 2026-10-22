@@ -1,0 +1,370 @@
+# E-RET-PB7: local rerank models and configurations (gte-multilingual-reranker-base, mmarco-mMiniLMv2-L12, bge-reranker-base int8) on the hybrid RRF pool of
+# E-RET-5f (PB6), from the same ENCRYPTED full-corpus snapshot: hit@5, exact McNemar against RRF alone, per-query p50 / p95 on the N2 runner; then an N1 bench
+# bundle for the cells that are significant AND fast. Experiment branch only (exp/e-ret-pb-local-rerank*); never merged. The Qdrant is a CI-local service
+# container. Plaintext corpus exists only in $RUNNER_TEMP (umask 077) and is removed in an `if: always()` step. NO cloud key is used: the rerank models are public,
+# pinned by commit and run on the runner; HUMAUX_EVAL_PACK_KEY appears only in the fetch step's env. Output = aggregate numbers only, checked by
+# `local_rerank.py guard` before anything is published. Triggers: push to exp/e-ret-pb-local-rerank* when a file of this experiment changes AND the tip commit message
+# carries a run token ([run:pre] public smoke on toy text, [run:grid] the real grid + merge + bundle, [run:bundle] the bundle alone from a committed qualify file),
+# and workflow_dispatch (= grid). Never pull_request / pull_request_target. Top-level permissions are read-only; only the bundle job (no secret, no corpus, public
+# model and data) gets contents: write, to create the prerelease asset. At most 4 runs for this card.
+name: eret-local
+on:
+  push:
+    branches: ['exp/e-ret-pb-local-rerank*']
+    paths:
+      - '.github/workflows/eret-local.yml'
+      - 'experiments/eret_pb/local_rerank.py'
+      - 'experiments/eret_pb/n1_bench_local.py'
+      - 'experiments/eret_pb/bundle_qualify.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: eret-local
+  cancel-in-progress: false
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '4'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  QDRANT_URL: http://127.0.0.1:6333
+  # gz sha256 of the full-corpus tar (corpus.v1.tar.gz) and of the query-vector variants (qvec2.json.gz), tag eval-pack-e-ret-2026-10-v1 (as eret-rrfrr.yml)
+  CORPUS_SHA256: 1e8158d43afd0403e8aec838eb488ed54ca6267c944b3e458b5bdcc725c00a52
+  QVEC2_SHA256: 6e7b7135cf4916b6120b9468b280269c0d656994075a9014afd276af01981e2c
+  BUNDLE_TAG: n1-bench-bundle-v2
+jobs:
+  plan:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      pre: ${{ steps.g.outputs.pre }}
+      grid: ${{ steps.g.outputs.grid }}
+      bundle: ${{ steps.g.outputs.bundle }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: selftest (cell runner, qualify rule, bundle choice, merge, notes, guard red/green; fake scorer, no model, no network, no secret)
+        shell: bash
+        run: python experiments/eret_pb/local_rerank.py selftest
+      - name: compile the scripts
+        shell: bash
+        run: python -m py_compile experiments/eret_pb/local_rerank.py experiments/eret_pb/n1_bench_local.py
+      - id: g
+        shell: bash
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          pre=false
+          grid=false
+          bundle=false
+          if [ "$EVENT" = workflow_dispatch ]; then grid=true; fi
+          if printf '%s' "$MSG" | grep -qF '[run:pre]'; then pre=true; fi
+          if printf '%s' "$MSG" | grep -qF '[run:grid]'; then grid=true; fi
+          if printf '%s' "$MSG" | grep -qF '[run:bundle]'; then bundle=true; fi
+          echo "pre=$pre" >> "$GITHUB_OUTPUT"
+          echo "grid=$grid" >> "$GITHUB_OUTPUT"
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+
+  # Public smoke, no corpus and no secret: real models on public toy pools. Pins and licences, download, int8 export (5a's recipe; gte through its own export),
+  # sanity, parity of int8 against fp32 torch on public text, the whole cell loop and the summary. Then (bundle job) a dry bundle with three cells.
+  pre:
+    needs: plan
+    if: needs.plan.outputs.pre == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: install pinned deps (as the PB6 job)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only, read-only token); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
+      - name: grid on public toy pools (all four arms, two cells, parity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python experiments/eret_pb/local_rerank.py grid --pools fake --part pre --arms gte:int8,gte:fp32,bge:int8,mmarco12:int8 --cells 10x256,25x512 --parity \
+            --out out/grid-pre.json --summary out/grid-pre.md --budget-min 100 --strict
+      - name: publish summary
+        if: always() && hashFiles('out/grid-pre.md') != ''
+        shell: bash
+        run: cat out/grid-pre.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && hashFiles('out/grid-pre.json') != ''
+        with:
+          name: eret-local-pre
+          path: |
+            out/grid-pre.json
+            out/grid-pre.md
+
+  grid:
+    needs: plan
+    if: needs.plan.outputs.grid == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: gte
+            arms: 'gte:int8,gte:fp32'
+          - part: ref
+            arms: 'bge:int8,mmarco12:int8'
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.0
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: install pinned deps (as the PB6 job)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only, read-only token); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0
+          python -m pip freeze
+      - name: smoke (fake corpus against the live Qdrant service; picks the vector layout)
+        shell: bash
+        run: python experiments/eret_pb/qdrant_sparse.py smoke --out "$RUNNER_TEMP/smoke.json"
+      - name: fetch and decrypt corpus and query vectors
+        shell: bash
+        env:
+          HUMAUX_EVAL_PACK_KEY: ${{ secrets.HUMAUX_EVAL_PACK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/harness.py fetch --asset corpus.v1.tar.gz.enc --sha "$CORPUS_SHA256" --out "$RUNNER_TEMP/corpus.tar" --keyfile "$RUNNER_TEMP/k"
+          python experiments/eret_pb/harness.py fetch --asset qvec2.json.gz.enc --sha "$QVEC2_SHA256" --out "$RUNNER_TEMP/qvec2.json"
+      - name: the RRF pool (PB6's stage 1 unchanged; reproduction gate RRF hit@5 96 and pool@25 147; a mismatch stops here)
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p out
+          python experiments/eret_pb/rrf_rerank.py pools --corpus "$RUNNER_TEMP/corpus.tar" --qvec "$RUNNER_TEMP/qvec2.json" --smoke "$RUNNER_TEMP/smoke.json" \
+            --out "$RUNNER_TEMP/pools.json" --agg out/pools.json --summary out/pools.md
+      - name: grid, part ${{ matrix.part }} (${{ matrix.arms }})
+        timeout-minutes: 320
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python experiments/eret_pb/local_rerank.py grid --pools "$RUNNER_TEMP/pools.json" --part "${{ matrix.part }}" --arms "${{ matrix.arms }}" \
+            --out "out/grid-${{ matrix.part }}.json" --summary "out/grid-${{ matrix.part }}.md" --budget-min 300
+      - name: seal raw results with the pack key (a guard false positive must not lose the run; the public artifact below stays guard-gated)
+        if: always() && hashFiles('out/*') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p sealed
+          tar -C out -czf "$RUNNER_TEMP/results.tgz" .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass file:"$RUNNER_TEMP/k" -in "$RUNNER_TEMP/results.tgz" -out "sealed/eret-local-${{ matrix.part }}.tgz.enc"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && hashFiles('sealed/*.enc') != ''
+        with:
+          name: eret-local-sealed-${{ matrix.part }}
+          path: sealed/eret-local-${{ matrix.part }}.tgz.enc
+          retention-days: 3
+      - name: guard
+        id: guard
+        if: always() && hashFiles('out/*.json') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          python experiments/eret_pb/local_rerank.py guard --corpus "$RUNNER_TEMP/corpus.tar" --files out/*.json out/*.md
+      - name: publish summary
+        if: always() && steps.guard.outcome == 'success'
+        shell: bash
+        run: |
+          for f in out/pools.md out/grid-${{ matrix.part }}.md; do
+            if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.guard.outcome == 'success'
+        with:
+          name: eret-local-part-${{ matrix.part }}
+          path: out/grid-${{ matrix.part }}.json
+      - name: cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/corpus.tar" "$RUNNER_TEMP/qvec2.json" "$RUNNER_TEMP/k" "$RUNNER_TEMP/results.tgz" "$RUNNER_TEMP/smoke.json" "$RUNNER_TEMP/pools.json" "$RUNNER_TEMP/eret_local" "$RUNNER_TEMP/ort" out sealed
+
+  # No corpus here: the parts were guard-gated in their own jobs; this job only merges their aggregates.
+  merge:
+    needs: [plan, grid]
+    if: always() && needs.plan.outputs.grid == 'true' && needs.grid.result != 'skipped'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4.3.0
+        continue-on-error: true
+        with:
+          pattern: eret-local-part-*
+          merge-multiple: true
+          path: parts
+      - name: merge
+        shell: bash
+        run: python experiments/eret_pb/local_rerank.py merge --parts parts --out merged --expect gte,ref
+      - name: publish summary
+        shell: bash
+        run: cat merged/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: eret-local-results
+          path: |
+            merged/results.json
+            merged/qualify.json
+            merged/summary.md
+          if-no-files-found: error
+
+  # Public data only: the pinned models (licence read in the job) exported to dynamic int8 ONNX, C-MTEB T2Reranking text (Apache-2.0 upstream), onnxruntime wheels for
+  # python:3.11-slim / aarch64. The N2 reference runs inside python:3.11-slim from the extracted tarball, offline, the image the production host has.
+  # [run:pre] builds a dry bundle with three fixed cells and publishes nothing; [run:grid] builds from merged/qualify.json (nothing if no cell qualified).
+  bundle:
+    needs: [plan, merge]
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.pre == 'true' || needs.plan.outputs.bundle == 'true' || (needs.plan.outputs.grid == 'true' && needs.merge.result == 'success'))
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4.3.0
+        if: needs.plan.outputs.pre != 'true' && needs.plan.outputs.bundle != 'true'
+        with:
+          name: eret-local-results
+          path: results
+      - name: which cells
+        id: cells
+        shell: bash
+        env:
+          PRE: ${{ needs.plan.outputs.pre }}
+          BUNDLE_ONLY: ${{ needs.plan.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          if [ "$PRE" = true ]; then
+            echo "mode=dry" >> "$GITHUB_OUTPUT"
+            echo "args=--cells-spec gte:int8:10:256:180,mmarco12:int8:25:256:180,bge:int8:10:512:300" >> "$GITHUB_OUTPUT"
+            echo "n=3" >> "$GITHUB_OUTPUT"
+          else
+            f=results/qualify.json
+            if [ "$BUNDLE_ONLY" = true ]; then f=experiments/eret_pb/bundle_qualify.json; fi
+            echo "mode=publish" >> "$GITHUB_OUTPUT"
+            echo "args=--qualify $f" >> "$GITHUB_OUTPUT"
+            echo "n=$(python -c "import json,sys; print(len(json.load(open(sys.argv[1]))['cells']))" "$f")" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+      - name: none qualified
+        if: steps.cells.outputs.n == '0'
+        shell: bash
+        run: |
+          echo "No cell was significant against RRF with an N2 p50 of at most 0.5 s, so no bundle is built and nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: install pinned deps (as the PB4 bundle job)
+        if: steps.cells.outputs.n != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ponytail: no --require-hashes (CI-only); add hashes if this workflow is ever merged to main
+          python -m pip install -r experiments/eret_pb/requirements.txt
+          python -m pip install optimum==2.1.0 optimum-onnx==0.1.0 onnxruntime==1.30.0 onnx==1.22.0 pyarrow==23.0.1
+          python -m pip freeze
+      - name: models (int8 ONNX, 5a recipe), tokenizers, cells, bench_pairs.json, bench script, README
+        if: steps.cells.outputs.n != '0'
+        shell: bash
+        env:
+          ARGS: ${{ steps.cells.outputs.args }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          python experiments/eret_pb/local_rerank.py bundle --out "$RUNNER_TEMP/n1_bench_bundle_v2" --work "$RUNNER_TEMP/bw" $ARGS
+      - name: wheels for python:3.11-slim, pins, manifest
+        if: steps.cells.outputs.n != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/n1_bench_bundle_v2"
+          # every wheel the bench needs, resolved for CPython 3.11 / linux aarch64 inside the same image the production host has
+          docker run --rm -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$B":/b python:3.11-slim \
+            pip download --only-binary=:all: -d /b/wheels onnxruntime==1.30.0 tokenizers==0.22.2 numpy==2.3.5
+          {
+            echo "# Exact pins of every wheel in wheels/ (python:3.11-slim, linux aarch64, resolved by \`pip download\` in CI); install with"
+            echo "# pip install --no-index --find-links wheels -r requirements.txt"
+            echo
+            for w in $(ls "$B/wheels" | sort); do echo "$w" | awk -F- '{print $1"=="$2}'; done
+          } > "$B/requirements.txt"
+          cat "$B/requirements.txt"
+          (cd "$B" && find . -type f ! -name MANIFEST.sha256 | sort | xargs sha256sum > MANIFEST.sha256)
+          du -sh "$B" "$B"/models/*
+      - name: tarball and sha256
+        if: steps.cells.outputs.n != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/n1_bench_bundle_v2.tar.gz" n1_bench_bundle_v2
+          sha256sum "$RUNNER_TEMP/n1_bench_bundle_v2.tar.gz" | cut -d' ' -f1 > "$RUNNER_TEMP/bundle.sha256"
+          echo "tarball bytes: $(stat -c %s "$RUNNER_TEMP/n1_bench_bundle_v2.tar.gz")  sha256: $(cat "$RUNNER_TEMP/bundle.sha256")"
+      - name: N2 reference run (python:3.11-slim, offline, from the extracted tarball)
+        if: steps.cells.outputs.n != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/x" "$RUNNER_TEMP/out"
+          tar -C "$RUNNER_TEMP/x" -xzf "$RUNNER_TEMP/n1_bench_bundle_v2.tar.gz"
+          docker run --rm --network none --memory 3g -e PIP_DISABLE_PIP_VERSION_CHECK=1 \
+            -v "$RUNNER_TEMP/x/n1_bench_bundle_v2":/bundle:ro -v "$RUNNER_TEMP/out":/out python:3.11-slim \
+            bash -c 'pip install --no-index --find-links /bundle/wheels -r /bundle/requirements.txt > /dev/null && python /bundle/n1_bench.py --bundle /bundle --threads 4 --out /out/n1_n2.json --table /out/n1_n2.txt'
+      - name: publish the N2 reference numbers
+        if: always() && steps.cells.outputs.n != '0'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/out/n1_n2.txt" ]; then
+            { echo "## N1 bench bundle v2: N2 reference (runner, python:3.11-slim)"; echo; cat "$RUNNER_TEMP/out/n1_n2.txt"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4.6.2
+        if: always() && steps.cells.outputs.n != '0'
+        with:
+          name: n1-bench-v2-n2-reference
+          path: ${{ runner.temp }}/out/n1_n2.json
+          if-no-files-found: warn
+      - name: publish the prerelease asset
+        if: steps.cells.outputs.n != '0' && steps.cells.outputs.mode == 'publish'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="$(cat "$RUNNER_TEMP/bundle.sha256")"
+          python experiments/eret_pb/local_rerank.py notes --meta "$RUNNER_TEMP/n1_bench_bundle_v2/bundle_meta.json" --out "$RUNNER_TEMP/notes.md" \
+            --sha "$SHA" --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA" --ref "$RUNNER_TEMP/out/n1_n2.txt"
+          if gh release view "$BUNDLE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$BUNDLE_TAG" "$RUNNER_TEMP/n1_bench_bundle_v2.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$BUNDLE_TAG" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$BUNDLE_TAG" "$RUNNER_TEMP/n1_bench_bundle_v2.tar.gz" --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+              --title "N1 bench bundle v2 (public models and data)" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release view "$BUNDLE_TAG" --repo "$GITHUB_REPOSITORY" --json assets,isPrerelease --jq '{prerelease: .isPrerelease, assets: [.assets[] | {name, size}]}'
