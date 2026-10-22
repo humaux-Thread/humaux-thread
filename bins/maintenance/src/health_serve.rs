@@ -190,3 +190,36 @@ pub(crate) async fn serve() -> Result<Output> {
         "samples": samples,
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #193: `/metrics` renders the last publish, not the declaration. Before the first host reading
+    /// `host::render` writes nothing (§4.4), so the live body carries no bare host HELP/TYPE header while
+    /// `--metrics-families` does. Fault: `verdict` passes `metrics_families` instead of `live_metrics` ⇒ a
+    /// bare host header appears ⇒ red.
+    #[test]
+    fn live_metrics_before_the_first_host_reading_has_no_bare_host_headers() {
+        const HOST: [&str; 3] = [
+            "host_pressure_ratio",
+            "host_memory_available_bytes",
+            "host_cpu_busy_ratio",
+        ];
+        let declared = metrics_families();
+        for family in HOST {
+            assert!(
+                declared.contains(&format!("# TYPE {family} ")),
+                "{family} is not declared\n{declared}"
+            );
+        }
+        let last = resident::Last::ok();
+        let live = verdict(&last, Duration::from_secs(2)).expect("/metrics is ready");
+        for family in HOST {
+            assert!(
+                !live.contains(&format!("# TYPE {family}")),
+                "a bare {family} declaration leaked into the live scrape\n{live}"
+            );
+        }
+    }
+}

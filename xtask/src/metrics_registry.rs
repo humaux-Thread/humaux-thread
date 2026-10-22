@@ -64,8 +64,7 @@ const NOT_YET_PRODUCED: &[(&str, &str)] = &[];
 /// D7 / D8(c): families a process declares (`# TYPE`) whose zero-state render deliberately has no sample, because
 /// absence is their failure signal and a §42 `absent()` rule reads it, or because a sample before the first visit
 /// would be a made-up value. Only these count as exported from the header alone; any other header-only family stays
-/// unexported (ADR-0061 review-fix 3, F10). EX reads the same list: a listed family may also be missing from a live
-/// scrape, which is what a host without `/proc` (the macOS rehearsal) serves (#193).
+/// unexported (ADR-0061 review-fix 3, F10).
 const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
     (
         "partition_horizon_months",
@@ -95,6 +94,22 @@ const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
 /// True for a family whose zero-state declaration deliberately has no sample: [`ABSENT_UNTIL_FIRST_RUN`].
 fn may_be_absent(name: &str) -> bool {
     ABSENT_UNTIL_FIRST_RUN.iter().any(|(n, _)| *n == name)
+}
+
+/// EX only: families a live scrape may omit because the host has no `/proc` source for them (the macOS
+/// rehearsal). Deliberately narrower than [`ABSENT_UNTIL_FIRST_RUN`]: `partition_horizon_months` and
+/// `quota_window_horizon_seconds` stay there for D7 only, and EX still requires a live sample for them
+/// (#193, G-M22-1).
+const ABSENT_WITHOUT_PROC: &[&str] = &[
+    "host_pressure_ratio",
+    "host_memory_available_bytes",
+    "host_cpu_busy_ratio",
+];
+
+/// True for a family whose live scrape may have zero samples because its `/proc` source is missing:
+/// [`ABSENT_WITHOUT_PROC`].
+fn absent_without_proc(name: &str) -> bool {
+    ABSENT_WITHOUT_PROC.contains(&name)
 }
 
 /// §41.2 R4 (ADR-0061 addendum, D-M): families whose one `.inc(` sits in a `pub` helper so a DB-free
@@ -1590,7 +1605,7 @@ fn read_rule_files(dir: &Path) -> Vec<(String, String)> {
 
 /// EX: each scraped file `(process, path, content or read error)` carries exactly its
 /// process's `--metrics-families` family set, every family has ≥1 sample unless
-/// [`ABSENT_UNTIL_FIRST_RUN`] names it (such a family may also be absent from the scrape entirely,
+/// [`ABSENT_WITHOUT_PROC`] names it (such a family may also be absent from the scrape entirely,
 /// as on a host without `/proc`), and the D7 R / R6 / kind leg holds.
 fn check_expositions(
     registry: &[RegistryEntry],
@@ -1610,7 +1625,7 @@ fn check_expositions(
         let exp = parse_exposition(text);
         problems.extend(registry_problems(path, &exp, &index));
         for (name, fam) in &exp.families {
-            if fam.samples.is_empty() && !may_be_absent(name) {
+            if fam.samples.is_empty() && !absent_without_proc(name) {
                 problems.push(format!("{path}: `{name}` has zero samples"));
             }
         }
@@ -1621,7 +1636,7 @@ fn check_expositions(
                 let got: BTreeSet<String> = exp.families.keys().cloned().collect();
                 let missing: Vec<&String> = want
                     .difference(&got)
-                    .filter(|name| !may_be_absent(name.as_str()))
+                    .filter(|name| !absent_without_proc(name.as_str()))
                     .collect();
                 let extra: Vec<&String> = got.difference(&want).collect();
                 if !missing.is_empty() || !extra.is_empty() {
@@ -1641,7 +1656,7 @@ fn check_expositions(
     };
     let detail = if problems.is_empty() {
         format!(
-            "{} scrape(s) match their process's --metrics-families, every family sampled unless declared absent, R/R6 hold",
+            "{} scrape(s) match their process's --metrics-families, every family sampled unless its /proc source is absent, R/R6 hold",
             files.len()
         )
     } else {
@@ -2665,14 +2680,11 @@ pub fn gateway_respond() {
         );
     }
 
-    /// #193: a listed family is accepted with zero samples and when it is missing from the scrape
-    /// entirely (the macOS rehearsal); an unlisted family with zero samples stays red (#193).
+    /// #193: EX exempts only [`ABSENT_WITHOUT_PROC`], never D7's wider [`ABSENT_UNTIL_FIRST_RUN`].
+    /// `partition_horizon_months` and `quota_window_horizon_seconds` keep the old live-sample rule.
     #[test]
-    fn ex_honours_the_may_be_absent_list() {
+    fn ex_exempts_only_the_host_families_without_proc() {
         let registry = real_registry();
-        let declared = host_declarations();
-        let families_of =
-            BTreeMap::from([("maintenance".to_string(), Ok::<_, String>(declared.clone()))]);
         let file = |text: String| {
             vec![(
                 "maintenance".to_string(),
@@ -2681,11 +2693,36 @@ pub fn gateway_respond() {
             )]
         };
 
-        // (a) the scrape declares the host families but carries no sample for them.
+        // (a) `partition_horizon_months` is header-only in D7's list, but EX still requires a live
+        // sample: declared with no sample is red on that family's own assertion.
+        let partition =
+            "# HELP partition_horizon_months h\n# TYPE partition_horizon_months gauge\n";
+        let families_of =
+            BTreeMap::from([("maintenance".to_string(), Ok::<_, String>(partition.into()))]);
+        let red = check_expositions(&registry, &file(partition.to_string()), &families_of);
+        assert_eq!(red.status, GateStatus::Fail, "{}", red.detail);
+        assert!(
+            red.detail
+                .contains("`partition_horizon_months` has zero samples"),
+            "{}",
+            red.detail
+        );
+        // ... and missing from the scrape entirely is red too, not admitted by the family-set leg.
+        let red = check_expositions(&registry, &file(String::new()), &families_of);
+        assert_eq!(red.status, GateStatus::Fail, "{}", red.detail);
+        assert!(
+            red.detail
+                .contains("missing [\"partition_horizon_months\"]"),
+            "{}",
+            red.detail
+        );
+
+        // (b) a host family with no sample (a host without /proc) is accepted, declared or absent.
+        let declared = host_declarations();
+        let families_of =
+            BTreeMap::from([("maintenance".to_string(), Ok::<_, String>(declared.clone()))]);
         let green = check_expositions(&registry, &file(declared.clone()), &families_of);
         assert_eq!(green.status, GateStatus::Pass, "{}", green.detail);
-
-        // (b) a host without /proc serves none of them at all.
         let green = check_expositions(&registry, &file(String::new()), &families_of);
         assert_eq!(green.status, GateStatus::Pass, "{}", green.detail);
 
