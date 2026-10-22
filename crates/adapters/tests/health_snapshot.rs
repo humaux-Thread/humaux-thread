@@ -2,8 +2,9 @@
 //!   with real `role_maintenance` / `role_admin` / `role_gateway` logins, plus `RuntimeDbPool::ping` (ADR-0061 D-D,
 //!   D-F, D-J; card 34 T-D3..T-D9, T-J1, T-F1).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
-//!   services=[PostgreSQL(owner) r=[ops.schema_migrations] w=[control.tenants, ops.data_disclosures, ops.jobs,
-//!   projection.stream_checkpoints, projection.stream_log] x=[ops.admin_probe_snapshot, ops.health_snapshot],
+//!   services=[PostgreSQL(owner) r=[ops.schema_migrations] w=[control.api_keys, control.tenants, ops.data_disclosures,
+//!   ops.jobs, projection.stream_checkpoints, projection.stream_log] x=[ops.admin_probe_snapshot, ops.health_snapshot,
+//!   ops.tenants_active_counts],
 //!   PostgreSQL(role_admin), PostgreSQL(role_gateway), PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_migration_owner)];
 //!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::health,
@@ -175,6 +176,29 @@ impl Db {
             )
             .expect("seed tenant")
             .get(0)
+    }
+
+    /// One tenant in `state` holding one API key per entry of `keys`: `Some(h)` = last used `h` hours ago,
+    /// `None` = never used (M22-2).
+    fn tenant_with_keys(&mut self, name: &str, state: &str, keys: &[Option<i32>]) {
+        let tenant: Uuid = self
+            .sql()
+            .query_one(
+                "INSERT INTO control.tenants (name, state) VALUES ($1, $2) RETURNING tenant_id",
+                &[&name, &state],
+            )
+            .expect("seed tenant")
+            .get(0);
+        for used_hours_ago in keys {
+            self.sql()
+                .execute(
+                    "INSERT INTO control.api_keys (tenant_id, prefix, key_hash, status, last_used_at) \
+                     VALUES ($1, md5(gen_random_uuid()::text), sha256('m22-2'::bytea), 'ACTIVE', \
+                       now() - make_interval(hours => $2))",
+                    &[&tenant, used_hours_ago],
+                )
+                .expect("seed api key");
+        }
     }
 
     /// One `ops.jobs` row; `lease` = Some(true) an expired lease, Some(false) a live one.
@@ -464,17 +488,29 @@ fn only_the_named_role_executes_each_definer() {
             .sql()
             .query_one(
                 "SELECT has_function_privilege($1, 'ops.health_snapshot(timestamptz)', 'EXECUTE'), \
-                        has_function_privilege($1, 'ops.admin_probe_snapshot()', 'EXECUTE')",
+                        has_function_privilege($1, 'ops.admin_probe_snapshot()', 'EXECUTE'), \
+                        has_function_privilege($1, 'ops.tenants_active_counts()', 'EXECUTE')",
                 &[&role],
             )
             .expect("privilege probe");
-        let got: (bool, bool) = (row.get(0), row.get(1));
+        let got: (bool, bool, bool) = (row.get(0), row.get(1), row.get(2));
         assert_eq!(
             got,
-            (role == "role_maintenance", role == "role_admin"),
+            (role == "role_maintenance", role == "role_admin", false),
             "{role}"
         );
     }
+    // M22-2: the inner door is for the reader that owns ops.health_snapshot only; PUBLIC holds nothing.
+    let row = db
+        .sql()
+        .query_one(
+            "SELECT has_function_privilege('role_health_reader', 'ops.tenants_active_counts()', 'EXECUTE'), \
+                    has_function_privilege('public', 'ops.tenants_active_counts()', 'EXECUTE')",
+            &[],
+        )
+        .expect("door privilege probe");
+    let door: (bool, bool) = (row.get(0), row.get(1));
+    assert_eq!(door, (true, false), "ops.tenants_active_counts() executors");
     let Some(dsn) = db.login(T, "role_gateway") else {
         return;
     };
@@ -483,6 +519,7 @@ fn only_the_named_role_executes_each_definer() {
     for call in [
         "SELECT * FROM ops.health_snapshot(now())",
         "SELECT * FROM ops.admin_probe_snapshot()",
+        "SELECT * FROM ops.tenants_active_counts()",
     ] {
         let e = gateway.query(call, &[]).expect_err(call);
         let e = e
@@ -530,6 +567,42 @@ fn the_owner_is_not_widened_on_the_reader_tables() {
              TO role_migration_owner USING (true)"
         ),
         (3, 2)
+    );
+}
+
+/// M22-2: `tenants_active_*` count distinct ACTIVE tenants with an API key used inside the window. Two keys of one
+/// tenant count once; a key unused for longer than the window, a never-used key and a non-ACTIVE tenant count in
+/// neither column. Shown load-bearing the way T-D3 does: without 0112's owner SELECT policy on `api_keys` the inner
+/// door reads no key.
+#[test]
+fn tenants_active_counts_distinct_active_tenants_with_a_key_used_in_the_window() {
+    const T: &str = "tenants_active_counts_distinct_active_tenants_with_a_key_used_in_the_window";
+    let Some(mut db) = fixture(T) else { return };
+    db.tenant_with_keys("m22-in-1d", "ACTIVE", &[Some(1)]);
+    db.tenant_with_keys("m22-in-3d", "ACTIVE", &[Some(72), None]);
+    db.tenant_with_keys("m22-in-10d", "ACTIVE", &[Some(240)]);
+    db.tenant_with_keys("m22-two-keys", "ACTIVE", &[Some(2), Some(3)]);
+    db.tenant_with_keys("m22-never-used", "ACTIVE", &[None]);
+    db.tenant_with_keys("m22-deleted", "DELETED", &[Some(1)]);
+    let Some(s) = maintenance_read(&db, T, epoch()) else {
+        return;
+    };
+    assert_eq!(
+        (s.tenants_active_1d, s.tenants_active_7d),
+        (2, 3),
+        "1d = the 1 h tenant and the two-key tenant; 7d adds the 72 h tenant: {s:?}"
+    );
+
+    let row = db.read_under_fault(
+        "role_maintenance",
+        "DROP POLICY api_keys_bootstrap_owner_select ON control.api_keys",
+        "SELECT tenants_active_1d, tenants_active_7d FROM ops.health_snapshot(now())",
+    );
+    let blind: (i64, i64) = (row.get(0), row.get(1));
+    assert_eq!(
+        blind,
+        (0, 0),
+        "without the owner policy FORCE RLS hides every key"
     );
 }
 

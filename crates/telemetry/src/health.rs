@@ -88,6 +88,10 @@ pub struct HealthSnapshot {
     pub reserved_unfinalized: Vec<(AgeBucket, u64)>,
     /// Rows finalized after the sampler's watermark, per outcome — a delta, added to the counter.
     pub finalized_since_watermark: Vec<(DisclosureOutcome, u64)>,
+    /// ACTIVE tenants with an API key used in the last 24 hours (M22-2).
+    pub tenants_active_1d: u64,
+    /// ACTIVE tenants with an API key used in the last 7 days (M22-2).
+    pub tenants_active_7d: u64,
 }
 
 static JOBS_PENDING: Gauges<1> = Gauges::new();
@@ -100,6 +104,8 @@ static PROCESSING_GAP_COUNT: Gauges<{ TicketFamily::ALL.len() }> = Gauges::new()
 static DATA_DISCLOSURES_RESERVED_UNFINALIZED: Gauges<{ AgeBucket::ALL.len() }> = Gauges::new();
 static DATA_DISCLOSURES_FINALIZED_TOTAL: Counters<{ DisclosureOutcome::ALL.len() }> =
     Counters::new();
+static TENANTS_ACTIVE_1D: Gauges<1> = Gauges::new();
+static TENANTS_ACTIVE_7D: Gauges<1> = Gauges::new();
 
 fn total<K: PartialEq>(pairs: &[(K, u64)], key: &K) -> u64 {
     pairs.iter().filter(|(k, _)| k == key).map(|(_, n)| n).sum()
@@ -113,6 +119,8 @@ pub fn publish(s: &HealthSnapshot) {
     JOBS_DEAD.set(0, s.jobs_dead as f64);
     OLDEST_PENDING_AGE_SECONDS.set(0, s.oldest_pending_age_seconds);
     PROJECTION_LAG_EVENTS.set(0, s.projection_lag_events as f64);
+    TENANTS_ACTIVE_1D.set(0, s.tenants_active_1d as f64);
+    TENANTS_ACTIVE_7D.set(0, s.tenants_active_7d as f64);
     for (slot, family) in TicketFamily::ALL.iter().enumerate() {
         // labels: stream
         PROCESSING_GAP_COUNT.set(slot, total(&s.processing_gaps, family) as f64);
@@ -128,7 +136,9 @@ pub fn publish(s: &HealthSnapshot) {
     }
 }
 
-/// Renders the nine health families from the last [`publish`], every label value seeded.
+/// Renders the eleven health families from the last [`publish`], every label value seeded. The two tenant counts
+/// are exact SQL counts, so before the first publish they declare 0 like `jobs_*`; `health serve` binds its port
+/// only after the first successful sample, so no scrape reads that 0 (ADR-0061 D-D).
 pub fn render(out: &mut String) {
     for (family, cell) in [
         (&families::JOBS_PENDING, &JOBS_PENDING),
@@ -140,6 +150,8 @@ pub fn render(out: &mut String) {
             &OLDEST_PENDING_AGE_SECONDS,
         ),
         (&families::PROJECTION_LAG_EVENTS, &PROJECTION_LAG_EVENTS),
+        (&families::TENANTS_ACTIVE_1D, &TENANTS_ACTIVE_1D),
+        (&families::TENANTS_ACTIVE_7D, &TENANTS_ACTIVE_7D),
     ] {
         write_family(out, family, &[(&[], cell.get(0))]);
     }
@@ -197,6 +209,8 @@ mod tests {
             jobs_dead: 3,
             reserved_unfinalized: vec![(AgeBucket::Gt60s, 1)],
             finalized_since_watermark: vec![(DisclosureOutcome::Success, 2)],
+            tenants_active_1d: 4,
+            tenants_active_7d: 9,
             ..HealthSnapshot::default()
         };
         publish(&first);
@@ -210,6 +224,8 @@ mod tests {
         render(&mut out);
         assert_eq!(value(&out, "jobs_dead"), 1.0);
         assert_eq!(value(&out, "projection_lag_events"), 6.0);
+        assert_eq!(value(&out, "tenants_active_1d"), 4.0);
+        assert_eq!(value(&out, "tenants_active_7d"), 9.0);
         assert_eq!(
             value(
                 &out,
@@ -239,6 +255,8 @@ mod tests {
             ("jobs_dead", 1),
             ("oldest_pending_age_seconds", 1),
             ("projection_lag_events", 1),
+            ("tenants_active_1d", 1),
+            ("tenants_active_7d", 1),
             ("processing_gap_count", TicketFamily::ALL.len()),
             ("data_disclosures_finalized_total", 3),
             ("data_disclosures_reserved_unfinalized", 3),
@@ -248,7 +266,7 @@ mod tests {
             assert!(out.contains(&format!("# TYPE {family} ")), "TYPE {family}");
             assert_eq!(series_count(&out, family), n, "{family}\n{out}");
         }
-        assert_eq!(out.lines().filter(|l| l.starts_with("# TYPE ")).count(), 9);
+        assert_eq!(out.lines().filter(|l| l.starts_with("# TYPE ")).count(), 11);
     }
 
     /// §78.2 contract: the outcome enum equals the `ops.data_disclosures.outcome` CHECK set.

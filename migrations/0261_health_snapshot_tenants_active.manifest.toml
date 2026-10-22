@@ -1,0 +1,56 @@
+# §46.1 migration manifest. M22-2: ops.health_snapshot(timestamptz) returns two more columns, tenants_active_1d and
+# tenants_active_7d, filled by the new owner definer ops.tenants_active_counts() (owner role_migration_owner, EXECUTE
+# role_health_reader only; it reads control.api_keys and control.tenants through 0112's owner SELECT policies, so
+# role_health_reader keeps its five relations). The return shape changes, so ops.health_snapshot is dropped and
+# re-created in one transaction with the owner, SECURITY DEFINER, pinned search_path and the single role_maintenance
+# EXECUTE of 0210 (0200 precedent). Forward-fix (EXPAND_CONTRACT, number 0261).
+
+migration_id = "0261_health_snapshot_tenants_active"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless 0210's definer is still the 15-column one, the new door does not exist yet and the two tables it
+# reads and the reader role do.
+precheck = """
+select to_regprocedure('ops.health_snapshot(timestamptz)') is not null
+ and to_regprocedure('ops.tenants_active_counts()') is null
+ and coalesce(position('tenants_active_1d' in pg_get_function_result(to_regprocedure('ops.health_snapshot(timestamptz)'))) = 0, false)
+ and to_regclass('control.api_keys') is not null
+ and to_regclass('control.tenants') is not null
+ and exists (select 1 from pg_roles where rolname = 'role_health_reader')
+ as precheck_ok
+"""
+
+# Fails on: a door not owned by role_migration_owner, not SECURITY DEFINER, not STABLE, without the pinned
+# search_path, without both columns, executable by PUBLIC or by any login role, or not executable by
+# role_health_reader; a health_snapshot that is not owned by role_health_reader, not SECURITY DEFINER, not STABLE,
+# without 0210's search_path, without both new columns, executable by PUBLIC, or executable by any login role but
+# role_maintenance; or role_health_reader owning anything but its two definers.
+postcheck = """
+with login_role(r) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+  ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
+select
+  (select pg_get_userbyid(p.proowner) = 'role_migration_owner' and p.prosecdef and p.provolatile = 's'
+          and 'search_path=pg_catalog' = any(coalesce(p.proconfig, '{}'))
+          and position('tenants_active_1d bigint' in pg_get_function_result(p.oid)) > 0
+          and position('tenants_active_7d bigint' in pg_get_function_result(p.oid)) > 0
+          and has_function_privilege('role_health_reader', p.oid, 'EXECUTE')
+          and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                           where x.grantee = 0 and x.privilege_type = 'EXECUTE')
+          and not exists (select 1 from login_role l where has_function_privilege(l.r, p.oid, 'EXECUTE'))
+     from pg_proc p where p.oid = to_regprocedure('ops.tenants_active_counts()')) is true
+  and (select pg_get_userbyid(p.proowner) = 'role_health_reader' and p.prosecdef and p.provolatile = 's'
+          and 'search_path=pg_catalog, ops, projection' = any(coalesce(p.proconfig, '{}'))
+          and position('tenants_active_1d bigint' in pg_get_function_result(p.oid)) > 0
+          and position('tenants_active_7d bigint' in pg_get_function_result(p.oid)) > 0
+          and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                           where x.grantee = 0 and x.privilege_type = 'EXECUTE')
+          and (select bool_and(has_function_privilege(l.r, p.oid, 'EXECUTE') = (l.r = 'role_maintenance'))
+                 from login_role l)
+     from pg_proc p where p.oid = to_regprocedure('ops.health_snapshot(timestamptz)')) is true
+  and (select count(*) from pg_proc p
+        where p.proowner = (select oid from pg_roles where rolname = 'role_health_reader')) = 2
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward-fix only: DROP FUNCTION ops.health_snapshot(timestamptz); DROP FUNCTION ops.tenants_active_counts(); re-run 0210's CREATE FUNCTION ops.health_snapshot body plus its ALTER OWNER TO role_health_reader / REVOKE / GRANT EXECUTE TO role_maintenance (restores the 15-column shape). Roll humaux-maintenance back with it: a health serve built for this migration reads the two new columns by name and answers 503 naming the missing column."
+backup_restore_requirement = "none: drops and creates two read-only functions; no row data is read, copied, rewritten or deleted."
