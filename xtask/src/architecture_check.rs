@@ -10003,8 +10003,27 @@ runs:
         );
     }
 
+    /// Write a rerank Dockerfile/action pair into a unique temp root and run the gate over it, so tests exercise the
+    /// same three-state mapping `run()` uses.
+    fn rerank_verdict(tag: &str, dockerfile: &str, action: &str) -> Verdict {
+        let dir = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for (path, text) in [
+            (RERANK_DOCKERFILE, dockerfile),
+            (RERANK_PARITY_ACTION, action),
+        ] {
+            let p = dir.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        }
+        let verdict = rerank_pin_parity(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        verdict
+    }
+
     /// URL and sha256 both differ — one artifact version bumped in one file only. Both sides still carry pins, so
-    /// the gate is `fail`, naming both files and the action input, not `not_applicable` (#200, §57.1 第2条).
+    /// the gate is `fail`, one line per unmatched pin, each naming both files and its action input, not
+    /// `not_applicable` (#200, §57.1 第2条).
     #[test]
     fn rerank_pin_gate_fails_when_url_and_sha_both_differ() {
         let action = RERANK_ACTION_FIXTURE
@@ -10016,18 +10035,7 @@ runs:
                 "default: cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f",
                 "default: cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c20",
             );
-        let dir = std::env::temp_dir().join(format!("rerank-both-differ-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        for (path, text) in [
-            (RERANK_DOCKERFILE, RERANK_DOCKERFILE_FIXTURE),
-            (RERANK_PARITY_ACTION, action.as_str()),
-        ] {
-            let p = dir.join(path);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(p, text).unwrap();
-        }
-        let verdict = rerank_pin_parity(&dir);
-        fs::remove_dir_all(&dir).unwrap();
+        let verdict = rerank_verdict("rerank-both-differ", RERANK_DOCKERFILE_FIXTURE, &action);
         assert!(
             matches!(&verdict, Verdict::Fail(_)),
             "both pins differ must be fail, got {verdict:?}"
@@ -10035,16 +10043,60 @@ runs:
         let Verdict::Fail(lines) = verdict else {
             unreachable!("checked above")
         };
-        assert!(!lines.is_empty(), "a fail names every unmatched pin");
-        assert!(
-            lines
-                .iter()
-                .all(|l| l.contains(RERANK_DOCKERFILE) && l.contains(RERANK_PARITY_ACTION)),
-            "{lines:?}"
+        assert_eq!(
+            lines.len(),
+            2,
+            "one fail per unmatched pin (action side + image side): {lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains("inputs.rerank_sha256")),
-            "{lines:?}"
+            lines.iter().all(|l| l.contains(RERANK_DOCKERFILE)
+                && l.contains(RERANK_PARITY_ACTION)
+                && l.contains("inputs.")),
+            "every fail names both files and its action input: {lines:?}"
+        );
+        let image_url = "https://example.test/rerank.tar.gz";
+        let action_url = "https://example.test/rerank-v2.tar.gz";
+        assert_eq!(
+            lines.iter().filter(|l| l.contains(action_url)).count(),
+            1,
+            "the action-side unmatched pin names only the action URL: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.contains(image_url)).count(),
+            1,
+            "the image-side unmatched pin names only the image URL: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains("inputs.rerank_sha256"))
+                .count(),
+            1,
+            "the action-side line names its sha input: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("inputs.*_url")).count(),
+            1,
+            "the image-side line names the url-input family: {lines:?}"
+        );
+    }
+
+    /// `_url` inputs exist but no default is readable: there is nothing to compare, so the gate is `not_applicable`
+    /// naming the missing default, never a pass or a `fail` with an empty problem list (§57.1 第2条).
+    #[test]
+    fn rerank_pin_gate_is_not_applicable_when_every_action_default_is_missing() {
+        let no_defaults = RERANK_ACTION_FIXTURE
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("default:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            rerank_verdict(
+                "rerank-no-defaults",
+                RERANK_DOCKERFILE_FIXTURE,
+                &no_defaults
+            ),
+            Verdict::NotApplicable(format!("{RERANK_PARITY_ACTION}: inputs.ort_url.default"))
         );
     }
 
