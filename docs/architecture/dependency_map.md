@@ -1115,6 +1115,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `subprocess(sh)`
 - service `subprocess(sysctl)`
 
+#### `xtask::load_open`
+- service `PostgreSQL(any)`
+
 #### `xtask::main`
 - env `CARGO_BIN_NAME`
 - env `CARGO_PKG_VERSION`
@@ -11033,6 +11036,7 @@ executed by:
 - `xtask::e2e_seed`
 - `xtask::gate_registry`
 - `xtask::load`
+- `xtask::load_open`
 - `xtask::serial_lane`
 
 ### `PostgreSQL(owner)`
@@ -15158,6 +15162,7 @@ modules naming it:
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
 - `xtask::load`
+- `xtask::load_open`
 - `xtask::soak`
 
 ### xtask → `postgres` (normal)
@@ -15169,6 +15174,7 @@ modules naming it:
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
 - `xtask::load`
+- `xtask::load_open`
 - `xtask::migration_rehearsal`
 - `xtask::serial_lane`
 - `xtask::soak`

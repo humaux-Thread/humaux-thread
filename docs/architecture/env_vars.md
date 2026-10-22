@@ -482,6 +482,45 @@ modules:
 - `admin::tests::probes`
 - `admin::tls_expiry`
 
+### `HUMAUX_A_GONE`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+
+modules:
+- `xtask::dep_map`
+
+### `HUMAUX_A_LIVE`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+
+modules:
+- `xtask::dep_map`
+
+### `HUMAUX_A_NEW`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+
+modules:
+- `xtask::dep_map`
+
 ### `HUMAUX_BUILD_GIT_SHA`
 - witness: literal
 - registry: raw
@@ -556,6 +595,19 @@ modules:
 - `retrieval-worker::tests::exit_codes`
 - `xtask::main`
 - `xtask::tests::version`
+
+### `HUMAUX_BUILT_B`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+
+modules:
+- `xtask::dep_map`
 
 ### `HUMAUX_C36_LATENCY_DB`
 - witness: literal
@@ -2371,6 +2423,19 @@ processes:
 modules:
 - `gateway::bootstrap`
 - `gateway::tests::mcp_gateway`
+
+### `HUMAUX_LIT`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+
+modules:
+- `xtask::dep_map`
 
 ### `HUMAUX_LIVE_P2_BASE_URL`
 - witness: literal
