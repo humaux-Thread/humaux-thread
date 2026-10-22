@@ -23,7 +23,7 @@ use humaux_adapters::{
     qdrant::{
         DenseCandidate, DenseQuery, DenseQueryVersions, PointId, QdrantOperation,
         QdrantTransportError, RetrievalFamily, ha_profile_for, query_dense,
-        query_dense_groups_bounded, query_sparse,
+        query_dense_groups_bounded, query_sparse_groups,
     },
     read_materialize::MaterializedItem,
     retrieval_query_log::QueryLogCounts,
@@ -907,7 +907,7 @@ async fn sparse_leg(
 ) -> Option<SparseLegRun> {
     let corpus = corpus?;
     let started = Instant::now();
-    let outcome = query_sparse(transport, permit, query, text, corpus).await;
+    let outcome = query_sparse_groups(transport, permit, query, text, corpus).await;
     Some((outcome, started.elapsed()))
 }
 

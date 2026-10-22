@@ -27,8 +27,8 @@ use humaux_adapters::qdrant::{
     DenseQuery, DenseQueryVersions, Distance, IndexablePayload, PointId, QdrantOperation,
     QdrantPointPayload, ShardingMethod, TenantPlacementRow, VisibleCountFilter, count,
     create_collection_body, ha_profile_for, memory_id_index_body, query_dense, query_dense_groups,
-    query_dense_groups_bounded, query_sparse, scroll_by_ids, subject_index_body, tenant_index_body,
-    upsert, upsert_fenced, verify_visible_via_transport,
+    query_dense_groups_bounded, query_sparse_groups, scroll_by_ids, subject_index_body,
+    tenant_index_body, upsert, upsert_fenced, verify_visible_via_transport,
 };
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
@@ -1053,9 +1053,9 @@ async fn sparse_scores(
     corpus: &DenseQueryFilter,
     text: &str,
 ) -> Vec<(Option<Uuid>, f64)> {
-    query_sparse(transport, permit, query, text, corpus)
+    query_sparse_groups(transport, permit, query, text, corpus)
         .await
-        .expect("sparse query")
+        .expect("sparse grouped query")
         .into_iter()
         .map(|candidate| (candidate.memory_id, candidate.score))
         .collect()
@@ -1069,14 +1069,13 @@ fn same_ranking(left: &[(Option<Uuid>, f64)], right: &[(Option<Uuid>, f64)]) -> 
             .all(|(l, r)| l.0 == r.0 && (l.1 - r.1).abs() < 1e-6)
 }
 
-/// ADR-0083 gate G-RET-8 (D-A, V5) through a real Qdrant v1.19.0, with the U1 and U2 records. The sparse leg asks
-/// `/points/query` for a Document query with `params.idf.corpus` set to the caller's tenant + visibility predicate.
+/// ADR-0083 gate G-RET-8 (D-A, V5) through a real Qdrant v1.19.0, with the U1 and U2 records. The sparse leg asks the
+/// grouped endpoint for a Document query with `params.idf.corpus` set to the caller's tenant + visibility predicate.
 /// Another principal's private documents carrying the query term are outside that corpus, so they do not change the
 /// caller's ranking or scores. The control adds one more such document INSIDE the caller's scope and does change the
 /// score, so the gate can fail (a corpus that no longer excludes anything cannot pass the first and the control).
-/// U1: the Document query with `params.idf.corpus` is answered by `/points/query` and folded to Memories (the grouped
-/// endpoint also accepted it, run 39757704567, but the read-only permit does not admit that path). U2: queries whose
-/// tokens are all dropped (digits only, stopwords only) are answered with zero points, an empty leg, not an error.
+/// U1: the grouped endpoint answers a Document query with `params.idf.corpus` (run 39757704567). U2: queries whose
+/// tokens are all dropped (digits only, stopwords only) are answered with zero groups, an empty leg, not an error.
 /// Fault: omit `params.idf.corpus` (global statistics) ⇒ the other principal's four documents move df and N ⇒ red.
 // One spawned body (collection, documents, queries) so a panic still reaches the collection cleanup below.
 #[allow(clippy::too_many_lines)]
@@ -1193,7 +1192,7 @@ async fn sparse_leg_idf_corpus_is_scoped_to_what_the_caller_may_read() {
         assert_eq!(
             base.iter().map(|(group, _)| *group).collect::<Vec<_>>(),
             vec![Some(a1.0)],
-            "U1: /points/query answers a Document query with params.idf.corpus and returns the one lexical match"
+            "U1: the grouped endpoint answers a Document query with params.idf.corpus and returns the one lexical match"
         );
 
         // Another principal's private documents, four of them carrying the term, are invisible to the caller.
@@ -1246,13 +1245,14 @@ async fn sparse_leg_idf_corpus_is_scoped_to_what_the_caller_may_read() {
         // U2: all tokens dropped (the multilingual tokenizer drops pure-digit tokens, the default stopword list drops
         // the rest) is an empty leg.
         for text in ["2024 1999", "the of and"] {
-            let dropped = query_sparse(transport.as_ref(), &permit, &query, text, &corpus).await;
+            let dropped =
+                query_sparse_groups(transport.as_ref(), &permit, &query, text, &corpus).await;
             eprintln!(
                 "U2 (ADR-0083): query {text:?} with every token dropped answered {dropped:?}"
             );
             assert!(
                 matches!(&dropped, Ok(groups) if groups.is_empty()),
-                "U2: an all-dropped-token query is a 2xx with zero points: {dropped:?}"
+                "U2: an all-dropped-token query is a 2xx with zero groups: {dropped:?}"
             );
         }
     });

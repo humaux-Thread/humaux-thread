@@ -14,7 +14,7 @@
 //!   worker's point writes and deletes are fenced on source_stream_seq (ADR-0057 D-I); the memory_id backfill
 //!   writes only the memory_id key, by has_id filter, and accepts only one completed result per operation
 //!   (ADR-0068 40d-2a); the bm25 Document is built by bm25_document alone, for the write and for the query, so both
-//!   send identical model and options (ADR-0083 D-A); the sparse leg (points folded to Memories, ADR-0083 U1) sends the dense leg's filter value unchanged
+//!   send identical model and options (ADR-0083 D-A); the sparse leg sends the dense leg's filter value unchanged
 //!   (retrieval_filter_json) and sets `params.idf.corpus` to the tenant + visibility predicate alone, never a global
 //!   corpus (ADR-0083 D-A/D-C, §17.2)]
 //! Spec: Baseline §17; §17.5; §17.4; §17.6; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064; ADR-0068;
@@ -1696,22 +1696,21 @@ pub async fn query_dense(
     parse_dense_candidates(&result, query.limit)
 }
 
-/// ADR-0083 D-A / D-C: the sparse (BM25) leg's query body. `query` is [`bm25_document`] of the exact query bytes (the
-/// same builder the write path uses, so model and options match, V3); `using` names the `bm25` vector; `filter` is the
-/// dense leg's filter value ([`retrieval_filter_json`]); and `params.idf.corpus` is `corpus`, the tenant + §6.1.2
+/// ADR-0083 D-A / D-C: the sparse (BM25) leg's grouped query body. `query` is [`bm25_document`] of the exact query bytes
+/// (the same builder the write path uses, so model and options match, V3); `using` names the `bm25` vector; `filter` is
+/// the dense leg's filter value ([`retrieval_filter_json`]); and `params.idf.corpus` is `corpus`, the tenant + §6.1.2
 /// visibility predicate and nothing narrower (§17.2, V5), so another principal's private documents never enter the
-/// document frequencies. It asks `/points/query` for `limit` POINTS carrying their `memory_id` payload, and
-/// [`fold_sparse_points`] folds them to Memories: the `QdrantReadOnly` permit the gateway holds admits `/points/query`
-/// and not `/points/query/groups` (infra-cell `QDRANT_READ_ONLY_POST_SUFFIXES`), and this is the shape E-RET-PB5
-/// measured (ADR-0083 U1).
-pub fn sparse_query_body(query: &DenseQuery, text: &str, corpus: &DenseQueryFilter) -> Value {
+/// document frequencies. `limit` counts Memories (one hit per `memory_id` group), as in [`dense_group_query_body`].
+pub fn sparse_group_query_body(query: &DenseQuery, text: &str, corpus: &DenseQueryFilter) -> Value {
     let mut body = json!({
         "query": bm25_document(text),
         "using": BM25_VECTOR_NAME,
         "filter": retrieval_filter_json(query),
         "params": { "idf": { "corpus": condition_to_filter(corpus) } },
+        "group_by": MEMORY_ID_FIELD,
+        "group_size": 1,
         "limit": query.limit,
-        "with_payload": [MEMORY_ID_FIELD],
+        "with_payload": false,
         "with_vector": false,
     });
     if let Some(shard_key) = &query.shard_key {
@@ -1722,66 +1721,12 @@ pub fn sparse_query_body(query: &DenseQuery, text: &str, corpus: &DenseQueryFilt
     body
 }
 
-/// ADR-0083 D-C / U1: a sparse `points/query` response folded to Memories client-side. Points arrive best first; the
-/// first point of each `memory_id` stands for its Memory and later chunks of it are dropped, so the result is one
-/// candidate per Memory in the order of the Memory's best point, tagged with its group like a grouped hit. A point
-/// whose payload carries no parseable `memory_id` cannot be attributed to a Memory (U6) and is left out, as the grouped
-/// query leaves it out. More points than `limit`, a repeated point, or a non-finite score is an unexpected shape.
-fn fold_sparse_points(
-    result: &Value,
-    limit: u32,
-) -> Result<Vec<DenseCandidate>, QdrantTransportError> {
-    let shape = |what: &str| QdrantTransportError::UnexpectedResponseShape(what.to_owned());
-    let points = result
-        .get("result")
-        .and_then(|value| value.get("points"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| shape("missing result.points for sparse query"))?;
-    if points.len() > limit as usize {
-        return Err(shape("sparse query response exceeds requested limit"));
-    }
-    let mut memories = std::collections::HashSet::new();
-    let mut ids = std::collections::HashSet::new();
-    let mut folded = Vec::new();
-    for point in points {
-        let point_id = point
-            .get("id")
-            .and_then(point_id_from_json)
-            .ok_or_else(|| shape("sparse hit has invalid id"))?;
-        let score = point
-            .get("score")
-            .and_then(Value::as_f64)
-            .filter(|score| score.is_finite())
-            .ok_or_else(|| shape("sparse hit has invalid score"))?;
-        if !ids.insert(point_id) {
-            return Err(shape("sparse query repeats a point"));
-        }
-        let memory_id = point
-            .get("payload")
-            .and_then(|payload| payload.get(MEMORY_ID_FIELD))
-            .and_then(Value::as_str)
-            .and_then(|id| Uuid::parse_str(id).ok());
-        if let Some(memory_id) = memory_id
-            && memories.insert(memory_id)
-        {
-            folded.push(DenseCandidate {
-                point_id,
-                score,
-                memory_id: Some(memory_id),
-            });
-        }
-    }
-    Ok(folded)
-}
-
-/// ADR-0083 D-C: the sparse leg — one `POST /collections/{c}/points/query` for `text`, folded to Memories
-/// ([`fold_sparse_points`]), candidates only (the PG hydrate gate stays the authority). `query` supplies the
-/// collection, shard key, `limit` (points asked, `leg_depth`), read control and the retrieval filter, so both legs of
-/// one recall are scoped by the same value; `corpus` is the IDF corpus filter (`projection::sparse::build_sparse_lane`).
-/// Fewer Memories than `limit`, including none, is a valid answer (an all-dropped-token query is a 2xx with no
-/// points, U2); a transport error, a non-2xx reply or a reply of unexpected shape is the caller's leg failure
-/// (ADR-0083 D-C).
-pub async fn query_sparse(
+/// ADR-0083 D-C: the sparse leg — one `POST /collections/{c}/points/query/groups` for `text`, candidates only (the PG
+/// hydrate gate stays the authority). `query` supplies the collection, shard key, `limit`, read control and the
+/// retrieval filter, so both legs of one recall are scoped by the same value; `corpus` is the IDF corpus filter
+/// (`projection::sparse::build_sparse_lane`). Fewer groups than `limit`, including none, is a valid answer (V2, U2); a
+/// transport error, a non-2xx reply or a reply of unexpected shape is the caller's leg failure (ADR-0083 D-C).
+pub async fn query_sparse_groups(
     transport: &dyn IntraCellHttpTransport,
     permit: &CellAccessPermit,
     query: &DenseQuery,
@@ -1793,7 +1738,7 @@ pub async fn query_sparse(
             "sparse query text is empty".to_owned(),
         ));
     }
-    let path = format!("/collections/{}/points/query", query.collection);
+    let path = format!("/collections/{}/points/query/groups", query.collection);
     let path = match query.ha_profile.read_control() {
         Some(control) => qdrant_path(path, &[control]),
         None => path,
@@ -1803,10 +1748,10 @@ pub async fn query_sparse(
         permit,
         IntraCellMethod::Post,
         path,
-        Some(sparse_query_body(query, text, corpus)),
+        Some(sparse_group_query_body(query, text, corpus)),
     )
     .await?;
-    fold_sparse_points(&result, query.limit)
+    parse_group_candidates(&result, query.limit)
 }
 
 /// §17's `PUT /collections/{name}/points` upsert, wired to a real [`IntraCellHttpTransport`].
@@ -2484,23 +2429,23 @@ mod lifecycle_prefilter_tests {
         assert_eq!(groups["filter"], points["filter"]);
     }
 
-    /// ADR-0083 D-A / D-C: the sparse body is the shared Document query on `bm25` over `/points/query` (the path the
-    /// read-only permit admits), asking `leg_depth` points that carry `memory_id`; `limit` and `filter` are exactly the
-    /// dense leg's (one retrieval filter for both legs), and `params.idf.corpus` is the caller's tenant + visibility
-    /// predicate ALONE: it names the tenant and carries none of the retrieval-only clauses (servable, projection and
-    /// embedding version, overlays), which would narrow the statistic below the authorized universe.
+    /// ADR-0083 D-A / D-C: the sparse body is the shared Document query on `bm25`, grouped by Memory with one hit each,
+    /// `limit` and `filter` exactly the dense leg's (one retrieval filter for both legs), and `params.idf.corpus` the
+    /// caller's tenant + visibility predicate ALONE: it names the tenant and carries none of the retrieval-only
+    /// clauses (servable, projection and embedding version, overlays), which would narrow the statistic below the
+    /// authorized universe.
     /// Fault: drop `params` (global IDF), widen the corpus to the retrieval filter, or hand-build `filter` ⇒ red.
     #[test]
     fn sparse_body_pins_the_document_the_shared_filter_and_the_authorization_only_corpus() {
         let scope = scope();
         let query = query_in(&scope);
         let corpus = build_dense_filter(&scope, &[]);
-        let sparse = sparse_query_body(&query, "exact query bytes ", &corpus);
-        let dense = dense_query_body(&query);
+        let sparse = sparse_group_query_body(&query, "exact query bytes ", &corpus);
+        let dense = dense_group_query_body(&query);
         assert_eq!(sparse["query"], bm25_document("exact query bytes "));
         assert_eq!(sparse["using"], json!(BM25_VECTOR_NAME));
-        assert_eq!(sparse["with_payload"], json!([MEMORY_ID_FIELD]));
-        assert!(sparse.get("group_by").is_none(), "points, not groups");
+        assert_eq!(sparse["group_by"], json!(MEMORY_ID_FIELD));
+        assert_eq!(sparse["group_size"], json!(1));
         assert_eq!(sparse["limit"], dense["limit"]);
         assert_eq!(sparse["filter"], dense["filter"]);
         assert_eq!(
@@ -2518,58 +2463,6 @@ mod lifecycle_prefilter_tests {
             "the corpus holds no retrieval-only clause: {corpus_wire}"
         );
         assert_ne!(sparse["params"]["idf"]["corpus"], sparse["filter"]);
-    }
-
-    /// ADR-0083 U1: sparse points fold to Memories client-side. The best point of a Memory stands for it and its later
-    /// chunks are dropped (a long note cannot fill the leg), order is the order of each Memory's best point, a point
-    /// without a parseable `memory_id` is left out, and more points than asked, a repeated point or a non-finite
-    /// score are refused, never truncated.
-    /// Fault: keep every point, keep the last point of a Memory, or accept an over-long reply ⇒ red.
-    #[test]
-    fn sparse_points_fold_to_memories_best_point_first() {
-        let (m1, m2) = (Uuid::now_v7(), Uuid::now_v7());
-        let (p1, p2, p3, p4) = (
-            Uuid::now_v7(),
-            Uuid::now_v7(),
-            Uuid::now_v7(),
-            Uuid::now_v7(),
-        );
-        let hit = |id: Uuid, score: f64, memory: Option<Uuid>| {
-            let payload =
-                memory.map_or_else(|| json!({}), |m| json!({ "memory_id": m.to_string() }));
-            json!({ "id": id.to_string(), "score": score, "payload": payload })
-        };
-        let ok = json!({ "result": { "points": [
-            hit(p1, 0.9, Some(m1)),
-            hit(p2, 0.8, Some(m1)),
-            hit(p3, 0.7, None),
-            hit(p4, 0.6, Some(m2)),
-        ] } });
-        let folded = fold_sparse_points(&ok, 4).expect("well-formed points");
-        assert_eq!(
-            folded
-                .iter()
-                .map(|c| (c.point_id, c.memory_id))
-                .collect::<Vec<_>>(),
-            vec![(PointId::Uuid(p1), Some(m1)), (PointId::Uuid(p4), Some(m2))]
-        );
-        assert!(
-            fold_sparse_points(&ok, 3).is_err(),
-            "more points than limit"
-        );
-        assert!(
-            fold_sparse_points(&json!({ "result": { "points": [] } }), 4)
-                .expect("an empty leg is a valid answer")
-                .is_empty()
-        );
-        for bad in [
-            json!({ "result": { "groups": [] } }),
-            json!({ "result": { "points": [hit(p1, 0.9, Some(m1)), hit(p1, 0.8, Some(m2))] } }),
-            json!({ "result": { "points": [{ "id": "not-an-id", "score": 0.9 }] } }),
-            json!({ "result": { "points": [{ "id": p1.to_string() }] } }),
-        ] {
-            assert!(fold_sparse_points(&bad, 5).is_err(), "{bad}");
-        }
     }
 
     /// ADR-0068 D-E: a refill asks for the remaining groups and folds one `must_not` on `memory_id` naming every
