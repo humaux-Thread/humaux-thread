@@ -9826,6 +9826,9 @@ Trace / logs with protected access
 
 | 指标名 | 取数点（章 · 动作 · 处数） | 量纲 | 消费方 |
 |---|---|---|---|
+| `host_pressure_ratio{resource,kind}` | §41.2 `humaux-maintenance health serve` 周期读配置路径的 PSI avg60 / 100，`telemetry::host::HostSampler::sample` 内唯一 `.set()` · 1；resource = cpu / memory / io，kind = some / full；源缺失或无效无样本，旧内核 cpu 无 full 则仅缺 full；启动时仅 HELP/TYPE（M22-1 / D2） | gauge·ratio | M22 capacity rules |
+| `host_memory_available_bytes` | §41.2 同一采样器读 MemAvailable / MemTotal，校验后转换 kB 为字节，唯一 `.set()` · 1；源缺失或无效无样本，启动时仅 HELP/TYPE（M22-1 / D2） | gauge·字节 | M22 capacity rules |
+| `host_cpu_busy_ratio` | §41.2 同一采样器读 /proc/stat 聚合 cpu，唯一 `.set()` · 1；两次有效计数之差的 non-idle（排除 idle / iowait，guest 不重复计数）除 total；首样本、无效或零差值无样本，启动时仅 HELP/TYPE（M22-1 / D2） | gauge·ratio | M22 capacity rules |
 | `humaux_mcp_requests_total{tool,result,plan_class}` | §33 gateway 每次 tool 调用返回处 · 1 | counter·次 | §42 错误率；§54 MCP availability |
 | `mcp_latency_seconds{tool}` | §33 gateway 同一处计时 · 1 | histogram·秒 | §54 p50/p95/p99 |
 | `humaux_retrieval_requests_total{intent,completeness_class}` | §20 planner：每次经 §55.1 `build_request()` 且 envelope 返回时 · 1 | counter·次 | **§53.5 INV-1 分母**；§1.4 坑3 gate |

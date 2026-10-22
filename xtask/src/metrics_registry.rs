@@ -67,6 +67,18 @@ const NOT_YET_PRODUCED: &[(&str, &str)] = &[];
 /// unexported (ADR-0061 review-fix 3, F10).
 const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
     (
+        "host_pressure_ratio",
+        "§41.2 / M22-1: no sample until a valid PSI source is read; missing is absent",
+    ),
+    (
+        "host_memory_available_bytes",
+        "§41.2 / M22-1: no sample until valid MemAvailable and MemTotal are read",
+    ),
+    (
+        "host_cpu_busy_ratio",
+        "§41.2 / M22-1: two valid CPU readings and a positive delta are required",
+    ),
+    (
         "partition_horizon_months",
         "ADR-0063 D-K: rendered only while the last PARTITIONS run succeeded; PartitionHorizonAbsent",
     ),

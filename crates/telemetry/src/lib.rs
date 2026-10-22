@@ -17,6 +17,8 @@ pub mod degrade;
 pub mod direction;
 pub mod dr;
 pub mod health;
+/// Read-only host gauges with absent samples on unavailable sources (§41.2).
+pub mod host;
 pub mod metrics;
 
 use std::io::{Read as _, Write as _};

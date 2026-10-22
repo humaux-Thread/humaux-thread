@@ -4,7 +4,7 @@
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
 //!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
 //!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
-//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, tests]
+//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, telemetry::host, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
 //! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B
@@ -80,6 +80,28 @@ pub mod families {
             labels,
         }
     }
+
+    /// §41.2 / M22 D2: PSI avg60 as a ratio, bounded resource/kind labels.
+    pub const HOST_PRESSURE_RATIO: Family = f(
+        "host_pressure_ratio",
+        "Host PSI avg60 stall ratio.",
+        Kind::Gauge,
+        &["resource", "kind"],
+    );
+    /// §41.2 / M22 D2: MemAvailable, validated against MemTotal.
+    pub const HOST_MEMORY_AVAILABLE_BYTES: Family = f(
+        "host_memory_available_bytes",
+        "Host available memory in bytes.",
+        Kind::Gauge,
+        &[],
+    );
+    /// §41.2 / M22 D2: non-idle CPU time between valid aggregate samples.
+    pub const HOST_CPU_BUSY_RATIO: Family = f(
+        "host_cpu_busy_ratio",
+        "Host CPU busy ratio excluding idle and iowait.",
+        Kind::Gauge,
+        &[],
+    );
 
     // §41.2: §53.1 abstain() — gateway.
     /// `degrade_total{code}`.
