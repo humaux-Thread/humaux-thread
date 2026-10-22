@@ -2,7 +2,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-protocol, postgres, serde_json, time]; services=[PostgreSQL(any) r=[control.rate_buckets,
 //!   control.workspaces], HTTP(gateway), subprocess(docker), subprocess(sh), subprocess(sysctl)]; env=[];
 //!   modules=[adapters::quota_repo, xtask::soak]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::load_open, xtask::main]
 //! Invariants: [no load-report.json and a non-zero exit unless the gateway's /readyz answered 200 before the first phase and
 //!   after every restart (assertion 0); every number in the report and every LOAD / ISO / ISO_NOISE line carries its n,
 //!   its unit, host= and measured_at=; admission 503s (body RATE_LIMITED) are counted apart from failed_calls; a 503
@@ -65,8 +65,8 @@ const ENUMERATE_TENTHS: usize = 7;
 /// One workspace-bound credential: the bearer is read from the env var the flag names.
 #[derive(Clone)]
 pub struct Key {
-    workspace: String,
-    bearer: String,
+    pub(crate) workspace: String,
+    pub(crate) bearer: String,
 }
 
 /// Parsed flags (§78.1: all required except `--restart`).
@@ -374,7 +374,7 @@ pub struct Conn {
 }
 
 impl Conn {
-    fn new(host_port: &str, io_timeout: Duration) -> Self {
+    pub(crate) fn new(host_port: &str, io_timeout: Duration) -> Self {
         Self {
             host_port: host_port.to_string(),
             io_timeout,
@@ -448,7 +448,7 @@ pub fn forwarded_for(lane: char, index: usize) -> String {
 }
 
 /// The wire request of one call, keep-alive, with the lane's `Forwarded` header.
-fn request(target: &Target, key: &Key, forwarded: &str, op: Op) -> String {
+pub(crate) fn request(target: &Target, key: &Key, forwarded: &str, op: Op) -> String {
     let wire = match op {
         Op::Enumerate => mcp_request(
             &target.host_port,
@@ -550,10 +550,10 @@ pub struct Sample {
 
 /// Where the clients send.
 pub struct Target {
-    host_port: String,
-    path: String,
-    origin: String,
-    io_timeout: Duration,
+    pub(crate) host_port: String,
+    pub(crate) path: String,
+    pub(crate) origin: String,
+    pub(crate) io_timeout: Duration,
 }
 
 /// One client of a phase.

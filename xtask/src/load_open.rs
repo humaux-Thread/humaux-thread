@@ -1,5 +1,5 @@
 //! `xtask::load_open` — `cargo xtask load-open`: open-loop (constant-arrival) load against one gateway, the X-BASE measurement of M03.
-//! Depends-on: crates=[postgres, serde_json]; services=[PostgreSQL(any), HTTP(gateway)]; env=[]; modules=[xtask::soak]
+//! Depends-on: crates=[postgres, serde_json]; services=[PostgreSQL(any)]; env=[]; modules=[xtask::load, xtask::soak]
 //! Called-by: [xtask::main]
 //! Invariants: [arrivals are scheduled on the clock, never on the previous response, so latency is taken from the
 //!   intended start and a slow gateway cannot thin the offered load; an arrival that finds every worker busy and the
@@ -22,13 +22,12 @@
 //! statistics flush interval of idle pool connections before the second snapshot. The sampler's own queries add a
 //! constant that is subtracted for commits and left in for statements.
 //!
+//! The HTTP client, credential and request builder are `xtask::load`'s (visibility-only change, card M03-1).
 //! Ops are the two the closed-loop harness uses (`memory.enumerate`, `tools/list`): neither reaches a provider, the
 //! outbox or Qdrant, so a run spends no money. `--ops enumerate|tools_list` runs one class alone for per-class
 //! txns/op. §78.1: every number is a flag; the identities and the report are files.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -36,7 +35,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 
-use crate::soak::{mcp_request, percentile};
+use crate::load::{Conn, Key, Op, Outcome, Target, outcome_of, request};
+use crate::soak::percentile;
 
 const USAGE: &str = "usage: cargo xtask load-open \
 --gateway-url http://HOST:PORT/mcp --identities <tsv> --users <n,n,..> --identities-per-user <n> \
@@ -47,12 +47,6 @@ const USAGE: &str = "usage: cargo xtask load-open \
 /// Op classes by index; `mixed` sends `enumerate` for 7 of every 10 arrivals, as the closed-loop harness does.
 const OPS: [&str; 2] = ["enumerate", "tools_list"];
 const ENUMERATE_TENTHS: u64 = 7;
-
-/// The `tools/list` JSON-RPC body (no provider, no storage).
-const TOOLS_LIST_BODY: &str = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{\"_meta\":{\
-    \"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\
-    \"io.modelcontextprotocol/clientInfo\":{\"name\":\"xtask-load-open\",\"version\":\"1\"},\
-    \"io.modelcontextprotocol/clientCapabilities\":{}}}}";
 
 /// Arrival discipline: `Open` schedules on the clock; `Closed` sends the next call when the last returned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -70,17 +64,9 @@ impl Mode {
     }
 }
 
-/// One credential: the workspace the call names and its bearer (never printed).
-struct Ident {
-    workspace: String,
-    bearer: String,
-}
-
 /// Parsed flags.
 struct Config {
-    host_port: String,
-    path: String,
-    origin: String,
+    target: Target,
     users: Vec<usize>,
     per_user: usize,
     rate_per_user: f64,
@@ -89,13 +75,12 @@ struct Config {
     settle: Duration,
     workers: usize,
     queue: usize,
-    io_timeout: Duration,
     mode: Mode,
     only: Option<usize>,
     pg_dsn: String,
     host_class: Option<String>,
     report_path: String,
-    ids: Vec<Vec<Ident>>,
+    ids: Vec<Vec<Key>>,
 }
 
 fn flag<T: std::str::FromStr>(args: &[String], name: &str) -> Result<T, String>
@@ -123,9 +108,9 @@ fn split_url(url: &str) -> Result<(String, String), String> {
 }
 
 /// Rows `<user>\t<workspace>\t<bearer>`, grouped by user in order of first appearance.
-fn parse_identities(text: &str) -> Result<Vec<Vec<Ident>>, String> {
+fn parse_identities(text: &str) -> Result<Vec<Vec<Key>>, String> {
     let mut order: Vec<String> = Vec::new();
-    let mut by_user: BTreeMap<String, Vec<Ident>> = BTreeMap::new();
+    let mut by_user: BTreeMap<String, Vec<Key>> = BTreeMap::new();
     for (n, line) in text
         .lines()
         .enumerate()
@@ -139,7 +124,7 @@ fn parse_identities(text: &str) -> Result<Vec<Vec<Ident>>, String> {
                 if !by_user.contains_key(u) {
                     order.push(u.to_string());
                 }
-                by_user.entry(u.to_string()).or_default().push(Ident {
+                by_user.entry(u.to_string()).or_default().push(Key {
                     workspace: w.to_string(),
                     bearer: b.to_string(),
                 });
@@ -205,9 +190,12 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
         ),
     };
     Ok(Config {
-        origin: format!("http://{host_port}"),
-        host_port,
-        path,
+        target: Target {
+            origin: format!("http://{host_port}"),
+            host_port,
+            path,
+            io_timeout: Duration::from_secs(flag(args, "--io-timeout-secs")?),
+        },
         users,
         per_user,
         rate_per_user,
@@ -216,7 +204,6 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
         settle: Duration::from_secs(flag(args, "--settle-secs")?),
         workers,
         queue,
-        io_timeout: Duration::from_secs(flag(args, "--io-timeout-secs")?),
         mode,
         only,
         pg_dsn: std::env::var(&dsn_env)
@@ -232,183 +219,11 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Keep-alive HTTP/1.1 client (xtask::load keeps its own private; the card may not touch that file)
-// ---------------------------------------------------------------------------------------------
-
-/// One worker's connection, reopened after a close or an error.
-#[derive(Default)]
-struct Conn {
-    stream: Option<BufReader<TcpStream>>,
-}
-
-fn open(host_port: &str, io: Duration) -> Result<BufReader<TcpStream>, String> {
-    // dep: HTTP(gateway) — one keep-alive connection per worker.
-    let s = TcpStream::connect(host_port).map_err(|e| format!("connect: {e}"))?;
-    s.set_read_timeout(Some(io))
-        .and_then(|()| s.set_write_timeout(Some(io)))
-        .and_then(|()| s.set_nodelay(true))
-        .map_err(|e| format!("socket options: {e}"))?;
-    Ok(BufReader::new(s))
-}
-
-/// Write one request and read one response: (status, body, server asked to close).
-fn exchange(s: &mut BufReader<TcpStream>, wire: &str) -> Result<(u16, String, bool), String> {
-    s.get_mut()
-        .write_all(wire.as_bytes())
-        .map_err(|e| format!("write: {e}"))?;
-    let mut line = String::new();
-    if s.read_line(&mut line)
-        .map_err(|e| format!("read status: {e}"))?
-        == 0
-    {
-        return Err("eof before status line".to_string());
-    }
-    let status: u16 = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(|| format!("bad status line {line:?}"))?;
-    let (mut len, mut chunked, mut close) = (None::<usize>, false, false);
-    loop {
-        line.clear();
-        if s.read_line(&mut line)
-            .map_err(|e| format!("read header: {e}"))?
-            == 0
-        {
-            return Err("eof in headers".to_string());
-        }
-        let h = line.trim_end().to_ascii_lowercase();
-        if h.is_empty() {
-            break;
-        }
-        if let Some(v) = h.strip_prefix("content-length:") {
-            len = v.trim().parse().ok();
-        } else if h.starts_with("transfer-encoding:") && h.contains("chunked") {
-            chunked = true;
-        } else if h.starts_with("connection:") && h.contains("close") {
-            close = true;
-        }
-    }
-    let mut body = Vec::new();
-    if chunked {
-        loop {
-            line.clear();
-            s.read_line(&mut line)
-                .map_err(|e| format!("read chunk size: {e}"))?;
-            let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or("0"), 16)
-                .map_err(|e| format!("chunk size: {e}"))?;
-            if size == 0 {
-                while s
-                    .read_line(&mut line)
-                    .map_err(|e| format!("read trailer: {e}"))?
-                    > 2
-                {
-                    line.clear();
-                }
-                break;
-            }
-            let mut chunk = vec![0; size + 2];
-            s.read_exact(&mut chunk)
-                .map_err(|e| format!("read chunk: {e}"))?;
-            body.extend_from_slice(&chunk[..size]);
-        }
-    } else if let Some(n) = len {
-        body.resize(n, 0);
-        s.read_exact(&mut body)
-            .map_err(|e| format!("read body: {e}"))?;
-    } else {
-        close = true;
-        s.read_to_end(&mut body)
-            .map_err(|e| format!("read body: {e}"))?;
-    }
-    Ok((status, String::from_utf8_lossy(&body).into_owned(), close))
-}
-
-impl Conn {
-    /// Send one request. A reused connection the server closed while idle fails before any response byte; that
-    /// request is sent once more on a fresh connection, as any HTTP/1.1 client does.
-    fn send(&mut self, host_port: &str, io: Duration, wire: &str) -> Result<(u16, String), String> {
-        let reused = self.stream.is_some();
-        let mut s = match self.stream.take() {
-            Some(s) => s,
-            None => open(host_port, io)?,
-        };
-        let mut r = exchange(&mut s, wire);
-        if reused
-            && matches!(&r, Err(e) if e.starts_with("eof before status") || e.starts_with("write:"))
-        {
-            s = open(host_port, io)?;
-            r = exchange(&mut s, wire);
-        }
-        if matches!(&r, Ok((_, _, false))) {
-            self.stream = Some(s);
-        }
-        r.map(|(status, body, _)| (status, body))
-    }
-}
-
-/// What one call came back as. `Refused` is the §67.2 admission 503 whose body is exactly `RATE_LIMITED`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Answer {
-    Ok,
-    Refused,
-    Failed,
-    NoAnswer,
-}
-
-fn classify(r: Result<(u16, String), String>) -> Answer {
-    match r {
-        Err(_) => Answer::NoAnswer,
-        Ok((503, body)) if body.trim() == "RATE_LIMITED" => Answer::Refused,
-        Ok((200, body)) if !body.contains("\"error\":{") && !body.contains("\"isError\":true") => {
-            Answer::Ok
-        }
-        Ok(_) => Answer::Failed,
-    }
-}
-
-/// The wire request of one arrival; each user has its own `Forwarded` /64 (`2001:db8:<user>::1`, documentation range).
-fn wire(cfg: &Config, id: &Ident, user: usize, op: usize) -> String {
-    let raw = if op == 0 {
-        mcp_request(
-            &cfg.host_port,
-            &cfg.path,
-            &cfg.origin,
-            "memory",
-            &format!(
-                "{{\"action\":\"enumerate\",\"workspace_id\":\"{}\",\"limit\":10}}",
-                id.workspace
-            ),
-        )
-    } else {
-        format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
-             Accept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\n\
-             Mcp-Method: tools/list\r\nOrigin: {}\r\nAuthorization: Bearer {{BEARER}}\r\n\
-             Content-Length: {}\r\n\r\n{TOOLS_LIST_BODY}",
-            cfg.path,
-            cfg.host_port,
-            cfg.origin,
-            TOOLS_LIST_BODY.len()
-        )
-    };
-    raw.replacen("Connection: close\r\n", "", 1).replacen(
-        "Authorization: Bearer {BEARER}",
-        &format!(
-            "Forwarded: 2001:db8:{:x}::1\r\nAuthorization: Bearer {}",
-            user + 1,
-            id.bearer
-        ),
-        1,
-    )
-}
-
-// ---------------------------------------------------------------------------------------------
 // Arrival driver
 // ---------------------------------------------------------------------------------------------
 
 /// One level's arrival plan.
-struct Plan {
+struct Plan<'a> {
     mode: Mode,
     /// Arrivals per second, all users together.
     rate: f64,
@@ -421,6 +236,7 @@ struct Plan {
     users: usize,
     per_user: usize,
     only: Option<usize>,
+    target: &'a Target,
 }
 
 /// One scheduled call: its intended start, op class, user and that user's identity index.
@@ -438,7 +254,7 @@ struct Rec {
     warm: bool,
     intended_ms: f64,
     service_ms: f64,
-    answer: Answer,
+    answer: Outcome,
 }
 
 struct Tally {
@@ -473,9 +289,9 @@ fn worker<F>(
     end: Instant,
     out: &Mutex<Vec<Rec>>,
 ) where
-    F: Fn(&mut Conn, &Arrival) -> Answer,
+    F: Fn(&mut Conn, &Arrival) -> Outcome,
 {
-    let mut conn = Conn::default();
+    let mut conn = Conn::new(&p.target.host_port, p.target.io_timeout);
     let mut mine = Vec::new();
     loop {
         let a = match p.mode {
@@ -515,7 +331,7 @@ fn worker<F>(
 /// workers could not issue before the level's end is dropped. `issued + dropped == scheduled` in both modes.
 fn drive<F>(p: &Plan, send: &F) -> Tally
 where
-    F: Fn(&mut Conn, &Arrival) -> Answer + Sync,
+    F: Fn(&mut Conn, &Arrival) -> Outcome + Sync,
 {
     let start = Instant::now() + Duration::from_millis(50);
     let end = start + Duration::from_secs_f64(p.total as f64 / p.rate);
@@ -616,12 +432,12 @@ fn report_level(
     host: &str,
 ) -> serde_json::Value {
     let at = unix_now();
-    let count = |a: Answer| t.recs.iter().filter(|r| r.answer == a).count();
+    let count = |f: fn(&Outcome) -> bool| t.recs.iter().filter(|r| f(&r.answer)).count();
     let (ok, refused, failed, none) = (
-        count(Answer::Ok),
-        count(Answer::Refused),
-        count(Answer::Failed),
-        count(Answer::NoAnswer),
+        count(|o| matches!(o, Outcome::Ok)),
+        count(|o| matches!(o, Outcome::Refused { .. })),
+        count(|o| matches!(o, Outcome::Failed(_))),
+        count(|o| matches!(o, Outcome::Dropped)),
     );
     let dropped = t.scheduled - t.issued;
     println!(
@@ -636,7 +452,7 @@ fn report_level(
         let pick = |f: fn(&Rec) -> f64| -> Vec<f64> {
             t.recs
                 .iter()
-                .filter(|r| r.op == i && !r.warm && r.answer == Answer::Ok)
+                .filter(|r| r.op == i && !r.warm && r.answer == Outcome::Ok)
                 .map(f)
                 .collect()
         };
@@ -715,11 +531,23 @@ fn execute(cfg: &Config) -> i32 {
             users,
             per_user: cfg.per_user,
             only: cfg.only,
+            target: &cfg.target,
         };
         let before = db.as_mut().and_then(|c| pg_snap(c).ok());
         let tally = drive(&plan, &|conn: &mut Conn, a: &Arrival| {
-            let id = &cfg.ids[a.user][a.ident];
-            classify(conn.send(&cfg.host_port, cfg.io_timeout, &wire(cfg, id, a.user, a.op)))
+            // One `Forwarded` /64 per user (`2001:db8:<user>::1`, documentation range): a user's identities share an IP.
+            let wire = request(
+                &cfg.target,
+                &cfg.ids[a.user][a.ident],
+                &format!("2001:db8:{:x}::1", a.user + 1),
+                if a.op == 0 {
+                    Op::Enumerate
+                } else {
+                    Op::ToolsList
+                },
+            );
+            conn.send(&wire)
+                .map_or(Outcome::Dropped, |r| outcome_of(&r))
         });
         std::thread::sleep(cfg.settle);
         let after = db.as_mut().and_then(|c| pg_snap(c).ok());
@@ -759,8 +587,25 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
-    fn plan(mode: Mode, rate: f64, total: u64, workers: usize, queue: usize) -> Plan {
+    fn target() -> Target {
+        Target {
+            host_port: "127.0.0.1:1".to_string(),
+            path: "/mcp".to_string(),
+            origin: "http://127.0.0.1:1".to_string(),
+            io_timeout: Duration::from_secs(1),
+        }
+    }
+
+    fn plan(
+        t: &Target,
+        mode: Mode,
+        rate: f64,
+        total: u64,
+        workers: usize,
+        queue: usize,
+    ) -> Plan<'_> {
         Plan {
+            target: t,
             mode,
             rate,
             total,
@@ -773,16 +618,16 @@ mod tests {
         }
     }
 
-    fn slow(_: &mut Conn, _: &Arrival) -> Answer {
+    fn slow(_: &mut Conn, _: &Arrival) -> Outcome {
         std::thread::sleep(Duration::from_millis(25));
-        Answer::Ok
+        Outcome::Ok
     }
 
     /// The card's self-test: a server that cannot keep up with the schedule makes the closed loop report dropped
     /// iterations, the number an open-loop run turns into queue wait instead.
     #[test]
     fn closed_loop_reports_dropped_iterations_at_overload() {
-        let t = drive(&plan(Mode::Closed, 200.0, 200, 1, 1), &slow);
+        let t = drive(&plan(&target(), Mode::Closed, 200.0, 200, 1, 1), &slow);
         assert_ne!(
             t.scheduled - t.issued,
             0,
@@ -797,7 +642,7 @@ mod tests {
     /// in `intended_ms` while `service_ms` stays near 25 ms.
     #[test]
     fn open_loop_latency_includes_queue_wait() {
-        let t = drive(&plan(Mode::Open, 100.0, 50, 1, 64), &slow);
+        let t = drive(&plan(&target(), Mode::Open, 100.0, 50, 1, 64), &slow);
         assert_eq!(t.scheduled - t.issued, 0);
         let worst = |f: fn(&Rec) -> f64| t.recs.iter().map(f).fold(0.0, f64::max);
         assert!(
