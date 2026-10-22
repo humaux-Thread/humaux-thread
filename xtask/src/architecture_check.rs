@@ -9743,13 +9743,9 @@ mod tests {
             assert!(red[0].starts_with(&format!("{name}:2:")), "{name}: {red:?}");
         }
         for name in ["svc/img/makefile", "svc/img/Dockerfilex"] {
-            let dirty = vec![(
-                name.to_string(),
-                "FROM debian\nRUN pip install x\n".to_string(),
-            )];
             assert!(
-                no_python_problems(&[], &dirty, &[], &[]).is_empty(),
-                "{name}"
+                !is_dockerfile_name(name),
+                "{name} is not a product image file name"
             );
         }
         let tooling = vec![(
@@ -9764,6 +9760,11 @@ mod tests {
         fs::create_dir_all(dir.join("svc/img")).unwrap();
         fs::write(
             dir.join("svc/img/Dockerfile"),
+            "FROM debian\nRUN pip install x\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("svc/img/makefile"),
             "FROM debian\nRUN pip install x\n",
         )
         .unwrap();
