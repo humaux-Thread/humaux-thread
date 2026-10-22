@@ -6304,7 +6304,9 @@ mod tests {
         }
         let map = a.docs[0].1.as_ref().unwrap();
         assert!(
-            map.contains("### `ops.jobs`\nread by:\n- (no process): `humaux-a`\n\nwritten by:\n"),
+            map.contains(
+                "### `ops.jobs`\nread by:\n- (no process): `humaux-a`\n\nwritten by:\n\nexecuted by:\n\n"
+            ),
             "{map}"
         );
         assert!(
@@ -6347,9 +6349,23 @@ mod tests {
 
     // ---- G-TCI3: the generated docs merge without conflict (#181) ------------------------
 
-    /// Base tree of the G-TCI3 pair: one lib crate and three DB tests that sort `t_alpha < t_mid < t_zeta`, each
-    /// reading table `ops.jobs` and env var `HUMAUX_TEST_PG_DSN`. `extra` adds more tests of the same shape.
-    fn tci3_tree(name: &str, extra: &[&str]) -> Fx {
+    /// Base tree of the G-TCI3 pair: one lib crate, one bin (so G-TCI3-1 also covers the Processes section) and
+    /// three DB tests that sort `t_alpha < t_mid < t_zeta`, each reading table `ops.jobs` and env var
+    /// `HUMAUX_TEST_PG_DSN`. `extra` adds more tests of the same shape; `process` gives this branch one extra
+    /// process line: an env var (`env`) and/or a service (`svc`), on either side of the bin's base service line.
+    fn tci3_tree(name: &str, extra: &[&str], process: (bool, bool)) -> Fx {
+        let (env, svc) = process;
+        let mut services = "PostgreSQL(owner) r=[ops.jobs] w=[ops.outbox]".to_string();
+        if svc {
+            services.push_str(", Qdrant(c)");
+        }
+        let bin_env = if env { "HUMAUX_PROC_ENV" } else { "" };
+        let bin_dep = format!("crates=[]; services=[{services}]; env=[{bin_env}]; modules=[]");
+        let bin_read = if env {
+            "let _ = std::env::var(\"HUMAUX_PROC_ENV\"); "
+        } else {
+            ""
+        };
         let fx = Fx::new(name);
         fx.pkg(
             "crates/a",
@@ -6359,6 +6375,14 @@ mod tests {
         .file(
             "crates/a/src/lib.rs",
             &format!("{}pub fn f() {{}}\n", hdr("humaux-a", NODEP, "[]", "[x]")),
+        )
+        .pkg("bins/w", "humaux-w", "")
+        .file(
+            "bins/w/src/main.rs",
+            &format!(
+                "{}fn main() {{ {bin_read}let _ = \"select 1 from ops.jobs\"; let _ = \"insert into ops.outbox (a) values (1)\"; }}\n",
+                hdr("w::main", &bin_dep, "[process(humaux-w)]", "[x]")
+            ),
         );
         for stem in ["t_alpha", "t_mid", "t_zeta"].iter().chain(extra) {
             let dep = "crates=[serde]; services=[PostgreSQL(owner) r=[ops.jobs]]; env=[HUMAUX_TEST_PG_DSN]; modules=[]";
@@ -6439,14 +6463,24 @@ mod tests {
     }
 
     /// G-TCI3-1: from one base tree, branch A adds a test on table T and env var E and branch B adds two other
-    /// tests on the same T and E. Each doc merges with no conflict and the merge is the render of A+B. B adds two so
-    /// that a line counting files would differ on both sides (two identical edits merge without a conflict).
+    /// tests on the same T and E; each branch also adds one process line (A an env var, B a service) to the same
+    /// bin, so the Processes section is covered too. Each doc merges with no conflict and the merge is the render of
+    /// A+B. B adds two tests so that a line counting files would differ on both sides (two identical edits merge
+    /// without a conflict).
     #[test]
     fn g_tci3_1_two_prs_on_one_table_and_env_var_merge_clean_and_correct() {
-        let base = tci3_docs(&tci3_tree("tci3_base", &[]));
-        let a = tci3_docs(&tci3_tree("tci3_a", &["t_beta"]));
-        let b = tci3_docs(&tci3_tree("tci3_b", &["t_omega1", "t_omega2"]));
-        let both = tci3_docs(&tci3_tree("tci3_ab", &["t_beta", "t_omega1", "t_omega2"]));
+        let base = tci3_docs(&tci3_tree("tci3_base", &[], (false, false)));
+        let a = tci3_docs(&tci3_tree("tci3_a", &["t_beta"], (true, false)));
+        let b = tci3_docs(&tci3_tree(
+            "tci3_b",
+            &["t_omega1", "t_omega2"],
+            (false, true),
+        ));
+        let both = tci3_docs(&tci3_tree(
+            "tci3_ab",
+            &["t_beta", "t_omega1", "t_omega2"],
+            (true, true),
+        ));
         let dir = std::env::temp_dir().join(format!("dep_map_tci3_merge_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let merges: Vec<(i32, String)> = (0..3)
@@ -6476,7 +6510,7 @@ mod tests {
     /// is drift that names that file.
     #[test]
     fn g_tci3_2_a_hand_edited_committed_line_is_drift_naming_the_file() {
-        let fx = tci3_tree("tci3_drift", &["t_beta"]);
+        let fx = tci3_tree("tci3_drift", &["t_beta"], (false, false));
         let run = || evaluate(&fx.an(), Ok(Some(tci3_catalog())), Vec::new()).0;
         for (path, doc) in &run().docs {
             if let Some(doc) = doc {

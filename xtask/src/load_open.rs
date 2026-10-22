@@ -728,8 +728,30 @@ mod tests {
         }
     }
 
+    /// A one-level config for `report_level`; the target and `ids` are unused by the report shape.
+    fn cfg(mode: Mode) -> Config {
+        Config {
+            target: target(),
+            users: vec![2],
+            per_user: 3,
+            rate_per_user: 1.0,
+            warmup: Duration::ZERO,
+            window: Duration::ZERO,
+            settle: Duration::ZERO,
+            enumerate_tenths: 7,
+            workers: 1,
+            queue: 1,
+            mode,
+            only: None,
+            pg_dsn: String::new(),
+            host_class: None,
+            report_path: String::new(),
+            ids: Vec::new(),
+        }
+    }
+
     /// §57.1: a NoAnswer is not an answer. With N records of which K are NoAnswer, the per-response DB cost divides by
-    /// N-K, not by N.
+    /// N-K, not by N, and `report_level` publishes that denominator.
     #[test]
     fn load_open_denominator_excludes_no_answer() {
         let mut t = Tally {
@@ -746,10 +768,21 @@ mod tests {
                 answer: if i < 3 { Outcome::Dropped } else { Outcome::Ok },
             });
         }
-        assert_eq!(answered_count(&t), 7, "3 NoAnswer records are not answered");
+        let report = report_level(
+            &cfg(Mode::Open),
+            2,
+            &t,
+            Err("no counter session".to_string()),
+            "test",
+        );
+        assert_eq!(
+            report["answered"].as_u64(),
+            Some(7),
+            "report_level must publish answers, not issued calls: {report}"
+        );
         let a = snap(100, 0.0, Ok((0.0, 0.0)));
         let b = snap(109, 700.0, Ok((14.0, 140.0)));
-        let cost = pg_cost(&a, &b, answered_count(&t));
+        let cost = pg_cost(&a, &b, 7);
         assert_eq!(cost.txns, Some(1.0));
         assert_eq!(cost.wal, Some(100.0));
         assert_eq!(cost.stmts, (Some(2.0), Some(20.0)));

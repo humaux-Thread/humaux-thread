@@ -230,8 +230,7 @@ There is **no allowlist or ratchet file**. An exemption is a comment that must n
 
 The rule id must be one of §9's ids except `doc-drift`, `exemption-*` and `header-field`; the reason must be
 non-empty and not `TODO`. An exemption that suppresses nothing is itself a violation. Every exemption is listed
-(file:line, rule, reason) in `dependency_map.md` §Exemptions and counted in the summary line, so they are
-visible, countable and reviewed. Expected users: `xtask::rls_check` / `xtask::architecture_check` (they transcribe
+(file:line, rule, reason) in `dependency_map.md` §Exemptions, so they are visible and reviewed. Expected users: `xtask::rls_check` / `xtask::architecture_check` (they transcribe
 §6.2.2 and SQL fixtures in strings — `table-undeclared` file-scoped).
 
 ## 7. The three generated maps (`doc-drift`)
@@ -242,7 +241,7 @@ names, no counts that depend on DB traffic. Hand edits are a `doc-drift` violati
 
 | File | Contents | Source |
 |------|----------|--------|
-| `docs/architecture/dependency_map.md` | summary line; **process → module** (modules reachable from each `main.rs` over non-test edges) with tables r/w/x, env, services, UDS peers; **reverse index** table → readers/writers/executors by process; service → modules (UDS server ↔ clients); Cargo dep → why + every module naming it; **test binaries → external deps** (PostgreSQL/Qdrant/MiniMax/DashScope/subprocess): everything the target reaches, what its **default run** reaches (the closure of its non-`#[ignore]` tests over local fns/consts/statics/macros and `#[path]` modules), and `db-bound (default run)` — gate-truth's DB-bound set; excluded fixtures; exemptions | headers + computed facts |
+| `docs/architecture/dependency_map.md` | no aggregate count line; **process → module** (modules reachable from each `main.rs` over non-test edges) with tables r/w/x, env, services, UDS peers; **reverse index** table → readers/writers/executors by process; service → modules (UDS server ↔ clients); Cargo dep → why + every module naming it; **test binaries → external deps** (PostgreSQL/Qdrant/MiniMax/DashScope/subprocess): everything the target reaches, what its **default run** reaches (the closure of its non-`#[ignore]` tests over local fns/consts/statics/macros and `#[path]` modules), and `db-bound (default run)` — gate-truth's DB-bound set; excluded fixtures; exemptions | headers + computed facts |
 | `docs/architecture/db_objects.md` | every `schema.object` created by a migration: kind, owner role, RLS / FORCE, grants per runtime role (`SELECT, INSERT, UPDATE(col,…)`, `EXECUTE`), first migration that created it, modules/processes that read / write / execute it | `pg_catalog` on `HUMAUX_TEST_PG_DSN` (**read-only transaction**) + `migrations/*.sql` scan |
 | `docs/architecture/env_vars.md` | every variable: kind, processes and modules that name it, witness (`literal` / `declared-only`), registry (`gateway` / `raw`) | headers + computed facts |
 
