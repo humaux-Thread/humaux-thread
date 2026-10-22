@@ -3,9 +3,10 @@
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[telemetry::metrics]
 //! Called-by: [maintenance::health_serve, tests]
 //! Invariants: [a series renders only from a value parsed in the latest publish: a missing, unreadable or malformed
-//!   source leaves its series (or whole family) out and is never written as 0; before the first publish nothing
-//!   renders; the CPU busy ratio is the delta of two readable /proc/stat samples, absent for the first sample and
-//!   for a zero total delta; publish() holds exactly one `.set(` per family]
+//!   source leaves its series (or whole family) out and is never written as 0; render() writes nothing before the
+//!   first publish while declare_families() writes only the HELP/TYPE headers (#193); the CPU busy ratio is the
+//!   delta of two readable /proc/stat samples, absent for the first sample and for a zero total delta; publish()
+//!   holds exactly one `.set(` per family]
 //! Spec: Baseline §41.2; §4.4; §78.1; §78.3
 //!
 //! §4.4: "not scanned" is not "none". A host without PSI (kernel < 4.20, `psi=0`, no `full` line on older CPU
@@ -299,6 +300,20 @@ pub fn render(out: &mut String) {
     );
 }
 
+/// `--metrics-families`: the three §41.2 host families at zero state, HELP/TYPE only. A host without
+/// `/proc` (the macOS rehearsal) has no sample to render, but the families must still be declared so
+/// D7 counts them exported and an M22-3 rule may reference them (#193, G-M22-1). This writes no
+/// sample: the live render is [`render`], which keeps an absent family out (§4.4).
+pub fn declare_families(out: &mut String) {
+    for family in [
+        &families::HOST_PRESSURE_RATIO,
+        &families::HOST_MEMORY_AVAILABLE_BYTES,
+        &families::HOST_CPU_BUSY_RATIO,
+    ] {
+        write_family(out, family, &[]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +345,21 @@ mod tests {
         let mut out = String::new();
         write_reading(&mut out, r);
         out
+    }
+
+    #[test]
+    fn declare_families_writes_only_the_three_headers() {
+        let mut out = String::new();
+        declare_families(&mut out);
+        assert_eq!(
+            out.lines().filter(|l| l.starts_with("# TYPE ")).count(),
+            3,
+            "{out}"
+        );
+        assert!(
+            out.lines().all(|l| l.starts_with('#')),
+            "a declaration must carry no sample: {out}"
+        );
     }
 
     #[test]
