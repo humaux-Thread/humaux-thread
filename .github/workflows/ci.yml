@@ -662,11 +662,22 @@ jobs:
               sys.exit("G-M24-3:\n" + "\n".join(red))
           PY
 
+  # ADR-0084 D-G (T-RET-7c): G-RET-11 score parity and G-RET-14 artifact pin on the pinned rerank files, run INSIDE the
+  # runtime base image (U3). The steps and pins live in .github/actions/rerank-parity so targeted.yml's rerank dispatch
+  # runs the same gate (T-CI-4); this job keeps its name, runner and no services (the tests need no database).
+  rerank-parity:
+    name: rerank parity (G-RET-11, G-RET-14)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rerank-parity
+
   # The required check (branch protection names it): green only when every part above is green; a skipped or
   # cancelled part is red, never a quiet pass (§79.2).
   ci:
     name: fmt + check + clippy + test + gates
-    needs: [lint, test-a, test-b, serial-lane, sast]
+    needs: [lint, test-a, test-b, serial-lane, sast, rerank-parity]
     if: always()
     # Pinned x64 image: this job only compares five results, and on the arm queue it waited ~5.5 min for a runner
     # after every part had finished (run 38351566010).
@@ -675,12 +686,13 @@ jobs:
     steps:
       - name: every part passed
         run: |
-          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }} sast=${{ needs.sast.result }}'
+          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }} sast=${{ needs.sast.result }} rerank-parity=${{ needs.rerank-parity.result }}'
           test '${{ needs.lint.result }}' = success
           test '${{ needs.test-a.result }}' = success
           test '${{ needs.test-b.result }}' = success
           test '${{ needs.serial-lane.result }}' = success
           test '${{ needs.sast.result }}' = success
+          test '${{ needs.rerank-parity.result }}' = success
 
   # Real-provider tests (the local chain's distill_hop_live / distill_fairness_live /
   # distill_poison_live / two_provider_live / consolidation hop / dashscope_live_smoke).

@@ -10,7 +10,10 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 # §78.5: a new RustSec advisory blocks every PR. Fix = bump the lock; only if no fixed version exists, add an
 # entry here with the advisory id, the reason and an expiry date, and a card to remove it.
-ignore = []
+# cargo-deny has no expiry field, so the expiry date and the removal card sit in the reason string.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "ADR-0084 D-B: `paste` 1.0.15 (unmaintained, no patched version) is a normal dependency of `tokenizers` 0.23.2, which the retrieval-worker needs for the local rerank lane; the alternative is the pre-release `tokenizers` 1.0.0-rc.3 family. Expires 2027-04-30. Removal card: move to a tokenizers release without paste." },
+]
 
 [licenses]
 allow = [

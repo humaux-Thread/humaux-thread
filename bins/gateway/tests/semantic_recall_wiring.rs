@@ -2230,6 +2230,9 @@ fn hybrid_bootstrap(handle: &Handle, sparse_leg: bool) -> ContextBootstrap {
                 "retrieval.profile.sparse_leg_enabled".to_owned(),
                 sparse_leg.to_string(),
             ),
+            // ADR-0084 D-C 1 / D-E: `rerank_depth` may not exceed the profile's `cand_k`, which this small `top_k`
+            // keeps under the default 25; the lane is off here, so the smallest depth is enough.
+            ("retrieval.profile.rerank_depth".to_owned(), "1".to_owned()),
         ]),
     )
 }

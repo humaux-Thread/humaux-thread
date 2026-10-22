@@ -1,0 +1,44 @@
+# §46.1 migration manifest. Card M07-2 / ADR-0085 D-A: one security_invoker view private.memory_text_v (tenant_id,
+# memory_id, title, body) over memory_records, identity_note_materializations, evidence_objects and events; owner role_migration_owner;
+# SELECT for role_gateway and role_private_worker only. No DML, no table, policy or existing grant changes; additive, so
+# EXPAND_CONTRACT (number 0259).
+
+migration_id = "0259_memory_text_view"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless the view does not exist yet and the four tables it reads do.
+precheck = """
+select to_regclass('private.memory_text_v') is null
+ and to_regclass('private.memory_records') is not null
+ and to_regclass('private.identity_note_materializations') is not null
+ and to_regclass('private.evidence_objects') is not null
+ and to_regclass('private.events') is not null
+ as precheck_ok
+"""
+
+# Fails on: a view that is missing, not a view, not owned by role_migration_owner, not security_invoker, or without
+# exactly the columns (tenant_id uuid, memory_id uuid, title text, body text) in that order; SELECT held by anyone but
+# role_gateway and role_private_worker (PUBLIC included), or any write privilege held by a runtime role. Like 0255's,
+# this postcheck leaves the view body to adapters::tests::note_text_once (G-M07-3, view half), so a wrong body reaches
+# its gate instead of stopping the migration.
+postcheck = """
+with r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+                        ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
+select (select count(*) = 1 from pg_class c
+         where c.oid = to_regclass('private.memory_text_v') and c.relkind = 'v'
+           and pg_get_userbyid(c.relowner) = 'role_migration_owner'
+           and 'security_invoker=true' = any (coalesce(c.reloptions, array[]::text[])))
+ and (select array_agg(a.attname::text || ':' || a.atttypid::regtype::text order by a.attnum)
+        from pg_attribute a
+       where a.attrelid = to_regclass('private.memory_text_v') and a.attnum > 0 and not a.attisdropped)
+     = array['tenant_id:uuid', 'memory_id:uuid', 'title:text', 'body:text']
+ and not exists (select 1 from r
+                  where has_table_privilege(r.role, 'private.memory_text_v', 'SELECT')
+                        is distinct from (r.role in ('role_gateway', 'role_private_worker'))
+                     or has_table_privilege(r.role, 'private.memory_text_v', 'INSERT, UPDATE, DELETE, TRUNCATE'))
+ and not has_table_privilege('public', 'private.memory_text_v', 'SELECT')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while no reader selects from the view: DROP VIEW private.memory_text_v (nothing depends on it; the card ships no reader but memory_repo::memory_texts_in_txn, which has no production caller yet). Forward-fix (CREATE OR REPLACE VIEW with the same column list) once a reader card has switched to it."
+backup_restore_requirement = "none: creates one view and grants SELECT on it; no row is read, copied, rewritten or deleted."
