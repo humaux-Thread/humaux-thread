@@ -119,6 +119,7 @@ reads `pg_class`/`pg_proc`/`pg_namespace`/`aclexplode(relacl|proacl|attacl)` in 
 `migrations/*.sql` creates (first creating migration by number), so fixture objects in the shared DB never make
 the doc flap; it refuses unless `ops.schema_migrations` equals the repo's migration set (`db-not-at-head`).
 §6.2.2 agreement is inherited from `rls-check` on the same catalog; not re-parsed here.
+**Amended 2026-10-23 (T-CI-3, #181), layout only:** the docs carry no aggregate count line (`dep-map --check` prints the counts) and every list is `label:` plus one `- item` line under a heading per module, object, variable, dependency or test target, so two PRs that touch different items of one list merge without a conflict; G-TCI3-1 (`git merge-file` over the three docs of two sibling branches must report 0 conflicts and equal the render of A+B) and G-TCI3-2 (`--check` stays red on a hand edit, naming the file) gate it; red r1 (a files count line put back), targeted run 39846691223, failed on `<<<<<<< ours` / `5 files.` / `=======` / `6 files.` / `>>>>>>> theirs` in dependency_map.md.
 
 ### D-J — `cargo xtask dep-map [--check|--write|--suggest <files>]`
 No flag = `--check`. Exit 0 pass, 1 violations or drift, 2 usage/IO/missing DSN (skip ≠ pass, ADR-0050).
