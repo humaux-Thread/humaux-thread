@@ -55,7 +55,7 @@ same column list.
 
 | gate | location | injected fault | expected red |
 |---|---|---|---|
-| G-M07-3, view half | `crates/adapters/tests/note_text_once.rs::g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | the view returns the title as the body of a non-identity Memory (`ELSE m.content ->> 'title'`) | the legacy twin's `body` is its title, not its `key_claim`, at the assertion on the first read |
+| G-M07-3, view half | `crates/adapters/tests/note_text_once.rs::g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | the view returns the title as the body of a non-identity Memory (`ELSE m.content ->> 'title'`) | the legacy twin reads its title instead of the rewritten `key_claim` (`note_text_once.rs:268`, `left == right`) |
 
 The test writes two notes through the real `memory.note_put` transaction, reads them through the accessor as
 `role_gateway` with the member's RLS context, then reshapes them as the owner: the identity note loses its `key_claim`
@@ -63,7 +63,7 @@ The test writes two notes through the real `memory.note_put` transaction, reads 
 `key_claim` that differs from its payload, and must read the `key_claim`. A view that read only `key_claim`, only the
 payload, or the title fails one of the three reads.
 
-Red record: <!-- filled in by the card's red run --> pending.
+Red record: `red/m07-2-r1` (this branch plus the single mutation above, deleted after recording), targeted run 39811915711: FAILED on `note_text_once.rs:268`, the legacy twin's body assertion (left: its title, right: the rewritten `key_claim`), not on setup. Green: the PR's CI on the unmutated branch.
 
 ## Consequences
 
