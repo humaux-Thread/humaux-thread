@@ -11,7 +11,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use humaux_contracts::retrieval_config::RETRIEVAL_CANDIDATE_MULTIPLIER;
+use humaux_contracts::retrieval_config::RETRIEVAL_CANDIDATE_CAP;
 pub use humaux_contracts::retrieval_config::{
     QueryTransform, RegisteredRetrievalProfile, RetrievalConfigError,
     resolve_registered_retrieval_profile,
@@ -21,7 +21,13 @@ use humaux_domain::authority::MemoryId;
 use crate::planner::{self, PlannerDecision};
 use crate::predicate_registry::PredicateEntry;
 
-const CANDIDATE_CAP: u32 = 200;
+/// §55.6 / ADR-0083 D-D: `cand_k = min(top_k * cand_multiplier, RETRIEVAL_CANDIDATE_CAP)`. The one place the formula is
+/// computed, shared by [`build_request`] and the envelope's §23.3 consistency check so the two cannot drift.
+pub(crate) fn candidate_depth(top_k: u32, cand_multiplier: u32) -> u32 {
+    top_k
+        .saturating_mul(cand_multiplier)
+        .min(RETRIEVAL_CANDIDATE_CAP)
+}
 
 /// Effective request identity, minted only by build_request. No raw-string or deserialization
 /// constructor is exposed, so provenance must reuse an actual request identity.
@@ -164,6 +170,7 @@ pub struct RetrievalRequest {
     query_transform: QueryTransform,
     profile_id: String,
     top_k: u32,
+    cand_multiplier: u32,
     cand_k: u32,
     profile_fingerprint: ProfileFingerprint,
 }
@@ -211,7 +218,10 @@ impl RetrievalRequest {
 
     #[must_use]
     pub fn cand_k_formula(&self) -> String {
-        format!("min(top_k*{RETRIEVAL_CANDIDATE_MULTIPLIER}, {CANDIDATE_CAP})")
+        format!(
+            "min(top_k*{}, {RETRIEVAL_CANDIDATE_CAP})",
+            self.cand_multiplier
+        )
     }
 
     #[must_use]
@@ -246,10 +256,7 @@ pub fn build_request(
     intent: RetrievalIntent,
     profile: &RegisteredRetrievalProfile,
 ) -> Result<RetrievalRequest, RequestBuildError> {
-    let cand_k = profile
-        .top_k()
-        .saturating_mul(RETRIEVAL_CANDIDATE_MULTIPLIER)
-        .min(CANDIDATE_CAP);
+    let cand_k = candidate_depth(profile.top_k(), profile.cand_multiplier());
     let (intent, query, planner_decision) = match intent.input {
         RetrievalInput::Text {
             query,
@@ -292,6 +299,7 @@ pub fn build_request(
         query_transform: profile.query_transform(),
         profile_id: profile.profile_id().to_string(),
         top_k: profile.top_k(),
+        cand_multiplier: profile.cand_multiplier(),
         cand_k,
         profile_fingerprint: ProfileFingerprint(request_profile_fingerprint(profile, cand_k)),
     })
@@ -299,10 +307,20 @@ pub fn build_request(
 
 fn request_profile_fingerprint(profile: &RegisteredRetrievalProfile, cand_k: u32) -> String {
     let mut effective = BTreeMap::new();
-    effective.insert("candidate_cap".to_string(), CANDIDATE_CAP.to_string());
+    effective.insert(
+        "candidate_cap".to_string(),
+        RETRIEVAL_CANDIDATE_CAP.to_string(),
+    );
+    // ADR-0083 D-D: all four registry entries identify the request; G23-4 refuses to pool runs across any of them.
     effective.insert(
         "candidate_multiplier".to_string(),
-        RETRIEVAL_CANDIDATE_MULTIPLIER.to_string(),
+        profile.cand_multiplier().to_string(),
+    );
+    effective.insert("leg_depth".to_string(), profile.leg_depth().to_string());
+    effective.insert("rrf_k".to_string(), profile.rrf_k().to_string());
+    effective.insert(
+        "sparse_leg_enabled".to_string(),
+        profile.sparse_leg_enabled().to_string(),
     );
     effective.insert("cand_k".to_string(), cand_k.to_string());
     effective.insert(
@@ -408,6 +426,66 @@ mod tests {
         let context =
             build_request(RetrievalIntent::trusted_context(), &profile).expect("context request");
         assert_eq!(text.profile_fingerprint(), context.profile_fingerprint());
+    }
+
+    fn request_from(entries: &[(&str, &str)]) -> RetrievalRequest {
+        let raw: BTreeMap<String, String> = entries
+            .iter()
+            .map(|(key, value)| (format!("retrieval.profile.{key}"), value.to_string()))
+            .collect();
+        let profile = resolve_registered_retrieval_profile(&raw).expect("registered value");
+        build_request(intent("same query"), &profile).expect("request")
+    }
+
+    fn request_with(key: &str, value: &str) -> RetrievalRequest {
+        request_from(&[(key, value)])
+    }
+
+    /// G6c1-1: changing any one of the four ADR-0083 D-D entries changes the fingerprint, so G23-4 refuses to pool
+    /// runs across it. `top_k = 100` saturates the cap (multipliers 5 and 6 both give `cand_k` 200), so `cand_k`
+    /// cannot move the fingerprint and each row isolates its own key. Fault: leave one of them out of
+    /// `request_profile_fingerprint` => its row goes red.
+    #[test]
+    fn each_hybrid_registry_entry_moves_the_request_fingerprint() {
+        let base = request_from(&[("top_k", "100")]);
+        for (key, value) in [
+            ("cand_multiplier", "6"),
+            ("leg_depth", "201"),
+            ("rrf_k", "61"),
+            ("sparse_leg_enabled", "true"),
+        ] {
+            let changed = request_from(&[("top_k", "100"), (key, value)]);
+            assert_eq!(
+                base.cand_k(),
+                changed.cand_k(),
+                "{key}: cand_k must not be what moves it"
+            );
+            assert_ne!(
+                base.profile_fingerprint(),
+                changed.profile_fingerprint(),
+                "{key}"
+            );
+            assert!(
+                crate::envelope::require_single_fingerprint([
+                    base.profile_fingerprint(),
+                    changed.profile_fingerprint(),
+                ])
+                .is_err(),
+                "{key}"
+            );
+        }
+    }
+
+    /// ADR-0083 D-D: `cand_k` and its wire formula follow the registered multiplier; the default renders as before.
+    #[test]
+    fn cand_k_and_its_formula_follow_the_registered_multiplier() {
+        let default = build_request(intent("same query"), &profile()).expect("request");
+        assert_eq!(default.cand_k(), 25);
+        assert_eq!(default.cand_k_formula(), "min(top_k*5, 200)");
+        let wider = request_with("cand_multiplier", "10");
+        assert_eq!(wider.cand_k(), 50);
+        assert_eq!(wider.cand_k_formula(), "min(top_k*10, 200)");
+        assert_eq!(request_with("cand_multiplier", "200").cand_k(), 200);
     }
 
     #[test]

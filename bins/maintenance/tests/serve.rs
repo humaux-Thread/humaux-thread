@@ -310,7 +310,7 @@ fn one_cycle_answers_200_and_counts_each_due_task() {
     );
     assert_eq!(
         status["degrade"].as_object().map(serde_json::Map::len),
-        Some(11),
+        Some(12),
         "one entry per DegradeCode: {status}"
     );
     assert!(

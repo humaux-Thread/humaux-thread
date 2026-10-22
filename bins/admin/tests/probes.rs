@@ -401,7 +401,7 @@ fn absent_columns_are_named_refusals() {
 // ---- /status probes ------------------------------------------------------------------------------------------
 
 /// T-J6: `degrade.counters` against a real ops listener serving this process's real `/status` after one
-/// `abstain(EgressDenied)`: value 1, `scanned_n` 11. A second, closed address ⇒ a refusal naming it. Fault: sum the
+/// `abstain(EgressDenied)`: value 1, `scanned_n` 12. A second, closed address ⇒ a refusal naming it. Fault: sum the
 /// reachable processes only ⇒ exit 0 ⇒ red.
 #[test]
 fn degrade_counters_sum_every_listed_process_or_name_the_missing_one() {
@@ -412,7 +412,7 @@ fn degrade_counters_sum_every_listed_process_or_name_the_missing_one() {
     let one = format!("t={}", ops.local_addr());
 
     let r = q("degrade.counters", &[("HUMAUX_ADMIN_OPS_ADDRS", &one)]);
-    assert_eq!(r.value_and_scanned(), (1, 11));
+    assert_eq!(r.value_and_scanned(), (1, 12));
     let v = r.envelope();
     assert_eq!(v["detail"]["EgressDenied"]["by_process"]["t"], 1);
     assert!(v["detail"]["EgressDenied"]["last_fired_at"].is_u64());

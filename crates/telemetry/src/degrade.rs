@@ -77,6 +77,9 @@ degrade_code! {
     /// deployment has not delivered and the caller named no `mode`, so the dense
     /// lane answered in its place (result returned, §52.3 Q1).
     LaneSubstituted,
+    /// ADR-0083 D-C: the sparse (Qdrant bm25) leg failed (transport error, timeout, non-2xx, unexpected shape) and
+    /// the dense leg answered alone; the sparse lane reads `failed` (result returned, §52.3 Q1).
+    SparseLaneUnavailable,
 }
 
 impl DegradeCode {
@@ -215,7 +218,7 @@ pub fn degrade_last_fired_unix(code: DegradeCode) -> Option<u64> {
     }
 }
 
-/// Renders `degrade_total{code}` seeded over all 11 codes (ADR-0061 D-A), so INV-1's
+/// Renders `degrade_total{code}` seeded over all 12 codes (ADR-0061 D-A), so INV-1's
 /// `absent_over_time` branch can only mean "process down", never "never incremented".
 pub fn render(out: &mut String) {
     write_single_label(
@@ -254,10 +257,10 @@ mod tests {
     /// left operand of §53.3 rule 2 and of the fold-injectivity check.
     /// `ALL` is macro-derived from the enum's variant list (see
     /// `degrade_code!` above), so this can no longer silently pass while a
-    /// 12th variant exists.
+    /// 13th variant exists.
     #[test]
-    fn all_has_11_entries() {
-        assert_eq!(DegradeCode::ALL.len(), 11);
+    fn all_has_12_entries() {
+        assert_eq!(DegradeCode::ALL.len(), 12);
     }
 
     /// §53.2: variant names have no digits and no consecutive uppercase
@@ -294,7 +297,7 @@ mod tests {
             assert!(seen.insert(folded.clone()), "fold collision on {folded}");
             assert_eq!(unfold(&folded), name, "fold({name}) does not round-trip");
         }
-        assert_eq!(seen.len(), 11);
+        assert_eq!(seen.len(), 12);
     }
 
     /// §53.2 worked example, verbatim: `ProjectionInvisibleLoss` folds to
@@ -388,16 +391,16 @@ mod tests {
         );
     }
 
-    /// T-A2 / T-A4: `degrade_total` renders HELP + TYPE and exactly one series per code (11,
+    /// T-A2 / T-A4: `degrade_total` renders HELP + TYPE and exactly one series per code (12,
     /// §41.2 frozen set), seeded before any abstain.
     #[test]
-    fn render_seeds_all_eleven_codes() {
+    fn render_seeds_all_twelve_codes() {
         let mut out = String::new();
         render(&mut out);
         assert!(out.starts_with("# HELP degrade_total "), "{out}");
         assert!(out.contains("\n# TYPE degrade_total counter\n"));
         let series: Vec<&str> = out.lines().filter(|l| !l.starts_with('#')).collect();
-        assert_eq!(series.len(), 11, "{out}");
+        assert_eq!(series.len(), 12, "{out}");
         for code in DegradeCode::ALL {
             let prefix = format!("degrade_total{{code=\"{}\"}} ", code.as_str());
             assert!(

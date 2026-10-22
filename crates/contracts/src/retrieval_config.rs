@@ -1,8 +1,9 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
 //! Called-by: [gateway::bootstrap, gateway::recall, retrieval::request, tests]
-//! Invariants: []
-//! Spec: Baseline §50; §55.1; §55.6
+//! Invariants: [the five depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`)
+//!   are read here and nowhere else; each is bounds-checked when the registry loads]
+//! Spec: Baseline §50; §55.1; §55.6; ADR-0083 D-D
 //!
 //! This is the sole bootstrap boundary for retrieval depth. A request caller receives an
 //! already-resolved [`RegisteredRetrievalProfile`] and therefore cannot turn a request-local
@@ -19,9 +20,33 @@ const PROFILE_ID: &str = "retrieval.profile.id";
 const QUERY_TRANSFORM: &str = "retrieval.profile.query_transform";
 const TOP_K: &str = "retrieval.profile.top_k";
 const PRODUCTION_ENABLED: &str = "retrieval.profile.production_enabled";
-/// §55.6's registered-profile candidate-depth multiplier. Request construction imports this
-/// constant so typed validation and the derived `cand_k` formula cannot drift.
-pub const RETRIEVAL_CANDIDATE_MULTIPLIER: u32 = 5;
+/// ADR-0083 D-D: `cand_k = min(top_k * cand_multiplier, cap)`. Replaces the former constant multiplier 5 (ADR-0081 D-E).
+const CAND_MULTIPLIER: &str = "retrieval.profile.cand_multiplier";
+/// ADR-0083 D-D: `limit` of each leg's grouped request, in Memories (the fused list is then cut to `cand_k`).
+const LEG_DEPTH: &str = "retrieval.profile.leg_depth";
+/// ADR-0083 D-C: the constant in `score(m) = sum 1 / (rrf_k + rank)`.
+const RRF_K: &str = "retrieval.profile.rrf_k";
+/// ADR-0083 D-D / U6: turns the sparse leg on for the profile once the bm25 backfill reads zero missing.
+const SPARSE_LEG_ENABLED: &str = "retrieval.profile.sparse_leg_enabled";
+
+/// §23.3 / §55.6: the most Memories the candidate pool (`cand_k`) can hold. The one definition: `retrieval::request`
+/// computes `cand_k` with it and the bounds below derive from it, so they cannot drift apart.
+pub const RETRIEVAL_CANDIDATE_CAP: u32 = 200;
+
+// Bounds, checked when the registry loads (ADR-0083 D-D). The defaults sit inside every range.
+/// Below 1 `cand_k < top_k`: the pool could not hold the answer, breaking §23.3 `candidate_count >= returned`.
+const CAND_MULTIPLIER_MIN: u32 = 1;
+/// `cand_k` is capped at [`RETRIEVAL_CANDIDATE_CAP`] and `top_k >= 1`, so a multiplier above the cap changes nothing.
+const CAND_MULTIPLIER_MAX: u32 = RETRIEVAL_CANDIDATE_CAP;
+/// Each leg must be at least as deep as any `cand_k` (which never exceeds the cap): a shallower leg could not fill
+/// the candidate pool, so `candidate_count` would fall below `cand_k` and break the §23.3 invariant.
+const LEG_DEPTH_MIN: u32 = RETRIEVAL_CANDIDATE_CAP;
+/// Cost guard (ADR-0083 U7): the fused list is cut to `cand_k <= 200`, so five times that already over-fetches.
+const LEG_DEPTH_MAX: u32 = 1000;
+/// RRF ranks are 1-based, so 0 is legal arithmetic but weights rank 1 a hundredfold over rank 100; 1 is the floor.
+const RRF_K_MIN: u32 = 1;
+/// At 1000 the weights across a 200-deep leg differ by under 20%: fusion degenerates into counting legs.
+const RRF_K_MAX: u32 = 1000;
 /// ADR-0068 D-E: the most grouped dense calls one recall makes — the first plus at most two refills of the groups
 /// Qdrant's bounded group search left short of `cand_k`. The budget stays `cand_k` Memories across every call.
 pub const RETRIEVAL_GROUP_QUERY_MAX_CALLS: u32 = 3;
@@ -42,6 +67,10 @@ pub struct RegisteredRetrievalProfile {
     profile_id: String,
     query_transform: QueryTransform,
     top_k: u32,
+    cand_multiplier: u32,
+    leg_depth: u32,
+    rrf_k: u32,
+    sparse_leg_enabled: bool,
     effective_config_fingerprint: String,
 }
 
@@ -61,6 +90,30 @@ impl RegisteredRetrievalProfile {
         self.top_k
     }
 
+    /// ADR-0083 D-D: `cand_k = min(top_k * cand_multiplier, cap)`.
+    #[must_use]
+    pub fn cand_multiplier(&self) -> u32 {
+        self.cand_multiplier
+    }
+
+    /// ADR-0083 D-D: the `limit` of each leg's grouped request, in Memories.
+    #[must_use]
+    pub fn leg_depth(&self) -> u32 {
+        self.leg_depth
+    }
+
+    /// ADR-0083 D-C: the reciprocal-rank-fusion constant.
+    #[must_use]
+    pub fn rrf_k(&self) -> u32 {
+        self.rrf_k
+    }
+
+    /// ADR-0083 D-D / U6: whether the sparse leg runs for this profile.
+    #[must_use]
+    pub fn sparse_leg_enabled(&self) -> bool {
+        self.sparse_leg_enabled
+    }
+
     #[must_use]
     pub fn effective_config_fingerprint(&self) -> &str {
         &self.effective_config_fingerprint
@@ -75,6 +128,10 @@ pub enum RetrievalConfigError {
     UnsupportedQueryTransform(String),
     GenerativeContractUnavailable,
     InvalidTopK(String),
+    InvalidCandMultiplier(String),
+    InvalidLegDepth(String),
+    InvalidRrfK(String),
+    InvalidSparseLegEnabled(String),
     InvalidProductionEnabled(String),
     ProductionDisabled,
 }
@@ -92,6 +149,21 @@ impl fmt::Display for RetrievalConfigError {
                 "generative retrieval profiles require provider, purpose, budget, timeout, fallback, and manifest contracts"
             ),
             Self::InvalidTopK(value) => write!(f, "invalid retrieval profile top_k {value:?}"),
+            Self::InvalidCandMultiplier(value) => write!(
+                f,
+                "invalid retrieval profile cand_multiplier {value:?} (allowed {CAND_MULTIPLIER_MIN}..={CAND_MULTIPLIER_MAX})"
+            ),
+            Self::InvalidLegDepth(value) => write!(
+                f,
+                "invalid retrieval profile leg_depth {value:?} (allowed {LEG_DEPTH_MIN}..={LEG_DEPTH_MAX})"
+            ),
+            Self::InvalidRrfK(value) => write!(
+                f,
+                "invalid retrieval profile rrf_k {value:?} (allowed {RRF_K_MIN}..={RRF_K_MAX})"
+            ),
+            Self::InvalidSparseLegEnabled(value) => {
+                write!(f, "invalid retrieval profile sparse_leg_enabled {value:?}")
+            }
             Self::InvalidProductionEnabled(value) => {
                 write!(f, "invalid retrieval profile production_enabled {value:?}")
             }
@@ -115,6 +187,10 @@ pub fn retrieval_profile_registry() -> Vec<ConfigEntry> {
             "deterministic",
         ),
         entry(TOP_K, "u32", "5"),
+        entry(CAND_MULTIPLIER, "u32", "5"),
+        entry(LEG_DEPTH, "u32", "200"),
+        entry(RRF_K, "u32", "60"),
+        entry(SPARSE_LEG_ENABLED, "bool", "false"),
         entry(PRODUCTION_ENABLED, "bool", "true"),
     ]
 }
@@ -142,12 +218,32 @@ pub fn resolve_registered_retrieval_profile(
             ));
         }
     };
+    let cand_multiplier_text = required(&effective, CAND_MULTIPLIER);
+    let cand_multiplier = parse_in(
+        cand_multiplier_text,
+        CAND_MULTIPLIER_MIN,
+        CAND_MULTIPLIER_MAX,
+    )
+    .ok_or_else(|| RetrievalConfigError::InvalidCandMultiplier(cand_multiplier_text.to_string()))?;
     let top_k_text = required(&effective, TOP_K);
     let top_k = top_k_text
         .parse::<u32>()
         .ok()
-        .filter(|top_k| *top_k > 0 && top_k.checked_mul(RETRIEVAL_CANDIDATE_MULTIPLIER).is_some())
+        .filter(|top_k| *top_k > 0 && top_k.checked_mul(cand_multiplier).is_some())
         .ok_or_else(|| RetrievalConfigError::InvalidTopK(top_k_text.to_string()))?;
+    let leg_depth_text = required(&effective, LEG_DEPTH);
+    let leg_depth = parse_in(leg_depth_text, LEG_DEPTH_MIN, LEG_DEPTH_MAX)
+        .ok_or_else(|| RetrievalConfigError::InvalidLegDepth(leg_depth_text.to_string()))?;
+    let rrf_k_text = required(&effective, RRF_K);
+    let rrf_k = parse_in(rrf_k_text, RRF_K_MIN, RRF_K_MAX)
+        .ok_or_else(|| RetrievalConfigError::InvalidRrfK(rrf_k_text.to_string()))?;
+    let sparse_leg_enabled = required(&effective, SPARSE_LEG_ENABLED)
+        .parse::<bool>()
+        .map_err(|_| {
+            RetrievalConfigError::InvalidSparseLegEnabled(
+                required(&effective, SPARSE_LEG_ENABLED).to_string(),
+            )
+        })?;
     let production_enabled = required(&effective, PRODUCTION_ENABLED)
         .parse::<bool>()
         .map_err(|_| {
@@ -162,8 +258,17 @@ pub fn resolve_registered_retrieval_profile(
         profile_id,
         query_transform,
         top_k,
+        cand_multiplier,
+        leg_depth,
+        rrf_k,
+        sparse_leg_enabled,
         effective_config_fingerprint: effective_config_fingerprint(&effective),
     })
+}
+
+/// `text` as a `u32` inside `min..=max`, else `None`.
+fn parse_in(text: &str, min: u32, max: u32) -> Option<u32> {
+    text.parse::<u32>().ok().filter(|v| (min..=max).contains(v))
 }
 
 fn entry(name: &str, type_name: &str, default: &str) -> ConfigEntry {
@@ -194,7 +299,83 @@ mod tests {
         assert_eq!(profile.profile_id(), "default_deterministic");
         assert_eq!(profile.query_transform(), QueryTransform::Deterministic);
         assert_eq!(profile.top_k(), 5);
+        assert_eq!(profile.cand_multiplier(), 5);
+        assert_eq!(profile.leg_depth(), 200);
+        assert_eq!(profile.rrf_k(), 60);
+        assert!(!profile.sparse_leg_enabled());
         assert_eq!(profile.effective_config_fingerprint().len(), 64);
+    }
+
+    fn resolve_one(
+        key: &str,
+        value: &str,
+    ) -> Result<RegisteredRetrievalProfile, RetrievalConfigError> {
+        resolve_registered_retrieval_profile(&BTreeMap::from([(
+            key.to_string(),
+            value.to_string(),
+        )]))
+    }
+
+    /// G6c1-2: a value one step outside either bound is refused at load with that entry's own error, and the
+    /// bound itself resolves. Fault: drop one bound from `parse_in`'s callers => the matching row goes red.
+    #[test]
+    fn hybrid_entries_are_bounds_checked_at_load_with_a_named_error() {
+        let rows = [
+            (CAND_MULTIPLIER, CAND_MULTIPLIER_MIN, CAND_MULTIPLIER_MAX),
+            (LEG_DEPTH, LEG_DEPTH_MIN, LEG_DEPTH_MAX),
+            (RRF_K, RRF_K_MIN, RRF_K_MAX),
+        ];
+        for (key, min, max) in rows {
+            for outside in [
+                (min - 1).to_string(),
+                (max + 1).to_string(),
+                "x".to_string(),
+            ] {
+                let error = resolve_one(key, &outside).expect_err(key);
+                let named = match key {
+                    CAND_MULTIPLIER => {
+                        matches!(error, RetrievalConfigError::InvalidCandMultiplier(_))
+                    }
+                    LEG_DEPTH => matches!(error, RetrievalConfigError::InvalidLegDepth(_)),
+                    _ => matches!(error, RetrievalConfigError::InvalidRrfK(_)),
+                };
+                assert!(named, "{key}={outside}: {error:?}");
+            }
+            for inside in [min, max] {
+                assert!(
+                    resolve_one(key, &inside.to_string()).is_ok(),
+                    "{key}={inside}"
+                );
+            }
+        }
+        assert!(matches!(
+            resolve_one(SPARSE_LEG_ENABLED, "yes"),
+            Err(RetrievalConfigError::InvalidSparseLegEnabled(_))
+        ));
+        assert!(
+            resolve_one(SPARSE_LEG_ENABLED, "true")
+                .expect("bool")
+                .sparse_leg_enabled()
+        );
+    }
+
+    /// G6c1-1 (registry half): each of the four entries moves the effective-config fingerprint on its own.
+    #[test]
+    fn each_hybrid_entry_moves_the_effective_fingerprint() {
+        let default = resolve_registered_retrieval_profile(&BTreeMap::new()).expect("defaults");
+        for (key, value) in [
+            (CAND_MULTIPLIER, "6"),
+            (LEG_DEPTH, "201"),
+            (RRF_K, "61"),
+            (SPARSE_LEG_ENABLED, "true"),
+        ] {
+            let changed = resolve_one(key, value).expect(key);
+            assert_ne!(
+                default.effective_config_fingerprint(),
+                changed.effective_config_fingerprint(),
+                "{key}"
+            );
+        }
     }
 
     #[test]

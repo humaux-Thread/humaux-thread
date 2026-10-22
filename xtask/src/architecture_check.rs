@@ -2177,6 +2177,176 @@ fn g80_2_build_request_unique(root: &Path) -> Verdict {
     }
 }
 
+// ============================================================================
+// §55.6 G55-6 ① (G80-27): retrieval depth is never caller input
+// ============================================================================
+
+/// §55.6 G55-6 ①: the names no caller-assignable `RetrievalRequest` field or `build_request` parameter may carry. The
+/// first five are the Baseline's set; the last four are ADR-0083 D-D's registry entries (T-RET-6c-1).
+const G55_6_FORBIDDEN_NAMES: [&str; 9] = [
+    "limit",
+    "top_k",
+    "cand_k",
+    "depth",
+    "max_candidates",
+    "cand_multiplier",
+    "leg_depth",
+    "rrf_k",
+    "sparse_leg_enabled",
+];
+
+/// Whether `name` carries `forbidden` as a run of whole `_`-separated words: `top_k_override` carries `top_k` (the
+/// Baseline's own injection ①), `stop_k` does not.
+fn g55_6_name_carries(name: &str, forbidden: &str) -> bool {
+    let words: Vec<&str> = name.split('_').collect();
+    let wanted: Vec<&str> = forbidden.split('_').collect();
+    words.windows(wanted.len()).any(|w| w == wanted.as_slice())
+}
+
+/// `text` split at the commas that sit outside any `<>`, `()` or `[]` pair.
+fn g55_6_split_top_level(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start, mut prev) = (0i32, 0usize, ' ');
+    for (i, c) in text.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' if prev != '-' => depth -= 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// One field or parameter declaration with its comment and attribute lines dropped.
+fn g55_6_decl(part: &str) -> String {
+    part.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The names a caller can assign directly: the plain-`pub` fields of `pub struct RetrievalRequest` and every
+/// parameter of `pub fn build_request` found in `source` (§55.1). A private or `pub(crate)` field is not caller input.
+///
+/// ponytail: text scan like its siblings (no `syn`); a field or parameter declared through a macro is invisible to
+/// it. [`g55_6_1_caller_depth_names`] fails closed on a spelling this scan cannot read. Upgrade to `syn` if the
+/// request type ever grows macro-generated fields.
+fn g55_6_caller_assignable_names(source: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    if let Some(at) = source.find("pub struct RetrievalRequest {") {
+        let open = at + "pub struct RetrievalRequest ".len();
+        if let Some(close) = matching_brace_end(source, open) {
+            for part in g55_6_split_top_level(&source[open + 1..close - 1]) {
+                let decl = g55_6_decl(part);
+                if let Some(field) = decl.strip_prefix("pub ")
+                    && let Some((name, _)) = field.split_once(':')
+                {
+                    names.insert(name.trim().to_string());
+                }
+            }
+        }
+    }
+    if let Some(at) = source.find("pub fn build_request(") {
+        let open = at + "pub fn build_request".len();
+        let mut depth = 0i32;
+        let mut close = None;
+        for (i, b) in source.bytes().enumerate().skip(open) {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(close) = close {
+            for param in g55_6_split_top_level(&source[open + 1..close]) {
+                let decl = g55_6_decl(param);
+                let name = decl.split(':').next().unwrap_or("").trim();
+                let name = name.strip_prefix("mut ").unwrap_or(name).trim();
+                if !name.is_empty() {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Every caller-assignable name in `source` that carries a [`G55_6_FORBIDDEN_NAMES`] word run, with the word it hit.
+fn g55_6_offenders(source: &str) -> Vec<String> {
+    g55_6_caller_assignable_names(source)
+        .into_iter()
+        .filter_map(|name| {
+            G55_6_FORBIDDEN_NAMES
+                .iter()
+                .copied()
+                .find(|forbidden| g55_6_name_carries(&name, forbidden))
+                .map(|forbidden| format!("`{name}` carries `{forbidden}`"))
+        })
+        .collect()
+}
+
+/// §55.6 G55-6 ① over the workspace: `RetrievalRequest` fields ∪ `build_request` parameters, restricted to what a
+/// caller can assign, ∩ [`G55_6_FORBIDDEN_NAMES`] must be empty. Depth comes from the registered profile only.
+///
+/// Fail closed: a file that spells the type or the constructor in a form [`g55_6_caller_assignable_names`] cannot read
+/// (`pub(crate) struct RetrievalRequest`, `pub async fn build_request(`) would make the gate silently blind to its own
+/// object, so that is red, not `not_applicable` and not a pass.
+fn g55_6_1_caller_depth_names(root: &Path) -> Verdict {
+    let files = walk_workspace_rs(root);
+    let loose_type = |s: &str| s.contains("struct RetrievalRequest");
+    let loose_fn = |s: &str| s.contains("fn build_request(");
+    if !files.iter().any(|(_, s)| loose_type(s) || loose_fn(s)) {
+        return Verdict::NotApplicable(
+            "missing object: retrieval::build_request / RetrievalRequest (§55.1)".to_string(),
+        );
+    }
+    let unreadable: Vec<String> = files
+        .iter()
+        .filter(|(_, s)| {
+            (loose_type(s) && !s.contains("pub struct RetrievalRequest {"))
+                || (loose_fn(s) && !s.contains("pub fn build_request("))
+        })
+        .map(|(path, _)| display(root, path))
+        .collect();
+    if !unreadable.is_empty() {
+        return Verdict::Fail(vec![format!(
+            "§55.6 G55-6 ①: {unreadable:?} spell `struct RetrievalRequest` or `fn build_request(` in a form the gate \
+             cannot read (it reads `pub struct RetrievalRequest {{` and `pub fn build_request(`): it would be blind \
+             to its own object. Use that spelling or extend the matcher."
+        )]);
+    }
+    let offenders: Vec<String> = files
+        .iter()
+        .flat_map(|(path, source)| {
+            g55_6_offenders(source)
+                .into_iter()
+                .map(move |hit| format!("{}: {hit}", display(root, path)))
+        })
+        .collect();
+    if offenders.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(vec![format!(
+            "§55.6 G55-6 ①: a caller can assign retrieval depth: {offenders:?}. Depth values come from the registered \
+             profile only (§50 registry), never from RetrievalRequest or build_request."
+        )])
+    }
+}
+
 /// §16.2 G80-4: "检索侧禁止把 `projection_version` 当常量读，只能经
 /// `serving_version(stream_family)` 取" — the enforcement mechanism is a workspace-wide
 /// consumer call-site count. `serving_version`'s own definition (`adapters::serving_repo`) and
@@ -8651,6 +8821,10 @@ pub fn run(_args: &[String]) -> i32 {
             g80_2_build_request_unique(&root),
         ),
         (
+            "§55.6 G55-6 ① / G80-27 (no caller-assignable retrieval depth name on RetrievalRequest or build_request)",
+            g55_6_1_caller_depth_names(&root),
+        ),
+        (
             "§16.2 G80-4 (serving_version sole retrieval entry point)",
             g80_4_serving_version_sole_entry_point(&root),
         ),
@@ -9717,10 +9891,11 @@ mod tests {
         let root = real_root();
         let src = fs::read_to_string(root.join("crates/telemetry/src/degrade.rs")).unwrap();
         let variants = parse_degrade_variant_names(&src);
-        // card 30 (ADR-0055 D-C) added `LaneSubstituted`: Baseline §53.2 now lists 11 variants.
-        assert_eq!(variants.len(), 11, "{variants:?}");
+        // T-RET-6c-1 (ADR-0083 D-C) added `SparseLaneUnavailable`: Baseline §53.2 now lists 12 variants.
+        assert_eq!(variants.len(), 12, "{variants:?}");
         assert!(variants.contains(&"ProjectionInvisibleLoss".to_string()));
         assert!(variants.contains(&"LaneSubstituted".to_string()));
+        assert!(variants.contains(&"SparseLaneUnavailable".to_string()));
         assert!(variants.contains(&"RerankProviderTimeout".to_string()));
     }
 
@@ -12019,6 +12194,137 @@ async fn serving_version_in_txn() {}
         )
         .unwrap();
         assert!(matches!(g80_2_build_request_unique(&tmp), Verdict::Fail(_)));
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- §55.6 G55-6 ① -------------------------------------------------------------------
+
+    /// A request type whose depth values are private or `pub(crate)` and whose constructor takes only the intent and
+    /// the registered profile.
+    const G55_6_COMPLIANT: &str = "pub struct RetrievalRequest {\n    intent: IntentKind,\n    top_k: u32,\n    pub(crate) cand_k: u32,\n}\npub fn build_request(\n    intent: RetrievalIntent,\n    profile: &RegisteredRetrievalProfile,\n) -> Result<RetrievalRequest, RequestBuildError> {\n    todo!()\n}\n";
+
+    /// Positive control for G55-6 ①: the matcher reads the real request type and constructor, finds exactly the two
+    /// parameters, and the real tree passes.
+    #[test]
+    fn g55_6_1_real_repo_passes_and_the_matcher_is_not_blind() {
+        let root = real_root();
+        let request = fs::read_to_string(root.join("crates/retrieval/src/request.rs")).unwrap();
+        assert_eq!(
+            g55_6_caller_assignable_names(&request),
+            BTreeSet::from(["intent".to_string(), "profile".to_string()])
+        );
+        assert_eq!(g55_6_1_caller_depth_names(&root), Verdict::Pass);
+    }
+
+    #[test]
+    fn g55_6_1_private_depth_fields_are_not_caller_input() {
+        assert!(g55_6_offenders(G55_6_COMPLIANT).is_empty());
+    }
+
+    /// 注错 ① (Baseline §55.6): `top_k_override: Option<usize>` on `build_request` → the intersection is {top_k} → 红.
+    #[test]
+    fn g55_6_1_top_k_override_parameter_is_red() {
+        let injected = G55_6_COMPLIANT.replace(
+            "profile: &RegisteredRetrievalProfile,",
+            "profile: &RegisteredRetrievalProfile,\n    top_k_override: Option<usize>,",
+        );
+        assert_eq!(
+            g55_6_offenders(&injected),
+            vec!["`top_k_override` carries `top_k`".to_string()]
+        );
+    }
+
+    /// 注错 (T-RET-6c-1, ADR-0083 D-D): each of the four registry names, as a `build_request` parameter and as a
+    /// plain-`pub` field, → 红. The list here is deliberately a second copy: dropping a name from
+    /// [`G55_6_FORBIDDEN_NAMES`] makes its row red.
+    #[test]
+    fn g55_6_1_each_hybrid_registry_name_is_refused_as_parameter_and_pub_field() {
+        for name in [
+            "cand_multiplier",
+            "leg_depth",
+            "rrf_k",
+            "sparse_leg_enabled",
+        ] {
+            assert!(
+                G55_6_FORBIDDEN_NAMES.contains(&name),
+                "{name} is in the set"
+            );
+            let as_param =
+                G55_6_COMPLIANT.replace("profile: &", &format!("{name}: u32,\n    profile: &"));
+            assert_eq!(g55_6_offenders(&as_param).len(), 1, "{name} as a parameter");
+            let as_field =
+                G55_6_COMPLIANT.replace("    top_k: u32,", &format!("    pub {name}: u32,"));
+            assert_eq!(g55_6_offenders(&as_field).len(), 1, "{name} as a pub field");
+        }
+    }
+
+    fn g55_6_tree(label: &str, lib_rs: Option<&str>) -> PathBuf {
+        let tmp = fresh_tmp(label);
+        fs::create_dir_all(&tmp).unwrap();
+        if let Some(source) = lib_rs {
+            let dir = tmp.join("crates/retrieval/src");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("lib.rs"), source).unwrap();
+        }
+        tmp
+    }
+
+    /// G55-6 ① `Fail` branch, over a fixture tree like G80-2's: a caller-assignable `top_k_override` parameter in a
+    /// `build_request` → red, naming the parameter and the file.
+    #[test]
+    fn g55_6_1_fails_on_a_caller_assignable_depth_parameter_in_a_tree() {
+        let tmp = g55_6_tree(
+            "g55-6-red",
+            Some(
+                "pub struct RetrievalRequest {\n    intent: u8,\n}\npub fn build_request(\n    intent: u8,\n    top_k_override: Option<usize>,\n) -> RetrievalRequest {\n    RetrievalRequest { intent }\n}\n",
+            ),
+        );
+        match g55_6_1_caller_depth_names(&tmp) {
+            Verdict::Fail(lines) => assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("top_k_override") && l.contains("lib.rs")),
+                "{lines:?}"
+            ),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// G55-6 ① `NotApplicable` branch: a tree with no request type and no constructor → not applicable, naming
+    /// the missing object (§57.1 第2条).
+    #[test]
+    fn g55_6_1_is_not_applicable_on_an_empty_tree_and_names_the_missing_object() {
+        let tmp = g55_6_tree("g55-6-na", None);
+        match g55_6_1_caller_depth_names(&tmp) {
+            Verdict::NotApplicable(object) => assert!(
+                object.contains("RetrievalRequest") && object.contains("build_request"),
+                "{object}"
+            ),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// G55-6 ① fails closed: the type exists but only as `pub(crate) struct RetrievalRequest`, a spelling the matcher
+    /// does not read → red naming the file, never `not_applicable` and never a pass.
+    #[test]
+    fn g55_6_1_fails_closed_when_the_request_type_is_spelled_beyond_the_matcher() {
+        let tmp = g55_6_tree(
+            "g55-6-loose",
+            Some(
+                "pub(crate) struct RetrievalRequest {\n    pub top_k: u32,\n}\npub fn build_request() {}\n",
+            ),
+        );
+        match g55_6_1_caller_depth_names(&tmp) {
+            Verdict::Fail(lines) => assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("lib.rs") && l.contains("cannot read")),
+                "{lines:?}"
+            ),
+            other => panic!("expected Fail, got {other:?}"),
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 

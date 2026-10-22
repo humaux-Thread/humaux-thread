@@ -32,7 +32,9 @@ use humaux_domain::context::MandatoryOverflow;
 
 use crate::compiler::ContextOutcome;
 use crate::planner::{PlannerDecision, QueryClass};
-use crate::request::{IntentKind, ProfileFingerprint, RetrievalRequest};
+use crate::request::{
+    IntentKind, ProfileFingerprint, RegisteredRetrievalProfile, RetrievalRequest, candidate_depth,
+};
 use humaux_domain::grounding::{GroundingState, GroundingStateKind};
 use humaux_telemetry::degrade::{DegradeCode, Outcome, abstain};
 
@@ -800,10 +802,15 @@ impl CompletenessBlock {
 
     /// §23.3's other three named fixture invariants, tying this block to the request's own
     /// [`ProfileBlock`]: `returned == profile.top_k`, `candidate_count == profile.cand_k ==
-    /// min(top_k*5, 200)`, and `truncated == (candidate_count > returned)`. All four must hold
-    /// together — a mismatch in any one is "不是示例，是反例" (§23.3).
-    pub fn profile_consistent(&self, profile: &ProfileBlock) -> bool {
-        let expected_cand_k = profile.top_k.saturating_mul(5).min(200);
+    /// min(top_k * cand_multiplier, cap)` with the multiplier taken from the `registered` profile (ADR-0083 D-D),
+    /// and `truncated == (candidate_count > returned)`. All four must hold together — a mismatch in any one is
+    /// "不是示例，是反例" (§23.3).
+    pub fn profile_consistent(
+        &self,
+        profile: &ProfileBlock,
+        registered: &RegisteredRetrievalProfile,
+    ) -> bool {
+        let expected_cand_k = candidate_depth(profile.top_k, registered.cand_multiplier());
         self.returned == profile.top_k
             && self.candidate_count == profile.cand_k
             && profile.cand_k == expected_cand_k
@@ -1939,7 +1946,16 @@ mod tests {
             truncated: true,
             degradations: vec![],
         };
-        assert!(completeness.profile_consistent(&profile));
+        let registered = crate::request::resolve_registered_retrieval_profile(&BTreeMap::new())
+            .expect("registered defaults");
+        assert!(completeness.profile_consistent(&profile, &registered));
+        // ADR-0083 D-D: the multiplier is the registered one, not a literal 5 — a wider profile rejects this block.
+        let wider = crate::request::resolve_registered_retrieval_profile(&BTreeMap::from([(
+            "retrieval.profile.cand_multiplier".to_string(),
+            "10".to_string(),
+        )]))
+        .expect("registered multiplier");
+        assert!(!completeness.profile_consistent(&profile, &wider));
         assert!(completeness.rerank_degradation_consistent());
     }
 

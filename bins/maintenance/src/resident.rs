@@ -9,7 +9,7 @@
 //!   it installs a handler, reads a DSN or binds a port, and never reads or prints the value; both signal handlers
 //!   are installed before any work; a failed or stale last outcome answers 503 with
 //!   the reason and the age, never the last good values; the ops listener binds a loopback address only; every
-//!   resident mode's `/status` carries the full ADR-0061 D-B identity document, the 11 degrade codes included]
+//!   resident mode's `/status` carries the full ADR-0061 D-B identity document, every degrade code included]
 //! Spec: Baseline §41.2; §78.1; ADR-0037; ADR-0061 D-B; ADR-0061 D-D; ADR-0062 D-A; ADR-0063 D-H
 
 use std::net::SocketAddr;

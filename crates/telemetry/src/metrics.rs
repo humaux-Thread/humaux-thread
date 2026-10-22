@@ -992,7 +992,7 @@ mod tests {
     }
 
     /// `process_routes`: `/metrics` is the render fn, `/status` is JSON carrying the identity, an escaped
-    /// `git_sha` and all 11 degrade codes (drop the control-character arm ⇒ a raw newline ⇒ red).
+    /// `git_sha` and all 12 degrade codes (drop the control-character arm ⇒ a raw newline ⇒ red).
     #[test]
     fn process_routes_serve_render_and_identity_status() {
         let routes = process_routes("p", "serve-rpc", "1.2.3", Some("a\"b\n"), render_one);
@@ -1008,7 +1008,7 @@ mod tests {
             "{status}"
         );
         assert!(!status.contains('\n'), "{status}");
-        assert_eq!(status.matches("\"last_fired_at\":").count(), 11, "{status}");
+        assert_eq!(status.matches("\"last_fired_at\":").count(), 12, "{status}");
         for code in DegradeCode::ALL {
             assert!(
                 status.contains(&format!("\"{}\":{{\"count\":", code.as_str())),
