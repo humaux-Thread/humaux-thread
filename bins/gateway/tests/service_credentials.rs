@@ -18,13 +18,13 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_gateway::auth::{
-    AuthenticatedServiceCredential, CredentialScope, authenticate_service_credential,
+    AuthenticatedServiceCredential, CredentialScope, TouchThrottle, authenticate_service_credential,
 };
 use humaux_protocol::edge::compute_api_key_hash;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -35,6 +35,8 @@ use sqlx::types::Uuid;
 // Synthetic fixture material, never a real issued credential or deployment pepper.
 const TEST_PEPPER: &[u8] = b"synthetic-service-credential-fixture-only";
 const FIXTURE_DB: &str = "humaux_thread_service_credentials_20260828";
+/// The fixture's touch interval (a test value; production reads `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`).
+const TEST_TOUCH_INTERVAL: Duration = Duration::from_secs(60);
 
 struct Key {
     id: Uuid,
@@ -44,6 +46,8 @@ struct Key {
 struct Handle {
     rt: tokio::runtime::Runtime,
     runtime: RuntimeDbPool,
+    /// What `GatewayGuard` holds in production: one throttle for every request this handle authenticates.
+    touch: TouchThrottle,
     admin: Client,
     gateway: Client,
     tenant: Uuid,
@@ -178,6 +182,7 @@ impl DbIntegrationFixture for CredentialFixture {
         Ok(Handle {
             rt,
             runtime,
+            touch: TouchThrottle::new(TEST_TOUCH_INTERVAL),
             admin,
             gateway,
             tenant,
@@ -240,13 +245,34 @@ impl Handle {
         pepper: &[u8],
         previous: Option<&[u8]>,
     ) -> Result<AuthenticatedServiceCredential, ErrorCode> {
+        self.authenticate_full(key, pepper, previous, SystemTime::now())
+    }
+
+    /// One request at the request clock `now`: the throttle window is read off `now`, so a test steps through
+    /// windows without sleeping.
+    fn authenticate_at(
+        &self,
+        key: &Key,
+        now: SystemTime,
+    ) -> Result<AuthenticatedServiceCredential, ErrorCode> {
+        self.authenticate_full(key, TEST_PEPPER, None, now)
+    }
+
+    fn authenticate_full(
+        &self,
+        key: &Key,
+        pepper: &[u8],
+        previous: Option<&[u8]>,
+        now: SystemTime,
+    ) -> Result<AuthenticatedServiceCredential, ErrorCode> {
         self.rt.block_on(authenticate_service_credential(
             &self.runtime,
             &format!("Bearer {}", key.wire),
             pepper,
             previous,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
-            SystemTime::now(),
+            now,
+            &self.touch,
         ))
     }
 
@@ -292,6 +318,16 @@ impl Handle {
             &[&key.id],
         ))
         .get(0)
+    }
+
+    /// `(last_used_at, xmin)` of the key's row as text. A usage write moves both (`now()` is the writing transaction's
+    /// start, `xmin` its id), so equal states mean no write in between; text keeps this client off the `time` feature.
+    fn usage_state(&mut self, key: &Key) -> (Option<String>, String) {
+        let row = db_ok(self.admin.query_one(
+            "SELECT last_used_at::text, xmin::text FROM control.api_keys WHERE api_key_id = $1",
+            &[&key.id],
+        ));
+        (row.get(0), row.get(1))
     }
 
     fn set_key(&mut self, key: &Key, assignments: &str) {
@@ -433,6 +469,112 @@ fn each_request_checks_key_lifecycle_expiry_revocation_and_cidr() {
             );
             f.set_key(&key, reset);
             assert!(f.authenticate(&key).is_ok(), "{reset}");
+        }
+    });
+}
+
+/// G-M02-2 (M02 D8): the throttle skips the `last_used_at` write, never the validity read. A key revoked or expired after
+/// a warm-up request is refused on the very next request, inside the throttle window, and a refused request writes no
+/// stamp; restoring the key is honoured at once, still without a second write. Fault: key status cached for the
+/// window ⇒ the revoked key authenticates (the first assertion of the first case).
+#[test]
+fn revoked_or_expired_key_is_refused_on_the_next_request_inside_the_touch_window() {
+    run_db_fixture::<CredentialFixture, _>("live check inside the touch window", |mut f| {
+        let key = f.key(None, None, Some(1));
+        let t0 = SystemTime::now();
+        assert!(f.authenticate_at(&key, t0).is_ok(), "warm-up request");
+        let (warm, _) = f.usage_state(&key);
+        assert!(warm.is_some(), "the warm-up wrote the stamp");
+        for (invalid, reset) in [
+            // The row change `control.revoke_api_key` makes.
+            (
+                "status = 'REVOKED', revoked_at = now()",
+                "status = 'ACTIVE', revoked_at = NULL",
+            ),
+            ("status = 'EXPIRED'", "status = 'ACTIVE'"),
+            (
+                "expires_at = now() - interval '1 second'",
+                "expires_at = NULL",
+            ),
+            (
+                "revoked_at = now() - interval '1 second'",
+                "revoked_at = NULL",
+            ),
+        ] {
+            f.set_key(&key, invalid);
+            assert_eq!(
+                f.authenticate_at(&key, t0 + Duration::from_secs(1)).err(),
+                Some(ErrorCode::Unauthorized),
+                "{invalid}: refused on the next request, inside the window"
+            );
+            assert_eq!(
+                f.usage_state(&key).0,
+                warm,
+                "{invalid}: a refused request writes no stamp"
+            );
+            f.set_key(&key, reset);
+            assert!(
+                f.authenticate_at(&key, t0 + Duration::from_secs(2)).is_ok(),
+                "{reset}: honoured at once"
+            );
+            assert_eq!(
+                f.usage_state(&key).0,
+                warm,
+                "{reset}: still inside the window, no second write"
+            );
+        }
+    });
+}
+
+/// G-M02-2 (M02 D8): one `last_used_at` write per credential per interval. Thirty requests inside a window leave the
+/// row exactly as the first one wrote it, a second credential has its own window, the request one interval later writes
+/// again, and the new window is throttled in turn. Fault: a throttle that never skips ⇒ the row moves inside the window.
+#[test]
+fn touch_writes_once_per_interval_per_credential() {
+    run_db_fixture::<CredentialFixture, _>("throttled touch", |mut f| {
+        let key = f.key(None, None, Some(1));
+        let other = f.key(None, None, Some(1));
+        let t0 = SystemTime::now();
+        let secs = Duration::from_secs;
+        let untouched = f.usage_state(&key);
+        assert_eq!(untouched.0, None);
+
+        assert!(f.authenticate_at(&key, t0).is_ok());
+        let first = f.usage_state(&key);
+        assert!(first.0.is_some(), "the first request writes the stamp");
+        assert_ne!(first.1, untouched.1, "and it is an UPDATE of the row");
+        for offset in (1..60).step_by(2) {
+            assert!(f.authenticate_at(&key, t0 + secs(offset)).is_ok());
+            assert_eq!(
+                f.usage_state(&key),
+                first,
+                "{offset}s into the window: no write"
+            );
+        }
+
+        let other_before = f.usage_state(&other);
+        assert_eq!(other_before.0, None);
+        assert!(f.authenticate_at(&other, t0 + secs(5)).is_ok());
+        assert!(
+            f.usage_state(&other).0.is_some(),
+            "another credential is not throttled by this one"
+        );
+        assert_eq!(f.usage_state(&key), first, "and this one is untouched");
+
+        assert!(f.authenticate_at(&key, t0 + TEST_TOUCH_INTERVAL).is_ok());
+        let second = f.usage_state(&key);
+        assert_ne!(second.0, first.0, "one interval later: a new stamp");
+        assert_ne!(second.1, first.1, "written by a second UPDATE");
+        for offset in [1, 30, 59] {
+            assert!(
+                f.authenticate_at(&key, t0 + TEST_TOUCH_INTERVAL + secs(offset))
+                    .is_ok()
+            );
+            assert_eq!(
+                f.usage_state(&key),
+                second,
+                "{offset}s into the second window: no write"
+            );
         }
     });
 }

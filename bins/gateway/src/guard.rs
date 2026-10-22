@@ -55,7 +55,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::auth::{
-    AuthenticatedServiceCredential, CredentialScope, authenticate_service_credential,
+    AuthenticatedServiceCredential, CredentialScope, TouchThrottle, authenticate_service_credential,
 };
 
 /// Explicit bootstrap policy. Empty CIDR lists mean the operator has imposed no such
@@ -235,6 +235,8 @@ pub struct GatewayGuard {
     pool: Arc<RuntimeDbPool>,
     settings: GuardSettings,
     metrics: GuardMetrics,
+    /// M02 D8: when a credential's `last_used_at` is written again; never consulted for a validity decision.
+    touch: TouchThrottle,
 }
 
 struct AdmittedOperation {
@@ -321,7 +323,16 @@ impl GatewayGuard {
             pool: Arc::new(pool),
             settings,
             metrics: GuardMetrics::default(),
+            touch: TouchThrottle::new(Duration::ZERO),
         })
+    }
+
+    /// M02 D8 / §78.1: `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`, the least time between two `last_used_at`
+    /// writes of one credential. Every request still reads and validates the credential. Without this call the
+    /// interval is zero: every request writes the stamp, as before M02-2.
+    pub fn with_credential_touch_interval(mut self, interval: Duration) -> Self {
+        self.touch = TouchThrottle::new(interval);
+        self
     }
 
     pub fn metrics(&self) -> &GuardMetrics {
@@ -399,6 +410,7 @@ impl GatewayGuard {
                     self.settings.credential_pepper_previous.as_deref(),
                     network.client_ip,
                     SystemTime::now(),
+                    &self.touch,
                 )
                 .await
             }
