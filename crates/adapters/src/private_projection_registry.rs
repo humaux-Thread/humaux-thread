@@ -14,8 +14,9 @@
 //!   fingerprint and a different one is refused, never overwritten (ADR-0064 D-C); the identity is the source fence
 //!   plus (card_profile_hash, chunk_ordinal), the legacy profile at ordinal 0 keeps the v1 point id byte for byte and
 //!   every other slot gets a v2 id (ADR-0068 D-C); the legacy-only retirement touches the (LegacyCardV1, 0) bindings
-//!   of one Memory and never a chunk binding (ADR-0068 D-I)]
-//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C; ADR-0068 D-I
+//!   of one Memory and never a chunk binding (ADR-0068 D-I); a resolved point reports its card slot from the registry row
+//!   (ADR-0084 D-C 3)]
+//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C; ADR-0068 D-I; ADR-0084 D-C
 //!
 //! Qdrant returns an opaque point id plus a score.  This module is the sole private-plane
 //! point-id resolver: it binds that id to a Memory through PostgreSQL and then rechecks the
@@ -31,7 +32,7 @@ use humaux_projection::card::CARD_TEMPLATE_HASH;
 use humaux_projection::embedding_fingerprint::{
     DISTANCE, DTYPE, EmbeddingFingerprint, EmbeddingFingerprintInputs, NORMALIZATION,
 };
-use humaux_projection::note_chunks::LEGACY_CARD_PROFILE_HASH;
+use humaux_projection::note_chunks::{CardSlot, LEGACY_CARD_PROFILE_HASH};
 use humaux_projection::serving::StreamFamily;
 use sha2::{Digest, Sha256};
 use sqlx::types::Uuid;
@@ -189,6 +190,9 @@ pub enum RegistrationOutcome {
 pub struct ResolvedPrivateMemoryPoint {
     pub point_id: ProjectionPointId,
     pub memory_id: MemoryId,
+    /// ADR-0084 D-C 3: the card slot this point stands for, from the registry row (`card_profile_hash`,
+    /// `chunk_ordinal`) and never from the Qdrant payload. `None` when this build does not know the row's profile.
+    pub slot: Option<CardSlot>,
 }
 
 #[derive(Debug)]
@@ -808,7 +812,7 @@ pub(crate) async fn resolve_private_memory_points_in_txn(
     set_authorization_local(txn, authorization).await?;
     let ids = point_ids.iter().map(|id| id.0).collect::<Vec<_>>();
     let rows = sqlx::query(
-        "SELECT r.point_id, r.memory_id \
+        "SELECT r.point_id, r.memory_id, r.card_profile_hash, r.chunk_ordinal \
          FROM projection.private_memory_points AS r \
          JOIN private.memory_records AS m \
            ON m.tenant_id = r.tenant_id AND m.memory_id = r.memory_id \
@@ -835,7 +839,15 @@ pub(crate) async fn resolve_private_memory_points_in_txn(
     for row in rows {
         let point_id: Uuid = row.try_get("point_id")?;
         let memory_id: Uuid = row.try_get("memory_id")?;
-        resolved.insert(point_id, MemoryId(memory_id));
+        let card_profile_hash: String = row.try_get("card_profile_hash")?;
+        let chunk_ordinal: i32 = row.try_get("chunk_ordinal")?;
+        resolved.insert(
+            point_id,
+            (
+                MemoryId(memory_id),
+                CardSlot::from_registry(&card_profile_hash, chunk_ordinal),
+            ),
+        );
     }
 
     let mut seen = HashSet::new();
@@ -846,9 +858,10 @@ pub(crate) async fn resolve_private_memory_points_in_txn(
             resolved
                 .get(&point_id.0)
                 .copied()
-                .map(|memory_id| ResolvedPrivateMemoryPoint {
+                .map(|(memory_id, slot)| ResolvedPrivateMemoryPoint {
                     point_id: *point_id,
                     memory_id,
+                    slot,
                 })
         })
         .collect())

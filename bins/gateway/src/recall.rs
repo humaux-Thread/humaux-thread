@@ -28,9 +28,9 @@ use humaux_adapters::{
     read_materialize::MaterializedItem,
     retrieval_query_log::QueryLogCounts,
     retrieve::{
-        IndexFace, MaterializedPrivateReadServing, QueryHmac, RetrieveError, grouped_recall,
-        materialize_private_read_serving_about, query_hmac, query_log_limits, record_recall_query,
-        tombstoned_source_seqs, visible_index_count,
+        GatedTexts, IndexFace, MaterializedPrivateReadServing, QueryHmac, RetrieveError,
+        grouped_recall, materialize_private_read_serving_about, query_hmac, query_log_limits,
+        record_recall_query, tombstoned_source_seqs, visible_index_count,
     },
     serving_repo::family_read_state,
 };
@@ -789,6 +789,8 @@ async fn answer(
         &candidates,
         &input.subject_ids,
         input.affect.as_ref(),
+        // No rerank lane yet (ADR-0084, T-RET-7d-2): no text is read until the lane asks for it.
+        GatedTexts::Skip,
     )
     .await
     .map_err(|error| match error {
@@ -1451,6 +1453,25 @@ mod tests {
             "leg order is not a tie-break"
         );
         assert_eq!(forward, fuse_rrf([&dense, &sparse], 60, true, 10), "repeat");
+    }
+
+    /// ADR-0084 D-C 3: the point that stands for a fused Memory is its best leg hit's, dense first: the dense leg's point
+    /// for a Memory both legs found, the sparse leg's for a Memory only the sparse leg found. That point is the one whose
+    /// registry slot picks the chunk the reranker scores (`retrieve::stand_in_points` keeps the first point per Memory).
+    /// Fault: let the sparse candidate replace the dense one for a Memory both legs found ⇒ red on the first assertion.
+    #[test]
+    fn the_fused_candidate_is_the_dense_hit_else_the_sparse_hit() {
+        let dense = leg(&[(11, Some(1))]);
+        let sparse = leg(&[(22, Some(2)), (21, Some(1))]);
+        let fused = fuse_rrf([&dense, &sparse], 60, true, 10);
+        let point_of = |memory: u128| {
+            fused
+                .iter()
+                .find(|c| c.memory_id == Some(Uuid::from_u128(memory)))
+                .map(|c| c.point_id)
+        };
+        assert_eq!(point_of(1), Some(PointId::Uuid(Uuid::from_u128(11))));
+        assert_eq!(point_of(2), Some(PointId::Uuid(Uuid::from_u128(22))));
     }
 
     /// ADR-0083 D-C: a plain (ungrouped) dense leg carries no `memory_id`, so the legs agree on the point; a sparse hit

@@ -6,10 +6,10 @@
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
-//!   modules=[adapters::context_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
+//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo,
 //!   domain::affect, domain::error,
-//!   domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::serving,
+//!   domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving,
 //!   projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, tests, maintenance::switch_visible]
 //! Invariants: [read-your-writes on role_gateway: an expired token, cross-tenant/workspace scope or a changed serving
@@ -17,8 +17,10 @@
 //!   is caller-scoped (family_probe), the visibility-free stream count serves ops callers only (ADR-0057 D-C);
 //!   the consistency token is MAC-verified before any field is parsed and carries no authorization (ADR-0059 D-G);
 //!   the RYW overlay never shows a rebuild generation's stream_log row (ADR-0064 D-A, E13); the query-hash log MAC is
-//!   derived here from the installed token key and leaves this module only as a digest and a kid (ADR-0081 D-A)]
-//! Spec: Baseline §6.2.3, §15.5; ADR-0057; ADR-0059; ADR-0064; ADR-0081
+//!   derived here from the installed token key and leaves this module only as a digest and a kid (ADR-0081 D-A); the card
+//!   slot reported for a hydrated Memory is the registry row of the first candidate point that resolved to it, never a
+//!   Qdrant payload (ADR-0084 D-C 3)]
+//! Spec: Baseline §6.2.3, §15.5; ADR-0057; ADR-0059; ADR-0064; ADR-0081; ADR-0084 D-C
 //!
 //! **Why this lives in `humaux-adapters`, not `humaux-application`**: every function below
 //! that touches PostgreSQL needs `&RuntimeDbPool`, and [`crate::postgres::RuntimeDbPool`]'s
@@ -52,18 +54,23 @@ use humaux_domain::ids::{TenantId, WorkspaceId};
 use humaux_domain::subject::SubjectId;
 use humaux_infra_cell::{CellAccessPermit, IntraCellHttpTransport};
 use humaux_projection::dense::build_stream_count_filter;
+use humaux_projection::note_chunks::CardSlot;
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::completeness::LedgerClosure;
 use humaux_retrieval::envelope::GroundingBlock;
 
 use crate::context_repo::{StreamPipelineCounts, stream_pipeline_counts_in_txn};
+use crate::memory_repo::{MemoryText, memory_texts_in_txn};
 use crate::postgres::RuntimeDbPool;
 use crate::private_projection_registry::{
-    PrivateProjectionRegistryError, ProjectionPointId, resolve_private_memory_points_in_txn,
+    PrivateProjectionRegistryError, ProjectionPointId, ResolvedPrivateMemoryPoint,
+    resolve_private_memory_points_in_txn,
 };
 use crate::qdrant::{DenseCandidate, PointId, VisibleCountFilter, count_visible_excluding_seqs};
-use crate::read_materialize::{MaterializedBodies, materialize_final_bodies_about_in_txn};
+use crate::read_materialize::{
+    MaterializedBodies, MaterializedItem, materialize_final_bodies_about_in_txn,
+};
 use crate::retrieval_query_log::{self, QueryLogCounts};
 use crate::serving_repo::{self, ServingRepoError};
 use crate::stream_repo::close_ledger_in_txn;
@@ -1013,11 +1020,35 @@ pub struct PrivateReadServingCandidates {
     pub serving_version: Option<String>,
 }
 
+/// ADR-0084 D-C 3: the card slot of the best candidate point of each Memory a hydrate resolved; `None` as a value is a
+/// point whose profile this build does not know.
+pub type PointSlots = BTreeMap<Uuid, Option<CardSlot>>;
+
+/// Whether the hydrate transaction also reads the canonical text of the Memories that pass its gate (ADR-0084 D-C 3).
+/// The read is part of the gate's own transaction and takes its ids from the gated items, so the text of a Memory the gate
+/// refused (archived, superseded, secret-backed, tombstoned, outside the subject or affect filter) is never read (G-RET-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatedTexts {
+    /// Read nothing: [`MaterializedPrivateReadServing::gated_texts`] is empty.
+    Skip,
+    /// Read `(title, body)` of every Memory item the gate returned, in the same snapshot.
+    Read,
+}
+
 /// One private semantic result whose bodies, ledger closure, and conservative grounding report
 /// were all produced under the same PostgreSQL repeatable-read snapshot.
 #[derive(Debug, Clone)]
 pub struct MaterializedPrivateReadServing {
     pub bodies: MaterializedBodies,
+    /// ADR-0084 D-C 3: for every Memory a candidate point resolved to, the card slot of the FIRST candidate point that
+    /// resolved to it (the caller's candidate order is the leg order, so that is the best leg hit), from the same
+    /// registry read that gated the point. `None` as a value: the point's profile is unknown to this build. A Memory
+    /// the hydrate gate then dropped is still listed; the caller looks up only the Memories of `bodies`.
+    pub point_slots: PointSlots,
+    /// ADR-0084 D-C 3: the canonical text (`private.memory_text_v`, ADR-0085) of exactly the Memories in `bodies`,
+    /// read in this same snapshot after the gate when the caller asked for [`GatedTexts::Read`]; empty otherwise. A
+    /// Memory the gate dropped has no entry, by construction: there is no other way to obtain a text from this module.
+    pub gated_texts: BTreeMap<Uuid, MemoryText>,
     pub ledger: LedgerClosure,
     /// §23.3④ `stream_ledger` pipeline readings for the same six-column `StreamKey` the ledger
     /// closed on, taken in the same snapshot (ADR-0041 D-H). Not an `Option`: no census travels
@@ -1101,6 +1132,7 @@ pub async fn materialize_private_read_serving(
         semantic,
         &[],
         None,
+        GatedTexts::Skip,
     )
     .await
 }
@@ -1122,13 +1154,14 @@ pub async fn materialize_private_read_serving_about(
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
+    texts: GatedTexts,
 ) -> Result<MaterializedPrivateReadServing, RetrieveError> {
     // dep: PostgreSQL(role_gateway) — transaction entry for `materialize_private_read_serving_about`
     let mut txn = pool.pool().begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *txn)
         .await?;
-    let bodies = materialize_private_read_serving_in_txn(
+    let (bodies, point_slots) = materialize_private_read_serving_in_txn(
         &mut txn,
         consistency_token,
         authorization,
@@ -1140,6 +1173,10 @@ pub async fn materialize_private_read_serving_about(
         affect,
     )
     .await?;
+    let gated_texts = match texts {
+        GatedTexts::Skip => BTreeMap::new(),
+        GatedTexts::Read => gated_memory_texts(&mut txn, authorization, &bodies).await?,
+    };
     let key = family.with_version(projection_version);
     let ledger = close_ledger_in_txn(&mut txn, &key, authorization).await?;
     let pipeline = stream_pipeline_counts_in_txn(&mut txn, &key)
@@ -1152,6 +1189,8 @@ pub async fn materialize_private_read_serving_about(
     txn.commit().await?;
     Ok(MaterializedPrivateReadServing {
         bodies,
+        point_slots,
+        gated_texts,
         ledger,
         pipeline,
         grounding,
@@ -1206,7 +1245,7 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
-) -> Result<MaterializedBodies, RetrieveError> {
+) -> Result<(MaterializedBodies, PointSlots), RetrieveError> {
     let envelope = match consistency_token {
         Some(token) => recall_with_overlay_in_txn(txn, token, authorization, family).await?,
         None => {
@@ -1257,25 +1296,9 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
             },
         )
         .collect();
-    let mut seen = HashSet::new();
-    serving.memory_ids = resolved
-        .into_iter()
-        .filter(
-            |candidate| match groups.get(&candidate.point_id.as_uuid()) {
-                Some(group) if *group != candidate.memory_id.0 => {
-                    eprintln!(
-                        "humaux-retrieve: projection_inconsistency group_memory_mismatch point={}",
-                        candidate.point_id.as_uuid()
-                    );
-                    false
-                }
-                _ => true,
-            },
-        )
-        .map(|candidate| candidate.memory_id.0)
-        .filter(|memory_id| seen.insert(*memory_id))
-        .collect();
-    materialize_final_bodies_about_in_txn(
+    let (memory_ids, point_slots) = stand_in_points(resolved, &groups);
+    serving.memory_ids = memory_ids;
+    let bodies = materialize_final_bodies_about_in_txn(
         txn,
         authorization,
         family,
@@ -1290,7 +1313,66 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
         affect,
     )
     .await
-    .map_err(RetrieveError::FinalMaterialization)
+    .map_err(RetrieveError::FinalMaterialization)?;
+    Ok((bodies, point_slots))
+}
+
+/// ADR-0084 D-C 3 / G-RET-13: the canonical text of exactly the Memory items `bodies` holds, read in the hydrate
+/// transaction after its gate. The ids are taken from the gated items here and nowhere else, so a Memory the gate
+/// refused (lifecycle, secret-backed, tombstoned, subject or affect filter) can never be read: `private.memory_text_v`
+/// applies RLS only and none of those. A Memory the caller's RLS context cannot read has no row and so no entry.
+async fn gated_memory_texts(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    bodies: &MaterializedBodies,
+) -> Result<BTreeMap<Uuid, MemoryText>, RetrieveError> {
+    let gated: Vec<Uuid> = bodies
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MaterializedItem::Memory { memory_id, .. } => Some(*memory_id),
+            _ => None,
+        })
+        .collect();
+    let texts = memory_texts_in_txn(txn, authorization.tenant_id().0, &gated).await?;
+    Ok(texts
+        .into_iter()
+        .map(|text| (text.memory_id, text))
+        .collect())
+}
+
+/// The Memories the resolved candidate points stand for, in candidate order, each once, and the card slot of the FIRST
+/// point that stood for it (ADR-0084 D-C 3: the candidate order is the leg order, so the first point is the best leg hit
+/// and its slot is the chunk the reranker scores). ADR-0068 D-E: a grouped hit whose group id is not the Memory the
+/// registry resolved its point to is dropped, that point only, and logged as a projection inconsistency; it never
+/// contributes a slot.
+fn stand_in_points(
+    resolved: Vec<ResolvedPrivateMemoryPoint>,
+    groups: &HashMap<Uuid, Uuid>,
+) -> (Vec<Uuid>, PointSlots) {
+    let mut seen = HashSet::new();
+    let mut point_slots = BTreeMap::new();
+    let memory_ids: Vec<Uuid> = resolved
+        .into_iter()
+        .filter(
+            |candidate| match groups.get(&candidate.point_id.as_uuid()) {
+                Some(group) if *group != candidate.memory_id.0 => {
+                    eprintln!(
+                        "humaux-retrieve: projection_inconsistency group_memory_mismatch point={}",
+                        candidate.point_id.as_uuid()
+                    );
+                    false
+                }
+                _ => true,
+            },
+        )
+        .filter(|candidate| seen.insert(candidate.memory_id.0))
+        .map(|candidate| {
+            point_slots.insert(candidate.memory_id.0, candidate.slot);
+            candidate.memory_id.0
+        })
+        .collect();
+    (memory_ids, point_slots)
 }
 
 /// Top-level read-your-writes entry. The token only proves the requested overlay boundary;
@@ -1623,6 +1705,59 @@ pub async fn record_recall_query(
     .await?;
     txn.commit().await?;
     Ok(())
+}
+
+/// ADR-0084 D-C 3: [`stand_in_points`], the first-point-per-Memory slot rule, over hand-built resolved points.
+#[cfg(test)]
+mod stand_in_tests {
+    use super::*;
+    use humaux_domain::authority::MemoryId;
+
+    fn resolved(point: u128, memory: u128, slot: Option<CardSlot>) -> ResolvedPrivateMemoryPoint {
+        ResolvedPrivateMemoryPoint {
+            point_id: ProjectionPointId::new(Uuid::from_u128(point)),
+            memory_id: MemoryId(Uuid::from_u128(memory)),
+            slot,
+        }
+    }
+
+    fn chunk(ordinal: u32) -> Option<CardSlot> {
+        Some(CardSlot::Chunk { ordinal })
+    }
+
+    /// ADR-0084 D-C 3: a Memory is reported once, with the slot of the first (best-ranked) candidate point that stood for
+    /// it, whatever slots its later points carry; Memories keep candidate order; a point of an unknown profile reports
+    /// `None`; a grouped hit whose group is another Memory than the registry resolved is dropped and contributes
+    /// nothing, so the Memory's next point still stands for it.
+    /// Fault: let a later point overwrite the slot (drop the first-seen filter) ⇒ the chunk-2 assertion goes red.
+    #[test]
+    fn the_first_candidate_point_of_a_memory_fixes_its_slot() {
+        let resolved = vec![
+            resolved(1, 10, chunk(2)),
+            resolved(2, 20, Some(CardSlot::Legacy)),
+            resolved(3, 10, chunk(0)),
+            resolved(4, 30, None),
+            resolved(5, 40, chunk(1)),
+            resolved(6, 40, chunk(3)),
+        ];
+        // Point 5 is labelled as Memory 99 by its group, but the registry resolved it to Memory 40: dropped.
+        let groups = HashMap::from([(Uuid::from_u128(5), Uuid::from_u128(99))]);
+        let (memory_ids, slots) = stand_in_points(resolved, &groups);
+        assert_eq!(
+            memory_ids,
+            [10, 20, 30, 40].map(Uuid::from_u128),
+            "candidate order, each Memory once"
+        );
+        assert_eq!(
+            slots,
+            BTreeMap::from([
+                (Uuid::from_u128(10), chunk(2)),
+                (Uuid::from_u128(20), Some(CardSlot::Legacy)),
+                (Uuid::from_u128(30), None),
+                (Uuid::from_u128(40), chunk(3)),
+            ])
+        );
+    }
 }
 
 /// §78.2 "DB enum 与 Rust enum 走 contract test 对账": [`ProcessingState::ALL`] must list

@@ -10,6 +10,43 @@
 - Amended 2026-10-22 (card ds-ret-189, #187 review): **the `rerank_depth <= cand_k` ceiling (D-C 1, D-E) applies only
   while `rerank_enabled` is true** (#166), so a disabled lane keeps the registry default depth at any `cand_k`; the
   values file leaves the two worker keys empty, and empty means unset so the registry defaults apply (#185).
+- Amended 2026-10-23 (card T-RET-7d-1, the lead's ruling): **T-RET-7d splits in two, the contract first.** T-RET-7d-1 is
+  the module contract that D-C 3 and D-D need before any wiring: the D-D serve rule and the D-C 3 data path below, with
+  no gateway change. T-RET-7d-2 keeps the rest of the T-RET-7d row (below, "Cards"): the gateway client and its
+  bootstrap wiring with the deployment model pin, D-C steps 1 to 3, 5 and 6 in `gateway::recall`, the G55-6 names not
+  already caught, the provenance constructor, both fault tests on the real path, G-RET-12, G-RET-13, G-RET-15, the
+  in-cell test and U7.
+- Amended 2026-10-23 (T-RET-7d-1), **D-D serve rule.** A `provenance` component that is `cannot_establish` is served,
+  not refused. Baseline §23.3 (the provenance table and the paragraph after it) keeps `is_valid` as "complete
+  provenance, eligible for result statistics", false for any `cannot_establish`, and says the failure diagnostic still
+  serialises with all six fields, with no second validity notion. `retrieval::envelope` therefore splits
+  `ProvenanceBlock::is_valid` into its two conjuncts inside the one definition (structural integrity; every component
+  established), and `outcome_block_under` refuses only a structural breach with `ErrorCode::Internal`: another
+  request's fingerprint or profile, an empty `binary_build`, a blank or placeholder `used` id, a `not_applicable`
+  projection or embedding on a semantic branch. Before this, every D-D row whose `rerank_model_id` reads
+  `cannot_establish` would have answered `Internal` instead of the fused order. No `ErrorCode` is added.
+- Amended 2026-10-23 (T-RET-7d-1), **D-C 3 data path.** The chunk of a Memory is identified by the PostgreSQL registry,
+  not by Qdrant: `projection.private_memory_points` carries `card_profile_hash` and `chunk_ordinal` for every point
+  (ADR-0068 D-C), while the point id is a one-way digest and the point payload holds no ordinal. So:
+  `ResolvedPrivateMemoryPoint` gains `slot: Option<CardSlot>` (`projection::note_chunks::CardSlot`, `Legacy` or
+  `Chunk { ordinal }`; `None` for a profile this build does not know, ADR-0068 D-I);
+  `MaterializedPrivateReadServing.point_slots` holds, for each Memory, the slot of the first candidate point that
+  resolved to it (the fused list holds one point per Memory: the dense leg's when both legs found it, the sparse leg's
+  otherwise, `gateway::recall::fuse_rrf`); `materialize_private_read_serving_about` takes a `GatedTexts` argument and,
+  for `Read`, returns `gated_texts`: `(title, body)` from `private.memory_text_v` (ADR-0085) of exactly the Memory items
+  the gate returned, read inside the hydrate transaction; and `projection::note_chunks::rerank_document(title, body,
+  slot)` builds the document: `chunk_card_text` for a chunk slot (the card text that was embedded), title prefix +
+  separator + the whole body for a legacy slot (which holds the body whole). The gateway passes `Skip` until T-RET-7d-2
+  turns the lane on, so a recall with the lane off reads no text. A Memory whose slot is `None`, or whose text cannot be
+  read, has no document: T-RET-7d-2 does not send it and keeps it after the scored ones in fused order (D-C 5).
+- Amended 2026-10-23 (T-RET-7d-1, review of PR #204), **G-RET-13 and the text read.** The first shape of the D-C 3 data
+  path read the texts in a second snapshot through a public function. `private.memory_text_v` applies RLS only: it does
+  not exclude tombstoned, archived, superseded or secret-backed Memories, which the hydrate gate does. So a Memory
+  forgotten (tombstoned) between the gate and that read, and any id the gate had refused, would have had its title and
+  body returned and sent to the worker. There is now one snapshot and one gate: the text read is a private step of the
+  hydrate transaction (`gated_memory_texts`), its ids are taken from the gated items and from nowhere else, and no public
+  function returns a Memory text. The archive-or-forget race is gone by construction.
+
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
 - Relates to: Baseline §7.2, §19 (Rerank Provider Failover), §23.1③, §23.3, §50, §51, §52.3, §53.2, §53.4, §57.1,
@@ -319,6 +356,8 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | `gateway::recall`, `retrieval::request` | the client call and D-C steps 3 to 6 | T-RET-7d |
 | `retrieval::rerank` (a placeholder today) | the pure ordering step (D-C 5), so G-RET-15 needs no model | T-RET-7d |
 | `telemetry::degrade`, `testkit/fault`, `dormant.toml` | the rustdoc wording; both rerank fault tests become real-path (they drive the production function, not `abstain()`); the two M11 dormant rows are deleted | T-RET-7d |
+| `retrieval::envelope` | `is_valid` split into its two conjuncts; `outcome_block_under` refuses a structural breach only (D-D serve rule) | T-RET-7d-1 |
+| `adapters::private_projection_registry`, `adapters::retrieve`, `projection::note_chunks` | `slot` on a resolved point, `point_slots` and `gated_texts` on the hydrate result, `CardSlot` and `rerank_document` (D-C 3 data path) | T-RET-7d-1 |
 
 ## Cards
 
@@ -327,7 +366,7 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | T-RET-7a | This ADR; Baseline §4.2, §7.2, §19 Rerank Provider Failover, §23.3, §50, §53.4, §67.2 and the opening list; the rerank lines of ADR-0083 and ADR-0081 (docs only) | none |
 | T-RET-7b | CI artifact pipeline (D-A) and the public parity fixtures (the public texts `PUB` in `local_rerank.py` at aae2ae4 are a seed, plus a pair longer than `rerank_max_len`) | none of its own (feeds G-RET-11) |
 | T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), **the five registry entries and the fingerprint (D-E, moved here from T-RET-7d)**, the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
-| T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
+| T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. **Split (2026-10-23): T-RET-7d-1 is the D-D serve rule and the D-C 3 data path (amendments above, no gate of its own); T-RET-7d-2 is the rest of this row.** Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
 
 ## T-RET-7c record (2026-10-22)
 
@@ -368,6 +407,26 @@ carries four special tokens and the tokenizer crate subtracts them from `max_len
 operator value of 4 fails at registry load, a call with 4 is `invalid_request`. An undecodable
 body or an unknown field is refused by the extractor (HTTP 4xx) before any outcome exists; every semantic error is an
 `invalid_request` outcome with the call id.
+
+## T-RET-7d-1 record (2026-10-23)
+
+Recorded by CI (nothing ran locally). The code and the tests below landed in PR #204: r1 to r5 on head 2f9c1ec (green run
+39859048051), r6 with the one-snapshot text read after the review of 2731a9c. Each red is one mutation on a throwaway
+`red/t-ret-7d-1-rN` branch run through `targeted.yml` on the test named, failing on that test's own assertion; the branches
+are deleted. T-RET-7d-1 adds no `G-RET-` id: these are the tests of the contracts amended above (§80.1 inject, red, fix,
+green).
+
+| Contract | Test | Injected fault | Red run |
+|---|---|---|---|
+| D-D serve rule | `retrieval::envelope::tests::a_cannot_establish_component_is_served_with_its_diagnostic_and_is_never_valid` | r1: `outcome_block_under` refuses every `!is_valid` provenance (the old gate): fails at "a structurally sound block is served: Internal" | 39861103125 |
+| D-C 3, first point per Memory | `adapters::retrieve::stand_in_tests::the_first_candidate_point_of_a_memory_fixes_its_slot` | r2: a later candidate point overwrites the Memory's slot (Memory 10 reads `Chunk { 0 }`, expected `Chunk { 2 }`) | 39861417814 |
+| D-C 3, slot from the registry row | `private_projection_registry::repeated_chunks_share_vector_not_point` | r3: the resolver reports ordinal 0 whatever the row says (both points read `Chunk { 0 }`) | 39861763939 |
+| D-C 3, the embedded card text | `projection::note_chunks::tests::rerank_document_is_the_card_text_of_the_slot` | r4: the document is always built from slot 0 | 39862116696 |
+| D-C 3, dense point, else sparse | `gateway::recall::tests::the_fused_candidate_is_the_dense_hit_else_the_sparse_hit` | r5: a later leg's point replaces the dense leg's for a Memory both legs found | 39862460586 |
+| G-RET-13, the text read is gated | `private_projection_registry::a_tombstoned_memory_never_has_its_text_read_for_rerank` | r6: read `private.memory_text_v` for every resolved candidate instead of the gated items (control and `Skip` pass; the tombstoned Memory's text is read: `([], [memory])`) | 39866008465 |
+
+The structural-breach test (`a_structural_breach_is_still_refused_as_internal`) and the G23-6 tests are unchanged by the
+split of `is_valid` and stay green.
 
 ## Alternatives rejected
 
