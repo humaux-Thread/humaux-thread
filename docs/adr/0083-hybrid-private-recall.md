@@ -37,16 +37,18 @@ one correct Memory each.
 |---|---|---|
 | dense, exact search | 64 | 127 |
 | Qdrant `bm25` leg with the multilingual tokenizer, gateway-style memory-level RRF (k 60) | 96 | 147 |
-| Qdrant server-side chunk-level RRF (k 60) over the same leg | 79 | 125 |
+| Qdrant server-side chunk-level RRF (k 60), default-tokenizer leg | 79 | 125 |
+| gateway-style memory-level RRF (k 60), default-tokenizer leg | 90 | 125 |
 | reference: PB2's own bigram BM25 leg, client RRF (k 60) | 100 | 140 |
 
-- Server against client fusion on the same leg: b/c 12/1, exact McNemar p .0034 (PB5 follow-up, secondary (c)).
+- Server against client fusion, both on the default-tokenizer leg: 79 against 90, b/c 12/1, exact McNemar p .0034
+  (PB5 follow-up, secondary (c)). Server fusion on the multilingual leg at k 60 was not run.
 - Multilingual tokenizer against the default tokenizer, fused pool@25: b/c 7/29, p .0003 (PB5 follow-up, secondary (b)).
 - The bigram-leg reference (100 / 140) against the multilingual Qdrant leg (96 / 147): not significant.
 - PB2, pre-registered: pool@25 127 to 140 with the bigram leg and RRF (b/c 6/19, p .015); hit@5 64 to 100 (b/c 9/45,
   p 7.3e-7).
-- Reranking the RRF pool did not help significantly (PB2: hit@5 100 to 106, b/c 24/30, p .50). Rerank stays deferred
-  (T-RET-7, no card yet; ADR-0081 "Later").
+- Rerank is not part of this design: the owner decided on 2026-10-22 to run hybrid recall without a reranker (see
+  Alternatives rejected for the measurements).
 
 Caveats that bound these numbers:
 
@@ -82,11 +84,10 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
 |---|---|---|---|
 | U1 | Whether a real server returns the expected groups for a Document query with `params.idf.corpus` and `group_by memory_id` (the source says it should, V2; nothing here has run it) | Fold the sparse leg client-side over `leg_depth` points on `POST /points/query`, the shape PB5 measured; this ADR is then amended to say so | T-RET-6c, G-RET-7 and G-RET-8 through a real Qdrant |
 | U2 | What a real server does with a query whose tokens are all dropped (empty sparse vector, V7) | A 2xx with zero groups is an empty leg; any non-2xx is a leg failure and shows as the D-C degradation, never silently | T-RET-6c reads it once and records the result here |
-| U3 | Resolved by the lead (2026-10-22): both legs ask for `leg_depth` Memories, the depth the fusions were measured at; `cand_k` cuts only the fused list | — | — |
 | U4 | Where the policy value behind `SKIPPED_BY_POLICY` comes from: `build_sparse_lane` takes `local_text_processing_allowed` from its caller and only tests call it, so no policy value is read anywhere today | The write path and the query path read one decision (D-E); T-RET-6b names the source before the write path ships | T-RET-6b |
 | U5 | How a skipped sparse lane renders in the envelope: `LaneStatus` has `ok`, `failed`, `not_required` and nothing for "skipped by policy" | Render `not_required` (no wire change) unless that card's contract review asks for a new value | T-RET-6c |
 | U6 | What turns the sparse leg on for a stream: it must find `bm25` and `memory_id` on every point, or a memory missing either is silently never matched (dense-only quality, no error) | A registered flag, off by default, flipped after the T-RET-6b backfill reads zero missing and ADR-0068's `memory_id` backfill reads `strays = 0` | T-RET-6c |
-| U7 | The cost of the corpus-scoped IDF (V5) on a large authorized corpus, and of a grouped sparse search at depth 200 (up to ten rounds, V2) | None assumed; no cache is added before a number exists (ADR-0081 D-G) | T-RET-6c reads the sparse leg's own stage timing |
+| U7 | The cost of the corpus-scoped IDF (V5) on a large authorized corpus, and of a grouped sparse search at depth 200 (up to ten rounds, V2) | Lower `leg_depth` through the registry (no code change); no cache is added before a number exists (ADR-0081 D-G) | T-RET-6c reads the sparse leg's own stage timing |
 
 ## Decisions
 
@@ -140,7 +141,7 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
   legs that returned `m`, ranks 1-based, ties broken by `memory_id` ascending. The fused list is cut to `cand_k` and
   then passes the **unchanged** PostgreSQL hydrate gate; a candidate that only the sparse leg found gets no weaker a
   gate than a dense one.
-- **Not Qdrant server-side fusion.** Measured worse on the same leg (79 against 96, p .0034), it fuses chunks so one
+- **Not Qdrant server-side fusion.** Measured worse on the same default-tokenizer leg (79 against 90, p .0034), it fuses chunks so one
   note fills several slots, it does not break ties (V6), and its default constant is not the formula above.
 - A short sparse leg (fewer groups than asked, V2) is valid, not a failure.
 - **Lanes** are `dense` and `sparse`. `LANE_SUBSTITUTED` keeps its meaning (ADR-0055 D-C): it fires only for a planner
@@ -157,19 +158,20 @@ The three checks ADR-0081 D-E left open are answered by V6 (RRF constant), V3 (t
 
 ### D-D Configuration (§78.1)
 
-Three registered-profile fields, beside `top_k` in the §50 registry, none ever caller input:
+Four registered-profile entries, beside `top_k` in the §50 registry, none ever caller input (the fourth, `sparse_leg_enabled`, is U6's switch):
 
 | Field | Default | Meaning |
 |---|---|---|
 | `cand_multiplier` | 5 (ADR-0081 D-E) | `cand_k = min(top_k × cand_multiplier, 200)`; replaces the constant `RETRIEVAL_CANDIDATE_MULTIPLIER` |
 | `leg_depth` | 200 | `limit` of each leg's grouped request (dense and sparse), in Memories; the fused list is then cut to `cand_k` |
 | `rrf_k` | 60 | the constant in the D-C formula |
+| `sparse_leg_enabled` | false | turns the sparse leg on for the profile after the T-RET-6b backfill reads zero missing `bm25` (U6) |
 
-All three enter `request_profile_fingerprint` and the envelope validation (§23.3 fixture assertions), so a change moves
+All four enter `request_profile_fingerprint` and the envelope validation (§23.3 fixture assertions), so a change moves
 `profile_fingerprint` and G23-4 refuses to pool runs across values. `cand_k_formula` renders the resolved multiplier.
-`RetrievalRequest` and `build_request` take no parameter for any of them (§55.1); T-RET-6c adds the three names to the
+`RetrievalRequest` and `build_request` take no parameter for any of them (§55.1); T-RET-6c adds the four names to the
 G55-6 ① forbidden-name set, red-recorded by that card. Bounds are validated when the registry loads, and no literal of
-the three appears outside it.
+the four appears outside it.
 
 ### D-E `projection::sparse`
 
@@ -210,7 +212,7 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 | `adapters::provisioning` | `collection_setup_puts`, `collection_generation` and `ensure_collection` add and check `bm25` | T-RET-6b |
 | `adapters::projection_worker`, `adapters::rebuild` | the point write sends `bm25`; the verifier expects it | T-RET-6b |
 | `adapters::retrieve`, `gateway::recall` | the sparse leg runs beside the dense leg; RRF; lanes; `abstain()` on sparse failure | T-RET-6c |
-| `contracts::retrieval_config`, `retrieval::request` | the three registry fields; fingerprint; `cand_k_formula` | T-RET-6c |
+| `contracts::retrieval_config`, `retrieval::request` | the four registry entries; fingerprint; `cand_k_formula` | T-RET-6c |
 | `projection::sparse` | `build_sparse_lane` stays; local IDF deleted | T-RET-6c |
 | `telemetry::degrade`, `testkit/fault` | `DegradeCode::SparseLaneUnavailable` and its fault test (Baseline §53.2 and §53.4) | T-RET-6c |
 
@@ -220,13 +222,12 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 |---|---|---|
 | T-RET-6a | This ADR; Baseline §17.6, §23.3, §33, §55.6; the T-RET-6 row and the D-E checks of ADR-0081 (docs only) | none |
 | T-RET-6b | Indexing and backfill (D-B): collection body and generation, `collection ensure` adds `bm25`, named-vector upsert, rebuild backfill and verifier. **Before T-RET-6c.** Names the policy source (U4) | the provisioning sentinel and the rebuild-verify test, extended |
-| T-RET-6c | Recall, configuration and lanes (D-C to D-E): the three registry fields, the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U3, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
-| T-RET-7 | Rerank on the fused pool, after E-RET-5; no card yet | |
+| T-RET-6c | Recall, configuration and lanes (D-C to D-E): the four registry entries, the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
 
 ## Alternatives rejected
 
-- **Qdrant server-side fusion** (`query: {fusion: rrf}` or `rrf: {k}`): 79 against 96 hit@5 on the same leg (p .0034),
-  chunk-level, no tie-break, a different constant (V6).
+- **Qdrant server-side fusion** (`query: {fusion: rrf}` or `rrf: {k}`): 79 against 90 hit@5, both on the default-tokenizer
+  leg (p .0034); chunk-level, no tie-break, a different constant (V6).
 - **The default `word` tokenizer for the leg**: 29 against 7 fused questions in pool@25 (p .0003) against the
   multilingual one.
 - **Global IDF** (no `params.idf.corpus`): other principals' term statistics would shape the ranking (§17.2).
@@ -237,14 +238,16 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 - **A `projection_version` bump for the backfill**: it would move every Memory's fingerprint and point id (ADR-0068 D-I).
 - **Rerank in production**: the owner decided on 2026-10-22 to run hybrid recall without a reranker. For the record,
   E-RET-5f (run 39629912275, `exp/e-ret-pb-rrf-rerank`) measured, on the fused pool of the same 198 questions, a cloud
-  reranker at 140 (from 96, p 3.7e-11) and local int8 at 111 (p .077); local int8 takes 6.4 s per query on the N1
-  production host (Baseline §67.2). T-RET-7 is not pursued; the data stays for a later decision.
+  reranker at 140 (from 96, p 3.7e-11) and local int8 at 111 (p .077, 3.5 s p50 on the 4-vCPU Neoverse-N2 CI runner).
+  On the 4-vCPU Neoverse-N1 production host (Baseline §67.2) the same int8 model measured 6.43 s p50 / 11.92 s p95 per
+  depth-25 query with all four cores busy (E-RET-5e, 2026-10-21, the public bundle `n1-bench-bundle-v1`, run by the lead
+  with the owner's approval; not a CI run). No rerank card is opened; the data stays for a later decision.
 
 ## Deferred items
 
 | Item | Upgrade signal |
 |---|---|
-| Sealed-set confirmation of the fused ranking | The sealed set of ADR-0081 exists; re-measure dense, fused and the rerank arm on it |
+| Sealed-set confirmation of the fused ranking | The sealed set of ADR-0081 exists; re-measure dense and fused on it |
 | Tuning `k`, `b`, `avg_len` or the language options | A paired experiment shows a gain; every stored sparse vector is rewritten, so it is a new rebuild generation (V7) |
 | Pinning the serving version into the IDF corpus | A G-RET-8-style measurement shows a rank change during a backfill window |
 | Answering from the sparse leg alone when the dense leg fails | The dense leg's failure rate makes dense-only recall the dominant outage |

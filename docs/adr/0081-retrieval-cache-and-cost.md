@@ -275,7 +275,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 | E-CACHE-1 | Query-cache TTL / TTI | Replay the D-A log in time order once it is online (capacity, TTL / TTI and restarts simulated). The old capture file was polluted by evaluation replays and is an upper bound only: without its busiest day, 43.9% of queries repeat, nearly all within 5 minutes | Query-hash log (no plaintext) | 0 | Decides TTL against TTI (D-D); also decides whether to open the candidate-cache ADR (D-G) |
 | E-CACHE-2 | How much of a revised document's vector work can be reused? | Pilot done: 85 versions of the Baseline as of main `197e5f0` (84 adjacent revisions; the newest version has 4,238 paragraphs, about 0.87 MB). Prefix chain: 80.6% of bytes re-embedded, median per-revision reuse 11.6%. Paragraph hash against the previous version: 2.5%, median reuse 98.0%. Against all older versions: 2.2%, 98.4%. Heading path in the key: 1.65% (the denominator grows, the absolute volume is comparable). Limit: one document, written incrementally, so not representative of book revisions | Public (this repository's history); book revisions are retested on the E-KNOW-4 corpus (ADR-0080) | 0 | Pilot supports content addressing (D-C); the book retest repeats the comparison |
 | E-CACHE-3 | LLM prefix layout | MiniMax (M3.1-Flash), the same batch of 40 evidence items in both arms. Arm A = current text + variant-grouped warm-up. Arm B = fixed full-set schema and system text, with the allowed grades in the envelope. Measure H, over-grading rate, parse-failure rate and total cost per qualified output; pair by evidence | Not fixed by the design (UNKNOWN); the card that runs it declares it | at most USD 1 | Arm B is adopted only if over-grading and parse-failure rates are no worse than arm A's (paired, margin fixed beforehand) (D-B) |
-| E-RET-5 | Local reranker | bge-reranker-v2-m3 against Qwen3-Reranker-0.6B; candidates 20 / 50 / 100; truncation 256 / 512; p95 on the target machine | Private real data | Pending the owner's decision on how to run it (D-E) | Chosen by target-machine p95 (D-E) |
+| E-RET-5 | Reranker | Done (E-RET-5a speed on public data; 5b/5d/5f accuracy on the encrypted development set; 5e speed on the N1 production host): see ADR-0083 Alternatives rejected | Private real data, aggregates only | Closed: the owner decided on 2026-10-22 to run without a reranker |
 
 ## Cards
 
@@ -289,7 +289,7 @@ that wires an adapter replaces its `not_applicable` with the real sample and add
 | T-RET-4 | D-B: prefix-grouped warm-up scheduling; fixed prefix only if E-CACHE-3 passes | G-RET-2 |
 | T-RET-5 | D-C: vector reuse (same batch as T-DOC-2, ADR-0079) | G-RET-5 |
 | T-RET-6 | After E-RET-1 / 3, split by ADR-0083: T-RET-6a (docs: ADR-0083 and its Baseline edits), T-RET-6b (indexing and backfill of the `bm25` vector), T-RET-6c (recall: `cand_multiplier`, `leg_depth`, `rrf_k`, the BM25 leg, RRF, lanes). `cand_multiplier` ships with T-RET-6c | G-RET-3, extended to every leg by T-RET-6c (ADR-0083 D-F) |
-| Later | Local rerank and the D-F pair cache, after E-RET-5; no card yet | |
+| Later | Rerank and the D-F pair cache: not pursued (owner, 2026-10-22, ADR-0083); reopen only with a new owner decision | |
 
 Code state behind the T-RET-1 split (design §19.5 note, 2026-10-20): `byok` has one reply protocol, OpenAI-compatible, so
 T-RET-1a normalises only that one; the Anthropic-compatible and DeepSeek samples are `not_applicable` in G-RET-1 until
