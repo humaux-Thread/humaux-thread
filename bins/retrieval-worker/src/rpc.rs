@@ -1,12 +1,14 @@
 //! `retrieval-worker::rpc` — ADR-0012 query-embedding RPC — the Unix-domain-socket side `humaux-retrieval-worker`
 //!   serves.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-retrieval,
-//!   humaux-retrieval-provider, serde, sha2, tokio, tracing,
-//!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres, adapters::retrieval_embedding_rpc, domain::error,
-//!   domain::identity, domain::ids, humaux-local-secret-scan, infra-cell::uds, retrieval-provider::contract, retrieval::request]
+//! Depends-on: crates=[axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
+//!   humaux-retrieval, humaux-retrieval-provider, serde, sha2, tokio, tracing,
+//!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres, adapters::retrieval_embedding_rpc, contracts::retrieval_config, domain::error,
+//!   domain::identity, domain::ids, humaux-local-secret-scan, infra-cell::uds, retrieval-provider::contract, retrieval-worker::rerank, retrieval::request]
 //! Called-by: [retrieval-worker::main, tests]
-//! Invariants: [a malformed or unauthenticated RPC frame is rejected before it reaches the embedding provider call]
-//! Spec: Baseline §2; §6; §7.5; ADR-0012; ADR-0056
+//! Invariants: [a malformed or unauthenticated RPC frame is rejected before it reaches the embedding provider call;
+//!   the rerank route sits behind the same peer-credential layer, writes no PostgreSQL row, never seals or
+//!   egresses text, and logs counts and timings only, never the query or a document]
+//! Spec: Baseline §2; §6; §7.5; §41.4; ADR-0012; ADR-0056; ADR-0084 D-B; ADR-0084 D-C
 //!
 //! §决定2: the worker authenticates the **caller process** via the kernel peer credential
 //! (`UnixStream::peer_cred()`), not the request body — [`PeerIdentity::connect_info`] captures
@@ -15,6 +17,11 @@
 //! "读 body 之前" ordering. §决定3: authorization still flows through the one closed
 //! `IntraCellResource::RETRIEVAL_EMBEDDING_RPC` registry/permit — this module does not invent a
 //! second identity/authorization type.
+//!
+//! ADR-0084 D-B: the same router also serves `POST /v1/rerank` (the local rerank lane), behind the same
+//! `require_gateway_uid` layer. It needs no PostgreSQL call row (no egress, no cost, nothing to bill or
+//! deduplicate) and so no `RpcState` field: the lane travels as an axum `Extension`, which keeps every existing
+//! `RpcState` literal valid.
 
 use std::sync::Arc;
 
@@ -22,7 +29,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router, middleware};
+use axum::{Extension, Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -31,11 +38,14 @@ use humaux_adapters::postgres::RetrievalWorkerDbPool;
 use humaux_adapters::retrieval_embedding_rpc::{
     ClaimOutcome, ClaimedRegistration, FinishOutcome, RetrievalWorkerEmbeddingCalls, StoredOutcome,
 };
+use humaux_contracts::retrieval_config::{RERANK_MAX_LEN_MAX, RETRIEVAL_CANDIDATE_CAP};
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_local_secret_scan::LocalSecretScanner;
 use humaux_retrieval_provider::contract::{EmbeddingProvider, RetrievalQueryCallContext};
+
+use crate::rerank::{BATCH_SIZE, MIN_MAX_LEN, ModelIdentity, RerankLane};
 
 /// Wire request — ADR-0012 §2 verbatim field set. `query` is the only sensitive field, and it
 /// is exactly what the design says crosses the wire: raw text, never sealed/embedded on the
@@ -130,13 +140,21 @@ async fn require_gateway_uid(
     next.run(request).await
 }
 
+/// The router with the rerank lane switched off: `POST /v1/rerank` answers `disabled`.
 pub fn router(state: Arc<RpcState>) -> Router {
+    router_with_rerank(state, RerankLane::disabled())
+}
+
+/// The router with `lane` behind `POST /v1/rerank` (ADR-0084 D-B). The peer-credential layer is the outermost one,
+/// so a wrong peer is refused before any body is read.
+pub fn router_with_rerank(state: Arc<RpcState>, lane: RerankLane) -> Router {
     Router::new()
         .route(
             "/internal/v1/retrieval/query-embedding",
             post(query_embedding_handler),
         )
         .route("/internal/v1/retrieval/readyz", get(readyz_handler))
+        .merge(rerank_router::<Arc<RpcState>>(lane))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_gateway_uid,
@@ -377,4 +395,127 @@ fn build_authorization(registration: &ClaimedRegistration) -> Option<Authorizati
         Some(UserId(registration.user_id)),
         allowed,
     ))
+}
+
+/// ADR-0084 D-B: the rerank route, beside the embedding route on the one serve socket.
+pub const RERANK_ROUTE: &str = "/v1/rerank";
+
+/// The rerank route alone, with no state and no peer check: [`router_with_rerank`] merges it under the
+/// peer-credential layer; tests serve it directly on a loopback port.
+pub fn rerank_router<S>(lane: RerankLane) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route(RERANK_ROUTE, post(rerank_handler))
+        .layer(Extension(lane))
+}
+
+/// Rerank wire request (ADR-0084 D-B). `query` and `documents` are in-Cell text: never sealed, never logged, and
+/// deliberately without a `Debug` impl.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RerankRpcRequest {
+    schema_version: u16,
+    call_id: Uuid,
+    query: String,
+    documents: Vec<String>,
+    max_len: u32,
+}
+
+/// The closed outcome of a rerank call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RerankOutcome {
+    /// Every document has a score.
+    Scored,
+    /// The registry's `rerank_enabled` is false for this worker: no model is loaded.
+    Disabled,
+    /// The request breaks a bound (schema, document count, `max_len`).
+    InvalidRequest,
+    /// The model could not score the batch (tokenizer, session, non-finite score).
+    Failed,
+}
+
+/// Rerank wire reply: `scores` (one raw logit per document, request order) only when `scored`; `model` whenever a
+/// model is loaded.
+#[derive(Debug, Serialize)]
+struct RerankRpcReply<'a> {
+    schema_version: u16,
+    call_id: Uuid,
+    outcome: RerankOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scores: Option<Vec<f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a ModelIdentity>,
+}
+
+/// ADR-0084 D-B: scores every document against the query, or says why not. All or nothing (D-C 4).
+async fn rerank_handler(
+    Extension(lane): Extension<RerankLane>,
+    Json(wire): Json<RerankRpcRequest>,
+) -> Response {
+    let started = std::time::Instant::now();
+    let documents = wire.documents.len();
+    let reply = rerank_reply(&lane, wire).await;
+    // Counts and timings only (ADR-0084 D-B): the query and the documents never reach a log line.
+    tracing::info!(
+        call_id = %reply.call_id,
+        documents,
+        outcome = ?reply.outcome,
+        elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "retrieval_rerank_rpc"
+    );
+    (StatusCode::OK, Json(reply)).into_response()
+}
+
+/// The pure part of [`rerank_handler`]: validation, the disabled lane, the blocking scoring.
+async fn rerank_reply(lane: &RerankLane, wire: RerankRpcRequest) -> RerankRpcReply<'_> {
+    let call_id = wire.call_id;
+    let reply = |outcome, scores| RerankRpcReply {
+        schema_version: SCHEMA_VERSION,
+        call_id,
+        outcome,
+        scores,
+        model: lane.reranker().map(|reranker| reranker.identity()),
+    };
+    let max_len = usize::try_from(wire.max_len).unwrap_or(usize::MAX);
+    let in_bounds = wire.schema_version == SCHEMA_VERSION
+        && (1..=usize::try_from(RETRIEVAL_CANDIDATE_CAP).unwrap_or(usize::MAX))
+            .contains(&wire.documents.len())
+        && (MIN_MAX_LEN..=usize::try_from(RERANK_MAX_LEN_MAX).unwrap_or(usize::MAX))
+            .contains(&max_len);
+    if !in_bounds {
+        return reply(RerankOutcome::InvalidRequest, None);
+    }
+    let Some(reranker) = lane.reranker().map(Arc::clone) else {
+        return reply(RerankOutcome::Disabled, None);
+    };
+    let expected = wire.documents.len();
+    let RerankRpcRequest {
+        query, documents, ..
+    } = wire;
+    let scored = tokio::task::spawn_blocking(move || {
+        reranker.score(&query, &documents, max_len, BATCH_SIZE)
+    })
+    .await;
+    match scored {
+        Ok(Ok(scores)) if scores.len() == expected && scores.iter().all(|s| s.is_finite()) => {
+            reply(RerankOutcome::Scored, Some(scores))
+        }
+        Ok(Ok(_)) => {
+            tracing::error!(
+                "retrieval_rerank_rpc: the model returned a wrong or non-finite score set"
+            );
+            reply(RerankOutcome::Failed, None)
+        }
+        Ok(Err(error)) => {
+            tracing::error!(%error, "retrieval_rerank_rpc: scoring failed");
+            reply(RerankOutcome::Failed, None)
+        }
+        Err(error) => {
+            tracing::error!(%error, "retrieval_rerank_rpc: the scoring task did not finish");
+            reply(RerankOutcome::Failed, None)
+        }
+    }
 }
