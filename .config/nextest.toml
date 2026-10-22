@@ -15,8 +15,13 @@ experimental = ["wrapper-scripts"]
 #   serial-* groups below are shadowed for every binary that global-db also matches (first matching override wins),
 #   and the maintenance entries only matter if maintenance moves to nextest. Completeness is gated by
 #   `cargo xtask architecture-check` (M24-7 / G-M24-7, xtask/src/architecture_check.rs `m24_7_global_db_completeness`):
-#   a binary whose sources carry a cluster-global marker must be matched by the global-db filter below or be a row of
-#   GLOBAL_DB_EXEMPT there, and a binary_id that names no binary is red. Groups exist only in profile `ci`.
+#   a binary whose sources carry a derived-job, outbox or provider-slot marker (the state named above, not every kind of
+#   cluster-global state: at #145, 36 of the 67 integration binaries in global-db carry one and the rest were grouped from
+#   observed failures) must be matched by the global-db filter below or be a row of GLOBAL_DB_EXEMPT there, and a
+#   binary_id that names no binary is red. global-db serialises a binary only against its own members, so DDL on the
+#   shared catalog is not covered by it: M24-7b (#145, same function) wants such a statement inside a
+#   lane(a:disposable) test, run by `cargo xtask serial-lane`. Groups exist only in profile `ci`; an override that
+#   carries test-group must carry exactly filter and test-group (the gate reads no other key) and is red otherwise.
 #  - global-db also holds M08-3's read_gate_closure and cross_tenant_canary: each seeds real tenants through the
 #    operation_receipt fixture (and, for the closure test, the continuity fixture), whose teardown toggles
 #    triggers on shared tables (control.audit_events, the continuity append-only guards).

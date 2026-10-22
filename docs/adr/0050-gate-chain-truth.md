@@ -88,19 +88,22 @@ fixtures run DDL as the owner (`g80_31_handoff` installs a tenant-scoped RESTRIC
 is the one guard that stops a mis-exported DSN from reaching a remote database.
 
 **The consequence has to be named.** In the chain the target is `humaux_thread_dev`, which is
-at head, so `facet` has `attgenerated='s'` (verified). `FacetShadow` therefore **will arm on the
+at head, so `facet` has `attgenerated='s'` (verified). `FacetShadow` therefore **would arm on the
 dev database**. `Drop` restores it, but a SIGKILL or a tool timeout mid-test would leave dev with
 a writable `facet` plus a `facet__probe_shadow` column, which is schema drift that the
-checksum-only migrate cannot see. `setup()` therefore first checks for the `facet__probe_shadow`
-residue and, if it is present, runs the same restore SQL as `Drop` and prints one line. This
-handles the Drop that did not run. It changes no assertion.
+checksum-only migrate cannot see. *Amended by #145:* the shadow test is now `lane(a:disposable)`
+and refuses every database not named `humaux_thread_disposable_*`, so it no longer arms on dev,
+and `setup()` no longer repairs: it only **reads** for the `facet__probe_shadow` residue (under the
+fixture lock) and, if it finds one, fails every test with a pointer to the heal procedure in
+`docs/ops/serial-lane.md`, because the repair is DDL that a shared database must not receive from
+a test. It changes no assertion.
 
 *Implementation correction.* The draft put this repair in `FacetShadow::arm`. Fault-testing it
 on a throwaway database with an injected residue showed that the repair was never reached. With
 a residue present, `facet` reads as `attgenerated=''`, so the shadow test does not arm at all,
-and the residue survived the run. The repair now runs in `setup()`, before any test reads the
-catalog. Re-tested: the injected residue came back as `facet attgenerated='s'` with no shadow
-column.
+and the residue survived the run. The repair ran in `setup()`, before any test reads the
+catalog (#145 replaced it there with the read-only probe above). Re-tested: the injected residue
+came back as `facet attgenerated='s'` with no shadow column.
 
 **What the first real run exposed.** These are fixture-side preconditions, not assertion
 changes. They were invisible because these files had never run on a shared database.

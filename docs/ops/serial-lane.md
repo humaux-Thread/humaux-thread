@@ -69,6 +69,7 @@ where an oracle that reads a *global* queue or a global profile table belongs �
 isolated by a fixture, only by a database nobody else has written — and it is the one resource
 provisioned once per **target** rather than once per group, because a global scan is not isolated
 from the target that ran before it in its own group.
+A test that runs DDL on the shared catalog (`RENAME`/`ADD`/`DROP COLUMN`, `ALTER ROLE`/`SYSTEM`/`DATABASE`, `LOCK TABLE … ACCESS EXCLUSIVE`) belongs here too: `cargo xtask architecture-check` (M24-7b, #145) is red for such a statement outside a `lane(a:disposable)` test unless its binary is a row of `SHARED_CATALOG_DDL_EXEMPT`.
 
 ## Running it
 
@@ -279,3 +280,32 @@ Every database the lane creates is recorded and dropped `WITH (FORCE)` when the 
 nothing. Never dropped: `humaux_thread_dev`, `humaux_thread_c31`, `humaux_thread_ci`,
 `humaux_thread_stable_observations`. A lane killed by Ctrl-C (no signal handler) leaves its current group's
 databases (ADR-0063 L19).
+
+## Healing a facet shadow residue (`mandatory_context_lane`, #145)
+
+`an_unsatisfiable_requirement_is_reported_missing` swaps the generated column `private.memory_records.facet` for a
+writable one for the length of the test and puts it back in `Drop`. Since #145 it is `lane(a:disposable)` and refuses
+every database not named `humaux_thread_disposable_*`; the lane drops that database when its group ends, so a killed
+run cannot leave a residue anywhere that matters. A **shared** database that an older version of the test (or a
+`--ignored` run before the guard) killed mid-test can still carry one: a writable `facet` next to a
+`facet__probe_shadow` column (ADR-0050 D-B).
+
+You know it by every test of `mandatory_context_lane` failing in `setup()` with "private.memory_records carries a
+facet__probe_shadow column", or `facet_contract` failing on "facet must be GENERATED ALWAYS ... STORED". `setup()` only
+reads; it never repairs a database that other test binaries use. Heal it by hand, as the table owner (the
+`HUMAUX_TEST_PG_DSN` login) on the damaged database, holding the key every fixture of the binary holds
+(`FACET_SHADOW_ADVISORY_LOCK`, 0x4858464143455453) so that no live fixture is mid-test:
+
+```sql
+SET lock_timeout = '10s';
+SELECT pg_advisory_lock(5212993814796784723);
+BEGIN;
+ALTER TABLE private.memory_records DROP COLUMN facet;
+ALTER TABLE private.memory_records RENAME COLUMN facet__probe_shadow TO facet;
+COMMIT;
+SELECT pg_advisory_unlock(5212993814796784723);
+```
+
+Check: `SELECT attname, attgenerated FROM pg_attribute WHERE attrelid = 'private.memory_records'::regclass AND attname
+LIKE 'facet%' AND NOT attisdropped;` returns exactly one row, `facet | s`. The two `ALTER`s are the shadow test's own
+restore statement; keep them in step with it.

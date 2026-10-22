@@ -988,6 +988,7 @@ fn fixture_cleanup_rolls_back_an_aborted_owner_transaction() {
 /// A second owner connection then advances state/highwater. The released actor must retain its
 /// old snapshot while a fresh request observes the advanced projection.
 #[test]
+#[ignore = "lane(a:disposable) needs a per-run database: it holds LOCK TABLE ops.outbox IN ACCESS EXCLUSIVE MODE for the whole test, so on a shared database every binary that reads or writes ops.outbox queues behind it"]
 fn recall_overlay_decision_keeps_token_and_projection_reads_in_one_rr_snapshot() {
     run_db_fixture::<RetrieveFixture, _>(
         "recall_overlay_decision_keeps_token_and_projection_reads_in_one_rr_snapshot",

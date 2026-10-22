@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -7753,7 +7753,7 @@ fn w2_continuity_gate(root: &Path) -> Verdict {
 }
 
 // ============================================================================
-// M24-7 / G-M24-7 (§79, #101): a test binary that touches cluster-global DB state is in nextest's `global-db` group
+// M24-7 / G-M24-7 (§79, #101): a test binary whose sources carry a derived-job, outbox or provider-slot marker is in nextest's `global-db` group
 // ============================================================================
 
 /// The nextest config the completeness gate reads. §79: nextest runs test binaries in parallel, so a binary that
@@ -7763,9 +7763,12 @@ const NEXTEST_CONFIG_FILE: &str = ".config/nextest.toml";
 /// The one nextest test group that serialises every binary touching cluster-global DB state.
 const GLOBAL_DB_GROUP: &str = "global-db";
 
-/// Closed list of literal markers of cluster-global DB state, `(marker, why it is shared)`. A test binary whose
-/// sources (its test file plus every module it pulls in) contain one must be in [`GLOBAL_DB_GROUP`] or be listed in
-/// [`GLOBAL_DB_EXEMPT`].
+/// Closed list of literal markers of the cluster-global DB state this gate knows, `(marker, why it is shared)`: the
+/// derived jobs and their claim, the outbox rows that enqueue them, the four provider slots and the fixtures whose
+/// teardown toggles triggers on shared tables. It is not every kind of cluster-global state: at #145, 36 of the 67
+/// integration binaries in `global-db` (54%) carry a marker, the other 31 were grouped from observed failures or review,
+/// and a binary that shares some other state is invisible here. A test binary whose sources (its test file plus every
+/// module it pulls in) contain one must be in [`GLOBAL_DB_GROUP`] or be listed in [`GLOBAL_DB_EXEMPT`].
 ///
 /// Derived from the header of `.config/nextest.toml` (provider slots, the outbox-to-job triggers, the claim of derived
 /// jobs, the fixtures whose teardown toggles triggers) and from what the binaries already in the group reference.
@@ -7865,6 +7868,89 @@ const GLOBAL_DB_EXEMPT: &[(&str, &str)] = &[
     ),
 ];
 
+// ----------------------------------------------------------------------------
+// M24-7b (§79, #145): DDL on the shared catalog runs only in a `lane(a:disposable)` test
+// ----------------------------------------------------------------------------
+
+/// Closed list of DDL that rewrites the catalog or takes a table-wide lock, `(first words, words that must follow in the
+/// same statement, why it is unsafe on a database other test binaries use)`. The `global-db` group serialises a binary
+/// only against its own members and most test binaries are ungrouped, so none of these may run in a plain test: every
+/// hit in a test binary's sources must sit inside a `#[test]` fn whose `#[ignore]` reason is `lane(a:disposable)` (the
+/// serial lane gives it a database no other binary writes, docs/ops/serial-lane.md) or the binary must be a row of
+/// [`SHARED_CATALOG_DDL_EXEMPT`].
+///
+/// Words are lowercase and single-spaced. The scan reads the word tokens of the code text (strings included, comments
+/// blanked), so case, line breaks and `\` string continuations never hide a statement; a statement ends at `;` or at a
+/// `"`.
+// ponytail: token match on code text, not a SQL parser or a call graph. Invisible: DDL assembled from pieces, a
+// `LOCK TABLE` with no `IN .. MODE` (ACCESS EXCLUSIVE by default), a statement that holds an escaped quote before its
+// mode, DDL in a library's or binary's own unit tests (they carry no sources), and DDL reached from a plain test through
+// a helper (the helper's text is a hit, so it has to sit inside the `lane(a:disposable)` test itself). Upgrade = syn.
+const SHARED_CATALOG_DDL: &[(&str, Option<&str>, &str)] = &[
+    (
+        "rename column",
+        None,
+        "RENAME COLUMN takes ACCESS EXCLUSIVE and changes the catalog every concurrent statement of every other binary is planned against",
+    ),
+    (
+        "add column",
+        None,
+        "ADD COLUMN takes ACCESS EXCLUSIVE; a writable column swapped in under a generated one gives every concurrent insert different semantics (#145)",
+    ),
+    (
+        "drop column",
+        None,
+        "DROP COLUMN takes ACCESS EXCLUSIVE and removes a column other binaries' statements name",
+    ),
+    (
+        "alter role",
+        None,
+        "a role is one cluster-global row: its attributes and password change for every database and for every binary that logs in as it (BYPASSRLS on role_gateway lifts row-level security for all of them)",
+    ),
+    (
+        "alter system",
+        None,
+        "rewrites the configuration file of the whole cluster",
+    ),
+    (
+        "alter database",
+        None,
+        "changes a setting of the database that every concurrent session of every other binary is connected to",
+    ),
+    (
+        "lock table",
+        Some("access exclusive"),
+        "ACCESS EXCLUSIVE blocks every reader and writer of the table, so ungrouped binaries queue behind it or fail on their lock_timeout (55P03)",
+    ),
+];
+
+/// Test binaries that carry shared-catalog DDL outside a `lane(a:disposable)` test, `(nextest binary id, why)`. The
+/// reason names the mechanism that keeps the DDL off the shared database, or says plainly that it is an open hazard. A
+/// row whose binary is gone, or no longer carries a hit outside a `lane(a:disposable)` test, is red (stale), so the list
+/// cannot outlive its reasons. A row exempts the whole binary: a new DDL statement in it is not seen until the row goes.
+const SHARED_CATALOG_DDL_EXEMPT: &[(&str, &str)] = &[
+    (
+        "humaux-gateway::cross_tenant_canary",
+        "its ALTER ROLE role_gateway BYPASSRLS / NOBYPASSRLS sits in RlsOutOfThePath::lift and Drop, which exactly one test builds: foreign_ids_are_not_found_with_row_level_security_out_of_the_path, lane(a:disposable); lift refuses unless HUMAUX_TEST_DISPOSABLE_CLUSTER=1 (set on the CI serial-lane step only) and the database is humaux_thread_*",
+    ),
+    (
+        "humaux-gateway::mcp_gateway",
+        "OPEN HAZARD, not a safety claim: the five native_mcp_*_final_metric_* tests call assert_local_read_final_metric_after_settlement, whose barrier holds LOCK TABLE private.memory_records IN ACCESS EXCLUSIVE MODE on the shared database against ungrouped readers; they belong in lane(a:disposable) and mcp_gateway.rs was outside the files of the card that added this gate (#145); follow-up humaux/humaux-thread#149. Drop the row when they move",
+    ),
+    (
+        "humaux-maintenance::backup",
+        "ALTER ROLE role_maintenance PASSWORD runs on the test's own scratch container cluster (Source::start, connected through source.owner_dsn on that cluster's port), never on the shared one",
+    ),
+    (
+        "humaux-maintenance::drill",
+        "ALTER ROLE and ALTER SYSTEM run on the test's own scratch container cluster (Source::prepare, connected through source.owner_dsn on that cluster's port), never on the shared one",
+    ),
+    (
+        "humaux-maintenance::roles_hygiene",
+        "ALTER ROLE .. LOGIN targets the role the fixture generated for itself (Fixture::role: hx33_<pid>_<token>_own), which no other binary logs in as",
+    ),
+];
+
 /// One nextest test binary: its id as `binary_id(..)` names it, and the code it is built from as `(display path,
 /// text with comments blanked)`. A library's or binary's own unit-test binary has no sources: its code is the
 /// crate's production code, which holds the markers by design.
@@ -7921,11 +8007,30 @@ fn read_groups(config: &str) -> Result<Option<GroupMembership>, String> {
     };
     let mut has_global_db = false;
     for entry in overrides.into_iter().flatten() {
+        let Some(group) = entry.get("test-group") else {
+            continue;
+        };
+        let extra: Vec<&str> = entry
+            .as_table()
+            .into_iter()
+            .flat_map(|table| table.keys().map(String::as_str))
+            .filter(|key| !matches!(*key, "test-group" | "filter"))
+            .collect();
+        if !extra.is_empty() {
+            return Err(format!(
+                "{NEXTEST_CONFIG_FILE}: an override with `test-group` also sets {extra:?}; this gate reads only `filter` and \
+                 `test-group`, so a `platform` or any other key would move binaries in or out of the group unseen \
+                 (give that setting an override of its own)"
+            ));
+        }
         let (Some(group), Some(filter)) = (
-            entry.get("test-group").and_then(toml::Value::as_str),
+            group.as_str(),
             entry.get("filter").and_then(toml::Value::as_str),
         ) else {
-            continue;
+            return Err(format!(
+                "{NEXTEST_CONFIG_FILE}: an override with `test-group` needs a string `test-group` and a string `filter`; one \
+                 without a filter applies to every test, which this gate does not read"
+            ));
         };
         let ids = filter_binary_ids(filter).map_err(|term| {
             format!(
@@ -7973,16 +8078,40 @@ fn module_declaration(item: &str) -> Option<&str> {
         .then_some(name)
 }
 
-/// The existing files that `code` (the comment-blanked text of `file`) pulls in with `mod x;` or
-/// `#[path = ".."] mod x;`. A `#[path]` is relative to the directory of the file that holds it; a plain `mod x;` is
-/// looked up the way rustc does for a crate root (`x.rs`, `x/mod.rs`) and for a module file (`<stem>/x.rs`). A module
-/// that resolves to no file is skipped: that is a compile error somewhere else.
-fn declared_module_files(file: &Path, code: &str) -> Vec<PathBuf> {
+/// A file a test binary pulls in, with whether it owns its directory (a crate root, a `mod.rs`, a `#[path]`-loaded or
+/// `include!`-loaded file: its nested `mod x;` sit beside it) or not (a plain `mod x;` loaded from `x.rs`: they sit
+/// under `<stem>/`).
+type LoadedFiles = Vec<(PathBuf, bool)>;
+
+/// What `code` (the comment-blanked text of `file`) pulls in, as `(files that exist, declarations that resolve to no
+/// file)`: `mod x;`, `#[path = ".."] mod x;` and `include!("..")`. A `#[path]` and an `include!` path are relative to the
+/// directory of the file that holds them. A plain `mod x;` is looked up by the kind of `file`, the way rustc does:
+/// beside a file that owns its directory (`owns_dir`) it is `x.rs`, then `x/mod.rs`; beside any other file it is
+/// `<stem>/x.rs`, then `<stem>/x/mod.rs` and nothing else, so an unrelated sibling `x.rs` is never read for it. A
+/// declaration that finds nothing, and an `include!` whose argument is not a string literal, come back unresolved: the
+/// binary's sources are then unreadable and a marker in them would go unseen.
+fn declared_module_files(file: &Path, owns_dir: bool, code: &str) -> (LoadedFiles, Vec<String>) {
     let dir = file.parent().unwrap_or_else(|| Path::new("."));
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let nested = if owns_dir {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
     let mut found = Vec::new();
+    let mut unresolved = Vec::new();
     let mut path_attr: Option<String> = None;
     for line in code.lines() {
+        if let Some((_, arg)) = line.split_once("include!(") {
+            let arg = arg.trim_start();
+            match arg.strip_prefix('"').and_then(|a| a.split_once('"')) {
+                Some((path, _)) if dir.join(path).is_file() => found.push((dir.join(path), true)),
+                _ => unresolved.push(format!(
+                    "include!({})",
+                    arg.split(')').next().unwrap_or("").trim()
+                )),
+            }
+        }
         let mut rest = line.trim();
         // Attributes first: a `#[path]` may share its line with the `mod x;` or sit above other attributes.
         while let Some(attr) = rest.strip_prefix("#[") {
@@ -7999,42 +8128,58 @@ fn declared_module_files(file: &Path, code: &str) -> Vec<PathBuf> {
             path_attr = None;
             continue;
         };
+        let loaded_by_path = path_attr.is_some();
         let candidates = match path_attr.take() {
             Some(path) => vec![dir.join(path)],
             None => vec![
-                dir.join(format!("{name}.rs")),
-                dir.join(name).join("mod.rs"),
-                dir.join(stem).join(format!("{name}.rs")),
+                nested.join(format!("{name}.rs")),
+                nested.join(name).join("mod.rs"),
             ],
         };
-        found.extend(candidates.into_iter().find(|c| c.is_file()));
+        match candidates.into_iter().find(|c| c.is_file()) {
+            Some(module) => {
+                let owns = loaded_by_path || module.file_name().is_some_and(|n| n == "mod.rs");
+                found.push((module, owns));
+            }
+            None => unresolved.push(format!("mod {name};")),
+        }
     }
-    found
+    (found, unresolved)
 }
 
+/// `(path, text with comments blanked)` of each source file of a test binary.
+type CodeFiles = Vec<(PathBuf, String)>;
+
+/// `(declaring file, declaration)` of each `mod x;` / `include!` that resolves to no file.
+type Unresolved = Vec<(PathBuf, String)>;
+
 /// `entry` plus every file it pulls in, followed transitively (a `#[path]` module may declare modules of its own),
-/// as `(path, text with comments blanked)`, entry first. A file reached twice is read once.
-fn test_binary_sources(entry: &Path) -> Vec<(PathBuf, String)> {
+/// as `(path, text with comments blanked)`, entry first; a file reached twice is read once. The second list holds
+/// the declarations that resolve to no file, as `(declaring file, declaration)` ([`declared_module_files`]).
+fn test_binary_sources(entry: &Path) -> (CodeFiles, Unresolved) {
     let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let mut files = vec![entry.to_path_buf()];
+    let mut files = vec![(entry.to_path_buf(), true)];
     let mut seen = BTreeSet::from([canonical(entry)]);
     let mut out = Vec::new();
+    let mut unresolved = Vec::new();
     let mut next = 0;
     while next < files.len() {
-        let path = files[next].clone();
+        let (path, owns_dir) = files[next].clone();
         next += 1;
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
         let code = code_without_comments(&text);
-        for module in declared_module_files(&path, &code) {
+        let (modules, missing) = declared_module_files(&path, owns_dir, &code);
+        unresolved.extend(missing.into_iter().map(|decl| (path.clone(), decl)));
+        for (module, owns) in modules {
             if seen.insert(canonical(module.as_path())) {
-                files.push(module);
+                files.push((module, owns));
             }
         }
         out.push((path, code));
     }
-    out
+    (out, unresolved)
 }
 
 /// The entries of `dir`, sorted; empty when it cannot be read.
@@ -8138,9 +8283,23 @@ fn nextest_binaries(root: &Path) -> Result<Vec<NextestBinary>, String> {
             } else {
                 continue;
             };
+            let (sources, unresolved) = test_binary_sources(&entry);
+            if !unresolved.is_empty() {
+                let list = unresolved
+                    .iter()
+                    .map(|(file, decl)| format!("`{decl}` in {}", display(root, file)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "M24-7: {package}::{name} pulls in {list}, which resolve to no file (tried x.rs then x/mod.rs beside a \
+                     crate root, a mod.rs or a `#[path]`-loaded file, <stem>/x.rs then <stem>/x/mod.rs beside any other file, the \
+                     `#[path]` itself, a string-literal `include!`): its sources cannot be read, so a marker or DDL statement in \
+                     them would go unseen. Fix the declaration, or teach declared_module_files the form"
+                ));
+            }
             out.push(NextestBinary {
                 id: format!("{package}::{name}"),
-                sources: test_binary_sources(&entry)
+                sources: sources
                     .into_iter()
                     .map(|(file, code)| (display(root, &file), code))
                     .collect(),
@@ -8164,19 +8323,183 @@ fn carried_markers(binary: &NextestBinary) -> Vec<(&'static str, &'static str, &
         .collect()
 }
 
+/// The word tokens of `code` as `(token, 1-based line)`: lowercase runs of ASCII letters, digits and `_`, plus `;` and
+/// `"` as tokens of their own (where [`ddl_hit_lines`] ends a statement).
+fn ddl_tokens(code: &str) -> Vec<(String, usize)> {
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    let mut line = 1;
+    for c in code.chars().chain(std::iter::once('\n')) {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c.to_ascii_lowercase());
+            continue;
+        }
+        if !word.is_empty() {
+            tokens.push((std::mem::take(&mut word), line));
+        }
+        match c {
+            '\n' => line += 1,
+            ';' | '"' => tokens.push((c.to_string(), line)),
+            _ => {}
+        }
+    }
+    tokens
+}
+
+/// The lines where the phrase `head` starts in `tokens`, when `tail` (if any) follows in the same statement.
+fn ddl_hit_lines(tokens: &[(String, usize)], head: &str, tail: Option<&str>) -> Vec<usize> {
+    let phrase_at = |at: usize, phrase: &str| {
+        phrase
+            .split(' ')
+            .enumerate()
+            .all(|(k, word)| tokens.get(at + k).is_some_and(|t| t.0 == word))
+    };
+    let head_len = head.split(' ').count();
+    (0..tokens.len())
+        .filter(|&at| phrase_at(at, head))
+        .filter(|&at| {
+            tail.is_none_or(|tail| {
+                (at + head_len..tokens.len())
+                    .take_while(|&i| tokens[i].0 != ";" && tokens[i].0 != "\"")
+                    .any(|i| phrase_at(i, tail))
+            })
+        })
+        .map(|at| tokens[at].1)
+        .collect()
+}
+
+/// The 1-based `(first, last)` line spans of the tests in `code` whose `#[ignore]` sits on one of `ignore_lines`: from
+/// that line to the `}` that closes the fn body it belongs to. Found on the code with strings and chars blanked, so a
+/// brace inside a SQL string never unbalances the match.
+fn disposable_spans(code: &str, ignore_lines: &[usize]) -> Vec<(usize, usize)> {
+    let masked = mask_comments_and_literals(code);
+    ignore_lines
+        .iter()
+        .filter_map(|&line| {
+            let from: usize = masked
+                .split_inclusive('\n')
+                .take(line.saturating_sub(1))
+                .map(str::len)
+                .sum();
+            let open = from + masked[from..].find('{')?;
+            let close = matching_brace_end(&masked, open)?;
+            Some((line, masked[..close].matches('\n').count() + 1))
+        })
+        .collect()
+}
+
+/// The shared-catalog DDL `binary` carries outside every `lane(a:disposable)` test, as `(file, line, phrase, why)` in
+/// source order. `disposable` is `(display path, line)` of each `#[ignore = "lane(a:disposable) .."]` in the tree.
+fn bare_catalog_ddl(
+    binary: &NextestBinary,
+    disposable: &[(String, usize)],
+) -> Vec<(String, usize, String, &'static str)> {
+    let mut out = Vec::new();
+    for (file, code) in &binary.sources {
+        let ignores: Vec<usize> = disposable
+            .iter()
+            .filter(|(f, _)| f == file)
+            .map(|&(_, line)| line)
+            .collect();
+        let spans = disposable_spans(code, &ignores);
+        let tokens = ddl_tokens(code);
+        let mut hits: Vec<(usize, String, &'static str)> = SHARED_CATALOG_DDL
+            .iter()
+            .flat_map(|&(head, tail, why)| {
+                let phrase = tail.map_or_else(|| head.to_owned(), |t| format!("{head} … {t}"));
+                ddl_hit_lines(&tokens, head, tail)
+                    .into_iter()
+                    .map(move |line| (line, phrase.clone(), why))
+            })
+            .filter(|(line, _, _)| {
+                !spans
+                    .iter()
+                    .any(|&(first, last)| (first..=last).contains(line))
+            })
+            .collect();
+        hits.sort();
+        hits.dedup();
+        out.extend(
+            hits.into_iter()
+                .map(|(line, phrase, why)| (file.clone(), line, phrase, why)),
+        );
+    }
+    out
+}
+
+/// M24-7b over the test binaries: one line for each binary that carries shared-catalog DDL outside a `lane(a:disposable)`
+/// test and is not an `exempt` row, and one for each stale `exempt` row (binary gone, or no hit left outside a
+/// `lane(a:disposable)` test).
+fn shared_ddl_problems(
+    binaries: &[NextestBinary],
+    disposable: &[(String, usize)],
+    exempt: &[(&str, &str)],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for binary in binaries {
+        let bare = bare_catalog_ddl(binary, disposable);
+        let Some((_, _, _, why)) = bare.first() else {
+            continue;
+        };
+        if exempt.iter().any(|&(id, _)| binary.id == id) {
+            continue;
+        }
+        let id = &binary.id;
+        let carried = bare
+            .iter()
+            .map(|(file, line, phrase, _)| format!("`{phrase}` ({file}:{line})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(format!(
+            "M24-7b: {id} runs {carried} outside a test whose `#[ignore]` reason is `lane(a:disposable)`: {why}. Mark the test \
+             that runs it `#[ignore = \"lane(a:disposable) ..\"]` (docs/ops/serial-lane.md) and keep the DDL text inside that \
+             test, or list {id} in SHARED_CATALOG_DDL_EXEMPT with the reason it is safe on the shared database"
+        ));
+    }
+    for &(id, _) in exempt {
+        let stale = match binaries.iter().find(|b| b.id == id) {
+            None => Some("names no test binary of the workspace"),
+            Some(b) if bare_catalog_ddl(b, disposable).is_empty() => {
+                Some("carries no shared-catalog DDL outside a lane(a:disposable) test any more")
+            }
+            Some(_) => None,
+        };
+        if let Some(reason) = stale {
+            problems.push(format!(
+                "M24-7b: SHARED_CATALOG_DDL_EXEMPT lists {id}, which {reason} (stale exemption); drop the row"
+            ));
+        }
+    }
+    problems
+}
+
 /// M24-7 over a nextest config text and the workspace's test binaries.
 /// * fail: a binary that carries a marker and is not in the `global-db` group (and not in `exempt`); a
 ///   `binary_id(..)` in a `global-db` filter that names no binary (stale); an `exempt` row whose binary is gone, carries
 ///   no marker or is now in the group (stale); a config or filter this gate cannot read;
-/// * not_applicable, naming the missing object: the config has no `global-db` override;
+/// * not_applicable, naming the missing object: the config has no `global-db` override and no binary carries a marker
+///   (with a marker somewhere, the missing override is a fail);
 /// * pass otherwise.
 fn global_db_verdict(config: &str, binaries: &[NextestBinary], exempt: &[(&str, &str)]) -> Verdict {
     let groups = match read_groups(config) {
         Ok(Some(groups)) => groups,
         Ok(None) => {
-            return Verdict::NotApplicable(format!(
-                "missing object: a [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" in {NEXTEST_CONFIG_FILE}"
-            ));
+            let carriers: Vec<&str> = binaries
+                .iter()
+                .filter(|b| !carried_markers(b).is_empty())
+                .map(|b| b.id.as_str())
+                .collect();
+            return match carriers.first() {
+                None => Verdict::NotApplicable(format!(
+                    "missing object: a [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" in {NEXTEST_CONFIG_FILE}"
+                )),
+                Some(first) => Verdict::Fail(vec![format!(
+                    "M24-7: {NEXTEST_CONFIG_FILE} has no [[profile.ci.overrides]] entry with test-group = \"{GLOBAL_DB_GROUP}\" while {} \
+                     test binaries carry a cluster-global marker (first: {first}); restore the override, its absence is not \
+                     \"nothing to check\"",
+                    carriers.len()
+                )]),
+            };
         }
         Err(detail) => return Verdict::Fail(vec![detail]),
     };
@@ -8236,24 +8559,41 @@ fn global_db_verdict(config: &str, binaries: &[NextestBinary], exempt: &[(&str, 
 
 /// M24-7 / G-M24-7 over the real workspace.
 fn m24_7_global_db_completeness(root: &Path) -> Verdict {
-    m24_7_over_tree(root, GLOBAL_DB_EXEMPT)
+    m24_7_over_tree(root, GLOBAL_DB_EXEMPT, SHARED_CATALOG_DDL_EXEMPT)
 }
 
-/// M24-7 over the workspace at `root` with the given exemption rows. `not_applicable` only when
-/// `.config/nextest.toml` is absent or has no `global-db` override, and it names that object (§57.1 第2条).
-fn m24_7_over_tree(root: &Path, exempt: &[(&str, &str)]) -> Verdict {
-    let config = match fs::read_to_string(root.join(NEXTEST_CONFIG_FILE)) {
-        Ok(config) => config,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Verdict::NotApplicable(format!("missing object: {NEXTEST_CONFIG_FILE}"));
-        }
+/// M24-7 (`global-db` completeness) and M24-7b (shared-catalog DDL, [`SHARED_CATALOG_DDL`]) over the workspace at `root`
+/// with the given exemption rows. `not_applicable` only when `.config/nextest.toml` is absent or has no `global-db`
+/// override and no binary carries a marker, and it names that object (§57.1 第2条); any M24-7b problem is a `Fail`
+/// whatever the first part says.
+fn m24_7_over_tree(root: &Path, exempt: &[(&str, &str)], ddl_exempt: &[(&str, &str)]) -> Verdict {
+    let (config, missing) = match fs::read_to_string(root.join(NEXTEST_CONFIG_FILE)) {
+        Ok(config) => (config, false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), true),
         Err(e) => {
             return Verdict::Fail(vec![format!("{NEXTEST_CONFIG_FILE} unreadable: {e}")]);
         }
     };
-    match nextest_binaries(root) {
-        Ok(binaries) => global_db_verdict(&config, &binaries, exempt),
-        Err(detail) => Verdict::Fail(vec![detail]),
+    let binaries = match nextest_binaries(root) {
+        Ok(binaries) => binaries,
+        Err(_) if missing => {
+            return Verdict::NotApplicable(format!("missing object: {NEXTEST_CONFIG_FILE}"));
+        }
+        Err(detail) => return Verdict::Fail(vec![detail]),
+    };
+    let ddl = shared_ddl_problems(
+        &binaries,
+        &crate::serial_lane::disposable_ignores(root),
+        ddl_exempt,
+    );
+    match global_db_verdict(&config, &binaries, exempt) {
+        Verdict::Fail(mut problems) => {
+            problems.extend(ddl);
+            Verdict::Fail(problems)
+        }
+        Verdict::NotApplicable(object) if ddl.is_empty() => Verdict::NotApplicable(object),
+        _ if ddl.is_empty() => Verdict::Pass,
+        _ => Verdict::Fail(ddl),
     }
 }
 
@@ -8445,7 +8785,7 @@ pub fn run(_args: &[String]) -> i32 {
             m08_2_can_read_one_home(&root),
         ),
         (
-            "M24-7 / G-M24-7 (§79, #101: every test binary that carries a cluster-global DB marker is in nextest's global-db group; no stale binary_id or exemption)",
+            "M24-7 / G-M24-7 (§79, #101, #145: every test binary that carries a derived-job, outbox or provider-slot marker is in nextest's global-db group; shared-catalog DDL runs only in a lane(a:disposable) test; no stale binary_id or exemption)",
             m24_7_global_db_completeness(&root),
         ),
     ];
@@ -15937,7 +16277,8 @@ async fn serving_version_in_txn() {}
         m07_write(&tmp, "t/ghost.rs", "fn ghost() {}\n");
         m07_write(&tmp, "t/inline.rs", "fn inline() {}\n");
         m07_write(&tmp, "t/ghost_block.rs", "fn ghost_block() {}\n");
-        let sources = test_binary_sources(&tmp.join("t/a.rs"));
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/a.rs"));
+        assert!(unresolved.is_empty(), "{unresolved:?}");
         assert_eq!(
             m24_7_file_names(&sources),
             [
@@ -15958,8 +16299,8 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    /// A `#[path]` that is separated from its `mod` by another item belongs to nothing; a module that resolves to no
-    /// file is skipped; a file reached through two modules is read once; a cycle terminates.
+    /// A `#[path]` that is separated from its `mod` by another item belongs to nothing, so that `mod` is unresolved like
+    /// one that names no file; a file reached through two modules is read once; a cycle terminates.
     #[test]
     fn m24_7_walker_drops_a_stranded_path_and_survives_cycles() {
         let tmp = fresh_tmp("m24-7-walker-edge");
@@ -15971,8 +16312,107 @@ async fn serving_version_in_txn() {}
         );
         m07_write(&tmp, "t/support/x.rs", "fn x() {}\n");
         m07_write(&tmp, "t/support/y.rs", "#[path = \"../b.rs\"]\nmod back;\n");
-        let sources = test_binary_sources(&tmp.join("t/b.rs"));
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/b.rs"));
         assert_eq!(m24_7_file_names(&sources), ["b.rs", "y.rs"]);
+        let declared: Vec<&str> = unresolved.iter().map(|(_, decl)| decl.as_str()).collect();
+        assert_eq!(declared, ["mod x;", "mod missing;"]);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// P2 (a) of the #144 review: a nested `<dir>/<stem>/<name>/mod.rs` under a module file that is not a `mod.rs`, and
+    /// a string-literal `include!`, are followed; a `mod x;` or `include!` that finds no file, and an `include!` whose
+    /// argument is not a literal, come back unresolved with the file that declares them.
+    #[test]
+    fn m24_7_follows_nested_mod_rs_and_include_and_reports_what_it_cannot_resolve() {
+        let tmp = fresh_tmp("m24-7-resolve");
+        m07_write(
+            &tmp,
+            "t/a.rs",
+            "mod fx;\ninclude!(\"support/inc.rs\");\nmod missing;\n\
+             include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\ninclude!(\"support/none.rs\");\n",
+        );
+        m07_write(&tmp, "t/fx.rs", "mod deep;\n");
+        m07_write(&tmp, "t/fx/deep/mod.rs", "fn deep() {}\n");
+        m07_write(&tmp, "t/support/inc.rs", "fn inc() {}\n");
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/a.rs"));
+        assert_eq!(
+            m24_7_file_names(&sources),
+            ["a.rs", "fx.rs", "inc.rs", "mod.rs"]
+        );
+        let declared: Vec<&str> = unresolved.iter().map(|(_, decl)| decl.as_str()).collect();
+        assert_eq!(
+            declared,
+            [
+                "mod missing;",
+                "include!(concat!(env!(\"OUT_DIR\")",
+                "include!(\"support/none.rs\")"
+            ]
+        );
+        assert!(unresolved.iter().all(|(file, _)| file.ends_with("t/a.rs")));
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// P2-1 of the #146 review: a plain `mod x;` is looked up by the kind of the file that holds it. Beside a file that
+    /// owns its directory (the crate root, a `mod.rs`, a `#[path]`-loaded file) it is `x.rs` then `x/mod.rs`; beside any
+    /// other file only `<stem>/x.rs` then `<stem>/x/mod.rs`, so an unrelated sibling `child.rs` is not read for
+    /// `support.rs`'s `mod child;` and the declaration is unresolved until its own file exists.
+    #[test]
+    fn m24_7_reads_nested_modules_by_the_kind_of_their_file() {
+        let tmp = fresh_tmp("m24-7-kinds");
+        m07_write(
+            &tmp,
+            "t/root.rs",
+            "mod support;\n#[path = \"loaded/l.rs\"]\nmod l;\nmod owned;\n",
+        );
+        m07_write(&tmp, "t/support.rs", "mod child;\n");
+        m07_write(&tmp, "t/child.rs", "fn sibling_of_support() {}\n");
+        m07_write(&tmp, "t/loaded/l.rs", "mod peer;\n");
+        m07_write(&tmp, "t/loaded/peer.rs", "fn peer() {}\n");
+        m07_write(&tmp, "t/owned/mod.rs", "mod twin;\n");
+        m07_write(&tmp, "t/owned/twin.rs", "fn twin() {}\n");
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/root.rs"));
+        assert_eq!(
+            m24_7_file_names(&sources),
+            [
+                "l.rs",
+                "mod.rs",
+                "peer.rs",
+                "root.rs",
+                "support.rs",
+                "twin.rs"
+            ]
+        );
+        let declared: Vec<&str> = unresolved.iter().map(|(_, decl)| decl.as_str()).collect();
+        assert_eq!(declared, ["mod child;"]);
+        assert!(unresolved[0].0.ends_with("t/support.rs"), "{unresolved:?}");
+        m07_write(&tmp, "t/support/child.rs", "fn child() {}\n");
+        let (sources, unresolved) = test_binary_sources(&tmp.join("t/root.rs"));
+        assert!(unresolved.is_empty(), "{unresolved:?}");
+        let paths: Vec<&PathBuf> = sources.iter().map(|(path, _)| path).collect();
+        assert!(
+            paths.contains(&&tmp.join("t/support/child.rs")),
+            "{paths:?}"
+        );
+        assert!(!paths.contains(&&tmp.join("t/child.rs")), "{paths:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// P2 (a), through the tree: an unresolved `mod x;` is a `Fail` naming the binary, the declaration and its file, never
+    /// a silently shorter source list.
+    #[test]
+    fn m24_7_fails_on_a_binary_whose_module_resolves_to_no_file() {
+        let tmp = m24_7_tree(
+            "m24-7-unresolved",
+            "binary_id(pkg::b)",
+            &[("tests/b.rs", "mod gone;\nfn f() {}\n")],
+        );
+        let lines = m24_7_fail_lines(m24_7_over_tree(&tmp, &[], &[]));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("pkg::b pulls in `mod gone;` in crates/pkg/tests/b.rs"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("resolve to no file"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 
@@ -16195,6 +16635,88 @@ async fn serving_version_in_txn() {}
         assert!(lines[0].contains("global-db"), "{lines:?}");
     }
 
+    /// P2 (b) of the #144 review: an override that carries `test-group` plus any key but `filter` (a `platform`, a
+    /// `retries`), or no `filter` at all, is red; an override without `test-group` is not this gate's business.
+    #[test]
+    fn m24_7_fails_on_a_test_group_override_it_cannot_fully_read() {
+        let quiet = [m24_7_binary("pkg::c", "fn f() {}")];
+        for key in ["platform", "retries", "slow-timeout"] {
+            let config = format!("{}{key} = 'x'\n", m24_7_config("binary_id(pkg::c)"));
+            let lines = m24_7_fail_lines(global_db_verdict(&config, &quiet, &[]));
+            assert_eq!(lines.len(), 1, "{key}: {lines:?}");
+            assert!(lines[0].contains(&format!("[\"{key}\"]")), "{lines:?}");
+        }
+        let no_filter = "[[profile.ci.overrides]]\ntest-group = 'global-db'\n";
+        let lines = m24_7_fail_lines(global_db_verdict(no_filter, &quiet, &[]));
+        assert!(lines[0].contains("a string `filter`"), "{lines:?}");
+        let unrelated = format!(
+            "{}[[profile.ci.overrides]]\nplatform = 'cfg(unix)'\nretries = 1\n",
+            m24_7_config("binary_id(pkg::c)")
+        );
+        assert_eq!(global_db_verdict(&unrelated, &quiet, &[]), Verdict::Pass);
+    }
+
+    /// 注错 (§80.1, r3, in process): the real config with `platform = 'cfg(windows)'` on the `global-db` override → red
+    /// naming the key. The CI record of the same fault is a `red/fix-145-r3` run.
+    #[test]
+    fn m24_7_real_config_with_a_platform_on_the_global_db_override_is_red() {
+        let real = fs::read_to_string(real_root().join(NEXTEST_CONFIG_FILE)).unwrap();
+        let injected = real.replacen(
+            "test-group = 'global-db'\n",
+            "test-group = 'global-db'\nplatform = 'cfg(windows)'\n",
+            1,
+        );
+        assert_ne!(
+            real, injected,
+            "the global-db override no longer ends its keys with test-group"
+        );
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let lines = m24_7_fail_lines(global_db_verdict(&injected, &binaries, GLOBAL_DB_EXEMPT));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("[\"platform\"]"), "{lines:?}");
+    }
+
+    /// P2 (c) of the #144 review: no `global-db` override is `not_applicable` only while no binary carries a marker; with
+    /// one, the config (or the whole file) losing the group is a `Fail`, never "nothing to check".
+    #[test]
+    fn m24_7_is_a_fail_not_na_when_the_group_is_gone_but_a_marker_is_not() {
+        let carrying = [
+            m24_7_binary("pkg::c", "fn f() { let _ = RememberCommand; }"),
+            m24_7_binary("pkg::q", "fn f() {}"),
+        ];
+        let other_group =
+            "[[profile.ci.overrides]]\nfilter = 'binary_id(pkg::c)'\ntest-group = 'serial-c'\n";
+        for config in [other_group, "[profile.ci]\nretries = 0\n", ""] {
+            let lines = m24_7_fail_lines(global_db_verdict(config, &carrying, &[]));
+            assert_eq!(lines.len(), 1, "{config:?}: {lines:?}");
+            assert!(
+                lines[0].contains("1 test binaries") && lines[0].contains("first: pkg::c"),
+                "{lines:?}"
+            );
+        }
+        let real = fs::read_to_string(real_root().join(NEXTEST_CONFIG_FILE)).unwrap();
+        let ungrouped = real.replace(
+            "test-group = 'global-db'",
+            "test-group = 'serial-not-global-db'",
+        );
+        assert_ne!(real, ungrouped);
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let lines = m24_7_fail_lines(global_db_verdict(&ungrouped, &binaries, GLOBAL_DB_EXEMPT));
+        assert!(
+            lines[0].contains("test binaries carry a cluster-global marker"),
+            "{lines:?}"
+        );
+        let tmp = m24_7_tree(
+            "m24-7-nofile",
+            "binary_id(pkg::b)",
+            &[("tests/b.rs", "fn f() { let _ = RememberCommand; }\n")],
+        );
+        fs::remove_file(tmp.join(NEXTEST_CONFIG_FILE)).unwrap();
+        let lines = m24_7_fail_lines(m24_7_over_tree(&tmp, &[], &[]));
+        assert!(lines[0].contains("first: pkg::b"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
     /// Through the tree: a marker that reaches the binary only through a `#[path]` module counts, a marker that is
     /// only mentioned in a comment does not; naming the binary in the filter turns the red run green.
     #[test]
@@ -16211,7 +16733,7 @@ async fn serving_version_in_txn() {}
             ),
         ];
         let red = m24_7_tree("m24-7-red", "binary_id(pkg::c)", &files);
-        let lines = m24_7_fail_lines(m24_7_over_tree(&red, &[]));
+        let lines = m24_7_fail_lines(m24_7_over_tree(&red, &[], &[]));
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("pkg::b is in no test group"), "{lines:?}");
         assert!(
@@ -16224,7 +16746,251 @@ async fn serving_version_in_txn() {}
             "binary_id(pkg::b) | binary_id(pkg::c)",
             &files,
         );
-        assert_eq!(m24_7_over_tree(&green, &[]), Verdict::Pass);
+        assert_eq!(m24_7_over_tree(&green, &[], &[]), Verdict::Pass);
         fs::remove_dir_all(&green).ok();
+    }
+
+    // ---- M24-7b (§79, #145): shared-catalog DDL runs only in a lane(a:disposable) test ----
+
+    /// The `(phrase, line)` pairs of shared-catalog DDL in `code` held by a binary with no `lane(a:disposable)` test.
+    fn m24_7b_hits(code: &str) -> Vec<(String, usize)> {
+        bare_catalog_ddl(&m24_7_binary("pkg::b", code), &[])
+            .into_iter()
+            .map(|(_, line, phrase, _)| (phrase, line))
+            .collect()
+    }
+
+    /// The `(display path, line)` of the `#[ignore]` on line `line` of `tests/f.rs`.
+    fn m24_7b_ignore_at(line: usize) -> Vec<(String, usize)> {
+        vec![("tests/f.rs".to_owned(), line)]
+    }
+
+    /// Every phrase of the closed list is read, whatever the case, the line break or the `\` continuation between its
+    /// words; `LOCK TABLE` counts only with `ACCESS EXCLUSIVE` in the same statement.
+    #[test]
+    fn m24_7b_reads_every_listed_phrase() {
+        for (code, phrase, line) in [
+            ("ALTER TABLE t RENAME COLUMN a TO b;", "rename column", 1),
+            ("x\nALTER TABLE t Add\n   Column a int", "add column", 2),
+            ("\"ALTER TABLE t DROP \\\n  COLUMN a\"", "drop column", 1),
+            ("ALTER ROLE r BYPASSRLS", "alter role", 1),
+            ("ALTER SYSTEM SET archive_mode = 'on'", "alter system", 1),
+            ("ALTER DATABASE d SET x = 1", "alter database", 1),
+            (
+                "LOCK TABLE s.t IN ACCESS EXCLUSIVE MODE",
+                "lock table … access exclusive",
+                1,
+            ),
+            (
+                "lock table s.t\n  in access\n  exclusive mode",
+                "lock table … access exclusive",
+                1,
+            ),
+        ] {
+            assert_eq!(m24_7b_hits(code), [(phrase.to_owned(), line)], "{code:?}");
+        }
+        for (head, tail, why) in SHARED_CATALOG_DDL {
+            assert!(!why.is_empty(), "{head}: a phrase needs its reason");
+            assert!(
+                tail.is_none_or(|t| !t.is_empty()),
+                "{head}: an empty tail would match nothing"
+            );
+        }
+        for (id, why) in SHARED_CATALOG_DDL_EXEMPT {
+            assert!(!why.is_empty(), "{id}: an exemption needs its reason");
+        }
+    }
+
+    /// What is not shared-catalog DDL stays quiet: a lock mode below ACCESS EXCLUSIVE, an `ACCESS EXCLUSIVE` that
+    /// belongs to the next statement or string, other `ALTER`s, identifiers that merely contain the words.
+    #[test]
+    fn m24_7b_ignores_what_is_not_listed() {
+        for quiet in [
+            "LOCK TABLE s.t IN SHARE MODE",
+            "LOCK TABLE s.t IN SHARE ROW EXCLUSIVE MODE",
+            "LOCK TABLE s.t IN ACCESS SHARE MODE; SELECT 'ACCESS EXCLUSIVE'",
+            "c.batch_execute(\"LOCK TABLE s.t IN ROW SHARE MODE\"); f(\"ACCESS EXCLUSIVE\")",
+            "ALTER TABLE t ADD CONSTRAINT k CHECK (a > 0); CREATE ROLE r; DROP TABLE t",
+            "rename_column add_column drop_column alter_role alter_system alter_database lock_table",
+            "RENAME TABLE t TO u; ADD INDEX i; DROP ROLE r",
+        ] {
+            assert!(m24_7b_hits(quiet).is_empty(), "{quiet:?}");
+        }
+    }
+
+    /// 注错 (§80.1): DDL outside a `lane(a:disposable)` test is red naming the binary, file, line and phrase; the same
+    /// text inside one passes, braces in a string do not unbalance the test's span, and a hit after the test is outside.
+    #[test]
+    fn m24_7b_passes_inside_a_disposable_test_and_fails_outside_it() {
+        let code = [
+            "const OTHER: &str = \"ALTER ROLE r NOLOGIN\";",
+            "#[test]",
+            "#[ignore = \"lane(a:disposable) own database\"]",
+            "fn ddl() {",
+            "    let open = \"{\";",
+            "    run(\"ALTER TABLE t RENAME COLUMN a TO b\");",
+            "}",
+            "fn after() { run(\"ALTER SYSTEM SET a = 1\"); }",
+        ]
+        .join("\n");
+        let binary = m24_7_binary("pkg::b", &code);
+        let hits = bare_catalog_ddl(&binary, &m24_7b_ignore_at(3));
+        let seen: Vec<(usize, &str)> = hits.iter().map(|h| (h.1, h.2.as_str())).collect();
+        assert_eq!(seen, [(1, "alter role"), (8, "alter system")]);
+        let lines = shared_ddl_problems(&[binary], &m24_7b_ignore_at(3), &[]);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0]
+                .contains("pkg::b runs `alter role` (tests/f.rs:1), `alter system` (tests/f.rs:8)"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("SHARED_CATALOG_DDL_EXEMPT"), "{lines:?}");
+        let binary = m24_7_binary("pkg::b", &code);
+        let lines = shared_ddl_problems(&[binary], &[], &[]);
+        assert!(
+            lines[0].contains("`rename column` (tests/f.rs:6)"),
+            "{lines:?}"
+        );
+    }
+
+    /// An exemption row lets a binary keep its DDL; a row whose binary is gone or has no hit left outside a
+    /// `lane(a:disposable)` test is red (stale).
+    #[test]
+    fn m24_7b_exemptions_pass_and_go_stale() {
+        let ddl = m24_7_binary(
+            "pkg::own_cluster",
+            "fn f() { run(\"ALTER SYSTEM SET a = 1\"); }",
+        );
+        let quiet = m24_7_binary("pkg::quiet", "fn f() {}");
+        let row = [("pkg::own_cluster", "its own cluster")];
+        assert!(shared_ddl_problems(&[ddl], &[], &row).is_empty());
+        let lines = shared_ddl_problems(
+            &[quiet, m24_7_binary("pkg::own_cluster", "fn f() {}")],
+            &[],
+            &[
+                ("pkg::own_cluster", "its own cluster"),
+                ("pkg::gone", "was a binary"),
+            ],
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains("pkg::own_cluster")
+                && lines[0].contains("carries no shared-catalog DDL"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].contains("pkg::gone") && lines[1].contains("names no test binary"),
+            "{lines:?}"
+        );
+    }
+
+    /// Through the tree and the real serial-lane walker: the DDL inside a `lane(a:disposable)` test passes; remove the
+    /// `#[ignore]`, or give it another lane resource, and the run is red naming the binary, file and line; a comment that
+    /// mentions the DDL never counts.
+    #[test]
+    fn m24_7b_tree_removing_the_ignore_turns_the_run_red() {
+        let test = "#[test]\n#[ignore = \"lane(a:disposable) own database\"]\n\
+                    fn ddl() { run(\"ALTER TABLE t DROP COLUMN a\"); }\n\
+                    // ALTER ROLE r NOLOGIN\n";
+        let green = m24_7_tree("m24-7b-green", "binary_id(pkg::d)", &[("tests/d.rs", test)]);
+        assert_eq!(m24_7_over_tree(&green, &[], &[]), Verdict::Pass);
+        fs::remove_dir_all(&green).ok();
+        for (label, mutated) in [
+            (
+                "no-ignore",
+                test.replace("#[ignore = \"lane(a:disposable) own database\"]\n", ""),
+            ),
+            (
+                "shared-db",
+                test.replace("lane(a:disposable)", "lane(a:shared_db)"),
+            ),
+        ] {
+            let red = m24_7_tree(
+                &format!("m24-7b-{label}"),
+                "binary_id(pkg::d)",
+                &[("tests/d.rs", mutated.as_str())],
+            );
+            let lines = m24_7_fail_lines(m24_7_over_tree(&red, &[], &[]));
+            assert_eq!(lines.len(), 1, "{label}: {lines:?}");
+            assert!(
+                lines[0].contains("pkg::d runs `drop column` (crates/pkg/tests/d.rs:"),
+                "{label}: {lines:?}"
+            );
+            fs::remove_dir_all(&red).ok();
+        }
+    }
+
+    /// The real tree: the DDL tests that moved are inside their `lane(a:disposable)` span, so the shared-catalog part is
+    /// clean with the real rows, and every real row still has a hit to stand on.
+    #[test]
+    fn m24_7b_real_repo_is_clean_and_every_row_is_live() {
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let disposable = crate::serial_lane::disposable_ignores(&real_root());
+        assert_eq!(
+            shared_ddl_problems(&binaries, &disposable, SHARED_CATALOG_DDL_EXEMPT),
+            Vec::<String>::new()
+        );
+    }
+
+    /// 注错 (§80.1, r1, in process): the real `#[ignore = "lane(a:disposable) .."]` of a moved DDL test removed → red,
+    /// naming the binary and the DDL lines in its file. The CI record of the same fault is a `red/fix-145-r1` run.
+    #[test]
+    fn m24_7b_real_moved_tests_without_their_ignore_are_red() {
+        let binaries = nextest_binaries(&real_root()).unwrap();
+        let disposable = crate::serial_lane::disposable_ignores(&real_root());
+        for (id, file, phrase) in [
+            (
+                "humaux-adapters::mandatory_context_lane",
+                "crates/adapters/tests/mandatory_context_lane.rs",
+                "`rename column` (crates/adapters/tests/mandatory_context_lane.rs:",
+            ),
+            (
+                "humaux-adapters::retrieve_read_your_writes",
+                "crates/adapters/tests/retrieve_read_your_writes.rs",
+                "`lock table … access exclusive` (crates/adapters/tests/retrieve_read_your_writes.rs:",
+            ),
+        ] {
+            let injected: Vec<(String, usize)> = disposable
+                .iter()
+                .filter(|(f, _)| f != file)
+                .cloned()
+                .collect();
+            assert_ne!(
+                injected.len(),
+                disposable.len(),
+                "{file} no longer holds a lane(a:disposable) test"
+            );
+            let lines = shared_ddl_problems(&binaries, &injected, SHARED_CATALOG_DDL_EXEMPT);
+            assert_eq!(lines.len(), 1, "{id}: {lines:?}");
+            assert!(
+                lines[0].contains(&format!("M24-7b: {id} runs ")),
+                "{lines:?}"
+            );
+            assert!(lines[0].contains(phrase), "{lines:?}");
+        }
+    }
+
+    /// 注错 (§80.1, r2, in process): a bare `ALTER TABLE .. RENAME COLUMN` line appended to an ungrouped real test file
+    /// → red, naming the binary, file and the new line. The CI record is a `red/fix-145-r2` run.
+    #[test]
+    fn m24_7b_real_ungrouped_binary_with_a_bare_rename_column_is_red() {
+        let mut binaries = nextest_binaries(&real_root()).unwrap();
+        let disposable = crate::serial_lane::disposable_ignores(&real_root());
+        let target = binaries
+            .iter_mut()
+            .find(|b| b.id == "humaux-adapters::mandatory_context_lane")
+            .expect("an ungrouped integration binary");
+        let (file, code) = &mut target.sources[0];
+        let file = file.clone();
+        let next_line = code.lines().count() + 1;
+        code.push_str("\nconst BARE: &str = \"ALTER TABLE t RENAME COLUMN a TO b\";\n");
+        let lines = shared_ddl_problems(&binaries, &disposable, SHARED_CATALOG_DDL_EXEMPT);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains(&format!(
+                "humaux-adapters::mandatory_context_lane runs `rename column` ({file}:{next_line})"
+            )),
+            "{lines:?}"
+        );
     }
 }
