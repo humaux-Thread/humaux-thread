@@ -1,12 +1,13 @@
 //! `adapters::tests::qdrant_contract` — T5.4+T5.6 — `adapters::qdrant` (§17) pure-logic tests.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, serde_json,
-//!   sqlx, tokio, uuid]; services=[]; env=[]; modules=[adapters::qdrant, domain::authority, domain::dataclass,
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-contracts, humaux-domain, humaux-infra-cell,
+//!   humaux-projection, serde_json, sqlx, tokio, uuid]; services=[]; env=[]; modules=[adapters::provisioning,
+//!   adapters::qdrant, contracts::config_registry, domain::authority, domain::dataclass,
 //!   domain::identity, domain::ids, domain::memory, domain::subject, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, projection::card, projection::dense]
 //! Called-by: [cargo-test]
 //! Invariants: [no DB and no network: only request/response JSON shaping and the §17.4 confirmation contract;
 //!   unexpected shapes and non-success statuses must map to the typed QdrantTransportError]
-//! Spec: Baseline §17.4; §17.1; §23.4; ADR-0055
+//! Spec: Baseline §17.4; §17.1; §17.7; §23.4; ADR-0055; ADR-0085
 //!
 //! No DB, no network: everything this
 //! file exercises is request/response JSON shaping and the §17.4 confirmation contract, none
@@ -20,14 +21,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use humaux_adapters::provisioning::{collection_setup_puts, collection_setup_puts_for};
 use humaux_adapters::qdrant::{
-    DenseQuery, DenseQueryVersions, Distance, PlacementClass, PointId, PromotionState,
-    QdrantOperation, QdrantPointPayload, QdrantTransportError, ReadConsistency, RetrievalFamily,
-    ShardingMethod, TenantPlacementRow, VisibleCountFilter, WriteOrdering, condition_to_filter,
-    count_body, create_collection_body, dense_query_body, ha_profile_for, may_advance_checkpoint,
-    query_dense, shard_key_body, subject_index_body, tenant_index_body, upsert, upsert_point_body,
-    verify_visible, visible_count,
+    CollectionSpec, DenseQuery, DenseQueryVersions, Distance, PlacementClass, PointId,
+    PromotionState, QdrantOperation, QdrantPointPayload, QdrantTransportError, ReadConsistency,
+    RetrievalFamily, ShardingMethod, TenantPlacementRow, VisibleCountFilter, WriteOrdering,
+    condition_to_filter, count_body, create_collection_body, dense_query_body, ha_profile_for,
+    may_advance_checkpoint, query_dense, shard_key_body, subject_index_body, tenant_index_body,
+    upsert, upsert_point_body, verify_visible, visible_count,
 };
+use humaux_contracts::config_registry::{CollectionConfigError, CollectionDatatype};
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus};
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId, VisibilityClass};
@@ -809,4 +812,117 @@ fn promotion_state_db_strings_match_migration_0068_literal_check_values() {
     );
     assert_eq!(PromotionState::Promoted.as_db_str(), "PROMOTED");
     assert_eq!(PromotionState::ALL.len(), 3);
+}
+
+// ---- G-M10-1 / ADR-0085: CollectionSpec from the config registry ----
+
+fn collection_raw(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+/// The shipped default must not change a byte of the body `collection ensure` always sent.
+/// Fault: write `datatype` or `hnsw_config` unconditionally => red.
+#[test]
+fn default_spec_body_is_the_legacy_body_byte_for_byte() {
+    let spec = CollectionSpec::resolve(RetrievalFamily::PrivateMemoryV1, 1024, &BTreeMap::new())
+        .expect("defaults resolve");
+    assert_eq!(spec.collection_name(), "private_memory_v1");
+    assert_eq!(
+        spec.create_body(),
+        create_collection_body(1024, Distance::Cosine, 1, 1, 1, ShardingMethod::Auto)
+    );
+    assert!(spec.create_body()["sparse_vectors"]["bm25"].is_object());
+    assert_eq!(
+        collection_setup_puts_for(&spec),
+        collection_setup_puts("private_memory_v1", 1024)
+    );
+}
+
+/// Fault: hard-code the datatype (ignore `config.datatype`) => red.
+#[test]
+fn spec_body_carries_datatype_and_hnsw_from_config() {
+    let spec = CollectionSpec::resolve(
+        RetrievalFamily::PrivateMemoryV1,
+        1024,
+        &collection_raw(&[
+            ("qdrant.collection.datatype", "turbo4"),
+            ("qdrant.collection.hnsw_m", "0"),
+            ("qdrant.collection.hnsw_payload_m", "16"),
+            ("qdrant.collection.hnsw_ef_construct", "100"),
+        ]),
+    )
+    .expect("tenant-local graphs");
+    assert_eq!(spec.config().datatype, CollectionDatatype::Turbo4);
+    let body = spec.create_body();
+    assert_eq!(body["vectors"]["datatype"], "turbo4");
+    assert_eq!(body["vectors"]["size"], 1024);
+    assert_eq!(body["hnsw_config"]["m"], 0);
+    assert_eq!(body["hnsw_config"]["payload_m"], 16);
+    assert_eq!(body["hnsw_config"]["ef_construct"], 100);
+
+    let half = CollectionSpec::resolve(
+        RetrievalFamily::PrivateMemoryV1,
+        1024,
+        &collection_raw(&[("qdrant.collection.datatype", "float16")]),
+    )
+    .expect("float16");
+    let body = half.create_body();
+    assert_eq!(body["vectors"]["datatype"], "float16");
+    assert!(
+        body.get("hnsw_config").is_none(),
+        "unset HNSW knobs stay Qdrant's defaults"
+    );
+}
+
+#[test]
+fn generation_label_names_the_collection_and_every_setup_path() {
+    let spec = CollectionSpec::resolve(
+        RetrievalFamily::PrivateMemoryV1,
+        384,
+        &collection_raw(&[("qdrant.collection.generation_label", "g2")]),
+    )
+    .expect("labelled generation");
+    assert_eq!(spec.collection_name(), "private_memory_v1_g2");
+    for (path, _) in collection_setup_puts_for(&spec) {
+        assert!(
+            path.starts_with("/collections/private_memory_v1_g2"),
+            "{path}"
+        );
+    }
+    assert!(matches!(
+        CollectionSpec::resolve(
+            RetrievalFamily::CodeV1,
+            384,
+            &collection_raw(&[("qdrant.collection.generation_label", "a/b")]),
+        ),
+        Err(CollectionConfigError::Invalid { .. })
+    ));
+}
+
+/// §17.1: the collection, then the tenant index (`is_tenant`), then the other payload indexes and the sparse vector;
+/// no point write in the sequence, so no point can exist before the tenant index does.
+/// Fault: omit `is_tenant`, or move the tenant index after the other PUTs => red.
+#[test]
+fn setup_puts_create_the_collection_then_the_tenant_index_before_anything_else() {
+    let spec = CollectionSpec::new(RetrievalFamily::PrivateMemoryV1, 1024, Default::default());
+    let puts = collection_setup_puts_for(&spec);
+    assert_eq!(puts[0].0, "/collections/private_memory_v1");
+    assert_eq!(puts[0].1["vectors"]["size"], 1024);
+    assert_eq!(puts[1].0, "/collections/private_memory_v1/index");
+    assert_eq!(puts[1].1["field_name"], "tenant_id");
+    assert_eq!(puts[1].1["field_schema"]["is_tenant"], true);
+    let fields: Vec<_> = puts[2..4]
+        .iter()
+        .map(|(_, body)| body["field_name"].as_str().expect("index field"))
+        .collect();
+    assert_eq!(fields, ["subject_ids", "memory_id"]);
+    assert_eq!(
+        puts[4].0, "/collections/private_memory_v1/vectors/bm25",
+        "the sparse vector closes the sequence"
+    );
+    assert_eq!(puts.len(), 5);
+    assert!(puts.iter().all(|(path, _)| !path.contains("/points")));
 }

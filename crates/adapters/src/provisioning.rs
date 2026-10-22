@@ -17,7 +17,8 @@
 //!   transaction and the activation commits only if evaluate_switch accepts the DB-returned facts and the collection
 //!   generation is unchanged; a refusal writes nothing but its DENIED audit row; Qdrant or PostgreSQL down -> a typed
 //!   ProvisioningError (exit 1), never a partial activation; no receipt carries a wire key or the pepper]
-//! Spec: Baseline §4.2; §6.2.2; §16.2; §16.3; §17.3; §17.6; §77; ADR-0017; ADR-0053; ADR-0057; ADR-0058; ADR-0083 D-B
+//! Spec: Baseline §4.2; §6.2.2; §16.2; §16.3; §17.3; §17.6; §17.7; §77; ADR-0017; ADR-0053; ADR-0057; ADR-0058; ADR-0083 D-B;
+//!   ADR-0085
 //!
 //! Every onboarding write runs as `role_maintenance` ([`MaintenanceDbPool`]) through the eight
 //! owner SECURITY DEFINER doors of migration 0186 — this module holds no table INSERT of its own.
@@ -66,8 +67,8 @@ use uuid::Uuid;
 use crate::membership_repo::{self, AdminAction, MembershipRepoError, MembershipRequest};
 use crate::postgres::MaintenanceDbPool;
 use crate::qdrant::{
-    BM25_MODIFIER, BM25_VECTOR_NAME, Distance, ShardingMethod, bm25_vector_body,
-    create_collection_body, memory_id_index_body, subject_index_body, tenant_index_body,
+    BM25_MODIFIER, BM25_VECTOR_NAME, CollectionSpec, bm25_vector_body,
+    default_collection_create_body, memory_id_index_body, subject_index_body, tenant_index_body,
 };
 use crate::retrieve::{IndexFace, stream_count_of_version};
 
@@ -1416,18 +1417,20 @@ impl QdrantFace {
 /// idempotent no-op; on a collection created before ADR-0083 it is what adds the vector (`PATCH /collections/{c}` cannot,
 /// ADR-0083 V1; `PUT /collections/{c}/vectors/{name}` can, V1b).
 pub fn collection_setup_puts(collection: &str, dimension: u32) -> Vec<(String, Value)> {
+    setup_puts(collection, default_collection_create_body(dimension))
+}
+
+/// [`collection_setup_puts`] for one [`CollectionSpec`]: the same sequence, named and shaped by the spec (ADR-0085).
+pub fn collection_setup_puts_for(spec: &CollectionSpec) -> Vec<(String, Value)> {
+    setup_puts(&spec.collection_name(), spec.create_body())
+}
+
+/// The sequence behind both entry points. Order is the contract (§17.1, ADR-0085 D-C): the collection, then the
+/// tenant index (`is_tenant`) and the other payload indexes, the sparse vector last, and never a point write: no
+/// point exists before every index does.
+fn setup_puts(collection: &str, create_body: Value) -> Vec<(String, Value)> {
     vec![
-        (
-            format!("/collections/{collection}"),
-            create_collection_body(
-                dimension.into(),
-                Distance::Cosine,
-                1,
-                1,
-                1,
-                ShardingMethod::Auto,
-            ),
-        ),
+        (format!("/collections/{collection}"), create_body),
         (
             format!("/collections/{collection}/index"),
             tenant_index_body(),
@@ -1529,6 +1532,36 @@ pub async fn ensure_collection(
     collection: &str,
     dimension: u32,
 ) -> Result<CollectionReceipt> {
+    ensure_with_puts(
+        face,
+        collection,
+        dimension,
+        collection_setup_puts(collection, dimension),
+    )
+    .await
+}
+
+/// [`ensure_collection`] for one [`CollectionSpec`] (ADR-0085): the generation's own name and create body; an existing
+/// collection of that name is left as it is, whatever its datatype or HNSW (a knob change is a new generation).
+pub async fn ensure_collection_for(
+    face: &QdrantFace,
+    spec: &CollectionSpec,
+) -> Result<CollectionReceipt> {
+    ensure_with_puts(
+        face,
+        &spec.collection_name(),
+        spec.dimension(),
+        collection_setup_puts_for(spec),
+    )
+    .await
+}
+
+async fn ensure_with_puts(
+    face: &QdrantFace,
+    collection: &str,
+    dimension: u32,
+    puts: Vec<(String, Value)>,
+) -> Result<CollectionReceipt> {
     let (status, _) = face
         .request(
             IntraCellMethod::Get,
@@ -1537,7 +1570,7 @@ pub async fn ensure_collection(
         )
         .await?;
     let existed = (200..300).contains(&status);
-    let mut puts = collection_setup_puts(collection, dimension).into_iter();
+    let mut puts = puts.into_iter();
     let (create_path, create_body) = puts
         .next()
         .ok_or_else(|| ProvisioningError::Qdrant("empty setup sequence".to_owned()))?;
