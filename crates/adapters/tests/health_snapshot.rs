@@ -590,7 +590,7 @@ fn tenants_active_counts_distinct_active_tenants_with_a_key_used_in_the_window()
     assert_eq!(
         (s.tenants_active_1d, s.tenants_active_7d),
         (2, 3),
-        "1d = the 1 h tenant and the two-key tenant; 7d adds the 72 h tenant: {s:?}"
+        "1d = the 1 h tenant and the two-key tenant; 7d adds the 72 h tenant"
     );
 
     let row = db.read_under_fault(
