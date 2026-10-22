@@ -134,6 +134,8 @@ jobs:
             sudo apt-get install -y -qq lld
           fi
 
+      # This job's rust-cache key (`v0-rust-targeted-…`) is written only by targeted runs, and ci.yml never reads it.
+      # The job must save it: with `save_cache: false` the key lost its only writer, went stale and then built cold (#194).
       - uses: ./.github/actions/setup
 
       # Twin of ci.yml's "cargo xtask dep-map --check" step (same staging and diff lines): keep the two in step.
@@ -217,4 +219,8 @@ jobs:
             exit 2
           }
 
+      # Shares its rust-cache key with ci.yml's rerank-parity job, so it restores but never saves: only ci.yml writes
+      # that key (#194).
       - uses: ./.github/actions/rerank-parity
+        with:
+          save_cache: false
