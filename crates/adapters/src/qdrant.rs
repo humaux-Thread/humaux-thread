@@ -1707,7 +1707,7 @@ pub async fn upsert(
         .iter()
         .map(|(id, payload, vector)| PointWrite {
             id: *id,
-            payload: *payload,
+            payload,
             vector: vector.clone(),
             bm25_text: None,
         })

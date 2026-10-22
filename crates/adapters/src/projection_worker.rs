@@ -2461,7 +2461,7 @@ mod bm25_policy_tests {
     fn the_in_cell_text_processing_seam_is_always_allowed_until_a_policy_field_exists() {
         eprintln!(
             "G6b-4 not_applicable: no tenant policy field for in-cell text processing \
-             (TenantDataPolicy / control.egress_policies)"
+             (TenantDataPolicy / egress_policies column)"
         );
         for _ in 0..3 {
             assert!(in_cell_text_processing_allowed(TenantId::new()));
