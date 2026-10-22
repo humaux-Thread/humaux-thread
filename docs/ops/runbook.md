@@ -1825,10 +1825,21 @@ node or a developer machine) from a public model pinned by commit, and published
   overwrite an existing release. The build refuses to start unless the pinned model card's licence is Apache-2.0 or MIT.
 - **Deploy pins the tarball sha256** (the `.sha256` asset, repeated in the release notes), not the tag and not the recipe: if
   the export is not byte-deterministic (the manifest says), the published file is the only pin. The worker refuses to start on a
-  mismatch (G-RET-14). T-RET-7c wires the fetch into the image; until then nothing on a node reads this artifact and
-  `rerank_enabled` stays false.
+  mismatch (G-RET-14). The image fetches it since T-RET-7c (below); `rerank_enabled` stays false until the lead flips it.
 - **Scores are batch-dependent.** Int8 scores depend on the batch they are computed in (the parity fixture header measures it), so any
   absolute cut-off or cross-batch comparison (ADR-0084 D-F) must be calibrated under production batching.
+- **Deployment keys (T-RET-7c).** `deploy/env/values/retrieval-worker.env` carries the eight non-secret keys the
+  `--serve-rpc` process reads, and only once the registry's `rerank_enabled` is true: `HUMAUX_RETRIEVAL_WORKER_RERANK_REPO`,
+  `_REVISION`, `_RECIPE` (the identity), `_RERANK_MODEL_PATH` and `_RERANK_MODEL_SHA256`, `_RERANK_TOKENIZER_PATH` and
+  `_RERANK_TOKENIZER_SHA256` (the two files and their hashes), and `HUMAUX_RETRIEVAL_WORKER_ONNXRUNTIME_PATH` (the
+  `libonnxruntime.so` loaded by explicit path, never a default or a download). The image copies the three files to those
+  paths from the tarballs pinned by `ADD --checksum` in `deploy/images/humaux/Dockerfile`. The worker hashes both files
+  before it touches ONNX Runtime and exits 2 naming `rerank model` or `rerank tokenizer` with the expected and the actual
+  hash on any mismatch (G-RET-14); with `rerank_enabled` false (the default) it reads none of these keys and answers the route
+  `disabled`. The registry's `rerank_enabled` and `rerank_threads` reach the worker through two optional keys,
+  `HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_ENABLED` and `..._RERANK_THREADS`, stated in the values file with the
+  registry defaults (`false`, `4`): set the same value on the gateway and on the worker when the lane is turned on. Enabling the lane
+  makes a wrong artifact a start-up failure of the whole `retrieval-rpc` service, query embedding included.
 - **Changing it.** Any change to the identity is a new `calibration_profile` (Baseline §19, Rerank Provider Failover): publish
   it under a new tag, never over this one.
 
