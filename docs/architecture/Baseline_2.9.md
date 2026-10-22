@@ -4491,7 +4491,7 @@ IDF corpus       -> authorized visibility universe
 
 如果 tenant policy 连 Data Cell 内的 Qdrant text processing 都不允许（极端 policy），Sparse lane 标 `SKIPPED_BY_POLICY`；不要回退到外部 provider。
 
-**私有 hybrid recall 的落地选择（planned，T-RET-6b / T-RET-6c，ADR-0083 D-A / D-C）**：
+**私有 hybrid recall 的落地选择（已交付，T-RET-6b / T-RET-6c，ADR-0083 D-A / D-C）**：sparse 腿默认关闭（`sparse_leg_enabled=false`，ADR-0083 D-D），开启后才有两腿并发与 gateway 内 RRF 融合。
 
 - **tokenizer**：Document 的 `options` 固定为 `{"tokenizer": "multilingual"}`（Qdrant v1.19.0 `Bm25Config.tokenizer`，默认 `word`）。tokenizer 是每次请求的属性，不存进集合配置，所以写入与查询必须逐字相同；改动任何 option 等于重写全部 sparse 向量，走新一代 rebuild（ADR-0064），不是开关。
 - **融合位置**：在 gateway 内做记忆级 RRF，不用 Qdrant server 端 fusion；管线、公式与截断见 §23.3 与 ADR-0083 D-C。
@@ -6232,7 +6232,7 @@ Exact，以及 schema/结算/审计失败的零指标对照；此入口不代表
 
 检索侧同理：`candidate_count 25` / `reranked_count 12` / `returned 5`。`RERANK_PROVIDER_TIMEOUT` 的含义是 25 个候选里只有 12 个真过了重排、其余走 fallback 序；**两个 count 相等的示例看不出降级发生过**，正是 §23.2 那条判据例要排除的形态（本示例先前写 `25 / 25` 却同时挂着这条降级，自己违反了自己立的标准，已改）。三个数的自洽关系即 §23.4 的夹具断言：`returned (5) == profile.top_k`、`reranked_count (12) <= candidate_count (25) == profile.cand_k == min(top_k × profile.cand_multiplier, 200)`（`cand_multiplier` 是注册 profile 的字段、默认 5、永不由调用方给：planned，T-RET-6c，此前乘数是常量 5；`cand_k_formula` 以解析后的乘数渲染，所以本例仍写 `min(top_k*5, 200)`；ADR-0081 D-E。hybrid 召回再带两个同级注册字段 `leg_depth`（默认 200）与 `rrf_k`（默认 60），三者同入 `profile_fingerprint`；ADR-0083 D-D）、`truncated = true` 因为 `candidate_count > returned`；且 `reranked_count == candidate_count` 时 `degradations` 不得含任何 rerank 类降级（重排全数完成 = 结果未被降级；重试后全数成功只记指标，不进 `degradations`），反之含该降级时 `reranked_count` 必须严格小于 `candidate_count`。
 
-**hybrid 候选管线（已交付，T-RET-6c，ADR-0083 D-C / D-E）**：dense 腿与 sparse 腿（Qdrant 内置 `qdrant/bm25`）各按 `memory_id` 分组（组大小 1）取 `leg_depth` 个记忆，并发，带同一套 filter（tenant、可见性、subject、affect、tombstone overlay，§17.1 / §17.2）；两腿在 gateway 内按 memory 名次做 RRF（`Σ 1/(rrf_k + rank)`，并列按 `memory_id` 升序），融合列表截到 `cand_k`，再过未改动的 PostgreSQL hydrate 闸。sparse 腿是 live lane：本例 `lanes` 与 `profile.lanes` 里的 `sparse` 就是当前形状（ADR-0083 D-C / D-E；§33）。
+**hybrid 候选管线（已交付，T-RET-6c，ADR-0083 D-C / D-E）**：dense 腿与 sparse 腿（Qdrant 内置 `qdrant/bm25`）各按 `memory_id` 分组（组大小 1）取 `leg_depth` 个记忆，**仅当 `sparse_leg_enabled=true` 时两腿并发**（注册默认 `false`，ADR-0083 D-D），带同一套 filter（tenant、可见性、subject、affect、tombstone overlay，§17.1 / §17.2）；启用时两腿在 gateway 内按 memory 名次做 RRF（`Σ 1/(rrf_k + rank)`，并列按 `memory_id` 升序），融合列表截到 `cand_k`，再过未改动的 PostgreSQL hydrate 闸。sparse 腿是 live lane 但默认关闭：`sparse_leg_enabled=true` 时本例 `lanes` 与 `profile.lanes` 里的 `sparse` 就是当前形状，默认 profile 只由 dense 腿作答、`profile.lanes` 只有 `dense`（ADR-0083 D-C / D-D；§33）。
 
 **本地 rerank 阶段（planned，T-RET-7d，ADR-0084 D-C / D-D）**：融合列表截到 `cand_k` 并过未改动的 hydrate 闸之后，对前 `rerank_depth` 个可见 Memory 以「title + 换行 + best chunk」构造 (query, document) 对（best chunk = 该 Memory 的 chunk 中 leg 名次最好者，dense 优先，其次 sparse），按 `rerank_max_len` token 由 tokenizer 截断，交本地 cross-encoder 打分，只发已授权、已 hydrate 的文本；按分数排序，并列按融合名次，超出 `rerank_depth` 的候选保持融合序、排在已打分者之后；其后才是 `top_k`、mood rerank、`limit`。rerank 只改序，不增不减。envelope 的读法：`reranked_count` 是实际打分的 Memory 数，任何降级时为 0（本地 worker 一次调用要么全部返回要么全无）；`degradations` 里的 `RERANK_PROVIDER_TIMEOUT` 表示 rerank 执行方（云端 route 或本地 worker）未在时限内返回分数或调用失败、结果按融合序，`RERANK_MODEL_MISMATCH` 表示作答的模型不是被钉的那个（§53.4）；`provenance.rerank_model_id`：打分完成为 `used`，`rerank_enabled` 为 false 或租户策略跳过为 `not_applicable`，超时、失败、身份不符为 `cannot_establish`（§23.1③：已选择的分支失败不得退写 `not_applicable`）。五个注册项 `rerank_enabled`、`rerank_depth`、`rerank_max_len`、`rerank_timeout_ms`、`rerank_threads` 不是调用方输入，进入 `profile_fingerprint`，定义见 §50 与 ADR-0084 D-E。上面示例里的 `qwen3-rerank@revision-1` 与 `reranked_count 12` 是云端 route 形状的夹具读数，不随本地 lane 改写。
 
@@ -8821,7 +8821,7 @@ completeness_request = required     未交付  bins/gateway/src/recall.rs:299 �
   只有显式 `mode` 指名未交付 lane 才拒绝，错误码仍是 `DEPENDENCY_UNAVAILABLE`（本节上表，不变）。
   原锚点 `recall.rs:255-261 ⇒ INVALID_INPUT` 作废。见证：
   `bins/gateway/tests/mcp_gateway.rs::recall_everyday_queries_are_answered_by_dense_with_lane_substituted`。
-- **已交付（T-RET-6c，ADR-0083 D-C / D-E）**：已交付 lane 是 `{dense, sparse}` —— `semantic` 由 dense 与 sparse（Qdrant 内置 BM25，§17.6）两条 live lane 并发作答，gateway 内按 memory 名次 RRF 融合。`LANE_SUBSTITUTED` 含义不变：只在 planner 选的 lane 仍未交付（如 literal、association）且调用方未带 `mode` 时出现；sparse 不是 `mode` 取值，所以 `x-humaux-v1-supported`、上表与下面那道闸都不动。sparse 腿失败由 dense 作答并带 `SparseLaneUnavailable`（§53.2 的第 12 个变体，由 T-RET-6c 加入）。**上文「唯一已交付 lane」与各 file:line 锚点描述的是 T-RET-6c 之前的交付点。**
+- **已交付（T-RET-6c，ADR-0083 D-C / D-E）**：已交付 lane 是 `{dense, sparse}` —— `sparse_leg_enabled=true` 时 `semantic` 由 dense 与 sparse（Qdrant 内置 BM25，§17.6）两条 live lane 并发作答，gateway 内按 memory 名次 RRF 融合；注册默认 `false`（ADR-0083 D-D），默认 `semantic` 只由 dense 腿作答，`profile.lanes` 只有 `dense`。`LANE_SUBSTITUTED` 含义不变：只在 planner 选的 lane 仍未交付（如 literal、association）且调用方未带 `mode` 时出现；sparse 不是 `mode` 取值，所以 `x-humaux-v1-supported`、上表与下面那道闸都不动。sparse 腿失败由 dense 作答并带 `SparseLaneUnavailable`（§53.2 的第 12 个变体，由 T-RET-6c 加入）。**上文「唯一已交付 lane」与各 file:line 锚点描述的是 T-RET-6c 之前的交付点。**
 - 未交付的 lane 走 `DEPENDENCY_UNAVAILABLE`（§52：契约里有、这个部署没有实现），不是
   `INVALID_INPUT`（值非法）。合约 `contracts/mcp/recall.schema.json` 因此**保留** `mode` 的
   五值闭集 —— 把未交付值从 enum 里删掉会让这条 guard 变成不可达代码，拒绝路径也就不再可观察
@@ -9887,6 +9887,9 @@ Trace / logs with protected access
 | `backup_disk_free_bytes{volume}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：进程内 statvfs(3)（f_bavail × f_frsize，不派生 `df` 子进程）现量 `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`（`repo`，仓库自己的文件系统）与 `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`（`pgdata`）的可用字节 | gauge·字节 | §42 disk free low |
 | `backup_budget_headroom_bytes{limit}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`repo_max` = 回执记下的 `repo_max_bytes` − `repo_bytes` − 估算；`free_floor` = 仓库文件系统现量可用 − 回执记下的 `min_free_bytes` − 估算；估算 = 最新 VERIFIED 集 `set_repo_bytes` × 1.25，否则该回执的 `estimate_bytes`；尚无回执两者 = 0；守护进程不读预算键（ADR-0064 D-V / 10.11 D） | gauge·字节 | §42 backup budget low |
 | `wal_archive_failing` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`ops.wal_archive_failures` 里有晚于最新 VERIFIED 全量开始时刻的观测行（闩锁，只有更晚开始的 VERIFIED 全量才解除），或 `pg_stat_archiver` 此刻在失败 ⇒ 1，否则 0（ADR-0064 10.11 D） | gauge·0/1 | §42 WAL archive failing |
+| `host_pressure_ratio{resource,kind}` | M22-1 `humaux-maintenance health serve` 每个采样周期，`telemetry::host::publish` 内唯一 `.set()` · 1：`/proc/pressure/{cpu,memory,io}` 各 `some` / `full` 行的 `avg60` ÷ 100（0..1）；文件缺失、行缺失（老内核的 cpu 无 `full`）或无法解析 ⇒ 该样本不出现，绝不写 0（§4.4 「没扫到」≠「没有」） | gauge·比率 | M22 capacity 规则（M22-3） |
+| `host_memory_available_bytes` | 同一次采样，`telemetry::host::publish` 内唯一 `.set()` · 1：`/proc/meminfo` 的 `MemAvailable`（kB × 1024）；`MemTotal` 缺失、为 0 或小于 `MemAvailable` 视为无法解析 ⇒ family 缺席，绝不写 0 | gauge·字节 | M22 capacity 规则（M22-3） |
+| `host_cpu_busy_ratio` | 同一次采样，`telemetry::host::publish` 内唯一 `.set()` · 1：`/proc/stat` 聚合 `cpu` 行相邻两次读数的差分（（total − idle − iowait）增量 ÷ total 增量）；首次采样、total 增量为 0、计数器回退或读数无法解析 ⇒ family 缺席，绝不写 0 | gauge·比率 | M22 capacity 规则（M22-3） |
 | `tenant_isolation_canary_failures_total{probe}` ⊕ | §45 cross-tenant canary 每次探测判定处 · 1 | counter·次 | §42；§54 cross-tenant violation = 0 |
 | `boundary_violations_total{kind}` ⊕ | §12 `contribution_release` 准入校验拒绝分支 · 1 | counter·次 | §42 private/public boundary violation |
 | `tombstoned_unpurged_over_sla` ⊕ | §65 `retention` job 收尾 `.set()` · 1；扫 `state = 'TOMBSTONED'` 且 Qdrant point / object bytes 仍在、`settled_at` 已过 purge SLA 的行数（**现算，不落列** —— 落列即违反 §37.2 那道 12 列闸） | gauge·条 | §42 tombstone 超 SLA 未 purge；§37 tombstone-first 的补偿控制 |
@@ -9910,6 +9913,8 @@ backup_last_success_timestamp_seconds.target        local（只此一值，`tele
 restore_drill_last_success_timestamp_seconds.target local（同上）
 backup_disk_free_bytes.volume              repo | pgdata（`telemetry::dr::Volume::as_str` 逐字）
 backup_budget_headroom_bytes.limit         repo_max | free_floor（`telemetry::dr::Limit::as_str` 逐字）
+host_pressure_ratio.resource               cpu | memory | io（`telemetry::host::Resource::as_str` 逐字）
+host_pressure_ratio.kind                   some | full（`telemetry::host::PressureKind::as_str` 逐字）
 partition_horizon_months.table             model_call_ledger | stage_runs | messages | maintenance_receipts | events | audit_events | retrieval_query_log
                                            （ADR-0063 D-C table_key 闭集的小写形，`PartitionTable::label` 逐字）
 maintenance_task_runs_total.outcome        ok | failed
@@ -10893,7 +10898,7 @@ rollback target
 
 生产运行必须记录 effective config fingerprint，而不是只看 `.env`。
 
-检索 profile 的 rerank 注册项（planned，T-RET-7d，ADR-0084 D-E）：`rerank_enabled`（默认 false）、`rerank_depth`（25）、`rerank_max_len`（256）、`rerank_timeout_ms`（4000）、`rerank_threads`（4）。五项与 `top_k`、`cand_multiplier` 同属注册 profile，永不由调用方给，全部进 `profile_fingerprint`；加载时校验 `rerank_depth` 不大于 `cand_k`。本地模型的身份 pin 不在 registry 里，在部署配置里（与 embedding provider 的变量并列），每次请求在 `provenance.rerank_model_id` 自报。
+检索 profile 的 rerank 注册项（planned，T-RET-7d，ADR-0084 D-E）：`rerank_enabled`（默认 false）、`rerank_depth`（25）、`rerank_max_len`（256）、`rerank_timeout_ms`（4000）、`rerank_threads`（4）。五项与 `top_k`、`cand_multiplier` 同属注册 profile，永不由调用方给，全部进 `profile_fingerprint`；加载时仅当 `rerank_enabled=true` 校验 `rerank_depth` 不大于 `cand_k`，关闭时该上限不适用、只保留下限 `1`（#166 / ADR-0084 D-C 1）。本地模型的身份 pin 不在 registry 里，在部署配置里（与 embedding provider 的变量并列），每次请求在 `provenance.rerank_model_id` 自报。
 
 
 ## 50.1 Enterprise Feature Activation Registry
