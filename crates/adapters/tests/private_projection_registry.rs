@@ -56,7 +56,9 @@ use humaux_infra_cell::{
 };
 use humaux_projection::card::EgressDisposition;
 use humaux_projection::embedding_fingerprint::{DISTANCE, DTYPE, NORMALIZATION};
-use humaux_projection::note_chunks::{LEGACY_CARD_PROFILE_HASH, NOTE_CHUNKS_V1_PROFILE_HASH};
+use humaux_projection::note_chunks::{
+    CardSlot, LEGACY_CARD_PROFILE_HASH, NOTE_CHUNKS_V1_PROFILE_HASH,
+};
 use humaux_projection::serving::StreamFamily;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
@@ -1163,5 +1165,35 @@ fn repeated_chunks_share_vector_not_point() {
             .expect("count the vector rows")
             .get(0);
         assert_eq!(vectors, 1, "duplicate chunk text shares one vector row");
+        // ADR-0084 D-C 3: the resolver reports the card slot each point stands for, read from its registry row, in the
+        // candidate's order. Fault: report `Chunk { ordinal: 0 }` whatever the row says ⇒ the first element goes red.
+        let resolved = handle
+            .rt
+            .block_on(resolve_private_memory_points(
+                &handle.runtime,
+                &handle.authorization,
+                &handle.family,
+                "private-v1",
+                "embed-v1",
+                &[slots[1].point_id, slots[0].point_id],
+            ))
+            .expect("resolve the chunk points");
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|point| (point.memory_id, point.slot))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    MemoryId(handle.memory_id),
+                    Some(CardSlot::Chunk { ordinal: 1 })
+                ),
+                (
+                    MemoryId(handle.memory_id),
+                    Some(CardSlot::Chunk { ordinal: 0 })
+                ),
+            ],
+            "one registry row per point, slot = (profile, ordinal)"
+        );
     });
 }

@@ -711,7 +711,9 @@ fn outcome_block_under<T>(
     inputs: CompletenessInputs<'_>,
     accept: impl FnOnce(ExactOutcome) -> Result<T, humaux_domain::error::ErrorCode>,
 ) -> Result<PendingEnvelope<T>, humaux_domain::error::ErrorCode> {
-    if !inputs.provenance.is_valid(request) {
+    // §23.3: only a structural breach is a malformed envelope. A component that is `cannot_establish` is served with its
+    // diagnostic intact; `is_valid` stays false for it, which is what keeps it out of result statistics.
+    if !inputs.provenance.is_structurally_sound(request) {
         return Err(humaux_domain::error::ErrorCode::Internal);
     }
     let class = final_completeness_class(
@@ -857,7 +859,9 @@ pub enum ProvenanceValue {
 }
 
 impl ProvenanceValue {
-    fn is_valid(&self) -> bool {
+    /// Structural integrity of one component (§23.1③): a `used` id is real, non-blank and not a placeholder. The two
+    /// id-less states carry nothing to check; `cannot_establish` is a legitimate diagnostic, not a malformed value.
+    fn is_sound(&self) -> bool {
         match self {
             Self::Used { id } => {
                 let id = id.trim();
@@ -867,9 +871,13 @@ impl ProvenanceValue {
                         "none" | "n/a" | "n-a" | "unknown" | "null"
                     )
             }
-            Self::NotApplicable {} => true,
-            Self::CannotEstablish {} => false,
+            Self::NotApplicable {} | Self::CannotEstablish {} => true,
         }
+    }
+
+    /// Whether the component's actual identity was established, i.e. anything but `cannot_establish`.
+    fn is_established(&self) -> bool {
+        !matches!(self, Self::CannotEstablish {})
     }
 
     fn is_not_applicable(&self) -> bool {
@@ -892,10 +900,21 @@ pub struct ProvenanceBlock {
 }
 
 impl ProvenanceBlock {
-    /// G23-6's sole validity gate: the identities and effective profile must belong to the
-    /// request actually executed. Unknown provenance never enters result statistics.
+    /// G23-6's one validity definition: "complete provenance, eligible for result statistics" (§23.1③). It is the
+    /// conjunction of the two private conjuncts below, so there is no second validity notion: structural integrity
+    /// (the identities and effective profile belong to the request actually executed) and every component established.
+    /// Unknown provenance never enters result statistics; a block that is only unestablished is still served
+    /// ([`envelope_outcome_block`] checks the structural conjunct alone) and keeps its diagnostic.
     #[must_use]
     pub fn is_valid(&self, request: &RetrievalRequest) -> bool {
+        self.is_structurally_sound(request) && self.is_established()
+    }
+
+    /// The structural conjunct of [`Self::is_valid`]: `binary_build` is non-empty, fingerprint and profile match the
+    /// request, the planner decision is not `CannotEstablish`, no `used` id is blank or a placeholder, and no
+    /// semantic branch reports `not_applicable` for the projection or the embedding it must have used. A breach is a
+    /// malformed envelope (`Internal`); a `cannot_establish` component is not one (§23.3).
+    fn is_structurally_sound(&self, request: &RetrievalRequest) -> bool {
         if self.binary_build.trim().is_empty()
             || self.profile_fingerprint != *request.profile_fingerprint_identity()
             || self.profile.top_k != request.top_k()
@@ -904,22 +923,33 @@ impl ProvenanceBlock {
         {
             return false;
         }
-        let values = [
-            &self.projection_version,
-            &self.embedding_model_id,
-            &self.rerank_model_id,
-            &self.card_builder_version,
-        ];
         let structured_read = matches!(
             request.planner_decision(),
             PlannerDecision::DirectGet(_)
                 | PlannerDecision::Enumerate { .. }
                 | PlannerDecision::Class(QueryClass::Continuity)
         );
-        values.into_iter().all(ProvenanceValue::is_valid)
+        self.components().into_iter().all(ProvenanceValue::is_sound)
             && (structured_read
                 || (!self.projection_version.is_not_applicable()
                     && !self.embedding_model_id.is_not_applicable()))
+    }
+
+    /// The conjunct of [`Self::is_valid`] that no component is `cannot_establish`.
+    fn is_established(&self) -> bool {
+        self.components()
+            .into_iter()
+            .all(ProvenanceValue::is_established)
+    }
+
+    /// The four components that share the explicit `used` / `not_applicable` / `cannot_establish` type.
+    fn components(&self) -> [&ProvenanceValue; 4] {
+        [
+            &self.projection_version,
+            &self.embedding_model_id,
+            &self.rerank_model_id,
+            &self.card_builder_version,
+        ]
     }
 }
 
@@ -1215,8 +1245,9 @@ pub enum PinnedReport {
 /// [`build_projection_block`], never invented), `provenance.projection_version =
 /// cannot_establish`, `embedding_model_id = not_applicable`, freshness `unknown`.
 ///
-/// It bypasses [`envelope_outcome_block`] on purpose: that path refuses a `cannot_establish`
-/// provenance (G23-6), and this read's provenance is exactly that. The class it records on
+/// It bypasses [`envelope_outcome_block`] on purpose: that path classifies from lane, census and ledger inputs, and
+/// this read's class (`no_serving_projection`) is fixed by the missing serving version, not judged. Its provenance is
+/// `cannot_establish` for the projection, which `is_valid` reports as false (§23.3). The class it records on
 /// [`PendingEnvelope::finish`] is the one it serialises. B is a protocol state for the optional
 /// semantic lanes only — the PG-authoritative routes (`memory.get` / `memory.enumerate`) never
 /// use it (R-28: never get → NOT_FOUND, never enumerate → a complete empty set).
@@ -3307,6 +3338,129 @@ mod tests {
             .finish();
         assert_eq!(out.class, CompletenessClassWire::SemanticBounded);
         assert!(out.exact.is_none());
+    }
+
+    // ---- §23.3 / §23.1③: a component that cannot be established is a diagnostic, not a malformed envelope ----
+
+    /// `dense_lane_outcome_block` over a closed one-item ledger, with the request and the provenance as the only
+    /// variables.
+    fn dense_outcome_under(
+        request: &RetrievalRequest,
+        provenance: &ProvenanceBlock,
+    ) -> Result<(), humaux_domain::error::ErrorCode> {
+        let ledger = closed(LedgerReads {
+            expected: 1,
+            done: 1,
+            deleted: 0,
+            skipped: 0,
+            open_gaps: 0,
+            pending: 0,
+        });
+        let pipeline = PipelineBlock {
+            evidence: EvidenceBlock::no_batch(Some(1), CountScope::StreamLedger),
+            knowledge: KnowledgeBlock {
+                eligible: Some(1),
+                processed: Some(1),
+                waiting_key: Some(0),
+                failed: Some(0),
+                count_scope: CountScope::StreamLedger,
+            },
+            projection: build_projection_block(&ledger, Some(1), LAG).value,
+        };
+        let census = CensusResult::ok_without_enumeration();
+        dense_lane_outcome_block(
+            request,
+            CompletenessInputs {
+                lane_status: &LaneStatus::Ok,
+                census: &census,
+                ledger: &ledger,
+                pipeline: &pipeline,
+                provenance,
+                visible: Some(1),
+                context: None,
+                mandatory_missing: 0,
+                lag_threshold: LAG,
+            },
+            Ok,
+        )
+        .map(drop)
+    }
+
+    /// §23.3: `is_valid` keeps meaning "complete provenance, eligible for statistics", so any `cannot_establish`
+    /// makes it false; the block is still served, with the failed component's diagnostic and all six fields on the
+    /// wire. Each of the four components, alone, is served and never valid.
+    /// Fault: refuse every `!is_valid` provenance in `outcome_block_under` (the old gate) ⇒ red on the `expect`.
+    #[test]
+    fn a_cannot_establish_component_is_served_with_its_diagnostic_and_is_never_valid() {
+        let request = provenance_request("fixture", 5, true);
+        assert_eq!(
+            request.planner_decision(),
+            &PlannerDecision::Class(QueryClass::Semantic)
+        );
+        for index in 0..4 {
+            let mut provenance = full_provenance();
+            *provenance_fields(&mut provenance)[index] = ProvenanceValue::CannotEstablish {};
+            assert!(
+                !provenance.is_valid(&request),
+                "component {index}: cannot_establish is never stats-eligible"
+            );
+            dense_outcome_under(&request, &provenance)
+                .expect("a structurally sound block is served");
+        }
+        let mut provenance = full_provenance();
+        provenance.rerank_model_id = ProvenanceValue::CannotEstablish {};
+        let wire = serde_json::to_value(&provenance).expect("serialize");
+        assert_eq!(
+            wire["rerank_model_id"],
+            serde_json::json!({"status": "cannot_establish"})
+        );
+        for field in [
+            "binary_build",
+            "projection_version",
+            "embedding_model_id",
+            "rerank_model_id",
+            "card_builder_version",
+            "profile_fingerprint",
+            "profile",
+        ] {
+            assert!(wire.get(field).is_some(), "{field} stays on the wire");
+        }
+    }
+
+    /// A structural breach is still `Internal`: another request's fingerprint and profile, a blank `binary_build`, a
+    /// placeholder `used` id, and `not_applicable` for the embedding of a semantic branch.
+    /// Fault: drop the structural check from `outcome_block_under` ⇒ red on the first assertion.
+    #[test]
+    fn a_structural_breach_is_still_refused_as_internal() {
+        let request = provenance_request("fixture", 5, true);
+        let internal = |result: Result<(), humaux_domain::error::ErrorCode>| {
+            matches!(result, Err(humaux_domain::error::ErrorCode::Internal))
+        };
+        let other = provenance_request("fixture", 7, true);
+        assert!(
+            internal(dense_outcome_under(&other, &full_provenance())),
+            "fingerprint and profile of another request"
+        );
+        let mut blank = full_provenance();
+        blank.binary_build = "  ".to_string();
+        assert!(
+            internal(dense_outcome_under(&request, &blank)),
+            "blank build"
+        );
+        let mut placeholder = full_provenance();
+        placeholder.rerank_model_id = ProvenanceValue::Used {
+            id: "unknown".to_string(),
+        };
+        assert!(
+            internal(dense_outcome_under(&request, &placeholder)),
+            "placeholder used id"
+        );
+        let mut unproven = full_provenance();
+        unproven.embedding_model_id = ProvenanceValue::NotApplicable {};
+        assert!(
+            internal(dense_outcome_under(&request, &unproven)),
+            "a semantic branch used an embedding"
+        );
     }
 }
 

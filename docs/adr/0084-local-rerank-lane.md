@@ -10,6 +10,36 @@
 - Amended 2026-10-22 (card ds-ret-189, #187 review): **the `rerank_depth <= cand_k` ceiling (D-C 1, D-E) applies only
   while `rerank_enabled` is true** (#166), so a disabled lane keeps the registry default depth at any `cand_k`; the
   values file leaves the two worker keys empty, and empty means unset so the registry defaults apply (#185).
+- Amended 2026-10-23 (card T-RET-7d-1, the lead's ruling): **T-RET-7d splits in two, the contract first.** T-RET-7d-1 is
+  the module contract that D-C 3 and D-D need before any wiring: the D-D serve rule and the D-C 3 data path below, with
+  no gateway change. T-RET-7d-2 keeps the rest of the T-RET-7d row (below, "Cards"): the gateway client and its
+  bootstrap wiring with the deployment model pin, D-C steps 1 to 3, 5 and 6 in `gateway::recall`, the G55-6 names not
+  already caught, the provenance constructor, both fault tests on the real path, G-RET-12, G-RET-13, G-RET-15, the
+  in-cell test and U7.
+- Amended 2026-10-23 (T-RET-7d-1), **D-D serve rule.** A `provenance` component that is `cannot_establish` is served,
+  not refused. Baseline §23.3 (the provenance table and the paragraph after it) keeps `is_valid` as "complete
+  provenance, eligible for result statistics", false for any `cannot_establish`, and says the failure diagnostic still
+  serialises with all six fields, with no second validity notion. `retrieval::envelope` therefore splits
+  `ProvenanceBlock::is_valid` into its two conjuncts inside the one definition (structural integrity; every component
+  established), and `outcome_block_under` refuses only a structural breach with `ErrorCode::Internal`: another
+  request's fingerprint or profile, an empty `binary_build`, a blank or placeholder `used` id, a `not_applicable`
+  projection or embedding on a semantic branch. Before this, every D-D row whose `rerank_model_id` reads
+  `cannot_establish` would have answered `Internal` instead of the fused order. No `ErrorCode` is added.
+- Amended 2026-10-23 (T-RET-7d-1), **D-C 3 data path.** The chunk of a Memory is identified by the PostgreSQL registry,
+  not by Qdrant: `projection.private_memory_points` carries `card_profile_hash` and `chunk_ordinal` for every point
+  (ADR-0068 D-C), while the point id is a one-way digest and the point payload holds no ordinal. So:
+  `ResolvedPrivateMemoryPoint` gains `slot: Option<CardSlot>` (`projection::note_chunks::CardSlot`, `Legacy` or
+  `Chunk { ordinal }`; `None` for a profile this build does not know, ADR-0068 D-I);
+  `MaterializedPrivateReadServing.point_slots` holds, for each Memory, the slot of the first candidate point that
+  resolved to it (the fused list holds one point per Memory: the dense leg's when both legs found it, the sparse leg's
+  otherwise, `gateway::recall::fuse_rrf`); `adapters::retrieve::visible_memory_texts` reads `(title, body)` of the
+  Memories the hydrate gate returned from `private.memory_text_v` (ADR-0085); and
+  `projection::note_chunks::rerank_document(title, body, slot)` builds the document: `chunk_card_text` for a chunk slot
+  (the card text that was embedded), title prefix + separator + the whole body for a legacy slot (which holds the body
+  whole). A Memory whose slot is `None`, or whose text cannot be read, has no document: T-RET-7d-2 does not send it and
+  keeps it after the scored ones in fused order (D-C 5). The text read is a second snapshot (`ponytail` in the code);
+  it reads no lifecycle state, so the ids it is given must be the hydrate gate's (G-RET-13).
+
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
 - Relates to: Baseline §7.2, §19 (Rerank Provider Failover), §23.1③, §23.3, §50, §51, §52.3, §53.2, §53.4, §57.1,
@@ -319,6 +349,8 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | `gateway::recall`, `retrieval::request` | the client call and D-C steps 3 to 6 | T-RET-7d |
 | `retrieval::rerank` (a placeholder today) | the pure ordering step (D-C 5), so G-RET-15 needs no model | T-RET-7d |
 | `telemetry::degrade`, `testkit/fault`, `dormant.toml` | the rustdoc wording; both rerank fault tests become real-path (they drive the production function, not `abstain()`); the two M11 dormant rows are deleted | T-RET-7d |
+| `retrieval::envelope` | `is_valid` split into its two conjuncts; `outcome_block_under` refuses a structural breach only (D-D serve rule) | T-RET-7d-1 |
+| `adapters::private_projection_registry`, `adapters::retrieve`, `projection::note_chunks` | `slot` on a resolved point, `point_slots` on the hydrate result, `visible_memory_texts`, `CardSlot` and `rerank_document` (D-C 3 data path) | T-RET-7d-1 |
 
 ## Cards
 
@@ -327,7 +359,7 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | T-RET-7a | This ADR; Baseline §4.2, §7.2, §19 Rerank Provider Failover, §23.3, §50, §53.4, §67.2 and the opening list; the rerank lines of ADR-0083 and ADR-0081 (docs only) | none |
 | T-RET-7b | CI artifact pipeline (D-A) and the public parity fixtures (the public texts `PUB` in `local_rerank.py` at aae2ae4 are a seed, plus a pair longer than `rerank_max_len`) | none of its own (feeds G-RET-11) |
 | T-RET-7c | The retrieval-worker rerank RPC with `ort` and `tokenizers` (D-B), **the five registry entries and the fingerprint (D-E, moved here from T-RET-7d)**, the image pin, the `deny.toml` entry; settles U1 to U6 | G-RET-11, G-RET-14 |
-| T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
+| T-RET-7d | Gateway wiring (D-C to D-E: the client, D-C steps 1 to 3, 5 and 6, the G55-6 forbidden-name set, the provenance constructor); lands after T-RET-6c-2; settles U7. **Split (2026-10-23): T-RET-7d-1 is the D-D serve rule and the D-C 3 data path (amendments above, no gate of its own); T-RET-7d-2 is the rest of this row.** Includes a named test that a tenant whose `in_cell_text_processing_allowed` is false gets no rerank call and fused order (red-recorded with the card) | G-RET-12, G-RET-13, G-RET-15 |
 
 ## T-RET-7c record (2026-10-22)
 

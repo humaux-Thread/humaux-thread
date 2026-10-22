@@ -2,14 +2,15 @@
 //!   over a long note's body), the projection's [`NoteChunkPolicy`], and [`build_projection_plan`], the one entry that
 //!   picks a chunk profile or the unchanged legacy card.
 //! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::dataclass, projection::card]
-//! Called-by: [adapters::private_projection_registry, adapters::projection_worker, adapters::rebuild, tests]
+//! Called-by: [adapters::private_projection_registry, adapters::projection_worker, adapters::rebuild, adapters::retrieve, tests]
 //! Invariants: [pure and IO-free (§3/§78.3); chunk card text is constructed only here, SQL recomputes only the count
 //!   and the legacy predicate (ADR-0068 D-B); ranges are half-open over Unicode scalars and a slice never splits a
 //!   UTF-8 sequence; only an identity note that is not SECRET_MATERIAL, whose projection policy is NoteChunksV1 and
 //!   whose non-empty body the legacy card cannot hold losslessly is chunked, every other input yields exactly
 //!   build_card's outcome (ADR-0068 D-A); a policy hash this build does not know is refused, never read as legacy
-//!   (ADR-0068 D-I)]
-//! Spec: Baseline §18.2; §3; §78.3; ADR-0068
+//!   (ADR-0068 D-I); the document a reranker scores for a point is built here from the point's registry slot, as
+//!   the card text that was embedded (ADR-0084 D-C 3)]
+//! Spec: Baseline §18.2; §3; §78.3; ADR-0068; ADR-0084 D-C
 //!
 //! The projection worker builds through [`build_projection_plan`]; rebuild's verifier still calls `build_card` (40d-1b-iii).
 //! The window parameters are a frozen,
@@ -123,6 +124,45 @@ fn card_text(title: &str, window: &str) -> String {
 pub fn chunk_card_text(title: &str, body: &str, ordinal: usize) -> Option<String> {
     let range = chunk_ranges(body).into_iter().nth(ordinal)?;
     Some(card_text(title, scalar_slice(body, range)?))
+}
+
+/// ADR-0084 D-C 3: the card slot a registered point stands for, read from its registry row
+/// (`projection.private_memory_points.card_profile_hash`, `chunk_ordinal`, ADR-0068 D-C). The registry is the identity;
+/// a Qdrant payload is never read for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardSlot {
+    /// [`LEGACY_CARD_PROFILE_HASH`]: the Memory's one point; the whole body is its text.
+    Legacy,
+    /// [`NOTE_CHUNKS_V1_PROFILE_HASH`] slot `ordinal` (0-based, [`chunk_ranges`] order).
+    Chunk {
+        /// The slot within the profile.
+        ordinal: u32,
+    },
+}
+
+impl CardSlot {
+    /// Reads a registry row. `None` for a profile this build does not know and for an ordinal outside the profile's
+    /// range (a legacy row is ordinal 0 only, 0238 CHECK): an unknown profile is refused, never read as legacy
+    /// (ADR-0068 D-I).
+    pub fn from_registry(card_profile_hash: &str, chunk_ordinal: i32) -> Option<Self> {
+        match (card_profile_hash, u32::try_from(chunk_ordinal).ok()?) {
+            (LEGACY_CARD_PROFILE_HASH, 0) => Some(Self::Legacy),
+            (NOTE_CHUNKS_V1_PROFILE_HASH, ordinal) => Some(Self::Chunk { ordinal }),
+            _ => None,
+        }
+    }
+}
+
+/// ADR-0084 D-C 3: the rerank document of a Memory whose best leg hit was the point of `slot`: title prefix +
+/// separator + the text that point stands for. A chunk slot is [`chunk_card_text`] itself, so the document is
+/// byte-for-byte the card text that was embedded; a legacy slot is the title prefix, the separator and the whole body
+/// (the legacy card holds the body whole, [`legacy_capacity_holds`]). `None` when the slot lies past the body's last
+/// chunk.
+pub fn rerank_document(title: &str, body: &str, slot: CardSlot) -> Option<String> {
+    match slot {
+        CardSlot::Legacy => Some(card_text(title, body)),
+        CardSlot::Chunk { ordinal } => chunk_card_text(title, body, usize::try_from(ordinal).ok()?),
+    }
 }
 
 /// ADR-0068 D-I: which note chunk profile a projection builds, parsed once from
@@ -600,5 +640,73 @@ mod tests {
         let reversed_end = 1;
         assert_eq!(scalar_slice("長😀", 2..reversed_end), None);
         assert_eq!(scalar_slice("長😀", 1..2), Some("😀"));
+    }
+
+    /// ADR-0084 D-C 3: a registry row reads as the slot its point stands for; a profile this build does not know, a
+    /// legacy row off ordinal 0 and a negative ordinal read as no slot. Fault: read an unknown profile as legacy ⇒ red.
+    #[test]
+    fn registry_rows_read_as_card_slots() {
+        assert_eq!(
+            CardSlot::from_registry(LEGACY_CARD_PROFILE_HASH, 0),
+            Some(CardSlot::Legacy)
+        );
+        assert_eq!(
+            CardSlot::from_registry(NOTE_CHUNKS_V1_PROFILE_HASH, 0),
+            Some(CardSlot::Chunk { ordinal: 0 })
+        );
+        assert_eq!(
+            CardSlot::from_registry(NOTE_CHUNKS_V1_PROFILE_HASH, 2),
+            Some(CardSlot::Chunk { ordinal: 2 })
+        );
+        assert_eq!(CardSlot::from_registry("NoteChunksV2-unknown", 0), None);
+        assert_eq!(CardSlot::from_registry(LEGACY_CARD_PROFILE_HASH, 1), None);
+        assert_eq!(
+            CardSlot::from_registry(NOTE_CHUNKS_V1_PROFILE_HASH, -1),
+            None
+        );
+    }
+
+    /// ADR-0084 D-C 3: the rerank document of a chunk slot is the embedded card text of that chunk, for every slot of
+    /// a three-chunk body, distinct per slot; past the last chunk there is none.
+    /// A legacy slot is title prefix + separator + the whole body. Fault: build the document from slot 0 whatever the
+    /// ordinal ⇒ red on the per-slot equality.
+    #[test]
+    fn rerank_document_is_the_card_text_of_the_slot() {
+        let title = "t".repeat(NOTE_CHUNKS_V1_TITLE_PREFIX + 10);
+        let prefix = "t".repeat(NOTE_CHUNKS_V1_TITLE_PREFIX);
+        // 1,000 distinct scalars: no two chunk windows are equal, so a wrong slot cannot pass.
+        let body: String = (0x4e00_u32..0x4e00 + 1_000)
+            .filter_map(char::from_u32)
+            .collect();
+        let count = chunk_count(body.chars().count());
+        assert_eq!(count, 3);
+        let documents: Vec<String> = (0..count)
+            .map(|ordinal| {
+                let slot = CardSlot::Chunk {
+                    ordinal: u32::try_from(ordinal).expect("small"),
+                };
+                let document =
+                    rerank_document(&title, &body, slot).expect("a slot inside the body");
+                assert_eq!(
+                    Some(document.as_str()),
+                    chunk_card_text(&title, &body, ordinal).as_deref()
+                );
+                document
+            })
+            .collect();
+        assert_ne!(documents[0], documents[1]);
+        assert_ne!(documents[1], documents[2]);
+        assert_eq!(
+            rerank_document(&title, &body, CardSlot::Chunk { ordinal: 3 }),
+            None
+        );
+        assert_eq!(
+            rerank_document("short", "the whole body", CardSlot::Legacy),
+            Some(format!("short{NOTE_CHUNKS_V1_SEPARATOR}the whole body"))
+        );
+        assert_eq!(
+            rerank_document(&title, "b", CardSlot::Legacy),
+            Some(format!("{prefix}{NOTE_CHUNKS_V1_SEPARATOR}b"))
+        );
     }
 }
