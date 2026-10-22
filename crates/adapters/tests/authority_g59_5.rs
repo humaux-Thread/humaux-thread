@@ -10,7 +10,9 @@
 //! Six injections, none optional (§59.1 G59-5: injecting only 1.5 leaves the four NOT NULL columns and the CHECK's
 //! lower bound with no sample, so that part would be vacuously true): confidence 1.5 and -0.5 must hit the CHECK
 //! (23514), and NULL in `authority_class` / `confidence` / `status` / `asserted_at` must each hit NOT NULL (23502)
-//! on exactly that column. Skip contract (§79.2): no DSN / unreachable ⇒ visible SKIP.
+//! on exactly that column. The CHECK branch pins the exact constraint name generated for the unnamed column CHECK
+//! at `0004_private_evidence_memory.sql:130`; no case derives its expected object from its label (#175 item 1).
+//! Skip contract (§79.2): no DSN / unreachable ⇒ visible SKIP.
 
 use humaux_domain::ids::TenantId;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -69,43 +71,116 @@ fn g59_5_six_injections_are_rejected_by_the_schema() {
         .expect("G59-5 positive control: a fully valid row must insert");
         sp.rollback().expect("rollback savepoint");
 
-        // (label, class, confidence, status, asserted_at): exactly one bad value per row.
-        type Row = (
-            &'static str,
-            Option<&'static str>,
-            Option<f32>,
-            Option<&'static str>,
-            Option<SystemTime>,
-        );
+        // The confidence CHECK is declared inline/unnamed at 0004_private_evidence_memory.sql:130,
+        // so PostgreSQL generates `<table>_<column>_check` for it. Pinning that exact name (not a
+        // substring) keeps a later CHECK whose name also contains "confidence" from masking a
+        // dropped bound (#175 item 1).
+        const CONFIDENCE_CHECK: &str = "memory_records_confidence_check";
+
+        /// The schema object a rejection must name — never inferred from the case label.
+        enum Target {
+            Column(&'static str),
+            Constraint(&'static str),
+        }
+
+        /// One injection row: exactly one of the value fields is bad, as before.
+        struct Injection {
+            label: &'static str,
+            class: Option<&'static str>,
+            confidence: Option<f32>,
+            status: Option<&'static str>,
+            asserted_at: Option<SystemTime>,
+            sqlstate: SqlState,
+            target: Target,
+        }
+
         let ok_c = Some("PrivateKnowledge");
         let ok_f = Some(0.5f32);
         let ok_s = Some("active");
         let ok_t = Some(now);
-        let cases: [Row; 6] = [
-            ("confidence=1.5", ok_c, Some(1.5), ok_s, ok_t),
-            ("confidence=-0.5", ok_c, Some(-0.5), ok_s, ok_t),
-            ("authority_class=NULL", None, ok_f, ok_s, ok_t),
-            ("confidence=NULL", ok_c, None, ok_s, ok_t),
-            ("status=NULL", ok_c, ok_f, None, ok_t),
-            ("asserted_at=NULL", ok_c, ok_f, ok_s, None),
+        let cases = [
+            Injection {
+                label: "confidence=1.5",
+                class: ok_c,
+                confidence: Some(1.5),
+                status: ok_s,
+                asserted_at: ok_t,
+                sqlstate: SqlState::CHECK_VIOLATION,
+                target: Target::Constraint(CONFIDENCE_CHECK),
+            },
+            Injection {
+                label: "confidence=-0.5",
+                class: ok_c,
+                confidence: Some(-0.5),
+                status: ok_s,
+                asserted_at: ok_t,
+                sqlstate: SqlState::CHECK_VIOLATION,
+                target: Target::Constraint(CONFIDENCE_CHECK),
+            },
+            Injection {
+                label: "authority_class=NULL",
+                class: None,
+                confidence: ok_f,
+                status: ok_s,
+                asserted_at: ok_t,
+                sqlstate: SqlState::NOT_NULL_VIOLATION,
+                target: Target::Column("authority_class"),
+            },
+            Injection {
+                label: "confidence=NULL",
+                class: ok_c,
+                confidence: None,
+                status: ok_s,
+                asserted_at: ok_t,
+                sqlstate: SqlState::NOT_NULL_VIOLATION,
+                target: Target::Column("confidence"),
+            },
+            Injection {
+                label: "status=NULL",
+                class: ok_c,
+                confidence: ok_f,
+                status: None,
+                asserted_at: ok_t,
+                sqlstate: SqlState::NOT_NULL_VIOLATION,
+                target: Target::Column("status"),
+            },
+            Injection {
+                label: "asserted_at=NULL",
+                class: ok_c,
+                confidence: ok_f,
+                status: ok_s,
+                asserted_at: None,
+                sqlstate: SqlState::NOT_NULL_VIOLATION,
+                target: Target::Column("asserted_at"),
+            },
         ];
-        for (label, class, conf, status, at) in cases {
+        for case in &cases {
             let mut sp = txn.transaction().expect("savepoint");
             let err = sp
-                .execute(INSERT, &[&tenant, &class, &conf, &status, &at])
-                .expect_err(&format!("G59-5 injection {label} must be rejected"));
+                .execute(
+                    INSERT,
+                    &[
+                        &tenant,
+                        &case.class,
+                        &case.confidence,
+                        &case.status,
+                        &case.asserted_at,
+                    ],
+                )
+                .expect_err(&format!("G59-5 injection {} must be rejected", case.label));
             let db = err.as_db_error().expect("database error");
-            if label.starts_with("confidence=") && !label.ends_with("NULL") {
-                assert_eq!(db.code(), &SqlState::CHECK_VIOLATION, "{label}: {db}");
-                assert!(
-                    db.constraint().is_some_and(|c| c.contains("confidence")),
-                    "{label}: CHECK must be the confidence one, got {:?}",
+            assert_eq!(db.code(), &case.sqlstate, "{}: {db}", case.label);
+            match &case.target {
+                Target::Constraint(name) => assert_eq!(
+                    db.constraint(),
+                    Some(*name),
+                    "{}: CHECK must be exactly {name}, got {:?}",
+                    case.label,
                     db.constraint()
-                );
-            } else {
-                let column = label.split('=').next().unwrap();
-                assert_eq!(db.code(), &SqlState::NOT_NULL_VIOLATION, "{label}: {db}");
-                assert_eq!(db.column(), Some(column), "{label}: wrong column");
+                ),
+                Target::Column(name) => {
+                    assert_eq!(db.column(), Some(*name), "{}: wrong column", case.label)
+                }
             }
             sp.rollback().expect("rollback savepoint");
         }

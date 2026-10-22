@@ -11,8 +11,9 @@
 //! §10's table.
 //!
 //! `asserted_at` is a `time::OffsetDateTime` (the instant `TIMESTAMPTZ` stores; `Ord` compares
-//! the UTC instant, so an offset never changes I1's "asserted_at later wins" tier). Pure value
-//! type: no I/O, no ENV (§3, §78.3).
+//! the UTC instant, so an offset never changes I1's "asserted_at later wins" tier).
+//! `Authority::new` normalises it to `UtcOffset::UTC`, so the stored offset is not part of the
+//! value. Pure value type: no I/O, no ENV (§3, §78.3).
 //!
 //! `MemoryId` / `EvidenceId` are minted here rather than in `domain::ids`: they are not among
 //! that module's fixed seven §59 core types, and this module is their first consumer
@@ -222,7 +223,9 @@ pub struct Authority {
 
 impl Authority {
     /// Validates §59.1's I4/I5/I6 before constructing; returns `Err(ErrorCode::InvalidInput)`
-    /// rather than silently repairing a bad combination (§50 fail-loud).
+    /// rather than silently repairing a bad combination (§50 fail-loud). `asserted_at` is
+    /// normalised to UTC so I1's second tier is a pure instant comparison at the value boundary
+    /// (a caller's offset never leaks into the stored row).
     ///
     /// - **I4**: `status == Superseded` iff `superseded_by.is_some()` — checked below, both
     ///   directions.
@@ -250,7 +253,7 @@ impl Authority {
             class,
             confidence,
             status,
-            asserted_at,
+            asserted_at: asserted_at.to_offset(time::UtcOffset::UTC),
             evidence,
             superseded_by,
         })
@@ -508,6 +511,57 @@ mod i4_status_superseded_by_consistency {
             None,
         );
         assert!(result.is_ok());
+    }
+}
+
+/// §59.1 I1 tier 2 / #175 item 3: `Authority::new` is the sole construction point, so it is
+/// also the only place `asserted_at` can be normalised — the stored offset is not part of the
+/// value and equal instants must still tie on the time tier.
+#[cfg(test)]
+mod authority_asserted_at_utc {
+    use super::*;
+
+    #[test]
+    fn authority_new_normalises_asserted_at_to_utc_and_equal_instants_tie_on_time() {
+        let instant = OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(1_700_000_000);
+        let west = instant.to_offset(time::UtcOffset::from_hms(-8, 0, 0).expect("valid offset"));
+        let east = instant.to_offset(time::UtcOffset::from_hms(5, 30, 0).expect("valid offset"));
+        assert_eq!(west, east, "fixture offsets must denote the same instant");
+        assert_ne!(west.offset(), east.offset(), "fixture offsets must differ");
+
+        let make = |at| {
+            Authority::new(
+                AuthorityClass::PrivateKnowledge,
+                Confidence::new(0.5).expect("0.5 is in range"),
+                AuthorityStatus::Active,
+                at,
+                NonEmptyVec::new(vec![EvidenceId::new()]).expect("one element is non-empty"),
+                None,
+            )
+            .expect("valid Active authority")
+        };
+        let west_authority = make(west);
+        let east_authority = make(east);
+
+        assert_eq!(west_authority.asserted_at.offset(), time::UtcOffset::UTC);
+        assert_eq!(east_authority.asserted_at.offset(), time::UtcOffset::UTC);
+        assert_eq!(west_authority.asserted_at, east_authority.asserted_at);
+
+        // Class, confidence and instant all tie, so `resolve` must fall through the time
+        // tier to the memory_id tier — the differing offsets never decide the winner.
+        let (low, high) = {
+            let a = MemoryId::new();
+            let b = MemoryId::new();
+            if a < b { (a, b) } else { (b, a) }
+        };
+        assert_eq!(
+            resolve(&(low, west_authority), &(high, east_authority)),
+            Ordering::Less
+        );
+        assert_eq!(
+            resolve(&(high, west_authority), &(low, east_authority)),
+            Ordering::Greater
+        );
     }
 }
 
