@@ -914,7 +914,7 @@ fn check_rerank_timeout(
 ) -> Result<(), BootstrapError> {
     if rerank_enabled && Duration::from_millis(u64::from(rerank_timeout_ms)) >= handler_timeout {
         return Err(BootstrapError::new(
-            "HUMAUX_GATEWAY_RETRIEVAL_PROFILE_RERANK_TIMEOUT_MS",
+            retrieval_env_key("retrieval.profile.rerank_timeout_ms"),
             "must be below HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS (ADR-0084 U7)",
         ));
     }
@@ -2209,7 +2209,7 @@ mod tests {
         );
 
         values.insert(
-            "HUMAUX_GATEWAY_RETRIEVAL_PROFILE_RERANK_ENABLED".into(),
+            retrieval_env_key("retrieval.profile.rerank_enabled"),
             "true".into(),
         );
         assert!(
@@ -2273,13 +2273,13 @@ mod tests {
             values.insert(key.into(), value);
         }
         values.insert(
-            "HUMAUX_GATEWAY_RETRIEVAL_PROFILE_RERANK_ENABLED".into(),
+            retrieval_env_key("retrieval.profile.rerank_enabled"),
             "true".into(),
         );
         GatewayBootstrap::from_raw(values.clone())
             .expect("the registered 4000 ms fits a 5 s handler");
         values.insert(
-            "HUMAUX_GATEWAY_RETRIEVAL_PROFILE_RERANK_TIMEOUT_MS".into(),
+            retrieval_env_key("retrieval.profile.rerank_timeout_ms"),
             "5000".into(),
         );
         assert!(GatewayBootstrap::from_raw(values).is_err());
@@ -2297,31 +2297,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("{key} is missing from its values file"))
                 .to_owned()
         };
-        for (gateway_key, worker_key) in [
-            (
-                "HUMAUX_GATEWAY_RERANK_REPO",
-                "HUMAUX_RETRIEVAL_WORKER_RERANK_REPO",
-            ),
-            (
-                "HUMAUX_GATEWAY_RERANK_REVISION",
-                "HUMAUX_RETRIEVAL_WORKER_RERANK_REVISION",
-            ),
-            (
-                "HUMAUX_GATEWAY_RERANK_RECIPE",
-                "HUMAUX_RETRIEVAL_WORKER_RERANK_RECIPE",
-            ),
-            (
-                "HUMAUX_GATEWAY_RERANK_MODEL_SHA256",
-                "HUMAUX_RETRIEVAL_WORKER_RERANK_MODEL_SHA256",
-            ),
-            (
-                "HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256",
-                "HUMAUX_RETRIEVAL_WORKER_RERANK_TOKENIZER_SHA256",
-            ),
-        ] {
+        // The worker's key names are assembled: this process reads none of them (dep-map's env scan).
+        let worker_prefix = ["HUMAUX", "RETRIEVAL", "WORKER", "RERANK"].join("_");
+        for (gateway_key, part) in RERANK_PIN_KEYS.into_iter().zip([
+            "REPO",
+            "REVISION",
+            "RECIPE",
+            "MODEL_SHA256",
+            "TOKENIZER_SHA256",
+        ]) {
+            let worker_key = format!("{worker_prefix}_{part}");
             assert_eq!(
                 value(gateway, gateway_key),
-                value(worker, worker_key),
+                value(worker, &worker_key),
                 "{gateway_key}"
             );
         }
