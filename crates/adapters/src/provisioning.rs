@@ -17,7 +17,7 @@
 //!   transaction and the activation commits only if evaluate_switch accepts the DB-returned facts and the collection
 //!   generation is unchanged; a refusal writes nothing but its DENIED audit row; Qdrant or PostgreSQL down -> a typed
 //!   ProvisioningError (exit 1), never a partial activation; no receipt carries a wire key or the pepper]
-//! Spec: Baseline §4.2; §6.2.2; §16.2; §16.3; §17.3; §77; ADR-0017; ADR-0053; ADR-0057; ADR-0058
+//! Spec: Baseline §4.2; §6.2.2; §16.2; §16.3; §17.3; §17.6; §77; ADR-0017; ADR-0053; ADR-0057; ADR-0058; ADR-0083 D-B
 //!
 //! Every onboarding write runs as `role_maintenance` ([`MaintenanceDbPool`]) through the eight
 //! owner SECURITY DEFINER doors of migration 0186 — this module holds no table INSERT of its own.
@@ -66,8 +66,8 @@ use uuid::Uuid;
 use crate::membership_repo::{self, AdminAction, MembershipRepoError, MembershipRequest};
 use crate::postgres::MaintenanceDbPool;
 use crate::qdrant::{
-    Distance, ShardingMethod, create_collection_body, memory_id_index_body, subject_index_body,
-    tenant_index_body,
+    BM25_MODIFIER, BM25_VECTOR_NAME, Distance, ShardingMethod, bm25_vector_body,
+    create_collection_body, memory_id_index_body, subject_index_body, tenant_index_body,
 };
 use crate::retrieve::{IndexFace, stream_count_of_version};
 
@@ -1410,8 +1410,11 @@ impl QdrantFace {
 }
 
 /// The exact `PUT` sequence that brings one collection into existence: the collection itself,
-/// then BOTH payload indexes §17.1 / §6.1.3 require (card 9 P2: the `subject_ids` uuid index was
-/// once simply never PUT and nothing could see it missing — the sentinel test below pins both).
+/// then the payload indexes §17.1 / §6.1.3 / ADR-0068 require (card 9 P2: the `subject_ids` uuid index was
+/// once simply never PUT and nothing could see it missing — the sentinel test below pins them), then ADR-0083 D-B's
+/// `bm25` sparse vector. The collection body already declares `bm25`, so on a fresh collection the last PUT is Qdrant's
+/// idempotent no-op; on a collection created before ADR-0083 it is what adds the vector (`PATCH /collections/{c}` cannot,
+/// ADR-0083 V1; `PUT /collections/{c}/vectors/{name}` can, V1b).
 pub fn collection_setup_puts(collection: &str, dimension: u32) -> Vec<(String, Value)> {
     vec![
         (
@@ -1437,21 +1440,26 @@ pub fn collection_setup_puts(collection: &str, dimension: u32) -> Vec<(String, V
             format!("/collections/{collection}/index"),
             memory_id_index_body(),
         ),
+        (
+            format!("/collections/{collection}/vectors/{BM25_VECTOR_NAME}"),
+            bm25_vector_body(),
+        ),
     ]
 }
 
 /// The payload index names `collection_setup_puts` creates, in order.
 fn payload_index_names(collection: &str) -> Vec<String> {
-    collection_setup_puts(collection, 1)[1..]
+    collection_setup_puts(collection, 1)
         .iter()
+        .filter(|(path, _)| path.ends_with("/index"))
         .filter_map(|(_, body)| body["field_name"].as_str().map(str::to_owned))
         .collect()
 }
 
 /// ADR-0053: the collection's generation from `GET /collections/{c}` — its name plus the sha256
-/// of the canonical config subset (vector size + distance, and each required payload index's
-/// type and params; never the live `points` counts). A missing collection is `collection_missing`;
-/// a dimension or index mismatch is `collection_misconfigured`.
+/// of the canonical config subset (vector size + distance, the `bm25` sparse vector's modifier (ADR-0083 D-B), and
+/// each required payload index's type and params; never the live `points` counts). A missing collection is
+/// `collection_missing`; a dimension, `bm25` or index mismatch is `collection_misconfigured`.
 pub async fn collection_generation(
     face: &QdrantFace,
     collection: &str,
@@ -1485,6 +1493,16 @@ pub async fn collection_generation(
             "collection_misconfigured".to_owned(),
         ));
     }
+    // ADR-0083 D-B: a collection created before the sparse vector existed reads misconfigured until
+    // `collection ensure` adds it, the path ADR-0068 used for the `memory_id` index.
+    let sparse = &result["config"]["params"]["sparse_vectors"][BM25_VECTOR_NAME];
+    let modifier = sparse["modifier"].as_str().unwrap_or("");
+    if modifier != BM25_MODIFIER {
+        return Err(ProvisioningError::Refused(
+            "collection_misconfigured".to_owned(),
+        ));
+    }
+    canonical.push_str(&format!(";{BM25_VECTOR_NAME}_modifier={modifier}"));
     for index in payload_index_names(collection) {
         let schema = &result["payload_schema"][&index];
         if schema.is_null() {
@@ -1501,9 +1519,10 @@ pub async fn collection_generation(
     Ok(GenerationId(format!("{collection}@{digest}")))
 }
 
-/// `collection ensure`: creates the collection and every payload index unless present. A
+/// `collection ensure`: creates the collection and every payload index unless present, and adds the `bm25` sparse
+/// vector to a collection that predates it (ADR-0083 D-B). A
 /// non-2xx create is re-read and accepted when the collection now exists (a concurrent
-/// onboarding created it); the index PUTs are idempotent and wait for completion so the
+/// onboarding created it); the index and vector PUTs are idempotent and wait for completion so the
 /// generation read right after sees them.
 pub async fn ensure_collection(
     face: &QdrantFace,
@@ -1562,7 +1581,7 @@ pub async fn ensure_collection(
             .await?;
         if !(200..300).contains(&status) {
             return Err(ProvisioningError::Qdrant(format!(
-                "PUT payload index returned {status}"
+                "PUT {path} returned {status}"
             )));
         }
     }
@@ -1883,11 +1902,11 @@ mod tests {
         let puts = collection_setup_puts("c", 1024);
         assert_eq!(
             puts.len(),
-            4,
-            "collection + tenant index + subject index + memory_id index"
+            5,
+            "collection + tenant index + subject index + memory_id index + bm25 vector"
         );
         assert_eq!(puts[0].0, "/collections/c");
-        let fields: Vec<&str> = puts[1..]
+        let fields: Vec<&str> = puts[1..4]
             .iter()
             .map(|(path, body)| {
                 assert_eq!(path, "/collections/c/index");
@@ -1901,6 +1920,28 @@ mod tests {
         assert_eq!(
             payload_index_names("c"),
             vec!["tenant_id", "subject_ids", "memory_id"]
+        );
+    }
+
+    /// ADR-0083 D-B / G6b-1 (T-RET-6b): a fresh collection is created WITH the `bm25` sparse vector
+    /// (`modifier: idf`), and the setup sequence ends with the `PUT /collections/c/vectors/bm25` that adds it to a
+    /// collection created before ADR-0083 (`PATCH` cannot, V1). The live arm — an old collection gains the vector
+    /// through `ensure_collection` and a second call changes nothing — is `rebuild.rs`'s
+    /// `ensure_adds_bm25_to_an_old_collection_once`.
+    /// Fault: drop the vector PUT from `collection_setup_puts` ⇒ red; drop `sparse_vectors` from the body ⇒ red.
+    #[test]
+    fn a_seeded_collection_gets_the_bm25_sparse_vector() {
+        let puts = collection_setup_puts("c", 1024);
+        assert_eq!(
+            puts[0].1["sparse_vectors"],
+            serde_json::json!({ "bm25": { "modifier": "idf" } }),
+            "a fresh collection is created with bm25"
+        );
+        let last = puts.last().expect("a non-empty sequence");
+        assert_eq!(last.0, "/collections/c/vectors/bm25");
+        assert_eq!(
+            last.1,
+            serde_json::json!({ "sparse": { "modifier": "idf" } })
         );
     }
 

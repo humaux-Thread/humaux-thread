@@ -1,5 +1,5 @@
 //! `adapters::rebuild` — the Qdrant rebuild from PostgreSQL as generation g+1 on the same stream (ADR-0064 D-A,
-//!   D-E), its equivalence verifier against Project(PG@H2) (D-F E1–E5, orphan deletion under the quiescent rule),
+//!   D-E), its equivalence verifier against Project(PG@H2) (D-F E1–E6, orphan deletion under the quiescent rule),
 //!   the embedding-fingerprint precheck (D-G), the closed no-provider deps of the restore drill (D-M), and the
 //!   registry-driven `memory_id` payload backfill (ADR-0068 40d-2a).
 //! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
@@ -25,9 +25,11 @@
 //!   drill's own Qdrant on 127.0.0.1; with require_stored_vector (the drill) only generation tickets count as in
 //!   flight for the stream-quiescence verdict, restored non-generation tickets being frozen quarantine state;
 //!   backfill_memory_ids writes only the memory_id payload key, only on points with a registry row (live or
-//!   retired) and only the value that row names, never PostgreSQL, a vector or a provider]
+//!   retired) and only the value that row names, never PostgreSQL, a vector or a provider; E6 requires a bm25 sparse
+//!   vector on every point of a tenant whose in_cell_text_processing_allowed is true, by presence alone (ADR-0083
+//!   D-B), and reports the missing count as bm25_missing_points, the U6 reading]
 //! Spec: Baseline §16.2; §44; ADR-0057; ADR-0064 D-A; ADR-0064 D-E; ADR-0064 D-F; ADR-0064 D-G; ADR-0064 D-M;
-//!   ADR-0064 D-N; ADR-0068
+//!   ADR-0064 D-N; ADR-0068; ADR-0083 D-B
 //!
 //! ## One stream, in order (D-E)
 //!
@@ -982,6 +984,22 @@ fn judge_points(
     (pg_hasher.finalize().into(), payload_diff, vector_diff)
 }
 
+/// D-F E6 (ADR-0083 D-B, U6): the ids of `r` (R \ T) that Qdrant holds without a `bm25` sparse vector, when the
+/// tenant's policy allows in-cell text processing (`projection_worker::in_cell_text_processing_allowed`, the same
+/// function the write path calls — a tenant that forbids it has no `bm25` to miss). The rule is presence, not
+/// equality: the vector is Qdrant's own computation of the card text, which PostgreSQL cannot reproduce, and an empty
+/// sparse vector is a legal value (V7). A point Qdrant does not hold at all is E3's, not counted here. The count is
+/// T-RET-6c's `sparse_leg_enabled` precondition (U6): it flips the flag only after reading 0.
+fn points_missing_bm25(tenant: TenantId, scrolled: &Scrolled, r: &BTreeSet<Uuid>) -> Vec<Uuid> {
+    if !projection_worker::in_cell_text_processing_allowed(tenant) {
+        return Vec::new();
+    }
+    r.iter()
+        .copied()
+        .filter(|id| scrolled.label.get(id).is_some_and(|p| !p.has_bm25))
+        .collect()
+}
+
 /// D-F E3's sets: T (registry points whose memory fails the hydrate gate), R \ T, and the four differences.
 struct IdSets {
     t_points: BTreeSet<Uuid>,
@@ -1089,6 +1107,11 @@ async fn judge(
     if !vector_diff.is_empty() {
         reasons.push(format!("e5:vectors_differ={}", vector_diff.len()));
     }
+    // E6 (ADR-0083 D-B)
+    let bm25_missing = points_missing_bm25(stream.key.tenant_id, scrolled, &r);
+    if !bm25_missing.is_empty() {
+        reasons.push(format!("e6:bm25_missing={}", bm25_missing.len()));
+    }
     let verdict = if in_flight > 0 || pg.stream_in_flight {
         reasons.insert(0, "generation_in_flight".to_owned());
         Verdict::CannotEstablish
@@ -1113,6 +1136,7 @@ async fn judge(
     json["excluded"] = json!(pg.excluded);
     json["excluded_by_outcome"] = json!(by_outcome);
     json["legacy_points_without_vector"] = json!(legacy);
+    json["bm25_missing_points"] = json!(bm25_missing.len());
     json["differing_ids"] = json!({
         "registered_not_in_qdrant": first_ids(missing),
         "qdrant_not_registered": first_ids(orphans.iter().copied()),
@@ -1120,6 +1144,7 @@ async fn judge(
         "pg_projection_not_registered": first_ids(unprojected),
         "payload": first_ids(payload_diff),
         "vector": first_ids(vector_diff),
+        "bm25": first_ids(bm25_missing),
     });
     Ok(Report {
         verdict,

@@ -30,9 +30,11 @@
 //!   (ADR-0068 D-G), on its own thread, so a slow scanner cannot keep the lease heartbeat from being polled (#79);
 //!   one distinct vector key is embedded once and mapped to its slots by key (ADR-0068 D-F); a Memory
 //!   counts toward DONE only when every one of its slots is registered and confirmed visible, and a chunked note's
-//!   legacy point retires only in that same completion step (ADR-0068 D-F/D-I)]
-//! Spec: Baseline §4.2; §15.1; §17.4; §18.2; §15.7; §6.1.2; ADR-0052; ADR-0057; ADR-0064 D-B; ADR-0064 D-F;
-//!   ADR-0064 D-N; ADR-0068
+//!   legacy point retires only in that same completion step (ADR-0068 D-F/D-I); every slot's point write carries
+//!   its card text as the bm25 Document exactly when in_cell_text_processing_allowed(tenant), the one decision the
+//!   rebuild verifier and the recall path share (ADR-0083 D-B)]
+//! Spec: Baseline §4.2; §15.1; §17.4; §17.6; §18.2; §15.7; §6.1.2; ADR-0052; ADR-0057; ADR-0064 D-B; ADR-0064 D-F;
+//!   ADR-0064 D-N; ADR-0068; ADR-0083 D-B
 //!
 //! §4.2 (line 818): there is no separate `projection-worker` process — this is
 //! `humaux-retrieval-worker`'s own consumer loop, owned by `role_retrieval_worker`.
@@ -408,6 +410,17 @@ pub fn note_chunk_policy_refusal(row: Option<Option<&str>>) -> Option<String> {
             },
         ),
     }
+}
+
+/// ADR-0083 D-A/D-E, U4: whether `tenant` allows text processing INSIDE the Data Cell (§17.6), i.e. whether a point of
+/// this tenant carries a `bm25` sparse vector and the sparse leg may run for it. `false` is the §17.6 "extreme policy"
+/// that makes the sparse lane `SKIPPED_BY_POLICY` (never a fallback to an external provider). It is the ONE decision:
+/// the write path (`finish_row`, so an upsert and a rebuild alike), the rebuild verifier's `bm25` expectation and
+/// T-RET-6c's query path all call this function and no other, so they cannot disagree about a tenant. Pure and
+/// synchronous on purpose: when a policy source lands it is read here, and the callers do not change.
+// ponytail: no tenant policy field exists (Baseline §17.6 prose only; TenantDataPolicy has none), so in-cell text processing is always allowed; upgrade = a TenantDataPolicy / control.egress_policies field read here when a tenant first needs it
+pub fn in_cell_text_processing_allowed(_tenant: TenantId) -> bool {
+    true
 }
 
 /// ADR-0068 D-I: the policy one pass plans under, read before anything is claimed. A missing row reads as NULL, as
@@ -935,6 +948,9 @@ struct LiveSlot {
     ordinal: u32,
     input_sha256: [u8; 32],
     vector: Vec<f32>,
+    /// The card text the vector was embedded from (ADR-0064 D-B), which ADR-0083 D-A also hands Qdrant as the `bm25`
+    /// Document: chunk cards included, the same bytes as the dense input.
+    card_text: String,
 }
 
 /// A live memory with one entry per expected point slot (ADR-0068 D-F). `chunked` = profile `NoteChunksV1`: every
@@ -1045,6 +1061,7 @@ async fn resolve_and_embed(
             ordinal: slot.ordinal,
             input_sha256: slot.input_sha256,
             vector,
+            card_text: slot.card.card_text,
         });
     }
     Ok(Prepared {
@@ -1562,12 +1579,16 @@ async fn finish_row(
             input_sha256: slot.input_sha256,
             vector: slot.vector.clone(),
         });
+        // ADR-0083 D-B: the sparse vector rides every slot's write — rebuild generation tickets included, which is
+        // how an existing point gains it in place — unless the tenant's policy forbids in-cell text processing.
+        let bm25_text = in_cell_text_processing_allowed(ctx.family.tenant_id)
+            .then_some(slot.card_text.as_str());
         if let Err(failure) = write_slot(
             ctx,
             stream_seq,
             &authorization,
             &registration,
-            (&payload, slot.vector),
+            (&payload, slot.vector, bm25_text),
             stored.as_ref(),
         )
         .await
@@ -1619,7 +1640,7 @@ async fn write_slot(
     stream_seq: i64,
     authorization: &AuthorizationScope,
     registration: &PrivateMemoryPointRegistration,
-    (payload, vector): (&IndexablePayload, Vec<f32>),
+    (payload, vector, bm25_text): (&IndexablePayload, Vec<f32>, Option<&str>),
     stored: Option<&StoredVector>,
 ) -> Result<(), (RowTerminal, &'static str)> {
     let point_id = PointId::Uuid(registration.point_id.as_uuid());
@@ -1637,6 +1658,7 @@ async fn write_slot(
         ctx.permit,
         &ctx.placement.collection_name,
         (point_id, payload, vector),
+        bm25_text,
         ha_profile_for(QdrantOperation::NormalImmutableUpsert),
     )
     .await
@@ -2421,5 +2443,28 @@ mod classification_tests {
             terminal_for_missing_memory(Some("PENDING")).0,
             RowTerminal::Pending
         );
+    }
+}
+
+#[cfg(test)]
+mod bm25_policy_tests {
+    use super::in_cell_text_processing_allowed;
+    use humaux_domain::ids::TenantId;
+
+    /// ADR-0083 U4 / G6b-4 (T-RET-6b): the gate "a tenant whose policy forbids in-cell text processing gets no `bm25`
+    /// and verify does not count it as missing" is `not_applicable: no tenant policy field for in-cell text
+    /// processing (TenantDataPolicy / control.egress_policies)` (§57.1) — no such field exists, so the seam answers
+    /// `true` for every tenant. This test pins that answer and is the tripwire: the card that adds a policy field
+    /// changes the seam, must change this assertion, and with it owns the real gate (a forbidding tenant's write
+    /// carries no `bm25` and the verifier's missing count skips it). Fault: return `false` ⇒ red.
+    #[test]
+    fn the_in_cell_text_processing_seam_is_always_allowed_until_a_policy_field_exists() {
+        eprintln!(
+            "G6b-4 not_applicable: no tenant policy field for in-cell text processing \
+             (TenantDataPolicy / control.egress_policies)"
+        );
+        for _ in 0..3 {
+            assert!(in_cell_text_processing_allowed(TenantId::new()));
+        }
     }
 }

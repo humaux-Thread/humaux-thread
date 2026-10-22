@@ -30,7 +30,7 @@
 //!   role_retrieval_worker for the fingerprint binding, the settles and the worker); every refusal is asserted by
 //!   SQLSTATE or typed error, never by message text alone]
 //! Spec: Baseline §15.2; §37.2; §44; §6.2.2; ADR-0064 D-A; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0064 D-E;
-//!   ADR-0064 D-J; ADR-0064 D-O; ADR-0068
+//!   ADR-0064 D-J; ADR-0064 D-O; ADR-0068; ADR-0083 D-B
 
 #[path = "support/throwaway_db.rs"]
 #[allow(dead_code)]
@@ -1164,7 +1164,10 @@ use humaux_adapters::projection_worker::{
     PassConfig, SharedProjectionDeps, run_claimed_pass, run_claimed_pass_for_run,
 };
 use humaux_adapters::provisioning::{self as provisioning_api, QdrantFace};
-use humaux_adapters::qdrant::{PointId, RetrievalFamily};
+use humaux_adapters::qdrant::{
+    PointId, RetrievalFamily, bm25_document, memory_id_index_body, subject_index_body,
+    tenant_index_body,
+};
 use humaux_adapters::rebuild::{
     self, ClosedDeps, NoProviderEmbedder, OrphanStep, RebuildDeps, RebuildOptions, Stream,
     StreamOutcome, Verdict, WorkerLabel,
@@ -1451,14 +1454,70 @@ fn drop_collection(h: &Handle) {
     );
 }
 
-/// Upserts one point (id, vector, payload) into the scratch collection.
+/// Upserts one point (id, vector, payload) into the scratch collection, with the `bm25` Document the worker writes
+/// (ADR-0083 D-B): a tampered point must differ from Project(PG) in the field under test and in nothing else, and a
+/// dense-only upsert would also drop the sparse vector.
 fn put_point(h: &Handle, id: Uuid, vector: &[f32], payload: &serde_json::Map<String, Value>) {
+    qdrant_call(
+        h,
+        IntraCellMethod::Put,
+        format!("/collections/{}/points?wait=true", h.collection),
+        Some(json!({ "points": [{
+            "id": id.to_string(),
+            "vector": { "": vector, "bm25": bm25_document("c37 tampered point") },
+            "payload": payload,
+        }] })),
+    );
+}
+
+/// The point as written before ADR-0083: the bare dense vector and no `bm25` (T-RET-6b's pre-change state).
+fn put_point_dense_only(
+    h: &Handle,
+    id: Uuid,
+    vector: &[f32],
+    payload: &serde_json::Map<String, Value>,
+) {
     qdrant_call(
         h,
         IntraCellMethod::Put,
         format!("/collections/{}/points?wait=true", h.collection),
         Some(json!({ "points": [{ "id": id.to_string(), "vector": vector, "payload": payload }] })),
     );
+}
+
+/// The collection as `collection ensure` made it before ADR-0083: the unnamed dense vector and every payload index,
+/// no `bm25` sparse vector (T-RET-6b's pre-change state; Qdrant cannot add the vector through `PATCH`, V1).
+fn make_old_collection(h: &Handle) {
+    drop_collection(h);
+    qdrant_call(
+        h,
+        IntraCellMethod::Put,
+        format!("/collections/{}", h.collection),
+        Some(json!({ "vectors": { "size": 4, "distance": "Cosine" } })),
+    );
+    for body in [
+        tenant_index_body(),
+        subject_index_body(),
+        memory_id_index_body(),
+    ] {
+        qdrant_call(
+            h,
+            IntraCellMethod::Put,
+            format!("/collections/{}/index?wait=true", h.collection),
+            Some(body),
+        );
+    }
+}
+
+/// `config.params.sparse_vectors` of the scratch collection as Qdrant reports it.
+fn sparse_vectors_of(h: &Handle) -> Value {
+    qdrant_call(
+        h,
+        IntraCellMethod::Get,
+        format!("/collections/{}", h.collection),
+        None,
+    )["result"]["config"]["params"]["sparse_vectors"]
+        .clone()
 }
 
 fn scrolled(h: &Handle, port: u16, stream: &Stream) -> rebuild::Scrolled {
@@ -2724,4 +2783,169 @@ fn force_transient_exhausted(h: &Handle, run_id: Uuid) -> u64 {
     txn.commit().expect("commit");
     drop(worker_client);
     forced
+}
+
+/// T-RET-6b G6b-1 (ADR-0083 D-B, V1b): a collection created before ADR-0083 has no `bm25` sparse vector, so
+/// `collection_generation` reads it `collection_misconfigured`; `ensure_collection` adds the vector with
+/// `PUT /collections/{c}/vectors/bm25`, the generation then reads, and a second call changes nothing (same
+/// generation, same config). A collection `ensure` creates fresh carries `bm25` (`modifier: idf`) from the start.
+/// Fault: drop the vector PUT from `collection_setup_puts` ⇒ the old collection stays misconfigured ⇒ red.
+#[test]
+fn ensure_adds_bm25_to_an_old_collection_once() {
+    run_db_fixture::<S3Fixture, _>("ensure_adds_bm25_to_an_old_collection_once", |s| {
+        let (h, port) = (&s.h, s.port);
+        let qdrant = face(port);
+        let idf = json!("idf");
+
+        make_old_collection(h);
+        assert!(
+            sparse_vectors_of(h)["bm25"].is_null(),
+            "an old collection has no bm25"
+        );
+        let read = h.rt.block_on(provisioning_api::collection_generation(
+            &qdrant,
+            &h.collection,
+            4,
+        ));
+        assert!(
+            matches!(&read, Err(provisioning_api::ProvisioningError::Refused(reason)) if reason == "collection_misconfigured"),
+            "an old collection reads misconfigured: {read:?}"
+        );
+
+        let first =
+            h.rt.block_on(provisioning_api::ensure_collection(
+                &qdrant,
+                &h.collection,
+                4,
+            ))
+            .expect("ensure adds bm25 to the old collection");
+        assert!(!first.created, "the collection existed");
+        assert_eq!(sparse_vectors_of(h)["bm25"]["modifier"], idf);
+        let second =
+            h.rt.block_on(provisioning_api::ensure_collection(
+                &qdrant,
+                &h.collection,
+                4,
+            ))
+            .expect("a second ensure");
+        assert!(!second.created);
+        assert_eq!(
+            second.generation, first.generation,
+            "a second ensure is a no-op"
+        );
+        assert_eq!(sparse_vectors_of(h)["bm25"]["modifier"], idf);
+
+        drop_collection(h);
+        let fresh =
+            h.rt.block_on(provisioning_api::ensure_collection(
+                &qdrant,
+                &h.collection,
+                4,
+            ))
+            .expect("ensure creates the collection");
+        assert!(fresh.created);
+        assert_eq!(
+            sparse_vectors_of(h)["bm25"]["modifier"],
+            idf,
+            "a fresh collection carries bm25"
+        );
+        assert_eq!(
+            fresh.generation, first.generation,
+            "a fresh and an upgraded collection share one generation"
+        );
+    });
+}
+
+/// T-RET-6b G6b-3 (ADR-0083 D-B, ADR-0064 D-F E6): points written before ADR-0083 hold the dense vector only. Verify
+/// names them (`e6:bm25_missing=N`, `bm25_missing_points` = N, the U6 reading), a rebuild generation re-projects them
+/// in place from the stored vectors — no provider call, no `projection_version` bump — and afterwards every point holds
+/// `bm25`, the count reads 0 and the stream is equivalent.
+/// Fault: write no `bm25` in the projector (the rebuild's own writer) ⇒ the in-place rebuild closes `not_equivalent`
+/// with `e6:bm25_missing=2` ⇒ red.
+#[test]
+fn a_rebuild_backfills_bm25_in_place_and_verify_names_a_point_without_it() {
+    run_db_fixture::<S3Fixture, _>(
+        "a_rebuild_backfills_bm25_in_place_and_verify_names_a_point_without_it",
+        |mut s| {
+            let port = s.port;
+            let h = &mut s.h;
+            prepare(h);
+            let ws = h.workspace();
+            h.fan_out(ws, "c6b backfill", 2);
+            drain(h, ws, &Arc::new(CountingEmbedder::default()));
+            serve(h, ws);
+            let stream = stream_of(h, ws);
+
+            // The pre-change state: the old collection, and each projected point re-put with its dense vector only.
+            let projected = scrolled(h, port, &stream);
+            assert_eq!(projected.label.len(), 2);
+            make_old_collection(h);
+            for (id, point) in &projected.label {
+                put_point_dense_only(
+                    h,
+                    *id,
+                    point.vector.as_deref().expect("vector"),
+                    &point.payload,
+                );
+            }
+            let before = scrolled(h, port, &stream);
+            assert_eq!(before.label.len(), 2);
+            assert!(
+                before.label.values().all(|p| !p.has_bm25),
+                "the seeded points hold no bm25"
+            );
+
+            let report = verify(h, port, &stream, None);
+            assert_eq!(report.verdict, Verdict::NotEquivalent, "{}", report.json);
+            assert_eq!(
+                report.json["bm25_missing_points"],
+                json!(2),
+                "{}",
+                report.json
+            );
+            assert!(
+                report.json["reasons"]
+                    .to_string()
+                    .contains("e6:bm25_missing=2"),
+                "verify names the missing sparse vectors: {}",
+                report.json
+            );
+            assert_eq!(
+                report.json["differing_ids"]["bm25"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(2),
+                "{}",
+                report.json
+            );
+
+            // The in-place generation: ensure_collection adds bm25 to the old collection, the tickets re-send the
+            // stored dense vectors with the sparse Document.
+            let (shared, no_provider) = closed(h);
+            let outcome = rebuild_with(h, port, &stream, &shared, None);
+            assert_eq!(outcome.verdict, Verdict::Equivalent, "{}", outcome.receipt);
+            assert_eq!(outcome.receipt["closed"], json!(true));
+            assert_eq!(
+                outcome.receipt["bm25_missing_points"],
+                json!(0),
+                "{}",
+                outcome.receipt
+            );
+            assert_eq!(no_provider.attempts(), 0, "the backfill calls no provider");
+            assert_eq!(sparse_vectors_of(h)["bm25"]["modifier"], json!("idf"));
+            let after = scrolled(h, port, &stream);
+            assert_eq!(
+                after.label.keys().collect::<Vec<_>>(),
+                projected.label.keys().collect::<Vec<_>>(),
+                "the same points, rewritten in place"
+            );
+            assert!(
+                after.label.values().all(|p| p.has_bm25),
+                "every point holds bm25 after the backfill"
+            );
+            let again = verify(h, port, &stream, None);
+            assert_eq!(again.verdict, Verdict::Equivalent, "{}", again.json);
+            assert_eq!(again.json["bm25_missing_points"], json!(0));
+        },
+    );
 }
