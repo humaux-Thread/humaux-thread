@@ -18,9 +18,9 @@
 //!   (retrieval_filter_json) and sets `params.idf.corpus` to the tenant + visibility predicate alone, never a global
 //!   corpus (ADR-0083 D-A/D-C, §17.2); a collection body carries a datatype or HNSW knob only when the resolved
 //!   config differs from Qdrant's own default, so the default spec's body is `create_collection_body` unchanged
-//!   (ADR-0085 D-B)]
+//!   (ADR-0086 D-B)]
 //! Spec: Baseline §17; §17.5; §17.4; §17.6; §17.7; §23.1; §23.4; ADR-0003; §83.4; §7.0; ADR-0055; ADR-0057; ADR-0064;
-//!   ADR-0068; ADR-0083; ADR-0085
+//!   ADR-0068; ADR-0083; ADR-0086
 //!
 //! Implements every part of §17: collection/index request-body shaping, payload encoding, the
 //! [`Condition`](humaux_projection::dense::Condition) → Qdrant filter JSON translation, the
@@ -230,7 +230,7 @@ pub fn create_collection_body(
 
 /// `PUT /collections/{name}` body for one collection generation: [`create_collection_body`] (cosine, the unnamed
 /// dense vector of `dimension`, the `bm25` sparse vector, one shard, one replica) plus the datatype and HNSW knobs of
-/// `config` — each only when it differs from Qdrant's own default (ADR-0085 D-B), so the default config yields the
+/// `config` — each only when it differs from Qdrant's own default (ADR-0086 D-B), so the default config yields the
 /// body this function's callers sent before `CollectionConfig` existed. `hnsw_config` is the collection-level one:
 /// it governs the unnamed dense vector, and the sparse vector has no HNSW graph.
 pub fn collection_create_body(dimension: u32, config: &CollectionConfig) -> Value {

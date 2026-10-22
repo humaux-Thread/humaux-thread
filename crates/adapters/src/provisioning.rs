@@ -18,7 +18,7 @@
 //!   generation is unchanged; a refusal writes nothing but its DENIED audit row; Qdrant or PostgreSQL down -> a typed
 //!   ProvisioningError (exit 1), never a partial activation; no receipt carries a wire key or the pepper]
 //! Spec: Baseline §4.2; §6.2.2; §16.2; §16.3; §17.3; §17.6; §17.7; §77; ADR-0017; ADR-0053; ADR-0057; ADR-0058; ADR-0083 D-B;
-//!   ADR-0085
+//!   ADR-0086
 //!
 //! Every onboarding write runs as `role_maintenance` ([`MaintenanceDbPool`]) through the eight
 //! owner SECURITY DEFINER doors of migration 0186 — this module holds no table INSERT of its own.
@@ -1420,12 +1420,12 @@ pub fn collection_setup_puts(collection: &str, dimension: u32) -> Vec<(String, V
     setup_puts(collection, default_collection_create_body(dimension))
 }
 
-/// [`collection_setup_puts`] for one [`CollectionSpec`]: the same sequence, named and shaped by the spec (ADR-0085).
+/// [`collection_setup_puts`] for one [`CollectionSpec`]: the same sequence, named and shaped by the spec (ADR-0086).
 pub fn collection_setup_puts_for(spec: &CollectionSpec) -> Vec<(String, Value)> {
     setup_puts(&spec.collection_name(), spec.create_body())
 }
 
-/// The sequence behind both entry points. Order is the contract (§17.1, ADR-0085 D-C): the collection, then the
+/// The sequence behind both entry points. Order is the contract (§17.1, ADR-0086 D-C): the collection, then the
 /// tenant index (`is_tenant`) and the other payload indexes, the sparse vector last, and never a point write: no
 /// point exists before every index does.
 fn setup_puts(collection: &str, create_body: Value) -> Vec<(String, Value)> {
@@ -1541,7 +1541,7 @@ pub async fn ensure_collection(
     .await
 }
 
-/// [`ensure_collection`] for one [`CollectionSpec`] (ADR-0085): the generation's own name and create body; an existing
+/// [`ensure_collection`] for one [`CollectionSpec`] (ADR-0086): the generation's own name and create body; an existing
 /// collection of that name is left as it is, whatever its datatype or HNSW (a knob change is a new generation).
 pub async fn ensure_collection_for(
     face: &QdrantFace,

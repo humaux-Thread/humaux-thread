@@ -1,4 +1,4 @@
-# ADR-0085 — CollectionSpec: one typed description of a Qdrant collection per embedding generation
+# ADR-0086 — CollectionSpec: one typed description of a Qdrant collection per embedding generation
 
 - Status: Accepted (2026-10-22). Card M10-1 (wave B, module M10). Design note: `module_design_M10.md` §2, §6 D1/D2,
   §9; cross-module contract C7 of the wave B overview.

@@ -7,7 +7,7 @@
 //! Called-by: [cargo-test]
 //! Invariants: [no DB and no network: only request/response JSON shaping and the §17.4 confirmation contract;
 //!   unexpected shapes and non-success statuses must map to the typed QdrantTransportError]
-//! Spec: Baseline §17.4; §17.1; §17.7; §23.4; ADR-0055; ADR-0085
+//! Spec: Baseline §17.4; §17.1; §17.7; §23.4; ADR-0055; ADR-0086
 //!
 //! No DB, no network: everything this
 //! file exercises is request/response JSON shaping and the §17.4 confirmation contract, none
@@ -814,7 +814,7 @@ fn promotion_state_db_strings_match_migration_0068_literal_check_values() {
     assert_eq!(PromotionState::ALL.len(), 3);
 }
 
-// ---- G-M10-1 / ADR-0085: CollectionSpec from the config registry ----
+// ---- G-M10-1 / ADR-0086: CollectionSpec from the config registry ----
 
 fn collection_raw(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
