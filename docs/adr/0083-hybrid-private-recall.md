@@ -48,8 +48,9 @@ one correct Memory each.
 - The bigram-leg reference (100 / 140) against the multilingual Qdrant leg (96 / 147): not significant.
 - PB2, pre-registered: pool@25 127 to 140 with the bigram leg and RRF (b/c 6/19, p .015); hit@5 64 to 100 (b/c 9/45,
   p 7.3e-7).
-- Rerank is not part of this design: the owner decided on 2026-10-22 to run hybrid recall without a reranker (see
-  Alternatives rejected for the measurements).
+- Rerank is not part of this design. It is decided in ADR-0084: the owner's decision of 2026-10-22 to run hybrid recall
+  without a reranker was replaced the same day by a local rerank lane (see Alternatives rejected for the measurements
+  that were recorded here).
 
 Caveats that bound these numbers:
 
@@ -259,12 +260,14 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
   authorized-corpus code where §17.6 and Qdrant already provide both.
 - **Adding the sparse vector with `PATCH /collections/{name}`**: it cannot create one (V1).
 - **A `projection_version` bump for the backfill**: it would move every Memory's fingerprint and point id (ADR-0068 D-I).
-- **Rerank in production**: the owner decided on 2026-10-22 to run hybrid recall without a reranker. For the record,
+- **Rerank in this design** (superseded by ADR-0084): the owner decided on 2026-10-22 to run hybrid recall without a
+  reranker, and replaced that decision the same day with a local rerank lane, which ADR-0084 records. For the record,
   E-RET-5f (run 39629912275, `exp/e-ret-pb-rrf-rerank`) measured, on the fused pool of the same 198 questions, a cloud
   reranker at 140 (from 96, p 3.7e-11) and local int8 at 111 (p .077, 3.5 s p50 on the 4-vCPU Neoverse-N2 CI runner).
   On the 4-vCPU Neoverse-N1 production host (Baseline §67.2) the same int8 model measured 6.43 s p50 / 11.92 s p95 per
   depth-25 query with all four cores busy (E-RET-5e, 2026-10-21, the public bundle `n1-bench-bundle-v1`, run by the lead
-  with the owner's approval; not a CI run). No rerank card is opened; the data stays for a later decision.
+  with the owner's approval; not a CI run). The local lane that was chosen afterwards is ADR-0084 (cards T-RET-7a to
+  T-RET-7d).
 
 ## Deferred items
 
