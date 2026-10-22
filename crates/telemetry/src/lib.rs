@@ -17,6 +17,7 @@ pub mod degrade;
 pub mod direction;
 pub mod dr;
 pub mod health;
+pub mod host;
 pub mod metrics;
 
 use std::io::{Read as _, Write as _};

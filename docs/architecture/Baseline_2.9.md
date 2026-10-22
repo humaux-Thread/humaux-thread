@@ -9886,6 +9886,9 @@ Trace / logs with protected access
 | `backup_disk_free_bytes{volume}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：进程内 statvfs(3)（f_bavail × f_frsize，不派生 `df` 子进程）现量 `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`（`repo`，仓库自己的文件系统）与 `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`（`pgdata`）的可用字节 | gauge·字节 | §42 disk free low |
 | `backup_budget_headroom_bytes{limit}` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`repo_max` = 回执记下的 `repo_max_bytes` − `repo_bytes` − 估算；`free_floor` = 仓库文件系统现量可用 − 回执记下的 `min_free_bytes` − 估算；估算 = 最新 VERIFIED 集 `set_repo_bytes` × 1.25，否则该回执的 `estimate_bytes`；尚无回执两者 = 0；守护进程不读预算键（ADR-0064 D-V / 10.11 D） | gauge·字节 | §42 backup budget low |
 | `wal_archive_failing` | §44 同一次运行收尾，`telemetry::dr::publish` 内唯一 `.set()` · 1：`ops.wal_archive_failures` 里有晚于最新 VERIFIED 全量开始时刻的观测行（闩锁，只有更晚开始的 VERIFIED 全量才解除），或 `pg_stat_archiver` 此刻在失败 ⇒ 1，否则 0（ADR-0064 10.11 D） | gauge·0/1 | §42 WAL archive failing |
+| `host_pressure_ratio{resource,kind}` | §41.2: 无 SQL。`humaux-maintenance health serve` 每个采样周期读 `/proc/pressure/{cpu,memory,io}`，取每个文件里 `some` / `full` 行的 `avg60` 除以 100（0–1），`telemetry::host::publish` 内唯一 `.set()` · 1；`resource` ∈ {`cpu`,`memory`,`io`}，`kind` ∈ {`some`,`full`}；内核不给 `cpu` 的 `full` 行 ⇒ 该序列不出样本；文件缺失或无法解析 ⇒ 该资源的全部序列缺席，绝不写 0（§4.4）；只由 `health serve` 导出 | gauge·比例 0–1 | M22-3 能力告警的 PSI 佐证；runbook「capacity alert response」 |
+| `host_memory_available_bytes` | §41.2: 无 SQL。同一采样点读 `/proc/meminfo` 的 `MemAvailable`（kB × 1024 = 字节），`MemTotal` 只作上界校验（可用量超过总数即视为不可解析，不夹取），`telemetry::host::publish` 内唯一 `.set()` · 1；文件缺失、无该行或无法解析 ⇒ 该 family 无样本，绝不写 0（§4.4）；只由 `health serve` 导出 | gauge·字节 | M22-3 能力告警（MemAvailable）；runbook「capacity alert response」 |
+| `host_cpu_busy_ratio` | §41.2: 无 SQL。同一采样点读 `/proc/stat` 首行 `cpu`，与同一 `telemetry::host::Reader` 上一次读数做差分：`1 − Δ(idle+iowait)/Δ(前 8 列之和)`，`telemetry::host::publish` 内唯一 `.set()` · 1；第一次读数无样本（只存计数器），`Δtotal = 0` 无样本（不除零）；文件缺失或无法解析 ⇒ 无样本，绝不写 0（§4.4）；只由 `health serve` 导出 | gauge·比例 0–1 | M22-3 能力告警（CPU busy）；runbook「capacity alert response」 |
 | `tenant_isolation_canary_failures_total{probe}` ⊕ | §45 cross-tenant canary 每次探测判定处 · 1 | counter·次 | §42；§54 cross-tenant violation = 0 |
 | `boundary_violations_total{kind}` ⊕ | §12 `contribution_release` 准入校验拒绝分支 · 1 | counter·次 | §42 private/public boundary violation |
 | `tombstoned_unpurged_over_sla` ⊕ | §65 `retention` job 收尾 `.set()` · 1；扫 `state = 'TOMBSTONED'` 且 Qdrant point / object bytes 仍在、`settled_at` 已过 purge SLA 的行数（**现算，不落列** —— 落列即违反 §37.2 那道 12 列闸） | gauge·条 | §42 tombstone 超 SLA 未 purge；§37 tombstone-first 的补偿控制 |
@@ -9909,6 +9912,8 @@ backup_last_success_timestamp_seconds.target        local（只此一值，`tele
 restore_drill_last_success_timestamp_seconds.target local（同上）
 backup_disk_free_bytes.volume              repo | pgdata（`telemetry::dr::Volume::as_str` 逐字）
 backup_budget_headroom_bytes.limit         repo_max | free_floor（`telemetry::dr::Limit::as_str` 逐字）
+host_pressure_ratio.resource               cpu | memory | io（`PressureResource::as_str` 逐字，也是 /proc/pressure 下的文件名）
+host_pressure_ratio.kind                   some | full（`PressureKind::as_str` 逐字；内核的 cpu 文件只有 some 行）
 partition_horizon_months.table             model_call_ledger | stage_runs | messages | maintenance_receipts | events | audit_events | retrieval_query_log
                                            （ADR-0063 D-C table_key 闭集的小写形，`PartitionTable::label` 逐字）
 maintenance_task_runs_total.outcome        ok | failed

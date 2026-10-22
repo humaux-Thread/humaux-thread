@@ -36,6 +36,12 @@ const FAMILIES: [&str; 9] = [
     "data_disclosures_finalized_total",
     "data_disclosures_reserved_unfinalized",
 ];
+/// The three `telemetry::host` families the same process renders (M22-1); zero state declares them with no sample.
+const HOST_FAMILIES: [&str; 3] = [
+    "host_pressure_ratio",
+    "host_memory_available_bytes",
+    "host_cpu_busy_ratio",
+];
 
 fn value(metrics: &str, series: &str) -> Option<f64> {
     metrics
@@ -227,18 +233,28 @@ fn sigterm_exits_zero_and_closes_the_port() {
     );
 }
 
-/// T-M5: `--metrics-families` needs no environment and prints the nine families at zero state.
+/// T-M5: `--metrics-families` needs no environment and declares the nine SQL families plus the three host families
+/// at zero state. The host families carry no sample before the first procfs read (§4.4: absent, never a 0).
 #[test]
-fn metrics_families_prints_nine_families_without_env() {
+fn metrics_families_prints_every_family_without_env() {
     let out = run(&["--metrics-families"], &[]);
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         text.lines().filter(|l| l.starts_with("# TYPE ")).count(),
-        9,
+        FAMILIES.len() + HOST_FAMILIES.len(),
         "{text}"
     );
     for family in FAMILIES {
         assert!(text.contains(&format!("# TYPE {family} ")), "{family}");
+    }
+    for family in HOST_FAMILIES {
+        assert!(text.contains(&format!("# TYPE {family} ")), "{family}");
+        assert!(
+            !text
+                .lines()
+                .any(|l| !l.starts_with('#') && l.starts_with(family)),
+            "{family} must have no sample before the first host read\n{text}"
+        );
     }
 }

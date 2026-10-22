@@ -4,13 +4,14 @@
 //! Depends-on: crates=[humaux-adapters, humaux-telemetry, serde_json, time, tokio];
 //!   services=[PostgreSQL(role_maintenance) x=[ops.health_snapshot]]; env=[
 //!   HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_PG_DSN]; modules=[adapters::disclosure, adapters::health, adapters::postgres,
-//!   telemetry::health, telemetry::metrics, maintenance::main, maintenance::resident]
+//!   telemetry::health, telemetry::host, telemetry::metrics, maintenance::main, maintenance::resident]
 //! Called-by: [maintenance::main]
 //! Invariants: [a scrape never runs SQL, it renders the last publish; a failed or stale (> 2 × interval) sample
 //!   answers 503 with the error and the age, never the last good values; the first sample is taken before the
 //!   listener binds; both keys are required with no code default; HUMAUX_MIGRATOR_PG_DSN in the environment refuses
-//!   boot before anything else (ADR-0063 D-H); SIGTERM / SIGINT close the port and exit 0]
-//! Spec: Baseline §41.2; §53.5; §42; §78.1; ADR-0061 D-B; ADR-0061 D-D; ADR-0063 D-H
+//!   boot before anything else (ADR-0063 D-H); SIGTERM / SIGINT close the port and exit 0; the host gauges are
+//!   sampled from procfs on the same tick and a missing source renders no sample at all, never a 0 (§4.4)]
+//! Spec: Baseline §41.2; §4.4; §53.5; §42; §78.1; ADR-0061 D-B; ADR-0061 D-D; ADR-0063 D-H
 //!
 //! Exactly one process samples (ADR-0061 D-D): one series per gauge, one EXECUTE grant. The finalized-disclosure
 //! watermark lives here: it starts at process start and advances to each successful sample's `as_of`; a failed
@@ -24,6 +25,7 @@ use humaux_adapters::disclosure::DisclosureOutcome as DbOutcome;
 use humaux_adapters::health::{HealthSample, read_health_snapshot};
 use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_telemetry::health::{self, AgeBucket, DisclosureOutcome, HealthSnapshot};
+use humaux_telemetry::host;
 use humaux_telemetry::metrics::Routes;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -41,6 +43,7 @@ const PG_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";
 pub(crate) fn metrics_families() -> String {
     let mut out = String::new();
     health::render(&mut out);
+    host::render(&mut out);
     out
 }
 
@@ -129,6 +132,9 @@ pub(crate) async fn serve() -> Result<Output> {
     let pool = MaintenanceDbPool::connect(&with_statement_timeout(&env(PG_DSN)?, interval))
         .await
         .map_err(|e| Failure::Infra(format!("connect {PG_DSN}: {e}")))?;
+    // the host gauges' one reader; its first pass only stores the /proc/stat counters
+    let mut hosts = host::Reader::new(host::HostPaths::default());
+    host::publish(&hosts.read());
     let mut watermark = sample(&pool, OffsetDateTime::now_utc(), interval)
         .await
         .map_err(|e| Failure::Infra(format!("first health sample: {e}")))?;
@@ -152,6 +158,8 @@ pub(crate) async fn serve() -> Result<Output> {
             _ = latch.wait() => break,
             _ = ticker.tick() => {}
         }
+        // sampled before the SQL read, so a slow or failing snapshot never starves the host gauges
+        host::publish(&hosts.read());
         let outcome = sample(&pool, watermark, interval).await;
         samples += 1;
         let mut guard = last.lock().unwrap_or_else(PoisonError::into_inner);

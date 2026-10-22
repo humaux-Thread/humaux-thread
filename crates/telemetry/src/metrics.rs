@@ -4,7 +4,8 @@
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
 //!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
 //!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
-//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, tests]
+//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, telemetry::host,
+//!   tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
 //! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B
@@ -370,6 +371,32 @@ pub mod families {
     pub const WAL_ARCHIVE_FAILING: Family = f(
         "wal_archive_failing",
         "1 while a WAL archive failure is latched (until a later VERIFIED full) or archiving fails now, else 0.",
+        Kind::Gauge,
+        &[],
+    );
+    // §41.2: host pressure — `humaux-maintenance health serve`'s host sampler, one `.set()` in
+    // `telemetry::host::publish` (M22-1). `resource` is the `/proc/pressure/<resource>` file, `kind` the PSI stall
+    // class; the kernel emits no `full` line for `cpu`, so that one series is never produced.
+    /// `host_pressure_ratio{resource,kind}`.
+    pub const HOST_PRESSURE_RATIO: Family = f(
+        "host_pressure_ratio",
+        "PSI avg60 per resource and stall kind, as a 0-1 ratio of the time a resource was stalled.",
+        Kind::Gauge,
+        &["resource", "kind"],
+    );
+    // §41.2: the same host sampler (M22-1); a missing or unparsable /proc/meminfo renders no sample, never 0.
+    /// `host_memory_available_bytes`.
+    pub const HOST_MEMORY_AVAILABLE_BYTES: Family = f(
+        "host_memory_available_bytes",
+        "MemAvailable from /proc/meminfo in bytes.",
+        Kind::Gauge,
+        &[],
+    );
+    // §41.2: the same host sampler (M22-1); the first reading of a process yields no sample.
+    /// `host_cpu_busy_ratio`.
+    pub const HOST_CPU_BUSY_RATIO: Family = f(
+        "host_cpu_busy_ratio",
+        "CPU busy ratio over the interval between two /proc/stat readings (1 - idle/total).",
         Kind::Gauge,
         &[],
     );
