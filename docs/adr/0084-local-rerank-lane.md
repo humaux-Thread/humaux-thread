@@ -32,13 +32,20 @@
   `Chunk { ordinal }`; `None` for a profile this build does not know, ADR-0068 D-I);
   `MaterializedPrivateReadServing.point_slots` holds, for each Memory, the slot of the first candidate point that
   resolved to it (the fused list holds one point per Memory: the dense leg's when both legs found it, the sparse leg's
-  otherwise, `gateway::recall::fuse_rrf`); `adapters::retrieve::visible_memory_texts` reads `(title, body)` of the
-  Memories the hydrate gate returned from `private.memory_text_v` (ADR-0085); and
-  `projection::note_chunks::rerank_document(title, body, slot)` builds the document: `chunk_card_text` for a chunk slot
-  (the card text that was embedded), title prefix + separator + the whole body for a legacy slot (which holds the body
-  whole). A Memory whose slot is `None`, or whose text cannot be read, has no document: T-RET-7d-2 does not send it and
-  keeps it after the scored ones in fused order (D-C 5). The text read is a second snapshot (`ponytail` in the code);
-  it reads no lifecycle state, so the ids it is given must be the hydrate gate's (G-RET-13).
+  otherwise, `gateway::recall::fuse_rrf`); `materialize_private_read_serving_about` takes a `GatedTexts` argument and,
+  for `Read`, returns `gated_texts`: `(title, body)` from `private.memory_text_v` (ADR-0085) of exactly the Memory items
+  the gate returned, read inside the hydrate transaction; and `projection::note_chunks::rerank_document(title, body,
+  slot)` builds the document: `chunk_card_text` for a chunk slot (the card text that was embedded), title prefix +
+  separator + the whole body for a legacy slot (which holds the body whole). The gateway passes `Skip` until T-RET-7d-2
+  turns the lane on, so a recall with the lane off reads no text. A Memory whose slot is `None`, or whose text cannot be
+  read, has no document: T-RET-7d-2 does not send it and keeps it after the scored ones in fused order (D-C 5).
+- Amended 2026-10-23 (T-RET-7d-1, review of PR #204), **G-RET-13 and the text read.** The first shape of the D-C 3 data
+  path read the texts in a second snapshot through a public function. `private.memory_text_v` applies RLS only: it does
+  not exclude tombstoned, archived, superseded or secret-backed Memories, which the hydrate gate does. So a Memory
+  forgotten (tombstoned) between the gate and that read, and any id the gate had refused, would have had its title and
+  body returned and sent to the worker. There is now one snapshot and one gate: the text read is a private step of the
+  hydrate transaction (`gated_memory_texts`), its ids are taken from the gated items and from nowhere else, and no public
+  function returns a Memory text. The archive-or-forget race is gone by construction.
 
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
@@ -350,7 +357,7 @@ No PostgreSQL table changes. The artifact, the model and the library are files; 
 | `retrieval::rerank` (a placeholder today) | the pure ordering step (D-C 5), so G-RET-15 needs no model | T-RET-7d |
 | `telemetry::degrade`, `testkit/fault`, `dormant.toml` | the rustdoc wording; both rerank fault tests become real-path (they drive the production function, not `abstain()`); the two M11 dormant rows are deleted | T-RET-7d |
 | `retrieval::envelope` | `is_valid` split into its two conjuncts; `outcome_block_under` refuses a structural breach only (D-D serve rule) | T-RET-7d-1 |
-| `adapters::private_projection_registry`, `adapters::retrieve`, `projection::note_chunks` | `slot` on a resolved point, `point_slots` on the hydrate result, `visible_memory_texts`, `CardSlot` and `rerank_document` (D-C 3 data path) | T-RET-7d-1 |
+| `adapters::private_projection_registry`, `adapters::retrieve`, `projection::note_chunks` | `slot` on a resolved point, `point_slots` and `gated_texts` on the hydrate result, `CardSlot` and `rerank_document` (D-C 3 data path) | T-RET-7d-1 |
 
 ## Cards
 

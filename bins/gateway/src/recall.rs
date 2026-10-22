@@ -28,9 +28,9 @@ use humaux_adapters::{
     read_materialize::MaterializedItem,
     retrieval_query_log::QueryLogCounts,
     retrieve::{
-        IndexFace, MaterializedPrivateReadServing, QueryHmac, RetrieveError, grouped_recall,
-        materialize_private_read_serving_about, query_hmac, query_log_limits, record_recall_query,
-        tombstoned_source_seqs, visible_index_count,
+        GatedTexts, IndexFace, MaterializedPrivateReadServing, QueryHmac, RetrieveError,
+        grouped_recall, materialize_private_read_serving_about, query_hmac, query_log_limits,
+        record_recall_query, tombstoned_source_seqs, visible_index_count,
     },
     serving_repo::family_read_state,
 };
@@ -789,6 +789,8 @@ async fn answer(
         &candidates,
         &input.subject_ids,
         input.affect.as_ref(),
+        // No rerank lane yet (ADR-0084, T-RET-7d-2): no text is read until the lane asks for it.
+        GatedTexts::Skip,
     )
     .await
     .map_err(|error| match error {

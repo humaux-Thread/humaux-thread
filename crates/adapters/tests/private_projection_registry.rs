@@ -41,8 +41,8 @@ use humaux_adapters::qdrant::{
 };
 use humaux_adapters::read_materialize::MaterializedItem;
 use humaux_adapters::retrieve::{
-    ProcessingState, RetrieveError, TokenClaims, issue_consistency_token,
-    materialize_private_read_serving,
+    GatedTexts, ProcessingState, RetrieveError, TokenClaims, issue_consistency_token,
+    materialize_private_read_serving, materialize_private_read_serving_about,
 };
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
@@ -1098,6 +1098,138 @@ fn assert_chunk_points_report_their_slots(
         ],
         "one registry row per point, slot = (profile, ordinal)"
     );
+}
+
+/// The Memory ids the hydrate gate returned for `candidate`, and the Memory ids whose canonical text the same
+/// transaction read (ADR-0084 D-C 3), in one hydrate call.
+fn hydrate_ids(
+    handle: &Handle,
+    candidate: &DenseCandidate,
+    texts: GatedTexts,
+) -> (Vec<Uuid>, Vec<Uuid>) {
+    let read = handle
+        .rt
+        .block_on(materialize_private_read_serving_about(
+            &handle.runtime,
+            None,
+            &handle.authorization,
+            &handle.family,
+            "private-v1",
+            "embed-v1",
+            std::slice::from_ref(candidate),
+            &[],
+            None,
+            texts,
+        ))
+        .expect("hydrate the candidate");
+    let gated = read
+        .bodies
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MaterializedItem::Memory { memory_id, .. } => Some(*memory_id),
+            _ => None,
+        })
+        .collect();
+    (gated, read.gated_texts.keys().copied().collect())
+}
+
+/// ADR-0084 D-C 3 / G-RET-13: the text read for rerank is part of the hydrate transaction and covers exactly the Memories
+/// the gate returned. A live Memory's text is read (control) and `GatedTexts::Skip` reads none; once the Memory's
+/// backing Evidence is tombstoned the gate drops it and no text is read, though `private.memory_text_v` itself still
+/// returns the row (RLS is all it applies). Fault: read the text of every resolved candidate instead of the gated items
+/// ⇒ the last assertion goes red.
+#[test]
+fn a_tombstoned_memory_never_has_its_text_read_for_rerank() {
+    run_db_fixture::<RegistryFixture, _>("gated_texts_tombstone", |mut handle| {
+        let point = ProjectionPointId::new(Uuid::new_v4());
+        // §16.2: `serving` is what the token-free hydrate selects on (as in `seed_ryw_overlay`).
+        handle
+            .admin
+            .execute(
+                "INSERT INTO projection.stream_checkpoints \
+                   (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version,serving) \
+                 VALUES($1,'tenant',$1,'knowledge','dense','private-v1',true) \
+                 ON CONFLICT (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version) \
+                 DO UPDATE SET serving = true",
+                &[&handle.tenant_id],
+            )
+            .expect("serving checkpoint");
+        assert_eq!(
+            handle
+                .rt
+                .block_on(register_private_memory_point(
+                    &handle.worker,
+                    &handle.authorization,
+                    &registration(&handle, point),
+                ))
+                .expect("register the point"),
+            RegistrationOutcome::Inserted
+        );
+        let candidate = DenseCandidate {
+            point_id: PointId::Uuid(point.as_uuid()),
+            score: 0.9,
+            memory_id: None,
+        };
+        let memory = handle.memory_id;
+        assert_eq!(
+            hydrate_ids(&handle, &candidate, GatedTexts::Read),
+            (vec![memory], vec![memory]),
+            "control: a live Memory's text is read with the gate"
+        );
+        assert_eq!(
+            hydrate_ids(&handle, &candidate, GatedTexts::Skip),
+            (vec![memory], vec![]),
+            "Skip reads no text"
+        );
+
+        // Tombstone the Memory's backing Evidence the way the gate's anti-join sees it (ops.outbox -> TOMBSTONED row).
+        let evidence_id: Uuid = handle
+            .admin
+            .query_one(
+                "SELECT evidence_id FROM private.memory_evidence WHERE memory_id = $1",
+                &[&memory],
+            )
+            .expect("backing Evidence")
+            .get(0);
+        let commit_seq: i64 = handle
+            .admin
+            .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+            .expect("commit sequence")
+            .get(0);
+        handle
+            .admin
+            .execute(
+                "INSERT INTO projection.stream_log \
+                   (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version, \
+                    stream_seq,commit_seq,state,settled_at) \
+                 VALUES($1,'tenant',$1,'knowledge','dense','private-v1',1,$2,'TOMBSTONED',clock_timestamp())",
+                &[&handle.tenant_id, &commit_seq],
+            )
+            .expect("tombstoned stream row");
+        handle
+            .admin
+            .execute(
+                "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
+                 VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)",
+                &[&handle.tenant_id, &commit_seq, &evidence_id],
+            )
+            .expect("link the tombstone to the Evidence");
+        handle
+            .admin
+            .execute(
+                "UPDATE projection.stream_checkpoints SET issued_highwater = 1 \
+                  WHERE tenant_id=$1 AND scope_kind='tenant' AND scope_id=$1 AND domain='knowledge' \
+                    AND projection_kind='dense' AND projection_version='private-v1'",
+                &[&handle.tenant_id],
+            )
+            .expect("raise the issued highwater to the tombstoned seq");
+        assert_eq!(
+            hydrate_ids(&handle, &candidate, GatedTexts::Read),
+            (vec![], vec![]),
+            "a tombstoned Memory is dropped by the gate and its text is never read"
+        );
+    });
 }
 
 /// (point_id, card_profile_hash, chunk_ordinal, fingerprint_sha256, input_sha256) of one registry slot.

@@ -68,7 +68,9 @@ use crate::private_projection_registry::{
     resolve_private_memory_points_in_txn,
 };
 use crate::qdrant::{DenseCandidate, PointId, VisibleCountFilter, count_visible_excluding_seqs};
-use crate::read_materialize::{MaterializedBodies, materialize_final_bodies_about_in_txn};
+use crate::read_materialize::{
+    MaterializedBodies, MaterializedItem, materialize_final_bodies_about_in_txn,
+};
 use crate::retrieval_query_log::{self, QueryLogCounts};
 use crate::serving_repo::{self, ServingRepoError};
 use crate::stream_repo::close_ledger_in_txn;
@@ -1022,6 +1024,17 @@ pub struct PrivateReadServingCandidates {
 /// point whose profile this build does not know.
 pub type PointSlots = BTreeMap<Uuid, Option<CardSlot>>;
 
+/// Whether the hydrate transaction also reads the canonical text of the Memories that pass its gate (ADR-0084 D-C 3).
+/// The read is part of the gate's own transaction and takes its ids from the gated items, so the text of a Memory the gate
+/// refused (archived, superseded, secret-backed, tombstoned, outside the subject or affect filter) is never read (G-RET-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatedTexts {
+    /// Read nothing: [`MaterializedPrivateReadServing::gated_texts`] is empty.
+    Skip,
+    /// Read `(title, body)` of every Memory item the gate returned, in the same snapshot.
+    Read,
+}
+
 /// One private semantic result whose bodies, ledger closure, and conservative grounding report
 /// were all produced under the same PostgreSQL repeatable-read snapshot.
 #[derive(Debug, Clone)]
@@ -1032,6 +1045,10 @@ pub struct MaterializedPrivateReadServing {
     /// registry read that gated the point. `None` as a value: the point's profile is unknown to this build. A Memory
     /// the hydrate gate then dropped is still listed; the caller looks up only the Memories of `bodies`.
     pub point_slots: PointSlots,
+    /// ADR-0084 D-C 3: the canonical text (`private.memory_text_v`, ADR-0085) of exactly the Memories in `bodies`,
+    /// read in this same snapshot after the gate when the caller asked for [`GatedTexts::Read`]; empty otherwise. A
+    /// Memory the gate dropped has no entry, by construction: there is no other way to obtain a text from this module.
+    pub gated_texts: BTreeMap<Uuid, MemoryText>,
     pub ledger: LedgerClosure,
     /// §23.3④ `stream_ledger` pipeline readings for the same six-column `StreamKey` the ledger
     /// closed on, taken in the same snapshot (ADR-0041 D-H). Not an `Option`: no census travels
@@ -1115,6 +1132,7 @@ pub async fn materialize_private_read_serving(
         semantic,
         &[],
         None,
+        GatedTexts::Skip,
     )
     .await
 }
@@ -1136,6 +1154,7 @@ pub async fn materialize_private_read_serving_about(
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
+    texts: GatedTexts,
 ) -> Result<MaterializedPrivateReadServing, RetrieveError> {
     // dep: PostgreSQL(role_gateway) — transaction entry for `materialize_private_read_serving_about`
     let mut txn = pool.pool().begin().await?;
@@ -1154,6 +1173,10 @@ pub async fn materialize_private_read_serving_about(
         affect,
     )
     .await?;
+    let gated_texts = match texts {
+        GatedTexts::Skip => BTreeMap::new(),
+        GatedTexts::Read => gated_memory_texts(&mut txn, authorization, &bodies).await?,
+    };
     let key = family.with_version(projection_version);
     let ledger = close_ledger_in_txn(&mut txn, &key, authorization).await?;
     let pipeline = stream_pipeline_counts_in_txn(&mut txn, &key)
@@ -1167,6 +1190,7 @@ pub async fn materialize_private_read_serving_about(
     Ok(MaterializedPrivateReadServing {
         bodies,
         point_slots,
+        gated_texts,
         ledger,
         pipeline,
         grounding,
@@ -1293,6 +1317,30 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
     Ok((bodies, point_slots))
 }
 
+/// ADR-0084 D-C 3 / G-RET-13: the canonical text of exactly the Memory items `bodies` holds, read in the hydrate
+/// transaction after its gate. The ids are taken from the gated items here and nowhere else, so a Memory the gate
+/// refused (lifecycle, secret-backed, tombstoned, subject or affect filter) can never be read: `private.memory_text_v`
+/// applies RLS only and none of those. A Memory the caller's RLS context cannot read has no row and so no entry.
+async fn gated_memory_texts(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    bodies: &MaterializedBodies,
+) -> Result<BTreeMap<Uuid, MemoryText>, RetrieveError> {
+    let gated: Vec<Uuid> = bodies
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MaterializedItem::Memory { memory_id, .. } => Some(*memory_id),
+            _ => None,
+        })
+        .collect();
+    let texts = memory_texts_in_txn(txn, authorization.tenant_id().0, &gated).await?;
+    Ok(texts
+        .into_iter()
+        .map(|text| (text.memory_id, text))
+        .collect())
+}
+
 /// The Memories the resolved candidate points stand for, in candidate order, each once, and the card slot of the FIRST
 /// point that stood for it (ADR-0084 D-C 3: the candidate order is the leg order, so the first point is the best leg hit
 /// and its slot is the chunk the reranker scores). ADR-0068 D-E: a grouped hit whose group id is not the Memory the
@@ -1325,32 +1373,6 @@ fn stand_in_points(
         })
         .collect();
     (memory_ids, point_slots)
-}
-
-/// ADR-0084 D-C 3: the canonical text (`private.memory_text_v`, ADR-0085) of Memories the hydrate gate already
-/// returned, read in its own repeatable-read snapshot under the caller's RLS context. A Memory the caller cannot read
-/// is absent from the result. The ids must come from [`MaterializedPrivateReadServing::bodies`]: this reads no
-/// lifecycle or tombstone state, so it is never a candidate gate (G-RET-13). Empty input runs no query.
-///
-/// ponytail: a second snapshot, so a Memory archived between the two reads is still scored and its text never leaves
-/// the Cell or reaches the response; read the texts inside the hydrate transaction if the window ever matters.
-pub async fn visible_memory_texts(
-    pool: &RuntimeDbPool,
-    authorization: &AuthorizationScope,
-    memory_ids: &[Uuid],
-) -> Result<Vec<MemoryText>, RetrieveError> {
-    if memory_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    // dep: PostgreSQL(role_gateway) — transaction entry for `visible_memory_texts`
-    let mut txn = pool.pool().begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *txn)
-        .await?;
-    set_authorization_local(&mut txn, authorization).await?;
-    let texts = memory_texts_in_txn(&mut txn, authorization.tenant_id().0, memory_ids).await?;
-    txn.commit().await?;
-    Ok(texts)
 }
 
 /// Top-level read-your-writes entry. The token only proves the requested overlay boundary;
@@ -1685,9 +1707,7 @@ pub async fn record_recall_query(
     Ok(())
 }
 
-/// §78.2 "DB enum 与 Rust enum 走 contract test 对账": [`ProcessingState::ALL`] must list
-/// exactly `projection.stream_log`'s `state` CHECK values, in order, both directions. Runs
-/// against the real migration file text, not a live DB (mirrors `jobs::contract_tests`).
+/// ADR-0084 D-C 3: [`stand_in_points`], the first-point-per-Memory slot rule, over hand-built resolved points.
 #[cfg(test)]
 mod stand_in_tests {
     use super::*;
@@ -1740,6 +1760,9 @@ mod stand_in_tests {
     }
 }
 
+/// §78.2 "DB enum 与 Rust enum 走 contract test 对账": [`ProcessingState::ALL`] must list
+/// exactly `projection.stream_log`'s `state` CHECK values, in order, both directions. Runs
+/// against the real migration file text, not a live DB (mirrors `jobs::contract_tests`).
 #[cfg(test)]
 mod contract_tests {
     use super::*;
