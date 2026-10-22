@@ -64,13 +64,24 @@ tenant on ENTITLEMENT_REQUIRED until it runs again; `QuotaWindowRenewalMissing` 
 
 `humaux-maintenance health serve` (ADR-0061 D-D) **is** a supervised unit: the one process that samples
 the §41.2 SQL-derived health gauges (`jobs_*`, `oldest_pending_age_seconds`, `projection_lag_events`,
-`processing_gap_count`, `data_disclosures_*`) through `ops.health_snapshot()` as `role_maintenance`,
-every `HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS`, and serves the last sample on the loopback
+`processing_gap_count`, `data_disclosures_*`, and the two tenant counts `tenants_active_1d` /
+`tenants_active_7d` — distinct ACTIVE tenants with an API key used in the last 24 h / 168 h, an exact
+count so 0 is a real value) through `ops.health_snapshot()` as `role_maintenance`, plus the three host
+gauges from `/proc` (`host_pressure_ratio{resource,kind}` = PSI `avg60 / 100` for `resource` =
+`cpu` / `memory` / `io` and `kind` = `some` / `full`; `host_memory_available_bytes` = `MemAvailable` in
+bytes; `host_cpu_busy_ratio` = the busy share of the delta between two `/proc/stat` samples), every
+`HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS`, and serves the last sample on the loopback
 `HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR` (`/metrics`, `/status`). Both keys are required, with no
 default. The first sample is taken before the port binds, so a boot that cannot sample exits non-zero
 naming the failure. A scrape never runs SQL. A failed sample, or one older than 2 × the interval, makes
 `/metrics` answer 503 with the reason and the age — never the last good values. Run exactly one
 instance: two would export every gauge twice.
+
+The three host gauges are **absent, never 0**, while their `/proc` source is unreadable: nothing renders
+before the first host sample, `host_cpu_busy_ratio` also has no series on that first tick (it needs two
+readable samples), and on a host without `/proc` (the macOS rehearsal) a live scrape may carry none of
+them (#207, `ABSENT_WITHOUT_PROC`). A missing or malformed PSI line, `/proc/meminfo` or `/proc/stat`
+leaves its series out rather than writing 0 (§4.4: "not scanned" is not "none").
 
 ### Ops listeners: `/metrics` and `/status` (card 34, ADR-0061 D-B)
 
@@ -92,7 +103,7 @@ boot-fatal naming the key; there is no default port and no fallback to `:0`. One
 | private-worker `--serve-rpc` | `HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR` | none yet (card 34b) — `up` is its liveness |
 | private-worker `--distill-serve` | `HUMAUX_PRIVATE_WORKER_DISTILL_SERVE_METRICS_ADDR` | none yet (card 34b) |
 | consolidation-worker `--serve` | `HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR` | none yet (card 34b) |
-| maintenance `health serve` | `HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR` | 9 SQL-derived gauges / counters |
+| maintenance `health serve` | `HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR` | 14: 11 SQL-derived health families (`jobs_*`, `oldest_pending_age_seconds`, `projection_lag_events`, `processing_gap_count`, `data_disclosures_*`, `tenants_active_1d`, `tenants_active_7d`) + 3 host gauges (`host_pressure_ratio`, `host_memory_available_bytes`, `host_cpu_busy_ratio`) |
 | maintenance `--serve` | `HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR` | 2: `maintenance_task_runs_total{task,outcome}`, `maintenance_task_rows_total{task}` (ADR-0062 D-S; zero state: `--serve --metrics-families`) |
 
 `/metrics` and `/status` are **never** on the gateway's `BIND_ADDR` (the MCP surface behind the
