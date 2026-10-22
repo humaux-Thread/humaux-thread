@@ -10025,9 +10025,12 @@ runs:
         }
         let verdict = rerank_pin_parity(&dir);
         fs::remove_dir_all(&dir).unwrap();
-        let lines = match verdict {
-            Verdict::Fail(lines) => lines,
-            other => panic!("both pins differ must be fail, got {other:?}"),
+        assert!(
+            matches!(&verdict, Verdict::Fail(_)),
+            "both pins differ must be fail, got {verdict:?}"
+        );
+        let Verdict::Fail(lines) = verdict else {
+            unreachable!("checked above")
         };
         assert!(!lines.is_empty(), "a fail names every unmatched pin");
         assert!(
