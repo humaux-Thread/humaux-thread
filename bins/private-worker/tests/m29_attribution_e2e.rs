@@ -77,7 +77,7 @@ use humaux_domain::{
     ids::{TaskId, TenantId, WorkspaceId},
     relation::{DecidedBy, RelationEdge, RelationId, RelationKind, Timestamp, Validity},
 };
-use humaux_gateway::auth::{CredentialScope, authenticate_service_credential};
+use humaux_gateway::auth::{CredentialScope, TouchThrottle, authenticate_service_credential};
 use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport, dispatch_pass};
 use humaux_protocol::edge::compute_api_key_hash;
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
@@ -360,6 +360,7 @@ fn authenticate(
         None,
         IpAddr::from([127, 0, 0, 1]),
         SystemTime::now(),
+        &TouchThrottle::new(Duration::ZERO),
     ))?
     .authorize(
         CredentialScope::MemoryWrite,
