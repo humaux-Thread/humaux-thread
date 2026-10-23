@@ -546,39 +546,69 @@ tests:
         alertname: DiskFreeLow
         exp_alerts: []
 
-  # admission rejected fire (§42 injection: admission capped at 1, two concurrent requests ⇒ one 503): the gateway
-  # exports the seeded zero series; one queue_full refusal at 10m fires the row with that reason's labels, and the
-  # other reasons stay silent.
+  # capacity rejection ratio (M22-3 D3, G-M22-3): 1 queue_full refusal per minute against 10 admitted tool calls per
+  # minute is 1/11 ≈ 9.1 % — over the 0.5 % warning line. Pending inside the 15 m `for:` and firing after; the same
+  # input is over the 2 % critical line, pending inside 5 m and firing after. `changes() > 1` makes the rule active
+  # one minute after the first refusal, hence the 15 m / 5 m eval points.
   - interval: 1m
     input_series:
       - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="queue_full"}'
-        values: '0x9 1x20'
-      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="wait_timeout"}'
-        values: '0x30'
+        values: '0+1x20'
+      - series: 'humaux_mcp_requests_total{tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+10x20'
     alert_rule_test:
-      - eval_time: 12m
-        alertname: AdmissionRejected
+      - eval_time: 15m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: CapacityRejectionRatioHigh
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: humaux-gateway
-              class: gateway_inbound
-              reason: queue_full
+      - eval_time: 5m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
 
-  # admission rejected silent: no 503 at all (every series flat at its seeded 0), and 5 minutes after the last
-  # refusal the increase is 0 again.
+  # capacity rejection ratio silent below the warning line: 1 refusal per minute against 250 admitted calls per minute
+  # is 1/251 ≈ 0.4 %, under 0.5 %; both rows stay silent even though the count is well over `changes() > 1`.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="wait_timeout"}'
+        values: '0+1x20'
+      - series: 'humaux_mcp_requests_total{tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+250x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+
+  # G-M22-3 one rejection never pages: one queue_full refusal at 10 m against 600 admitted calls per minute is 1/3001
+  # ≈ 0.03 %, and `changes() > 1` is false for that single refusal anyway. Replacing either expression with
+  # `increase(admission_rejected_total[5m]) > 0` fires here (mutation `admission`), so this block is the red record
+  # for the gate rather than a restatement of it.
   - interval: 1m
     input_series:
       - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="queue_full"}'
-        values: '0x9 1x30'
-      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="key_limit"}'
-        values: '0x40'
+        values: '0x10 1x20'
+      - series: 'humaux_mcp_requests_total{tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+600x30'
     alert_rule_test:
-      - eval_time: 5m
-        alertname: AdmissionRejected
+      - eval_time: 12m
+        alertname: CapacityRejectionRatioHigh
         exp_alerts: []
-      - eval_time: 25m
-        alertname: AdmissionRejected
+      - eval_time: 12m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CapacityRejectionRatioHigh
         exp_alerts: []
 
   # DNS pin deferred fire (§42 injection, ADR-0066 D-P: the pinned address stops answering ⇒ every distill call is a
@@ -642,4 +672,154 @@ tests:
     alert_rule_test:
       - eval_time: 80m
         alertname: QuotaWindowRenewalMissing
+        exp_alerts: []
+
+  # M22-3 D4 recording rules on fixed input series (exact values, not "exists"): 0.50 busy with 40 weekly tenants ⇒
+  # (0.70−0.50)/(0.50/40) = 16 additional users; PSI cpu some 0.10 ⇒ (0.20−0.10)/(0.10/40) = 40, so the min is the
+  # CPU-busy term's 16. MemAvailable 8 GiB ⇒ 4 GiB headroom; PSI headroom is 0.20−0.10; PGDATA 8 GiB against the
+  # 7.5 GiB §42 floor ⇒ 512 MiB.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio'
+        values: '0.5x10'
+      - series: 'host_memory_available_bytes'
+        values: '8589934592x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some"}'
+        values: '0.1x10'
+      - series: 'host_pressure_ratio{resource="memory",kind="some"}'
+        values: '0.1x10'
+      - series: 'tenants_active_7d'
+        values: '40x10'
+      - series: 'backup_disk_free_bytes{volume="pgdata"}'
+        values: '8589934592x10'
+    promql_expr_test:
+      - expr: capacity:headroom_cpu_ratio
+        eval_time: 5m
+        exp_samples:
+          - labels: '{}'
+            value: 0.2
+      - expr: capacity:headroom_memory_bytes
+        eval_time: 5m
+        exp_samples:
+          - labels: '{}'
+            value: 4294967296
+      - expr: capacity:headroom_psi_cpu_ratio
+        eval_time: 5m
+        exp_samples:
+          - labels: '{resource="cpu",kind="some"}'
+            value: 0.1
+      - expr: capacity:headroom_disk_bytes
+        eval_time: 5m
+        exp_samples:
+          - labels: '{volume="pgdata"}'
+            value: 536870912
+      - expr: capacity:additional_users
+        eval_time: 5m
+        exp_samples:
+          - labels: '{}'
+            value: 16
+
+  # capacity CPU warning (M22-3 D3): 0.75 busy crosses 0.70; pending inside the 15 m `for:` at 14 m, firing at 16 m.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio'
+        values: '0.75x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CapacityCpuBusyHigh
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: CapacityCpuBusyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              resource: cpu
+
+  # capacity CPU warning silent below the line: 0.65 busy never crosses 0.70.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio'
+        values: '0.65x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: CapacityCpuBusyHigh
+        exp_alerts: []
+
+  # capacity CPU critical (M22-3 D3): 0.90 busy and PSI cpu some 0.25 fire after the 5 m `for:`; 0.90 with PSI 0.10
+  # (corroboration missing) and 0.80 with PSI 0.90 (busy below the line) both stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio'
+        values: '0.90x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some"}'
+        values: '0.25x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              resource: cpu
+
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio'
+        values: '0.90x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some"}'
+        values: '0.10x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio'
+        values: '0.80x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some"}'
+        values: '0.90x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts: []
+
+  # capacity memory (M22-3 D3): 3 GiB available is under both the 4 GiB warning and the 2 GiB critical lines, pending
+  # inside each window; 8 GiB is above both and stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'host_memory_available_bytes'
+        values: '3221225472x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CapacityMemoryLow
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: CapacityMemoryLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              resource: memory
+      - eval_time: 4m
+        alertname: CapacityMemoryCritical
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CapacityMemoryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              resource: memory
+
+  - interval: 1m
+    input_series:
+      - series: 'host_memory_available_bytes'
+        values: '8589934592x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: CapacityMemoryLow
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CapacityMemoryCritical
         exp_alerts: []

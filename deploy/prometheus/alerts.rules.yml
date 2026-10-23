@@ -1,7 +1,10 @@
-# §42 alert rows loaded by cards 34, 34b, 35, 36, 37 and 38 (ADR-0061 D-E, ADR-0062 D-S, ADR-0063 D-F, ADR-0064 D-K, ADR-0065 D-C). Each expression is copied literally from the
+# §42 alert rows loaded by cards 34, 34b, 35, 36, 37 and 38 (ADR-0061 D-E, ADR-0062 D-S, ADR-0063 D-F, ADR-0064 D-K, ADR-0065 D-C). Each §42 expression is copied literally from the
 # §42 table; metric names and label keys are §41.2 rows (freezes ① and ④, checked by
 # `cargo xtask metrics-registry --check` D8). The other §42 rows wait for a producer and a red
 # record (freeze ②, §80.1); they are listed in ADR-0061 limits.
+# The `humaux-capacity` group is not a §42 row: it is module_design_M22 D3/D4 deploy config
+# (`thresholds live here, never in Rust`, §78.1; B23 values as starting values, X-M22-3 final)
+# over the M22-1 /proc gauges and the M22-2 tenant gauges.
 # Every alert here has a firing and a silent case in tests/alerts.test.yml, and one balanced token
 # mutation in mutations.sh that the tests must catch.
 groups:
@@ -161,13 +164,24 @@ groups:
         labels:
           severity: critical
 
-      # §42 "admission rejected（单机档）" (card 38, ADR-0065 D-C): the gateway's §67.2 admission layer answered 503 in
-      # the last 5 minutes. `reason` (queue_full | wait_timeout | key_limit, §41.2) stays on the alert, so the page names
-      # the bound that refused; the row gives no `for:`.
-      - alert: AdmissionRejected
-        expr: increase(admission_rejected_total[5m]) > 0
+      # §42 "admission rejected（单机档）" (card 38, ADR-0065 D-C) as M22-3 D3 replaces it (G-M22-3): the refusal must be
+      # a *ratio* of attempts, not a count, so one 503 never mails. Numerator: §67.2 refusals that name a capacity bound
+      # (`reason` queue_full | wait_timeout, §41.2) — `key_limit` is the per-key rate policy D3 excludes. Denominator:
+      # every inbound attempt that reached a tool call (humaux_mcp_requests_total) plus every refusal, so a gateway whose
+      # traffic is entirely refused reads 1. `changes(...) > 1` is the gate's own condition: at any traffic level a
+      # single refusal is not a ratio (one attempt ⇒ 100 %) and must not page. sum() drops the reason labels.
+      - alert: CapacityRejectionRatioHigh
+        expr: sum(rate(admission_rejected_total{reason!="key_limit"}[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1
+        for: 15m
         labels:
           severity: warning
+
+      # Same ratio over the critical window (D3: >2 % / 5 m).
+      - alert: CapacityRejectionRatioCritical
+        expr: sum(rate(admission_rejected_total{reason!="key_limit"}[5m])) / (sum(rate(humaux_mcp_requests_total[5m])) + sum(rate(admission_rejected_total[5m]))) > 0.02 and sum(changes(admission_rejected_total{reason!="key_limit"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: critical
 
       # §42 "DNS pin deferred" (card 39, ADR-0066 D-P): distill jobs keep deferring on TRANSPORT while a DNS pin is
       # configured and no memory record is written — the pinned address (or the provider) is unreachable, not a single
@@ -177,3 +191,67 @@ groups:
         for: 15m
         labels:
           severity: warning
+
+  # M22-3 D3/D4 (module_design_M22 l.100 / l.108): the host's own capacity. Not §42 rows — the numeric
+  # thresholds are B23 starting values kept as deploy config (§78.1); X-M22-3 replaces them with the measured knee.
+  # Sources: host_cpu_busy_ratio, host_memory_available_bytes, host_pressure_ratio (M22-1) and tenants_active_7d
+  # (M22-2). A missing /proc source is an absent family (G-M22-1), so its rule is silent, never 0.
+  - name: humaux-capacity
+    rules:
+      # D4 headroom per resource: the distance to the warning line, in the resource's own unit. Memory and disk have
+      # no proportional demand series (D2 rejected node_exporter, so there is no total-bytes family), so their
+      # headroom cannot be turned into a user count; M22-4's weekly report carries the bytes next to the number.
+      # The disk floor is §42 DiskFreeLow's 7.5 GiB runbook value, not a second threshold.
+      - record: capacity:headroom_cpu_ratio
+        expr: 0.70 - host_cpu_busy_ratio
+
+      - record: capacity:headroom_memory_bytes
+        expr: host_memory_available_bytes - 4294967296
+
+      - record: capacity:headroom_psi_cpu_ratio
+        expr: 0.20 - host_pressure_ratio{resource="cpu",kind="some"}
+
+      - record: capacity:headroom_disk_bytes
+        expr: backup_disk_free_bytes{volume="pgdata"} - 8053063680
+
+      # D4 (B23): additional users = min over resources of (safe budget − current) / (current / tenants_active_7d);
+      # the two resources with a rate budget are CPU busy (warning line 0.70) and the PSI cpu some corroboration
+      # (0.20). label_replace gives each term a distinct label so `or` keeps both; min() then collapses them to the
+      # one sample the report reads. The linear model is a ponytail ceiling: replace it after X-M22-3 if off by >25 %.
+      - record: capacity:additional_users
+        expr: min(label_replace((0.70 - host_cpu_busy_ratio) / (host_cpu_busy_ratio / tenants_active_7d), "resource", "cpu_busy", "", "") or label_replace((0.20 - min(host_pressure_ratio{resource="cpu",kind="some"})) / (min(host_pressure_ratio{resource="cpu",kind="some"}) / tenants_active_7d), "resource", "cpu_psi", "", ""))
+
+      # D3 CPU warning: >70 % busy for 15 m. `for:` is spelled in seconds on this one row so mutations.sh's
+      # drop-`for:` token occurs exactly once (the `lag` row keeps the only 10 m token, ADR-0063 D-F).
+      - alert: CapacityCpuBusyHigh
+        expr: host_cpu_busy_ratio > 0.70
+        for: 900s
+        labels:
+          severity: warning
+          resource: cpu
+
+      # D3 CPU critical: >85 % for 5 m **with** PSI cpu some >20 % as corroboration. min() drops resource/kind so the
+      # `and` matches on an empty label set; if PSI is unreadable the family is absent and this row stays silent (the
+      # M22-1 fallback covers that host, G-M22-1).
+      - alert: CapacityCpuBusyCritical
+        expr: host_cpu_busy_ratio > 0.85 and min(host_pressure_ratio{resource="cpu",kind="some"}) > 0.20
+        for: 300s
+        labels:
+          severity: critical
+          resource: cpu
+
+      # D3 memory: MemAvailable <4 GiB warn / <2 GiB crit. The note gives no window for memory; the CPU pair's 15 m /
+      # 5 m starting values are reused unchanged (deploy config, X-M22-3).
+      - alert: CapacityMemoryLow
+        expr: host_memory_available_bytes < 4294967296
+        for: 15m
+        labels:
+          severity: warning
+          resource: memory
+
+      - alert: CapacityMemoryCritical
+        expr: host_memory_available_bytes < 2147483648
+        for: 5m
+        labels:
+          severity: critical
+          resource: memory

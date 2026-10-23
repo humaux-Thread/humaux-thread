@@ -9,7 +9,7 @@
 #   (c) the pinned `promtool test rules` exits 1 AND prints `alertname: <expected>, time:` (W6).
 # Before any row: the promtool pin is checked, and the unmutated tree must pass test-rules.sh in the
 # same copy layout ("baseline red in copy" otherwise), so a path or layout error is never read as red.
-# Rows: `id|rule-file|from|to|expected-alertname`; rows-file overrides the built-in 36 (selftest.sh);
+# Rows: `id|rule-file|from|to|expected-alertname`; rows-file overrides the built-in 38 (selftest.sh);
 # every `absent(...)` branch of CoreMetricAbsent, HealthGaugesAbsent, MaintenanceCountersAbsent and PartitionHorizonAbsent
 # has its own row.
 #
@@ -74,9 +74,11 @@ not_offsite|alerts.rules.yml|label_replace(vector(0),|label_replace(vector(0) < 
 drill|alerts.rules.yml|691200|1382400|RestoreDrillFailure
 wal_failing|alerts.rules.yml|wal_archive_failing > 0|wal_archive_failing > 1|WalArchiveFailing
 budget_low|alerts.rules.yml|backup_budget_headroom_bytes < 0|backup_budget_headroom_bytes > 0|BackupBudgetLow
-disk_free_low|alerts.rules.yml|8053063680|0|DiskFreeLow
-admission|alerts.rules.yml|increase(admission_rejected_total[5m]) > 0|increase(admission_rejected_total[5m]) < 0|AdmissionRejected
+disk_free_low|alerts.rules.yml|{volume="pgdata"} < 8053063680|{volume="pgdata"} < 0|DiskFreeLow
+admission|alerts.rules.yml|sum(rate(admission_rejected_total{reason!="key_limit"}[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1|increase(admission_rejected_total[5m]) > 0|CapacityRejectionRatioHigh
 dns_pin_and|alerts.rules.yml|> 0 and increase(private_distill_outputs_total[30m]) == 0|> 0|DnsPinDeferred
+cap_for|alerts.rules.yml|for: 900s|for: 0m|CapacityCpuBusyHigh
+cap_threshold|alerts.rules.yml|host_cpu_busy_ratio > 0.70|host_cpu_busy_ratio > 0.85|CapacityCpuBusyHigh
 ROWS
 fi
 # ponytail: `dead` uses `> 2`, not `> 1`: measured, delta() extrapolates a 0→1 step over [15m] at 1m
