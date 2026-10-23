@@ -171,6 +171,23 @@ fn must_be_set(key: &str) -> bool {
     is_secret_key(key) && !key.contains("_PREVIOUS") && !key.ends_with("_CREDENTIALS")
 }
 
+/// M02-3 / M02 D3: the gateway's auth MAC key. Unlike every other [`must_be_set`] secret it may be empty while
+/// [`AUTH_SURFACE_ENABLED`] is not `true`; once the surface is on, an empty key is `secret_empty` like any secret.
+const AUTH_HMAC_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
+/// The gateway key that turns the auth surface on (`bins/gateway` bootstrap, registered default `false`).
+const AUTH_SURFACE_ENABLED: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
+
+/// Whether any of `sources` sets [`AUTH_SURFACE_ENABLED`] to `true` for process `p`.
+fn auth_surface_enabled(sources: &[&[EnvFile]], p: &str) -> bool {
+    sources.iter().any(|files| {
+        files
+            .iter()
+            .filter(|f| f.process == p)
+            .filter_map(|f| f.value(AUTH_SURFACE_ENABLED))
+            .any(|value| value == "true")
+    })
+}
+
 /// The flags that route `deploy-check` here instead of the ADR-0059 `--roles-sql` checks.
 pub const MODE_FLAGS: [&str; 5] = [
     "--compose-json",
@@ -961,7 +978,10 @@ pub fn presence_reasons(
             let all: Vec<String> = [in_values, in_secret, of(compose, p, key)].concat();
             if all.is_empty() {
                 reasons.push(format!("key_missing:{p}:{key}"));
-            } else if must_be_set(key) && all.iter().all(String::is_empty) {
+            } else if must_be_set(key)
+                && all.iter().all(String::is_empty)
+                && !(key == AUTH_HMAC_KEY && !auth_surface_enabled(&[values, secrets, compose], p))
+            {
                 reasons.push(format!("secret_empty:{p}:{key}"));
             }
         }
@@ -2550,6 +2570,60 @@ mod tests {
         );
         assert_eq!(sources.len(), 1, "the environment, not the values file");
         assert_eq!(sources[0].process, "gateway");
+    }
+
+    /// M02-3: the gateway's auth MAC key may be empty while the auth surface is off (absent or `false`), and is
+    /// `secret_empty` the moment `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED=true` (values or compose) with the key still
+    /// empty; a set key is green. Another empty secret stays red either way.
+    /// Fault: treat the auth key as optional when the surface is on ⇒ red.
+    #[test]
+    fn env_auth_key_is_required_only_when_the_auth_surface_is_on() {
+        let examples = files(&[(
+            "example/gateway.env",
+            "gateway",
+            "HUMAUX_GATEWAY_AUTH_HMAC_KEY=\nHUMAUX_GATEWAY_AUTH_SURFACE_ENABLED=\nHUMAUX_GATEWAY_PG_DSN=\n",
+        )]);
+        let secrets = |auth_key: &str| {
+            files(&[
+                (
+                    "secrets/gateway.secret.env",
+                    "gateway",
+                    &format!("HUMAUX_GATEWAY_AUTH_HMAC_KEY={auth_key}\nHUMAUX_GATEWAY_PG_DSN=d"),
+                ),
+                (
+                    "secrets/migrate.secret.env",
+                    "migrate",
+                    "HUMAUX_MIGRATOR_PG_DSN=m",
+                ),
+            ])
+        };
+        let values = |surface: &str| {
+            files(&[(
+                "values/gateway.env",
+                "gateway",
+                &format!("HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED={surface}"),
+            )])
+        };
+        let reasons = |surface: &str, auth_key: &str| {
+            presence_reasons(&examples, &values(surface), &secrets(auth_key), &[])
+        };
+        assert_eq!(reasons("false", ""), Vec::<String>::new());
+        assert_eq!(reasons("false", "k"), Vec::<String>::new());
+        assert_eq!(reasons("true", "k"), Vec::<String>::new());
+        assert_eq!(
+            reasons("true", ""),
+            vec!["secret_empty:gateway:HUMAUX_GATEWAY_AUTH_HMAC_KEY".to_owned()]
+        );
+        let compose = files(&[(
+            "compose/gateway:environment",
+            "gateway",
+            "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED=true",
+        )]);
+        let no_values = files(&[]);
+        assert_eq!(
+            presence_reasons(&examples, &no_values, &secrets(""), &compose),
+            vec!["secret_empty:gateway:HUMAUX_GATEWAY_AUTH_HMAC_KEY".to_owned()]
+        );
     }
 
     /// Review P1 (2026-10-08): `--env` without `--examples-dir` (or without the compose document) is a caller error,
