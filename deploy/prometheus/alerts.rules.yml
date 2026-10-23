@@ -170,16 +170,18 @@ groups:
       # every inbound attempt that reached a tool call (humaux_mcp_requests_total) plus every refusal, so a gateway whose
       # traffic is entirely refused reads 1. `changes(...) > 1` is the gate's own condition: at any traffic level a
       # single refusal is not a ratio (one attempt ⇒ 100 %) and must not page. sum() drops the reason labels.
+      # The note fixes the ratio *window* (15 m); `for:` is the minimum hold and stays below a 5 m count window so
+      # the old `increase(...) > 0` form (mutation `admission`) pages on one refusal instead of hiding behind it.
       - alert: CapacityRejectionRatioHigh
         expr: sum(rate(admission_rejected_total{reason!="key_limit"}[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1
-        for: 15m
+        for: 2m
         labels:
           severity: warning
 
-      # Same ratio over the critical window (D3: >2 % / 5 m).
+      # Same ratio over the critical window (D3: >2 % / 5 m), held 1 m.
       - alert: CapacityRejectionRatioCritical
         expr: sum(rate(admission_rejected_total{reason!="key_limit"}[5m])) / (sum(rate(humaux_mcp_requests_total[5m])) + sum(rate(admission_rejected_total[5m]))) > 0.02 and sum(changes(admission_rejected_total{reason!="key_limit"}[5m])) > 1
-        for: 5m
+        for: 1m
         labels:
           severity: critical
 

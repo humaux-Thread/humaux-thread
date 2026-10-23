@@ -547,9 +547,9 @@ tests:
         exp_alerts: []
 
   # capacity rejection ratio (M22-3 D3, G-M22-3): 1 queue_full refusal per minute against 10 admitted tool calls per
-  # minute is 1/11 ≈ 9.1 % — over the 0.5 % warning line. Pending inside the 15 m `for:` and firing after; the same
-  # input is over the 2 % critical line, pending inside 5 m and firing after. `changes() > 1` makes the rule active
-  # one minute after the first refusal, hence the 15 m / 5 m eval points.
+  # minute is 1/11 ≈ 9.1 % — over the 0.5 % warning line. Pending inside the 2 m `for:` and firing after; the same
+  # input is over the 2 % critical line, pending at its first active evaluation and firing after the 1 m hold.
+  # `changes() > 1` makes the rule active one minute after the first refusal, hence the eval points below.
   - interval: 1m
     input_series:
       - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="queue_full"}'
@@ -557,18 +557,18 @@ tests:
       - series: 'humaux_mcp_requests_total{tool="recall",result="ok",plan_class="unclassified"}'
         values: '0+10x20'
     alert_rule_test:
-      - eval_time: 15m
+      - eval_time: 3m
         alertname: CapacityRejectionRatioHigh
         exp_alerts: []
-      - eval_time: 18m
+      - eval_time: 5m
         alertname: CapacityRejectionRatioHigh
         exp_alerts:
           - exp_labels:
               severity: warning
-      - eval_time: 5m
+      - eval_time: 2m
         alertname: CapacityRejectionRatioCritical
         exp_alerts: []
-      - eval_time: 8m
+      - eval_time: 4m
         alertname: CapacityRejectionRatioCritical
         exp_alerts:
           - exp_labels:
@@ -583,17 +583,17 @@ tests:
       - series: 'humaux_mcp_requests_total{tool="recall",result="ok",plan_class="unclassified"}'
         values: '0+250x20'
     alert_rule_test:
-      - eval_time: 18m
+      - eval_time: 5m
         alertname: CapacityRejectionRatioHigh
         exp_alerts: []
-      - eval_time: 8m
+      - eval_time: 4m
         alertname: CapacityRejectionRatioCritical
         exp_alerts: []
 
   # G-M22-3 one rejection never pages: one queue_full refusal at 10 m against 600 admitted calls per minute is 1/3001
-  # ≈ 0.03 %, and `changes() > 1` is false for that single refusal anyway. Replacing either expression with
-  # `increase(admission_rejected_total[5m]) > 0` fires here (mutation `admission`), so this block is the red record
-  # for the gate rather than a restatement of it.
+  # ≈ 0.03 %, and `changes() > 1` is false for that single refusal anyway. Replacing the High expression with
+  # `increase(admission_rejected_total[5m]) > 0` makes that refusal pending at 10 m and firing at 12 m (mutation
+  # `admission`), so this block is the red record for the gate rather than a restatement of it.
   - interval: 1m
     input_series:
       - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="queue_full"}'
