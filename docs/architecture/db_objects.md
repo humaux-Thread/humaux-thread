@@ -1260,6 +1260,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::facet_contract`
 - (no process): `adapters::tests::quota_and_rate`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
@@ -1823,6 +1824,83 @@ written by:
 
 executed by:
 
+### `control.plan_versions`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0262_plan_catalogue
+
+grants (runtime roles):
+- role_consolidation_worker: SELECT
+- role_gateway: SELECT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_private_worker: SELECT
+- role_public_worker: SELECT
+- role_retrieval_worker: SELECT
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+
+written by:
+- (no process): `adapters::tests::plan_catalog`
+
+executed by:
+
+### `control.plan_versions_pin`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0262_plan_catalogue
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
+### `control.plans`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0262_plan_catalogue
+
+grants (runtime roles):
+- role_consolidation_worker: SELECT
+- role_gateway: SELECT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_private_worker: SELECT
+- role_public_worker: SELECT
+- role_retrieval_worker: SELECT
+
+read by:
+
+written by:
+- (no process): `adapters::tests::plan_catalog`
+
+executed by:
+
 ### `control.private_reasoning_domains`
 - kind: table
 - owner: role_migration_owner
@@ -2240,6 +2318,25 @@ written by:
 - (no process): `adapters::tests::support::public_anonymous_seam`
 
 executed by:
+
+### `control.publish_plan_version`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0262_plan_catalogue
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::plan_repo`
+- (no process): `adapters::tests::plan_catalog`
 
 ### `control.purge_idle_rate_buckets`
 - kind: function (SECURITY DEFINER)
