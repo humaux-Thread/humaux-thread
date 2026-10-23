@@ -424,6 +424,7 @@ fn grant_source_enum_matches_the_check() {
 /// plan and a plan without a per-period window are refused and leave no tenant behind. Fault: write the snapshot in the
 /// door, or grant a draft ⇒ red.
 #[test]
+#[allow(clippy::too_many_lines)] // One real-PG oracle: exact grants, refusals, and the projector's stored terms.
 fn onboarding_grants_the_plan_and_the_projector_stores_its_terms() {
     run_db_fixture::<ProjectorFixture, _>(
         "onboarding_grants_the_plan_and_the_projector_stores_its_terms",
