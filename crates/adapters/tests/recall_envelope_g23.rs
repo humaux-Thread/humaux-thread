@@ -1054,6 +1054,9 @@ fn seed_memory_linked_to_evidence(admin: &mut Client, tenant_id: Uuid, evidence_
 /// §15.5 / §69 DOD-013: the token is the one `remember` returned (never a test-minted one),
 /// and the write must come back on that same call's next `recall_with_overlay` — as the exact
 /// `memory_id` linked to the Evidence, not merely a non-empty candidate list.
+// Single sequential e2e narrative: fixture setup -> remember -> Memory link -> recall. Same
+// shape and same allow as `g23_2_legal_deletion_contrast_stays_closed_across_four_lanes`.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
     const TEST: &str = "g23_4_remember_token_recall_returns_the_exact_memory_id";
