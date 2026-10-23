@@ -341,6 +341,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
+- `xtask::architecture_check`
 - `xtask::contract_impact`
 
 ### `GITLEAKS_CONFIG`
@@ -3553,6 +3554,19 @@ modules:
 - `private-worker::tests::support::live_minimax`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_NO_PYTHON_COMPOSE_JSON`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+
+modules:
+- `xtask::architecture_check`
+
 ### `HUMAUX_OTHER_LIMIT`
 - witness: literal
 - registry: raw
@@ -4478,6 +4492,7 @@ processes:
 
 modules:
 - `humaux-testkit`
+- `xtask::architecture_check`
 
 ### `HUMAUX_REQUIRE_MINIMAX`
 - witness: literal

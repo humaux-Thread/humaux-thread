@@ -854,6 +854,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
+- env `GITHUB_ACTIONS`
+- env `HUMAUX_NO_PYTHON_COMPOSE_JSON`
+- env `HUMAUX_REQUIRE_DOCKER`
 - service `PostgreSQL(any)`
 - service `subprocess(cargo)`
 
