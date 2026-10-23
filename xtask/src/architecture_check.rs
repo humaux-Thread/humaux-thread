@@ -3211,7 +3211,7 @@ fn m04_sql_plan_literal_hits(source: &str, plan_keys: &BTreeSet<String>) -> Vec<
         for ident in M04_SQL_QUOTED_IDENTS {
             if m04_quoted_key_integer(line, ident) {
                 hits.push(format!(
-                    "line {}: the price / limit key {ident:?} given an integer literal",
+                    "line {}: the quoted price / limit key {ident} given an integer literal",
                     index + 1
                 ));
             }
@@ -14972,7 +14972,7 @@ async fn serving_version_in_txn() {}
         );
         assert!(
             line.contains(
-                "migrations/0263_price_update.sql: line 2: the price / limit key \"price_cents\" given an integer literal"
+                "migrations/0263_price_update.sql: line 2: the quoted price / limit key price_cents given an integer literal"
             ),
             "{line}"
         );
