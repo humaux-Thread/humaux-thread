@@ -387,9 +387,20 @@ fn sourced_write_is_one_atomic_unit() {
             "standup moved",
             "USER_PRIVATE",
         );
-        assert!(
-            matches!(repeat, Err(RememberError::Db(_))),
-            "a repeated identity must hit the UNIQUE: {repeat:?}"
+        let violated = match &repeat {
+            Err(RememberError::Db(sqlx::Error::Database(db))) => (
+                db.code().map(|c| c.to_string()),
+                db.constraint().map(str::to_owned),
+            ),
+            other => panic!("a repeated identity must be a database error: {other:?}"),
+        };
+        assert_eq!(
+            violated,
+            (
+                Some("23505".to_string()),
+                Some("evidence_sources_identity_key".to_string())
+            ),
+            "the refusal must be the identity UNIQUE, not another constraint"
         );
         assert_eq!(counts(&mut handle), [1, 1, 1, 1]);
     });

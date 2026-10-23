@@ -41,12 +41,11 @@ select (select count(*) = 1 from t join pg_class k on k.oid = t.oid
              = array['tenant_id', 'owner_user_id', 'source_kind', 'object_key_d16', 'source_version'])
  and (select count(*) = 1 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f'
        where k.conkey[1] = (select attnum from pg_attribute where attrelid = t.oid and attname = 'tenant_id')
-         and k.confdeltype = 'c')
+         and k.confdeltype = 'c' and k.confrelid = to_regclass('private.evidence_objects'))
  and (select count(*) = 1 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f')
- and (select count(*) = 4 from pg_constraint k
+ and (select count(*) = 5 from t join pg_constraint k on k.conrelid = t.oid
        where k.contype = 'c' and k.conname in ('evidence_sources_source_kind_check', 'evidence_sources_object_key_len',
-         'evidence_sources_version_len', 'evidence_sources_thread_key_len'))
- and (select count(*) = 1 from pg_constraint k where k.contype = 'c' and k.conname = 'evidence_sources_payload_len')
+         'evidence_sources_version_len', 'evidence_sources_thread_key_len', 'evidence_sources_payload_len'))
  and has_table_privilege('role_gateway', 'private.evidence_sources', 'SELECT')
  and has_table_privilege('role_gateway', 'private.evidence_sources', 'INSERT')
  and has_table_privilege('role_maintenance', 'private.evidence_sources', 'SELECT')
