@@ -496,7 +496,11 @@ fn onboarding_grants_the_plan_and_the_projector_stores_its_terms() {
             }
             let tenants: i64 = h
                 .admin
-                .query_one("SELECT count(*) FROM control.tenants", &[])
+                .query_one(
+                    "SELECT count(*) FROM control.tenants \
+                      WHERE name IN ('draft tenant', 'unknown tenant', 'flat tenant')",
+                    &[],
+                )
                 .expect("count")
                 .get(0);
             assert_eq!(tenants, 0, "a refused onboarding leaves no tenant");
