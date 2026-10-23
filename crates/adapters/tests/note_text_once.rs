@@ -1,38 +1,52 @@
-//! `adapters::tests::note_text_once` — M07 D1 (ADR-0085), view half of G-M07-3: `private.memory_text_v` resolves an identity
-//!   note's body from its Evidence payload and any other Memory's body from `content.key_claim`, and the Rust accessor
-//!   returns exactly that, against a real PostgreSQL and an actual `role_gateway` role.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) w=[private.events, private.identity_note_materializations, private.memory_records], PostgreSQL(role_gateway)];
+//! `adapters::tests::note_text_once` — M07 D1 (ADR-0085), G-M07-3: `private.memory_text_v` resolves an identity
+//!   note's body from its Evidence payload and any other Memory's body from `content.key_claim`, the Rust accessor
+//!   returns exactly that, and the body materializers behind memory.get, memory.enumerate and recall/context read the
+//!   same text through the view, against a real PostgreSQL and an actual `role_gateway` role.
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx];
+//!   services=[PostgreSQL(owner) w=[private.events, private.identity_note_materializations, private.memory_records],
+//!   PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::memory_repo, adapters::operation_receipt,
-//!   adapters::note_repo, adapters::remember, adapters::tests::support::operation_receipt_fixture, domain::audit,
-//!   domain::evidence, domain::ids, domain::note, domain::subject, humaux-testkit]
+//!   adapters::note_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::remember,
+//!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::evidence,
+//!   domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [notes enter through the real `memory.note_put` transaction; the text is read back only through
-//!   `memory_repo::memory_texts_in_txn` under `SET LOCAL ROLE role_gateway` with the member's RLS context, in a transaction
-//!   that is rolled back; the owner connection only reshapes this fixture's rows (the stripped identity note M07-3 will
-//!   write, the legacy twin) under `session_replication_role = replica`]
+//!   `memory_repo::memory_texts_in_txn` and the production body materializers, under `SET LOCAL ROLE role_gateway`
+//!   with the member's RLS context, in a transaction that is rolled back; the owner connection only reshapes this
+//!   fixture's rows (the stripped identity note M07-3 will write, the legacy twin) under
+//!   `session_replication_role = replica`]
 //! Spec: Baseline §8.2; §8.5; ADR-0067; ADR-0085
 //!
 //! | test | gate | injected fault that turns it red |
 //! |---|---|---|
 //! | `g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | G-M07-3 (view half) | the view returns the title as the body of a non-identity Memory; the identity branch falls back to `key_claim` / drops the `jsonb_typeof` guard |
+//! | `g_m07_3_the_body_readers_resolve_text_through_the_view` | G-M07-3 (reader half) | a body reader takes `content ->> 'key_claim'` instead of the view's `body` |
 //!
 //! called-by: `cargo test -p humaux-adapters --test note_text_once`.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use humaux_adapters::{
     memory_repo::{self, MemoryText},
     note_repo::NoteIntake,
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION},
+    postgres::RuntimeDbPool,
+    read_gate::{
+        MaterializedMemory, MaterializedMemoryPage, MemoryEnumerationParams, NoteEnumerationFilter,
+        materialize_memory_enumeration_filtered, materialize_memory_get,
+    },
+    read_materialize::{MaterializedBodies, MaterializedItem, materialize_final_bodies},
     remember::RememberCommand,
 };
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
+    authority::MemoryId,
     evidence::{EvidenceOriginClass, payload_sha256},
-    ids::{TenantId, WorkspaceId},
-    note::{DEFAULT_AUTHORITY, NoteBody, NoteKind, note_title},
+    ids::{Scope, TenantId, UserId, WorkspaceId},
+    note::{DEFAULT_AUTHORITY, NoteBody, NoteKind, REPRESENTATION, note_title},
 };
+use humaux_projection::{serving::StreamFamily, stream::StreamKey};
 use humaux_testkit::run_db_fixture;
 use sqlx::types::{Uuid, time::OffsetDateTime};
 use sqlx::{Connection, PgConnection};
@@ -52,6 +66,8 @@ const GUARDED_BODY: &str =
 /// The legacy twin's body as the note put wrote it.
 const LEGACY_PUT_BODY: &str =
     "Legacy twin, as the writer stored it: the body is also the key_claim.";
+/// A note that keeps the shape the writer stores today, as the parity control for the two reshaped twins.
+const NORMAL_BODY: &str = "An ordinary note, whose key_claim and Evidence payload agree.";
 /// What the legacy twin's `key_claim` is rewritten to, so a view that read its Evidence payload instead is caught.
 const LEGACY_KEY_CLAIM: &str = "Legacy twin key_claim that is not the Evidence payload.";
 
@@ -194,6 +210,121 @@ fn row(rows: &[MemoryText], id: Uuid) -> MemoryText {
         .expect("the memory has a row in the view")
 }
 
+/// The manifest's page-cursor MAC key (ADR-0062 D-K); a test constant, never a configured secret.
+const MAC_KEY: &[u8] = b"card m08-2 memory text parity mac key";
+
+fn scope(handle: &Handle) -> Scope {
+    Scope {
+        tenant_id: TenantId(handle.tenant_id),
+        user_id: Some(UserId(handle.user_id)),
+        workspace_id: Some(WorkspaceId(handle.workspace_id)),
+        repository_id: None,
+        task_id: None,
+        run_id: None,
+        agent_id: None,
+    }
+}
+
+/// The note write path's own stream (`workspace`, knowledge, ingest, v1).
+fn family(handle: &Handle) -> StreamFamily {
+    StreamFamily::new(
+        TenantId(handle.tenant_id),
+        "workspace",
+        handle.workspace_id,
+        DOMAIN,
+        PROJECTION_KIND,
+    )
+}
+
+fn key(handle: &Handle) -> StreamKey {
+    family(handle).with_version(PROJECTION_VERSION)
+}
+
+/// The `memory.get` body reader, as the gateway calls it.
+fn get_body(handle: &Handle, memory_id: Uuid) -> MaterializedMemory {
+    handle
+        .rt
+        .block_on(materialize_memory_get(
+            &handle.runtime,
+            &handle.auth,
+            &scope(handle),
+            &family(handle),
+            &key(handle),
+            MemoryId(memory_id),
+        ))
+        .expect("memory.get materializes")
+}
+
+/// The `memory.enumerate` body reader, one unfiltered page.
+fn enumerate_bodies(handle: &Handle, page_size: u16) -> MaterializedMemoryPage {
+    handle
+        .rt
+        .block_on(materialize_memory_enumeration_filtered(
+            &handle.runtime,
+            &handle.auth,
+            &scope(handle),
+            &family(handle),
+            &key(handle),
+            MemoryEnumerationParams {
+                cursor: None,
+                page_size,
+                ttl: Duration::from_secs(60),
+                manifest_cap: 1000,
+                mac_key: MAC_KEY,
+                subject_id: None,
+            },
+            &NoteEnumerationFilter::default(),
+        ))
+        .expect("memory.enumerate materializes")
+}
+
+/// The recall/context/continuity body reader (`materialize_final_bodies`, `Lifecycle::CURRENT`).
+fn recall_bodies(handle: &Handle, ids: &[Uuid]) -> MaterializedBodies {
+    handle
+        .rt
+        .block_on(materialize_final_bodies(
+            &handle.runtime,
+            &handle.auth,
+            &family(handle),
+            &key(handle),
+            ids,
+            &[],
+        ))
+        .expect("final bodies")
+}
+
+/// `memory_id → content` for the Memory items `items` holds, asserting every item is a Memory.
+fn memory_contents(items: &[MaterializedItem]) -> BTreeMap<Uuid, serde_json::Value> {
+    let mut contents = BTreeMap::new();
+    for item in items {
+        match item {
+            MaterializedItem::Memory { memory_id, content } => {
+                assert!(
+                    contents.insert(*memory_id, content.clone()).is_none(),
+                    "one Memory item per id"
+                );
+            }
+            other => panic!("a body read returns Memory items only, got {other:?}"),
+        }
+    }
+    contents
+}
+
+/// The exact item set of a body read, sorted.
+fn ids_of(contents: &BTreeMap<Uuid, serde_json::Value>) -> Vec<Uuid> {
+    contents.keys().copied().collect()
+}
+
+/// One note's `content` as the view resolves it: its derived `title`, its canonical `body` in `key_claim`, and the
+/// writer's `representation`. Pinned whole, so a reader that leaves a base-column text key behind is caught.
+fn expected_content(title: &str, body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "title": title,
+        "key_claim": body,
+        "representation": REPRESENTATION,
+    })
+}
+
 /// G-M07-3, view half. Two notes written by the real writer, then reshaped: the identity note into the stripped shape card
 /// M07-3 will write (no `key_claim`), the other into the legacy shape (no identity contract, a `key_claim` that differs from
 /// its Evidence payload). The view must give each its own text, byte for byte, with its own `title`.
@@ -310,6 +441,99 @@ fn g_m07_3_the_view_resolves_identity_and_legacy_text_alike() {
             // Absent and empty inputs: no row for an unknown id, and no query for an empty slice.
             assert!(texts(&handle, &[Uuid::new_v4()]).is_empty());
             assert!(texts(&handle, &[]).is_empty());
+        },
+    );
+}
+
+/// G-M07-3, reader half (M08-2). The body readers behind `memory.get`, `memory.enumerate` and recall/context
+/// (`materialize_final_bodies`; context.assemble and continuity call the same function) must return the view's text,
+/// not the base columns: the stripped identity note keeps its body although its `key_claim` is gone, and the legacy
+/// twin keeps the rewritten `key_claim` rather than its Evidence payload. The unreshaped note is the control.
+#[test]
+#[allow(clippy::too_many_lines)] // one causal chain: three notes, each reshaped and re-read through three readers
+fn g_m07_3_the_body_readers_resolve_text_through_the_view() {
+    run_db_fixture::<Fixture, _>(
+        "g_m07_3_the_body_readers_resolve_text_through_the_view",
+        |mut handle| {
+            handle.seed_current_entitlement_and_window(8);
+            let normal = put(&handle, NORMAL_BODY, NoteKind::Note);
+            let stripped = put(&handle, IDENTITY_BODY, NoteKind::Note);
+            let legacy = put(&handle, LEGACY_PUT_BODY, NoteKind::Decision);
+            let (normal_title, identity_title, legacy_title) = (
+                derived_title(NORMAL_BODY),
+                derived_title(IDENTITY_BODY),
+                derived_title(LEGACY_PUT_BODY),
+            );
+            let (tenant, stripped_s, legacy_s) =
+                (handle.tenant_id, stripped.to_string(), legacy.to_string());
+
+            // The stripped identity note: the shape M07-3 writes, where only the Evidence payload holds the body.
+            handle
+                .admin
+                .batch_execute(&format!(
+                    "SET session_replication_role = replica; \
+                     UPDATE private.memory_records SET content = content - 'key_claim' \
+                      WHERE tenant_id = '{tenant}' AND memory_id = '{stripped_s}'; \
+                     SET session_replication_role = DEFAULT;"
+                ))
+                .expect("strip the identity note's key_claim");
+            // The legacy twin: no identity contract, and a key_claim that is not its Evidence payload.
+            handle
+                .admin
+                .batch_execute(&format!(
+                    "SET session_replication_role = replica; \
+                     DELETE FROM private.identity_note_materializations \
+                      WHERE tenant_id = '{tenant}' AND output_memory_id = '{legacy_s}'; \
+                     UPDATE private.memory_records \
+                        SET content = jsonb_set(content, '{{key_claim}}', to_jsonb('{LEGACY_KEY_CLAIM}'::text)) \
+                      WHERE tenant_id = '{tenant}' AND memory_id = '{legacy_s}'; \
+                     SET session_replication_role = DEFAULT;"
+                ))
+                .expect("reshape the legacy twin");
+
+            // The fixture differs from the base column for the stripped note, which is what makes the reader half
+            // load-bearing: the base `content ->> 'key_claim'` is absent while the view's body is the payload text.
+            let stripped_base: Option<String> = handle
+                .admin
+                .query_one(
+                    "SELECT content ->> 'key_claim' FROM private.memory_records \
+                      WHERE tenant_id = $1 AND memory_id = $2",
+                    &[&tenant, &stripped],
+                )
+                .expect("owner reads the stripped note")
+                .get(0);
+            assert_eq!(stripped_base, None);
+            let view = texts(&handle, &[stripped]);
+            assert_eq!(row(&view, stripped).body.as_deref(), Some(IDENTITY_BODY));
+
+            let expected = BTreeMap::from([
+                (normal, expected_content(&normal_title, NORMAL_BODY)),
+                (stripped, expected_content(&identity_title, IDENTITY_BODY)),
+                (legacy, expected_content(&legacy_title, LEGACY_KEY_CLAIM)),
+            ]);
+            let mut expected_ids = vec![normal, stripped, legacy];
+            expected_ids.sort_unstable();
+
+            // memory.get: one item, the exact body.
+            let get = get_body(&handle, stripped);
+            assert_eq!(get.bodies.items.len(), 1);
+            let contents = memory_contents(&get.bodies.items);
+            assert_eq!(ids_of(&contents), vec![stripped]);
+            assert_eq!(contents[&stripped], expected[&stripped]);
+
+            // memory.enumerate: the exact three-item page, each with its own text.
+            let page = enumerate_bodies(&handle, 10);
+            assert_eq!(page.memory.bodies.items.len(), 3);
+            let contents = memory_contents(&page.memory.bodies.items);
+            assert_eq!(ids_of(&contents), expected_ids);
+            assert_eq!(contents, expected);
+
+            // recall / context / continuity: the same three bodies through the shared final-body reader.
+            let bodies = recall_bodies(&handle, &[normal, stripped, legacy]);
+            assert_eq!(bodies.items.len(), 3);
+            let contents = memory_contents(&bodies.items);
+            assert_eq!(ids_of(&contents), expected_ids);
+            assert_eq!(contents, expected);
         },
     );
 }
