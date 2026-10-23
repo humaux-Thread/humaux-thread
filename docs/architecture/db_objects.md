@@ -1425,6 +1425,7 @@ written by:
 - (no process): `adapters::tests::reasoning_route_foundation`
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::retrieval_query_sources`
@@ -2045,6 +2046,7 @@ written by:
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -4090,6 +4092,7 @@ written by:
 - (no process): `adapters::tests::reasoning_route_foundation`
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::retrieval_query_sources`
@@ -6059,6 +6062,7 @@ written by:
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::public_runtime`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::scheduler_exactly_once`
@@ -6571,6 +6575,7 @@ written by:
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::stream_repo`
@@ -7722,6 +7727,7 @@ grants (runtime roles):
 read by:
 
 written by:
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 
 executed by:
@@ -8727,6 +8733,7 @@ written by:
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -8969,6 +8976,7 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::read_gate_closure`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -9665,6 +9673,7 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::read_gate_closure`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::selection_snapshot`
@@ -9964,6 +9973,7 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::read_gate_closure`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::selection_snapshot`
