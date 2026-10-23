@@ -13709,14 +13709,16 @@ runs:
         let tmp = g_m01_8_tree("grow", 4, 3);
         let verdict = m01_6_lint_allow_ratchet(&tmp);
         fs::remove_dir_all(&tmp).ok();
-        let Verdict::Fail(details) = verdict else {
-            panic!("one extra allow must be red: {verdict:?}");
-        };
-        assert_eq!(details.len(), 1, "{details:?}");
-        assert!(
-            details[0].contains("`excessive_nesting` has 4 allow attributes, baseline 3"),
-            "{details:?}"
-        );
+        match verdict {
+            Verdict::Fail(details) => {
+                assert_eq!(details.len(), 1, "{details:?}");
+                assert!(
+                    details[0].contains("`excessive_nesting` has 4 allow attributes, baseline 3"),
+                    "{details:?}"
+                );
+            }
+            other => panic!("one extra allow must be red: {other:?}"),
+        }
     }
 
     /// The baseline is exact, so a removed allow without lowering the row is red too (the ledger may not claim
@@ -13726,14 +13728,16 @@ runs:
         let tmp = g_m01_8_tree("shrink", 2, 3);
         let verdict = m01_6_lint_allow_ratchet(&tmp);
         fs::remove_dir_all(&tmp).ok();
-        let Verdict::Fail(details) = verdict else {
-            panic!("an unrecorded shrink must be red: {verdict:?}");
-        };
-        assert_eq!(details.len(), 1, "{details:?}");
-        assert!(
-            details[0].contains("lower the baseline to 2"),
-            "{details:?}"
-        );
+        match verdict {
+            Verdict::Fail(details) => {
+                assert_eq!(details.len(), 1, "{details:?}");
+                assert!(
+                    details[0].contains("lower the baseline to 2"),
+                    "{details:?}"
+                );
+            }
+            other => panic!("an unrecorded shrink must be red: {other:?}"),
+        }
     }
 
     /// The matched state is a pass, and a missing input (clippy.toml) is a fail naming it, never a pass.
@@ -13742,14 +13746,16 @@ runs:
         let ok = g_m01_8_tree("ok", 3, 3);
         assert_eq!(m01_6_lint_allow_ratchet(&ok), Verdict::Pass);
         fs::remove_file(ok.join("clippy.toml")).unwrap();
-        let Verdict::Fail(details) = m01_6_lint_allow_ratchet(&ok) else {
-            panic!("a missing clippy.toml must be red");
-        };
-        assert_eq!(details.len(), 1, "{details:?}");
-        assert!(
-            details[0].starts_with("clippy.toml unreadable:"),
-            "{details:?}"
-        );
+        match m01_6_lint_allow_ratchet(&ok) {
+            Verdict::Fail(details) => {
+                assert_eq!(details.len(), 1, "{details:?}");
+                assert!(
+                    details[0].starts_with("clippy.toml unreadable:"),
+                    "{details:?}"
+                );
+            }
+            other => panic!("a missing clippy.toml must be red: {other:?}"),
+        }
         fs::remove_dir_all(&ok).ok();
     }
 
