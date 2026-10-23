@@ -84,18 +84,20 @@ name matching.
 
 The confirm transaction moves the tenant to `DELETING`, revokes every credential and session (M02 port) in the same
 transaction, and tombstones every seq. The daemon (M21) runs this request ahead of all other work (B17 priority:
-revocation/forget first): purge door (PostgreSQL) → Qdrant delete-by-tenant filter (M10 guest) → object prefix, all
-versions (M17; receipt is a no-op until the object store exists) → cache epoch bump (M12) → public contributions revoked
-and rebuilt (M20, step 8) → disclosure ledger: per processor `DONE` / `EXTERNAL_PENDING` / `PARTIAL_CANNOT_ERASE`
-(open research R1–R2) → `COMPLETED`. The completion census requires every table with `tenant_id` to hold 0 rows for the
-tenant except the RETAIN list (the erasure ledger; billing rows if Q3 says keep). No completion email — the address is
-part of what is deleted; the UI shows the receipt at confirm. The live-data SLA is measured (X-M19-1) and disclosed
-with the backup age-out window.
+revocation/forget first): public contributions revoked first through `PublicRevocationPort::revoke_scope` (M20; order
+per ADR-0091 D-E and module_design_M20.md:140, "revoke_scope runs BEFORE M19's purge (FKs)") → purge door
+(PostgreSQL) → Qdrant delete-by-tenant filter (M10 guest) → object prefix, all versions (M17; receipt is a no-op until
+the object store exists) → cache epoch bump (M12) → disclosure ledger: per processor `DONE` / `EXTERNAL_PENDING` /
+`PARTIAL_CANNOT_ERASE` (open research R1–R2) → `COMPLETED`. The completion census requires every table with `tenant_id`
+to hold 0 rows for the tenant except the RETAIN list (the erasure ledger; billing rows if Q3 says keep). No completion
+email — the address is part of what is deleted; the UI shows the receipt at confirm. The live-data SLA is measured
+(X-M19-1) and disclosed with the backup age-out window.
 
 ### D-F  Restores never resurrect deleted data
 
-`control.erasure_ledger(request_id, scope_kind, target-id hash set, completed_at)` is content-free and kept while any
-backup generation predates `completed_at`. Each backup manifest carries a copy (M23 guest); the restore runbook
+`control.erasure_ledger(request_id, scope_kind, target-id hash set, completed_at)` is content-free and kept until the
+next verified export — the backup age-out window (module_design_M23.md:118-119: "Backup age-out disclosed to M19:
+until the next verified export"). Each backup manifest carries a copy (M23 guest); the restore runbook
 re-applies the ledger before serving opens, and the restore drill asserts it. The M23 v2 note (2026-10-23) extends this
 with `erasure/journal.jsonl` on the export volume: M19's executor writes `{request_id, scope_kind, target sha256 set,
 confirmed_at}` as its first daemon step after confirm, and restore re-applies journal lines through the purge door before
@@ -251,6 +253,9 @@ Any deletion, purge or retention drop against production data, including the fir
 and `account.delete`; `retention execute` on production; the first live send of a compression notice or an export-ready
 email; live provider keys in tests.
 
+- **Owner-gated:** account deletion does not yet cover the 1,041 legacy originals in the old MinIO; deleting them is
+  real-data deletion and stays owner-only, pending the owner's decision (module_design_M17.md:192-198, C-M17-6).
+
 ## Open research
 
 1. Alibaba Model Studio text-embedding-v4 (DashScope): are request inputs retained or logged, for how long, and is there
@@ -259,16 +264,14 @@ email; live provider keys in tests.
    deleted account)
 3. With Creem as merchant of record, which payment records must we (not Creem) keep after an account is deleted, and for
    how long, in the owner's jurisdiction? (feeds Q3)
-4. OCI Object Storage: do versioned buckets / retention rules guarantee that an expired off-site backup object is gone,
-   and how is that verified? (age-out disclosure)
 
 ## UNKNOWNs and fallbacks
 
 - Account-deletion live-data SLA → until X-M19-1, disclose "within 24 hours" and alert on
   `tombstoned_unpurged_over_sla`.
-- Backup age-out window → M23 v2 states it as until the next verified export (≈ 24 h, longer while exports fail). The
-  M19 note's earlier "cadence × retained generations + off-site expiry" wording predates M23 v2; the two are listed as
-  a cross-module conflict in the card's PR body and are not settled here.
+- Backup age-out window → closed: until the next verified export (≈ 24 h, longer while exports fail), and the erasure
+  ledger is kept until then (module_design_M23.md:118-119: "Backup age-out disclosed to M19: until the next verified
+  export"). M19's earlier "cadence × retained generations + off-site expiry" wording is superseded.
 - External processors' deletion → `EXTERNAL_PENDING`, then `PARTIAL_CANNOT_ERASE` with the processor named (§37: never
   claim deletion on a 200).
 - Compression trigger numbers → B23b start values as config, disabled until R11 and M04's storage-allowance numbers
