@@ -2,7 +2,7 @@
 //!   exercising the three literal task-brief acceptance behaviors: enqueue never blocks on SMTP, a suppressed address
 //!   never gets enqueued (same outcome type either way — unified safety semantics), and a provider failure lands the
 //!   row in `FAILED` with a matching delivery event.
-//! Depends-on: crates=[humaux-adapters, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any)
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any)
 //!   w=[control.users, ops.email_delivery_events, ops.email_outbox, ops.email_suppressions],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_private_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email,
 //!   adapters::email::outbox, adapters::email::test_double, adapters::postgres, humaux-testkit]
@@ -34,7 +34,10 @@ use std::sync::Mutex;
 use humaux_adapters::email::test_double::{
     EmailErrorKind, RecordingEmailProvider, ScriptedOutcome,
 };
-use humaux_adapters::email::{EmailStream, outbox};
+use humaux_adapters::email::{
+    EmailError, EmailMode, EmailPriority, EmailProvider, EmailStream, OutboundEmail,
+    ProviderMessageId, RecipientAllowlist, SendPolicy, SinkEmailProvider, SmtpConfig, outbox,
+};
 use humaux_adapters::postgres::{PrivateWorkerDbPool, RuntimeDbPool};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
@@ -147,6 +150,8 @@ fn req(handle: &Handle, to: &str, stream: EmailStream) -> outbox::EnqueueRequest
         template_id: "EMAIL_VERIFICATION".to_string(),
         subject: "Verify your email".to_string(),
         payload: serde_json::json!({}),
+        priority: EmailPriority::Auth,
+        idempotency_key: None,
     }
 }
 
@@ -167,6 +172,7 @@ fn enqueue_returns_immediately_and_writes_queued_row() {
                 .block_on(outbox::enqueue(
                     &handle.gateway,
                     &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
                 ))
                 .expect("enqueue must not error for a non-suppressed address");
             let elapsed = started.elapsed();
@@ -215,6 +221,7 @@ fn suppressed_address_is_not_enqueued() {
             .block_on(outbox::enqueue(
                 &handle.gateway,
                 &req(&handle, &to, EmailStream::Transactional),
+                &RecipientAllowlist::allow_all(),
             ))
             .expect("enqueue against a suppressed address must not itself error");
         assert_eq!(outcome, outbox::EnqueueOutcome::Suppressed);
@@ -266,6 +273,7 @@ fn marketing_suppression_does_not_block_transactional_stream() {
                 .block_on(outbox::enqueue(
                     &handle.gateway,
                     &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
                 ))
                 .expect("enqueue must not error");
             assert_eq!(
@@ -307,6 +315,7 @@ fn provider_failure_marks_row_failed_and_records_event() {
                 .block_on(outbox::enqueue(
                     &handle.gateway,
                     &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
                 ))
                 .expect("seed a QUEUED row to claim");
 
@@ -330,6 +339,7 @@ fn provider_failure_marks_row_failed_and_records_event() {
                 .block_on(outbox::run_once(
                     &handle.worker,
                     &provider,
+                    &SendPolicy::default(),
                     10,
                     Some(handle.user_id),
                 ))
@@ -385,6 +395,7 @@ fn provider_success_marks_row_sent_and_records_event() {
                 .block_on(outbox::enqueue(
                     &handle.gateway,
                     &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
                 ))
                 .expect("seed a QUEUED row to claim");
 
@@ -403,6 +414,7 @@ fn provider_success_marks_row_sent_and_records_event() {
                 .block_on(outbox::run_once(
                     &handle.worker,
                     &provider,
+                    &SendPolicy::default(),
                     10,
                     Some(handle.user_id),
                 ))
@@ -437,6 +449,576 @@ fn provider_success_marks_row_sent_and_records_event() {
             .expect("count query")
             .get(0);
             assert_eq!(event_count, 1);
+        },
+    );
+}
+
+fn state_of(handle: &mut Handle, to: &str) -> String {
+    handle
+        .admin
+        .query_one(
+            "SELECT state FROM ops.email_outbox WHERE user_id = $1 AND to_email = $2",
+            &[&handle.user_id, &to],
+        )
+        .expect("outbox row must exist")
+        .get(0)
+}
+
+fn drain(
+    handle: &Handle,
+    provider: &RecordingEmailProvider,
+    policy: &SendPolicy,
+    limit: i64,
+) -> usize {
+    handle
+        .rt
+        .block_on(outbox::run_once(
+            &handle.worker,
+            provider,
+            policy,
+            limit,
+            Some(handle.user_id),
+        ))
+        .expect("run_once must not error")
+}
+
+fn smtp_settings() -> SmtpConfig {
+    SmtpConfig {
+        host: "smtp.invalid".to_string(),
+        port: 465,
+        username: "u".to_string(),
+        password: "p".to_string(),
+        implicit_tls: true,
+    }
+}
+
+/// G-M02-15 (M02 D10): a profile that names no mode gets the non-sending sink, even when SMTP
+/// settings are present; SMTP needs the explicit name, and a bad name never falls back to sending.
+#[test]
+fn default_mode_is_sink_and_smtp_needs_explicit_choice() {
+    let dir = std::env::temp_dir().join(format!("humaux-sink-{}", Uuid::new_v4()));
+
+    let default_mode = EmailMode::resolve(None, dir.clone(), Some(smtp_settings()))
+        .expect("an absent mode resolves");
+    assert!(
+        matches!(&default_mode, EmailMode::Sink(d) if d == &dir),
+        "no explicit mode must select the sink, got {default_mode:?}"
+    );
+    assert_eq!(
+        default_mode.into_provider().expect("sink builds").name(),
+        "sink"
+    );
+
+    let explicit_sink = EmailMode::resolve(Some("sink"), dir.clone(), None).expect("sink resolves");
+    assert!(matches!(explicit_sink, EmailMode::Sink(_)));
+
+    let smtp = EmailMode::resolve(Some("smtp"), dir.clone(), Some(smtp_settings()))
+        .expect("smtp with settings resolves");
+    assert!(matches!(smtp, EmailMode::Smtp(_)));
+
+    match EmailMode::resolve(Some("smtp"), dir.clone(), None) {
+        Err(EmailError::Config(m)) => assert_eq!(m, "email mode smtp requires SMTP settings"),
+        other => panic!("smtp without settings must be refused, got {other:?}"),
+    }
+    match EmailMode::resolve(Some("SMTP "), dir, Some(smtp_settings())) {
+        Err(EmailError::Config(m)) => assert_eq!(m, "unknown email mode \"SMTP \""),
+        other => panic!("an unknown mode name must be refused, got {other:?}"),
+    }
+}
+
+/// G-M02-15: the sink writes the message to a file named after its Message-ID and nothing else.
+#[test]
+fn sink_writes_one_eml_file_per_message_id() {
+    let dir = std::env::temp_dir().join(format!("humaux-sink-{}", Uuid::new_v4()));
+    let sink = SinkEmailProvider::new(dir.clone());
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let mail = |body: &str| OutboundEmail {
+        to: "owner@example.invalid".to_string(),
+        from: "no-reply@humaux.example".to_string(),
+        subject: "Hello".to_string(),
+        body_text: body.to_string(),
+        body_html: None,
+        stream: EmailStream::Transactional,
+        message_id: "<abc@humaux.example>".to_string(),
+    };
+
+    let id = rt.block_on(sink.send(mail("first"))).expect("sink send");
+    assert_eq!(id.0, "<abc@humaux.example>");
+    rt.block_on(sink.send(mail("second"))).expect("sink resend");
+
+    let files: Vec<String> = std::fs::read_dir(&dir)
+        .expect("sink dir exists")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(files, vec!["abc_humaux.example.eml".to_string()]);
+    let text = std::fs::read_to_string(sink.path_for("<abc@humaux.example>")).expect("eml");
+    assert!(text.contains("Message-ID: <abc@humaux.example>\r\n"));
+    assert!(text.contains("To: owner@example.invalid\r\n"));
+    assert!(
+        text.ends_with("second"),
+        "a replay overwrites the same file"
+    );
+
+    let mut injected = mail("x");
+    injected.subject = "a\r\nBcc: victim@example.invalid".to_string();
+    match rt.block_on(sink.send(injected)) {
+        Err(EmailError::Rejected(_)) => {}
+        other => panic!("a header with a line break must be rejected, got {other:?}"),
+    }
+    let files_after: usize = std::fs::read_dir(&dir).expect("sink dir").count();
+    assert_eq!(files_after, 1, "the rejected message wrote no file");
+
+    std::fs::remove_dir_all(&dir).expect("cleanup sink dir");
+}
+
+/// Allowlist parsing: unset allows all, a blank value permits nobody, entries match
+/// case-insensitively.
+#[test]
+fn allowlist_parse_semantics() {
+    assert!(RecipientAllowlist::parse(None).permits("anyone@example.invalid"));
+    assert!(!RecipientAllowlist::parse(Some("")).permits("anyone@example.invalid"));
+    let list = RecipientAllowlist::parse(Some(" Owner@Example.invalid , second@example.invalid "));
+    assert!(list.permits("owner@example.invalid"));
+    assert!(list.permits("SECOND@example.invalid"));
+    assert!(!list.permits("third@example.invalid"));
+}
+
+/// G-M02-15: with an allowlist set, any other recipient is stored SUPPRESSED at enqueue and is
+/// never handed to the provider; a row queued before the list was tightened is stopped at send time.
+#[test]
+fn non_allowlisted_recipient_is_suppressed_and_never_sent() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>(
+        "non_allowlisted_recipient_is_suppressed_and_never_sent",
+        |mut handle| {
+            let owner = unique_email("owner");
+            let stranger = unique_email("stranger");
+            let late = unique_email("late");
+            let allowlist = RecipientAllowlist::only([owner.as_str()]);
+
+            let enqueue = |h: &Handle, to: &str, al: &RecipientAllowlist| {
+                h.rt.block_on(outbox::enqueue(
+                    &h.gateway,
+                    &req(h, to, EmailStream::Transactional),
+                    al,
+                ))
+                .expect("enqueue")
+            };
+            assert_eq!(
+                enqueue(&handle, &owner, &allowlist),
+                outbox::EnqueueOutcome::Queued
+            );
+            assert_eq!(
+                enqueue(&handle, &stranger, &allowlist),
+                outbox::EnqueueOutcome::Suppressed
+            );
+            assert_eq!(state_of(&mut handle, &stranger), "SUPPRESSED");
+            // Queued while no list was configured; the worker's own policy must still stop it.
+            assert_eq!(
+                enqueue(&handle, &late, &RecipientAllowlist::allow_all()),
+                outbox::EnqueueOutcome::Queued
+            );
+
+            let provider = RecordingEmailProvider::new();
+            let policy = SendPolicy {
+                allowlist,
+                max_sends_per_minute: None,
+            };
+            assert_eq!(drain(&handle, &provider, &policy, 10), 2);
+
+            let sent: Vec<String> = provider.sent().into_iter().map(|m| m.to).collect();
+            assert_eq!(
+                sent,
+                vec![owner.clone()],
+                "only the allowlisted recipient is sent"
+            );
+            assert_eq!(state_of(&mut handle, &owner), "SENT");
+            assert_eq!(state_of(&mut handle, &late), "SUPPRESSED");
+            let suppressed_events: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.email_delivery_events e \
+                     JOIN ops.email_outbox o USING (outbox_id) \
+                     WHERE o.user_id = $1 AND e.event_type = 'SUPPRESSED'",
+                    &[&handle.user_id],
+                )
+                .expect("count query")
+                .get(0);
+            assert_eq!(
+                suppressed_events, 1,
+                "the send-time refusal records one SUPPRESSED event"
+            );
+        },
+    );
+}
+
+/// M02 D10: one row per idempotency key; the replay reports Duplicate and inserts nothing.
+#[test]
+fn idempotency_key_replay_inserts_once() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>("idempotency_key_replay_inserts_once", |mut handle| {
+        let to = unique_email("idem");
+        let key = format!("test-key-{}", Uuid::new_v4());
+        let mut request = req(&handle, &to, EmailStream::Transactional);
+        request.idempotency_key = Some(key.clone());
+
+        let enqueue = |h: &Handle| {
+            h.rt.block_on(outbox::enqueue(
+                &h.gateway,
+                &request,
+                &RecipientAllowlist::allow_all(),
+            ))
+            .expect("enqueue")
+        };
+        assert_eq!(enqueue(&handle), outbox::EnqueueOutcome::Queued);
+        assert_eq!(enqueue(&handle), outbox::EnqueueOutcome::Duplicate);
+
+        let rows: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM ops.email_outbox WHERE idempotency_key = $1",
+                &[&key],
+            )
+            .expect("count query")
+            .get(0);
+        assert_eq!(rows, 1);
+
+        // NULL keys never collide, and a different key is a different message.
+        let other_to = unique_email("idem-other");
+        let mut other = req(&handle, &other_to, EmailStream::Transactional);
+        other.idempotency_key = Some(format!("test-key-{}", Uuid::new_v4()));
+        let mut keyless_a = req(
+            &handle,
+            &unique_email("idem-null-a"),
+            EmailStream::Transactional,
+        );
+        keyless_a.idempotency_key = None;
+        let keyless_b = req(
+            &handle,
+            &unique_email("idem-null-b"),
+            EmailStream::Transactional,
+        );
+        for r in [&other, &keyless_a, &keyless_b] {
+            let outcome = handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    r,
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("enqueue");
+            assert_eq!(outcome, outbox::EnqueueOutcome::Queued);
+        }
+        let total: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM ops.email_outbox WHERE user_id = $1",
+                &[&handle.user_id],
+            )
+            .expect("count query")
+            .get(0);
+        assert_eq!(total, 4);
+    });
+}
+
+/// Provider whose `send` aborts the worker mid-call, standing in for a crash after the message
+/// may have left.
+struct CrashingProvider;
+
+#[async_trait::async_trait]
+impl EmailProvider for CrashingProvider {
+    fn name(&self) -> &str {
+        "crashing-test-double"
+    }
+
+    async fn send(&self, _mail: OutboundEmail) -> Result<ProviderMessageId, EmailError> {
+        panic!("simulated crash inside send");
+    }
+}
+
+/// M02 D10: the in-flight marker is committed before the provider is called, so a crash
+/// inside `send` leaves SUBMISSION_UNKNOWN and the next drain sends nothing.
+#[test]
+fn crash_inside_send_never_leads_to_a_resend() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>(
+        "crash_inside_send_never_leads_to_a_resend",
+        |mut handle| {
+            let to = unique_email("crash");
+            handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("seed a QUEUED row");
+
+            let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle.rt.block_on(outbox::run_once(
+                    &handle.worker,
+                    &CrashingProvider,
+                    &SendPolicy::default(),
+                    10,
+                    Some(handle.user_id),
+                ))
+            }));
+            assert!(crashed.is_err(), "the provider panic must reach the caller");
+            assert_eq!(state_of(&mut handle, &to), "SUBMISSION_UNKNOWN");
+
+            let provider = RecordingEmailProvider::new();
+            assert_eq!(drain(&handle, &provider, &SendPolicy::default(), 10), 0);
+            assert_eq!(provider.sent().len(), 0);
+        },
+    );
+}
+
+/// G-M22-11 shape (the door half): a post-DATA drop is SUBMISSION_UNKNOWN, recorded once, and
+/// the next drain never sends it again.
+#[test]
+fn submission_unknown_is_never_resent() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>("submission_unknown_is_never_resent", |mut handle| {
+        let to = unique_email("after-data");
+        handle
+            .rt
+            .block_on(outbox::enqueue(
+                &handle.gateway,
+                &req(&handle, &to, EmailStream::Transactional),
+                &RecipientAllowlist::allow_all(),
+            ))
+            .expect("seed a QUEUED row");
+
+        let provider = RecordingEmailProvider::new();
+        provider.push_outcome(ScriptedOutcome::Err(
+            EmailErrorKind::SubmissionUnknown,
+            "connection reset after DATA".to_string(),
+        ));
+        let policy = SendPolicy::default();
+        assert_eq!(drain(&handle, &provider, &policy, 10), 1);
+        assert_eq!(state_of(&mut handle, &to), "SUBMISSION_UNKNOWN");
+
+        let (attempt, event_count): (i32, i64) = handle
+            .admin
+            .query_one(
+                "SELECT o.attempt, (SELECT count(*) FROM ops.email_delivery_events e \
+                   WHERE e.outbox_id = o.outbox_id AND e.event_type = 'SUBMISSION_UNKNOWN') \
+                 FROM ops.email_outbox o WHERE o.user_id = $1 AND o.to_email = $2",
+                &[&handle.user_id, &to],
+            )
+            .map(|r| (r.get(0), r.get(1)))
+            .expect("row");
+        assert_eq!((attempt, event_count), (1, 1));
+
+        assert_eq!(drain(&handle, &provider, &policy, 10), 0);
+        assert_eq!(
+            provider.sent().len(),
+            1,
+            "an unknown outcome is never resent"
+        );
+        assert_eq!(state_of(&mut handle, &to), "SUBMISSION_UNKNOWN");
+    });
+}
+
+/// M02-5: the plaintext login code is scrubbed from `payload` at the earliest point it is not
+/// needed — in the in-flight UPDATE (covers the crash case) and in settle (SENT / FAILED /
+/// SUPPRESSED) — never left behind past the row's life.
+#[test]
+fn login_code_is_scrubbed_from_payload_in_every_state() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>(
+        "login_code_is_scrubbed_from_payload_in_every_state",
+        |mut handle| {
+            let has_code = |h: &mut Handle, to: &str| -> bool {
+                h.admin
+                    .query_one(
+                        "SELECT payload ? 'code' FROM ops.email_outbox WHERE to_email = $1",
+                        &[&to],
+                    )
+                    .expect("row")
+                    .get(0)
+            };
+            let seed = |h: &mut Handle, tag: &str| -> String {
+                let to = unique_email(tag);
+                let mut r = req(h, &to, EmailStream::Transactional);
+                r.payload = serde_json::json!({ "code": "123456", "keep": "x" });
+                h.rt.block_on(outbox::enqueue(
+                    &h.gateway,
+                    &r,
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("seed a QUEUED row");
+                assert!(has_code(h, &to), "precondition: code present while QUEUED");
+                to
+            };
+
+            // (state, payload ? 'code') per case, asserted exactly.
+            let mut observed: Vec<(String, bool)> = Vec::new();
+
+            let to = seed(&mut handle, "scrub-sent");
+            assert_eq!(
+                drain(
+                    &handle,
+                    &RecordingEmailProvider::new(),
+                    &SendPolicy::default(),
+                    10
+                ),
+                1
+            );
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            let to = seed(&mut handle, "scrub-failed");
+            let failing = RecordingEmailProvider::new();
+            failing.push_outcome(ScriptedOutcome::Err(
+                EmailErrorKind::Rejected,
+                "550 mailbox unavailable".to_string(),
+            ));
+            assert_eq!(drain(&handle, &failing, &SendPolicy::default(), 10), 1);
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            let to = seed(&mut handle, "scrub-suppressed");
+            let policy = SendPolicy {
+                allowlist: RecipientAllowlist::only(["nobody@example.invalid"]),
+                max_sends_per_minute: None,
+            };
+            assert_eq!(
+                drain(&handle, &RecordingEmailProvider::new(), &policy, 10),
+                1
+            );
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            let to = seed(&mut handle, "scrub-crash");
+            let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle.rt.block_on(outbox::run_once(
+                    &handle.worker,
+                    &CrashingProvider,
+                    &SendPolicy::default(),
+                    10,
+                    Some(handle.user_id),
+                ))
+            }));
+            assert!(crashed.is_err(), "the provider panic must reach the caller");
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            assert_eq!(
+                observed,
+                vec![
+                    ("SENT".to_string(), false),
+                    ("FAILED".to_string(), false),
+                    ("SUPPRESSED".to_string(), false),
+                    ("SUBMISSION_UNKNOWN".to_string(), false),
+                ]
+            );
+        },
+    );
+}
+
+/// M22 D11 (the door half): the drain takes AUTH before DIGEST regardless of arrival order.
+#[test]
+fn drain_takes_highest_priority_first() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>("drain_takes_highest_priority_first", |handle| {
+        let digest = unique_email("digest");
+        let login = unique_email("login");
+        for (to, priority) in [
+            (&digest, EmailPriority::Digest),
+            (&login, EmailPriority::Auth),
+        ] {
+            let mut request = req(&handle, to, EmailStream::Transactional);
+            request.priority = priority;
+            handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    &request,
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("enqueue");
+        }
+
+        let provider = RecordingEmailProvider::new();
+        assert_eq!(drain(&handle, &provider, &SendPolicy::default(), 1), 1);
+        let sent: Vec<String> = provider.sent().into_iter().map(|m| m.to).collect();
+        assert_eq!(
+            sent,
+            vec![login],
+            "the login code goes first although queued second"
+        );
+    });
+}
+
+/// M22 D11: the per-minute cap bounds sends begun in the window; the rest stay QUEUED.
+#[test]
+fn send_cap_bounds_one_minute_window() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>("send_cap_bounds_one_minute_window", |mut handle| {
+        let addrs: Vec<String> = (0..3).map(|i| unique_email(&format!("cap{i}"))).collect();
+        for to in &addrs {
+            handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    &req(&handle, to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("enqueue");
+        }
+        // The cap is queue-wide, so size it relative to what other rows already used this minute.
+        let recent: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM ops.email_outbox WHERE sent_at > now() - interval '1 minute'",
+                &[],
+            )
+            .expect("count query")
+            .get(0);
+        let policy = SendPolicy {
+            allowlist: RecipientAllowlist::allow_all(),
+            max_sends_per_minute: Some(u32::try_from(recent + 2).expect("small cap")),
+        };
+
+        let provider = RecordingEmailProvider::new();
+        assert_eq!(drain(&handle, &provider, &policy, 10), 2);
+        assert_eq!(drain(&handle, &provider, &policy, 10), 0);
+        assert_eq!(provider.sent().len(), 2);
+        let queued = addrs
+            .iter()
+            .filter(|to| state_of(&mut handle, to) == "QUEUED")
+            .count();
+        assert_eq!(queued, 1, "the send that did not fit stays QUEUED");
+    });
+}
+
+/// M02 D10: Message-ID is `<outbox_id@sender-domain>`, so a resend can be recognised.
+#[test]
+fn message_id_is_deterministic_per_outbox_row() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>(
+        "message_id_is_deterministic_per_outbox_row",
+        |mut handle| {
+            let to = unique_email("msgid");
+            handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("enqueue");
+            let outbox_id: Uuid = handle
+                .admin
+                .query_one(
+                    "SELECT outbox_id FROM ops.email_outbox WHERE user_id = $1 AND to_email = $2",
+                    &[&handle.user_id, &to],
+                )
+                .expect("row")
+                .get(0);
+
+            let provider = RecordingEmailProvider::new();
+            assert_eq!(drain(&handle, &provider, &SendPolicy::default(), 10), 1);
+            let sent = provider.sent();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].message_id, format!("<{outbox_id}@humaux.example>"));
         },
     );
 }

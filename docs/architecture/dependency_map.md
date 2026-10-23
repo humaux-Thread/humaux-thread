@@ -57,6 +57,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
+#### `adapters::entitlement_repo`
+- reads `control.entitlement_snapshots`
+- executes `control.entitlement_grants_for_projection`
+- executes `control.write_entitlement_snapshot`
+- service `PostgreSQL(role_maintenance)`
+
 #### `adapters::evidence_repo`
 - writes `private.evidence_objects`
 - env `CARGO_MANIFEST_DIR`
@@ -129,7 +135,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
+
+#### `adapters::plan_repo`
+- executes `control.publish_plan_version`
+- service `PostgreSQL(role_maintenance)`
 
 #### `adapters::postgres`
 - reads `private.events`
@@ -255,13 +266,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -344,9 +360,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::entitlement`
+
 #### `application::pin`
 
 #### `application::public_evolve`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -409,6 +429,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::public`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -494,7 +516,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.credential_pepper_state`
 - reads `control.email_challenges`
 - reads `control.email_change_requests`
+- reads `control.entitlement_grants`
 - reads `control.memberships`
+- reads `control.oauth_authorization_codes`
+- reads `control.oauth_client_registrations`
+- reads `control.oauth_grants`
+- reads `control.oauth_refresh_tokens`
 - reads `control.operation_receipts`
 - reads `control.partition_registry`
 - reads `control.password_credentials`
@@ -580,6 +607,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.evidence_projects`
+- reads `private.evidence_sources`
 - reads `private.evidence_subjects`
 - reads `private.evidence_task_runs`
 - reads `private.identity_note_materializations`
@@ -658,8 +686,21 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.current_reasoning_route_binding`
 - executes `control.ensure_admission_tier`
 - executes `control.ensure_user`
+- executes `control.entitlement_grants_for_projection`
 - executes `control.issue_api_key`
+- executes `control.login_challenge_claim`
+- executes `control.login_challenge_issue`
+- executes `control.login_challenge_settle`
 - executes `control.maintenance_tenant_page`
+- executes `control.oauth_client_lookup`
+- executes `control.oauth_client_register`
+- executes `control.oauth_code_consume`
+- executes `control.oauth_code_issue`
+- executes `control.oauth_grant_issue`
+- executes `control.oauth_grant_lookup`
+- executes `control.oauth_grant_revoke`
+- executes `control.oauth_refresh_family_revoke`
+- executes `control.oauth_refresh_rotate`
 - executes `control.observe_reasoning_route_health`
 - executes `control.onboard_tenant`
 - executes `control.onboard_workspace`
@@ -684,6 +725,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.revoke_api_key`
 - executes `control.set_reasoning_profile_enabled`
 - executes `control.sweep_confirm_tokens`
+- executes `control.write_entitlement_snapshot`
 - executes `ops.admin_probe_snapshot`
 - executes `ops.admit_distill_budget`
 - executes `ops.auto_redrive_schema_failed`
@@ -914,6 +956,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.ensure_user`
 - executes `control.issue_quota_window`
 - executes `control.onboard_tenant`
+- executes `control.publish_plan_version`
 - env `CARGO_TARGET_DIR`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_ADMISSION_CONCURRENCY`
@@ -1592,6 +1635,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -1657,6 +1701,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -1671,8 +1716,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -1759,6 +1808,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `consolidation-worker::dsn`
@@ -1842,6 +1893,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::public`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -2067,6 +2120,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -2142,13 +2196,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -2239,6 +2298,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::retrieve`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `cache::bounded`
@@ -2297,6 +2358,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::selection`
 
+#### `domain::source`
+
 #### `domain::subject`
 
 #### `domain::ticket_family`
@@ -2314,6 +2377,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH`
 - env `HUMAUX_GATEWAY_ALLOWED_HOSTS`
 - env `HUMAUX_GATEWAY_ALLOWED_ORIGINS`
+- env `HUMAUX_GATEWAY_AUTH_HMAC_KEY`
+- env `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
 - env `HUMAUX_GATEWAY_BIND_ADDR`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED`
@@ -2595,6 +2661,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
+#### `adapters::entitlement_repo`
+- reads `control.entitlement_snapshots`
+- executes `control.entitlement_grants_for_projection`
+- executes `control.write_entitlement_snapshot`
+- service `PostgreSQL(role_maintenance)`
+
 #### `adapters::evidence_repo`
 - writes `private.evidence_objects`
 - env `CARGO_MANIFEST_DIR`
@@ -2708,6 +2780,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -2816,6 +2889,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -2857,8 +2931,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -2949,7 +3027,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::entitlement`
+
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -2999,9 +3081,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::note`
 
+#### `domain::plan`
+
 #### `domain::policy`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -3156,7 +3242,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.credential_pepper_state`
 - reads `control.email_challenges`
 - reads `control.email_change_requests`
+- reads `control.entitlement_grants`
 - reads `control.memberships`
+- reads `control.oauth_authorization_codes`
+- reads `control.oauth_client_registrations`
+- reads `control.oauth_grants`
+- reads `control.oauth_refresh_tokens`
 - reads `control.operation_receipts`
 - reads `control.partition_registry`
 - reads `control.password_credentials`
@@ -3242,6 +3333,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.evidence_projects`
+- reads `private.evidence_sources`
 - reads `private.evidence_subjects`
 - reads `private.evidence_task_runs`
 - reads `private.identity_note_materializations`
@@ -3320,8 +3412,21 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.current_reasoning_route_binding`
 - executes `control.ensure_admission_tier`
 - executes `control.ensure_user`
+- executes `control.entitlement_grants_for_projection`
 - executes `control.issue_api_key`
+- executes `control.login_challenge_claim`
+- executes `control.login_challenge_issue`
+- executes `control.login_challenge_settle`
 - executes `control.maintenance_tenant_page`
+- executes `control.oauth_client_lookup`
+- executes `control.oauth_client_register`
+- executes `control.oauth_code_consume`
+- executes `control.oauth_code_issue`
+- executes `control.oauth_grant_issue`
+- executes `control.oauth_grant_lookup`
+- executes `control.oauth_grant_revoke`
+- executes `control.oauth_refresh_family_revoke`
+- executes `control.oauth_refresh_rotate`
 - executes `control.observe_reasoning_route_health`
 - executes `control.onboard_tenant`
 - executes `control.onboard_workspace`
@@ -3346,6 +3451,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.revoke_api_key`
 - executes `control.set_reasoning_profile_enabled`
 - executes `control.sweep_confirm_tokens`
+- executes `control.write_entitlement_snapshot`
 - executes `ops.admin_probe_snapshot`
 - executes `ops.admit_distill_budget`
 - executes `ops.auto_redrive_schema_failed`
@@ -3762,6 +3868,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -3827,6 +3934,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -3841,8 +3949,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -3929,6 +4041,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `contracts::config_registry`
@@ -3989,6 +4103,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::relation`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -4362,6 +4478,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -4447,6 +4564,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -4461,8 +4579,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -4556,6 +4678,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `contracts::config_registry`
@@ -4607,6 +4731,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -4950,6 +5076,7 @@ executed by:
 
 ### `control.audit_events`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
@@ -4975,6 +5102,15 @@ read by:
 - (no process): `maintenance::tests::partitions`
 
 written by:
+
+executed by:
+
+### `control.auth_events`
+read by:
+- (no process): `adapters::tests::auth_contract`
+
+written by:
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -5172,11 +5308,13 @@ executed by:
 
 ### `control.email_challenges`
 read by:
+- (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -5196,6 +5334,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::provisioning`
@@ -5209,6 +5348,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::provisioning`
@@ -5217,18 +5357,44 @@ executed by:
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.entitlement_grants`
+read by:
+- (no process): `maintenance::tests::onboarding`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::entitlement_projector`
+
+executed by:
+
+### `control.entitlement_grants_for_projection`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::entitlement_projector`
+- process(cargo-xtask): `adapters::entitlement_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::entitlement_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.entitlement_snapshots`
 read by:
 - (no process): `maintenance::tests::onboarding`
+- process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(humaux-consolidation-worker): `adapters::request_guard_repo`
 - process(humaux-gateway): `adapters::request_guard_repo`
+- process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::request_guard_repo`
 - process(humaux-private-worker): `adapters::request_guard_repo`
 - process(humaux-retrieval-worker): `adapters::request_guard_repo`
 
 written by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::quota_and_rate`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -5263,6 +5429,37 @@ executed by:
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
+
+### `control.login_challenge_claim`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.login_challenge_issue`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- (no process): `adapters::tests::login_challenge`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.login_challenge_settle`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.maintenance_tenant_page`
 read by:
@@ -5304,6 +5501,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::contribution_pipeline`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
@@ -5318,6 +5516,7 @@ written by:
 - (no process): `adapters::tests::reasoning_route_foundation`
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::retrieval_query_sources`
@@ -5342,6 +5541,144 @@ written by:
 
 executed by:
 
+### `control.oauth_authorization_codes`
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
+### `control.oauth_client_lookup`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_client_register`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_client_registrations`
+read by:
+- (no process): `adapters::tests::auth_contract`
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
+### `control.oauth_code_consume`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- (no process): `adapters::tests::oauth_persistence`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_code_issue`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grant_issue`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grant_lookup`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grant_revoke`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grants`
+read by:
+- (no process): `adapters::tests::auth_contract`
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
+### `control.oauth_refresh_family_revoke`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_refresh_rotate`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_refresh_tokens`
+read by:
+- (no process): `adapters::tests::auth_contract`
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
 ### `control.observe_reasoning_route_health`
 read by:
 
@@ -5362,6 +5699,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::provisioning`
@@ -5386,6 +5724,7 @@ executed by:
 
 ### `control.operation_receipts`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
@@ -5563,6 +5902,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
@@ -5585,6 +5925,7 @@ written by:
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -5734,8 +6075,11 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::plan_repo`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `maintenance::tests::onboarding`
+- (no process): `maintenance::tests::reasoning_routes`
+- process(cargo-xtask): `adapters::plan_repo`
+- process(cargo-xtask): `xtask::e2e_onboard`
 
 ### `control.purge_idle_rate_buckets`
 read by:
@@ -6242,7 +6586,9 @@ written by:
 - (no process): `adapters::tests::coord_task_run`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
@@ -6259,6 +6605,7 @@ written by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
 - (no process): `adapters::tests::model_call_ledger`
+- (no process): `adapters::tests::oauth_persistence`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
@@ -6323,6 +6670,7 @@ executed by:
 
 ### `control.usage_reservations`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
@@ -6353,6 +6701,7 @@ read by:
 - process(cargo-xtask): `xtask::e2e_onboard`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -6392,12 +6741,15 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_subjects_link`
+- (no process): `adapters::tests::oauth_persistence`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
@@ -6406,6 +6758,7 @@ written by:
 - (no process): `adapters::tests::reasoning_route_foundation`
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::retrieval_query_sources`
@@ -6512,6 +6865,18 @@ written by:
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
+
+### `control.write_entitlement_snapshot`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::entitlement_projector`
+- process(cargo-xtask): `adapters::entitlement_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::entitlement_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `coord.task_runs`
 read by:
@@ -7037,6 +7402,7 @@ read by:
 written by:
 - (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -7057,6 +7423,7 @@ read by:
 written by:
 - (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -7217,6 +7584,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::distill_dispatch_v2`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -7232,6 +7600,7 @@ written by:
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::public_runtime`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::scheduler_exactly_once`
@@ -7434,6 +7803,7 @@ executed by:
 ### `ops.outbox`
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_reads`
@@ -7449,6 +7819,7 @@ read by:
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::read_materialize`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -7457,29 +7828,34 @@ read by:
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::read_materialize`
+- process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
+- process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
@@ -7489,6 +7865,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::note_put`
@@ -7500,6 +7877,7 @@ written by:
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::stream_repo`
@@ -8030,6 +8408,7 @@ executed by:
 read by:
 
 written by:
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 
 executed by:
@@ -8371,6 +8750,7 @@ executed by:
 
 ### `private.events`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -8404,6 +8784,7 @@ written by:
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -8422,6 +8803,7 @@ written by:
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -8487,6 +8869,7 @@ executed by:
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::memory_attribution`
@@ -8573,6 +8956,7 @@ written by:
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
@@ -8596,6 +8980,7 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::read_gate_closure`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -8649,6 +9034,29 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::remember`
+- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::remember`
+
+executed by:
+
+### `private.evidence_sources`
+read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
+- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::remember`
+
+written by:
+- (no process): `adapters::tests::evidence_sources`
+- process(cargo-xtask): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::remember`
@@ -9000,6 +9408,7 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::read_gate_closure`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::selection_snapshot`
@@ -9211,6 +9620,7 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::read_gate_closure`
 - (no process): `adapters::tests::rebuild`
+- (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
 - (no process): `adapters::tests::selection_snapshot`
@@ -9386,13 +9796,19 @@ executed by:
 ### `private.memory_text_v`
 read by:
 - process(cargo-xtask): `adapters::memory_repo`
+- process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_repo`
+- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::memory_repo`
+- process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::memory_repo`
+- process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::memory_repo`
+- process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::memory_repo`
+- process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
 
@@ -10133,6 +10549,7 @@ written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -10191,6 +10608,7 @@ executed by:
 
 ### `projection.stream_log`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
@@ -10206,6 +10624,7 @@ read by:
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::read_materialize`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -10216,6 +10635,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
@@ -10224,6 +10644,7 @@ read by:
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::exact_census`
@@ -10232,6 +10653,7 @@ read by:
 - process(humaux-maintenance): `adapters::postgres`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `maintenance::drill`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10241,6 +10663,7 @@ read by:
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::postgres`
 - process(humaux-private-worker): `adapters::read_materialize`
+- process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::context_repo`
@@ -10248,12 +10671,14 @@ read by:
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
+- process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 
 written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
@@ -10369,6 +10794,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::projection_claim`
+- (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::tenant_placements_migration`
@@ -10379,9 +10805,15 @@ written by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::rebuild_cli`
+- process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-consolidation-worker): `adapters::placement_repo`
+- process(humaux-gateway): `adapters::placement_repo`
+- process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
+- process(humaux-private-worker): `adapters::placement_repo`
+- process(humaux-retrieval-worker): `adapters::placement_repo`
 
 executed by:
 
@@ -11098,12 +11530,14 @@ executed by:
 - `adapters::exact_census`
 - `adapters::forget_repo`
 - `adapters::jobs`
+- `adapters::login_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::model_call_ledger`
 - `adapters::note_repo`
+- `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::placement_repo`
 - `adapters::postgres`
@@ -11120,6 +11554,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
 - `adapters::stream_repo`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -11138,6 +11573,7 @@ executed by:
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::email_outbox`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
 - `adapters::tests::forget_repo`
@@ -11145,6 +11581,7 @@ executed by:
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
+- `adapters::tests::login_challenge`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
@@ -11153,6 +11590,7 @@ executed by:
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::note_chunk_count_parity`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_assessed_contract`
@@ -11199,6 +11637,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::distill_dispatch_v2`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::g80_31_handoff`
@@ -11328,12 +11767,15 @@ executed by:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_affects`
@@ -11344,6 +11786,7 @@ executed by:
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
@@ -11356,6 +11799,7 @@ executed by:
 - `adapters::tests::public_trust`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::reasoning_route_runtime`
+- `adapters::tests::recall_envelope_g23`
 - `adapters::tests::relation_kernel`
 - `adapters::tests::request_guard`
 - `adapters::tests::retrieve_read_your_writes`
@@ -11389,6 +11833,7 @@ executed by:
 - `retrieval-provider::tests::router_rls_integration`
 
 ### `PostgreSQL(role_maintenance)`
+- `adapters::entitlement_repo`
 - `adapters::health`
 - `adapters::maintenance_repo`
 - `adapters::plan_repo`
@@ -11405,6 +11850,7 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::disclosure_ledger`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
@@ -11631,6 +12077,9 @@ executed by:
 ### `fs(statvfs of the DR paths)`
 - `maintenance::serve`
 
+### `subprocess(bash)`
+- `xtask::tests::experiment_workflow`
+
 ### `subprocess(cargo)`
 - `fail-closed-macro::tests::compile_fail`
 - `xtask::architecture_check`
@@ -11789,12 +12238,14 @@ modules naming it:
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::email::outbox`
+- `adapters::entitlement_repo`
 - `adapters::evidence_repo`
 - `adapters::exact_census`
 - `adapters::forget_repo`
 - `adapters::grep_repo`
 - `adapters::health`
 - `adapters::jobs`
+- `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
@@ -11802,6 +12253,7 @@ modules naming it:
 - `adapters::memory_repo`
 - `adapters::model_call_ledger`
 - `adapters::note_repo`
+- `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::placement_repo`
 - `adapters::plan_repo`
@@ -11842,12 +12294,15 @@ modules naming it:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
@@ -11857,6 +12312,7 @@ modules naming it:
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
@@ -11915,10 +12371,12 @@ modules naming it:
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
+- `adapters::entitlement_repo`
 - `adapters::evidence_repo`
 - `adapters::exact_census`
 - `adapters::grep_repo`
 - `adapters::health`
+- `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
@@ -11926,6 +12384,7 @@ modules naming it:
 - `adapters::memory_repo`
 - `adapters::model_call_ledger`
 - `adapters::note_repo`
+- `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::placement_repo`
 - `adapters::plan_repo`
@@ -11964,7 +12423,10 @@ modules naming it:
 - `adapters::tests::contribution_scan`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::disclosure_ledger`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -11972,6 +12434,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -11989,6 +12452,7 @@ modules naming it:
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -12105,7 +12569,9 @@ modules naming it:
 - `adapters::contribution_scan`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
+- `adapters::entitlement_repo`
 - `adapters::forget_repo`
+- `adapters::login_repo`
 - `adapters::memory_governance_repo`
 - `adapters::model_call_ledger`
 - `adapters::private_inference_rpc`
@@ -12114,14 +12580,18 @@ modules naming it:
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::retrieve`
+- `adapters::tests::auth_contract`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_policy_lifecycle_0132`
 - `adapters::tests::contribution_reasoner`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
+- `adapters::tests::login_challenge`
 - `adapters::tests::mechanism_observation`
 - `adapters::tests::memory_affects`
 - `adapters::tests::model_call_ledger`
@@ -12169,6 +12639,7 @@ modules naming it:
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
+- `adapters::tests::note_text_once`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
@@ -12228,6 +12699,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::email`
+- `adapters::email::sink`
 - `adapters::email::smtp`
 - `adapters::email::test_double`
 - `adapters::memory_repo`
@@ -12238,6 +12710,7 @@ modules naming it:
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
+- `adapters::tests::email_outbox`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
@@ -12274,13 +12747,16 @@ modules naming it:
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::email::outbox`
+- `adapters::entitlement_repo`
 - `adapters::jobs`
+- `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::note_repo`
+- `adapters::oauth_repo`
 - `adapters::plan_repo`
 - `adapters::projection_worker`
 - `adapters::provisioning`
@@ -12307,6 +12783,9 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::email_outbox`
+- `adapters::tests::entitlement_projector`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -12322,6 +12801,7 @@ modules naming it:
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
@@ -12360,8 +12840,10 @@ modules naming it:
 - `adapters::distill_repo`
 - `adapters::maintenance_repo`
 - `adapters::memory_governance_repo`
+- `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::quota_repo`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
@@ -12392,6 +12874,7 @@ modules naming it:
 - `adapters::distill_reasoner`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
+- `adapters::oauth_repo`
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provisioning`
@@ -12441,6 +12924,7 @@ modules naming it:
 - `adapters::rebuild`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
@@ -12459,6 +12943,7 @@ modules naming it:
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
 - `adapters::distill_reasoner`
+- `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::operation_receipt`
@@ -12481,6 +12966,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_append_only`
@@ -12550,6 +13036,7 @@ why: self-reference for test-support feature
 
 modules naming it:
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::confirm_token_retention`
@@ -12566,7 +13053,10 @@ modules naming it:
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
@@ -12574,6 +13064,7 @@ modules naming it:
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12587,6 +13078,7 @@ modules naming it:
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -12661,6 +13153,7 @@ modules naming it:
 - `adapters::consolidate_repo`
 - `adapters::postgres`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -12679,7 +13172,9 @@ modules naming it:
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12690,6 +13185,7 @@ modules naming it:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12703,6 +13199,7 @@ modules naming it:
 - `adapters::tests::note_chunk_count_parity`
 - `adapters::tests::note_put`
 - `adapters::tests::note_replace`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
@@ -12775,6 +13272,7 @@ modules naming it:
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
 - `adapters::distill_reasoner`
+- `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::operation_receipt`
@@ -12797,6 +13295,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_append_only`
@@ -12848,6 +13347,7 @@ modules naming it:
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -12860,7 +13360,10 @@ modules naming it:
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12871,6 +13374,7 @@ modules naming it:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
@@ -12887,6 +13391,7 @@ modules naming it:
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
@@ -12956,13 +13461,17 @@ modules naming it:
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
+- `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12971,6 +13480,7 @@ modules naming it:
 - `adapters::tests::note_put`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::plan_catalog`
@@ -13019,6 +13529,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::correct`
 - `application::entitlement`
+- `application::login`
 - `application::notify`
 - `application::pin`
 - `application::public_evolve`
@@ -13047,13 +13558,16 @@ why: token/RNG source for auth, referral codes and supersede confirm tokens
 modules naming it:
 - `application::auth`
 - `application::referral`
+- `application::signed_token`
 - `application::supersede`
+- `tests`
 
 ### humaux-application → `hmac` (normal)
-why: verification-code HMAC
+why: verification-code HMAC and the signed-token MAC
 
 modules naming it:
 - `application::auth`
+- `application::signed_token`
 
 ### humaux-application → `sha2` (normal)
 why: token/handoff sha256 digests
@@ -13065,6 +13579,7 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::referral`
+- `application::signed_token`
 - `tests`
 
 ### humaux-application → `hex` (normal)
@@ -13076,6 +13591,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::referral`
+- `application::signed_token`
 - `tests`
 
 ### humaux-application → `serde` (normal)
@@ -13226,6 +13742,7 @@ modules naming it:
 - `domain::evidence`
 - `domain::note`
 - `domain::selection`
+- `domain::source`
 
 ### humaux-domain → `async-trait` (normal)
 why: object-safe async traits for ports and transports
@@ -16021,6 +16538,15 @@ default run:
 - PostgreSQL
 - Qdrant
 
+### `crates/adapters/tests/auth_contract.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/auth_scope_rls.rs`
 db-bound (default run): yes
 
@@ -16205,6 +16731,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/entitlement_projector.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/enumerate_scale.rs`
 db-bound (default run): no
 
@@ -16212,6 +16747,24 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/adapters/tests/evidence_sources.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/evidence_sources_dedupe.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/evidence_task_runs.rs`
 db-bound (default run): yes
@@ -16295,6 +16848,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/ledger_frontier.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/login_challenge.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -16450,6 +17012,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/note_text_once.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/oauth_persistence.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -17093,6 +17664,15 @@ services (computed):
 
 default run:
 
+### `xtask/tests/experiment_workflow.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
+- subprocess
+
 ### `xtask/tests/version.rs`
 db-bound (default run): no
 
@@ -17142,7 +17722,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:41` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
-- `crates/application/src/auth.rs:494` [table-undeclared] (line) — names the table only in a panic message; no DB access here
+- `crates/application/src/auth.rs:518` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access

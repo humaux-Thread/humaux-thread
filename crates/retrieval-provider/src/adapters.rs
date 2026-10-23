@@ -1182,7 +1182,6 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroU32;
     use std::path::PathBuf;
-    use std::str::FromStr;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
@@ -1193,10 +1192,7 @@ mod tests {
     };
     use humaux_retrieval::request::{RetrievalIntent, build_request};
     use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
-    use postgres::config::Host;
     use postgres::{Client, NoTls};
-
-    const QUERY_FIXTURE_DB: &str = "humaux_thread_request_guard_20260828";
 
     struct DeterministicEmbeddingTransport {
         calls: AtomicUsize,
@@ -1270,7 +1266,7 @@ mod tests {
             if let Some((dsn, tenant_id, logical_call_id)) = pre_send_probe {
                 let count = tokio::task::spawn_blocking(move || {
                     let mut client =
-                        // dep: PostgreSQL(role_retrieval_worker) — connects with the exact 127.0.0.1:61719 guard DSN this fixture requires.
+                        // dep: PostgreSQL(owner) — connects with the fixture's owner DSN (`HUMAUX_TEST_PG_DSN`).
                         Client::connect(&dsn, NoTls).map_err(|_| ErrorCode::Internal)?;
                     Ok::<i64, ErrorCode>(
                         client
@@ -1332,28 +1328,10 @@ mod tests {
         owner_dsn: String,
     }
 
+    /// §79.2: seeds one throwaway tenant on the isolated database CI provides
+    /// (`HUMAUX_TEST_PG_DSN` owner, `HUMAUX_RETRIEVAL_WORKER_PG_DSN` role); no machine-local
+    /// target is pinned, so a standard environment runs it instead of skipping.
     struct QueryProviderFixture;
-
-    fn checked_query_dsn(
-        name: &str,
-        expected_user: Option<&str>,
-    ) -> Result<String, DbFixtureSkipReason> {
-        let dsn = std::env::var(name).map_err(|_| DbFixtureSkipReason::NoDatabaseUrl)?;
-        let config = postgres::Config::from_str(&dsn)
-            .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
-        let host_ok = matches!(config.get_hosts(), [Host::Tcp(host)] if host == "127.0.0.1");
-        let port_ok = matches!(config.get_ports(), [61719]);
-        if !host_ok
-            || !port_ok
-            || config.get_dbname() != Some(QUERY_FIXTURE_DB)
-            || expected_user.is_some_and(|user| config.get_user() != Some(user))
-        {
-            return Err(DbFixtureSkipReason::IsolationSetupFailed(
-                "query provider fixture requires exact 127.0.0.1:61719 guard DSNs".into(),
-            ));
-        }
-        Ok(dsn)
-    }
 
     fn seed_query_provider_budget_limits(
         admin: &mut Client,
@@ -1400,24 +1378,6 @@ mod tests {
     }
 
     impl DbIntegrationFixture for QueryProviderFixture {
-        type Handle = QueryProviderHandle;
-
-        fn isolate() -> Result<Self::Handle, DbFixtureSkipReason> {
-            let owner_dsn = checked_query_dsn("HUMAUX_TEST_PG_DSN", None)?;
-            let retrieval_dsn = checked_query_dsn(
-                "HUMAUX_RETRIEVAL_WORKER_PG_DSN",
-                Some("role_retrieval_worker"),
-            )?;
-            seeded_provider_handle(owner_dsn, retrieval_dsn)
-        }
-    }
-
-    /// ADR-0068 D-F batch gates: the same seeded handle on the repo-wide database CI provides
-    /// (`HUMAUX_TEST_PG_DSN`, `HUMAUX_RETRIEVAL_WORKER_PG_DSN`), without
-    /// [`QueryProviderFixture`]'s request-guard container pin.
-    struct CardBatchFixture;
-
-    impl DbIntegrationFixture for CardBatchFixture {
         type Handle = QueryProviderHandle;
 
         fn isolate() -> Result<Self::Handle, DbFixtureSkipReason> {
@@ -1987,7 +1947,7 @@ mod tests {
     /// sources from `memory_ids[0..]` ⇒ red.
     #[test]
     fn embedding_batches_respect_provider_limit() {
-        run_db_fixture::<CardBatchFixture, _>("dashscope_card_batches", |mut handle| {
+        run_db_fixture::<QueryProviderFixture, _>("dashscope_card_batches", |mut handle| {
             let transport = Arc::new(DeterministicEmbeddingTransport::new());
             transport.reverse_data.store(true, Ordering::SeqCst);
             let (provider, _, _) = query_provider_and_authorization(&mut handle, transport.clone());
@@ -2033,7 +1993,7 @@ mod tests {
     /// `index`, or continue past a failed slice ⇒ red.
     #[test]
     fn a_duplicate_index_in_a_later_batch_returns_no_vectors() {
-        run_db_fixture::<CardBatchFixture, _>("dashscope_card_batch_dup", |mut handle| {
+        run_db_fixture::<QueryProviderFixture, _>("dashscope_card_batch_dup", |mut handle| {
             let transport = Arc::new(DeterministicEmbeddingTransport::new());
             transport.duplicate_index_on_call.store(2, Ordering::SeqCst);
             let (provider, _, _) = query_provider_and_authorization(&mut handle, transport.clone());

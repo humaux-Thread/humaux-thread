@@ -1,14 +1,14 @@
 //! `maintenance::tests::onboarding` — real-PostgreSQL / real-Qdrant tests of the `humaux-maintenance` binary
 //!   (ADR-0053).
 //! Depends-on: crates=[humaux-protocol, humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(owner)
-//!   r=[control.api_keys, control.audit_events, control.credential_pepper_state, control.entitlement_snapshots, control.memberships,
+//!   r=[control.api_keys, control.audit_events, control.credential_pepper_state, control.entitlement_grants, control.entitlement_snapshots, control.memberships,
 //!   control.private_reasoning_domains, control.quota_windows, control.retrieval_provider_admission_limits,
 //!   control.tenants, control.user_emails, control.users, control.workspace_memberships, ops.commit_seq_seq,
 //!   ops.schema_migrations,
 //!   projection.family_activations, projection.tenant_placements] w=[control.workspaces, ops.jobs, ops.outbox,
 //!   private.evidence_objects, projection.stream_checkpoints, projection.stream_log]
 //!   x=[control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.onboard_tenant,
-//!   control.onboard_workspace, control.revoke_api_key, projection.activate_empty_family,
+//!   control.onboard_workspace, control.publish_plan_version, control.revoke_api_key, projection.activate_empty_family,
 //!   projection.ensure_tenant_placement], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*),
 //!   subprocess(humaux-maintenance)];
 //!   env=[CARGO_BIN_EXE_humaux-maintenance, CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_CREDENTIAL_PEPPER_HEX,
@@ -186,8 +186,31 @@ fn fixture(test: &str) -> Option<Fixture> {
     // dep: PostgreSQL(owner) — fixture connection to the throwaway database
     let mut client = Client::connect(&with_db(&owner_dsn, &db), NoTls).expect("connect test db");
     migrate(&mut client);
+    publish_test_plan(&mut client);
     fixture.client = Some(client);
     Some(fixture)
+}
+
+/// The plan every fixture tenant is granted: published by the fixture, so onboarding reads a real catalogue row (§71.1).
+const PLAN_KEY: &str = "onboard_test";
+
+/// The per-period window limit of [`PLAN_KEY`] version 1.
+const PLAN_LIMIT: i64 = 1000;
+
+/// Publishes [`PLAN_KEY`] version 1 as the database owner (the door's `role_maintenance` EXECUTE is not what is under
+/// test here).
+fn publish_test_plan(client: &mut Client) {
+    // dep: PostgreSQL(owner) — fixture seed of the plan catalogue through the owner door
+    client
+        .execute(
+            "SELECT control.publish_plan_version($1, 1, 0, 'USD', 'month', \
+             jsonb_build_object('mcp.billable_operations.per_period', \
+               jsonb_build_object('limit', $2::bigint, 'period', 'subscription_period', \
+                                  'charge_policy', 'success_only')), \
+             16, '{}'::jsonb, true)",
+            &[&PLAN_KEY, &PLAN_LIMIT],
+        )
+        .expect("publish the fixture plan");
 }
 
 fn hex_of(bytes: &[u8]) -> String {
@@ -264,8 +287,10 @@ impl Fixture {
             name,
             "--owner-email",
             "Owner@Example.com",
-            "--plan-limit",
-            "1000",
+            "--plan",
+            PLAN_KEY,
+            "--plan-version",
+            "1",
             "--period-end",
             "2099-01-01T00:00:00Z",
             "--scopes",
@@ -316,7 +341,7 @@ impl Fixture {
         let row = txn
             .query_one(
                 "SELECT tenant_id, workspace_id FROM control.onboard_tenant($1, $2, 'default', \
-                 'default', 10, now() - interval '1 second', now() + interval '1 day', $3, $4, \
+                 'default', 'onboard_test', 1, now() - interval '1 second', now() + interval '1 day', $3, $4, \
                  10, 10, ARRAY['private_memory','PRIVATE_MEMORY','v1'])",
                 &[&name, &user, &PROVIDER, &REGION],
             )
@@ -495,6 +520,41 @@ fn onboard_tenant_creates_every_row_and_activates_verified_empty() {
     assert_eq!(activation["outcome"], "activated");
     assert_eq!(activation["evidence"], "VerifiedEmpty");
     assert_eq!(activation["probe_visible"], 0);
+
+    // §76 / M04-2: the snapshot is the projector's output over the plan's PLAN grants, with the window the plan states.
+    let effective: Value = serde_json::from_str(
+        &f.db()
+            .query_one(
+                "SELECT effective::text FROM control.entitlement_snapshots WHERE tenant_id = $1",
+                &[&tenant],
+            )
+            .expect("snapshot")
+            .get::<_, String>(0),
+    )
+    .expect("effective is JSON");
+    let per_period = &effective["mcp.billable_operations.per_period"];
+    assert_eq!(effective.as_object().unwrap().len(), 1, "{effective}");
+    assert_eq!(per_period["limit"], PLAN_LIMIT);
+    assert_eq!(per_period["period"], "subscription_period");
+    assert_eq!(per_period["charge_policy"], "success_only");
+    assert_eq!(per_period["period_end"], "2099-01-01T00:00:00.000Z");
+    let grant_values: Vec<Value> = f
+        .db()
+        .query(
+            "SELECT value::text FROM control.entitlement_grants \
+              WHERE tenant_id = $1 AND source = 'PLAN' AND revoked_at IS NULL",
+            &[&tenant],
+        )
+        .expect("grants")
+        .iter()
+        .map(|row| serde_json::from_str(&row.get::<_, String>(0)).expect("grant value is JSON"))
+        .collect();
+    assert_eq!(
+        grant_values,
+        std::slice::from_ref(per_period),
+        "the snapshot is the one PLAN grant, verbatim"
+    );
+    assert!(per_period["period_start"].is_string(), "{per_period}");
 
     // The printed key authenticates against the stored §73.5 hash; the receipt has only the
     // fingerprint.
@@ -1138,7 +1198,7 @@ fn onboarding_functions_are_not_executable_by_runtime_roles() {
     let functions = [
         "control.ensure_admission_tier(text,text,uuid,text,bigint,bigint)",
         "control.ensure_user(text,text)",
-        "control.onboard_tenant(text,uuid,text,text,bigint,timestamptz,timestamptz,text,text,bigint,bigint,text[])",
+        "control.onboard_tenant(text,uuid,text,text,text,integer,timestamptz,timestamptz,text,text,bigint,bigint,text[])",
         "control.onboard_workspace(uuid,text,uuid,text[])",
         "control.issue_api_key(uuid,uuid,uuid,text,bytea,text[])",
         "control.revoke_api_key(uuid,text)",
@@ -1231,9 +1291,9 @@ fn cli_refuses_missing_flags_without_defaults() {
     args.extend(ADMIN);
     let out = run(&args);
     assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains("--plan-limit"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--plan"), "{}", stderr(&out));
     // Every flag present but no environment: the DSN/pepper are env-only, never defaulted.
-    args.extend(["--plan-limit", "1"]);
+    args.extend(["--plan", "p", "--plan-version", "1"]);
     let out = run(&args);
     assert_eq!(out.status.code(), Some(2));
     assert!(

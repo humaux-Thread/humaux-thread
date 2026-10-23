@@ -1,0 +1,64 @@
+# §46.1 migration manifest. Card M06-1a / ADR-0098 D1: one new private table private.evidence_sources (source identity of
+# a relayed Evidence) with a tenant-leg cascading FK to private.evidence_objects, closed CHECKs, a UNIQUE identity key, a
+# partial thread index, FORCE RLS on tenant AND owner (humaux.user_id), owner role_migration_owner, and NAMED §6.2.2
+# grants (role_gateway SELECT + INSERT, role_maintenance SELECT; nobody UPDATE/DELETE). No DML.
+# §46 forward-fix (EXPAND_CONTRACT, number 0264).
+
+migration_id = "0264_evidence_sources"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the Evidence parent or one that already has the table.
+precheck = """
+select to_regclass('private.evidence_objects') is not null
+ and to_regclass('private.evidence_sources') is null
+ as precheck_ok
+"""
+
+# Fails on: RLS not forced, wrong owner, a policy missing the NULLIF tenant clause or the humaux.user_id owner clause
+# (USING and WITH CHECK), a PK or UNIQUE of the wrong shape, an FK without the tenant leg or without CASCADE, a missing
+# named CHECK, or any grant beyond gateway SELECT + INSERT and maintenance SELECT (column-level grants included).
+postcheck = """
+with runtime_roles(name) as (values
+  ('role_admin'), ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+  ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance')),
+t as (select to_regclass('private.evidence_sources') as oid)
+select (select count(*) = 1 from t join pg_class k on k.oid = t.oid
+         where k.relrowsecurity and k.relforcerowsecurity and pg_get_userbyid(k.relowner) = 'role_migration_owner')
+ and (select count(*) = 1 from pg_policies p
+       where p.schemaname = 'private' and p.tablename = 'evidence_sources'
+         and p.qual like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.qual like '%NULLIF(current_setting(''humaux.user_id''%'
+         and p.with_check like '%NULLIF(current_setting(''humaux.tenant_id''%'
+         and p.with_check like '%NULLIF(current_setting(''humaux.user_id''%')
+ and (select count(*) = 1 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'p'
+       where (select array_agg(a.attname::text order by u.i)
+                from unnest(k.conkey) with ordinality u(n, i)
+                join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.n) = array['tenant_id', 'evidence_id'])
+ and (select count(*) = 1 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'u'
+       where (select array_agg(a.attname::text order by u.i)
+                from unnest(k.conkey) with ordinality u(n, i)
+                join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.n)
+             = array['tenant_id', 'owner_user_id', 'source_kind', 'object_key_d16', 'source_version'])
+ and (select count(*) = 1 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f'
+       where k.conkey[1] = (select attnum from pg_attribute where attrelid = t.oid and attname = 'tenant_id')
+         and k.confdeltype = 'c' and k.confrelid = to_regclass('private.evidence_objects'))
+ and (select count(*) = 1 from t join pg_constraint k on k.conrelid = t.oid and k.contype = 'f')
+ and (select count(*) = 5 from t join pg_constraint k on k.conrelid = t.oid
+       where k.contype = 'c' and k.conname in ('evidence_sources_source_kind_check', 'evidence_sources_object_key_len',
+         'evidence_sources_version_len', 'evidence_sources_thread_key_len', 'evidence_sources_payload_len'))
+ and has_table_privilege('role_gateway', 'private.evidence_sources', 'SELECT')
+ and has_table_privilege('role_gateway', 'private.evidence_sources', 'INSERT')
+ and has_table_privilege('role_maintenance', 'private.evidence_sources', 'SELECT')
+ and not exists (select 1 from runtime_roles r
+                  where has_any_column_privilege(r.name, 'private.evidence_sources', 'UPDATE')
+                     or has_table_privilege(r.name, 'private.evidence_sources', 'DELETE')
+                     or has_table_privilege(r.name, 'private.evidence_sources', 'TRUNCATE')
+                     or (r.name not in ('role_gateway', 'role_maintenance')
+                         and has_any_column_privilege(r.name, 'private.evidence_sources', 'SELECT'))
+                     or (r.name <> 'role_gateway'
+                         and has_any_column_privilege(r.name, 'private.evidence_sources', 'INSERT')))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback while the table is empty: DROP TABLE private.evidence_sources; and remove adapters::remember::remember_sourced_in_txn, humaux_domain::source and the §6.2.2 cells in the same release. Forward-fix once any row exists: the rows are the dedupe identity 1b reads and are never discarded silently."
+backup_restore_requirement = "none: one new empty table; no existing row, policy or grant is touched."
