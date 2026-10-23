@@ -717,26 +717,38 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rerank-parity
 
+  # ADR-0061 D-E (T-CI-5): the loaded rules are tested on synthetic series and every mutation must turn a test red.
+  # The steps and the promtool pin live in .github/actions/prometheus-rules so targeted.yml's prom_rules dispatch runs
+  # the same gates; no services (promtool reads the unit-test fixtures only).
+  prometheus-rules:
+    name: prometheus rules (promtool + mutations)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prometheus-rules
+
   # The required check (branch protection names it): green only when every part above is green; a skipped or
   # cancelled part is red, never a quiet pass (§79.2).
   ci:
     name: fmt + check + clippy + test + gates
-    needs: [lint, test-a, test-b, serial-lane, sast, rerank-parity]
+    needs: [lint, test-a, test-b, serial-lane, sast, rerank-parity, prometheus-rules]
     if: always()
-    # Pinned x64 image: this job only compares five results, and on the arm queue it waited ~5.5 min for a runner
+    # Pinned x64 image: this job only compares results, and on the arm queue it waited ~5.5 min for a runner
     # after every part had finished (run 38351566010).
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: every part passed
         run: |
-          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }} sast=${{ needs.sast.result }} rerank-parity=${{ needs.rerank-parity.result }}'
+          echo 'lint=${{ needs.lint.result }} test-a=${{ needs.test-a.result }} test-b=${{ needs.test-b.result }} serial-lane=${{ needs.serial-lane.result }} sast=${{ needs.sast.result }} rerank-parity=${{ needs.rerank-parity.result }} prometheus-rules=${{ needs.prometheus-rules.result }}'
           test '${{ needs.lint.result }}' = success
           test '${{ needs.test-a.result }}' = success
           test '${{ needs.test-b.result }}' = success
           test '${{ needs.serial-lane.result }}' = success
           test '${{ needs.sast.result }}' = success
           test '${{ needs.rerank-parity.result }}' = success
+          test '${{ needs.prometheus-rules.result }}' = success
 
   # Real-provider tests (the local chain's distill_hop_live / distill_fairness_live /
   # distill_poison_live / two_provider_live / consolidation hop / dashscope_live_smoke).
