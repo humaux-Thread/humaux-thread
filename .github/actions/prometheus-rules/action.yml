@@ -1,0 +1,77 @@
+name: prometheus rules (promtool + mutations)
+# ADR-0061 D-E (T-CI-5): the `promtool_test_rules` gate is `deploy/prometheus/test-rules.sh` plus the §80.1 red record
+# `deploy/prometheus/mutations.sh`. Both read the promtool pin through deploy/prometheus/pinned-tool.sh, which never
+# resolves a binary from PATH and exits 2 (not_applicable) when a pin variable is unset. This action sets all three
+# variables from the README "Pins" row, and its callers run on a Linux arm64 runner: the sha256 below is the
+# `linux-arm64` tarball pin, not the darwin executable pin.
+#
+# One definition (T-CI-5): ci.yml's `prometheus rules (promtool + mutations)` job and targeted.yml's `prom_rules`
+# dispatch both call this action, so a mutation on this path gets a red record without ci.yml (whose `live` job spends
+# provider money). The caller checks out the ref; this action needs the workspace at that ref and no services.
+#
+# CI has no not_applicable: the pin is always set here, so a script's exit 2 fails the step like any other non-zero
+# exit. The tarball sha256 is checked before every extract, a cache hit included, so a poisoned cache cannot pass.
+description: run the ADR-0061 D-E promtool rule tests and the §80.1 mutation record on the pinned promtool
+inputs:
+  promtool_version:
+    description: promtool version, pinned by deploy/prometheus/README.md "Pins"
+    required: false
+    default: "3.15.0"
+  promtool_tarball_url:
+    description: Prometheus release tarball for linux-arm64 (it contains promtool)
+    required: false
+    default: https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.linux-arm64.tar.gz
+  promtool_tarball_sha256:
+    description: sha256 of that linux-arm64 tarball, from deploy/prometheus/README.md "Pins"
+    required: false
+    default: f1f90ec08e849d494ca66c611470afc50192f0355f1a61c33f2cbde02d067823
+runs:
+  using: composite
+  steps:
+    # The cache holds the tarball, keyed by its sha256: a changed pin is a new key and cannot reuse an old archive.
+    # The verification below runs on every run, a cache hit included.
+    - uses: actions/cache@v4
+      with:
+        path: ~/.humaux-promtool
+        key: promtool-linux-arm64-${{ inputs.promtool_tarball_sha256 }}
+
+    - name: verify, extract and pin promtool
+      shell: bash
+      env:
+        PROMTOOL_VERSION: ${{ inputs.promtool_version }}
+        PROMTOOL_TARBALL_URL: ${{ inputs.promtool_tarball_url }}
+        PROMTOOL_TARBALL_SHA256: ${{ inputs.promtool_tarball_sha256 }}
+      run: |
+        set -euo pipefail
+        dl="$HOME/.humaux-promtool"
+        mkdir -p "$dl"
+        tarball="$dl/prometheus-${PROMTOOL_VERSION}.linux-arm64.tar.gz"
+        if [ ! -f "$tarball" ]; then
+          curl --fail --location --silent --show-error --retry 3 "$PROMTOOL_TARBALL_URL" -o "$tarball"
+        fi
+        printf '%s  %s\n' "$PROMTOOL_TARBALL_SHA256" "$tarball" | sha256sum --check --strict
+        dir="$RUNNER_TEMP/prometheus-${PROMTOOL_VERSION}"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        tar -xzf "$tarball" -C "$dir"
+        mapfile -t bins < <(find "$dir" -type f -name promtool)
+        test "${#bins[@]}" -eq 1
+        bin="${bins[0]}"
+        test -x "$bin"
+        # pinned-tool.sh hashes $HUMAUX_TEST_PROMTOOL_BIN, while the README pins the tarball: this is the digest of the
+        # one executable the verified tarball yields.
+        got="$(sha256sum "$bin" | cut -d' ' -f1)"
+        "$bin" --version 2>&1 | grep -qF "version ${PROMTOOL_VERSION}"
+        {
+          echo "HUMAUX_TEST_PROMTOOL_BIN=$bin"
+          echo "HUMAUX_TEST_PROMTOOL_SHA256=$got"
+          echo "HUMAUX_TEST_PROMTOOL_VERSION=$PROMTOOL_VERSION"
+        } >> "$GITHUB_ENV"
+
+    - name: promtool test rules + coverage (promtool_test_rules)
+      shell: bash
+      run: sh deploy/prometheus/test-rules.sh
+
+    - name: every rule mutation turns a test red (§80.1)
+      shell: bash
+      run: sh deploy/prometheus/mutations.sh
