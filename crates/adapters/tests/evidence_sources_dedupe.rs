@@ -1,6 +1,6 @@
 //! `adapters::tests::evidence_sources_dedupe` — M06-1b (ADR-0098 D1/D3): `remember_sourced_atomically` against a real
 //!   Postgres: one Evidence per source identity across agents, `SOURCE_VERSION_CONFLICT`, and the 0265 receipt trigger.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, hex, serde_json, sqlx, tokio];
 //!   services=[PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
 //!   ops.outbox, private.evidence_objects, private.evidence_sources, private.events, projection.stream_log]];
 //!   env=[]; modules=[adapters::operation_receipt, adapters::postgres, adapters::remember,
@@ -14,19 +14,20 @@
 //!
 //! G-M06-1 `two_agents_one_message`: concurrent puts of one message from two principals → 1 Evidence, 2 receipts, 1 ticket.
 //! G-M06-2 `same_key_new_bytes_conflicts`: same identity, new bytes → SOURCE_VERSION_CONFLICT, original bytes untouched.
+//! G-M06-3 `sourced_put_waits_on_identity_lock`: a held identity advisory lock parks the put at `Lock/advisory` until commit.
 
 use std::sync::{Arc, Barrier};
 
 use humaux_adapters::{
     operation_receipt::{
-        self, AtomicRememberRequest, AtomicRememberResult, Dedupe, SourcedPutOutcome,
+        self, AtomicRememberRequest, AtomicRememberResult, Dedupe, SourcedPutError,
     },
     postgres::RuntimeDbPool,
     remember::RememberCommand,
 };
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
-    error::ErrorCode,
+    error::{ConflictReason, ErrorCode},
     evidence::{EvidenceOriginClass, payload_sha256},
     identity::{AuthorizationScope, BoundedSet, PrincipalId},
     ids::{TenantId, UserId, WorkspaceId},
@@ -156,7 +157,7 @@ fn put(
     source: &SourceIdentity,
     key: &str,
     content: &str,
-) -> Result<SourcedPutOutcome, ErrorCode> {
+) -> Result<AtomicRememberResult, SourcedPutError> {
     handle
         .rt
         .block_on(operation_receipt::remember_sourced_atomically(
@@ -167,10 +168,13 @@ fn put(
         ))
 }
 
-fn stored(outcome: Result<SourcedPutOutcome, ErrorCode>, what: &str) -> AtomicRememberResult {
+fn stored(
+    outcome: Result<AtomicRememberResult, SourcedPutError>,
+    what: &str,
+) -> AtomicRememberResult {
     match outcome {
-        Ok(SourcedPutOutcome::Stored(result)) => result,
-        other => panic!("{what}: expected a stored result, got {other:?}"),
+        Ok(result) => result,
+        Err(error) => panic!("{what}: expected a stored result, got {error:?}"),
     }
 }
 
@@ -179,7 +183,7 @@ fn stored(outcome: Result<SourcedPutOutcome, ErrorCode>, what: &str) -> AtomicRe
 fn put_concurrently(
     handle: &Handle,
     jobs: Vec<(Uuid, AtomicRememberRequest, SourceIdentity)>,
-) -> Vec<Result<SourcedPutOutcome, ErrorCode>> {
+) -> Vec<Result<AtomicRememberResult, SourcedPutError>> {
     let barrier = Arc::new(Barrier::new(jobs.len()));
     let threads: Vec<_> = jobs
         .into_iter()
@@ -351,9 +355,21 @@ fn same_key_new_bytes_conflicts() {
 
         for (agent, key) in [(agent_b, "k-other-agent"), (agent_a, "k-same-agent")] {
             let conflict = put(&handle, agent, &source, key, "edited body");
-            assert!(
-                matches!(conflict, Ok(SourcedPutOutcome::SourceVersionConflict)),
+            assert_eq!(
+                conflict.as_ref().err(),
+                Some(&SourcedPutError {
+                    code: ErrorCode::Conflict,
+                    conflict_reason: Some(ConflictReason::SOURCE_VERSION_CONFLICT),
+                }),
                 "{key}: {conflict:?}"
+            );
+            assert_eq!(
+                conflict
+                    .err()
+                    .and_then(|e| e.conflict_reason)
+                    .map(ConflictReason::code),
+                Some(1301),
+                "{key}: the D-B numeric code"
             );
             assert_eq!(
                 counts(&mut handle),
@@ -389,5 +405,97 @@ fn same_key_new_bytes_conflicts() {
             1,
             "the first message is still byte-identical"
         );
+    });
+}
+
+/// G-M06-3 (ADR-0098 D1): a sourced put queues on the identity's advisory lock. An owner transaction holds the lock key
+/// of the identity; the put's backend must reach `Lock/advisory` and stay there until the holder commits, then store.
+/// The key text mirrors `source_lock_key` in `operation_receipt.rs`: the principal is not part of it, so one agent's put
+/// queues behind any other holder of the identity.
+#[test]
+fn sourced_put_waits_on_identity_lock() {
+    run_db_fixture::<Fixture, _>("sourced_put_waits_on_identity_lock", |mut handle| {
+        handle.seed_current_entitlement_and_window(10);
+        let agent = handle.principal_id;
+        let source = identity(IngestSourceKind::EmailMessage, "mail-lock", Some("v1"));
+        let lock_text = format!(
+            "evidence-source:{}:{}:{}:{}:{}",
+            handle.tenant_id,
+            handle.user_id,
+            source.kind().db_code(),
+            hex::encode(source.object_key_d16().as_bytes()),
+            source.version()
+        );
+        let app_name = format!("evidence-sources-lock-{}", Uuid::new_v4().simple());
+        let dsn = handle.gateway_application_dsn(&app_name);
+        let auth = auth_for(&handle, agent);
+        let put_request = request(&handle, agent, "k-lock", "locked body");
+        let before = counts(&mut handle);
+
+        handle
+            .admin
+            .batch_execute("BEGIN")
+            .expect("owner opens a transaction");
+        handle
+            .admin
+            .execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                &[&lock_text],
+            )
+            .expect("owner takes the identity lock");
+
+        let putter = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            // dep: PostgreSQL(role_gateway) — RuntimeDbPool under test.
+            let pool = rt
+                .block_on(RuntimeDbPool::connect(&dsn))
+                .expect("agent connection");
+            rt.block_on(operation_receipt::remember_sourced_atomically(
+                &pool,
+                &auth,
+                put_request,
+                &source,
+            ))
+        });
+
+        let waiting = |handle: &mut Handle| -> i64 {
+            handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity \
+                      WHERE application_name = $1 AND wait_event_type = 'Lock' AND wait_event = 'advisory'",
+                    &[&app_name],
+                )
+                .expect("pg_stat_activity")
+                .get(0)
+        };
+        let mut seen = 0;
+        for _ in 0..50 {
+            seen = waiting(&mut handle);
+            if seen == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(seen, 1, "the put's backend waits on the advisory lock");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(waiting(&mut handle), 1, "the put is still waiting");
+        assert!(
+            !putter.is_finished(),
+            "the put has not completed while the lock is held"
+        );
+        assert_eq!(
+            counts(&mut handle),
+            before,
+            "a waiting put has written nothing"
+        );
+
+        handle
+            .admin
+            .batch_execute("COMMIT")
+            .expect("owner releases the lock");
+        let stored = stored(putter.join().expect("put thread"), "put after release");
+        assert_eq!(stored.dedupe, Dedupe::New);
+        assert_eq!(delta(counts(&mut handle), before), [1, 1, 1, 1, 1, 1, 3]);
     });
 }

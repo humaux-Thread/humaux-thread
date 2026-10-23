@@ -103,8 +103,9 @@ Status stays Accepted. Nothing above is reversed; this records what D3 deferred 
 - **Three outcomes.** Unused: the Evidence and identity row are written (`Dedupe::New`). Same bytes (`payload_sha256`
   equal): no Evidence, ticket or outbox row; the call still reserves and consumes its own BMO unit, writes its own audit
   rows and a NEW receipt pointing at the existing Evidence, and answers through the same readable-Evidence and token
-  rules as a replay (`Dedupe::Existing`). Different bytes: `SourcedPutOutcome::SourceVersionConflict`, which the gateway
-  renders as `CONFLICT` with `ConflictReason::SOURCE_VERSION_CONFLICT` (1301, a new `13xx` ingest partition of the §52 D-B
+  rules as a replay (`Dedupe::Existing`). Different bytes: the adapter returns `CONFLICT` with
+  `ConflictReason::SOURCE_VERSION_CONFLICT` (`SourcedPutError`); the gateway renders it through the existing `ErrorCode`
+  path once M06-2 exposes the sourced entry on the wire (1301, a new `13xx` ingest partition of the §52 D-B
   sub-reasons; `ErrorCode` stays at 18); nothing is written, the stored bytes are untouched and the operation key stays
   unused. There is no `ON CONFLICT DO UPDATE` anywhere on this path, and `role_gateway` holds no UPDATE or DELETE on
   `evidence_sources`.

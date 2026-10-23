@@ -26,7 +26,7 @@ use humaux_domain::{
     continuity::ProjectId,
     coordination::{FencingToken, TaskRunId},
     dataclass::DataClass,
-    error::ErrorCode,
+    error::{ConflictReason, ErrorCode},
     evidence::EvidenceOriginClass,
     identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor},
     ids::{UserId, WorkspaceId},
@@ -133,16 +133,24 @@ pub enum NoteReplaceOutcome {
     StaleVersion,
 }
 
-/// How one sourced put ended (ADR-0098 D1). Like [`NoteReplaceOutcome`], a business refusal with a `CONFLICT`
-/// sub-reason is a variant, so `ErrorCode` stays at 18 codes (§52 D-B).
-#[derive(Debug)]
-pub enum SourcedPutOutcome {
-    /// Committed by this call (a new Evidence or a dedupe hit, see [`AtomicRememberResult::dedupe`]) or replayed.
-    Stored(AtomicRememberResult),
-    /// The source identity already holds different bytes: `CONFLICT` with
-    /// [`humaux_domain::error::ConflictReason::SOURCE_VERSION_CONFLICT`]. Nothing was written, the stored bytes are
-    /// untouched, and the idempotency key is left unused.
-    SourceVersionConflict,
+/// Why a sourced put was refused (ADR-0098 D1): the terminal [`ErrorCode`] plus, for a `CONFLICT`, the §52 D-B
+/// sub-reason. It adds no code of its own, so `ErrorCode` stays at 18 codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourcedPutError {
+    /// The terminal code; the transaction rolled back.
+    pub code: ErrorCode,
+    /// `Some(SOURCE_VERSION_CONFLICT)` when the source identity already holds different bytes, else `None`. The stored
+    /// bytes are untouched and the idempotency key is left unused.
+    pub conflict_reason: Option<ConflictReason>,
+}
+
+impl From<ErrorCode> for SourcedPutError {
+    fn from(code: ErrorCode) -> Self {
+        Self {
+            code,
+            conflict_reason: None,
+        }
+    }
 }
 
 /// The coordinates a receipt row repeats from the Evidence's accepted ticket (0114/0265 trigger).
@@ -387,7 +395,8 @@ pub async fn note_replace_atomically(
 /// - unused: the Evidence and its identity row are written like any put ([`Dedupe::New`]);
 /// - same bytes: no Evidence, ticket or outbox row; a NEW receipt points at the existing Evidence, with its own
 ///   reservation and audit rows ([`Dedupe::Existing`]);
-/// - different bytes: [`SourcedPutOutcome::SourceVersionConflict`], nothing written, never an overwrite.
+/// - different bytes: `CONFLICT` with [`ConflictReason::SOURCE_VERSION_CONFLICT`] ([`SourcedPutError`]), nothing
+///   written, the transaction rolled back, never an overwrite.
 ///
 /// A task run, a project or a note cannot ride on a sourced put (`INVALID_INPUT`). A dedupe hit must repeat the stored
 /// ticket's stream scope; a put naming another scope is `CONFLICT`.
@@ -398,10 +407,13 @@ pub async fn remember_sourced_atomically(
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     source: &SourceIdentity,
-) -> Result<SourcedPutOutcome, ErrorCode> {
+) -> Result<AtomicRememberResult, SourcedPutError> {
     match atomically_with_source(pool, auth, request, None, None, None, None, Some(source)).await? {
-        Settled::Outcome(outcome) => stored(outcome).map(SourcedPutOutcome::Stored),
-        Settled::SourceVersionConflict => Ok(SourcedPutOutcome::SourceVersionConflict),
+        Settled::Outcome(outcome) => Ok(stored(outcome)?),
+        Settled::SourceVersionConflict => Err(SourcedPutError {
+            code: ErrorCode::Conflict,
+            conflict_reason: Some(ConflictReason::SOURCE_VERSION_CONFLICT),
+        }),
     }
 }
 
