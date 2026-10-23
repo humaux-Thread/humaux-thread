@@ -10239,13 +10239,19 @@ grants (runtime roles):
 
 read by:
 - process(cargo-xtask): `adapters::memory_repo`
+- process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_repo`
+- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::memory_repo`
+- process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::memory_repo`
+- process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::memory_repo`
+- process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::memory_repo`
+- process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
 
