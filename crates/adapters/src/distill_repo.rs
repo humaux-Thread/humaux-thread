@@ -642,7 +642,8 @@ fn remember_err(error: remember::RememberError) -> ErrorCode {
         | remember::RememberError::BatchExhausted => ErrorCode::Conflict,
         remember::RememberError::Subject(code)
         | remember::RememberError::Affect(code)
-        | remember::RememberError::Note(code) => code,
+        | remember::RememberError::Note(code)
+        | remember::RememberError::Source(code) => code,
         remember::RememberError::ReasoningDomainUnresolved
         | remember::RememberError::TokenKeysUnset => ErrorCode::DependencyUnavailable,
         remember::RememberError::EvidenceClassOutsideSet { .. } => ErrorCode::Internal,

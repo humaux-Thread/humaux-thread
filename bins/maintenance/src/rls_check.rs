@@ -1602,6 +1602,15 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
         "role_private_worker",
         ["SELECT"]
     ),
+    // 0264 (ADR-0098 D1, M06-1a) relayed-source identity: gateway writes it with the Evidence in remember's
+    // receipt transaction and reads it; maintenance reads. Nobody holds UPDATE/DELETE. Every other non-owner role —
+    // (absence == no grant).
+    cell!(
+        "private.evidence_sources",
+        "role_gateway",
+        ["SELECT", "INSERT"]
+    ),
+    cell!("private.evidence_sources", "role_maintenance", ["SELECT"]),
     cell!(
         "private.memory_projects",
         "role_gateway",
