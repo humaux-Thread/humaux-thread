@@ -1150,6 +1150,21 @@ fn identical_note_two_agents() {
             1,
             "only the first call wrote a contract"
         );
+        // The 0269 UNIQUE keys `private.identity_note_body_sha256(content)`; the lookup keys the contract's
+        // `body_sha256`. The backstop only holds while both name one digest, so compare them on the stored rows.
+        let split: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM private.memory_records m \
+                   JOIN private.identity_note_materializations c \
+                     ON c.tenant_id = m.tenant_id AND c.output_memory_id = m.memory_id \
+                  WHERE m.tenant_id = $1 AND m.note_kind IS NOT NULL \
+                    AND private.identity_note_body_sha256(m.content) <> c.body_sha256",
+                &[&handle.tenant_id],
+            )
+            .expect("owner compares the index expression with the stored digest")
+            .get(0);
+        assert_eq!(split, 0, "the index expression and the lookup hash agree");
 
         let stored: Vec<operation_receipt::AtomicRememberResult> = outcomes
             .into_iter()
