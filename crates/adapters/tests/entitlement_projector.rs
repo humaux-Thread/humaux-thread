@@ -346,7 +346,7 @@ fn no_runtime_role_reads_the_grants_and_the_doors_pin_the_tenant() {
                 );
             }
             // role_maintenance holds the doors, but only for the tenant its GUC names.
-            // dep: PostgreSQL(owner) — SET LOCAL ROLE role_maintenance, rolled back with the transaction
+            // dep: PostgreSQL(role_maintenance) — SET LOCAL ROLE role_maintenance, rolled back with the transaction
             let mut txn = h.admin.transaction().expect("txn");
             txn.batch_execute("SET LOCAL ROLE role_maintenance")
                 .expect("set role");
@@ -367,7 +367,7 @@ fn no_runtime_role_reads_the_grants_and_the_doors_pin_the_tenant() {
                 "{error}"
             );
             drop(txn);
-            // dep: PostgreSQL(owner) — SET LOCAL ROLE role_maintenance, rolled back with the transaction
+            // dep: PostgreSQL(role_maintenance) — SET LOCAL ROLE role_maintenance, rolled back with the transaction
             let mut txn = h.admin.transaction().expect("txn");
             txn.batch_execute("SET LOCAL ROLE role_maintenance")
                 .expect("set role");
