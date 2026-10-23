@@ -1,7 +1,7 @@
 //! `adapters::tests::note_put` — ADR-0067 card 40a acceptance for `memory.note_put`'s storage path (G01-G10, G16, G17, G22,
 //!   the fault pair lives in G16 and the worker test d13), against a real PostgreSQL and an actual `role_gateway` login.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
-//!   services=[PostgreSQL(owner), PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
+//!   services=[PostgreSQL(owner) x=[private.identity_note_body_sha256], PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
 //!   ops.distill_calls, ops.model_call_ledger, private.distill_candidates, private.events, private.evidence_objects,
 //!   private.identity_note_materializations, projection.stream_log] w=[ops.distill_tenant_scheduler, ops.jobs, ops.outbox,
 //!   private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::attribution_repo, adapters::note_repo, adapters::operation_receipt,
