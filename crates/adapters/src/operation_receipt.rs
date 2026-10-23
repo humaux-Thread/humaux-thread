@@ -1,6 +1,6 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note]
+//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
 //! Called-by: [gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
@@ -9,8 +9,11 @@
 //!   only a fresh (non-replayed) write verifies (design v0.2 §15 T04c); that put re-checks the run's lease as the
 //!   last statement before COMMIT, after every statement that can wait, and is refused whole when the lease ran out
 //!   meanwhile (§34.0.1, ADR-0078 D-D, #91); a put declaring a project resolves it before
-//!   any write and is one INVALID_INPUT when it is not visible, and only a fresh write resolves (ADR-0078 D-D A1)]
-//! Spec: ADR-0067; ADR-0078; §6.1.4; §30.2; §34.0.1
+//!   any write and is one INVALID_INPUT when it is not visible, and only a fresh write resolves (ADR-0078 D-D A1); a
+//!   sourced put takes the identity's advisory lock (blocking, the receipt-key derivation) before its lookup, so an
+//!   identity holds one Evidence, a dedupe hit writes a receipt and no Evidence, ticket or outbox row, and different bytes
+//!   under one identity write nothing (ADR-0098 D1, M06-1b)]
+//! Spec: ADR-0067; ADR-0078; ADR-0098; §6.1.4; §30.2; §34.0.1
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
 
@@ -28,6 +31,7 @@ use humaux_domain::{
     identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor},
     ids::{UserId, WorkspaceId},
     note::replace_intent_sha256,
+    source::SourceIdentity,
 };
 use sqlx::{Row, postgres::PgRow};
 use time::OffsetDateTime;
@@ -65,6 +69,7 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 pub const TENANT_SHARED_WRITER_ROLES: [&str; 2] = ["OWNER", "ADMIN"];
 
 /// Trusted application inputs. This is not a deserializable MCP request or a credential.
+#[derive(Clone)]
 pub struct AtomicRememberRequest {
     pub request_id: Uuid,
     pub idempotency_key: String,
@@ -76,10 +81,25 @@ pub struct AtomicRememberRequest {
     pub finished_audit: AuditEvent,
 }
 
+/// Whether a sourced put wrote new Evidence or pointed its receipt at the Evidence its source identity already held
+/// (ADR-0098 D1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dedupe {
+    /// This call wrote the Evidence (every unsourced put, and a replay of any key).
+    New,
+    /// The identity already held an Evidence with the same bytes: this call wrote a receipt, an operation and its audit
+    /// rows, and no Evidence, ticket or outbox row.
+    Existing,
+}
+
 #[derive(Debug)]
 pub struct AtomicRememberResult {
     pub accepted: RememberAccepted,
     pub replayed: bool,
+    /// [`Dedupe::Existing`] only on a fresh dedupe hit. A replay reports [`Dedupe::New`]: `replayed` is its answer.
+    // ponytail: a replay of a dedupe-hit key does not recompute `Existing`; upgrade path is reading the Evidence's
+    // origin principal against the receipt's when the wire (M06-2) needs the distinction.
+    pub dedupe: Dedupe,
     /// ADR-0067: the Memory the same transaction wrote (or, on a replay, wrote originally) for a `memory.note_put`;
     /// `None` for `remember.put`.
     pub memory_id: Option<Uuid>,
@@ -111,6 +131,36 @@ pub enum NoteReplaceOutcome {
     Confirmable,
     /// `supersedes` is not the note's head: `STALE_NOTE_VERSION`. Nothing was written.
     StaleVersion,
+}
+
+/// How one sourced put ended (ADR-0098 D1). Like [`NoteReplaceOutcome`], a business refusal with a `CONFLICT`
+/// sub-reason is a variant, so `ErrorCode` stays at 18 codes (§52 D-B).
+#[derive(Debug)]
+pub enum SourcedPutOutcome {
+    /// Committed by this call (a new Evidence or a dedupe hit, see [`AtomicRememberResult::dedupe`]) or replayed.
+    Stored(AtomicRememberResult),
+    /// The source identity already holds different bytes: `CONFLICT` with
+    /// [`humaux_domain::error::ConflictReason::SOURCE_VERSION_CONFLICT`]. Nothing was written, the stored bytes are
+    /// untouched, and the idempotency key is left unused.
+    SourceVersionConflict,
+}
+
+/// The coordinates a receipt row repeats from the Evidence's accepted ticket (0114/0265 trigger).
+struct ReceiptRefs {
+    evidence_id: Uuid,
+    scope_kind: String,
+    scope_id: Uuid,
+    domain: String,
+    projection_kind: String,
+    projection_version: String,
+    stream_seq: i64,
+    commit_seq: i64,
+}
+
+/// Internal result of [`atomically_with_source`]; only a sourced put can end in the second arm.
+enum Settled {
+    Outcome(NoteReplaceOutcome),
+    SourceVersionConflict,
 }
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
@@ -330,6 +380,31 @@ pub async fn note_replace_atomically(
     .await
 }
 
+/// ADR-0098 D1: `remember.put` for Evidence relayed from an external object, with [`remember_atomically`]'s receipt /
+/// replay / BMO / audit machinery. After the receipt lookup it classifies the command ([`remember::classify_sourced_command`],
+/// a refusal is `INVALID_INPUT`), takes `pg_advisory_xact_lock` on the identity `(tenant, owner user, source kind, object
+/// key digest, version)` (the agent, project and op key are not in it), and reads the identity under that lock:
+/// - unused: the Evidence and its identity row are written like any put ([`Dedupe::New`]);
+/// - same bytes: no Evidence, ticket or outbox row; a NEW receipt points at the existing Evidence, with its own
+///   reservation and audit rows ([`Dedupe::Existing`]);
+/// - different bytes: [`SourcedPutOutcome::SourceVersionConflict`], nothing written, never an overwrite.
+///
+/// A task run, a project or a note cannot ride on a sourced put (`INVALID_INPUT`). A dedupe hit must repeat the stored
+/// ticket's stream scope; a put naming another scope is `CONFLICT`.
+// ponytail: a cross-scope dedupe hit is refused because the receipt repeats the Evidence's own stream coordinates
+// (0265 keeps that clause); upgrade path is a receipt shape that carries the caller's scope separately.
+pub async fn remember_sourced_atomically(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    source: &SourceIdentity,
+) -> Result<SourcedPutOutcome, ErrorCode> {
+    match atomically_with_source(pool, auth, request, None, None, None, None, Some(source)).await? {
+        Settled::Outcome(outcome) => stored(outcome).map(SourcedPutOutcome::Stored),
+        Settled::SourceVersionConflict => Ok(SourcedPutOutcome::SourceVersionConflict),
+    }
+}
+
 /// A create / `remember.put` can only end in `Stored`.
 fn stored(outcome: NoteReplaceOutcome) -> Result<AtomicRememberResult, ErrorCode> {
     match outcome {
@@ -447,8 +522,26 @@ async fn lock_note_head(
     Ok(true)
 }
 
-#[allow(clippy::too_many_lines)] // one receipt transaction, in §34.0.1 order
+/// The unsourced transaction: [`atomically_with_source`] with no source identity, which cannot end in a conflict.
 async fn atomically(
+    pool: &RuntimeDbPool,
+    auth: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    note: Option<(NoteIntake, &dyn MemoryAttribution)>,
+    replace: Option<NoteReplaceRequest>,
+    task_run: Option<(TaskRunId, FencingToken)>,
+    project: Option<ProjectId>,
+) -> Result<NoteReplaceOutcome, ErrorCode> {
+    match atomically_with_source(pool, auth, request, note, replace, task_run, project, None)
+        .await?
+    {
+        Settled::Outcome(outcome) => Ok(outcome),
+        Settled::SourceVersionConflict => Err(ErrorCode::Internal),
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one receipt transaction, in §34.0.1 order
+async fn atomically_with_source(
     pool: &RuntimeDbPool,
     auth: &AuthorizationScope,
     mut request: AtomicRememberRequest,
@@ -456,7 +549,8 @@ async fn atomically(
     replace: Option<NoteReplaceRequest>,
     task_run: Option<(TaskRunId, FencingToken)>,
     project: Option<ProjectId>,
-) -> Result<NoteReplaceOutcome, ErrorCode> {
+    source: Option<&SourceIdentity>,
+) -> Result<Settled, ErrorCode> {
     let operation = if note.is_some() {
         NOTE_OPERATION
     } else {
@@ -465,6 +559,13 @@ async fn atomically(
     let auth = validate(auth, &request, operation)?;
     // Design v0.2 §15 T04c / ADR-0078 D-D A1: the task-run and declared-project carriers are `remember.put`'s alone.
     if (task_run.is_some() || project.is_some()) && note.is_some() {
+        return Err(ErrorCode::InvalidInput);
+    }
+    // ADR-0098 D3: a sourced put is the plain `remember.put` write plus one identity row; the other carriers have their
+    // own write steps, which a dedupe hit would skip.
+    if source.is_some()
+        && (note.is_some() || replace.is_some() || task_run.is_some() || project.is_some())
+    {
         return Err(ErrorCode::InvalidInput);
     }
     if let Some(replace) = &replace {
@@ -500,18 +601,57 @@ async fn atomically(
         txn.commit()
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
-        return Ok(NoteReplaceOutcome::Stored(AtomicRememberResult {
-            accepted,
-            replayed: true,
-            memory_id,
-            secret_material,
-        }));
+        return Ok(Settled::Outcome(NoteReplaceOutcome::Stored(
+            AtomicRememberResult {
+                accepted,
+                replayed: true,
+                dedupe: Dedupe::New,
+                memory_id,
+                secret_material,
+            },
+        )));
     }
     if let Some(replace) = &replace
         && !lock_note_head(&mut txn, &auth, &mut request, replace).await?
     {
-        return Ok(NoteReplaceOutcome::StaleVersion);
+        return Ok(Settled::Outcome(NoteReplaceOutcome::StaleVersion));
     }
+    // ADR-0098 D1: classify, then serialize on the identity BEFORE the lookup, in this transaction (§34.0.1 pattern, the
+    // same lock derivation as the receipt key). The identity UNIQUE is only the backstop. Two agents relaying one message
+    // meet here: the second waits, then reads the first's committed row. A refused classification stays one
+    // INVALID_INPUT even for a would-be hit, and a hit of different bytes writes nothing.
+    let mut sourced: Option<(&SourceIdentity, Uuid)> = None;
+    let mut hit: Option<remember::SourceHit> = None;
+    if let Some(source) = source {
+        let owner = remember::classify_sourced_command(&mut request.command, source)
+            .map_err(remember_error)?;
+        advisory_xact_lock(
+            &mut txn,
+            &source_lock_key(auth.tenant_id().0, owner, source),
+            LockWait::Block,
+        )
+        .await?;
+        hit = remember::find_source_in_txn(&mut txn, auth.tenant_id().0, owner, source)
+            .await
+            .map_err(db_error)?;
+        sourced = Some((source, owner));
+        if let Some(found) = &hit {
+            if found.payload_sha256.as_slice() != request.command.payload_sha256.as_bytes() {
+                return Ok(Settled::SourceVersionConflict);
+            }
+            let command = &request.command;
+            if found.scope_kind != command.scope_kind
+                || found.scope_id != command.scope_id
+                || found.domain != command.domain
+                || found.projection_kind != command.projection_kind
+                || found.projection_version != command.projection_version
+            {
+                return Err(ErrorCode::Conflict);
+            }
+        }
+    }
+    // A hit is answered from the receipt this call writes, so its request is kept before the write consumes the command.
+    let hit_request = hit.as_ref().map(|_| request.clone());
     // ADR-0032 D-B: TENANT_SHARED is reachable only for an OWNER/ADMIN member; judged in this
     // same transaction (one indexed membership read, only on that path) before any reservation
     // so a refused put leaves no Evidence, no BMO and no receipt.
@@ -549,7 +689,7 @@ async fn atomically(
         .as_ref()
         .is_some_and(|replace| replace.claim.is_none())
     {
-        return Ok(NoteReplaceOutcome::Confirmable);
+        return Ok(Settled::Outcome(NoteReplaceOutcome::Confirmable));
     }
     let reservation = match quota_repo::reserve_bmo_in_txn(
         &mut txn,
@@ -587,20 +727,57 @@ async fn atomically(
             note_id: replace.note_id,
             supersedes: replace.supersedes,
         });
-    let pending = remember::remember_in_txn_with(
-        &mut txn,
-        request.command,
-        note.as_ref()
-            .map(|(note, attribution)| (note, lineage, *attribution)),
-    )
-    .await
-    .map_err(remember_error)?;
+    // A dedupe hit writes no Evidence, ticket or outbox row: its receipt repeats the stored ticket's coordinates.
+    let pending = match (&hit, sourced) {
+        (Some(_), _) => None,
+        (None, Some((source, owner))) => Some(
+            remember::write_sourced_in_txn(&mut txn, request.command, source, owner)
+                .await
+                .map_err(remember_error)?,
+        ),
+        (None, None) => Some(
+            remember::remember_in_txn_with(
+                &mut txn,
+                request.command,
+                note.as_ref()
+                    .map(|(note, attribution)| (note, lineage, *attribution)),
+            )
+            .await
+            .map_err(remember_error)?,
+        ),
+    };
+    let refs = match (&pending, hit) {
+        (Some(pending), _) => {
+            let stream = pending.stream_key();
+            ReceiptRefs {
+                evidence_id: pending.accepted().evidence_id,
+                scope_kind: stream.scope_kind.clone(),
+                scope_id: stream.scope_id,
+                domain: stream.domain.clone(),
+                projection_kind: stream.projection_kind.clone(),
+                projection_version: stream.projection_version.clone(),
+                stream_seq: pending.stream_seq(),
+                commit_seq: pending.commit_seq(),
+            }
+        }
+        (None, Some(hit)) => ReceiptRefs {
+            evidence_id: hit.evidence_id,
+            scope_kind: hit.scope_kind,
+            scope_id: hit.scope_id,
+            domain: hit.domain,
+            projection_kind: hit.projection_kind,
+            projection_version: hit.projection_version,
+            stream_seq: hit.stream_seq,
+            commit_seq: hit.commit_seq,
+        },
+        (None, None) => return Err(ErrorCode::Internal),
+    };
     if let Some(verified) = verified {
         remember::insert_evidence_task_run_in_txn(
             &mut txn,
             auth.tenant_id(),
             verified,
-            pending.accepted().evidence_id,
+            refs.evidence_id,
         )
         .await
         .map_err(db_error)?;
@@ -610,7 +787,7 @@ async fn atomically(
             &mut txn,
             auth.tenant_id(),
             declared,
-            pending.accepted().evidence_id,
+            refs.evidence_id,
         )
         .await
         .map_err(db_error)?;
@@ -618,6 +795,7 @@ async fn atomically(
     // ADR-0057 D-B: the superseded version's point is retired by a MEMORY_LIFECYCLE ticket on its home stream, as
     // `memory.correct` retires M1's; ADR-0020: with the SUPERSEDE event and head stamp `memory.supersede` writes.
     if let Some(replace) = &replace {
+        let pending = pending.as_ref().ok_or(ErrorCode::Internal)?;
         memory_governance_repo::retire_superseded_note_in_txn(
             &mut txn,
             &auth,
@@ -652,7 +830,6 @@ async fn atomically(
         .await?
         .checked_add(replay_duration)
         .ok_or(ErrorCode::InvalidInput)?;
-    let stream = pending.stream_key();
     sqlx::query(
         "INSERT INTO control.operation_receipts \
          (tenant_id,principal_id,operation,idempotency_key,request_fingerprint,user_id,workspace_id, \
@@ -663,10 +840,10 @@ async fn atomically(
     .bind(auth.tenant_id().0).bind(auth.principal().0).bind(operation)
     .bind(&request.idempotency_key).bind(&request.request_fingerprint)
     .bind(auth.user_id().map(|id| id.0)).bind(request.workspace_id.map(|id| id.0))
-    .bind(request.request_id).bind(reservation.id()).bind(pending.accepted().evidence_id)
-    .bind(&stream.scope_kind).bind(stream.scope_id).bind(&stream.domain)
-    .bind(&stream.projection_kind).bind(&stream.projection_version)
-    .bind(pending.stream_seq()).bind(pending.commit_seq()).bind(audit_id.0).bind(replay_expires_at)
+    .bind(request.request_id).bind(reservation.id()).bind(refs.evidence_id)
+    .bind(&refs.scope_kind).bind(refs.scope_id).bind(&refs.domain)
+    .bind(&refs.projection_kind).bind(&refs.projection_version)
+    .bind(refs.stream_seq).bind(refs.commit_seq).bind(audit_id.0).bind(replay_expires_at)
     .execute(&mut *txn).await.map_err(db_error)?;
     let finalized_at = db_now(&mut txn).await?;
     if finalized_at >= reservation.expires_at() || finalized_at >= token_expires_at {
@@ -679,18 +856,39 @@ async fn atomically(
     if let Some((task_run_id, fencing_token)) = task_run {
         coord_repo::recheck_run_live_in_txn(&mut txn, &auth, task_run_id, fencing_token).await?;
     }
+    // A dedupe hit answers from the receipt row it just wrote (same readable-Evidence and token rules as a replay), so a
+    // refusal there drops `txn` and rolls the receipt back with everything else.
+    let hit_accepted = match &hit_request {
+        Some(hit_request) => {
+            let written = find_receipt(&mut txn, &auth, hit_request, operation)
+                .await?
+                .ok_or(ErrorCode::Internal)?;
+            Some(replay(&mut txn, &auth, hit_request, &written).await?)
+        }
+        None => None,
+    };
     // A COMMIT error cannot establish rollback. Only a subsequent receipt lookup
     // resolves durability; callers must not publish a terminal failure or refund.
     txn.commit()
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let memory_id = pending.memory_id();
-    Ok(NoteReplaceOutcome::Stored(AtomicRememberResult {
-        accepted: pending.into_accepted(),
-        replayed: false,
-        memory_id,
-        secret_material,
-    }))
+    let (accepted, memory_id, dedupe) = match (pending, hit_accepted) {
+        (Some(pending), _) => {
+            let memory_id = pending.memory_id();
+            (pending.into_accepted(), memory_id, Dedupe::New)
+        }
+        (None, Some(accepted)) => (accepted, None, Dedupe::Existing),
+        (None, None) => return Err(ErrorCode::Internal),
+    };
+    Ok(Settled::Outcome(NoteReplaceOutcome::Stored(
+        AtomicRememberResult {
+            accepted,
+            replayed: false,
+            dedupe,
+            memory_id,
+            secret_material,
+        },
+    )))
 }
 
 /// The transaction's `clock_timestamp()` — every §34.0.1 deadline is judged on the database
@@ -752,22 +950,72 @@ async fn lock_and_find_receipt(
     .execute(&mut **txn)
     .await
     .map_err(db_error)?;
-    let locked: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
-            .bind(format!(
-                "operation-receipt:{}:{}:{}:{}:{operation}:{}",
-                auth.tenant_id().0,
-                auth.principal().0,
-                request.command.scope_kind,
-                request.command.scope_id,
-                request.idempotency_key
-            ))
-            .fetch_one(&mut **txn)
-            .await
-            .map_err(db_error)?;
-    if !locked {
+    let key = format!(
+        "operation-receipt:{}:{}:{}:{}:{operation}:{}",
+        auth.tenant_id().0,
+        auth.principal().0,
+        request.command.scope_kind,
+        request.command.scope_id,
+        request.idempotency_key
+    );
+    if !advisory_xact_lock(txn, &key, LockWait::Try).await? {
         return Err(ErrorCode::Conflict);
     }
+    find_receipt(txn, auth, request, operation).await
+}
+
+/// Whether [`advisory_xact_lock`] gives up at once or waits for the holder to finish.
+#[derive(Clone, Copy)]
+enum LockWait {
+    /// `pg_try_advisory_xact_lock`: a held key is a refusal (the receipt key: a concurrent same-key write is `CONFLICT`).
+    Try,
+    /// `pg_advisory_xact_lock`: the caller queues behind the holder (the source identity: the second writer must read the
+    /// first one's committed row, not fail).
+    Block,
+}
+
+/// The one advisory-lock statement and key derivation (`hashtextextended(text, 0)`), held to COMMIT/ROLLBACK. Returns
+/// `false` only for [`LockWait::Try`] on a held key.
+async fn advisory_xact_lock(
+    txn: &mut Txn<'_>,
+    key: &str,
+    wait: LockWait,
+) -> Result<bool, ErrorCode> {
+    match wait {
+        LockWait::Try => {
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(key)
+                .fetch_one(&mut **txn)
+                .await
+                .map_err(db_error)
+        }
+        LockWait::Block => sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(key)
+            .execute(&mut **txn)
+            .await
+            .map(|_| true)
+            .map_err(db_error),
+    }
+}
+
+/// ADR-0098 D1: the advisory-lock text of a source identity. Only the identity members appear: no principal, op key,
+/// project or time, so every agent relaying the same object queues on one key.
+fn source_lock_key(tenant_id: Uuid, owner: Uuid, source: &SourceIdentity) -> String {
+    format!(
+        "evidence-source:{tenant_id}:{owner}:{}:{}:{}",
+        source.kind().db_code(),
+        hex::encode(source.object_key_d16().as_bytes()),
+        source.version()
+    )
+}
+
+/// The receipt row of this request's key under the transaction's tenant context, with the database clock reading.
+async fn find_receipt(
+    txn: &mut Txn<'_>,
+    auth: &AuthorizationScope,
+    request: &AtomicRememberRequest,
+    operation: &str,
+) -> Result<Option<PgRow>, ErrorCode> {
     sqlx::query(
         "SELECT *, clock_timestamp() AS observed_at FROM control.operation_receipts \
          WHERE tenant_id=$1 AND principal_id=$2 AND scope_kind=$3 AND scope_id=$4 \
