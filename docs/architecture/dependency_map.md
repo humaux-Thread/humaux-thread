@@ -12325,6 +12325,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::email`
+- `adapters::email::sink`
 - `adapters::email::smtp`
 - `adapters::email::test_double`
 - `adapters::memory_repo`
@@ -12335,6 +12336,7 @@ modules naming it:
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
+- `adapters::tests::email_outbox`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
