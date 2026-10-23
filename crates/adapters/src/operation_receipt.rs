@@ -133,9 +133,10 @@ fn remember_error(error: RememberError) -> ErrorCode {
         RememberError::ConsistencyTokenExpiryNotFuture => ErrorCode::Conflict,
         RememberError::BatchExhausted => ErrorCode::Conflict,
         // §6.1.3: an unresolvable subject declaration is INVALID_INPUT with nothing written.
-        RememberError::Subject(code) | RememberError::Affect(code) | RememberError::Note(code) => {
-            code
-        }
+        RememberError::Subject(code)
+        | RememberError::Affect(code)
+        | RememberError::Note(code)
+        | RememberError::Source(code) => code,
         // §11.2.1 / ADR-0032 D-A: the caller tenant has no reasoning domain to process this
         // Evidence under — not provisioned for writes, nothing written, retryable once it is.
         RememberError::ReasoningDomainUnresolved | RememberError::TokenKeysUnset => {

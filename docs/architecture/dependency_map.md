@@ -262,6 +262,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.private_reasoning_domains`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -409,6 +410,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::public`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -580,6 +583,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.evidence_projects`
+- reads `private.evidence_sources`
 - reads `private.evidence_subjects`
 - reads `private.evidence_task_runs`
 - reads `private.identity_note_materializations`
@@ -1673,6 +1677,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.private_reasoning_domains`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -1842,6 +1847,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::public`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -2149,6 +2156,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.private_reasoning_domains`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -2296,6 +2304,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::relation`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -2859,6 +2869,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.private_reasoning_domains`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -3002,6 +3013,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -3242,6 +3255,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.evidence_projects`
+- reads `private.evidence_sources`
 - reads `private.evidence_subjects`
 - reads `private.evidence_task_runs`
 - reads `private.identity_note_materializations`
@@ -3843,6 +3857,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.private_reasoning_domains`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -3989,6 +4004,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::relation`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -4463,6 +4480,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.private_reasoning_domains`
 - writes `private.events`
 - writes `private.evidence_projects`
+- writes `private.evidence_sources`
 - writes `private.evidence_task_runs`
 - writes `private.ingest_tickets`
 - executes `private.declared_project_visible`
@@ -4607,6 +4625,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::selection`
+
+#### `domain::source`
 
 #### `domain::subject`
 
@@ -5304,6 +5324,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::contribution_pipeline`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
@@ -5563,6 +5584,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
@@ -6243,6 +6265,7 @@ written by:
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
@@ -6392,6 +6415,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -7217,6 +7241,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::distill_dispatch_v2`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -7489,6 +7514,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::note_put`
@@ -8404,6 +8430,7 @@ written by:
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -8573,6 +8600,7 @@ written by:
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
@@ -8649,6 +8677,22 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::remember`
+- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::remember`
+
+executed by:
+
+### `private.evidence_sources`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::evidence_sources`
+- process(cargo-xtask): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::remember`
@@ -10133,6 +10177,7 @@ written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -10254,6 +10299,7 @@ written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
@@ -11138,6 +11184,7 @@ executed by:
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::email_outbox`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
 - `adapters::tests::forget_repo`
@@ -11328,6 +11375,7 @@ executed by:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -11842,6 +11890,7 @@ modules naming it:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
@@ -11965,6 +12014,7 @@ modules naming it:
 - `adapters::tests::coord_task_run`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12307,6 +12357,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::email_outbox`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -12567,6 +12618,7 @@ modules naming it:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
@@ -12680,6 +12732,7 @@ modules naming it:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12861,6 +12914,7 @@ modules naming it:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12957,6 +13011,7 @@ modules naming it:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
@@ -13226,6 +13281,7 @@ modules naming it:
 - `domain::evidence`
 - `domain::note`
 - `domain::selection`
+- `domain::source`
 
 ### humaux-domain → `async-trait` (normal)
 why: object-safe async traits for ports and transports
@@ -16212,6 +16268,15 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/adapters/tests/evidence_sources.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/evidence_task_runs.rs`
 db-bound (default run): yes
