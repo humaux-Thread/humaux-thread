@@ -184,6 +184,7 @@ modules:
 - `contracts::tests::feature_registry_contract`
 - `domain::consolidate`
 - `fail-closed-macro::tests::compile_fail`
+- `gateway::tests::no_memory_text_reader`
 - `gateway::tests::semantic_recall_wiring`
 - `maintenance::build`
 - `maintenance::migrate`
@@ -199,6 +200,7 @@ modules:
 - `protocol::tests::note_kind_contract`
 - `retrieval-provider::tests::contract_tests`
 - `retrieval::tests::planner_predicate_eval`
+- `retrieval::tests::rerank_provenance_constructor`
 - `xtask::architecture_check`
 - `xtask::benchset_declaration`
 - `xtask::card_version`
@@ -2244,6 +2246,71 @@ modules:
 - `gateway::bootstrap`
 - `gateway::tests::mcp_gateway`
 - `xtask::e2e_onboard`
+
+### `HUMAUX_GATEWAY_RERANK_MODEL_SHA256`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_RERANK_RECIPE`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_RERANK_REPO`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_RERANK_REVISION`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS`
 - witness: literal
