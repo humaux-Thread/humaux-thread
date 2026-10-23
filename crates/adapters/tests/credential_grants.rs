@@ -1,13 +1,16 @@
 //! `adapters::tests::credential_grants` — G-M02-1 (SEC-1, M02 D11, migration 0260): the eight `control` tables that hold a credential verifier are readable by role_gateway and role_maintenance and by no other role, proven by connecting as each role.
 //! Depends-on: crates=[humaux-testkit, postgres]; services=[PostgreSQL(any) r=[control.api_keys, control.email_challenges,
-//!   control.email_change_requests, control.password_credentials, control.password_reset_challenges,
-//!   control.recovery_codes, control.sessions, control.team_invitations]]; env=[HUMAUX_TEST_PG_DSN];
+//!   control.email_change_requests, control.oauth_authorization_codes, control.oauth_client_registrations,
+//!   control.oauth_grants, control.oauth_refresh_tokens, control.password_credentials,
+//!   control.password_reset_challenges, control.recovery_codes, control.sessions, control.team_invitations]];
+//!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [reads the shared test database only: every probe runs in a transaction that is rolled back, so no
 //!   row, grant or role changes; a SELECT that succeeds as a worker, batch issuer, admin or health reader is the
 //!   failure, and the grant set read back from the table ACL (PUBLIC included, column-level included) must equal
-//!   exactly SELECT for the two readers; no DSN or unreachable database is a visible §79.2 skip]
+//!   exactly SELECT for the two readers; the four OAuth tables of 0268 (M02-8) hold no grant for any role and are reached
+//!   only through nine doors executable by role_gateway alone; no DSN or unreachable database is a visible §79.2 skip]
 //! Spec: Baseline §6.2.1; §6.2.2; §79.2
 
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -134,6 +137,139 @@ fn g_m02_1_a_secret_table_acl_is_exactly_gateway_and_maintenance_select() {
                     .expect("read the column ACLs")
                     .get(0);
                 assert_eq!(columns, 0, "{table}: column-level grants");
+            }
+        },
+    );
+}
+
+/// The OAuth tables of migration 0268 and one column of each, for the UPDATE probe. No role may touch any of them.
+const OAUTH_TABLES: [(&str, &str); 4] = [
+    ("control.oauth_client_registrations", "kind"),
+    ("control.oauth_authorization_codes", "used_at"),
+    ("control.oauth_grants", "status"),
+    ("control.oauth_refresh_tokens", "status"),
+];
+
+/// The nine doors of migration 0268, by `pg_proc.proname`: the whole access path to the four tables.
+const OAUTH_DOORS: [&str; 9] = [
+    "oauth_client_lookup",
+    "oauth_client_register",
+    "oauth_code_consume",
+    "oauth_code_issue",
+    "oauth_grant_issue",
+    "oauth_grant_lookup",
+    "oauth_grant_revoke",
+    "oauth_refresh_family_revoke",
+    "oauth_refresh_rotate",
+];
+
+/// `statement` as `role`, in a transaction that is always rolled back; `Err` carries the SQLSTATE. Every statement used
+/// here selects or changes no row, so only the privilege check can refuse.
+fn run_as(client: &mut Client, role: &str, statement: &str) -> Result<(), Option<SqlState>> {
+    let mut txn = client.transaction().expect("open the probe transaction");
+    // dep: PostgreSQL(any) — the probe runs as the role under test
+    txn.batch_execute(&format!("SET LOCAL ROLE {role}"))
+        .expect("switch to the role under test");
+    let outcome = txn.batch_execute(statement);
+    txn.rollback().expect("roll back the probe transaction");
+    outcome.map_err(|e| e.code().cloned())
+}
+
+/// G-M02-1 for 0268, behaviour: every one of the nine non-owner roles, role_gateway included, is refused SELECT, UPDATE
+/// and DELETE on each OAuth table with 42501.
+#[test]
+fn g_m02_1_no_role_touches_an_oauth_table_directly() {
+    run_db_fixture::<GrantsFixture, _>(
+        "g_m02_1_no_role_touches_an_oauth_table_directly",
+        |mut h| {
+            let roles: Vec<&str> = READERS.iter().chain(NON_READERS.iter()).copied().collect();
+            assert_eq!(roles.len(), 9, "every non-owner role of §6.2.0");
+            assert_eq!(OAUTH_TABLES.len(), 4, "the four OAuth tables");
+            for (table, column) in OAUTH_TABLES {
+                let statements = [
+                    format!("SELECT 1 FROM {table} LIMIT 1"),
+                    format!("UPDATE {table} SET {column} = {column} WHERE false"),
+                    format!("DELETE FROM {table} WHERE false"),
+                ];
+                for role in &roles {
+                    for statement in &statements {
+                        assert_eq!(
+                            run_as(&mut h.client, role, statement),
+                            Err(Some(SqlState::INSUFFICIENT_PRIVILEGE)),
+                            "{role} must be refused `{statement}`"
+                        );
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// G-M02-1 for 0268, catalog: the grant set of each OAuth table, read back from its ACL, is exactly empty — PUBLIC, every
+/// verb and every column-level grant included.
+#[test]
+fn g_m02_1_an_oauth_table_acl_is_exactly_empty() {
+    run_db_fixture::<GrantsFixture, _>("g_m02_1_an_oauth_table_acl_is_exactly_empty", |mut h| {
+        for (table, _) in OAUTH_TABLES {
+            let grants: Vec<(String, String)> = h
+                .client
+                .query(ACL_SQL, &[&table])
+                .expect("read the table ACL")
+                .iter()
+                .map(|row| (row.get(0), row.get(1)))
+                .collect();
+            assert_eq!(grants, Vec::<(String, String)>::new(), "{table}: grant set");
+            let columns: i64 = h
+                .client
+                .query_one(COLUMN_ACL_SQL, &[&table])
+                .expect("read the column ACLs")
+                .get(0);
+            assert_eq!(columns, 0, "{table}: column-level grants");
+        }
+    });
+}
+
+/// G-M02-1 for 0268, doors: the `control.oauth_*` functions are exactly the nine named, each owner SECURITY DEFINER with
+/// `search_path=pg_catalog` alone, and EXECUTE is held by role_gateway alone (PUBLIC included).
+#[test]
+fn g_m02_1_the_oauth_doors_are_executable_by_gateway_alone() {
+    run_db_fixture::<GrantsFixture, _>(
+        "g_m02_1_the_oauth_doors_are_executable_by_gateway_alone",
+        |mut h| {
+            let rows = h
+                .client
+                .query(
+                    "SELECT p.proname::text, p.prosecdef, pg_get_userbyid(p.proowner)::text, \
+                            coalesce(p.proconfig, ARRAY[]::text[]), \
+                            ARRAY(SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END \
+                                    FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a \
+                                   WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner ORDER BY 1) \
+                       FROM pg_proc p \
+                      WHERE p.pronamespace = 'control'::regnamespace AND p.proname LIKE 'oauth\\_%' ORDER BY 1",
+                    &[],
+                )
+                .expect("read the door catalog");
+            let names: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+            let expected: Vec<String> = OAUTH_DOORS.iter().map(|d| (*d).to_owned()).collect();
+            assert_eq!(names, expected, "the door set");
+            for row in &rows {
+                let name: String = row.get(0);
+                let secdef: bool = row.get(1);
+                let owner: String = row.get(2);
+                let config: Vec<String> = row.get(3);
+                let executors: Vec<String> = row.get(4);
+                assert!(secdef, "{name}: SECURITY DEFINER");
+                assert_eq!(owner, "role_migration_owner", "{name}: owner");
+                assert_eq!(
+                    config,
+                    vec!["search_path=pg_catalog".to_owned()],
+                    "{name}: config"
+                );
+                assert_eq!(
+                    executors,
+                    vec!["role_gateway".to_owned()],
+                    "{name}: EXECUTE set"
+                );
             }
         },
     );
