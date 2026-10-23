@@ -79,4 +79,12 @@ the whole transaction back (G-M06-7).
   `outbox_batch_remember`). The §78.2 reconciliation tests are in the same file (`source_kind_codes_match_the_0264_check`,
   `ingest_event_kinds_are_members_of_the_events_check`); the table itself is pinned by
   `humaux_domain::source::tests::the_table_is_exactly_the_adr_table`.
-- Red records (targeted runs, branches deleted after recording): RED_RECORDS_PENDING
+- Red records (targeted runs on throwaway branches, deleted after recording; each failed on the gate's own assertion):
+  - G-M06-3, run 39910867763 (r1): object-key digest bound from the payload hash; `two_ok_messages_two_evidence` failed
+    at `evidence_sources.rs:286` ("second message with equal text", SQLSTATE 23505 on `evidence_sources_identity_key`).
+  - G-M06-4, run 39911578823 (r2): the Email arm replaced by the AgentNote arm; `email_cannot_be_workspace_shared`
+    failed at `evidence_sources.rs:321`, the `WORKSPACE_SHARED` refusal assertion.
+  - G-M06-7, run 39912106428 (r3): outbox INSERT skipped in `stream_repo`; `sourced_write_is_one_atomic_unit` failed
+    at `evidence_sources.rs:381` with `left: [1, 1, 1, 0], right: [1, 1, 1, 1]`. Run 39912676269 (same mutation): the
+    existing `outbox_batch_remember::m09_1_ticket_door_*` failed at `outbox_batch_remember.rs:830` with `left: 0, right: 1`.
+  - Green: the PR's CI on the unmutated branch.
