@@ -13191,7 +13191,9 @@ why: token/RNG source for auth, referral codes and supersede confirm tokens
 modules naming it:
 - `application::auth`
 - `application::referral`
+- `application::signed_token`
 - `application::supersede`
+- `tests`
 
 ### humaux-application → `hmac` (normal)
 why: verification-code HMAC and the signed-token MAC
@@ -13271,7 +13273,6 @@ modules naming it:
 - `application::pin`
 - `application::public_evolve`
 - `application::retrieval_embedding_port`
-- `application::signed_token`
 - `tests`
 
 ### humaux-application → `tokio` (dev)
