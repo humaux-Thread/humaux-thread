@@ -110,6 +110,10 @@ pub struct SemanticRecallRuntime {
     /// ADR-0084 D-B: the local rerank lane (the worker client and the deployment model pin); `None` when no worker
     /// serves rerank, which a profile that turns the lane on does not allow (bootstrap refuses it).
     rerank: Option<RerankLane>,
+    /// ADR-0084 D-B Policy / ADR-0083 U4: the one in-Cell text-processing decision per tenant, read once per request
+    /// for both the sparse leg and the rerank branch. Production leaves the default, `in_cell_text_processing_allowed`;
+    /// a test sets another through [`SemanticRecallRuntime::with_text_processing_policy`].
+    text_processing_allowed: fn(TenantId) -> bool,
 }
 
 /// `ContextBootstrap` derives `Debug` and now carries an optional handle to this runtime, so
@@ -153,7 +157,17 @@ impl SemanticRecallRuntime {
             handler_timeout,
             query_log_gate: OnceLock::new(),
             rerank,
+            text_processing_allowed: in_cell_text_processing_allowed,
         })
+    }
+
+    /// A runtime that reads `policy` instead of `in_cell_text_processing_allowed` for every tenant. The production
+    /// function is a stub that always allows (its `ponytail`), so a test that must see a tenant whose policy forbids
+    /// in-Cell text processing sets it here; bootstrap never does.
+    #[must_use]
+    pub fn with_text_processing_policy(mut self, policy: fn(TenantId) -> bool) -> Self {
+        self.text_processing_allowed = policy;
+        self
     }
 
     /// At most a quarter of the pool (minimum one) writes log rows at once, so the log can never take the answer path's
@@ -697,17 +711,16 @@ async fn answer(
     // processing (`build_sparse_lane`, the one SKIPPED_BY_POLICY decision); otherwise its lane is `not_required` (U5)
     // and nothing is sent. Decided before the dense query is built: without a sparse leg there is nothing to fuse with,
     // so the dense leg asks for `cand_k` Memories as before and a grouped refill is not spent on a depth nobody reads.
+    let text_processing_allowed = (runtime.text_processing_allowed)(authorization.tenant_id());
     let sparse_corpus = sparse_corpus_filter(
         bootstrap.profile.sparse_leg_enabled(),
-        in_cell_text_processing_allowed(authorization.tenant_id()),
+        text_processing_allowed,
         &authorization,
     );
     // ADR-0084 D-D row 1: the rerank branch is selected only when the profile turns the lane on AND tenant policy allows
     // in-Cell text processing (the same decision as the sparse leg); otherwise no text is read and no call is made.
-    let rerank_selected = rerank_branch_selected(
-        bootstrap.profile.rerank_enabled(),
-        in_cell_text_processing_allowed(authorization.tenant_id()),
-    );
+    let rerank_selected =
+        rerank_branch_selected(bootstrap.profile.rerank_enabled(), text_processing_allowed);
     let leg_limit = if sparse_corpus.is_some() {
         bootstrap.profile.leg_depth()
     } else {
@@ -876,6 +889,9 @@ async fn answer(
                 Duration::from_millis(u64::from(bootstrap.profile.rerank_timeout_ms())),
                 runtime.handler_timeout,
                 clock.elapsed(),
+                // The steps after the rerank are one PostgreSQL read and one Qdrant count: the registered budget of
+                // one Qdrant request, `sparse_timeout_ms`, is the nearest existing stage budget (no new key, §78.1).
+                Duration::from_millis(u64::from(bootstrap.profile.sparse_timeout_ms())),
             ),
             call_id: request_id,
             query: trusted_query.text(),
@@ -1111,9 +1127,20 @@ fn rerank_branch_selected(enabled: bool, text_processing_allowed: bool) -> bool 
 }
 
 /// ADR-0084 D-E / U7: the wait for the rerank RPC is the registered `rerank_timeout_ms`, never more than the handler
-/// budget the request has left, so a late answer cannot outlive the handler deadline (`guard.rs`).
-fn rerank_wait(registered: Duration, handler_timeout: Duration, elapsed: Duration) -> Duration {
-    registered.min(handler_timeout.saturating_sub(elapsed))
+/// budget the request has left less `reserve`, the time kept for the steps that follow (the mood rerank's read, the live
+/// index count and the assembly), so a slow rerank degrades the answer instead of letting the handler deadline
+/// (`guard.rs`) fail it. Zero when nothing is left over: the call is then not made.
+fn rerank_wait(
+    registered: Duration,
+    handler_timeout: Duration,
+    elapsed: Duration,
+    reserve: Duration,
+) -> Duration {
+    registered.min(
+        handler_timeout
+            .saturating_sub(elapsed)
+            .saturating_sub(reserve),
+    )
 }
 
 /// What the rerank stage needs besides the hydrated items.
@@ -1183,13 +1210,14 @@ fn apply_memory_order(items: &mut [MaterializedItem], order: &[Uuid]) {
 /// ADR-0084 D-C 3 to 5, D-D: scores the first `depth` visible Memories that have a document and puts the Memory items
 /// into the rerank order, order only.
 ///
-/// - Not selected: nothing is read or called; `not_applicable`.
+/// - Not selected, or no visible Memory: nothing is read or called; `not_applicable` (§23.3 allows it for the lane off,
+///   the tenant's policy, and nothing to rank).
 /// - The documents are built from `texts` and `slots`, which the hydrate transaction produced for the Memories that
-///   passed its gate and for no others (G-RET-13). A Memory without a document (an unknown slot, no readable body) is
-///   not sent and keeps its fused place after the scored ones. With no document at all there is nothing to score:
-///   `not_applicable`, with an operator line.
-/// - The call is bounded by `wait`; a timeout, a failed or unusable answer and another model's answer are the fused
-///   order with a [`RerankFailure`]. The code itself is emitted in `accepted_output`.
+///   passed its gate and for no others (G-RET-13). A Memory without a document (an unknown slot, an ordinal past the
+///   body, no readable body) is not sent and keeps its fused place after the scored ones. With visible Memories and no
+///   document at all, the selected branch has failed: the fused order, [`RerankFailure::Unavailable`].
+/// - The call is bounded by `wait` (no call when it is zero); a timeout, a failed or unusable answer and another
+///   model's answer are the fused order with a [`RerankFailure`]. The code itself is emitted in `accepted_output`.
 async fn rerank_stage(
     input: &RerankStageInput<'_>,
     items: &mut [MaterializedItem],
@@ -1199,7 +1227,7 @@ async fn rerank_stage(
     let visible = memory_ids(items);
     let report = |settlement: humaux_retrieval::rerank::Settlement<Uuid>| RerankReport {
         reranked_count: settlement.reranked_count,
-        model: settlement.model,
+        model: settlement.rerank_model_id,
         failure: settlement.failure,
     };
     if !input.selected || visible.is_empty() {
@@ -1223,12 +1251,14 @@ async fn rerank_stage(
         }
     }
     if documents.is_empty() {
+        // §23.1③ / D-D: the branch was selected and there are Memories to rank, so failing to build any document is a
+        // failure of the branch, never `not_applicable` (that is only the lane off, the tenant's policy, or no Memory).
         eprintln!(
-            "humaux-gateway: recall request_id={} rerank_no_documents visible={}",
+            "humaux-gateway: recall request_id={} rerank_failed class=no_documents visible={}",
             input.call_id,
             visible.len()
         );
-        return report(not_run(&visible));
+        return report(unavailable(&visible));
     }
     let Some(lane) = input.lane else {
         eprintln!(
@@ -1237,6 +1267,13 @@ async fn rerank_stage(
         );
         return report(unavailable(&visible));
     };
+    if input.wait.is_zero() {
+        eprintln!(
+            "humaux-gateway: recall request_id={} rerank_failed class=no_budget",
+            input.call_id
+        );
+        return report(settle(&visible, &sent, lane.pin(), Executor::Unavailable));
+    }
     let answered = tokio::time::timeout(
         input.wait,
         lane.port().rerank(RerankCall {
@@ -1967,10 +2004,13 @@ mod tests {
         }
     }
 
-    /// A selected branch with no lane wired, and a selected branch with nothing sendable, behave as the table says:
-    /// the first is a never-silent fallback, the second has nothing to score and reads `not_applicable`.
+    /// §23.1③ / ADR-0084 D-D: `not_applicable` is only the lane off, the tenant's policy, or no visible Memory to rank. A
+    /// selected branch with visible Memories that cannot be scored is a failure, never `not_applicable`: no lane wired,
+    /// and no document buildable (an unknown slot, an ordinal past the body, no readable text), each give the fused order,
+    /// `RerankFailure::Unavailable` and `cannot_establish`, with no call; no visible Memory reads `not_applicable`.
+    /// Fault: return `not_run` for a selected branch with no document ⇒ the second block goes red.
     #[tokio::test]
-    async fn a_missing_lane_falls_back_and_nothing_to_score_is_not_applicable() {
+    async fn a_selected_branch_that_cannot_score_is_a_failure_and_no_memory_is_not_applicable() {
         let (slots, texts) = hydrated(&[1, 2]);
         let mut items = vec![memory(1), memory(2)];
         let report = rerank_stage(&input(None, true, 25), &mut items, &slots, &texts).await;
@@ -1980,6 +2020,7 @@ mod tests {
 
         let port = reversing(Duration::ZERO);
         let lane = RerankLane::new(port.clone(), pin());
+        // Visible Memories, no slot and no text for any: no document can be built.
         let report = rerank_stage(
             &input(Some(&lane), true, 25),
             &mut items,
@@ -1988,29 +2029,66 @@ mod tests {
         )
         .await;
         assert_eq!(port.calls.load(Ordering::SeqCst), 0, "no document, no call");
-        assert_eq!(report.model, ProvenanceValue::NotApplicable {});
-        assert_eq!(report.failure, None);
+        assert_eq!(ids(&items), [1, 2], "the fused order");
+        assert_eq!(
+            report.failure,
+            Some(RerankFailure::Unavailable),
+            "a selected branch that could not score is a failure"
+        );
+        assert_eq!(report.model, ProvenanceValue::CannotEstablish {});
+        assert_eq!(report.reranked_count, 0);
 
         let mut empty: Vec<MaterializedItem> = Vec::new();
         let report = rerank_stage(&input(Some(&lane), true, 25), &mut empty, &slots, &texts).await;
         assert_eq!(
             report.model,
             ProvenanceValue::NotApplicable {},
-            "no visible Memory"
+            "no visible Memory: nothing was selected to fail"
         );
+        assert_eq!(report.failure, None);
     }
 
-    /// ADR-0084 U7: the wait is the registered `rerank_timeout_ms` capped by the handler budget that is left, and never
-    /// negative. Fault: drop the cap ⇒ the second row goes red.
+    /// ADR-0084 U7: no budget left means no call: the stage degrades to the fused order at once instead of dialling a
+    /// worker whose answer could not be waited for. Fault: dial anyway ⇒ the port is called ⇒ red.
+    #[tokio::test]
+    async fn a_zero_wait_degrades_without_calling_the_worker() {
+        let port = reversing(Duration::ZERO);
+        let lane = RerankLane::new(port.clone(), pin());
+        let (slots, texts) = hydrated(&[1, 2, 3]);
+        let mut items = vec![memory(1), memory(2), memory(3)];
+        let mut stage = input(Some(&lane), true, 25);
+        stage.wait = Duration::ZERO;
+        let report = rerank_stage(&stage, &mut items, &slots, &texts).await;
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0, "no budget, no call");
+        assert_eq!(ids(&items), [1, 2, 3], "the fused order");
+        assert_eq!(report.failure, Some(RerankFailure::Unavailable));
+        assert_eq!(report.model, ProvenanceValue::CannotEstablish {});
+    }
+
+    /// ADR-0084 U7: the wait is the registered `rerank_timeout_ms` capped by the handler budget that is left less the
+    /// reserve kept for the steps after the rerank, and never negative. Fault: drop the reserve ⇒ the second row goes
+    /// red; wait the whole budget left instead of the registered wait ⇒ the first row goes red.
     #[test]
-    fn the_rerank_wait_never_outlives_the_handler_budget() {
+    fn the_rerank_wait_leaves_the_reserve_and_never_outlives_the_handler_budget() {
         let ms = Duration::from_millis;
-        assert_eq!(rerank_wait(ms(4_000), ms(20_000), ms(100)), ms(4_000));
-        assert_eq!(rerank_wait(ms(4_000), ms(20_000), ms(18_000)), ms(2_000));
+        let wait = |elapsed, reserve| rerank_wait(ms(4_000), ms(20_000), ms(elapsed), ms(reserve));
         assert_eq!(
-            rerank_wait(ms(4_000), ms(20_000), ms(25_000)),
-            Duration::ZERO
+            wait(100, 1_000),
+            ms(4_000),
+            "plenty left: the registered wait"
         );
+        assert_eq!(
+            wait(15_500, 1_000),
+            ms(3_500),
+            "the budget left less the reserve"
+        );
+        assert_eq!(wait(18_800, 1_000), ms(200), "a thin budget");
+        assert_eq!(
+            wait(19_500, 1_000),
+            Duration::ZERO,
+            "the reserve takes what is left"
+        );
+        assert_eq!(wait(25_000, 1_000), Duration::ZERO, "past the deadline");
     }
 
     /// ADR-0084 D-C 3: the point that stands for a fused Memory is its best leg hit's, dense first: the dense leg's point

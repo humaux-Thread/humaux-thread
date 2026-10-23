@@ -4,8 +4,8 @@
 //! Depends-on: crates=[humaux-telemetry]; services=[]; env=[]; modules=[retrieval::envelope, telemetry::degrade]
 //! Called-by: [gateway::bootstrap, gateway::recall, gateway::rerank_client, tests]
 //! Invariants: [the rendered `provenance.rerank_model_id` is built by exactly one constructor, `RerankModelId::render`,
-//!   and differs whenever any part of the D-A identity differs (the source scan `rerank_provenance_constructor` counts
-//!   `== 1`); `order_by_score` only reorders: the output id set equals the input set, ties follow fused rank, and a
+//!   and differs whenever any part of the D-A identity differs, and the field is given a `used` value in exactly one
+//!   place, `settle` (the source scan `rerank_provenance_constructor` counts both `== 1`); `order_by_score` only reorders: the output id set equals the input set, ties follow fused rank, and a
 //!   reply that does not fit the request is `None`, never applied (G-RET-15); `settle` falls back to the fused order
 //!   on every failure and never returns scores of a model other than the pinned one (ADR-0084 D-D); `degradations`
 //!   holds the only two exits of `RERANK_PROVIDER_TIMEOUT` and `RERANK_MODEL_MISMATCH`, each through `abstain()`
@@ -174,7 +174,7 @@ pub struct Settlement<Id> {
     pub reranked_count: u32,
     /// `provenance.rerank_model_id`: `used` on success, `cannot_establish` on a failure, `not_applicable` when the
     /// branch did not run (§23.1③).
-    pub model: ProvenanceValue,
+    pub rerank_model_id: ProvenanceValue,
     /// Set on a fallback; [`degradations`] turns it into the codes.
     pub failure: Option<RerankFailure>,
 }
@@ -183,7 +183,7 @@ fn fallback<Id: Copy>(visible: &[Id], failure: RerankFailure) -> Settlement<Id> 
     Settlement {
         order: visible.to_vec(),
         reranked_count: 0,
-        model: ProvenanceValue::CannotEstablish {},
+        rerank_model_id: ProvenanceValue::CannotEstablish {},
         failure: Some(failure),
     }
 }
@@ -195,14 +195,15 @@ pub fn unavailable<Id: Copy>(visible: &[Id]) -> Settlement<Id> {
     fallback(visible, RerankFailure::Unavailable)
 }
 
-/// The stage that did not run (ADR-0084 D-D row 1: the lane is off or the tenant's policy skips it, or there was
-/// nothing to score): the fused order, nothing reranked, `not_applicable`, no degradation.
+/// The stage that did not run (ADR-0084 D-D row 1: the lane is off or the tenant's policy skips it; or there is no visible
+/// Memory to rank, so nothing was selected to fail): the fused order, nothing reranked, `not_applicable`, no degradation.
+/// A selected branch that has visible Memories but cannot call or score is [`unavailable`], never this.
 #[must_use]
 pub fn not_run<Id: Copy>(visible: &[Id]) -> Settlement<Id> {
     Settlement {
         order: visible.to_vec(),
         reranked_count: 0,
-        model: ProvenanceValue::NotApplicable {},
+        rerank_model_id: ProvenanceValue::NotApplicable {},
         failure: None,
     }
 }
@@ -229,7 +230,7 @@ pub fn settle<Id: Copy + Eq + Hash>(
             Some(order) => Settlement {
                 order,
                 reranked_count: u32::try_from(sent.len()).unwrap_or(u32::MAX),
-                model: ProvenanceValue::Used {
+                rerank_model_id: ProvenanceValue::Used {
                     id: pinned.model_id().0,
                 },
                 failure: None,
@@ -328,7 +329,7 @@ mod tests {
         assert_eq!(ok.order, [2, 3, 1]);
         assert_eq!(ok.reranked_count, 3);
         assert_eq!(
-            ok.model,
+            ok.rerank_model_id,
             ProvenanceValue::Used {
                 id: pin().model_id().as_str().to_owned()
             }
@@ -348,7 +349,10 @@ mod tests {
         for fallback in [unavailable, torn] {
             assert_eq!(fallback.order, visible, "the fused order");
             assert_eq!(fallback.reranked_count, 0);
-            assert_eq!(fallback.model, ProvenanceValue::CannotEstablish {});
+            assert_eq!(
+                fallback.rerank_model_id,
+                ProvenanceValue::CannotEstablish {}
+            );
             assert_eq!(fallback.failure, Some(RerankFailure::Unavailable));
         }
 
@@ -365,12 +369,15 @@ mod tests {
         );
         assert_eq!(mismatch.order, visible, "the scores are discarded");
         assert_eq!(mismatch.reranked_count, 0);
-        assert_eq!(mismatch.model, ProvenanceValue::CannotEstablish {});
+        assert_eq!(
+            mismatch.rerank_model_id,
+            ProvenanceValue::CannotEstablish {}
+        );
         assert_eq!(mismatch.failure, Some(RerankFailure::ModelMismatch));
 
         let idle = not_run(&visible);
         assert_eq!(idle.order, visible);
-        assert_eq!(idle.model, ProvenanceValue::NotApplicable {});
+        assert_eq!(idle.rerank_model_id, ProvenanceValue::NotApplicable {});
         assert_eq!(idle.failure, None);
     }
 

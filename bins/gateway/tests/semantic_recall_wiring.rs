@@ -2185,6 +2185,20 @@ impl HybridEnv {
         rerank: Option<RerankLane>,
         profile: &[(&str, &str)],
     ) -> Result<serde_json::Value, ErrorCode> {
+        self.recall_under(handle, shape, sparse_leg, rerank, profile, None)
+    }
+
+    /// [`Self::recall_with`] under a tenant policy other than the production stub's (which always allows in-Cell text
+    /// processing): `policy` replaces `in_cell_text_processing_allowed` for this recall's runtime.
+    fn recall_under(
+        &self,
+        handle: &Handle,
+        shape: Shape,
+        sparse_leg: bool,
+        rerank: Option<RerankLane>,
+        profile: &[(&str, &str)],
+        policy: Option<fn(TenantId) -> bool>,
+    ) -> Result<serde_json::Value, ErrorCode> {
         let port: Arc<dyn RetrievalEmbeddingPort> =
             Arc::new(FixedOutcomePort::new(RetrievalEmbeddingOutcome::Embedded {
                 vector: vec![1.0, 0.0, 0.0, 0.0],
@@ -2198,20 +2212,22 @@ impl HybridEnv {
             shape,
             sparse_bodies: Arc::clone(&self.sparse_bodies),
         });
-        let runtime = Arc::new(
-            SemanticRecallRuntime::new(
-                port,
-                transport,
-                self.registry.clone(),
-                SemanticRecallVersions {
-                    embedding_version: EMBEDDING_VERSION.to_owned(),
-                    dimension: DIMENSION,
-                },
-                Duration::from_secs(10),
-                rerank,
-            )
-            .expect("trusted semantic runtime"),
-        );
+        let runtime = SemanticRecallRuntime::new(
+            port,
+            transport,
+            self.registry.clone(),
+            SemanticRecallVersions {
+                embedding_version: EMBEDDING_VERSION.to_owned(),
+                dimension: DIMENSION,
+            },
+            Duration::from_secs(10),
+            rerank,
+        )
+        .expect("trusted semantic runtime");
+        let runtime = Arc::new(match policy {
+            Some(policy) => runtime.with_text_processing_policy(policy),
+            None => runtime,
+        });
         handle
             .rt
             .block_on(recall::search(
@@ -2829,6 +2845,84 @@ fn a_tombstoned_memory_is_never_sent_to_the_rerank_worker() {
         assert_eq!(
             after["completeness"]["reranked_count"],
             HYBRID_TEXTS.len() - 1
+        );
+        env.teardown(&handle);
+    });
+}
+
+/// A tenant policy that forbids in-Cell text processing (§17.6 "extreme policy"), for the runtime seam: the production
+/// `in_cell_text_processing_allowed` is a stub that always allows.
+fn text_processing_forbidden(_tenant: TenantId) -> bool {
+    false
+}
+
+/// ADR-0084 D-B Policy, through the real recall path: for a tenant whose policy forbids in-Cell text processing no worker
+/// call is made and no text is read, the answer is the fused order, `rerank_model_id` reads `not_applicable` and nothing
+/// degrades (a policy skip is a lane state, like the sparse leg's `SKIPPED_BY_POLICY`). The control, the same lane and
+/// profile under the default policy, makes its one call and reorders, so the assertion can fail.
+/// Fault: the call site ignores the policy (passes `true` to `rerank_branch_selected`) ⇒ the worker is called ⇒ red.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture: control under the default policy → the same recall under a forbidding one.
+fn a_tenant_whose_policy_forbids_text_processing_gets_no_worker_call_through_recall() {
+    run_db_fixture::<Fixture, _>("semantic_recall_wiring_rerank_policy", |mut handle| {
+        handle.assert_gateway_login();
+        let env = HybridEnv::seed(&mut handle, "rerank_policy");
+        let fused = returned_ids(
+            &env.recall(&handle, Shape::Real, false)
+                .expect("lane-off baseline"),
+        );
+
+        let (lane, sent) = scripted_lane(Rerank::Healthy);
+        let control = env
+            .recall_under(&handle, Shape::Real, false, Some(lane), &RERANK_ON, None)
+            .expect("control recall");
+        assert_eq!(
+            sent.lock().expect("recorded documents").len(),
+            1,
+            "control: the default policy allows the call"
+        );
+        assert_ne!(
+            returned_ids(&control),
+            fused,
+            "control: the rerank reorders"
+        );
+
+        let (lane, sent) = scripted_lane(Rerank::Healthy);
+        let before = (
+            degrade_total_count(DegradeCode::RerankProviderTimeout),
+            degrade_total_count(DegradeCode::RerankModelMismatch),
+        );
+        let out = env
+            .recall_under(
+                &handle,
+                Shape::Real,
+                false,
+                Some(lane),
+                &RERANK_ON,
+                Some(text_processing_forbidden),
+            )
+            .expect("recall under a forbidding policy");
+        assert_eq!(
+            sent.lock().expect("recorded documents").len(),
+            0,
+            "a tenant whose policy forbids in-Cell text processing gets no rerank call: {out}"
+        );
+        assert_eq!(returned_ids(&out), fused, "the fused order: {out}");
+        assert_eq!(
+            out["provenance"]["rerank_model_id"],
+            serde_json::json!({ "status": "not_applicable" }),
+            "a policy skip is not a failure: {out}"
+        );
+        assert_eq!(out["completeness"]["reranked_count"], 0, "{out}");
+        assert!(!has_degradation(&out, "RERANK_PROVIDER_TIMEOUT"), "{out}");
+        assert!(!has_degradation(&out, "RERANK_MODEL_MISMATCH"), "{out}");
+        assert_eq!(
+            (
+                degrade_total_count(DegradeCode::RerankProviderTimeout),
+                degrade_total_count(DegradeCode::RerankModelMismatch),
+            ),
+            before,
+            "a policy skip emits no degradation"
         );
         env.teardown(&handle);
     });
