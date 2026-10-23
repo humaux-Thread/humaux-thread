@@ -39,6 +39,7 @@ pub mod forget_repo;
 pub mod grep_repo;
 pub mod health;
 pub mod jobs;
+pub mod login_repo;
 pub mod maintenance_repo;
 pub mod mechanism_observation;
 pub mod membership_repo;
