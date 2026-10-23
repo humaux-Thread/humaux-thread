@@ -14,7 +14,7 @@
 //!   private.evidence_objects, private.memory_evidence, private.memory_records, private.messages]
 //!   x=[control.onboard_tenant, control.resolve_user_reasoning_admission], PostgreSQL(role_maintenance)];
 //!   env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::byok, adapters::byok::ssrf, adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::quota_repo,
+//!   modules=[adapters::byok, adapters::byok::ssrf, adapters::membership_repo, adapters::plan_repo, adapters::postgres, adapters::provisioning, adapters::quota_repo,
 //!   domain::identity, domain::ids, domain::ticket_family, protocol::edge, testkit::fixture_purge]
 //! Called-by: [xtask::e2e_onboard, xtask::main]
 //! Invariants: [a thin wrapper over adapters::provisioning (the same onboarding doors humaux-maintenance uses, no INSERT
@@ -96,6 +96,7 @@ use std::fmt::Write as _;
 
 use humaux_adapters::byok::ReasoningCapability;
 use humaux_adapters::membership_repo::AdminAction;
+use humaux_adapters::plan_repo;
 use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::provisioning::{self, NewApiKey, QdrantFace, TenantReceipt, TenantRequest};
 use humaux_adapters::quota_repo;
@@ -635,6 +636,35 @@ struct Seeded {
 /// tenant (random `e2e-seed-<uuid>` name, a throwaway `@e2e.invalid` owner), the quota window,
 /// the extra workspaces with their own keys, the collection and the VerifiedEmpty activation of
 /// every workspace (so the later `projection-serve` calls print "already serving").
+/// Publishes the seed's plan version 1 through the owner door (`plan_repo::seed`, as `role_maintenance`) and returns its
+/// plan key. The key carries the window limit, so a rerun with another `--limit` publishes another plan instead of
+/// conflicting with the pinned one (§71.1: a pinned version never changes).
+pub(crate) async fn publish_seed_plan(
+    maintenance: &MaintenanceDbPool,
+    limit: i64,
+) -> Result<String, String> {
+    let plan_key = format!("e2e_seed_{limit}");
+    let catalogue = serde_json::json!({ "plan_versions": [{
+        "plan_key": plan_key,
+        "version": 1,
+        "price_cents": 0,
+        "currency": "USD",
+        "billing_interval": "month",
+        "lease_block": 16,
+        "published": true,
+        "entitlement_template": { "mcp.billable_operations.per_period": {
+            "limit": limit, "period": "subscription_period", "charge_policy": "success_only",
+        }},
+        "provider_product_ref": {},
+    }]});
+    let specs = plan_repo::parse_catalogue(&catalogue.to_string())
+        .map_err(|e| format!("seed plan {plan_key}: {e}"))?;
+    plan_repo::seed(maintenance, &specs)
+        .await
+        .map_err(|e| format!("seed plan {plan_key}: {e:?}"))?;
+    Ok(plan_key)
+}
+
 #[allow(clippy::too_many_lines)] // the seed's onboarding sequence, one step per library call
 async fn provision(
     maintenance: &MaintenanceDbPool,
@@ -656,6 +686,7 @@ async fn provision(
     )
     .await
     .map_err(|e| format!("deploy_init: {e}"))?;
+    let plan_key = publish_seed_plan(maintenance, limit).await?;
     let now = time::OffsetDateTime::now_utc();
     let mut minted = None;
     let mut mint = |_tenant: Uuid| {
@@ -670,7 +701,8 @@ async fn provision(
             owner_email: &format!("e2e-seed-{run}@e2e.invalid"),
             workspace_name: "e2e-seed workspace",
             reasoning_domain_name: "default",
-            plan_limit: limit,
+            plan_key: &plan_key,
+            plan_version: 1,
             period_start: now - time::Duration::seconds(1),
             // The window must outlast the longest rehearsal that reuses this seed: the card-37 chain's rerun ran 67
             // minutes and every billable call after the 60th answered ENTITLEMENT_REQUIRED (ADR-0064 "Chain run 1");
@@ -1301,7 +1333,7 @@ mod tests {
         };
         if client
             .query_one(
-                "SELECT to_regprocedure('control.onboard_tenant(text,uuid,text,text,bigint,timestamptz,timestamptz,text,text,bigint,bigint,text[])') IS NULL",
+                "SELECT to_regprocedure('control.onboard_tenant(text,uuid,text,text,text,integer,timestamptz,timestamptz,text,text,bigint,bigint,text[])') IS NULL",
                 &[],
             )
             .map(|row| row.get::<_, bool>(0))
@@ -1502,6 +1534,7 @@ mod tests {
         )
         .await
         .map_err(|e| e.to_string())?;
+        let plan_key = super::publish_seed_plan(maintenance, 1000).await?;
         let now = time::OffsetDateTime::now_utc();
         let run = Uuid::new_v4();
         let mut mint = |_| super::seed_key(&[7u8; 32]).0;
@@ -1512,7 +1545,8 @@ mod tests {
                 owner_email: &format!("e2e-seed-{run}@e2e.invalid"),
                 workspace_name: "e2e-seed workspace",
                 reasoning_domain_name: "default",
-                plan_limit: 1000,
+                plan_key: &plan_key,
+                plan_version: 1,
                 period_start: now - time::Duration::seconds(1),
                 period_end: now + time::Duration::hours(1),
                 provider_id: &qdrant.embedding_provider,

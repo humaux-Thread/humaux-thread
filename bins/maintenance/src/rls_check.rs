@@ -1763,6 +1763,9 @@ const NAMED_NO_NON_OWNER_GRANTS: &[&str] = &[
     // 0230 (ADR-0063 D-B): the ledger identity rows are written only by the owner claim trigger of
     // ops.model_call_ledger; the five referencers reach them only through their FKs.
     "ops.model_call_identity",
+    // 0267 (M04-2, §76): the raw per-source grants. No runtime role reads them; the owner definers
+    // control.entitlement_grants_for_projection (read) and control.onboard_tenant (write) are the only paths.
+    "control.entitlement_grants",
 ];
 
 /// The §6.2.2 column set — "T" in the §48.2 "表集合派生" check's `S \ T == ∅`. Single
@@ -5158,7 +5161,7 @@ pub fn check_partition_leaves(client: &mut impl GenericClient) -> GateResult {
 const ONBOARDING_FUNCTIONS: [&str; 8] = [
     "control.ensure_admission_tier(text,text,uuid,text,bigint,bigint)",
     "control.ensure_user(text,text)",
-    "control.onboard_tenant(text,uuid,text,text,bigint,timestamptz,timestamptz,text,text,bigint,bigint,text[])",
+    "control.onboard_tenant(text,uuid,text,text,text,integer,timestamptz,timestamptz,text,text,bigint,bigint,text[])",
     "control.onboard_workspace(uuid,text,uuid,text[])",
     "control.issue_api_key(uuid,uuid,uuid,text,bytea,text[])",
     "control.revoke_api_key(uuid,text)",
@@ -5166,6 +5169,43 @@ const ONBOARDING_FUNCTIONS: [&str; 8] = [
     "projection.activate_empty_family(uuid,uuid,text,text,text,text,text,uuid,bigint,timestamptz)",
 ];
 const ONBOARDING_EXECUTORS: &[&str] = &["role_maintenance"];
+
+/// §76 / M04-2 (migration 0267): the projector's two owner doors, the only path to the raw grants and to a stored
+/// snapshot; executable by `role_maintenance` only.
+const ENTITLEMENT_DOOR_FUNCTIONS: [&str; 2] = [
+    "control.entitlement_grants_for_projection(uuid)",
+    "control.write_entitlement_snapshot(uuid,jsonb,uuid[],timestamptz)",
+];
+
+/// §76 / M04-2 (0267): each projector door is owner-owned, SECURITY DEFINER, `search_path=pg_catalog`, EXECUTE held by
+/// exactly `role_maintenance`, PUBLIC revoked (same helper as [`ONBOARDING_FUNCTIONS`]). Missing ⇒ `not_applicable`
+/// naming the function (§57.1).
+pub fn check_entitlement_doors(client: &mut impl GenericClient) -> GateResult {
+    let check = "§76 entitlement projector doors";
+    let missing: Vec<String> = match client.query(
+        "SELECT f FROM unnest($1::text[]) AS f WHERE to_regprocedure(f) IS NULL",
+        &[&ENTITLEMENT_DOOR_FUNCTIONS.to_vec()],
+    ) {
+        Ok(rows) => rows.iter().map(|r| r.get(0)).collect(),
+        Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+    };
+    if !missing.is_empty() {
+        return not_applicable(check, format!("missing {}", missing.join(", ")));
+    }
+    let mut problems = Vec::new();
+    for function in ENTITLEMENT_DOOR_FUNCTIONS {
+        check_owner_definer_function(client, &mut problems, function, ONBOARDING_EXECUTORS);
+    }
+    if problems.is_empty() {
+        pass(
+            check,
+            "2 projector doors (grants read / snapshot write): owner SECURITY DEFINER, search_path pinned, \
+             EXECUTE exactly {role_maintenance}, PUBLIC revoked",
+        )
+    } else {
+        fail(check, problems.join("; "))
+    }
+}
 const WRITE_GATE_FN: &str = "projection.stream_checkpoints_workspace_write_gate()";
 
 /// ADR-0060 D-H (migration 0208, card 33b): the operator reasoning-route doors and their read-only
@@ -5736,6 +5776,7 @@ pub fn run(args: &[String]) -> i32 {
             results.push(check_distill_dispatch_v2_boundary(&mut client));
             results.push(check_api_key_rehash_boundary(&mut client));
             results.push(check_reasoning_route_doors(&mut client));
+            results.push(check_entitlement_doors(&mut client));
             results.push(check_health_reader_boundary(&mut client));
             results.push(check_maintenance_doors(&mut client));
             results.push(check_maintenance_delete_doors(&mut client));
@@ -7194,6 +7235,72 @@ mod tests {
                 red.detail
             );
             txn.batch_execute("ROLLBACK TO SAVEPOINT r3_definer_fault")
+                .expect("restore");
+        }
+    }
+
+    /// G-M04-13 (§76, 0267): no runtime role reads or writes the raw entitlement grants. Over-grants (rolled back) of
+    /// SELECT to the gateway and INSERT to the maintenance role turn the grant-equality gate red naming the table and the
+    /// role; the clean tree is green.
+    #[test]
+    fn entitlement_grants_are_owner_only() {
+        txn_or_skip!(client, txn);
+        assert_eq!(check_grant_equality(&mut txn).status, GateStatus::Pass);
+        for (fault, role) in [
+            (
+                "GRANT SELECT ON control.entitlement_grants TO role_gateway",
+                "role_gateway",
+            ),
+            (
+                "GRANT INSERT ON control.entitlement_grants TO role_maintenance",
+                "role_maintenance",
+            ),
+        ] {
+            txn.batch_execute(&format!("SAVEPOINT entitlement_grants_fault; {fault}"))
+                .expect("fault");
+            let red = check_grant_equality(&mut txn);
+            assert_eq!(red.status, GateStatus::Fail, "{fault}: {}", red.detail);
+            assert!(
+                red.detail.contains("control.entitlement_grants") && red.detail.contains(role),
+                "{}",
+                red.detail
+            );
+            txn.batch_execute("ROLLBACK TO SAVEPOINT entitlement_grants_fault")
+                .expect("restore");
+        }
+        assert_eq!(check_grant_equality(&mut txn).status, GateStatus::Pass);
+    }
+
+    /// §76 (0267): the two projector doors are role_maintenance-only. Faults (rolled back): grant the snapshot writer to
+    /// role_gateway, or revoke the grants reader from role_maintenance → red naming the function and the role.
+    #[test]
+    fn entitlement_doors_are_maintenance_only() {
+        txn_or_skip!(client, txn);
+        let clean = check_entitlement_doors(&mut txn);
+        assert_eq!(clean.status, GateStatus::Pass, "{}", clean.detail);
+        for (fault, signature, role) in [
+            (
+                "GRANT EXECUTE ON FUNCTION {f} TO {r}",
+                ENTITLEMENT_DOOR_FUNCTIONS[1],
+                "role_gateway",
+            ),
+            (
+                "REVOKE EXECUTE ON FUNCTION {f} FROM {r}",
+                ENTITLEMENT_DOOR_FUNCTIONS[0],
+                "role_maintenance",
+            ),
+        ] {
+            let sql = fault.replace("{f}", signature).replace("{r}", role);
+            txn.batch_execute(&format!("SAVEPOINT entitlement_door_fault; {sql}"))
+                .expect("fault");
+            let red = check_entitlement_doors(&mut txn);
+            assert_eq!(red.status, GateStatus::Fail, "{sql}: {}", red.detail);
+            assert!(
+                red.detail.contains(signature) && red.detail.contains(role),
+                "{}",
+                red.detail
+            );
+            txn.batch_execute("ROLLBACK TO SAVEPOINT entitlement_door_fault")
                 .expect("restore");
         }
     }

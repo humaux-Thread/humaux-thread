@@ -137,6 +137,14 @@ fn fixture(test: &str) -> Option<Fixture> {
     // dep: PostgreSQL(owner) — fixture connection to the throwaway database
     let mut client = Client::connect(&with_db(&owner_dsn, &db), NoTls).expect("connect test db");
     migrate(&mut client);
+    // dep: PostgreSQL(owner) — the plan the fixture tenant is granted (§71.1), through the owner door
+    client
+        .batch_execute(
+            "SELECT control.publish_plan_version('c33b_plan', 1, 0, 'USD', 'month', \
+             '{\"mcp.billable_operations.per_period\": {\"limit\": 10, \"period\": \"subscription_period\", \
+             \"charge_policy\": \"success_only\"}}'::jsonb, 16, '{}'::jsonb, true)",
+        )
+        .expect("publish the fixture plan");
     // dep: PostgreSQL(role_maintenance) — the 0186 onboarding doors as the only role that may call them
     client
         .batch_execute(
@@ -155,7 +163,7 @@ fn fixture(test: &str) -> Option<Fixture> {
         .get(0);
     let tenant: Uuid = txn
         .query_one(
-            "SELECT tenant_id FROM control.onboard_tenant('c33b', $1, 'default', 'default', 10, \
+            "SELECT tenant_id FROM control.onboard_tenant('c33b', $1, 'default', 'default', 'c33b_plan', 1, \
              now() - interval '1 second', now() + interval '1 day', 'dashscope', 'cn-beijing', \
              10, 10, ARRAY['private_memory','PRIVATE_MEMORY','v1'])",
             &[&owner],

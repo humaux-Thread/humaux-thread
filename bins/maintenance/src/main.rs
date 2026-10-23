@@ -375,7 +375,8 @@ async fn onboard_tenant(args: &Args) -> Result<Output> {
     let reasoning_domain = args
         .get("--reasoning-domain")
         .unwrap_or_else(|| "default".to_owned());
-    let plan_limit: i64 = args.parsed("--plan-limit")?;
+    let plan_key = args.required("--plan")?;
+    let plan_version: i32 = args.parsed("--plan-version")?;
     let period_end = OffsetDateTime::parse(&args.required("--period-end")?, &Rfc3339)
         .map_err(|_| Failure::Usage("--period-end must be RFC 3339".to_owned()))?;
     let scopes = scopes(args)?;
@@ -394,7 +395,8 @@ async fn onboard_tenant(args: &Args) -> Result<Output> {
         owner_email: &owner_email,
         workspace_name: &workspace,
         reasoning_domain_name: &reasoning_domain,
-        plan_limit,
+        plan_key: &plan_key,
+        plan_version,
         period_start: OffsetDateTime::now_utc() - time::Duration::seconds(1),
         period_end,
         provider_id: &provider,
