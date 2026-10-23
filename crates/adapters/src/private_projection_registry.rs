@@ -2,7 +2,7 @@
 //!   stored vector each binding was projected from, and the embedding label's fingerprint binding.
 //! Depends-on: crates=[humaux-domain, humaux-projection, sha2, sqlx]; services=[PostgreSQL(any)
 //!   r=[private.memory_records] w=[projection.embedding_fingerprints, projection.memory_vectors,
-//!   projection.private_memory_points, projection.tenant_placements], PostgreSQL(role_gateway),
+//!   projection.private_memory_points], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_retrieval_worker)]; env=[];
 //!   modules=[adapters::placement_repo, adapters::postgres, domain::authority, domain::identity, domain::ids,
 //!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
