@@ -6,7 +6,9 @@
 #
 # excessive_nesting does nothing until this threshold is set — unlike the other lints it has no built-in
 # default (clippy's own documentation only shows an example value). 5 is the M01-6 (G-M01-8) measurement
-# basis: it is the value the first CI clippy run of this branch ran with, and the sites it flags are the
-# ones carrying `#[allow(clippy::excessive_nesting)]` with a `// ponytail:` reason. The allow count is
-# pinned exactly in xtask/known_red.toml `[[lint_allows]]` and checked by `cargo xtask architecture-check`.
+# basis: CI run 39954828293 (clippy job, 2026-10-23) reported 4 blocks past it, all inside one test helper
+# (`crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list`), which carries the one
+# `#[allow(clippy::excessive_nesting)]` with its `// ponytail:` reason. Raising this value is a reviewed
+# one-line diff; the allow count is pinned exactly in xtask/known_red.toml `[[lint_allows]]` and checked by
+# `cargo xtask architecture-check`.
 excessive-nesting-threshold = 5

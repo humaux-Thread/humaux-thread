@@ -295,7 +295,7 @@ reason = "pre-existing population measured 2026-10-23 on card/m01-6-nesting-ratc
 
 [[lint_allows]]
 lint = "excessive_nesting"
-count = 0
+count = 1
 owner = "M01-6"
-reason = "PENDING MEASUREMENT: replaced with the measured site count of the first CI clippy run with clippy.toml's excessive-nesting-threshold = 5"
+reason = "exactly one allow: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list, whose ARRAY[...] scan nests past clippy.toml's threshold of 5; measured by CI run 39954828293 (the first clippy run with the lint on: 4 blocks over the ceiling, all in that one test helper), allowed with a ponytail reason because M01-6 refactors nothing"
 
