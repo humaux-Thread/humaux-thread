@@ -72,12 +72,19 @@ pub(crate) struct ExactNoteHit {
     pub memory_id: Uuid,
     /// `private.evidence_objects.data_class` of the existing Evidence (the hit's answer, not the request's default).
     pub data_class: String,
+    /// `projection.stream_log.scope_kind` of the existing Evidence's accepted ticket (0114 repeats it in the receipt).
     pub scope_kind: String,
+    /// `projection.stream_log.scope_id`.
     pub scope_id: Uuid,
+    /// `projection.stream_log.domain`.
     pub domain: String,
+    /// `projection.stream_log.projection_kind`.
     pub projection_kind: String,
+    /// `projection.stream_log.projection_version`.
     pub projection_version: String,
+    /// `projection.stream_log.stream_seq`.
     pub stream_seq: i64,
+    /// `projection.stream_log.commit_seq`.
     pub commit_seq: i64,
 }
 

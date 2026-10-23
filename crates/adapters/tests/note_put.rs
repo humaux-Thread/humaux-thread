@@ -45,11 +45,7 @@ mod operation_receipt_fixture;
 
 use operation_receipt_fixture::{DOMAIN, Fixture, Handle, PROJECTION_KIND, PROJECTION_VERSION};
 
-fn finished_audit(handle: &Handle, request_id: Uuid) -> AuditEvent {
-    finished_audit_for(handle, handle.principal_id, request_id)
-}
-
-/// The same audit row for a chosen principal: the M06-3 gate runs two agents under one owner user.
+/// The finished audit row for a chosen principal: the M06-3 gate runs two agents under one owner user.
 fn finished_audit_for(handle: &Handle, principal: Uuid, request_id: Uuid) -> AuditEvent {
     let mut metadata = AuditMetadata::new();
     metadata
