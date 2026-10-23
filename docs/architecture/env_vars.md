@@ -5776,6 +5776,7 @@ modules:
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::note_chunk_count_parity`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_assessed_contract`
