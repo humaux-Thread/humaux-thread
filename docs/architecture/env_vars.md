@@ -6021,6 +6021,18 @@ modules:
 - `private-worker::tests::ops_listener`
 - `private-worker::tests::same_uid_boot`
 
+### `SUBCOMMAND`
+- witness: literal
+- registry: raw
+
+kind:
+- child
+
+processes:
+
+modules:
+- `xtask::tests::experiment_workflow`
+
 ### `no_proxy`
 - witness: literal
 - registry: raw
