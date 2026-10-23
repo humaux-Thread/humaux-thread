@@ -14,6 +14,9 @@ name: targeted
 # rerank_parity=true runs the G-RET-11/G-RET-14 parity job from .github/actions/rerank-parity (no live provider, no
 # database), so a mutation on that path gets a red record without ci.yml:
 #   gh workflow run targeted.yml --ref <branch-with-this-workflow> -f ref=<red branch> -f rerank_parity=true -f cargo_args=""
+# prom_rules=true runs the ADR-0061 D-E promtool rule tests and mutation record from .github/actions/prometheus-rules
+# (no database), so a mutation on deploy/prometheus gets a red record without ci.yml:
+#   gh workflow run targeted.yml --ref <branch-with-this-workflow> -f ref=<red branch> -f prom_rules=true -f cargo_args=""
 # cargo_args reaches the shell only through an env var, split on spaces, never evaluated (no `${{ }}` in `run:`).
 on:
   workflow_dispatch:
@@ -22,7 +25,7 @@ on:
         description: branch, tag or sha to test
         required: true
       cargo_args:
-        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact"); may be empty when regen_docs or rerank_parity
+        description: arguments after `cargo test` (e.g. "-p humaux-adapters --test note_put g07 -- --exact"); may be empty when regen_docs, rerank_parity or prom_rules
         required: false
         default: ""
       regen_docs:
@@ -31,6 +34,10 @@ on:
         default: false
       rerank_parity:
         description: run the rerank parity job (G-RET-11, G-RET-14) from .github/actions/rerank-parity; cargo_args may then be empty
+        type: boolean
+        default: false
+      prom_rules:
+        description: run the ADR-0061 D-E promtool rule tests and mutation record from .github/actions/prometheus-rules; cargo_args may then be empty
         type: boolean
         default: false
       as_root:
@@ -56,9 +63,9 @@ env:
 jobs:
   targeted:
     name: targeted cargo test
-    # rerank_parity=true with no cargo selector is the rerank dispatch: skip this job rather than fail its empty-
-    # cargo_args guard. A rerank_parity=false dispatch with an empty selector still runs and exits 2 (bad input).
-    if: ${{ inputs.regen_docs || inputs.cargo_args != '' || !inputs.rerank_parity }}
+    # rerank_parity=true or prom_rules=true with no cargo selector is that dispatch: skip this job rather than fail its
+    # empty-cargo_args guard. A false dispatch with an empty selector still runs and exits 2 (bad input).
+    if: ${{ inputs.regen_docs || inputs.cargo_args != '' || (!inputs.rerank_parity && !inputs.prom_rules) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     services:
@@ -224,3 +231,28 @@ jobs:
       - uses: ./.github/actions/rerank-parity
         with:
           save_cache: false
+
+  # ADR-0061 D-E through the same composite action ci.yml's required job calls (T-CI-5). No services: promtool runs
+  # on the unit-test fixtures only.
+  prometheus-rules:
+    name: prometheus rules (promtool + mutations)
+    if: ${{ inputs.prom_rules }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The action comes from the checked-out ref (like the setup action above): say so plainly on a ref that predates
+      # it instead of failing inside a missing action.
+      - name: the ref carries the prometheus-rules action
+        shell: bash
+        run: |
+          test -f .github/actions/prometheus-rules/action.yml || {
+            echo "ref $(git rev-parse HEAD) does not carry .github/actions/prometheus-rules: not supported by this workflow"
+            exit 2
+          }
+
+      - uses: ./.github/actions/prometheus-rules
