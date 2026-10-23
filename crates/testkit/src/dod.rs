@@ -149,6 +149,19 @@ pub const PHASE_6: &[DodVerifier] = &[
         kind: "test",
         verifier_ref: "test-bin::humaux-adapters::exact_completeness_eval::all_cases_match_expected_readouts",
     },
+    DodVerifier {
+        id: "DOD-013",
+        phase: 6,
+        // §69「read-your-write + delta overlay 可靠」≡ §15.5：写必须在下一次读取可见。
+        //
+        // verifier = recall_envelope_g23 的真 remember 写，拿它**返回的** consistency token
+        // 立刻 recall，断言该 Evidence 的**确切 memory_id**（不是非空列表）出现。
+        // fault = note 的 inject 列：去掉 recall_with_overlay_in_txn 的 delta overlay，
+        // 该测试在自己的 assert_eq!(overlay.len(), 1) 上红（见 PR/ADR 记录的 CI red run）。
+        fault: "g23_4_remember_token_recall_returns_the_exact_memory_id",
+        kind: "test",
+        verifier_ref: "test-bin::humaux-adapters::recall_envelope_g23::g23_4_remember_token_recall_returns_the_exact_memory_id",
+    },
 ];
 
 /// Phase 8 registrations — §25 Context Products。
