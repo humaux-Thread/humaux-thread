@@ -1978,10 +1978,11 @@ fn clippy_paths(args: &str) -> Vec<String> {
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
+        let width = name.len().max(1);
         if starts_word && !name.is_empty() && !out.contains(&name) {
             out.push(name);
         }
-        from = at + "clippy::".len() + name.len().max(1);
+        from = at + "clippy::".len() + width;
     }
     out
 }
@@ -2028,7 +2029,7 @@ pub fn lint_allow_sites_in(files: &[(String, String)]) -> BTreeMap<String, Vec<S
             for lint in &silencer.lints {
                 if RATCHETED_LINTS.contains(&lint.as_str()) {
                     sites
-                        .entry(lint.clone())
+                        .entry(lint.to_string())
                         .or_default()
                         .push(format!("{path}:{}", silencer.line));
                 }
