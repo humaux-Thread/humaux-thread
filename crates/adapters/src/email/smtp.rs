@@ -2,7 +2,7 @@
 //!   SMTP / SES / Postmark / Resend 等, 不写死供应商" — this is the SMTP one; SES/Postmark/Resend are HTTP-API adapters and
 //!   out of this task's scope).
 //! Depends-on: crates=[async-trait, lettre]; services=[]; env=[]; modules=[adapters::email]
-//! Called-by: [adapters::email]
+//! Called-by: []
 //! Invariants: [configuration comes only from the SmtpConfig parameter, never from env; an SMTP refusal is
 //!   EmailError::Rejected, a 4xx is Transport, any other failure is SubmissionUnknown; nothing is retried here;
 //!   the deterministic Message-ID is always set]

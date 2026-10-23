@@ -1,6 +1,6 @@
 //! `adapters::email::sink` — the non-sending [`super::EmailProvider`]: writes each message to a `.eml` file.
 //! Depends-on: crates=[async-trait]; services=[]; env=[]; modules=[adapters::email]
-//! Called-by: [adapters::email, tests]
+//! Called-by: []
 //! Invariants: [opens no network connection; the file name is derived from the deterministic Message-ID, so a replayed
 //!   send overwrites the same file instead of adding a second one; a header value carrying CR or LF is rejected]
 //! Spec: Baseline §74.6

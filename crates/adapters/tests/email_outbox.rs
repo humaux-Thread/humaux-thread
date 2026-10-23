@@ -5,7 +5,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any)
 //!   w=[control.users, ops.email_delivery_events, ops.email_outbox, ops.email_suppressions],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_private_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email,
-//!   adapters::email::outbox, adapters::email::sink, adapters::email::test_double, adapters::postgres, humaux-testkit]
+//!   adapters::email::outbox, adapters::email::test_double, adapters::postgres, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [runs on 0038's real tables and claims only its own user's rows; a suppressed address is never
 //!   enqueued and a provider rejection is recorded as a delivery event; no DSN/DB/migration is a visible SKIP]
