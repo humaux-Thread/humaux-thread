@@ -1,7 +1,7 @@
 //! `adapters::tests::console_session` — G-M02-4 (M02 D6, migration 0270): the console session against a real Postgres as
 //!   role_gateway through the four `control.session_*` doors.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
-//!   services=[PostgreSQL(any) w=[control.sessions, control.users] x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)];
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
+//!   services=[PostgreSQL(any) w=[control.sessions, control.users] x=[control.bump_user_security_epoch, control.session_issue], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::session_repo, application::auth, application::login,
 //!   application::session, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]

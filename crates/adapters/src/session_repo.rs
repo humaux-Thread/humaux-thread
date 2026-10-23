@@ -1,6 +1,6 @@
 //! `adapters::session_repo` — the console session over the four `control.session_*` doors (migration 0270). Writes only
 //!   through definers; role_gateway has SELECT only on `control.sessions`.
-//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) x=[control.session_issue, control.session_lookup, control.session_revoke, control.session_touch]]; env=[]; modules=[adapters::postgres, application::auth, application::login, application::session, domain::error]
+//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) x=[control.session_issue, control.session_lookup, control.session_revoke, control.session_touch]]; env=[]; modules=[adapters::postgres, application::auth, application::login, application::session, domain::error, domain::ids]
 //! Called-by: [tests]
 //! Invariants: [a session is minted only from LoginVerifyOutcome::Accepted; only the SHA-256 of the cookie secret reaches
 //!   the database; a lookup is judged by application::session::verify on the database clock, so a session whose epoch

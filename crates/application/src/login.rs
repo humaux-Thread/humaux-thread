@@ -1,7 +1,7 @@
 //! `application::login` — M02 D2 passwordless login challenge: the closed purpose set, the uniform start response and the
 //!   verify outcome. Pure: no SQL, no mail, no clock.
 //! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::ids]
-//! Called-by: [adapters::login_repo, tests]
+//! Called-by: [adapters::login_repo, adapters::session_repo, tests]
 //! Invariants: [every start, whatever became of the mailbox, is answered with LoginStartResponse::UNIFORM; a verify is
 //!   Accepted only for the one row the settle door consumed, and every other fate is the same Rejected]
 //! Spec: §74.2; §74.3; §52; §78.1; §78.2
