@@ -12228,6 +12228,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::email`
+- `adapters::email::sink`
 - `adapters::email::smtp`
 - `adapters::email::test_double`
 - `adapters::memory_repo`
