@@ -3012,6 +3012,22 @@ const M04_BUSINESS_NUMBER_IDENTS: [&str; 4] =
 /// (`domain::plan::TemplateValue`): a `limit` given an integer inside their braces is a limit spelled in Rust.
 const M04_QUOTA_LITERALS: [&str; 2] = ["PeriodQuota {", "Allowance {"];
 
+/// The newest migration on `main` when G-M04-1 widened from production Rust to `migrations/*.sql` (0262,
+/// `plan_catalogue`). A migration numbered at or below this floor predates the rule and is not rescanned: its literals
+/// were reviewed under §71.1 before the gate existed. Only a file numbered strictly above the floor is scanned.
+const M04_MIGRATION_SCAN_FLOOR: u32 = 262;
+
+/// Catalogue migrations whose own CHECK lists spell the closed sets on purpose. A file is skipped whole, by its exact
+/// repo-relative path only — never a prefix or a pattern. `0262_plan_catalogue.sql` sits at
+/// [`M04_MIGRATION_SCAN_FLOOR`] and is therefore not scanned, so it needs no entry; a catalogue migration above the
+/// floor adds one path here and nothing else.
+const M04_MIGRATION_CATALOGUE_ALLOW: [&str; 0] = [];
+
+/// The plan-version identifiers that may be spelled as a quoted SQL key (`('price_cents', 980)`): the price and the
+/// lease block. `hard_limit` is already found by [`m04_quoted_limit_integer`]; `granted_slots` is not a catalogue
+/// column.
+const M04_SQL_QUOTED_IDENTS: [&str; 2] = ["price_cents", "lease_block"];
+
 /// The `plan_key` of every row of the values file, or why the file cannot be read as one.
 fn m04_catalogue_plan_keys(text: &str) -> Result<BTreeSet<String>, String> {
     let value: serde_json::Value =
@@ -3110,6 +3126,100 @@ fn m04_quoted_key_integer(line: &str, key: &str) -> bool {
     })
 }
 
+/// The four-digit number a migration file name starts with, or `None` when it carries none. The gate dates the file
+/// against [`M04_MIGRATION_SCAN_FLOOR`]; an unnumbered `.sql` under `migrations/` is red, never silently old.
+fn m04_migration_number(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let (digits, _) = name.split_at_checked(4)?;
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// One migration's SQL with its comments blanked and its line numbers kept: `--` to end of line, `/* .. */` (nested)
+/// between statements, and a `--` inside a single- or double-quoted token left alone. A plan name or a price in prose
+/// is not a statement the database runs (§71.1).
+fn m04_sql_code(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let at = |i: usize| chars.get(i).copied().unwrap_or('\0');
+    let mut out = String::with_capacity(source.len());
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let current = chars[i];
+        if let Some(q) = quote {
+            out.push(current);
+            if current == q {
+                if at(i + 1) == q {
+                    out.push(q);
+                    i += 2;
+                    continue;
+                }
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if current == '\'' || current == '"' {
+            quote = Some(current);
+            out.push(current);
+            i += 1;
+            continue;
+        }
+        if current == '-' && at(i + 1) == '-' {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if current == '/' && at(i + 1) == '*' {
+            let mut depth = 0_usize;
+            while i < chars.len() {
+                if chars[i] == '/' && at(i + 1) == '*' {
+                    depth += 1;
+                    i += 2;
+                } else if chars[i] == '*' && at(i + 1) == '/' {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if chars[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        out.push(current);
+        i += 1;
+    }
+    out
+}
+
+/// The plan-name, price and limit literals in one migration's text ([`m04_plan_literal_hits`]) plus a quoted price or
+/// lease-block key that is given an integer (`('price_cents', 980)`), the SQL spelling of the #216 patterns
+/// (§71.1, §78.1). Comments are blanked first ([`m04_sql_code`]), so a header comment can name a plan without turning
+/// the gate red.
+fn m04_sql_plan_literal_hits(source: &str, plan_keys: &BTreeSet<String>) -> Vec<String> {
+    let code = m04_sql_code(source);
+    let mut hits = m04_plan_literal_hits(&code, plan_keys);
+    for (index, line) in code.lines().enumerate() {
+        for ident in M04_SQL_QUOTED_IDENTS {
+            if m04_quoted_key_integer(line, ident) {
+                hits.push(format!(
+                    "line {}: the price / limit key {ident:?} given an integer literal",
+                    index + 1
+                ));
+            }
+        }
+    }
+    hits
+}
+
 /// The template struct-variant literals in `source` ([`M04_QUOTA_LITERALS`]) that give their `limit` an integer, as
 /// `line N: ..` hits. Comment lines are blanked with their line numbers kept, so a doc comment never reads as code.
 fn m04_quota_literal_hits(source: &str) -> Vec<String> {
@@ -3192,9 +3302,11 @@ fn m04_plan_literal_hits(source: &str, plan_keys: &BTreeSet<String>) -> Vec<Stri
 }
 
 /// M04 D2 / G-M04-1: production source under `crates/` and `bins/` (test trees and trailing `#[cfg(test)]` modules
-/// excluded, [`door_production_sources`]) holds no plan-key literal of the values file and gives no price, lease block
-/// or quota limit an integer literal ([`m04_plan_literal_hits`] lists the positions). `not_applicable` only while the values file does not exist, naming it (§57.1
-/// 第2条); a file that lists no plan key, or a scan that reads no source, is red: it would be blind.
+/// excluded, [`door_production_sources`]) and in every migration above [`M04_MIGRATION_SCAN_FLOOR`] (older migrations
+/// predate the rule) holds no plan-key literal of the values file and gives no price, lease block or quota limit an
+/// integer literal ([`m04_plan_literal_hits`] lists the positions; [`m04_sql_plan_literal_hits`] reads `.sql`).
+/// `not_applicable` only while the values file does not exist, naming it (§57.1 第2条); a file that lists no plan key,
+/// or a scan that reads no source, is red: it would be blind.
 fn m04_1_plans_are_data(root: &Path) -> Verdict {
     let Ok(text) = fs::read_to_string(root.join(M04_CATALOGUE_FILE)) else {
         return Verdict::NotApplicable(format!(
@@ -3221,6 +3333,23 @@ fn m04_1_plans_are_data(root: &Path) -> Verdict {
             problems.push(format!("{disp}: {hit}"));
         }
     }
+    for (path, source) in read_files(&walk_files(&root.join("migrations"), &["sql"])) {
+        let disp = display(root, &path);
+        let Some(number) = m04_migration_number(&path) else {
+            problems.push(format!(
+                "{disp}: migration file name has no four-digit number, so the scan cannot date it"
+            ));
+            continue;
+        };
+        if number <= M04_MIGRATION_SCAN_FLOOR
+            || M04_MIGRATION_CATALOGUE_ALLOW.contains(&disp.as_str())
+        {
+            continue;
+        }
+        for hit in m04_sql_plan_literal_hits(&source, &plan_keys) {
+            problems.push(format!("{disp}: {hit}"));
+        }
+    }
     if scanned == 0 {
         return Verdict::Fail(vec![
             "M04 D2 / G-M04-1: no production source under crates/ or bins/ was scanned, so the scan is blind".to_owned(),
@@ -3231,7 +3360,7 @@ fn m04_1_plans_are_data(root: &Path) -> Verdict {
     } else {
         Verdict::Fail(vec![format!(
             "M04 D2 / G-M04-1: plan names, prices and lease blocks are data, not Rust (§71.1, §78.1); production source \
-             spells {} of them: {problems:?}",
+             (and migrations above {M04_MIGRATION_SCAN_FLOOR}) spells {} of them: {problems:?}",
             problems.len()
         )])
     }
@@ -9913,7 +10042,7 @@ pub fn run(_args: &[String]) -> i32 {
             m09_1_ticket_doors(&root),
         ),
         (
-            "M04 D2 / G-M04-1 (plans are data: no plan_key of the values file and no price_cents / lease_block integer literal in crates and bins non-test code)",
+            "M04 D2 / G-M04-1 (plans are data: no plan_key of the values file and no price_cents / lease_block integer literal in crates and bins non-test code, or in migrations above 0262)",
             m04_1_plans_are_data(&root),
         ),
         (
@@ -14739,6 +14868,10 @@ async fn serving_version_in_txn() {}
     const M04_CATALOGUE: &str =
         r#"{"plan_versions":[{"plan_key":"tier_a"},{"plan_key":"tier_b"}]}"#;
 
+    /// A values file that also names `free`, for the migration fixtures that spell that plan.
+    const M04_CATALOGUE_WITH_FREE: &str =
+        r#"{"plan_versions":[{"plan_key":"tier_a"},{"plan_key":"tier_b"},{"plan_key":"free"}]}"#;
+
     /// A fixture tree: the values file, one clean production file (so the scan reads something), and `extra`.
     fn m04_tree(label: &str, extra: &[(&str, &str)]) -> PathBuf {
         let tmp = fresh_tmp(label);
@@ -14761,11 +14894,125 @@ async fn serving_version_in_txn() {}
         }
     }
 
-    /// The tree as M04-1 leaves it: the real repo is green. 注错 (G-M04-1): a plan-key literal such as a `"pro"` branch,
-    /// or an integer given to `price_cents` or `lease_block`, in any `crates/` or `bins/` production file turns this red.
+    /// The tree as M04-1 leaves it, the migrations above the floor included: the real repo is green. 注错 (G-M04-1): a
+    /// plan-key literal such as a `"pro"` branch, or an integer given to `price_cents` or `lease_block`, in any
+    /// `crates/` or `bins/` production file, or a plan-key / price literal in a migration above the floor, turns this
+    /// red.
     #[test]
     fn m04_1_real_repo_passes() {
         assert_eq!(m04_1_plans_are_data(&real_root()), Verdict::Pass);
+    }
+
+    /// 注错 (G-M04-1, migrations): a plan-key literal in a migration above the floor is red, naming the file and the
+    /// literal. The header comment spells the same plan in prose and must not count.
+    #[test]
+    fn m04_1_fails_on_a_plan_key_in_a_new_migration() {
+        let tmp = m04_tree(
+            "m04-1-red-migration-plan-key",
+            &[
+                (M04_CATALOGUE_FILE, M04_CATALOGUE_WITH_FREE),
+                (
+                    "migrations/0263_onboarding.sql",
+                    "-- the free plan is a row of the catalogue; 'free' here is prose\n\
+                     CREATE FUNCTION control.onboard_default_plan() RETURNS void LANGUAGE sql AS $$\n\
+                       INSERT INTO control.plans (plan_key) VALUES ('free');\n\
+                     $$;\n",
+                ),
+            ],
+        );
+        let line = m04_fail_line(&tmp);
+        assert!(
+            line.contains(
+                "migrations/0263_onboarding.sql: line 3: plan key 'free' spelled as a literal"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("spells 1 of them"), "{line}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A migration at or below the floor predates the rule and is not rescanned: the same body passes at 0262 and below.
+    #[test]
+    fn m04_1_does_not_rescan_migrations_at_or_below_the_floor() {
+        let body = "-- the free plan is a row of the catalogue; 'free' here is prose\n\
+                    CREATE FUNCTION control.onboard_default_plan() RETURNS void LANGUAGE sql AS $$\n\
+                      INSERT INTO control.plans (plan_key) VALUES ('free');\n\
+                    $$;\n";
+        for name in [
+            "migrations/0262_onboarding.sql",
+            "migrations/0001_onboarding.sql",
+        ] {
+            let tmp = m04_tree(
+                "m04-1-migration-floor",
+                &[(M04_CATALOGUE_FILE, M04_CATALOGUE_WITH_FREE), (name, body)],
+            );
+            assert_eq!(m04_1_plans_are_data(&tmp), Verdict::Pass, "{name}");
+            fs::remove_dir_all(&tmp).ok();
+        }
+    }
+
+    /// 注错 (G-M04-1, migrations): a price given an integer in a plan-version statement is red, whether it is an
+    /// assignment or a quoted key, one hit per spelling.
+    #[test]
+    fn m04_1_fails_on_a_price_literal_in_a_new_migration() {
+        let tmp = m04_tree(
+            "m04-1-red-migration-price",
+            &[(
+                "migrations/0263_price_update.sql",
+                "UPDATE control.plan_versions SET price_cents = 4900 WHERE version = 1;\n\
+                 SELECT pg_catalog.jsonb_build_object('price_cents', 4900);\n",
+            )],
+        );
+        let line = m04_fail_line(&tmp);
+        assert!(
+            line.contains(
+                "migrations/0263_price_update.sql: line 1: `price_cents` given an integer literal"
+            ),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "migrations/0263_price_update.sql: line 2: the price / limit key \"price_cents\" given an integer literal"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("spells 2 of them"), "{line}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The scan dates a migration by the four leading digits of its file name; a name without them is not a migration
+    /// it can place, so the gate names it instead of treating it as old.
+    #[test]
+    fn m04_1_reads_the_migration_number_from_the_file_name() {
+        for (name, want) in [
+            ("0262_plan_catalogue.sql", Some(262)),
+            ("0263_onboarding.sql", Some(263)),
+            ("0001_initial.sql", Some(1)),
+            ("0263.sql", Some(263)),
+        ] {
+            assert_eq!(m04_migration_number(Path::new(name)), want, "{name}");
+        }
+        for name in ["plan_catalogue.sql", "262_plan.sql", "026x_plan.sql"] {
+            assert_eq!(m04_migration_number(Path::new(name)), None, "{name}");
+        }
+    }
+
+    /// The SQL scan reads statements, not prose: a plan key quoted in a `--` or `/* */` comment does not count, a `--`
+    /// inside a quoted token is not a comment, and a statement literal does count.
+    #[test]
+    fn m04_1_sql_scan_ignores_comments_and_reads_statement_literals() {
+        let source = "-- 'free' in a header\n\
+                      SELECT 'free'; /* 'free' in a block */\n\
+                      SELECT 'a--b';\n";
+        let code = m04_sql_code(source);
+        assert_eq!(code.lines().count(), 3, "{code:?}");
+        assert!(!code.contains("header"), "{code:?}");
+        assert!(!code.contains("block"), "{code:?}");
+        assert!(code.contains("'a--b'"), "{code:?}");
+        let hits = m04_sql_plan_literal_hits(source, &BTreeSet::from(["free".to_owned()]));
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].starts_with("line 2:"), "{hits:?}");
+        assert!(hits[0].contains("'free'"), "{hits:?}");
     }
 
     /// Everything that must NOT count: a comment naming a plan, a test tree, a trailing `#[cfg(test)]` module, tooling
