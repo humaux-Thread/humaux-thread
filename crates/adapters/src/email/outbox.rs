@@ -307,7 +307,6 @@ async fn drain_one(
                 provider: provider_name,
                 provider_message_id: None,
                 last_error: Some(ALLOWLIST_SUPPRESSION_REASON.to_string()),
-                clear_sent_at: false,
                 event: DeliveryEventType::Suppressed,
             },
         )
@@ -351,7 +350,6 @@ async fn drain_one(
             provider: provider_name,
             provider_message_id: Some(msg_id.0),
             last_error: None,
-            clear_sent_at: false,
             event: DeliveryEventType::Sent,
         },
         Err(EmailError::SubmissionUnknown(m)) => Settlement {
@@ -359,15 +357,14 @@ async fn drain_one(
             provider: provider_name,
             provider_message_id: None,
             last_error: Some(m),
-            clear_sent_at: false,
             event: DeliveryEventType::SubmissionUnknown,
         },
         Err(e) => Settlement {
             state: EmailOutboxState::Failed,
             provider: provider_name,
             provider_message_id: None,
+            // sent_at stays: a refused attempt still counts against the per-minute cap (M22 D11).
             last_error: Some(e.to_string()),
-            clear_sent_at: true,
             event: DeliveryEventType::Failed,
         },
     };
@@ -392,7 +389,6 @@ struct Settlement<'a> {
     provider: &'a str,
     provider_message_id: Option<String>,
     last_error: Option<String>,
-    clear_sent_at: bool,
     event: DeliveryEventType,
 }
 
@@ -404,8 +400,7 @@ async fn settle(
     let last_error = s.last_error.as_deref();
     sqlx::query(
         "UPDATE ops.email_outbox \
-         SET state = $2, provider = $3, provider_message_id = $4, last_error = $5, \
-             sent_at = CASE WHEN $6 THEN NULL ELSE sent_at END \
+         SET state = $2, provider = $3, provider_message_id = $4, last_error = $5 \
          WHERE outbox_id = $1",
     )
     .bind(outbox_id)
@@ -413,7 +408,6 @@ async fn settle(
     .bind(s.provider)
     .bind(s.provider_message_id.as_deref())
     .bind(last_error)
-    .bind(s.clear_sent_at)
     .execute(&mut **txn)
     .await?;
     record_event(

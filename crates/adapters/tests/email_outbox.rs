@@ -2,7 +2,7 @@
 //!   exercising the three literal task-brief acceptance behaviors: enqueue never blocks on SMTP, a suppressed address
 //!   never gets enqueued (same outcome type either way — unified safety semantics), and a provider failure lands the
 //!   row in `FAILED` with a matching delivery event.
-//! Depends-on: crates=[humaux-adapters, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any)
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any)
 //!   w=[control.users, ops.email_delivery_events, ops.email_outbox, ops.email_suppressions],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_private_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email,
 //!   adapters::email::outbox, adapters::email::test_double, adapters::postgres, humaux-testkit]
@@ -35,8 +35,8 @@ use humaux_adapters::email::test_double::{
     EmailErrorKind, RecordingEmailProvider, ScriptedOutcome,
 };
 use humaux_adapters::email::{
-    EmailMode, EmailPriority, EmailProvider, EmailStream, OutboundEmail, RecipientAllowlist,
-    SendPolicy, SinkEmailProvider, SmtpConfig, outbox,
+    EmailError, EmailMode, EmailPriority, EmailProvider, EmailStream, OutboundEmail,
+    ProviderMessageId, RecipientAllowlist, SendPolicy, SinkEmailProvider, SmtpConfig, outbox,
 };
 use humaux_adapters::postgres::{PrivateWorkerDbPool, RuntimeDbPool};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -516,14 +516,14 @@ fn default_mode_is_sink_and_smtp_needs_explicit_choice() {
         .expect("smtp with settings resolves");
     assert!(matches!(smtp, EmailMode::Smtp(_)));
 
-    assert!(
-        EmailMode::resolve(Some("smtp"), dir.clone(), None).is_err(),
-        "smtp without settings must be refused, not downgraded"
-    );
-    assert!(
-        EmailMode::resolve(Some("SMTP "), dir, Some(smtp_settings())).is_err(),
-        "an unknown mode name must be refused"
-    );
+    match EmailMode::resolve(Some("smtp"), dir.clone(), None) {
+        Err(EmailError::Config(m)) => assert_eq!(m, "email mode smtp requires SMTP settings"),
+        other => panic!("smtp without settings must be refused, got {other:?}"),
+    }
+    match EmailMode::resolve(Some("SMTP "), dir, Some(smtp_settings())) {
+        Err(EmailError::Config(m)) => assert_eq!(m, "unknown email mode \"SMTP \""),
+        other => panic!("an unknown mode name must be refused, got {other:?}"),
+    }
 }
 
 /// G-M02-15: the sink writes the message to a file named after its Message-ID and nothing else.
@@ -561,7 +561,12 @@ fn sink_writes_one_eml_file_per_message_id() {
 
     let mut injected = mail("x");
     injected.subject = "a\r\nBcc: victim@example.invalid".to_string();
-    assert!(rt.block_on(sink.send(injected)).is_err());
+    match rt.block_on(sink.send(injected)) {
+        Err(EmailError::Rejected(_)) => {}
+        other => panic!("a header with a line break must be rejected, got {other:?}"),
+    }
+    let files_after: usize = std::fs::read_dir(&dir).expect("sink dir").count();
+    assert_eq!(files_after, 1, "the rejected message wrote no file");
 
     std::fs::remove_dir_all(&dir).expect("cleanup sink dir");
 }
@@ -677,7 +682,95 @@ fn idempotency_key_replay_inserts_once() {
             .expect("count query")
             .get(0);
         assert_eq!(rows, 1);
+
+        // NULL keys never collide, and a different key is a different message.
+        let other_to = unique_email("idem-other");
+        let mut other = req(&handle, &other_to, EmailStream::Transactional);
+        other.idempotency_key = Some(format!("test-key-{}", Uuid::new_v4()));
+        let mut keyless_a = req(
+            &handle,
+            &unique_email("idem-null-a"),
+            EmailStream::Transactional,
+        );
+        keyless_a.idempotency_key = None;
+        let keyless_b = req(
+            &handle,
+            &unique_email("idem-null-b"),
+            EmailStream::Transactional,
+        );
+        for r in [&other, &keyless_a, &keyless_b] {
+            let outcome = handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    r,
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("enqueue");
+            assert_eq!(outcome, outbox::EnqueueOutcome::Queued);
+        }
+        let total: i64 = handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM ops.email_outbox WHERE user_id = $1",
+                &[&handle.user_id],
+            )
+            .expect("count query")
+            .get(0);
+        assert_eq!(total, 4);
     });
+}
+
+/// Provider whose `send` aborts the worker mid-call, standing in for a crash after the message
+/// may have left.
+struct CrashingProvider;
+
+#[async_trait::async_trait]
+impl EmailProvider for CrashingProvider {
+    fn name(&self) -> &str {
+        "crashing-test-double"
+    }
+
+    async fn send(&self, _mail: OutboundEmail) -> Result<ProviderMessageId, EmailError> {
+        panic!("simulated crash inside send");
+    }
+}
+
+/// M02 D10: the in-flight marker is committed before the provider is called, so a crash
+/// inside `send` leaves SUBMISSION_UNKNOWN and the next drain sends nothing.
+#[test]
+fn crash_inside_send_never_leads_to_a_resend() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>(
+        "crash_inside_send_never_leads_to_a_resend",
+        |mut handle| {
+            let to = unique_email("crash");
+            handle
+                .rt
+                .block_on(outbox::enqueue(
+                    &handle.gateway,
+                    &req(&handle, &to, EmailStream::Transactional),
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("seed a QUEUED row");
+
+            let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle.rt.block_on(outbox::run_once(
+                    &handle.worker,
+                    &CrashingProvider,
+                    &SendPolicy::default(),
+                    10,
+                    Some(handle.user_id),
+                ))
+            }));
+            assert!(crashed.is_err(), "the provider panic must reach the caller");
+            assert_eq!(state_of(&mut handle, &to), "SUBMISSION_UNKNOWN");
+
+            let provider = RecordingEmailProvider::new();
+            assert_eq!(drain(&handle, &provider, &SendPolicy::default(), 10), 0);
+            assert_eq!(provider.sent().len(), 0);
+        },
+    );
 }
 
 /// G-M22-11 shape (the door half): a post-DATA drop is SUBMISSION_UNKNOWN, recorded once, and
