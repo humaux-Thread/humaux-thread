@@ -1,0 +1,35 @@
+# §46.1 migration manifest. Card M06-1b / ADR-0098 D3: CREATE OR REPLACE of control.check_operation_receipt (0114) adding
+# one OR beside the origin-principal predicate: an evidence_sources row owned by the receipt's user. No table, grant or
+# trigger binding changes. No DML.
+# §46 forward-fix (EXPAND_CONTRACT, number 0265).
+
+migration_id = "0265_operation_receipt_source_identity"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the source table or the 0114 function, or one that already carries the amendment.
+precheck = """
+select to_regclass('private.evidence_sources') is not null
+ and to_regprocedure('control.check_operation_receipt()') is not null
+ and position('private.evidence_sources' in pg_get_functiondef('control.check_operation_receipt()'::regprocedure)) = 0
+ as precheck_ok
+"""
+
+# Fails on: the amendment missing, the 0114 predicate dropped, an owner other than role_migration_owner, a SECURITY
+# DEFINER function (the amendment must stay an invoker read), EXECUTE open to PUBLIC, or the trigger binding lost.
+postcheck = """
+select (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('control.check_operation_receipt()')
+           and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+           and not p.prosecdef
+           and position('private.evidence_sources' in pg_get_functiondef(p.oid)) > 0
+           and position('src.owner_user_id=NEW.user_id' in pg_get_functiondef(p.oid)) > 0
+           and position('e.origin_principal_id=NEW.principal_id AND e.origin_class=''AuthenticatedAgent''' in pg_get_functiondef(p.oid)) > 0)
+ and not has_function_privilege('public', 'control.check_operation_receipt()', 'EXECUTE')
+ and (select count(*) = 1 from pg_trigger
+       where tgrelid = 'control.operation_receipts'::regclass
+         and tgname = 'operation_receipt_integrity' and not tgisinternal)
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback by CREATE OR REPLACE FUNCTION control.check_operation_receipt() with the 0114 body, which refuses every dedupe-hit and ExternalContent receipt again (the sourced writer of M06-1b then fails at its receipt INSERT); deploy that only together with removing adapters::operation_receipt::remember_sourced_atomically. Receipts already written are never discarded."
+backup_restore_requirement = "none: one function body is replaced; no table, row, policy or grant is touched."

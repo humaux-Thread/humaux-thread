@@ -1,6 +1,6 @@
 //! `domain::error` — `ErrorCode`: the sole closed set of terminal error codes for the whole system (§52.1).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_reasoner, adapters::contribution_repo, adapters::contribution_scan, adapters::coord_repo, adapters::credential_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::exact_census, adapters::grep_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::postgres, adapters::projection_worker, adapters::provider_budget, adapters::public_projection, adapters::public_provenance, adapters::public_repo, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::rebuild, adapters::relation_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::selection_repo, adapters::serving_repo, adapters::subject_repo, application::archive, application::auth, application::continuity, application::contribute, application::contribution_execution, application::pin, application::public_evolve, application::referral, application::retrieval_embedding_port, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::egress, domain::identity, domain::ids, domain::lifecycle, domain::note, domain::relation, domain::source, domain::subject, gateway::admission, gateway::auth, gateway::cached_embedding, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-private-worker, infra-egress::http, private-worker::distill, protocol::error_map, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::admission, retrieval-provider::contract, retrieval-provider::failover, retrieval-worker::main, retrieval-worker::rpc, retrieval::envelope, telemetry::degrade, tests]
+//! Called-by: [adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_reasoner, adapters::contribution_repo, adapters::contribution_scan, adapters::coord_repo, adapters::credential_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::exact_census, adapters::grep_repo, adapters::login_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::postgres, adapters::projection_worker, adapters::provider_budget, adapters::public_projection, adapters::public_provenance, adapters::public_repo, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::rebuild, adapters::relation_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::selection_repo, adapters::serving_repo, adapters::subject_repo, application::archive, application::auth, application::continuity, application::contribute, application::contribution_execution, application::pin, application::public_evolve, application::referral, application::retrieval_embedding_port, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::egress, domain::identity, domain::ids, domain::lifecycle, domain::note, domain::relation, domain::source, domain::subject, gateway::admission, gateway::auth, gateway::cached_embedding, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-private-worker, infra-egress::http, private-worker::distill, protocol::error_map, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::admission, retrieval-provider::contract, retrieval-provider::failover, retrieval-worker::main, retrieval-worker::rpc, retrieval::envelope, telemetry::degrade, tests]
 //! Invariants: []
 //! Spec: Baseline §53.2; §52.1
 //!
@@ -148,7 +148,7 @@ pub const CONCEPT_PAIRS: [ConceptPair; 2] = [
 /// `reason` field the gateway surfaces in `structuredContent {code:"CONFLICT", reason:<u16>,
 /// reason_label:<SCREAMING_SNAKE>}`. It is NOT a 19th `ErrorCode` variant — the ALL/as_str
 /// gate (§52.4 G52-2) is untouched. The u16 space is partitioned by leading digit: 10xx
-/// lifecycle restore, 11xx distill candidate, 12xx generic state.
+/// lifecycle restore, 11xx distill candidate, 12xx generic state, 13xx ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConflictReason(pub u16);
 
@@ -179,9 +179,12 @@ impl ConflictReason {
     /// §6.3 "last OWNER cannot silently leave": the mutation would leave the tenant with no
     /// `ACTIVE` `OWNER`.
     pub const LAST_OWNER: ConflictReason = ConflictReason(1204);
+    /// ADR-0098 D1: a source identity already holds an Evidence with different bytes; nothing was written and the
+    /// stored bytes are untouched (M06-1b).
+    pub const SOURCE_VERSION_CONFLICT: ConflictReason = ConflictReason(1301);
 
     /// Every defined reason, for table-driven lookups and the label mapping.
-    pub const ALL: [ConflictReason; 10] = [
+    pub const ALL: [ConflictReason; 11] = [
         Self::UNDO_WINDOW_EXPIRED,
         Self::TARGET_NOT_CURRENT,
         Self::ERASE_TERMINAL,
@@ -192,6 +195,7 @@ impl ConflictReason {
         Self::NOT_REVERSIBLE,
         Self::TRANSITION_NOT_ALLOWED,
         Self::LAST_OWNER,
+        Self::SOURCE_VERSION_CONFLICT,
     ];
 
     /// The raw numeric reason surfaced in `structuredContent.reason`.
@@ -213,6 +217,7 @@ impl ConflictReason {
             1202 => "NOT_REVERSIBLE",
             1203 => "TRANSITION_NOT_ALLOWED",
             1204 => "LAST_OWNER",
+            1301 => "SOURCE_VERSION_CONFLICT",
             _ => return None,
         })
     }
@@ -274,6 +279,12 @@ mod tests {
         assert_eq!(ConflictReason::CANDIDATE_EXPIRED.code(), 1102);
         assert_eq!(ConflictReason::ALREADY_IN_STATE.code(), 1201);
         assert_eq!(ConflictReason::NOT_REVERSIBLE.code(), 1202);
+        assert_eq!(ConflictReason::SOURCE_VERSION_CONFLICT.code(), 1301);
+        assert_eq!(
+            ConflictReason::SOURCE_VERSION_CONFLICT.label(),
+            Some("SOURCE_VERSION_CONFLICT")
+        );
+        assert_eq!(ConflictReason::ALL.len(), 11);
         let mut labels = std::collections::HashSet::new();
         let mut codes = std::collections::HashSet::new();
         for reason in ConflictReason::ALL {
