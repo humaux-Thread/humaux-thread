@@ -44,8 +44,24 @@
   not exclude tombstoned, archived, superseded or secret-backed Memories, which the hydrate gate does. So a Memory
   forgotten (tombstoned) between the gate and that read, and any id the gate had refused, would have had its title and
   body returned and sent to the worker. There is now one snapshot and one gate: the text read is a private step of the
-  hydrate transaction (`gated_memory_texts`), its ids are taken from the gated items and from nowhere else, and no public
-  function returns a Memory text. The archive-or-forget race is gone by construction.
+  hydrate transaction (`gated_memory_texts`), its ids are taken from the gated items and from nowhere else, and no
+  function in `adapters::retrieve` returns a Memory text. (`adapters::memory_repo::memory_texts_in_txn` is still public and
+  predates #204; a source scan, `bins/gateway/tests/no_memory_text_reader.rs`, fails if anything under `bins/gateway/src`
+  names it or the view.) The archive-or-forget race is gone by construction.
+- Amended 2026-10-23 (card T-RET-7d-2): **the wiring lands.** `gateway::rerank_client` (the port, the UDS client of
+  `POST /v1/rerank` and the lane that carries the pin), the rerank stage of `gateway::recall`, the bootstrap (the five
+  `HUMAUX_GATEWAY_RERANK_*` pin keys, read only while `rerank_enabled` is true, and the U7 check) and `retrieval::rerank`
+  (the pure order-only step, `settle`, the one `RerankModelId` constructor, the one place the two rerank codes are
+  emitted). Interpretations the table of D-D left open: the rerank RPC's wait is part of the `rerank` stage lap;
+  `reranked_count` is the cross-encoder's while the branch is selected and the mood rerank's otherwise; `not_applicable` is
+  only the lane off, the tenant's policy, or no visible Memory to rank (§23.3, D-D row 1). A selected branch with visible
+  Memories whose documents cannot be built (an unknown slot, an ordinal past the body, no readable text) has failed: D-D's
+  failure row, the nearest fit (the branch was selected and produced no scores), so the fused order,
+  `RERANK_PROVIDER_TIMEOUT`, `degrade_total` +1 and `cannot_establish`, with an operator line and no call (review of
+  #215). A visible Memory with no document, among others that have one, keeps its fused place after the scored ones;
+  overlay items of a token read keep their positions among the Memory items. The tenant policy is read once per request
+  through a runtime seam (`SemanticRecallRuntime::with_text_processing_policy`, default `in_cell_text_processing_allowed`),
+  so the real recall path can be driven with a policy that forbids.
 
 - Supersedes: the "no reranker" record of ADR-0083 (its Evidence bullet and its Alternatives rejected entry), which the
   owner took earlier the same day. ADR-0083 now points here. Its legs and its fusion are unchanged.
@@ -174,7 +190,7 @@ The model is an XLM-RoBERTa sequence classifier with one output and an identity 
 | U4 | Resident memory of the loaded session in `retrieval-rpc` | Measure on the same-spec runner and set the compose memory limit (the §67.2 A5 rule) | T-RET-7c |
 | U5 | The tolerance of G-RET-11 | Measure the int8 run-to-run difference on the public fixtures and state the number with the gate; none is guessed here | T-RET-7b, T-RET-7c |
 | U6 | Whether the rerank RPC passes the closed `IntraCellResource` registry through the existing `RETRIEVAL_EMBEDDING_RPC` entry or needs its own (the registry has three entries today) | A second entry; the embedding RPC's wire does not change either way | T-RET-7c contract review |
-| U7 | Whether the gateway's end-to-end recall deadline leaves room for `rerank_timeout_ms` after the other stages (the deadline is not read here) | Lower `rerank_timeout_ms` (registry only) | T-RET-7d |
+| U7 | Whether the gateway's end-to-end recall deadline leaves room for `rerank_timeout_ms` after the other stages (the deadline is not read here) | Lower `rerank_timeout_ms` (registry only) | T-RET-7d. **Settled (T-RET-7d-2), by reasoning from the shipped values, not a measurement:** the handler deadline is `HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS`, 20 s in `values/gateway.env`, against `rerank_timeout_ms` 4000. The stages before the rerank are bounded one by one (the embedding RPC by the handler deadline it is handed, Qdrant by the transport timeout with the sparse leg cut at 1000 ms, PostgreSQL by the 10 s statement timeout), so their worst-case sum can exceed 16 s and room is not guaranteed in the worst case; in the measured case it is, a few milliseconds per stage on the CI fixture (ADR-0083 U7). So: bootstrap refuses a profile whose `rerank_enabled` is true and whose `rerank_timeout_ms` is not below the handler timeout (`check_rerank_timeout`), and the wait is capped at run time by the handler budget left (`recall::rerank_wait`), so a late worker cannot outlive the handler. The wait also leaves a reserve for the steps after the rerank (one PostgreSQL read, the Qdrant count, the assembly): `min(rerank_timeout_ms, handler budget left - sparse_timeout_ms)`, the registered budget of one Qdrant request being the nearest existing stage budget, so no new key (§78.1); with nothing left the call is not made and the answer degrades at once. A dedicated key is the upgrade if a measurement shows those steps need another number. The registered 4000 ms stands; lowering it stays a registry-only change. Not measured here: the N1 end-to-end recall with the lane on (U2's N1 re-run is the lead's) |
 
 ## Decisions
 
@@ -325,7 +341,8 @@ low-score candidates is shown to help.
 
 ### D-G Gates
 
-All are three-state (`pass` / `fail` / `not_applicable`, §57.1) and **all are planned**. Each gate exists only after its
+All are three-state (`pass` / `fail` / `not_applicable`, §57.1). G-RET-11 and G-RET-14 are implemented (T-RET-7c);
+G-RET-12, G-RET-13 and G-RET-15 are implemented by T-RET-7d-2 (records below). Each gate exists only after its
 inject, red, fix, green record (§80.1) lands in the card that implements it, and that card adds the record to this ADR.
 Module gate ids such as `G-RET-11` fall outside the §80.1 anchor grammar, like `G-RET-1` to `G-RET-10`. A gate that
 runs before its object exists (for example without the pinned library in CI) reports `not_applicable` and names that
@@ -426,7 +443,45 @@ green).
 | G-RET-13, the text read is gated | `private_projection_registry::a_tombstoned_memory_never_has_its_text_read_for_rerank` | r6: read `private.memory_text_v` for every resolved candidate instead of the gated items (control and `Skip` pass; the tombstoned Memory's text is read: `([], [memory])`) | 39866008465 |
 
 The structural-breach test (`a_structural_breach_is_still_refused_as_internal`) and the G23-6 tests are unchanged by the
-split of `is_valid` and stay green.
+split of `is_valid` and stay green. The green of r6 and of the one-snapshot text read: PR CI run 39866395427 (head
+5b33857).
+
+## T-RET-7d-2 record (2026-10-23)
+
+Recorded by CI (nothing ran locally). The code and the tests below landed in PR #215 (green run 39876953329, head fdd6d83;
+round 1, run 39874315699, was red on one clippy `type_complexity` in a test stub and on the G-M01-4 scratch-tree tests, whose
+tree did not yet copy the new emitter `retrieval/src/rerank.rs`). Each red is one mutation on a throwaway
+`red/t-ret-7d-2-rN` branch cut from that head, run through `targeted.yml` on the test named, failing on that test's own
+assertion; the branches are deleted. The pre-flight runs that compiled and ran the new tests before the PR was opened
+(39872246030 for the rerank, recall, bootstrap and fault tests and the three wiring tests; 39876092080 for the xtask gates)
+are not red records.
+
+| Gate | Test | Injected fault | Red run |
+|---|---|---|---|
+| G-RET-12 timeout degradation | `semantic_recall_wiring::a_failing_or_stalled_rerank_answers_in_the_fused_order_and_says_so` | r1: `retrieval::rerank::degradations` reports the timeout fallback without `abstain()`: the order, the code in `degradations` and `cannot_establish` stay, `degrade_total` does not rise (fails at "stalled past rerank_timeout_ms: degrade_total +1", left 0) | 39879175801 |
+| G-RET-13 hydrate before rerank | `semantic_recall_wiring::a_tombstoned_memory_is_never_sent_to_the_rerank_worker` | r2: rerank the resolved candidates and read their texts instead of the gated Memories (two sites: the stage also takes its ids from the gated items, so reading texts for every candidate alone cannot leak, which is defence in depth). The tombstoned Memory's document is sent | 39879893758 |
+| G-RET-15 order only | `retrieval::rerank::tests::order_by_score_is_order_only_and_ties_follow_fused_rank` | r3: ties are ordered by arrival, not by fused rank (`[30, 20, 40, 10, 50]` against `[20, 30, 40, 10, 50]`) | 39880160909 |
+| in-cell policy (D-B Policy) | `recall::tests::a_tenant_without_in_cell_text_processing_gets_no_rerank_call_and_the_fused_order` | r4: the rerank branch ignores the tenant policy (one call where none is allowed) | 39880871460 |
+| G55-6 ① names (D-E) | `xtask architecture_check::tests::g55_6_1_each_rerank_registry_name_is_refused_as_parameter_and_pub_field` | r5: `rerank_max_len` dropped from the forbidden set | 39881245022 |
+| provenance constructor `== 1` | `retrieval::tests::rerank_provenance_constructor::the_rendered_rerank_model_id_has_exactly_one_construction_site` | r6: a second `RerankModelId(..)` expression (the scan counts 2) | 39881528403 |
+| no Memory-text reader in the gateway | `gateway::tests::no_memory_text_reader::nothing_under_the_gateway_reads_a_memory_text` | r7: `bins/gateway/src/recall.rs` names `memory_texts_in_txn` | 39881820844 |
+
+Review round (CHANGES at 994aa1f, green run 39882174368): the fixes and their reds, cut from the fixed head, run as
+above (pre-flights 39884658512 and 39884908710 are not red records; the green of this round is the PR's final CI run,
+recorded in PR #215).
+
+| Finding | Test | Injected fault | Red run |
+|---|---|---|---|
+| P1 (§23.1③ / §23.3): a selected branch with visible Memories and no buildable document is a failure, never `not_applicable` | `recall::tests::a_selected_branch_that_cannot_score_is_a_failure_and_no_memory_is_not_applicable` | q1: return `not_run` for that case (`failure` reads `None`, not `Some(Unavailable)`) | 39885177918 |
+| the `rerank_model_id` field gets a `used` value in exactly one place | `rerank_provenance_constructor::the_rerank_model_id_field_is_given_a_used_value_in_exactly_one_place` | q2: a second `ProvenanceValue::Used` assignment (`bins/gateway/src/context.rs`; the scan counts 2). The cloud route's `rerank_model_id` (`retrieval-provider` router) is a route descriptor `Option<String>`, held out explicitly in the test | 39885439967 |
+| the policy is read on the real recall path | `semantic_recall_wiring::a_tenant_whose_policy_forbids_text_processing_gets_no_worker_call_through_recall` | q3: the call site passes `true` for the policy (one worker call where none is allowed) | 39885704699 |
+| U7 reserve for the steps after the rerank | `recall::tests::the_rerank_wait_leaves_the_reserve_and_never_outlives_the_handler_budget` | q4: no reserve (the wait reads 4 s, expected 3.5 s) | 39885986771 |
+| no budget, no call | `recall::tests::a_zero_wait_degrades_without_calling_the_worker` | q5: dial the worker with a zero wait | 39886257122 |
+
+The two rerank fault tests (`rerank_provider_timeout`, `rerank_model_mismatch`) now drive `retrieval::rerank::settle` and
+`degradations`; G-M01-4 (red-recorded by its own scratch-tree tests) holds them to that, and the two M11 rows of
+`dormant.toml` are gone. The worker's wire is checked by `the_rerank_client_speaks_the_workers_wire` against the real
+worker app. U7 is settled in its row above. Not measured here: the N1 end-to-end latency with the lane on.
 
 ## Alternatives rejected
 

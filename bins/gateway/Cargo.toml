@@ -21,23 +21,23 @@ humaux-domain = { path = "../../crates/domain" }
 humaux-protocol = { path = "../../crates/protocol" }
 # why: projection cards/serving types for recall and ingest; used-by: [gateway::context, gateway::memory, gateway::recall, gateway::remember, tests]
 humaux-projection = { path = "../../crates/projection" }
-# why: retrieval request/envelope/planner (sole request constructor, §55.1); used-by: [gateway::context, gateway::memory, gateway::recall, tests]
+# why: retrieval request/envelope/planner (sole request constructor, §55.1); used-by: [gateway::context, gateway::memory, gateway::recall, gateway::rerank_client, tests]
 humaux-retrieval = { path = "../../crates/retrieval" }
 # M12 D2 / ADR-0076: the query-embedding cache in front of the ADR-0012 port (§51, §67.2).
 # why: bounded, per-tenant, single-flight query-embedding cache; used-by: [gateway::cached_embedding]
 humaux-cache = { path = "../../crates/cache" }
-# why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls; used-by: [gateway::bootstrap, gateway::recall, gateway::retrieval_embedding_client, tests]
+# why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls; used-by: [gateway::bootstrap, gateway::recall, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
 humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0061 D-A/D-B: the §41.2 family table, text encoder and loopback ops listener (no metrics crate).
 # why: metrics exposition, degrade counters, the loopback ops listener and the version line `binary_build` reuses; used-by: [gateway::context, gateway::guard, gateway::main, gateway::status, tests]
 humaux-telemetry = { path = "../../crates/telemetry" }
-# why: object-safe async traits for ports and transports; used-by: [gateway::mcp_application, gateway::retrieval_embedding_client, tests]
+# why: object-safe async traits for ports and transports; used-by: [gateway::mcp_application, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
 async-trait = "0.1"
 # why: HTTP/UDS server framework; used-by: [gateway::main, gateway::mcp_application, tests]
 axum = "0.8"
-# why: derive (de)serialization for wire/DTO types; used-by: [gateway::context, gateway::mcp_application, gateway::memory, gateway::retrieval_embedding_client]
+# why: derive (de)serialization for wire/DTO types; used-by: [gateway::context, gateway::mcp_application, gateway::memory, gateway::rerank_client, gateway::retrieval_embedding_client]
 serde = { version = "1", features = ["derive"] }
-# why: JSON payloads and envelopes; used-by: [gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
+# why: JSON payloads and envelopes; used-by: [gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
 serde_json = { version = "1", features = ["raw_value"] }
 # why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [gateway::guard, gateway::retrieval_embedding_client, tests]
 sha2 = "0.10"
@@ -47,7 +47,7 @@ hex = "0.4"
 time = { version = "0.3", features = ["parsing"] }
 # why: async runtime; used-by: [gateway::bootstrap, gateway::guard, gateway::main, gateway::mcp_application, gateway::retrieval_embedding_client, tests]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal", "sync"] }
-# why: UUID ids (v7) and parsing; used-by: [gateway::bootstrap, gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
+# why: UUID ids (v7) and parsing; used-by: [gateway::bootstrap, gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
@@ -62,7 +62,7 @@ postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
 # tests/query_embedding_rpc.rs: spawns the real worker RPC app in-process rather than
 # reimplementing (and drifting from) its handler — see that test file's own module doc and
 # bins/retrieval-worker/src/lib.rs's doc for why this crate now has a lib target too.
-# why: retrieval-worker RPC server exercised end to end in tests; used-by: [tests]
+# why: retrieval-worker RPC server exercised end to end in tests, and its rerank identity key names; used-by: [gateway::bootstrap, tests]
 humaux-retrieval-worker = { path = "../retrieval-worker" }
 # ADR-0056 D-C: dev-only, so gateway production code cannot mint a SealedRetrievalQuery — the
 # retrieval worker's seal is the recall path's one query seal.

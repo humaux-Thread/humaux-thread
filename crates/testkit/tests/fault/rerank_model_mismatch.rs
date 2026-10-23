@@ -1,36 +1,50 @@
-//! `testkit::tests::fault::rerank_model_mismatch` — §53.4 注错测试：`DegradeCode::RerankModelMismatch` 的一条注错记录（每个 reason
-//!   必须有一条测试，从未触发过的 reason 不许合并，§53.3 规则2 的三数相等 把这句话变成 CI 事实）。
-//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[]; modules=[humaux-testkit, telemetry::degrade]
+//! `testkit::tests::fault::rerank_model_mismatch` — §53.4 fault record for `DegradeCode::RerankModelMismatch`
+//!   (§53.3 rule 2 counts one fault file per variant).
+//! Depends-on: crates=[humaux-retrieval, humaux-telemetry]; services=[]; env=[]; modules=[humaux-testkit, retrieval::rerank, telemetry::degrade]
 //! Called-by: [testkit::tests::fault_main]
-//! Invariants: []
-//! Spec: Baseline §53.4; §53.1
+//! Invariants: [the code is emitted by retrieval::rerank::degradations, the function the gateway calls once the
+//!   identity a worker reported differs from the pin; this file never names the exit point (M01 D4 / G-M01-4)]
+//! Spec: Baseline §53.4; §53.1; ADR-0077; ADR-0084 D-D
 //!
-//! Rerank 请求指定的模型与实际使用的模型不同（§53.4 照变体语义注入）。
-//!
-//! 本仓库尚无真实业务调用点会自然触发这条 abstain()（rerank/embedding/
-//! egress/graph 等 provider 集成留待后续任务落地），注入手段就是直接调用
-//! `abstain()`——它是 §53.1 全仓唯一出口点，直接调用即是对这条路径最贴近
-//! 的注错，不是绕过它。
+//! Real path: a worker answers with scores of another model than the pinned one. `settle` discards the scores (never a
+//! switch to that model) and keeps the fused order, and the production function that turns that failure into its
+//! degradation is driven directly, so a deleted emit leaves this test red.
 
-use humaux_telemetry::degrade::{DegradeCode, abstain, degrade_total_count};
+use humaux_retrieval::rerank::{Executor, ModelIdentity, degradations, settle};
+use humaux_telemetry::degrade::{DegradeCode, degrade_total_count};
 use humaux_testkit::{FaultObservation, assert_fault_observed};
+
+const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[test]
 fn rerank_model_mismatch_increments_counter_and_reports_both_forms() {
-    let before = degrade_total_count(DegradeCode::RerankModelMismatch);
-    let outcome = abstain(
-        DegradeCode::RerankModelMismatch,
-        "requested-model".to_string(),
+    let pinned = ModelIdentity::new("org/model", "revision", "recipe", HASH, HASH)
+        .expect("a valid identity");
+    let answered = ModelIdentity::new("org/model", "another-revision", "recipe", HASH, HASH)
+        .expect("a valid identity");
+    let visible = [11_u8, 22, 33];
+    // Scores that would reverse the order if they were applied.
+    let settlement = settle(
+        &visible,
+        &visible,
+        &pinned,
+        Executor::Scored {
+            scores: &[0.1, 0.5, 0.9],
+            model: &answered,
+        },
     );
+    assert_eq!(
+        settlement.order, visible,
+        "the scores of the wrong model are discarded"
+    );
+    assert_eq!(settlement.reranked_count, 0, "nothing was reranked");
+
+    let before = degrade_total_count(DegradeCode::RerankModelMismatch);
+    let codes = degradations(settlement.failure);
     let after = degrade_total_count(DegradeCode::RerankModelMismatch);
 
-    let degradations_wire: Vec<String> = outcome
-        .degradations
-        .iter()
-        .map(|c| c.line_format())
-        .collect();
-
-    // §53.4: unify both assertions in one place (see tests/fault/README.md).
+    let degradations_wire: Vec<String> = codes.iter().map(|c| c.line_format()).collect();
+    assert_eq!(degradations_wire, ["RERANK_MODEL_MISMATCH"]);
     assert_fault_observed(&FaultObservation {
         degrade_variant: DegradeCode::RerankModelMismatch.as_str(),
         degrade_total_before: before,

@@ -2,7 +2,7 @@
 //!   caller may ever name, and the deploy-supplied table that resolves one to an actual endpoint.
 //! Depends-on: crates=[humaux-domain, uuid]; services=[]; env=[]; modules=[domain::boundary, infra-cell::permit]
 //! Called-by: [adapters::mechanism_observation, adapters::provisioning, adapters::rebuild, admin::cell_resources,
-//!   gateway::bootstrap, gateway::recall, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit,
+//!   gateway::bootstrap, gateway::recall, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit,
 //!   infra-cell::transport, public-worker::main, retrieval-worker::main, tests, maintenance::switch_visible]
 //! Invariants: [a caller can name only an IntraCellResource variant (no raw URL escape hatch); the
 //!   host/port/CIDR/caller allowlist comes from the registry populated at bootstrap, never a literal here]

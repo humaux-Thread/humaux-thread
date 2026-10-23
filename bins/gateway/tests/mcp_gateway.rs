@@ -1993,6 +1993,7 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                     dimension: 4,
                 },
                 Duration::from_secs(10),
+                None,
             )
             .expect("trusted semantic runtime");
             let app = application(&handle, runtime).with_semantic_recall(semantic);
@@ -3234,6 +3235,7 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                         dimension: 4,
                     },
                     Duration::from_secs(10),
+                    None,
                 )
                 .expect("trusted serving-race runtime");
                 let race_app = application(&handle, race_runtime).with_semantic_recall(race_semantic);
@@ -3360,6 +3362,7 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                     dimension: 4,
                 },
                 Duration::from_secs(10),
+                None,
             )
             .expect("trusted semantic runtime");
             let app = application(&handle, runtime).with_semantic_recall(semantic);
@@ -3588,6 +3591,7 @@ fn recall_harness(handle: &mut Handle, tag: &str) -> RecallHarness {
             dimension: 4,
         },
         Duration::from_secs(10),
+        None,
     )
     .expect("trusted semantic runtime");
     let app = application(handle, runtime).with_semantic_recall(semantic);
@@ -11913,6 +11917,7 @@ fn native_mcp_one_process_serves_three_stream_pairs_per_request() {
                             dimension: 4,
                         },
                         Duration::from_secs(10),
+                        None,
                     )
                     .expect("trusted semantic runtime");
                     // The ONE process: family only, no default write pair (ADR-0054 D-D).

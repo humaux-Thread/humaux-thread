@@ -645,6 +645,17 @@ impl Handle {
     /// Seeds a `WORKSPACE_SHARED` memory and matching workspace-scoped mandatory binding.
     /// This is owner-only fixture setup; requests still use the gateway runtime identity.
     pub fn seed_workspace_visible_context_record(&mut self) -> ScopedContextRecord {
+        self.seed_workspace_visible_context_record_with_content(&serde_json::json!({
+            "fixture": "operation receipt scoped context"
+        }))
+    }
+
+    /// [`Self::seed_workspace_visible_context_record`] with the Memory's `content` chosen by the caller (a rerank test
+    /// seeds `title` and `key_claim`, which `private.memory_text_v` resolves, ADR-0085).
+    pub fn seed_workspace_visible_context_record_with_content(
+        &mut self,
+        content: &serde_json::Value,
+    ) -> ScopedContextRecord {
         let mut txn = self
             .admin
             .transaction()
@@ -673,7 +684,7 @@ impl Handle {
                  RETURNING memory_id"#,
                 &[
                     &self.tenant_id,
-                    &serde_json::json!({"fixture": "operation receipt scoped context"}),
+                    content,
                     &self.workspace_id,
                     &confidence,
                 ],

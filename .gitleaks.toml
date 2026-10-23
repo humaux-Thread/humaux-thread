@@ -54,9 +54,9 @@ commits = ["2c8eba79b3845fccc03803f54a32f458a35ce778"]
 paths = ['''^docs/adr/0056-retrieval-egress-seal-secrets-only\.md$''']
 
 [[allowlists]]
-description = "generic-api-key false positive: the published sha256 of the rerank tokenizer.json, a public file hash (ADR-0084 D-A) whose variable name contains 'token'"
+description = "generic-api-key false positive: the published sha256 of the rerank tokenizer.json, a public file hash (ADR-0084 D-A) whose variable name contains 'token'; the gateway's values file repeats it as its own pin (ADR-0084 D-E)"
 condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = ['''^62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb7[5]626$''']
-paths = ['''^deploy/env/values/retrieval-worker\.env$''']
+paths = ['''^deploy/env/values/(retrieval-worker|gateway)\.env$''']

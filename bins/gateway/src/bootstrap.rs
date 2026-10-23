@@ -4,7 +4,7 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-telemetry, serde_json, tokio, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
@@ -34,7 +34,9 @@
 //!   HUMAUX_GATEWAY_REMEMBER_PROJECTION_VERSION, HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID,
 //!   HUMAUX_GATEWAY_REMEMBER_SCOPE_KIND, HUMAUX_GATEWAY_REMEMBER_TENANT_ID,
 //!   HUMAUX_GATEWAY_REMEMBER_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS,
-//!   HUMAUX_GATEWAY_REMEMBER_WORKSPACE_ID, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_REMEMBER_WORKSPACE_ID, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS, HUMAUX_GATEWAY_RERANK_MODEL_SHA256,
+//!   HUMAUX_GATEWAY_RERANK_RECIPE, HUMAUX_GATEWAY_RERANK_REPO, HUMAUX_GATEWAY_RERANK_REVISION,
+//!   HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256,
 //!   HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_PRODUCTION_ENABLED,
 //!   HUMAUX_GATEWAY_RETRIEVAL_PROFILE_QUERY_TRANSFORM, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
@@ -44,12 +46,12 @@
 //!   adapters::retrieve, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
 //!   gateway::cached_embedding, gateway::context,
-//!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember,
+//!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::metrics]
+//!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
 //! Called-by: [gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
-//! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054
+//! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7
 //!
 //! This module owns process configuration only. Tool arguments never select a
 //! stream version, credential verifier, listener, or rate policy; a tool argument selects a
@@ -77,7 +79,7 @@ use humaux_contracts::config_registry::{
     ConfigEntry, effective_config_fingerprint, resolve_effective_config,
 };
 use humaux_contracts::retrieval_config::{
-    resolve_registered_retrieval_profile, retrieval_profile_registry,
+    RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
 };
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_infra_cell::{
@@ -89,6 +91,7 @@ use humaux_protocol::{
     mcp::{McpAdapter, McpHttpConfig},
     mcp_catalog::CanonicalCatalog,
 };
+use humaux_retrieval::rerank::ModelIdentity;
 use uuid::Uuid;
 
 use serde_json::{Map, Value};
@@ -101,6 +104,7 @@ use crate::{
     mcp_application::GatewayMcpApplication,
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
     remember::{self, ProcessFamily, RememberEventKind, RememberPolicy},
+    rerank_client::{GatewayRerankClient, RerankLane},
     retrieval_embedding_client::GatewayRetrievalEmbeddingClient,
     status::{METRICS_ADDR_KEY, READINESS_REFRESH_KEY, ReadinessProbe, SemanticDeps},
 };
@@ -109,6 +113,15 @@ const PREFIX: &str = "HUMAUX_GATEWAY_";
 const ENUMERATION_TTL_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS";
 const ENUMERATION_MANIFEST_CAP_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP";
 const TASK_LEASE_TTL_KEY: &str = "HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS";
+/// ADR-0084 D-E: the five parts of the deployment model pin, in `ModelIdentity::new` order (repo, revision, recipe, onnx
+/// sha256, tokenizer sha256). The retrieval worker's `HUMAUX_RETRIEVAL_WORKER_RERANK_*` identity values must equal them.
+const RERANK_PIN_KEYS: [&str; 5] = [
+    "HUMAUX_GATEWAY_RERANK_REPO",
+    "HUMAUX_GATEWAY_RERANK_REVISION",
+    "HUMAUX_GATEWAY_RERANK_RECIPE",
+    "HUMAUX_GATEWAY_RERANK_MODEL_SHA256",
+    "HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256",
+];
 const CREDENTIAL_TOUCH_INTERVAL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS";
 /// Largest accepted credential touch interval: one hour. A technical bound, not a business limit: the stamp feeds the
 /// 24 h activity window of `ops.health_snapshot` (0261), and an interval beyond an hour would blur it by more than a
@@ -269,6 +282,8 @@ struct SemanticRecallConfig {
     caller_id: CallerId,
     /// M12 D2: the query-embedding cache; `None` when no generation stamp is configured.
     query_cache: Option<(GenerationStamp, CacheConfig)>,
+    /// ADR-0084 D-E: the deployment model pin; `Some` exactly when the profile turns the rerank lane on.
+    rerank_pin: Option<ModelIdentity>,
 }
 
 /// Ready-to-serve components for `main`: bind [`Self::bind_addr`], then serve
@@ -480,6 +495,20 @@ impl GatewayBootstrap {
             required(&effective, READINESS_REFRESH_KEY)?,
             READINESS_REFRESH_KEY,
         )?;
+        // ADR-0084 D-E / U7: while the lane is on, the gateway needs the model pin, and its wait must fit in the handler.
+        let rerank_enabled = context_bootstrap.profile.rerank_enabled();
+        check_rerank_timeout(
+            rerank_enabled,
+            context_bootstrap.profile.rerank_timeout_ms(),
+            handler_timeout,
+        )?;
+        let semantic_recall = match parse_semantic_recall(&effective)? {
+            Some(config) => Some(SemanticRecallConfig {
+                rerank_pin: parse_rerank_pin(&effective, rerank_enabled)?,
+                ..config
+            }),
+            None => None,
+        };
         let task_lease_ttl = task_lease_ttl(required(&effective, TASK_LEASE_TTL_KEY)?)?;
         let credential_touch_interval =
             credential_touch_interval(required(&effective, CREDENTIAL_TOUCH_INTERVAL_KEY)?)?;
@@ -503,7 +532,7 @@ impl GatewayBootstrap {
             remember_event_kind: parse_remember_event_kind(&effective)?,
             context_bootstrap,
             config_fingerprint: redacted_fingerprint(&registry, &effective),
-            semantic_recall: parse_semantic_recall(&effective)?,
+            semantic_recall,
             handler_timeout,
             confirm_token_ttl,
             undo_window,
@@ -812,6 +841,7 @@ fn parse_semantic_recall(
     )?
     .to_owned();
     Ok(Some(SemanticRecallConfig {
+        rerank_pin: None,
         query_cache: parse_query_cache(effective, &embedding_version, embedding_dimension)?,
         socket_path: socket_path.to_owned(),
         server_uid: parse_u32(
@@ -862,6 +892,46 @@ fn parse_semantic_recall(
             .to_owned(),
         ),
     }))
+}
+
+/// ADR-0084 D-E: the deployment model pin. While `rerank_enabled` is false the keys are not read; while it is true all
+/// five are required and must form a valid identity (`ModelIdentity::new`), or the process refuses to boot: a lane with
+/// no pin could not tell which model answered. Hashes are accepted in either case and compared in lower case, as the
+/// worker reports them.
+fn parse_rerank_pin(
+    effective: &BTreeMap<String, String>,
+    rerank_enabled: bool,
+) -> Result<Option<ModelIdentity>, BootstrapError> {
+    if !rerank_enabled {
+        return Ok(None);
+    }
+    let [repo, revision, recipe, onnx, tokenizer] = RERANK_PIN_KEYS;
+    ModelIdentity::new(
+        required(effective, repo)?.trim(),
+        required(effective, revision)?.trim(),
+        required(effective, recipe)?.trim(),
+        &required(effective, onnx)?.trim().to_ascii_lowercase(),
+        &required(effective, tokenizer)?.trim().to_ascii_lowercase(),
+    )
+    .map(Some)
+    .ok_or_else(|| BootstrapError::new("HUMAUX_GATEWAY_RERANK_*", "invalid model identity"))
+}
+
+/// ADR-0084 U7: while the lane is on, `rerank_timeout_ms` must be below the handler timeout, or the handler's deadline
+/// would always fire before the wait elapsed and a slow worker would fail the recall instead of degrading it. The wait
+/// is also capped at run time by what is left of the handler budget (`recall::rerank_wait`).
+fn check_rerank_timeout(
+    rerank_enabled: bool,
+    rerank_timeout_ms: u32,
+    handler_timeout: Duration,
+) -> Result<(), BootstrapError> {
+    if rerank_enabled && Duration::from_millis(u64::from(rerank_timeout_ms)) >= handler_timeout {
+        return Err(BootstrapError::new(
+            retrieval_env_key(RERANK_TIMEOUT_MS),
+            "must be below HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS (ADR-0084 U7)",
+        ));
+    }
+    Ok(())
 }
 
 /// M12 D4 / D5 (§51, §78.1): the query-embedding cache of the semantic-recall lane. An all-blank generation stamp
@@ -980,6 +1050,18 @@ fn build_semantic_recall_runtime(
         registry.clone(),
         config.permit_ttl,
     ));
+    // ADR-0084 D-B: the rerank client dials the same socket as the embedding client, behind the same uid check.
+    let rerank = config.rerank_pin.map(|pin| {
+        RerankLane::new(
+            Arc::new(GatewayRerankClient::new(
+                config.socket_path.clone(),
+                config.server_uid,
+                registry.clone(),
+                config.permit_ttl,
+            )),
+            pin,
+        )
+    });
     // ADR-0061 D-F: readiness checks the same client, socket, transport and registry recall uses.
     let deps = SemanticDeps {
         rpc: Arc::clone(&client),
@@ -1008,6 +1090,7 @@ fn build_semantic_recall_runtime(
             dimension: config.embedding_dimension,
         },
         handler_timeout,
+        rerank,
     )
     .map(|runtime| (runtime, deps))
     .map_err(|_| BootstrapError::new("gateway semantic recall", "invalid runtime configuration"))
@@ -1135,6 +1218,14 @@ pub fn registry() -> Vec<ConfigEntry> {
         .map(|(suffix, type_name, secret)| {
             entry_with_default(&format!("{PREFIX}{suffix}"), type_name, secret, "")
         }),
+    );
+    // ADR-0084 D-E: the deployment model pin the gateway compares each rerank reply's identity with. Blank (the default)
+    // is valid while `rerank_enabled` is false; while it is true all five are required (`parse_rerank_pin`). They must
+    // equal the retrieval worker's HUMAUX_RETRIEVAL_WORKER_RERANK_{REPO,REVISION,RECIPE,MODEL_SHA256,TOKENIZER_SHA256}.
+    entries.extend(
+        RERANK_PIN_KEYS
+            .into_iter()
+            .map(|name| entry_with_default(name, "string", false, "")),
     );
     // M12 D4: the generation stamp the query-embedding cache admits; blank (the default) keeps the cache off
     // (`parse_query_cache`). It must equal what the retrieval worker reports for HUMAUX_GATEWAY_EMBEDDING_VERSION.
@@ -1553,6 +1644,10 @@ fn redacted_fingerprint(registry: &[ConfigEntry], effective: &BTreeMap<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humaux_contracts::retrieval_config::RERANK_ENABLED;
+    use humaux_retrieval_worker::rerank::{
+        KEY_MODEL_SHA256, KEY_RECIPE, KEY_REPO, KEY_REVISION, KEY_TOKENIZER_SHA256,
+    };
 
     fn raw() -> BTreeMap<String, String> {
         let tenant = Uuid::now_v7();
@@ -2169,6 +2264,115 @@ mod tests {
             assert!(
                 GatewayBootstrap::from_raw(broken).is_err(),
                 "{key} must be required once semantic recall is enabled"
+            );
+        }
+    }
+
+    /// ADR-0084 D-E: the model pin is read only while `rerank_enabled` is true; then all five keys are required and must
+    /// form a valid identity, hash case is folded, and one blank part or an identity that cannot be told apart refuses to
+    /// boot. Fault: read the pin while the lane is off, or let a blank part through ⇒ red.
+    #[test]
+    fn the_rerank_pin_is_required_exactly_while_the_lane_is_on() {
+        let pin_of = |boot: GatewayBootstrap| boot.semantic_recall.expect("configured").rerank_pin;
+        let mut values = semantic_recall_enabled_values();
+        let off = GatewayBootstrap::from_raw(values.clone()).expect("lane off boots without a pin");
+        assert!(
+            pin_of(off).is_none(),
+            "no pin is kept while the lane is off"
+        );
+
+        values.insert(retrieval_env_key(RERANK_ENABLED), "true".into());
+        assert!(
+            GatewayBootstrap::from_raw(values.clone()).is_err(),
+            "the lane is on and the pin is blank"
+        );
+        for (key, value) in RERANK_PIN_KEYS.into_iter().zip([
+            "org/model".to_owned(),
+            "rev1".to_owned(),
+            "recipe-v1".to_owned(),
+            "a".repeat(64),
+            "B".repeat(64),
+        ]) {
+            values.insert(key.into(), value);
+        }
+        let on = GatewayBootstrap::from_raw(values.clone()).expect("the lane is on with its pin");
+        assert_eq!(
+            pin_of(on),
+            ModelIdentity::new(
+                "org/model",
+                "rev1",
+                "recipe-v1",
+                &"a".repeat(64),
+                &"b".repeat(64)
+            ),
+            "the pin reaches the lane, hash case folded"
+        );
+        for key in RERANK_PIN_KEYS {
+            let mut broken = values.clone();
+            broken.insert(key.into(), String::new());
+            assert!(
+                GatewayBootstrap::from_raw(broken).is_err(),
+                "{key} is required while the lane is on"
+            );
+        }
+        let mut blurred = values;
+        blurred.insert(RERANK_PIN_KEYS[0].into(), "org model".into());
+        assert!(
+            GatewayBootstrap::from_raw(blurred).is_err(),
+            "an identity whose parts blur into one another"
+        );
+    }
+
+    /// ADR-0084 U7: while the lane is on, `rerank_timeout_ms` must be below the handler timeout; off, it is not checked.
+    /// Fault: drop the comparison ⇒ the boundary row goes red.
+    #[test]
+    fn the_rerank_timeout_must_be_below_the_handler_timeout_while_the_lane_is_on() {
+        let handler = Duration::from_secs(5);
+        assert!(check_rerank_timeout(false, 60_000, handler).is_ok());
+        assert!(check_rerank_timeout(true, 4_999, handler).is_ok());
+        assert!(check_rerank_timeout(true, 5_000, handler).is_err());
+
+        let mut values = semantic_recall_enabled_values();
+        for (key, value) in RERANK_PIN_KEYS.into_iter().zip([
+            "org/model".to_owned(),
+            "rev1".to_owned(),
+            "recipe-v1".to_owned(),
+            "a".repeat(64),
+            "b".repeat(64),
+        ]) {
+            values.insert(key.into(), value);
+        }
+        values.insert(retrieval_env_key(RERANK_ENABLED), "true".into());
+        GatewayBootstrap::from_raw(values.clone())
+            .expect("the registered 4000 ms fits a 5 s handler");
+        values.insert(retrieval_env_key(RERANK_TIMEOUT_MS), "5000".into());
+        assert!(GatewayBootstrap::from_raw(values).is_err());
+    }
+
+    /// ADR-0084 D-E: the gateway's pin in `values/gateway.env` and the worker's identity in `values/retrieval-worker.env`
+    /// are one identity written twice; this keeps them from drifting. Fault: change one hash digit in either file ⇒ red.
+    #[test]
+    fn the_gateway_pin_equals_the_workers_identity_in_the_values_files() {
+        let gateway = include_str!("../../../deploy/env/values/gateway.env");
+        let worker = include_str!("../../../deploy/env/values/retrieval-worker.env");
+        let value = |text: &str, key: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(&format!("{key}=")))
+                .unwrap_or_else(|| panic!("{key} is missing from its values file"))
+                .to_owned()
+        };
+        // `RERANK_PIN_KEYS` and the worker's `KEY_*` constants list the five parts in the same order.
+        for (gateway_key, worker_key) in RERANK_PIN_KEYS.into_iter().zip([
+            KEY_REPO,
+            KEY_REVISION,
+            KEY_RECIPE,
+            KEY_MODEL_SHA256,
+            KEY_TOKENIZER_SHA256,
+        ]) {
+            assert_eq!(
+                value(gateway, gateway_key),
+                value(worker, worker_key),
+                "{gateway_key}"
             );
         }
     }

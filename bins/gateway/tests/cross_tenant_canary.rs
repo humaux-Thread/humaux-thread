@@ -228,6 +228,7 @@ fn application(handle: &Handle) -> (GatewayMcpApplication, Arc<CountingPort>) {
             dimension: DIMENSION,
         },
         Duration::from_secs(10),
+        None,
     )
     .expect("semantic runtime");
     let app = GatewayMcpApplication::new(

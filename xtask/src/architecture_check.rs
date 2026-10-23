@@ -2183,8 +2183,9 @@ fn g80_2_build_request_unique(root: &Path) -> Verdict {
 // ============================================================================
 
 /// §55.6 G55-6 ①: the names no caller-assignable `RetrievalRequest` field or `build_request` parameter may carry. The
-/// first five are the Baseline's set; the last five are ADR-0083 D-D's registry entries (T-RET-6c-1, T-RET-6c-2).
-const G55_6_FORBIDDEN_NAMES: [&str; 10] = [
+/// first five are the Baseline's set; the next five are ADR-0083 D-D's registry entries (T-RET-6c-1, T-RET-6c-2); the
+/// last four are ADR-0084 D-E's, all but `rerank_depth`, which `depth` already catches word for word (T-RET-7d-2).
+const G55_6_FORBIDDEN_NAMES: [&str; 14] = [
     "limit",
     "top_k",
     "cand_k",
@@ -2195,6 +2196,10 @@ const G55_6_FORBIDDEN_NAMES: [&str; 10] = [
     "rrf_k",
     "sparse_leg_enabled",
     "sparse_timeout_ms",
+    "rerank_enabled",
+    "rerank_max_len",
+    "rerank_timeout_ms",
+    "rerank_threads",
 ];
 
 /// Whether `name` carries `forbidden` as a run of whole `_`-separated words: `top_k_override` carries `top_k` (the
@@ -13042,8 +13047,8 @@ runs:
         );
     }
 
-    /// A scratch tree holding what G-M01-4 reads: the real `degrade.rs`, the real emitter `envelope.rs`, the real fault
-    /// tests, their `fault_main.rs` and the real ledger. The gate runs over it through [`m01_4_real_path_or_dormant`],
+    /// A scratch tree holding what G-M01-4 reads: the real `degrade.rs`, the real emitters `envelope.rs` and `rerank.rs`,
+    /// the real fault tests, their `fault_main.rs` and the real ledger. The gate runs over it through [`m01_4_real_path_or_dormant`],
     /// paths and all.
     fn m01_4_tree(tag: &str) -> PathBuf {
         let tmp =
@@ -13053,6 +13058,7 @@ runs:
         let mut rels: Vec<String> = [
             DEGRADE_HOME,
             "crates/retrieval/src/envelope.rs",
+            "crates/retrieval/src/rerank.rs",
             DORMANT_FILE,
             FAULT_MAIN_FILE,
         ]
@@ -14002,6 +14008,32 @@ async fn serving_version_in_txn() {}
             assert!(
                 G55_6_FORBIDDEN_NAMES.contains(&name),
                 "{name} is in the set"
+            );
+            let as_param =
+                G55_6_COMPLIANT.replace("profile: &", &format!("{name}: u32,\n    profile: &"));
+            assert_eq!(g55_6_offenders(&as_param).len(), 1, "{name} as a parameter");
+            let as_field =
+                G55_6_COMPLIANT.replace("    top_k: u32,", &format!("    pub {name}: u32,"));
+            assert_eq!(g55_6_offenders(&as_field).len(), 1, "{name} as a pub field");
+        }
+    }
+
+    /// 注错 (T-RET-7d-2, ADR-0084 D-E): each of the five rerank registry names, as a `build_request` parameter and as a
+    /// plain-`pub` field, → 红. `rerank_depth` is caught by the word `depth` and is not in the set; the other four are
+    /// in it. The list here is deliberately a second copy: dropping a name from [`G55_6_FORBIDDEN_NAMES`] makes its row red.
+    #[test]
+    fn g55_6_1_each_rerank_registry_name_is_refused_as_parameter_and_pub_field() {
+        for name in [
+            "rerank_enabled",
+            "rerank_depth",
+            "rerank_max_len",
+            "rerank_timeout_ms",
+            "rerank_threads",
+        ] {
+            assert_eq!(
+                G55_6_FORBIDDEN_NAMES.contains(&name),
+                name != "rerank_depth",
+                "{name}: in the set exactly when `depth` does not already catch it"
             );
             let as_param =
                 G55_6_COMPLIANT.replace("profile: &", &format!("{name}: u32,\n    profile: &"));
