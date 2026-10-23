@@ -336,7 +336,8 @@ low-score candidates is shown to help.
 
 ### D-G Gates
 
-All are three-state (`pass` / `fail` / `not_applicable`, §57.1) and **all are planned**. Each gate exists only after its
+All are three-state (`pass` / `fail` / `not_applicable`, §57.1). G-RET-11 and G-RET-14 are implemented (T-RET-7c);
+G-RET-12, G-RET-13 and G-RET-15 are implemented by T-RET-7d-2 (records below). Each gate exists only after its
 inject, red, fix, green record (§80.1) lands in the card that implements it, and that card adds the record to this ADR.
 Module gate ids such as `G-RET-11` fall outside the §80.1 anchor grammar, like `G-RET-1` to `G-RET-10`. A gate that
 runs before its object exists (for example without the pinned library in CI) reports `not_applicable` and names that
@@ -439,6 +440,31 @@ green).
 The structural-breach test (`a_structural_breach_is_still_refused_as_internal`) and the G23-6 tests are unchanged by the
 split of `is_valid` and stay green. The green of r6 and of the one-snapshot text read: PR CI run 39866395427 (head
 5b33857).
+
+## T-RET-7d-2 record (2026-10-23)
+
+Recorded by CI (nothing ran locally). The code and the tests below landed in PR #215 (green run 39876953329, head fdd6d83;
+round 1, run 39874315699, was red on one clippy `type_complexity` in a test stub and on the G-M01-4 scratch-tree tests, whose
+tree did not yet copy the new emitter `retrieval/src/rerank.rs`). Each red is one mutation on a throwaway
+`red/t-ret-7d-2-rN` branch cut from that head, run through `targeted.yml` on the test named, failing on that test's own
+assertion; the branches are deleted. The pre-flight runs that compiled and ran the new tests before the PR was opened
+(39872246030 for the rerank, recall, bootstrap and fault tests and the three wiring tests; 39876092080 for the xtask gates)
+are not red records.
+
+| Gate | Test | Injected fault | Red run |
+|---|---|---|---|
+| G-RET-12 timeout degradation | `semantic_recall_wiring::a_failing_or_stalled_rerank_answers_in_the_fused_order_and_says_so` | r1: `retrieval::rerank::degradations` reports the timeout fallback without `abstain()`: the order, the code in `degradations` and `cannot_establish` stay, `degrade_total` does not rise (fails at "stalled past rerank_timeout_ms: degrade_total +1", left 0) | 39879175801 |
+| G-RET-13 hydrate before rerank | `semantic_recall_wiring::a_tombstoned_memory_is_never_sent_to_the_rerank_worker` | r2: rerank the resolved candidates and read their texts instead of the gated Memories (two sites: the stage also takes its ids from the gated items, so reading texts for every candidate alone cannot leak, which is defence in depth). The tombstoned Memory's document is sent | 39879893758 |
+| G-RET-15 order only | `retrieval::rerank::tests::order_by_score_is_order_only_and_ties_follow_fused_rank` | r3: ties are ordered by arrival, not by fused rank (`[30, 20, 40, 10, 50]` against `[20, 30, 40, 10, 50]`) | 39880160909 |
+| in-cell policy (D-B Policy) | `recall::tests::a_tenant_without_in_cell_text_processing_gets_no_rerank_call_and_the_fused_order` | r4: the rerank branch ignores the tenant policy (one call where none is allowed) | 39880871460 |
+| G55-6 ① names (D-E) | `xtask architecture_check::tests::g55_6_1_each_rerank_registry_name_is_refused_as_parameter_and_pub_field` | r5: `rerank_max_len` dropped from the forbidden set | 39881245022 |
+| provenance constructor `== 1` | `retrieval::tests::rerank_provenance_constructor::the_rendered_rerank_model_id_has_exactly_one_construction_site` | r6: a second `RerankModelId(..)` expression (the scan counts 2) | 39881528403 |
+| no Memory-text reader in the gateway | `gateway::tests::no_memory_text_reader::nothing_under_the_gateway_reads_a_memory_text` | r7: `bins/gateway/src/recall.rs` names `memory_texts_in_txn` | 39881820844 |
+
+The two rerank fault tests (`rerank_provider_timeout`, `rerank_model_mismatch`) now drive `retrieval::rerank::settle` and
+`degradations`; G-M01-4 (red-recorded by its own scratch-tree tests) holds them to that, and the two M11 rows of
+`dormant.toml` are gone. The worker's wire is checked by `the_rerank_client_speaks_the_workers_wire` against the real
+worker app. U7 is settled in its row above. Not measured here: the N1 end-to-end latency with the lane on.
 
 ## Alternatives rejected
 
