@@ -48,6 +48,20 @@ use operation_receipt_fixture::{
 // §79.2: fixture cleanup must run outside the owner's lock transaction, including during unwinding.
 struct RollbackOnPanic<'a>(&'a mut Handle);
 
+impl std::ops::Deref for RollbackOnPanic<'_> {
+    type Target = Handle;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl std::ops::DerefMut for RollbackOnPanic<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+
 impl Drop for RollbackOnPanic<'_> {
     fn drop(&mut self) {
         if let Err(error) = self.0.admin.batch_execute("ROLLBACK") {
@@ -442,8 +456,7 @@ fn sourced_put_waits_on_identity_lock() {
         let put_request = request(&handle, agent, "k-lock", "locked body");
         let before = counts(&mut handle);
 
-        let rollback = RollbackOnPanic(&mut handle);
-        let mut handle = &mut *rollback.0;
+        let mut handle = RollbackOnPanic(&mut handle);
         handle
             .admin
             .batch_execute("BEGIN")
