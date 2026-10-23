@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects,
 //!   private.evidence_subjects, private.identity_note_materializations, private.memory_evidence,
-//!   private.memory_records, private.memory_subjects, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
+//!   private.memory_records, private.memory_subjects, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
 //!   adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, application::affect, domain::affect,
 //!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
 //!   projection::serving, projection::stream]
@@ -423,10 +423,16 @@ async fn load_memories(
         affect,
     )
     .await?;
+    // ADR-0085 D-A (M07 D1): the two text keys are resolved by `private.memory_text_v`, the one place a Memory's text
+    // is resolved; every other key stays the row's own. A non-object `content` (the `memory.correct` bare-string
+    // shape) has no text keys to replace and is returned unchanged; the view resolves none for it either.
     let rows = sqlx::query(
         r#"
-        SELECT m.memory_id, m.content
+        SELECT m.memory_id, m.content, mt.title, mt.body
         FROM private.memory_records AS m
+        LEFT JOIN private.memory_text_v AS mt
+          ON mt.tenant_id = m.tenant_id
+         AND mt.memory_id = m.memory_id
         WHERE m.tenant_id = $1
           AND m.memory_id = ANY($2)
         "#,
@@ -440,10 +446,31 @@ async fn load_memories(
     let mut values = HashMap::with_capacity(rows.len());
     for row in rows {
         let memory_id: Uuid = row.try_get("memory_id").map_err(|_| ErrorCode::Internal)?;
-        values.insert(
-            memory_id,
-            row.try_get("content").map_err(|_| ErrorCode::Internal)?,
-        );
+        let mut content: serde_json::Value =
+            row.try_get("content").map_err(|_| ErrorCode::Internal)?;
+        let title: Option<String> = row.try_get("title").map_err(|_| ErrorCode::Internal)?;
+        let body: Option<String> = row.try_get("body").map_err(|_| ErrorCode::Internal)?;
+        if let Some(object) = content.as_object_mut() {
+            // No fallback to the row's own keys (ADR-0085 D-A): a NULL from the view means no text, so the key is
+            // absent rather than the base column resurfacing.
+            match title {
+                Some(title) => {
+                    object.insert("title".to_owned(), serde_json::Value::String(title));
+                }
+                None => {
+                    object.remove("title");
+                }
+            }
+            match body {
+                Some(body) => {
+                    object.insert("key_claim".to_owned(), serde_json::Value::String(body));
+                }
+                None => {
+                    object.remove("key_claim");
+                }
+            }
+        }
+        values.insert(memory_id, content);
     }
     eligible
         .into_iter()
