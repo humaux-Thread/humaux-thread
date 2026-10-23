@@ -435,6 +435,198 @@ fn a_pinned_version_never_changes_and_only_publish_retire_and_mapping_move() {
     );
 }
 
+/// SQLSTATE of unique_violation, which the door raises for a term that differs from the stored version.
+const UNIQUE_VIOLATION: &str = "23505";
+
+/// What `plan_versions_pin` says when a commercial term of a version changes (migration 0262).
+const PINNED_MESSAGE: &str = "a pinned plan version never changes: publish a new version number";
+
+/// What `plan_versions_pin` says when a version is removed.
+const REMOVED_MESSAGE: &str = "a plan version is never removed: retire it";
+
+/// What the door says when a repeat call carries a different term.
+const CONFLICT_MESSAGE: &str = "plan version content conflict";
+
+/// The commercial terms of a stored version: price, currency, interval, template, lease block.
+type Terms = (i64, String, String, Value, i32);
+
+/// The stored commercial terms of the version of `plan_key` (every plan has one version in these tests).
+fn stored_terms(h: &mut Handle, plan_key: &str) -> Terms {
+    let stored = h
+        .admin
+        .query_one(
+            "SELECT v.price_cents, v.currency, v.billing_interval, v.entitlement_template, v.lease_block \
+             FROM control.plan_versions v JOIN control.plans p ON p.plan_id = v.plan_id WHERE p.plan_key = $1",
+            &[&plan_key],
+        )
+        .expect("stored terms");
+    (
+        stored.get(0),
+        stored.get(1),
+        stored.get(2),
+        stored.get(3),
+        stored.get(4),
+    )
+}
+
+/// The owner cannot rewrite or remove a PUBLISHED version either: every commercial term is refused by the pin trigger
+/// itself (its SQLSTATE and its exact message; for the currency this also proves the trigger fires before the CHECK that
+/// would refuse `EUR` on its own), and the stored terms and the row survive each attempt.
+fn assert_the_owner_cannot_rewrite_or_remove_a_published_version(h: &mut Handle, terms: &Terms) {
+    for set in [
+        "price_cents = price_cents + 1",
+        "currency = 'EUR'",
+        "billing_interval = 'year'",
+        "entitlement_template = '{}'::jsonb",
+        "lease_block = lease_block + 1",
+    ] {
+        let error = h
+            .admin
+            .execute(
+                &format!("UPDATE control.plan_versions SET {set} WHERE price_cents = 200"),
+                &[],
+            )
+            .expect_err(set);
+        assert_eq!(sqlstate(&error), Some(CHECK_VIOLATION), "{set}: {error:?}");
+        assert_eq!(message(&error), PINNED_MESSAGE, "{set}: {error:?}");
+        assert_eq!(
+            violated(&error),
+            None,
+            "{set}: refused by the trigger, not by a CHECK"
+        );
+        assert_eq!(
+            &stored_terms(h, "pro"),
+            terms,
+            "{set}: the stored terms are unchanged"
+        );
+    }
+    let removal = h
+        .admin
+        .execute(
+            "DELETE FROM control.plan_versions WHERE price_cents = 200",
+            &[],
+        )
+        .expect_err("a published version is never removed");
+    assert_eq!(sqlstate(&removal), Some(CHECK_VIOLATION), "{removal:?}");
+    assert_eq!(message(&removal), REMOVED_MESSAGE, "{removal:?}");
+    assert_eq!(
+        h.versions().len(),
+        5,
+        "the published row survives its removal"
+    );
+    assert_eq!(&stored_terms(h, "pro"), terms);
+}
+
+/// One call of the door for the published `pro` version with the given terms; the rest is what the file states.
+fn door_call(
+    h: &mut Handle,
+    price: i64,
+    interval: &str,
+    template: &Value,
+    lease_block: i32,
+) -> Result<usize, postgres::Error> {
+    let references = json!({ "fake": "fake_product_pro_v1" });
+    h.admin
+        .query(
+            "SELECT out_created FROM control.publish_plan_version($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            &[
+                &"pro",
+                &1_i32,
+                &price,
+                &"USD",
+                &interval,
+                template,
+                &lease_block,
+                &references,
+                &true,
+            ],
+        )
+        .map(|rows| rows.len())
+}
+
+/// A repeat call for a published version that carries a changed term is refused at the door with 23505, through the
+/// repository as `Conflict`, and the stored terms are exactly what they were; the same call with the stored terms is
+/// accepted, so the refusals are about the changed term alone.
+fn assert_the_door_refuses_a_changed_term_of_a_published_version(h: &mut Handle, terms: &Terms) {
+    let (price, _, _, template, lease_block) = terms;
+    assert_eq!(*price, 200, "the published price is the file's");
+    assert_eq!(
+        door_call(h, 200, "month", template, *lease_block).expect("the stored terms are accepted"),
+        1
+    );
+    let empty = json!({});
+    let attempts: [(&str, Result<usize, postgres::Error>); 4] = [
+        ("price", door_call(h, 201, "month", template, *lease_block)),
+        (
+            "interval",
+            door_call(h, 200, "year", template, *lease_block),
+        ),
+        ("template", door_call(h, 200, "month", &empty, *lease_block)),
+        (
+            "lease block",
+            door_call(h, 200, "month", template, lease_block + 1),
+        ),
+    ];
+    for (term, attempt) in attempts {
+        let error = attempt.expect_err(term);
+        assert_eq!(
+            sqlstate(&error),
+            Some(UNIQUE_VIOLATION),
+            "{term}: {error:?}"
+        );
+        assert_eq!(message(&error), CONFLICT_MESSAGE, "{term}: {error:?}");
+    }
+    let mut dearer = catalogue();
+    dearer["plan_versions"][2]["published"] = json!(true);
+    dearer["plan_versions"][2]["price_cents"] = json!(201);
+    assert_eq!(h.seed_text(&dearer.to_string()), Err(ErrorCode::Conflict));
+    assert_eq!(
+        stored_terms(h, "pro").0,
+        200,
+        "the stored price is unchanged"
+    );
+    assert_eq!(&stored_terms(h, "pro"), terms);
+}
+
+/// A PUBLISHED version is pinned exactly like a draft: the owner cannot change a commercial term or remove it, and a
+/// repeat seed that carries a changed term is refused. Fault: a trigger that pins only drafts (or none), or a door that
+/// stops comparing a term ⇒ red.
+#[test]
+fn a_published_version_is_pinned_against_the_owner_and_the_door() {
+    run_db_fixture::<PlanFixture, _>(
+        "a_published_version_is_pinned_against_the_owner_and_the_door",
+        |mut h| {
+            let mut published = catalogue();
+            published["plan_versions"][2]["published"] = json!(true);
+            let seeded = SeedReport {
+                created: 5,
+                existing: 0,
+            };
+            assert_eq!(h.seed_text(&published.to_string()), Ok(seeded));
+            let draft: Vec<bool> = h.versions().iter().map(|r| r.4).collect();
+            assert_eq!(
+                draft,
+                [true, true, true, true, false],
+                "only pro (last in plan-key order) is published"
+            );
+            let terms = stored_terms(&mut h, "pro");
+            let file_template = catalogue()["plan_versions"][2]["entitlement_template"].clone();
+            assert_eq!(
+                terms,
+                (
+                    200,
+                    "USD".to_owned(),
+                    "month".to_owned(),
+                    file_template,
+                    256
+                )
+            );
+            assert_the_owner_cannot_rewrite_or_remove_a_published_version(&mut h, &terms);
+            assert_the_door_refuses_a_changed_term_of_a_published_version(&mut h, &terms);
+        },
+    );
+}
+
 /// The entitlement-template key set is closed: the database accepts a template carrying each `EntitlementKey` and
 /// refuses one carrying a key outside the set, a template that is not an object, and a provider mapping keyed by anything
 /// but a billing mode; a plan key must have the catalogue's shape. Fault: a Rust key the CHECK lacks (or the reverse) ⇒

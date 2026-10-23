@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -2996,9 +2996,16 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
 /// reads them from the data instead of repeating them).
 const M04_CATALOGUE_FILE: &str = "deploy/plans/plan_catalogue.json";
 
-/// Identifiers whose assignment, comparison or field initialisation with an integer literal spells a price or a lease
-/// block in Rust. Only the identifiers the plan catalogue owns: the scan is not a general number detector.
-const M04_BUSINESS_NUMBER_IDENTS: [&str; 2] = ["price_cents", "lease_block"];
+/// Identifiers whose assignment, comparison or field initialisation with an integer literal spells a price, a lease
+/// block or a quota number in Rust: the plan version's `price_cents` and `lease_block`, the quota window's
+/// `hard_limit` and the lease's `granted_slots` (module design M04 §3, D4, D5). Only identifiers the quota and plan
+/// catalogue own: the scan is not a general number detector (a bare `limit == 0` shape check is everywhere).
+const M04_BUSINESS_NUMBER_IDENTS: [&str; 4] =
+    ["price_cents", "lease_block", "hard_limit", "granted_slots"];
+
+/// Struct-variant literals of the entitlement template whose `limit` field is a quota number the catalogue owns
+/// (`domain::plan::TemplateValue`): a `limit` given an integer inside their braces is a limit spelled in Rust.
+const M04_QUOTA_LITERALS: [&str; 2] = ["PeriodQuota {", "Allowance {"];
 
 /// The `plan_key` of every row of the values file, or why the file cannot be read as one.
 fn m04_catalogue_plan_keys(text: &str) -> Result<BTreeSet<String>, String> {
@@ -3051,9 +3058,92 @@ fn m04_assigns_integer(line: &str, ident: &str) -> bool {
     false
 }
 
-/// The plan-name literals and business-number assignments in one production file's text: a comment line is skipped, a
-/// plan key counts only as a whole literal (`"key"` or `'key'`, the second being a SQL string inside Rust).
+/// Whether `rest` (the text after a quoted key) is a `:` or `,` followed by an integer literal: the JSON member
+/// `"limit": 5`, the SQL pair `'limit', 50` and the tuple `("key", 500)`.
+fn m04_integer_after_separator(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    rest.strip_prefix(':')
+        .or_else(|| rest.strip_prefix(','))
+        .and_then(|value| value.trim_start().bytes().next())
+        .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+/// Whether `line` spells a quoted key that names a limit (`"limit"`, `'hard_limit'`, `"emergency_limit"`) and gives it
+/// an integer: `json!({"limit": 5})`, `jsonb_build_object('limit', 50)`. A quoted `"limit"` that is looked up
+/// (`.get("limit")`) or given a variable is not a number.
+fn m04_quoted_limit_integer(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(relative) = line[from..].find("limit") {
+        let at = from + relative;
+        from = at + "limit".len();
+        let mut start = at;
+        while start > 0 && is_ident_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = from;
+        while end < bytes.len() && is_ident_byte(bytes[end]) {
+            end += 1;
+        }
+        let quoted = start > 0
+            && end < bytes.len()
+            && matches!(bytes[start - 1], b'"' | b'\'')
+            && bytes[end] == bytes[start - 1];
+        if quoted && m04_integer_after_separator(&line[end + 1..]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `line` spells the quoted entitlement key `key` and gives it an integer: `("mcp.billable_operations.x", 500)`.
+fn m04_quoted_key_integer(line: &str, key: &str) -> bool {
+    ['"', '\''].into_iter().any(|quote| {
+        let needle = format!("{quote}{key}{quote}");
+        line.match_indices(&needle)
+            .any(|(at, _)| m04_integer_after_separator(&line[at + needle.len()..]))
+    })
+}
+
+/// The template struct-variant literals in `source` ([`M04_QUOTA_LITERALS`]) that give their `limit` an integer, as
+/// `line N: ..` hits. Comment lines are blanked with their line numbers kept, so a doc comment never reads as code.
+fn m04_quota_literal_hits(source: &str) -> Vec<String> {
+    let code = source
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("//") {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut hits = Vec::new();
+    for needle in M04_QUOTA_LITERALS {
+        for (at, _) in code.match_indices(needle) {
+            let open = at + needle.len() - 1;
+            let Some(end) = matching_brace_end(&code, open) else {
+                continue;
+            };
+            if m04_assigns_integer(&code[open..end], "limit") {
+                let line = code[..at].matches('\n').count() + 1;
+                hits.push(format!(
+                    "line {line}: a `{needle} .. }}` literal gives `limit` an integer"
+                ));
+            }
+        }
+    }
+    hits
+}
+
+/// The plan-name literals, price and quota numbers in one production file's text: a comment line is skipped, a plan key
+/// counts only as a whole literal (`"key"` or `'key'`, the second being a SQL string inside Rust), and a number counts
+/// where the catalogue owns it: an identifier of [`M04_BUSINESS_NUMBER_IDENTS`], a quoted limit key, a quoted
+/// entitlement key (`domain::plan::EntitlementKey`, the window keys included) or a [`M04_QUOTA_LITERALS`] body.
 fn m04_plan_literal_hits(source: &str, plan_keys: &BTreeSet<String>) -> Vec<String> {
+    let entitlement_keys =
+        humaux_domain::plan::EntitlementKey::ALL.map(humaux_domain::plan::EntitlementKey::wire);
     let mut hits = Vec::new();
     for (index, line) in source.lines().enumerate() {
         if line.trim_start().starts_with("//") {
@@ -3077,13 +3167,28 @@ fn m04_plan_literal_hits(source: &str, plan_keys: &BTreeSet<String>) -> Vec<Stri
                 ));
             }
         }
+        if m04_quoted_limit_integer(line) {
+            hits.push(format!(
+                "line {}: a quoted limit key given an integer literal",
+                index + 1
+            ));
+        }
+        for key in entitlement_keys {
+            if m04_quoted_key_integer(line, key) {
+                hits.push(format!(
+                    "line {}: the entitlement key {key:?} given an integer literal",
+                    index + 1
+                ));
+            }
+        }
     }
+    hits.extend(m04_quota_literal_hits(source));
     hits
 }
 
 /// M04 D2 / G-M04-1: production source under `crates/` and `bins/` (test trees and trailing `#[cfg(test)]` modules
-/// excluded, [`door_production_sources`]) holds no plan-key literal of the values file and gives neither `price_cents`
-/// nor `lease_block` an integer literal. `not_applicable` only while the values file does not exist, naming it (§57.1
+/// excluded, [`door_production_sources`]) holds no plan-key literal of the values file and gives no price, lease block
+/// or quota limit an integer literal ([`m04_plan_literal_hits`] lists the positions). `not_applicable` only while the values file does not exist, naming it (§57.1
 /// 第2条); a file that lists no plan key, or a scan that reads no source, is red: it would be blind.
 fn m04_1_plans_are_data(root: &Path) -> Verdict {
     let Ok(text) = fs::read_to_string(root.join(M04_CATALOGUE_FILE)) else {
@@ -14318,6 +14423,143 @@ async fn serving_version_in_txn() {}
             assert!(!m04_assigns_integer(line, "price_cents"), "{line}");
         }
         assert!(!m04_assigns_integer("price_cents: 980,", "lease_block"));
+    }
+
+    /// 注错 (G-M04-1, quota limits): a `PeriodQuota { limit: 200_000, .. }` or `Allowance { limit: .. }` literal with an
+    /// integer limit is red, on one line or across several; one hit per literal, naming the file and the line.
+    #[test]
+    fn m04_1_fails_on_a_quota_limit_literal() {
+        let tmp = m04_tree(
+            "m04-1-red-quota",
+            &[(
+                "crates/domain/src/quota.rs",
+                "fn q() -> TemplateValue { TemplateValue::PeriodQuota { limit: 200_000, period: QuotaPeriod::SubscriptionPeriod, charge_policy: ChargePolicy::SuccessOnly } }\n\
+                 fn a() -> TemplateValue {\n\
+                     TemplateValue::Allowance {\n\
+                         limit: 100_000,\n\
+                     }\n\
+                 }\n",
+            )],
+        );
+        let line = m04_fail_line(&tmp);
+        assert!(
+            line.contains("crates/domain/src/quota.rs: line 1:"),
+            "{line}"
+        );
+        assert!(
+            line.contains("crates/domain/src/quota.rs: line 3:"),
+            "{line}"
+        );
+        assert!(line.contains("spells 2 of them"), "{line}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M04-1, quota limits): a quoted limit key, a quoted entitlement key and the quota identifiers
+    /// `hard_limit` / `granted_slots` given an integer are red, one hit per spelling.
+    #[test]
+    fn m04_1_fails_on_a_limit_key_a_window_key_or_a_quota_identifier_with_a_number() {
+        let tmp = m04_tree(
+            "m04-1-red-limit-keys",
+            &[(
+                "bins/gateway/src/limits.rs",
+                "fn a() { let _ = json!({\"limit\": 5}); }\n\
+                 const B: &str = \"SELECT jsonb_build_object('hard_limit', 7)\";\n\
+                 const C: (&str, u64) = (\"mcp.billable_operations.emergency\", 500);\n\
+                 struct W { hard_limit: i64 }\n\
+                 fn d() -> W { W { hard_limit: 12 } }\n\
+                 fn e() { let granted_slots = 16; drop(granted_slots); }\n",
+            )],
+        );
+        let line = m04_fail_line(&tmp);
+        for at in [1, 2, 3, 5, 6] {
+            assert!(
+                line.contains(&format!("bins/gateway/src/limits.rs: line {at}:")),
+                "line {at}: {line}"
+            );
+        }
+        assert!(!line.contains("limits.rs: line 4:"), "{line}");
+        assert!(line.contains("spells 5 of them"), "{line}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The values-file path passes: the numbers live in the JSON file, and production code that reads them (a limit from
+    /// a field, a pattern binding, a `.get("limit")`, a bare shape check) states none.
+    #[test]
+    fn m04_1_passes_when_the_limits_come_from_the_values_file() {
+        let tmp = m04_tree(
+            "m04-1-green-values-file",
+            &[
+                (
+                    M04_CATALOGUE_FILE,
+                    r#"{"plan_versions":[{"plan_key":"tier_a","price_cents":100,"lease_block":256,"entitlement_template":{"mcp.billable_operations.per_period":{"limit":200000,"period":"subscription_period","charge_policy":"success_only"},"mcp.billable_operations.emergency":{"limit":500}}}]}"#,
+                ),
+                (
+                    "crates/adapters/src/reads.rs",
+                    "fn q(quota: &Raw) -> TemplateValue { TemplateValue::PeriodQuota { limit: quota.limit, period, charge_policy } }\n\
+                     fn a(raw: &Raw) -> TemplateValue { TemplateValue::Allowance { limit: raw.limit } }\n\
+                     fn j(limit: u64) -> Value { json!({ \"limit\": limit }) }\n\
+                     fn g(v: &Value) -> Option<&Value> { v.get(\"limit\") }\n\
+                     fn s(limit: usize) -> bool { limit == 0 }\n\
+                     fn p(v: TemplateValue) { match v { TemplateValue::Allowance { limit } => drop(limit), _ => {} } }\n\
+                     const K: &str = \"mcp.billable_operations.per_period\";\n\
+                     fn w(hard_limit: i64) -> i64 { hard_limit }\n",
+                ),
+            ],
+        );
+        assert_eq!(m04_1_plans_are_data(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Which lines give a quoted limit key an integer: `:` or `,` then a digit, the key quoted on both sides.
+    #[test]
+    fn m04_1_quoted_limit_scan_matches_exactly_these_shapes() {
+        let hits = [
+            "json!({\"limit\": 5})",
+            "json!({\"query\":\"x\",\"limit\":101})",
+            "jsonb_build_object('limit', 50)",
+            "\"hard_limit\": 7",
+            "\"emergency_limit\" : 3",
+        ];
+        let misses = [
+            "v.get(\"limit\")",
+            "\"limit\": query.limit,",
+            "[\"project_id\", \"limit\"]",
+            "\"limit\": limit,",
+            "limit: 5",
+            "let limit = 5;",
+            "\"limit\"",
+        ];
+        for line in hits {
+            assert!(m04_quoted_limit_integer(line), "{line}");
+        }
+        for line in misses {
+            assert!(!m04_quoted_limit_integer(line), "{line}");
+        }
+        assert!(m04_quoted_key_integer(
+            "(\"storage.retained_bytes\", 9)",
+            "storage.retained_bytes"
+        ));
+        assert!(!m04_quoted_key_integer(
+            "(\"storage.retained_bytes\", bytes)",
+            "storage.retained_bytes"
+        ));
+        assert!(!m04_quoted_key_integer(
+            "(\"storage.retained_bytes\")",
+            "storage.retained_bytes"
+        ));
+    }
+
+    /// The template-literal scan reports line numbers, skips comment lines and reads a pattern as no literal.
+    #[test]
+    fn m04_1_quota_literal_scan_reports_lines_and_skips_comments_and_patterns() {
+        let source = "// TemplateValue::PeriodQuota { limit: 5 } is a doc example\n\
+                      fn a() {\n\
+                          let _ = TemplateValue::Allowance { limit: 7 };\n\
+                      }\n\
+                      fn b(v: TemplateValue) { if let TemplateValue::Allowance { limit } = v { drop(limit) } }\n";
+        let hits = m04_quota_literal_hits(source);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].starts_with("line 3:"), "{hits:?}");
     }
 
     // -- M29 T04c / G-T04c-3: one INSERT INTO private.evidence_task_runs, in remember.rs ----------------
