@@ -2,9 +2,10 @@
 //!   stored vector each binding was projected from, and the embedding label's fingerprint binding.
 //! Depends-on: crates=[humaux-domain, humaux-projection, sha2, sqlx]; services=[PostgreSQL(any)
 //!   r=[private.memory_records] w=[projection.embedding_fingerprints, projection.memory_vectors,
-//!   projection.private_memory_points], PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker)]; env=[];
-//!   modules=[adapters::postgres, domain::authority, domain::identity, domain::ids, projection::card,
-//!   projection::embedding_fingerprint, projection::note_chunks, projection::serving]
+//!   projection.private_memory_points, projection.tenant_placements], PostgreSQL(role_gateway),
+//!   PostgreSQL(role_retrieval_worker)]; env=[];
+//!   modules=[adapters::placement_repo, adapters::postgres, domain::authority, domain::identity, domain::ids,
+//!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
 //! Called-by: [adapters::projection_worker, adapters::retrieve, retrieval-worker::main, tests]
 //! Invariants: [sole private point-id resolver: binds a Qdrant point id to a Memory in PostgreSQL and re-checks the
 //!   source fence; no Qdrant IO here; cross-tenant/workspace, collisions and lost races are typed errors, never a
@@ -15,8 +16,9 @@
 //!   plus (card_profile_hash, chunk_ordinal), the legacy profile at ordinal 0 keeps the v1 point id byte for byte and
 //!   every other slot gets a v2 id (ADR-0068 D-C); the legacy-only retirement touches the (LegacyCardV1, 0) bindings
 //!   of one Memory and never a chunk binding (ADR-0068 D-I); a resolved point reports its card slot from the registry row
-//!   (ADR-0084 D-C 3)]
-//! Spec: Baseline §16.1; §17; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C; ADR-0068 D-I; ADR-0084 D-C
+//!   (ADR-0084 D-C 3); §17.3 `tenant_placements.point_count`/`bytes_estimate` move in that same transaction, by
+//!   exactly the bindings it inserted, revived or retired]
+//! Spec: Baseline §16.1; §17; §17.3; §44; ADR-0049; ADR-0064 D-B; ADR-0064 D-C; ADR-0064 D-D; ADR-0068 D-C; ADR-0068 D-I; ADR-0084 D-C
 //!
 //! Qdrant returns an opaque point id plus a score.  This module is the sole private-plane
 //! point-id resolver: it binds that id to a Memory through PostgreSQL and then rechecks the
@@ -39,6 +41,7 @@ use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 use sqlx::{Row, Transaction};
 
+use crate::placement_repo;
 use crate::postgres::{RetrievalWorkerDbPool, RuntimeDbPool};
 
 type Txn<'c> = Transaction<'c, sqlx::Postgres>;
@@ -428,6 +431,47 @@ async fn identity_binding_in_txn(
     .await?)
 }
 
+/// §17.3 point counters: moves the private placement's `point_count`/`bytes_estimate` in the SAME transaction as
+/// the binding row this write changed, so a committed counter always describes committed bindings and no
+/// background job or Qdrant count scan is needed (module design M10 B27, card M10-5). `points` is `+1` for one
+/// newly bound point and `-n` for the live bindings a retirement took.
+///
+/// `known_dimension` is the registered vector's width. A retirement holds no vector and reads the label's bound
+/// width from `projection.embedding_fingerprints` instead (0232: one width per `embedding_version`). A label with
+/// no bound fingerprint moves the point count but adds no vector bytes, the same way a vectorless registration
+/// does.
+///
+/// The retire side moves on the binding's transition, not on the later Qdrant delete: a delete that never lands
+/// leaves an orphan the resolver no longer serves, and a retried retirement finds no live row and subtracts
+/// nothing, so a replay can never take a point twice.
+async fn move_placement_counters(
+    txn: &mut Txn<'_>,
+    family: &StreamFamily,
+    embedding_version: &str,
+    points: i64,
+    known_dimension: Option<i64>,
+) -> Result<(), PrivateProjectionRegistryError> {
+    let dimension = match known_dimension {
+        Some(dimension) => dimension,
+        None => sqlx::query_scalar::<_, i32>(
+            "SELECT dimension FROM projection.embedding_fingerprints WHERE embedding_version = $1",
+        )
+        .bind(embedding_version)
+        .fetch_optional(&mut **txn)
+        .await?
+        .map_or(0, i64::from),
+    };
+    placement_repo::add_point_counters(
+        txn,
+        family.tenant_id,
+        placement_repo::PRIVATE_PROJECTION_FAMILY,
+        points,
+        points.saturating_mul(placement_repo::point_vector_bytes(dimension)),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Registers one exact PG source binding without a stored vector (a legacy row, ADR-0064 D-G). The projection
 /// worker calls [`register_private_memory_point_with_vector`]; this form stays for callers that bind no vector.
 pub async fn register_private_memory_point(
@@ -481,6 +525,8 @@ pub async fn register_private_memory_point_with_vector(
     }
     let fingerprint = vector.map(|v| &v.fingerprint_sha256[..]);
     let input = vector.map(|v| &v.input_sha256[..]);
+    // §17.3: the registered vector's own width, the bytes a new point adds to the placement's estimate.
+    let stored_dimension = vector.and_then(|v| i64::try_from(v.vector.len()).ok());
 
     let inserted = sqlx::query(
         "INSERT INTO projection.private_memory_points \
@@ -508,6 +554,14 @@ pub async fn register_private_memory_point_with_vector(
     .fetch_optional(&mut *txn)
     .await?;
     if inserted.is_some() {
+        move_placement_counters(
+            &mut txn,
+            &registration.family,
+            &registration.embedding_version,
+            1,
+            stored_dimension,
+        )
+        .await?;
         txn.commit().await?;
         return Ok(RegistrationOutcome::Inserted);
     }
@@ -540,8 +594,21 @@ pub async fn register_private_memory_point_with_vector(
                 .execute(&mut *txn)
                 .await?;
             }
+            let revived_count = revived.rows_affected();
+            // §17.3: only a binding that actually came back is a new point; an already-live replay
+            // (`AlreadyRegistered`) moves no counter — one point is counted once.
+            if revived_count == 1 {
+                move_placement_counters(
+                    &mut txn,
+                    &registration.family,
+                    &registration.embedding_version,
+                    1,
+                    stored_dimension,
+                )
+                .await?;
+            }
             txn.commit().await?;
-            return Ok(if revived.rows_affected() == 1 {
+            return Ok(if revived_count == 1 {
                 RegistrationOutcome::Revived
             } else {
                 RegistrationOutcome::AlreadyRegistered
@@ -598,6 +665,8 @@ pub async fn retire_private_memory_point(
             .bind(memory_id)
             .execute(&mut *txn)
             .await?;
+        // §17.3: exactly one live binding left the index, so exactly one point leaves the placement.
+        move_placement_counters(&mut txn, family, embedding_version, -1, None).await?;
     }
     txn.commit().await?;
     Ok(retired.is_some())
@@ -668,7 +737,7 @@ async fn retire_bindings(
     .bind(profile)
     .fetch_all(&mut *txn)
     .await?;
-    sqlx::query(
+    let retired = sqlx::query(
         "UPDATE projection.private_memory_points \
             SET projection_live = false, retired_at = now() \
           WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
@@ -686,12 +755,19 @@ async fn retire_bindings(
     .bind(memory_id.0)
     .bind(profile)
     .execute(&mut *txn)
-    .await?;
+    .await?
+    .rows_affected();
     sqlx::query(PURGE_UNREFERENCED_VECTORS)
         .bind(family.tenant_id.0)
         .bind(memory_id.0)
         .execute(&mut *txn)
         .await?;
+    // §17.3: `point_ids` above is every id ever bound (a replay-safe Qdrant delete set), while only the live
+    // rows this UPDATE retired leave the placement — so a retried retirement ticket cannot subtract twice.
+    if retired > 0 {
+        let points = i64::try_from(retired).unwrap_or(i64::MAX);
+        move_placement_counters(&mut txn, family, embedding_version, -points, None).await?;
+    }
     txn.commit().await?;
     Ok(point_ids.into_iter().map(ProjectionPointId::new).collect())
 }
