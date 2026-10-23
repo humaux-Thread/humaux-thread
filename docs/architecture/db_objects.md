@@ -1578,6 +1578,298 @@ written by:
 
 executed by:
 
+### `control.oauth_authorization_codes`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
+### `control.oauth_client_lookup`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_client_register`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_client_registrations`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::auth_contract`
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
+### `control.oauth_code_consume`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- (no process): `adapters::tests::oauth_persistence`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_code_issue`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grant_issue`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grant_lookup`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grant_revoke`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_grants`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::auth_contract`
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
+### `control.oauth_refresh_family_revoke`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_refresh_rotate`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_refresh_tokens`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0268_oauth_persistence
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::auth_contract`
+- (no process): `adapters::tests::credential_grants`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::oauth_persistence`
+
+executed by:
+
 ### `control.observe_reasoning_route_health`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -3853,6 +4145,7 @@ written by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
 - (no process): `adapters::tests::model_call_ledger`
+- (no process): `adapters::tests::oauth_persistence`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
@@ -4114,6 +4407,7 @@ written by:
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_subjects_link`
+- (no process): `adapters::tests::oauth_persistence`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
