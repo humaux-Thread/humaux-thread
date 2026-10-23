@@ -11,8 +11,9 @@
 //! Called-by: [cargo-test]
 //! Invariants: [CONNECT is revoked only on the test's own throwaway database humaux_thread_c34_rw_<pid>, dropped by the
 //!   fixture's Drop even on panic; the socket is the test's own under /tmp; a missing env is a failure under
-//!   HUMAUX_REQUIRE_DB, a named SKIP otherwise (§79.2)]
-//! Spec: Baseline §6.2.3; §79.2; ADR-0012; ADR-0061 D-F
+//!   HUMAUX_REQUIRE_DB, a named SKIP otherwise (§79.2); the gateway's request is one buffered write, and a 403 the
+//!   server sent before reading it is still the asserted status when the write meets EPIPE/ECONNRESET (§46)]
+//! Spec: Baseline §6.2.3; §46; §79.2; ADR-0012; ADR-0061 D-F
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -190,29 +191,56 @@ async fn serve(state: RpcState) -> String {
     path
 }
 
+/// One fresh connection with a bounded read: the gateway's side of the readiness round trip.
+fn dial(path: &str) -> UnixStream {
+    // dep: UDS(retrieval-worker) — the gateway's side of the readiness round trip
+    let stream = UnixStream::connect(path).expect("dial worker rpc socket");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    stream
+}
+
+/// One HTTP/1.1 exchange on an established socket: the whole request in a single `write_all`, then whatever
+/// response the peer already sent. §46: the wrong-uid refusal is written and the connection closed before the
+/// body is read, so EPIPE/ECONNRESET on the write must not mask the status the peer already sent.
+fn round_trip(stream: &mut UnixStream, request: &[u8]) -> (u16, String) {
+    if let Err(e) = stream.write_all(request) {
+        assert!(
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ),
+            "request write failed with more than a closed peer: {e}"
+        );
+    }
+    let mut raw = Vec::new();
+    // §46: a Linux unix socket reports the close as ECONNRESET once the unread body is discarded; the bytes
+    // already read still decide.
+    match stream.read_to_end(&mut raw) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(e) => panic!("read response: {e}"),
+    }
+    let raw = String::from_utf8(raw).expect("response is UTF-8");
+    let code = raw
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .expect("status code");
+    let body = raw.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_owned();
+    (code, body)
+}
+
 /// One `GET` over the socket, blocking, off the runtime's workers.
 async fn get(path: &str) -> (u16, String) {
     let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
-        // dep: UDS(retrieval-worker) — the gateway's side of the readiness round trip
-        let mut stream = UnixStream::connect(&path).expect("dial worker rpc socket");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .expect("read timeout");
-        write!(
-            stream,
+        let mut stream = dial(&path);
+        let request = format!(
             "GET {READYZ} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        )
-        .expect("write request");
-        let mut raw = String::new();
-        stream.read_to_string(&mut raw).expect("read response");
-        let code = raw
-            .split_whitespace()
-            .nth(1)
-            .and_then(|c| c.parse().ok())
-            .expect("status code");
-        let body = raw.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_owned();
-        (code, body)
+        );
+        round_trip(&mut stream, request.as_bytes())
     })
     .await
     .expect("request thread")
@@ -223,29 +251,50 @@ async fn post_rerank(path: &str) -> (u16, String) {
     let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
         let body = r#"{"schema_version":1,"call_id":"00000000-0000-7000-8000-000000000001","query":"q","documents":["d"],"max_len":256}"#;
-        // dep: UDS(retrieval-worker) — the gateway's side of the rerank round trip
-        let mut stream = UnixStream::connect(&path).expect("dial worker rpc socket");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .expect("read timeout");
-        write!(
-            stream,
+        let mut stream = dial(&path);
+        let request = format!(
             "POST {RERANK_ROUTE} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
-        )
-        .expect("write request");
-        let mut raw = String::new();
-        stream.read_to_string(&mut raw).expect("read response");
-        let code = raw
-            .split_whitespace()
-            .nth(1)
-            .and_then(|c| c.parse().ok())
-            .expect("status code");
-        let body = raw.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_owned();
-        (code, body)
+        );
+        round_trip(&mut stream, request.as_bytes())
     })
     .await
     .expect("request thread")
+}
+
+/// §46: a 403 is read from a peer that refuses and closes without reading the request. The client's request is
+/// one buffered write, so the peer's close surfaces as EPIPE and must not become the test's failure. Fault:
+/// split the request back into several `write!` calls ⇒ red.
+#[tokio::test(flavor = "multi_thread")]
+async fn readyz_reads_the_403_a_server_sent_before_closing_without_reading() {
+    let path = socket_path("early-403");
+    // dep: UDS(serve) — a peer that writes 403 and closes without reading the request
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind early-403 socket");
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept early-403 client");
+        conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .expect("write the 403");
+        drop(conn);
+        closed_tx.send(()).expect("signal the close");
+    });
+    let body = r#"{"schema_version":1,"call_id":"00000000-0000-7000-8000-000000000001","query":"q","documents":["d"],"max_len":256}"#;
+    let request = format!(
+        "POST {RERANK_ROUTE} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let dial_path = path.clone();
+    let client = tokio::task::spawn_blocking(move || {
+        let mut stream = dial(&dial_path);
+        // The peer's close happens before `recv` returns and the request is written only after it: the EPIPE this
+        // test exists for is deterministic, not a race.
+        closed_rx.recv().expect("server closed before reading");
+        round_trip(&mut stream, request.as_bytes())
+    });
+    let (code, body) = client.await.expect("client thread");
+    server.join().expect("server thread");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 403, "{body}");
 }
 
 /// T-W5: 200 while `role_retrieval_worker` connects; after CONNECT is revoked and its sessions are
