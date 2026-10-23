@@ -3235,6 +3235,72 @@ fn stale_worker_delete_is_refused_by_seq_fence() {
     );
 }
 
+/// The G-M10-6 fixture (§17.3, card M10-5): a tenant with the placement row provisioning creates
+/// (`projection.ensure_tenant_placement`, 0186 — the resident claim joins it), two TENANT_SHARED memories, and
+/// worker deps under a label of this test's own bound as the worker binds it at boot, so every registration
+/// carries its vector (ADR-0064 D-B) and the byte term has a dimension to state.
+fn placement_gate_fixture(
+    handle: &mut Handle,
+) -> (Uuid, ProjectionWorkerDeps, Governor, Uuid, Uuid) {
+    handle
+        .admin
+        .execute(
+            "INSERT INTO projection.tenant_placements \
+               (tenant_id, projection_family, collection_name, placement_class) \
+             VALUES ($1, 'private_memory_v1', $2, 'SHARED_FALLBACK')",
+            &[&handle.tenant_id, &handle.collection],
+        )
+        .expect("placement row");
+    let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
+    let scope_id = seed_workspace(handle);
+    gov.join(&mut handle.admin, scope_id);
+    let memory_a = seed_memory_with_visibility(
+        handle,
+        scope_id,
+        "placement counter memory a",
+        "TENANT_SHARED",
+        None,
+        None,
+    )
+    .1;
+    let memory_b = seed_memory_with_visibility(
+        handle,
+        scope_id,
+        "placement counter memory b",
+        "TENANT_SHARED",
+        None,
+        None,
+    )
+    .1;
+    let provider = Arc::new(TestDoubleProvider::new(
+        embedding_model(),
+        unused_rerank_model(),
+    ));
+    let mut deps = handle.rt.block_on(deps_for(handle, scope_id, provider));
+    deps.embedding_version = format!("m10-5-{}", Uuid::new_v4().simple());
+    handle
+        .rt
+        .block_on(bind_embedding_fingerprint(
+            &deps.pool,
+            &deps.embedding_version,
+            &worker_fingerprint_inputs("m10-5-test", &deps.embedding_version, "r1", 4, "v1"),
+        ))
+        .expect("label binding");
+    (scope_id, deps, gov, memory_a, memory_b)
+}
+
+/// One exact §17.3 checkpoint: the placement counters, the registry's live bindings and Qdrant's own count must
+/// agree on the same number, so the gate cannot pass on a counter that merely looks plausible.
+fn assert_placement_state(handle: &mut Handle, counters: (i64, i64), points: u64, why: &str) {
+    assert_eq!(placement_counts(handle), counters, "{why}");
+    assert_eq!(collection_point_count(handle), points, "{why}: Qdrant");
+    assert_eq!(
+        live_binding_count(handle),
+        i64::try_from(points).expect("a count is positive"),
+        "{why}: registry"
+    );
+}
+
 /// G-M10-6 (§17.3, card M10-5): the placement counters are written from the worker's own successful point writes,
 /// in the binding transaction, with no Qdrant count scan. After a known sequence — two upserts, one re-upsert of
 /// an already-bound point, one delete and one revive — `point_count` is exactly the live binding count and
@@ -3244,56 +3310,7 @@ fn stale_worker_delete_is_refused_by_seq_fence() {
 #[test]
 fn point_count_written() {
     run_db_fixture::<Fixture, _>("point_count_written", |mut handle| {
-        // §17.3 + 0186 `projection.ensure_tenant_placement`: provisioning creates the row before any ticket, and
-        // the resident claim joins it, so the worker always has counters to move.
-        handle
-            .admin
-            .execute(
-                "INSERT INTO projection.tenant_placements \
-                   (tenant_id, projection_family, collection_name, placement_class) \
-                 VALUES ($1, 'private_memory_v1', $2, 'SHARED_FALLBACK')",
-                &[&handle.tenant_id, &handle.collection],
-            )
-            .expect("placement row");
-
-        let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
-        let scope_id = seed_workspace(&mut handle);
-        gov.join(&mut handle.admin, scope_id);
-        let memory_a = seed_memory_with_visibility(
-            &mut handle,
-            scope_id,
-            "placement counter memory a",
-            "TENANT_SHARED",
-            None,
-            None,
-        )
-        .1;
-        let memory_b = seed_memory_with_visibility(
-            &mut handle,
-            scope_id,
-            "placement counter memory b",
-            "TENANT_SHARED",
-            None,
-            None,
-        )
-        .1;
-
-        let provider = Arc::new(TestDoubleProvider::new(
-            embedding_model(),
-            unused_rerank_model(),
-        ));
-        let mut deps = handle.rt.block_on(deps_for(&handle, scope_id, provider));
-        // A label of this test's own, bound as the worker binds its label at boot, so every registration carries
-        // its vector (ADR-0064 D-B) and §17.3's byte term has a dimension to state.
-        deps.embedding_version = format!("m10-5-{}", Uuid::new_v4().simple());
-        handle
-            .rt
-            .block_on(bind_embedding_fingerprint(
-                &deps.pool,
-                &deps.embedding_version,
-                &worker_fingerprint_inputs("m10-5-test", &deps.embedding_version, "r1", 4, "v1"),
-            ))
-            .expect("label binding");
+        let (scope_id, deps, gov, memory_a, memory_b) = placement_gate_fixture(&mut handle);
 
         // n = 2 upserts.
         let outcome = handle
@@ -3301,13 +3318,7 @@ fn point_count_written() {
             .block_on(run_once(&deps, 10))
             .expect("indexing pass");
         assert_eq!((outcome.done, outcome.failed), (2, 0), "{outcome:?}");
-        assert_eq!(
-            placement_counts(&mut handle),
-            (2, 32),
-            "two 4-d f32 vectors"
-        );
-        assert_eq!(collection_point_count(&handle), 2, "Qdrant ground truth");
-        assert_eq!(live_binding_count(&mut handle), 2, "registry ground truth");
+        assert_placement_state(&mut handle, (2, 32), 2, "two 4-d f32 vectors");
 
         // One re-upsert of an already-bound point: archive issues a lifecycle ticket and the worker rewrites the
         // SAME deterministic point id (the source identity did not change), so nothing new is counted.
@@ -3325,12 +3336,12 @@ fn point_count_written() {
             point_a,
             "the archive pass re-upserted the same point"
         );
-        assert_eq!(
-            placement_counts(&mut handle),
+        assert_placement_state(
+            &mut handle,
             (2, 32),
-            "a re-upsert of an existing point must not count twice"
+            2,
+            "a re-upsert of an existing point must not count twice",
         );
-        assert_eq!(collection_point_count(&handle), 2, "Qdrant ground truth");
 
         // m = 1 delete: the supersede makes the source non-live and the retire pass deletes its point.
         let (auth, key) = (
@@ -3344,13 +3355,12 @@ fn point_count_written() {
             .block_on(run_once(&deps, 10))
             .expect("retire pass");
         assert_eq!((outcome.done, outcome.failed), (1, 0), "{outcome:?}");
-        assert_eq!(
-            placement_counts(&mut handle),
+        assert_placement_state(
+            &mut handle,
             (1, 16),
-            "the delete takes exactly its own point"
+            1,
+            "the delete takes exactly its own point",
         );
-        assert_eq!(collection_point_count(&handle), 1, "Qdrant ground truth");
-        assert_eq!(live_binding_count(&mut handle), 1, "registry ground truth");
         assert!(
             !point_present(&handle, point_a),
             "the superseded memory's point is gone"
@@ -3364,13 +3374,12 @@ fn point_count_written() {
             .block_on(run_once(&deps, 10))
             .expect("revive pass");
         assert_eq!((outcome.done, outcome.failed), (1, 0), "{outcome:?}");
-        assert_eq!(
-            placement_counts(&mut handle),
+        assert_placement_state(
+            &mut handle,
             (2, 32),
-            "a revived binding is a live point again"
+            2,
+            "a revived binding is a live point again",
         );
-        assert_eq!(collection_point_count(&handle), 2, "Qdrant ground truth");
-        assert_eq!(live_binding_count(&mut handle), 2, "registry ground truth");
     });
 }
 
