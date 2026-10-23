@@ -402,6 +402,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::note`
 
+#### `domain::plan`
+
 #### `domain::policy`
 
 #### `domain::public`
