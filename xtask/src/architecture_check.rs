@@ -1848,10 +1848,22 @@ fn m01_4_real_path_or_dormant(root: &Path) -> Verdict {
 // M01 D6 — G-M01-8: allow-attribute ratchet for the §78.4 size/nesting lints
 // ============================================================================
 
-/// The §78.4 lints whose `#[allow(...)]` attributes are pinned. `too_many_lines` is the pre-existing lint (210
-/// attributes when this gate landed); `excessive_nesting` is enabled by M01-6 and fires past `clippy.toml`'s
-/// threshold, so every site past it carries one reasoned allow.
-pub const RATCHETED_LINTS: [&str; 2] = ["too_many_lines", "excessive_nesting"];
+/// The §78.4 lints whose `#[allow(...)]` / `#[expect(...)]` attributes are pinned, each with the clippy group it
+/// belongs to. The group is the bypass this gate must see: the ratchet counts the exact lint name, so a group allow
+/// would silence the lint invisibly. Membership in clippy 1.99.0: `too_many_lines` is `pedantic`
+/// (`rust-lang/rust` 1.99.0 `src/tools/clippy/clippy_lints/src/functions/mod.rs`, `TOO_MANY_LINES` declaration) and
+/// `excessive_nesting` is `complexity` (same tree, `src/tools/clippy/clippy_lints/src/excessive_nesting.rs`,
+/// `EXCESSIVE_NESTING` declaration).
+pub const RATCHETED_LINT_GROUPS: [(&str, &str); 2] = [
+    ("too_many_lines", "pedantic"),
+    ("excessive_nesting", "complexity"),
+];
+
+/// The ratcheted lint names, derived from [`RATCHETED_LINT_GROUPS`] so the group map is the one table.
+pub const RATCHETED_LINTS: [&str; 2] = [RATCHETED_LINT_GROUPS[0].0, RATCHETED_LINT_GROUPS[1].0];
+
+/// `clippy::all` is the union of every default clippy group, so it silences both ratcheted lints at once.
+const CLIPPY_ALL_GROUP: &str = "all";
 
 /// §78.4 asks for `deny` on nesting: a deep block that appears without an allow is a hard clippy failure, and
 /// an allow that appears without a measured site is caught by this gate's exact count.
@@ -1865,40 +1877,128 @@ const NESTING_THRESHOLD_KEY: &str = "excessive-nesting-threshold";
 /// fixture tree can exercise the gate's red and green directions, not only the real repository.
 const LINT_BASELINE_FILE: &str = "xtask/known_red.toml";
 
-/// Occurrences of a `#[allow(...)]` attribute naming `clippy::<lint>` in one source file. Comments are blanked
-/// first ([`code_without_comments`]) so prose that mentions an attribute is not an occurrence; a multi-lint or
-/// multi-line `#[allow(clippy::a, clippy::b)]` counts once per lint it names, which is what the compiler sees.
-/// The one ceiling: `allow` spelled through a macro metavariable is invisible to a text scan (the same ceiling
-/// as every other source scan in this file; review backs it).
-pub fn allow_attribute_count(source: &str, lint: &str) -> usize {
-    let code = code_without_comments(source);
-    let needle = format!("clippy::{lint}");
-    let mut count = 0;
+/// One `allow(...)` / `expect(...)` attribute that silences clippy lints: its line, whether it is an inner
+/// (`#![...]`) attribute covering a whole module/crate, and the `clippy::` paths it names. `cfg_attr(..., allow(...))`
+/// reaches the same scan because the inner `allow(` / `expect(` token is parsed wherever it appears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LintSilencer {
+    line: usize,
+    inner: bool,
+    kind: &'static str,
+    lints: Vec<String>,
+}
+
+/// Every `allow(...)` / `expect(...)` occurrence in `source` that names at least one `clippy::` lint. Comments and
+/// literals are blanked first ([`mask_comments_and_literals`]), so prose, fixture strings and `reason = "..."`
+/// text never read as an attribute; line numbers survive the masking.
+fn lint_silencers(source: &str) -> Vec<LintSilencer> {
+    let code = mask_comments_and_literals(source);
+    let mut out = Vec::new();
     let mut from = 0;
-    while let Some(offset) = code[from..].find("allow(") {
-        let start = from + offset;
-        from = start + "allow(".len();
-        // `disallow(` / `reallow(` are not the attribute: the token must start at a word boundary.
-        if code[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-        {
-            continue;
-        }
-        let Some(end) = code[from..].find(')') else {
+    while let Some((at, kind, args_at)) = next_lint_silencer(&code, from) {
+        let Some(close) = matching_paren(&code, args_at) else {
             break;
         };
-        let args = &code[from..from + end];
-        if args
-            .split([',', ' ', '\t', '\n'])
-            .any(|arg| arg.trim() == needle)
-        {
-            count += 1;
+        let lints = clippy_paths(&code[args_at..close]);
+        if !lints.is_empty() {
+            // `#![...]` does not contain the substring `#[`, so both markers are searched and the nearest wins.
+            let attr_at = match (code[..at].rfind("#!["), code[..at].rfind("#[")) {
+                (Some(bang), Some(plain)) => bang.max(plain),
+                (Some(bang), None) => bang,
+                (None, Some(plain)) => plain,
+                (None, None) => at,
+            };
+            let inner = code[attr_at..].starts_with("#![");
+            let line = code[..attr_at].matches('\n').count() + 1;
+            out.push(LintSilencer {
+                line,
+                inner,
+                kind,
+                lints,
+            });
         }
-        from += end + 1;
+        from = close + 1;
     }
-    count
+    out
+}
+
+/// The first `allow(` / `expect(` in `code[from..]` that starts at an identifier boundary, with the byte index of
+/// its argument list. `disallow(` / `reallow(` are not the attribute.
+fn next_lint_silencer(code: &str, from: usize) -> Option<(usize, &'static str, usize)> {
+    let mut best: Option<(usize, &'static str)> = None;
+    for (needle, kind) in [("allow(", "allow"), ("expect(", "expect")] {
+        let mut search = from;
+        while let Some(offset) = code[search..].find(needle) {
+            let at = search + offset;
+            let starts_word = code[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            if starts_word {
+                if best.is_none_or(|(earlier, _)| at < earlier) {
+                    best = Some((at, kind));
+                }
+                break;
+            }
+            search = at + needle.len();
+        }
+    }
+    best.map(|(at, kind)| (at, kind, at + kind.len() + 1))
+}
+
+/// Byte index of the `)` matching the `(` whose body starts at `args_at`. Masked input has no parentheses inside
+/// literals or comments left, so the depth count is the attribute's own nesting.
+fn matching_paren(code: &str, args_at: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (offset, c) in code[args_at..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(args_at + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The `clippy::<name>` paths in one attribute's argument list, deduplicated. Group names (`all`, `pedantic`,
+/// `complexity`, …) are returned too: telling a group from a lint is the caller's job.
+fn clippy_paths(args: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = args[from..].find("clippy::") {
+        let at = from + offset;
+        let starts_word = at == 0 || !is_ident_byte(args.as_bytes()[at - 1]);
+        let rest = &args[at + "clippy::".len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if starts_word && !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+        from = at + "clippy::".len() + name.len().max(1);
+    }
+    out
+}
+
+/// Occurrences of an item-level `#[allow(clippy::<lint>)]` or `#[expect(clippy::<lint>)]` in one source file.
+/// Comments and literals are blanked first, so prose that mentions an attribute is not an occurrence; a multi-lint
+/// or multi-line attribute counts once per lint it names, which is what the compiler sees. `cfg_attr(..., allow(...))`
+/// and `cfg_attr(..., expect(...))` count the same as the bare attribute. An inner `#![...]` attribute is excluded:
+/// it covers a whole scope and is forbidden by [`forbidden_lint_silencers_in`], not counted as one reviewed site.
+/// The one ceiling: `allow` spelled through a macro metavariable is invisible to a text scan (the same ceiling as
+/// every other source scan in this file; review backs it).
+pub fn allow_attribute_count(source: &str, lint: &str) -> usize {
+    lint_silencers(source)
+        .iter()
+        .filter(|silencer| !silencer.inner)
+        .filter(|silencer| silencer.lints.iter().any(|named| named.as_str() == lint))
+        .count()
 }
 
 /// Live per-lint attribute counts over `(path, source)` pairs. A lint with no attribute is absent from the map,
@@ -1916,29 +2016,100 @@ pub fn lint_allow_counts_in(files: &[(String, String)]) -> BTreeMap<String, usiz
     counts
 }
 
-/// The workspace's live allow counts. Every `.rs` file under the workspace root is scanned, this checker's own
-/// source included: unlike the constructor scans that must exclude [`SELF_FILE`] to avoid self-quoting needle
-/// text, the needles here are the lint names inside an `allow(` argument list, and this file's fixtures build
-/// their attribute text at runtime so nothing is quoted twice.
-fn lint_allow_counts(root: &Path) -> BTreeMap<String, usize> {
-    let files: Vec<(String, String)> = walk_files(root, &["rs"])
+/// Live item-level attribute sites per ratcheted lint over `(path, source)` pairs, each `path:line`. Growth reds
+/// name the new sites so the author does not have to re-grep the workspace to find them.
+pub fn lint_allow_sites_in(files: &[(String, String)]) -> BTreeMap<String, Vec<String>> {
+    let mut sites: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (path, source) in files {
+        for silencer in lint_silencers(source)
+            .iter()
+            .filter(|silencer| !silencer.inner)
+        {
+            for lint in &silencer.lints {
+                if RATCHETED_LINTS.contains(&lint.as_str()) {
+                    sites
+                        .entry(lint.clone())
+                        .or_default()
+                        .push(format!("{path}:{}", silencer.line));
+                }
+            }
+        }
+    }
+    sites
+}
+
+/// The workspace's live per-lint counts and sites. Every `.rs` file under the scanned root is read (this checker's
+/// own source included), with paths made relative to `root` so a failure names a repo-relative `file:line`, never a
+/// machine-specific absolute path.
+fn lint_silencer_files(root: &Path) -> Vec<(String, String)> {
+    walk_files(root, &["rs"])
         .into_iter()
-        .filter_map(|p| {
-            let source = fs::read_to_string(&p).ok()?;
-            Some((p.display().to_string(), source))
+        .filter_map(|path| {
+            let source = fs::read_to_string(&path).ok()?;
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string();
+            Some((relative, source))
         })
-        .collect();
-    lint_allow_counts_in(&files)
+        .collect()
+}
+
+/// Every site in `files` that silences a §78.4 ratcheted lint invisibly: a group (`clippy::all` or a ratcheted
+/// lint's own group) through `allow` or `expect`, anywhere; or an inner `#![allow(...)]` / `#![expect(...)]` naming
+/// the exact lint. A group is red anywhere because the exact-count ratchet cannot see how many sites it covers; an
+/// inner attribute is red because it covers a whole crate/module rather than one reviewed item. Each red starts with
+/// the repo-relative `path:line`.
+pub fn forbidden_lint_silencers_in(files: &[(String, String)]) -> Vec<String> {
+    let mut reds = Vec::new();
+    for (path, source) in files {
+        for silencer in lint_silencers(source) {
+            for lint in &silencer.lints {
+                if let Some(red) = forbidden_lint_silencer(path, &silencer, lint) {
+                    reds.push(red);
+                }
+            }
+        }
+    }
+    reds
+}
+
+fn forbidden_lint_silencer(path: &str, silencer: &LintSilencer, lint: &str) -> Option<String> {
+    let line = silencer.line;
+    let marker = if silencer.inner { "#!" } else { "#" };
+    let kind = silencer.kind;
+    let ratcheted_group = RATCHETED_LINT_GROUPS
+        .iter()
+        .find(|entry| entry.0 == lint)
+        .map(|entry| entry.1);
+    if lint == CLIPPY_ALL_GROUP {
+        return Some(format!(
+            "{path}:{line}: `{marker}[{kind}(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)"
+        ));
+    }
+    if ratcheted_group.is_some_and(|group| group == lint) {
+        return Some(format!(
+            "{path}:{line}: `{marker}[{kind}(clippy::{lint})]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)"
+        ));
+    }
+    if silencer.inner && RATCHETED_LINTS.contains(&lint) {
+        return Some(format!(
+            "{path}:{line}: `#![{kind}(clippy::{lint})]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)"
+        ));
+    }
+    None
 }
 
 /// G-M01-8 pure comparator. `counts` is the live per-lint attribute count, `baselines` the `[[lint_allows]]`
-/// rows of `xtask/known_red.toml`. §78.4 ratchet: exact equality in both directions — one more allow is an
-/// un-reviewed nesting escape hatch, one fewer with the baseline unchanged is a ledger that claims an allow the
-/// tree no longer has. A ratcheted lint with no baseline row is red: the baseline is a gate input, not a
-/// default of 0.
+/// rows of `xtask/known_red.toml`, `sites` the `path:line` of each counted attribute. §78.4 ratchet: exact equality
+/// in both directions — one more allow is an un-reviewed nesting escape hatch, one fewer with the baseline
+/// unchanged is a ledger that claims an allow the tree no longer has. A ratcheted lint with no baseline row is red:
+/// the baseline is a gate input, not a default of 0.
 pub fn lint_allow_report(
     counts: &BTreeMap<String, usize>,
     baselines: &BTreeMap<String, usize>,
+    sites: &BTreeMap<String, Vec<String>>,
 ) -> Vec<String> {
     let mut reds = Vec::new();
     for lint in baselines
@@ -1958,8 +2129,13 @@ pub fn lint_allow_report(
         };
         let live = counts.get(lint).copied().unwrap_or(0);
         if live > *baseline {
+            let where_ = sites
+                .get(lint)
+                .filter(|sites| !sites.is_empty())
+                .map(|sites| format!(" (sites: {})", sites.join(", ")))
+                .unwrap_or_default();
             reds.push(format!(
-                "`{lint}` has {live} allow attributes, baseline {baseline}: a new allow needs an existing one removed in the same PR (§78.4)"
+                "`{lint}` has {live} allow attributes, baseline {baseline}: a new allow needs an existing one removed in the same PR (§78.4){where_}"
             ));
         } else if live < *baseline {
             reds.push(format!(
@@ -2093,7 +2269,9 @@ fn m01_6_lint_allow_ratchet(root: &Path) -> Verdict {
         Ok(rows) => rows,
         Err(e) => return Verdict::Fail(vec![e]),
     };
-    let counts = lint_allow_counts(root);
+    let files = lint_silencer_files(root);
+    let counts = lint_allow_counts_in(&files);
+    let sites = lint_allow_sites_in(&files);
     for lint in RATCHETED_LINTS {
         println!(
             "M01-6 / G-M01-8: `{lint}` allow attributes = {} (baseline {})",
@@ -2105,7 +2283,8 @@ fn m01_6_lint_allow_ratchet(root: &Path) -> Verdict {
     }
     let mut reds = lint_level_problems(&cargo);
     reds.extend(nesting_threshold_problems(&clippy));
-    reds.extend(lint_allow_report(&counts, &baselines));
+    reds.extend(lint_allow_report(&counts, &baselines, &sites));
+    reds.extend(forbidden_lint_silencers_in(&files));
     if reds.is_empty() {
         Verdict::Pass
     } else {
@@ -10201,7 +10380,7 @@ pub fn run(_args: &[String]) -> i32 {
             m01_4_real_path_or_dormant(&root),
         ),
         (
-            "M01 D6 / G-M01-8 (§78.4 allow-count ratchet: excessive_nesting denied at clippy.toml's threshold, too_many_lines warn, and each lint's workspace-wide allow count equals its exact xtask/known_red.toml [[lint_allows]] baseline)",
+            "M01 D6 / G-M01-8 (§78.4 allow-count ratchet: excessive_nesting denied at clippy.toml's threshold, too_many_lines warn, each lint's workspace-wide `allow`/`expect` count equals its exact xtask/known_red.toml [[lint_allows]] baseline, and group or inner attributes that would silence a ratcheted lint are forbidden)",
             m01_6_lint_allow_ratchet(&root),
         ),
         (
@@ -13465,6 +13644,14 @@ runs:
         format!("#[allow({lints})]")
     }
 
+    fn expect_attr(lints: &str) -> String {
+        format!("#[expect({lints})]")
+    }
+
+    fn inner_allow_attr(lints: &str) -> String {
+        format!("#![allow({lints})]")
+    }
+
     fn counts(too_many_lines: usize, excessive_nesting: usize) -> BTreeMap<String, usize> {
         BTreeMap::from([
             ("too_many_lines".to_string(), too_many_lines),
@@ -13479,27 +13666,60 @@ runs:
         )
     }
 
-    /// Every spelling the compiler accepts is one occurrence: a plain allow, a multi-lint allow, a multi-line
-    /// allow, and the crate-level inner attribute. Another lint's allow, a comment mention, an `expect` and
-    /// `disallow(` are not occurrences.
+    /// Every item-level spelling the compiler accepts is one occurrence: a plain allow, a multi-lint allow, a
+    /// multi-line allow, an `expect`, and both spellings inside `cfg_attr(...)`. Another lint's allow, a group, a
+    /// comment mention, an inner attribute and `disallow(` are not item-level occurrences of the exact lint.
     #[test]
     fn allow_attribute_count_counts_every_spelling_of_one_occurrence() {
         let plain = allow_attr("clippy::too_many_lines");
         let multi = allow_attr("clippy::too_many_arguments, clippy::too_many_lines");
         let multi_line = format!("#[allow(\n    // why\n    {}\n)]", "clippy::too_many_lines");
-        let inner = format!("#![allow({})]", "clippy::too_many_lines");
         for (label, src) in [
             ("plain", plain.clone()),
             ("multi", multi),
-            ("multi_line", multi_line),
-            ("inner", inner),
+            (
+                "expect",
+                expect_attr("clippy::too_many_lines, reason = \"measured\""),
+            ),
+            (
+                "cfg_attr_allow",
+                format!(
+                    "#[cfg_attr(feature = \"x\", allow({}))]",
+                    "clippy::too_many_lines"
+                ),
+            ),
+            (
+                "cfg_attr_expect",
+                format!(
+                    "#[cfg_attr(feature = \"x\", expect({}))]",
+                    "clippy::too_many_lines"
+                ),
+            ),
         ] {
             assert_eq!(allow_attribute_count(&src, "too_many_lines"), 1, "{label}");
         }
         assert_eq!(
+            allow_attribute_count(&multi_line, "too_many_lines"),
+            1,
+            "multi_line"
+        );
+        assert_eq!(
+            allow_attribute_count(
+                &inner_allow_attr("clippy::too_many_lines"),
+                "too_many_lines"
+            ),
+            0,
+            "an inner attribute is forbidden, not counted as one item"
+        );
+        assert_eq!(
             allow_attribute_count(&allow_attr("clippy::too_many_arguments"), "too_many_lines"),
             0,
             "another lint's allow is not this lint's allow"
+        );
+        assert_eq!(
+            allow_attribute_count(&allow_attr("clippy::complexity"), "excessive_nesting"),
+            0,
+            "a group is not the exact lint (it is forbidden separately)"
         );
         assert_eq!(
             allow_attribute_count(
@@ -13510,21 +13730,48 @@ runs:
             "a comment mention is not an occurrence"
         );
         assert_eq!(
-            allow_attribute_count(
-                &format!("#[expect({})]", "clippy::too_many_lines"),
-                "too_many_lines"
-            ),
-            0,
-            "expect is not allow"
-        );
-        assert_eq!(
             allow_attribute_count("fn disallow(x: u8) -> u8 { x }", "too_many_lines"),
             0,
             "disallow( is not the attribute"
         );
     }
 
-    /// The count sums across files and is absent for a lint nobody allows.
+    /// The pure scanner reports `path:line` for every forbidden form, in every spelling, and nothing for a plain
+    /// item-level exact allow/expect (that one is counted, not forbidden).
+    #[test]
+    fn forbidden_lint_silencers_in_names_every_group_and_inner_site() {
+        let files = vec![
+            (
+                "a.rs".to_string(),
+                format!(
+                    "{}\n{}\n{}\n",
+                    allow_attr("clippy::complexity"),
+                    expect_attr("clippy::pedantic"),
+                    allow_attr("clippy::all")
+                ),
+            ),
+            (
+                "b.rs".to_string(),
+                format!(
+                    "{}\n{}",
+                    inner_allow_attr("clippy::excessive_nesting"),
+                    expect_attr("clippy::too_many_lines")
+                ),
+            ),
+        ];
+        assert_eq!(
+            forbidden_lint_silencers_in(&files),
+            vec![
+                "a.rs:1: `#[allow(clippy::complexity)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string(),
+                "a.rs:2: `#[expect(clippy::pedantic)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string(),
+                "a.rs:3: `#[allow(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)".to_string(),
+                "b.rs:1: `#![allow(clippy::excessive_nesting)]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)".to_string(),
+            ]
+        );
+    }
+
+    /// The count sums across files and is absent for a lint nobody allows; `expect` counts like `allow`, and the
+    /// per-lint sites are the exact `path:line` set the growth red will name.
     #[test]
     fn lint_allow_counts_in_sums_the_files() {
         let files = vec![
@@ -13536,32 +13783,62 @@ runs:
                     allow_attr("clippy::too_many_lines, clippy::excessive_nesting")
                 ),
             ),
-            ("b.rs".to_string(), allow_attr("clippy::excessive_nesting")),
+            (
+                "b.rs".to_string(),
+                format!(
+                    "{}\n{}\n",
+                    allow_attr("clippy::excessive_nesting"),
+                    expect_attr("clippy::too_many_lines")
+                ),
+            ),
         ];
         assert_eq!(
             lint_allow_counts_in(&files),
-            counts(2, 2),
-            "one per attribute, multi-lint allow counted for both lints"
+            counts(3, 2),
+            "one per attribute, multi-lint allow counted for both lints, expect counted"
+        );
+        assert_eq!(
+            lint_allow_sites_in(&files),
+            BTreeMap::from([
+                (
+                    "too_many_lines".to_string(),
+                    vec![
+                        "a.rs:1".to_string(),
+                        "a.rs:2".to_string(),
+                        "b.rs:2".to_string()
+                    ]
+                ),
+                (
+                    "excessive_nesting".to_string(),
+                    vec!["a.rs:2".to_string(), "b.rs:1".to_string()]
+                ),
+            ])
         );
         let none: Vec<(String, String)> = vec![("c.rs".to_string(), "fn f() {}".to_string())];
         assert!(lint_allow_counts_in(&none).is_empty());
+        assert!(lint_allow_sites_in(&none).is_empty());
     }
 
-    /// Exact equality in both directions: growth names the new count, decline names the baseline the same PR must
-    /// lower. An unknown lint row and a missing ratcheted-lint row are their own reds.
+    /// Exact equality in both directions: growth names the new count and the new sites, decline names the baseline
+    /// the same PR must lower. An unknown lint row and a missing ratcheted-lint row are their own reds.
     #[test]
     fn lint_allow_report_is_exact_in_both_directions() {
         let baseline = counts(210, 3);
-        assert!(lint_allow_report(&counts(210, 3), &baseline).is_empty());
+        let sites = BTreeMap::from([(
+            "too_many_lines".to_string(),
+            vec!["crates/x/src/lib.rs:7".to_string()],
+        )]);
+        let empty_sites = BTreeMap::new();
+        assert!(lint_allow_report(&counts(210, 3), &baseline, &sites).is_empty());
 
-        let grew = lint_allow_report(&counts(211, 3), &baseline);
+        let grew = lint_allow_report(&counts(211, 3), &baseline, &sites);
         assert_eq!(grew.len(), 1, "{grew:?}");
-        assert!(
-            grew[0].contains("`too_many_lines` has 211 allow attributes, baseline 210"),
-            "{grew:?}"
+        assert_eq!(
+            grew[0],
+            "`too_many_lines` has 211 allow attributes, baseline 210: a new allow needs an existing one removed in the same PR (§78.4) (sites: crates/x/src/lib.rs:7)"
         );
 
-        let shrank = lint_allow_report(&counts(210, 2), &baseline);
+        let shrank = lint_allow_report(&counts(210, 2), &baseline, &sites);
         assert_eq!(shrank.len(), 1, "{shrank:?}");
         assert!(
             shrank[0].contains("`excessive_nesting` has 2 allow attributes, baseline 3")
@@ -13573,12 +13850,12 @@ runs:
             ("too_many_lines".to_string(), 210),
             ("file_loc".to_string(), 1),
         ]);
-        let reds = lint_allow_report(&counts(0, 0), &unknown);
+        let reds = lint_allow_report(&counts(0, 0), &unknown, &empty_sites);
         assert_eq!(reds.len(), 3, "{reds:?}");
         assert!(reds[0].contains("`file_loc`") && reds[0].contains("not a §78.4 ratcheted lint"));
 
         let no_row = BTreeMap::from([("too_many_lines".to_string(), 210)]);
-        let reds = lint_allow_report(&counts(210, 0), &no_row);
+        let reds = lint_allow_report(&counts(210, 0), &no_row, &empty_sites);
         assert_eq!(reds.len(), 1, "{reds:?}");
         assert!(
             reds[0].contains("no xtask/known_red.toml [[lint_allows]] row for `excessive_nesting`"),
@@ -13693,9 +13970,15 @@ runs:
         assert_eq!(own_source_count("m01_6_lint_allow_", "ratchet(&root),"), 1);
     }
 
-    /// A scratch tree holding exactly the three inputs G-M01-8 reads plus `allows` attributes in one member
-    /// source file, so the gate's own red and green directions run through [`m01_6_lint_allow_ratchet`].
-    fn g_m01_8_tree(tag: &str, allows: usize, baseline: usize) -> PathBuf {
+    /// A scratch tree holding exactly the three inputs G-M01-8 reads plus `body` in one member source file, so the
+    /// gate's own red and green directions run through [`m01_6_lint_allow_ratchet`]. Ledger counts are explicit so a
+    /// prohibition case can keep the count matched and fail on the prohibition alone.
+    fn g_m01_8_tree_with(
+        tag: &str,
+        body: &str,
+        too_many_lines: usize,
+        excessive_nesting: usize,
+    ) -> PathBuf {
         let tmp =
             std::env::temp_dir().join(format!("arch-check-m01-8-{tag}-{}", std::process::id()));
         fs::remove_dir_all(&tmp).ok();
@@ -13707,14 +13990,177 @@ runs:
         )
         .unwrap();
         fs::write(tmp.join("clippy.toml"), "excessive-nesting-threshold = 5\n").unwrap();
+        fs::write(tmp.join("crates/x/src/lib.rs"), body).unwrap();
+        fs::write(
+            tmp.join("xtask/known_red.toml"),
+            ledger_rows(too_many_lines, excessive_nesting),
+        )
+        .unwrap();
+        tmp
+    }
+
+    fn g_m01_8_tree(tag: &str, allows: usize, baseline: usize) -> PathBuf {
         let attr = allow_attr("clippy::excessive_nesting");
         let mut src = String::new();
         for i in 0..allows {
             src.push_str(&format!("{attr}\nfn f{i}() {{}}\n"));
         }
-        fs::write(tmp.join("crates/x/src/lib.rs"), src).unwrap();
-        fs::write(tmp.join("xtask/known_red.toml"), ledger_rows(0, baseline)).unwrap();
-        tmp
+        g_m01_8_tree_with(tag, &src, 0, baseline)
+    }
+
+    /// 注错 (G-M01-8): an item-level `expect` is counted exactly like `allow`, so one new expect at a new site is
+    /// red on the count assertion and names the site.
+    #[test]
+    fn g_m01_8_item_expect_is_counted_as_a_new_site() {
+        let body = format!(
+            "{}\nfn f() {{}}\n",
+            expect_attr("clippy::excessive_nesting")
+        );
+        let tmp = g_m01_8_tree_with("expect", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "`excessive_nesting` has 1 allow attributes, baseline 0: a new allow needs an existing one removed in the same PR (§78.4) (sites: crates/x/src/lib.rs:1)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): `clippy::complexity` is `excessive_nesting`'s group; a group allow is forbidden at its site
+    /// even though the exact-lint count is zero.
+    #[test]
+    fn g_m01_8_complexity_group_is_forbidden() {
+        let body = format!("{}\nfn f() {{}}\n", allow_attr("clippy::complexity"));
+        let tmp = g_m01_8_tree_with("complexity", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#[allow(clippy::complexity)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): `clippy::pedantic` is `too_many_lines`'s group, so the same prohibition applies to it.
+    #[test]
+    fn g_m01_8_pedantic_group_is_forbidden_for_too_many_lines() {
+        let body = format!("{}\nfn f() {{}}\n", allow_attr("clippy::pedantic"));
+        let tmp = g_m01_8_tree_with("pedantic", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#[allow(clippy::pedantic)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): `clippy::all` covers every group, so it is forbidden at its site too.
+    #[test]
+    fn g_m01_8_clippy_all_is_forbidden() {
+        let body = format!("{}\nfn f() {{}}\n", allow_attr("clippy::all"));
+        let tmp = g_m01_8_tree_with("all", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#[allow(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): an inner `#![allow(...)]` of the exact lint is forbidden, not counted as one item.
+    #[test]
+    fn g_m01_8_inner_allow_is_forbidden_even_for_the_exact_lint() {
+        let body = format!(
+            "{}\nfn f() {{}}\n",
+            inner_allow_attr("clippy::excessive_nesting")
+        );
+        let tmp = g_m01_8_tree_with("inner-allow", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#![allow(clippy::excessive_nesting)]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): `expect` is counted like `allow`, so the inner form is forbidden like the inner allow.
+    #[test]
+    fn g_m01_8_inner_expect_is_forbidden() {
+        let body = format!(
+            "{}\nfn f() {{}}\n",
+            expect_attr("clippy::too_many_lines").replacen("#[", "#![", 1)
+        );
+        let tmp = g_m01_8_tree_with("inner-expect", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#![expect(clippy::too_many_lines)]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): the same bypass through `cfg_attr(..., expect(...))` is counted, at the attribute's line.
+    #[test]
+    fn g_m01_8_cfg_attr_expect_is_counted() {
+        let body = format!(
+            "#[cfg_attr(feature = \"x\", expect({}))]\nfn f() {{}}\n",
+            "clippy::excessive_nesting"
+        );
+        let tmp = g_m01_8_tree_with("cfg-expect", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "`excessive_nesting` has 1 allow attributes, baseline 0: a new allow needs an existing one removed in the same PR (§78.4) (sites: crates/x/src/lib.rs:1)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): a group inside `cfg_attr(..., allow(...))` is forbidden at the attribute's line.
+    #[test]
+    fn g_m01_8_cfg_attr_group_is_forbidden() {
+        let body = format!(
+            "#[cfg_attr(feature = \"x\", allow({}))]\nfn f() {{}}\n",
+            "clippy::complexity"
+        );
+        let tmp = g_m01_8_tree_with("cfg-group", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#[allow(clippy::complexity)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string()
+            ])
+        );
+    }
+
+    /// 注错 (G-M01-8): an inner `cfg_attr(..., allow(...))` is still an inner attribute and is forbidden at its line.
+    #[test]
+    fn g_m01_8_inner_cfg_attr_allow_is_forbidden() {
+        let body = format!(
+            "#![cfg_attr(feature = \"x\", allow({}))]\nfn f() {{}}\n",
+            "clippy::excessive_nesting"
+        );
+        let tmp = g_m01_8_tree_with("inner-cfg-allow", &body, 0, 0);
+        let verdict = m01_6_lint_allow_ratchet(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            verdict,
+            Verdict::Fail(vec![
+                "crates/x/src/lib.rs:1: `#![allow(clippy::excessive_nesting)]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)".to_string()
+            ])
+        );
     }
 
     /// 注错 (G-M01-8): one extra allow at a new site is red on the ratchet's own assertion, naming the count and
