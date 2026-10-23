@@ -135,6 +135,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::plan_repo`
@@ -1618,6 +1619,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -2099,6 +2101,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -2752,6 +2755,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -3823,6 +3827,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -4429,6 +4434,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -10585,6 +10591,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::projection_claim`
+- (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::tenant_placements_migration`
@@ -10595,9 +10602,15 @@ written by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::rebuild_cli`
+- process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-consolidation-worker): `adapters::placement_repo`
+- process(humaux-gateway): `adapters::placement_repo`
+- process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
+- process(humaux-private-worker): `adapters::placement_repo`
+- process(humaux-retrieval-worker): `adapters::placement_repo`
 
 executed by:
 
@@ -11856,6 +11869,9 @@ executed by:
 
 ### `fs(statvfs of the DR paths)`
 - `maintenance::serve`
+
+### `subprocess(bash)`
+- `xtask::tests::experiment_workflow`
 
 ### `subprocess(cargo)`
 - `fail-closed-macro::tests::compile_fail`
@@ -17410,6 +17426,15 @@ db-bound (default run): no
 services (computed):
 
 default run:
+
+### `xtask/tests/experiment_workflow.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
+- subprocess
 
 ### `xtask/tests/version.rs`
 db-bound (default run): no

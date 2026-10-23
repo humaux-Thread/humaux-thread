@@ -7,7 +7,8 @@
 //!   control.workspaces, ops.jobs, ops.outbox, private.events, private.evidence_objects,
 //!   private.identity_note_materializations, private.memory_affects, private.memory_evidence, private.memory_records,
 //!   private.memory_subjects, private.subjects, projection.card_profile_policies, projection.memory_vectors,
-//!   projection.private_memory_points, projection.stream_checkpoints, projection.stream_log]
+//!   projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
+//!   projection.tenant_placements]
 //!   x=[private.memory_subject_visibility_ok, projection.note_chunk_count],
 //!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway) x=[projection.stream_point_ledger],
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*),
@@ -39,6 +40,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use humaux_adapters::postgres::{RetrievalWorkerDbPool, RuntimeDbPool};
+use humaux_adapters::private_projection_registry::{
+    bind_embedding_fingerprint, worker_fingerprint_inputs,
+};
 use humaux_adapters::projection_worker::{CardEmbedder, ProjectionWorkerDeps, run_once};
 use humaux_adapters::qdrant::{
     DenseCandidate, DenseQuery, DenseQueryVersions, Distance, PlacementClass, PointId,
@@ -166,6 +170,7 @@ impl Drop for Handle {
             "DELETE FROM ops.jobs WHERE tenant_id = '{0}'; \
              DELETE FROM projection.private_memory_points WHERE tenant_id = '{0}'; \
              DELETE FROM projection.memory_vectors WHERE tenant_id = '{0}'; \
+             DELETE FROM projection.tenant_placements WHERE tenant_id = '{0}'; \
              DELETE FROM ops.outbox WHERE tenant_id = '{0}'; \
              DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
              DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}'; \
@@ -742,6 +747,32 @@ fn collection_point_count(handle: &Handle) -> u64 {
         .json_body
         .and_then(|body| body["result"]["count"].as_u64())
         .expect("count response carries result.count")
+}
+
+/// The tenant's §17.3 private-memory placement counters, `(point_count, bytes_estimate)`.
+fn placement_counts(handle: &mut Handle) -> (i64, i64) {
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT point_count, bytes_estimate FROM projection.tenant_placements \
+             WHERE tenant_id = $1 AND projection_family = 'private_memory_v1'",
+            &[&handle.tenant_id],
+        )
+        .expect("the fixture's placement row");
+    (row.get(0), row.get(1))
+}
+
+/// The registry's own live-binding count — the §17.3 counter's PG-side ground truth.
+fn live_binding_count(handle: &mut Handle) -> i64 {
+    handle
+        .admin
+        .query_one(
+            "SELECT count(*) FROM projection.private_memory_points \
+             WHERE tenant_id = $1 AND projection_live",
+            &[&handle.tenant_id],
+        )
+        .expect("registry count")
+        .get(0)
 }
 
 fn projection_highwater(handle: &mut Handle, key: &(Uuid, &str, Uuid, &str, &str, &str)) -> i64 {
@@ -3202,6 +3233,154 @@ fn stale_worker_delete_is_refused_by_seq_fence() {
             assert!(!point_present(&handle, point), "the stored seq deletes it");
         },
     );
+}
+
+/// The G-M10-6 fixture (§17.3, card M10-5): a tenant with the placement row provisioning creates
+/// (`projection.ensure_tenant_placement`, 0186 — the resident claim joins it), two TENANT_SHARED memories, and
+/// worker deps under a label of this test's own bound as the worker binds it at boot, so every registration
+/// carries its vector (ADR-0064 D-B) and the byte term has a dimension to state.
+fn placement_gate_fixture(
+    handle: &mut Handle,
+) -> (Uuid, ProjectionWorkerDeps, Governor, Uuid, Uuid) {
+    handle
+        .admin
+        .execute(
+            "INSERT INTO projection.tenant_placements \
+               (tenant_id, projection_family, collection_name, placement_class) \
+             VALUES ($1, 'private_memory_v1', $2, 'SHARED_FALLBACK')",
+            &[&handle.tenant_id, &handle.collection],
+        )
+        .expect("placement row");
+    let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
+    let scope_id = seed_workspace(handle);
+    gov.join(&mut handle.admin, scope_id);
+    let memory_a = seed_memory_with_visibility(
+        handle,
+        scope_id,
+        "placement counter memory a",
+        "TENANT_SHARED",
+        None,
+        None,
+    )
+    .1;
+    let memory_b = seed_memory_with_visibility(
+        handle,
+        scope_id,
+        "placement counter memory b",
+        "TENANT_SHARED",
+        None,
+        None,
+    )
+    .1;
+    let provider = Arc::new(TestDoubleProvider::new(
+        embedding_model(),
+        unused_rerank_model(),
+    ));
+    let mut deps = handle.rt.block_on(deps_for(handle, scope_id, provider));
+    deps.embedding_version = format!("m10-5-{}", Uuid::new_v4().simple());
+    handle
+        .rt
+        .block_on(bind_embedding_fingerprint(
+            &deps.pool,
+            &deps.embedding_version,
+            &worker_fingerprint_inputs("m10-5-test", &deps.embedding_version, "r1", 4, "v1"),
+        ))
+        .expect("label binding");
+    (scope_id, deps, gov, memory_a, memory_b)
+}
+
+/// One exact §17.3 checkpoint: the placement counters, the registry's live bindings and Qdrant's own count must
+/// agree on the same number, so the gate cannot pass on a counter that merely looks plausible.
+fn assert_placement_state(handle: &mut Handle, counters: (i64, i64), points: u64, why: &str) {
+    assert_eq!(placement_counts(handle), counters, "{why}");
+    assert_eq!(collection_point_count(handle), points, "{why}: Qdrant");
+    assert_eq!(
+        live_binding_count(handle),
+        i64::try_from(points).expect("a count is positive"),
+        "{why}: registry"
+    );
+}
+
+/// G-M10-6 (§17.3, card M10-5): the placement counters are written from the worker's own successful point writes,
+/// in the binding transaction, with no Qdrant count scan. After a known sequence — two upserts, one re-upsert of
+/// an already-bound point, one delete and one revive — `point_count` is exactly the live binding count and
+/// `bytes_estimate` exactly those bindings' dense bytes (the fixture embeds 4 dimensions, so 16 B per point).
+/// The Qdrant-side count is asserted as ground truth at every step, never "non-empty".
+/// Fault: count a re-upsert as new (`AlreadyRegistered` also moving `+1`) → red on the second counter assertion.
+#[test]
+fn point_count_written() {
+    run_db_fixture::<Fixture, _>("point_count_written", |mut handle| {
+        let (scope_id, deps, gov, memory_a, memory_b) = placement_gate_fixture(&mut handle);
+
+        // n = 2 upserts.
+        let outcome = handle
+            .rt
+            .block_on(run_once(&deps, 10))
+            .expect("indexing pass");
+        assert_eq!((outcome.done, outcome.failed), (2, 0), "{outcome:?}");
+        assert_placement_state(&mut handle, (2, 32), 2, "two 4-d f32 vectors");
+
+        // One re-upsert of an already-bound point: archive issues a lifecycle ticket and the worker rewrites the
+        // SAME deterministic point id (the source identity did not change), so nothing new is counted.
+        let point_a = point_id_for_memory(&mut handle, memory_a);
+        archive_step(
+            &mut handle,
+            &deps,
+            &gov,
+            scope_id,
+            memory_a,
+            DestructiveOp::MemoryArchive,
+        );
+        assert_eq!(
+            point_id_for_memory(&mut handle, memory_a),
+            point_a,
+            "the archive pass re-upserted the same point"
+        );
+        assert_placement_state(
+            &mut handle,
+            (2, 32),
+            2,
+            "a re-upsert of an existing point must not count twice",
+        );
+
+        // m = 1 delete: the supersede makes the source non-live and the retire pass deletes its point.
+        let (auth, key) = (
+            gov.scope(scope_id),
+            governance_ops::stream(handle.tenant_id, scope_id),
+        );
+        governance_ops::supersede(&handle.rt, &handle.gateway, &auth, &key, memory_a, memory_b)
+            .expect("supersede a");
+        let outcome = handle
+            .rt
+            .block_on(run_once(&deps, 10))
+            .expect("retire pass");
+        assert_eq!((outcome.done, outcome.failed), (1, 0), "{outcome:?}");
+        assert_placement_state(
+            &mut handle,
+            (1, 16),
+            1,
+            "the delete takes exactly its own point",
+        );
+        assert!(
+            !point_present(&handle, point_a),
+            "the superseded memory's point is gone"
+        );
+
+        // One revive: the restore brings the same binding back, which is one live point again.
+        governance_ops::restore(&handle.rt, &handle.gateway, &auth, &key, memory_a)
+            .expect("restore a");
+        let outcome = handle
+            .rt
+            .block_on(run_once(&deps, 10))
+            .expect("revive pass");
+        assert_eq!((outcome.done, outcome.failed), (1, 0), "{outcome:?}");
+        assert_placement_state(
+            &mut handle,
+            (2, 32),
+            2,
+            "a revived binding is a live point again",
+        );
+    });
 }
 
 /// ADR-0068 card 40d-1b-ii: the worker's note chunk path, asserted on real registry rows, real Qdrant points and the

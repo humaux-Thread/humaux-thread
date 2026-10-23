@@ -12267,6 +12267,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::projection_claim`
+- (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::tenant_placements_migration`
@@ -12277,9 +12278,15 @@ written by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::rebuild_cli`
+- process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-consolidation-worker): `adapters::placement_repo`
+- process(humaux-gateway): `adapters::placement_repo`
+- process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
+- process(humaux-private-worker): `adapters::placement_repo`
+- process(humaux-retrieval-worker): `adapters::placement_repo`
 
 executed by:
 
