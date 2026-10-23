@@ -173,6 +173,7 @@ modules:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
@@ -1166,6 +1167,51 @@ modules:
 - `gateway::bootstrap`
 - `gateway::tests::mcp_gateway`
 - `xtask::e2e_onboard`
+
+### `HUMAUX_GATEWAY_AUTH_HMAC_KEY`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
+
+### `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
 
 ### `HUMAUX_GATEWAY_B`
 - witness: literal
@@ -5685,6 +5731,7 @@ modules:
 - `adapters::consolidate_repo`
 - `adapters::postgres`
 - `adapters::stream_repo`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -5704,6 +5751,7 @@ modules:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -5714,6 +5762,7 @@ modules:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -5727,6 +5776,7 @@ modules:
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::note_chunk_count_parity`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_assessed_contract`
@@ -6016,6 +6066,18 @@ modules:
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::ops_listener`
 - `private-worker::tests::same_uid_boot`
+
+### `SUBCOMMAND`
+- witness: literal
+- registry: raw
+
+kind:
+- child
+
+processes:
+
+modules:
+- `xtask::tests::experiment_workflow`
 
 ### `no_proxy`
 - witness: literal

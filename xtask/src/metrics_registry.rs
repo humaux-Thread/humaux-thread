@@ -59,6 +59,11 @@ const PROCESSES: [&str; 6] = [
 /// producer card has to delete its row (E10 closed: card 34b's private worker exports the two
 /// distill counters; card 37's `humaux-maintenance --serve` exports
 /// `backup_last_success_timestamp_seconds`, ADR-0064 D-K). Empty: every rule-referenced family is exported.
+///
+/// This list exempts D8(c) only: a family here must still be registered in §41.2, because D8(a)
+/// rejects every unregistered name in a rule `expr:` (§41.2, §57.1). A row added before that
+/// registration and its reading rule is dead weight and fails
+/// `t_h6_d8_allowlist_is_the_only_not_applicable_path`, which asserts this list is empty.
 const NOT_YET_PRODUCED: &[(&str, &str)] = &[];
 
 /// D7 / D8(c): families a process declares (`# TYPE`) whose zero-state render deliberately has no sample, because
