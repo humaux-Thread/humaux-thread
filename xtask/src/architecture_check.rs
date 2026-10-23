@@ -13655,7 +13655,14 @@ runs:
             "no lint_allows section is an empty map, never a parse error"
         );
         for (toml, needle) in [
-            ("lint_allows = []\n".to_string(), "must be written [[lint_allows]]"),
+            (
+                "lint_allows = []\n".to_string(),
+                "[[lint_allows]] is empty; every ratcheted lint needs its baseline row",
+            ),
+            (
+                "lint_allows = 1\n".to_string(),
+                "must be written [[lint_allows]]",
+            ),
             (
                 "[[lint_allows]]\nlint = \"too_many_lines\"\ncount = 1\nowner = \"M01-6\"\nreason = \"r\"\n\
                  [[lint_allows]]\nlint = \"too_many_lines\"\ncount = 1\nowner = \"M01-6\"\nreason = \"r\"\n"

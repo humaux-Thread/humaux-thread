@@ -295,7 +295,7 @@ reason = "pre-existing population measured 2026-10-23 on card/m01-6-nesting-ratc
 
 [[lint_allows]]
 lint = "excessive_nesting"
-count = 1
+count = 3
 owner = "M01-6"
-reason = "exactly one allow: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list, whose ARRAY[...] scan nests past clippy.toml's threshold of 5; measured by CI run 39954828293 (the first clippy run with the lint on: 4 blocks over the ceiling, all in that one test helper), allowed with a ponytail reason because M01-6 refactors nothing"
+reason = "exactly three allows, each a measured site: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list (4 blocks over clippy.toml's threshold of 5, CI run 39954828293) and the two spawned accept loops of crates/infra-cell/src/transport.rs::{rebinding_between_successive_calls_is_rejected_by_the_same_resolver, stable_resolution_to_a_cell_address_succeeds_on_every_call} (2 blocks, CI run 39957055872); all test fixtures, allowed with a ponytail reason because M01-6 refactors nothing"
 
