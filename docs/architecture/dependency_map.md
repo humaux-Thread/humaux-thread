@@ -13520,6 +13520,7 @@ modules naming it:
 - `application::entitlement`
 - `application::login`
 - `application::notify`
+- `application::oauth`
 - `application::pin`
 - `application::public_evolve`
 - `application::referral`
@@ -13567,6 +13568,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::contribution_execution`
+- `application::oauth`
 - `application::referral`
 - `application::signed_token`
 - `tests`
@@ -13626,10 +13628,23 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::correct`
+- `application::oauth`
 - `application::pin`
 - `application::public_evolve`
 - `application::retrieval_embedding_port`
 - `tests`
+
+### humaux-application → `base64` (normal)
+why: unpadded base64url encoding of the PKCE S256 digest
+
+modules naming it:
+- `application::oauth`
+
+### humaux-application → `time` (normal)
+why: OffsetDateTime expiry/ceiling arithmetic of grants
+
+modules naming it:
+- `application::oauth`
 
 ### humaux-application → `tokio` (dev)
 why: async executor for #[tokio::test] fixtures of async ports
