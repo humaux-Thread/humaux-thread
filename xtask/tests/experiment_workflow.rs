@@ -1,6 +1,6 @@
 //! `xtask::tests::experiment_workflow` — `.github/workflows/experiment.yml`'s subcommand guard (M24-16): the dispatch
 //!   input reaches the shell as `$SUBCOMMAND`, and a value outside the workflow's choice list exits 2 before cargo.
-//! Depends-on: crates=[]; services=[subprocess(bash)]; env=[]; modules=[]
+//! Depends-on: crates=[]; services=[subprocess(bash)]; env=[SUBCOMMAND]; modules=[]
 //! Called-by: [cargo-test]
 //! Invariants: [the guard body is extracted from the committed workflow, never restated; the case arms equal the
 //!   workflow's `options:` list exactly; an unknown, empty, padded or unset value exits 2]
@@ -103,8 +103,8 @@ fn choice_list() -> Vec<String> {
 
 /// Run the extracted guard with `subcommand` set in the environment (`None` leaves it unset).
 fn run_guard(script: &str, subcommand: Option<&str>) -> Output {
-    let mut command = Command::new("bash");
     // dep: subprocess(bash) — the workflow's own guard text, not a second copy of it
+    let mut command = Command::new("bash");
     command
         .arg("-c")
         .arg(script)
