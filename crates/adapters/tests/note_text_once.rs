@@ -6,7 +6,7 @@
 //!   services=[PostgreSQL(owner) w=[private.events, private.identity_note_materializations, private.memory_records],
 //!   PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::memory_repo, adapters::operation_receipt,
-//!   adapters::note_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::remember,
+//!   adapters::note_repo, adapters::read_gate, adapters::read_materialize, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::evidence,
 //!   domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
@@ -31,7 +31,6 @@ use humaux_adapters::{
     memory_repo::{self, MemoryText},
     note_repo::NoteIntake,
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION},
-    postgres::RuntimeDbPool,
     read_gate::{
         MaterializedMemory, MaterializedMemoryPage, MemoryEnumerationParams, NoteEnumerationFilter,
         materialize_memory_enumeration_filtered, materialize_memory_get,
