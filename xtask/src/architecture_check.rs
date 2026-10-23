@@ -14914,8 +14914,8 @@ async fn serving_version_in_txn() {}
                 (
                     "migrations/0263_onboarding.sql",
                     "-- the free plan is a row of the catalogue; 'free' here is prose\n\
-                     CREATE FUNCTION control.onboard_default_plan() RETURNS void LANGUAGE sql AS $$\n\
-                       INSERT INTO control.plans (plan_key) VALUES ('free');\n\
+                     CREATE FUNCTION onboard_default_plan() RETURNS void LANGUAGE sql AS $$\n\
+                       INSERT INTO plans (plan_key) VALUES ('free');\n\
                      $$;\n",
                 ),
             ],
@@ -14935,8 +14935,8 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m04_1_does_not_rescan_migrations_at_or_below_the_floor() {
         let body = "-- the free plan is a row of the catalogue; 'free' here is prose\n\
-                    CREATE FUNCTION control.onboard_default_plan() RETURNS void LANGUAGE sql AS $$\n\
-                      INSERT INTO control.plans (plan_key) VALUES ('free');\n\
+                    CREATE FUNCTION onboard_default_plan() RETURNS void LANGUAGE sql AS $$\n\
+                      INSERT INTO plans (plan_key) VALUES ('free');\n\
                     $$;\n";
         for name in [
             "migrations/0262_onboarding.sql",
@@ -14959,8 +14959,8 @@ async fn serving_version_in_txn() {}
             "m04-1-red-migration-price",
             &[(
                 "migrations/0263_price_update.sql",
-                "UPDATE control.plan_versions SET price_cents = 4900 WHERE version = 1;\n\
-                 SELECT pg_catalog.jsonb_build_object('price_cents', 4900);\n",
+                "UPDATE plan_versions SET price_cents = 4900 WHERE version = 1;\n\
+                 SELECT jsonb_build_object('price_cents', 4900);\n",
             )],
         );
         let line = m04_fail_line(&tmp);
