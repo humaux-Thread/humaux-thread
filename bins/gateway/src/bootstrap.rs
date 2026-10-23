@@ -8,7 +8,8 @@
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
-//!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR,
+//!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_AUTH_HMAC_KEY,
+//!   HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED, HUMAUX_GATEWAY_BIND_ADDR,
 //!   HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES, HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED,
 //!   HUMAUX_GATEWAY_CACHE_EMBED_QUERY_TTL_SECONDS, HUMAUX_GATEWAY_CACHE_PER_TENANT_BYTES,
 //!   HUMAUX_GATEWAY_CALLER_ID, HUMAUX_GATEWAY_CELL_ID, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS,
@@ -122,6 +123,10 @@ const RERANK_PIN_KEYS: [&str; 5] = [
     "HUMAUX_GATEWAY_RERANK_MODEL_SHA256",
     "HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256",
 ];
+/// M02 D3: `true` enables the auth surface; only then is [`AUTH_HMAC_KEY_KEY`] required (no default, never logged).
+const AUTH_SURFACE_ENABLED_KEY: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
+const AUTH_HMAC_KEY_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
+const AUTH_HMAC_KEY_PREVIOUS_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS";
 const CREDENTIAL_TOUCH_INTERVAL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS";
 /// Largest accepted credential touch interval: one hour. A technical bound, not a business limit: the stamp feeds the
 /// 24 h activity window of `ops.health_snapshot` (0261), and an interval beyond an hour would blur it by more than a
@@ -246,6 +251,9 @@ pub struct GatewayBootstrap {
     mood_half_life: Duration,
     /// §15.5 / ADR-0059 D-G consistency-token MAC keys, installed process-wide in [`Self::build`].
     token_keys: TokenKeys,
+    /// M02 D3 auth-surface MAC keys; `Some` exactly when `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is true. A separate
+    /// key pair from `token_keys`: one leak must not mint both token families.
+    auth_keys: Option<TokenKeys>,
     /// ADR-0061 D-B `HUMAUX_GATEWAY_METRICS_ADDR`: the loopback ops listener (`/metrics`, `/status`).
     metrics_addr: SocketAddr,
     /// ADR-0061 D-F `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`.
@@ -298,9 +306,16 @@ pub struct GatewayRuntime {
     metrics_addr: SocketAddr,
     readiness_refresh: Duration,
     effective_config: Value,
+    auth_keys: Option<TokenKeys>,
 }
 
 impl GatewayRuntime {
+    /// M02 D3: hands the auth-surface key set to the auth wiring once (`None` when the surface is off, or after the
+    /// first call).
+    pub fn take_auth_keys(&mut self) -> Option<TokenKeys> {
+        self.auth_keys.take()
+    }
+
     #[must_use]
     pub const fn bind_addr(&self) -> SocketAddr {
         self.bind_addr
@@ -464,6 +479,7 @@ impl GatewayBootstrap {
             metrics_addr: self.metrics_addr,
             readiness_refresh: self.readiness_refresh,
             effective_config: self.effective_config,
+            auth_keys: self.auth_keys,
         })
     }
 
@@ -490,6 +506,7 @@ impl GatewayBootstrap {
             "HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS",
         )?;
         let token_keys = parse_token_keys(&effective)?;
+        let auth_keys = parse_auth_keys(&effective, &token_keys)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
             required(&effective, READINESS_REFRESH_KEY)?,
@@ -538,6 +555,7 @@ impl GatewayBootstrap {
             undo_window,
             mood_half_life,
             token_keys,
+            auth_keys,
             metrics_addr,
             readiness_refresh,
             task_lease_ttl,
@@ -609,6 +627,45 @@ fn parse_token_keys(effective: &BTreeMap<String, String>) -> Result<TokenKeys, B
             why,
         )
     })
+}
+
+/// M02 D3: the auth-surface key pair. `None` while `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is false; when true the key
+/// is required — unset or empty refuses to boot naming the key, there is no fallback key — and must share no key
+/// with the consistency-token set. Errors name the key, never a value.
+fn parse_auth_keys(
+    effective: &BTreeMap<String, String>,
+    token_keys: &TokenKeys,
+) -> Result<Option<TokenKeys>, BootstrapError> {
+    match present(effective, AUTH_SURFACE_ENABLED_KEY)? {
+        "true" => {}
+        "false" => return Ok(None),
+        _ => {
+            return Err(BootstrapError::new(
+                AUTH_SURFACE_ENABLED_KEY,
+                "must be true or false",
+            ));
+        }
+    }
+    let current = hex::decode(required(effective, AUTH_HMAC_KEY_KEY)?)
+        .map_err(|_| BootstrapError::new(AUTH_HMAC_KEY_KEY, "invalid hex"))?;
+    let previous = optional_hex(effective, AUTH_HMAC_KEY_PREVIOUS_KEY)?;
+    let keys = TokenKeys::new(current, previous).map_err(|why| {
+        BootstrapError::new(
+            if why.starts_with("current") {
+                AUTH_HMAC_KEY_KEY
+            } else {
+                AUTH_HMAC_KEY_PREVIOUS_KEY
+            },
+            why,
+        )
+    })?;
+    if keys.shares_key_with(token_keys) {
+        return Err(BootstrapError::new(
+            AUTH_HMAC_KEY_KEY,
+            "must differ from the consistency-token keys",
+        ));
+    }
+    Ok(Some(keys))
 }
 
 /// An optional secret hex key registered with default `""`: empty = absent; otherwise valid hex.
@@ -1185,9 +1242,15 @@ pub fn registry() -> Vec<ConfigEntry> {
     // them there deletes these two entries (their presence then becomes a boot error).
     // ADR-0059 D-G / D-H rotation twins: empty (the default) = rotation window closed.
     entries.extend(
-        ["TOKEN_HMAC_KEY_PREVIOUS", "CREDENTIAL_PEPPER_PREVIOUS_HEX"]
-            .into_iter()
-            .map(|suffix| entry_with_default(&format!("{PREFIX}{suffix}"), "hex", true, "")),
+        [
+            "TOKEN_HMAC_KEY_PREVIOUS",
+            "CREDENTIAL_PEPPER_PREVIOUS_HEX",
+            // M02 D3: empty (the default) = no auth key; required only when AUTH_SURFACE_ENABLED is true.
+            "AUTH_HMAC_KEY",
+            "AUTH_HMAC_KEY_PREVIOUS",
+        ]
+        .into_iter()
+        .map(|suffix| entry_with_default(&format!("{PREFIX}{suffix}"), "hex", true, "")),
     );
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
@@ -1242,6 +1305,7 @@ pub fn registry() -> Vec<ConfigEntry> {
     // sets the deployed values. The gateway's memory ceiling must hold the total (deploy/compose/prod.yml).
     entries.extend(
         [
+            ("AUTH_SURFACE_ENABLED", "bool", "false"),
             ("CACHE_EMBED_QUERY_ENABLED", "bool", "true"),
             ("CACHE_EMBED_QUERY_BYTES", "u64", "268435456"),
             ("CACHE_PER_TENANT_BYTES", "u64", "16777216"),
@@ -1982,6 +2046,99 @@ mod tests {
             generated_key_hex(),
         );
         assert!(GatewayBootstrap::from_raw(values).is_ok());
+    }
+
+    /// M02-3 / M02 D3: the auth key is required exactly when the auth surface is enabled, and its absence is a
+    /// refusal naming the key — never a default key. Fault: fall back to an empty key when it is unset ⇒ red.
+    #[test]
+    fn auth_key_unset_refuses_boot_when_the_auth_surface_is_enabled() {
+        let refusal = |values: BTreeMap<String, String>| match GatewayBootstrap::from_raw(values) {
+            Err(error) => (error.key.clone(), error.reason, error.to_string()),
+            Ok(_) => panic!("configuration must be rejected"),
+        };
+        let enabled = || {
+            let mut values = raw();
+            values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+            values
+        };
+        // Surface off (the registered default): no key needed, none installed.
+        assert!(GatewayBootstrap::from_raw(raw()).is_ok());
+        let (key, reason, _) = refusal(enabled());
+        assert_eq!(
+            (key.as_str(), reason),
+            (AUTH_HMAC_KEY_KEY, "missing or empty")
+        );
+        let mut values = enabled();
+        values.remove(AUTH_HMAC_KEY_KEY);
+        let (key, reason, _) = refusal(values);
+        assert_eq!(
+            (key.as_str(), reason),
+            (AUTH_HMAC_KEY_KEY, "missing or empty")
+        );
+        let mut values = enabled();
+        values.insert(AUTH_HMAC_KEY_KEY.into(), "  ".into());
+        let (key, reason, _) = refusal(values);
+        assert_eq!(
+            (key.as_str(), reason),
+            (AUTH_HMAC_KEY_KEY, "missing or empty")
+        );
+    }
+
+    /// M02-3: a set auth key is validated like the token key, never echoed, and must not share bytes with the
+    /// consistency-token set; a valid distinct pair boots with the keys held for the auth wiring.
+    #[test]
+    fn auth_key_is_validated_distinct_and_never_echoed() {
+        let refusal = |values: BTreeMap<String, String>| match GatewayBootstrap::from_raw(values) {
+            Err(error) => (error.key.clone(), error.reason, error.to_string()),
+            Ok(_) => panic!("configuration must be rejected"),
+        };
+        let base = raw();
+        let token = base["HUMAUX_GATEWAY_TOKEN_HMAC_KEY"].clone();
+        let with = |pairs: &[(&str, &str)]| {
+            let mut values = base.clone();
+            values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+            for (key, value) in pairs {
+                values.insert((*key).to_owned(), (*value).to_owned());
+            }
+            values
+        };
+        let (key, reason, _) = refusal(with(&[(AUTH_SURFACE_ENABLED_KEY, "yes")]));
+        assert_eq!(
+            (key.as_str(), reason),
+            (AUTH_SURFACE_ENABLED_KEY, "must be true or false")
+        );
+        let short = "ab".repeat(31);
+        let (key, _, shown) = refusal(with(&[(AUTH_HMAC_KEY_KEY, &short)]));
+        assert_eq!(key, AUTH_HMAC_KEY_KEY);
+        assert!(!shown.contains(&short));
+        let (key, reason, _) = refusal(with(&[(AUTH_HMAC_KEY_KEY, "not hex")]));
+        assert_eq!((key.as_str(), reason), (AUTH_HMAC_KEY_KEY, "invalid hex"));
+        let good = generated_key_hex();
+        let (key, _, _) = refusal(with(&[
+            (AUTH_HMAC_KEY_KEY, &good),
+            (AUTH_HMAC_KEY_PREVIOUS_KEY, &"ab".repeat(31)),
+        ]));
+        assert_eq!(key, AUTH_HMAC_KEY_PREVIOUS_KEY);
+        let (key, reason, _) = refusal(with(&[(AUTH_HMAC_KEY_KEY, &token)]));
+        assert_eq!(
+            (key.as_str(), reason),
+            (
+                AUTH_HMAC_KEY_KEY,
+                "must differ from the consistency-token keys"
+            )
+        );
+        let (key, reason, _) = refusal(with(&[
+            (AUTH_HMAC_KEY_KEY, &good),
+            (AUTH_HMAC_KEY_PREVIOUS_KEY, &token),
+        ]));
+        assert_eq!(
+            (key.as_str(), reason),
+            (
+                AUTH_HMAC_KEY_KEY,
+                "must differ from the consistency-token keys"
+            )
+        );
+        assert!(GatewayBootstrap::from_raw(with(&[(AUTH_HMAC_KEY_KEY, &good)])).is_ok());
     }
 
     #[test]

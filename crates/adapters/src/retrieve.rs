@@ -1,14 +1,14 @@
 //! `adapters::retrieve` — §15.5 Read-your-writes (`consistency_token` issue/decode/scope-check) and the PostgreSQL
 //!   delta overlay `recall`/`context` fall back to when serving Qdrant has not yet caught up to a token's write
 //!   (T3.8).
-//! Depends-on: crates=[hex, hmac, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
+//! Depends-on: crates=[hex, hmac, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
 //!   modules=[adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo,
-//!   domain::affect, domain::error,
+//!   application::signed_token, domain::affect, domain::error,
 //!   domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving,
 //!   projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, tests, maintenance::switch_visible]
@@ -47,6 +47,8 @@ use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
+pub use humaux_application::signed_token::TokenKeys;
+use humaux_application::signed_token::{FIELD_SEP, TokenLabel, labelled_hmac};
 use humaux_domain::affect::AffectFilter;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
@@ -326,79 +328,12 @@ impl TokenClaims {
     }
 }
 
-const FIELD_SEP: char = '\u{1}';
-
-/// §15.5 / ADR-0059 D-G: MAC domain label; the kid label below keeps the two derivations apart.
-const MAC_LABEL: &[u8] = b"humaux.consistency_token.v1";
-const KID_LABEL: &[u8] = b"humaux.consistency_token.kid.v1";
-/// ADR-0059 D-G: a token key is ≥ 32 bytes, the HMAC-SHA256 block-security floor.
-const MIN_TOKEN_KEY_BYTES: usize = 32;
-
-type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-
-/// ADR-0059 D-G: the gateway's token MAC key set — `current` signs and verifies, `previous`
-/// (rotation window only) verifies. `Debug` prints key ids only, never key bytes.
-pub struct TokenKeys {
-    current: Vec<u8>,
-    previous: Option<Vec<u8>>,
-}
-
-impl TokenKeys {
-    /// Validates the set: each key ≥ 32 bytes and `previous != current`. The error names the
-    /// failed rule, never a key byte.
-    pub fn new(current: Vec<u8>, previous: Option<Vec<u8>>) -> Result<Self, &'static str> {
-        if current.len() < MIN_TOKEN_KEY_BYTES {
-            return Err("current token key shorter than 32 bytes");
-        }
-        if let Some(prev) = &previous {
-            if prev.len() < MIN_TOKEN_KEY_BYTES {
-                return Err("previous token key shorter than 32 bytes");
-            }
-            if *prev == current {
-                return Err("previous token key equals the current key");
-            }
-        }
-        Ok(Self { current, previous })
-    }
-
-    fn by_kid(&self, kid: &str) -> Option<&[u8]> {
-        std::iter::once(self.current.as_slice())
-            .chain(self.previous.as_deref())
-            .find(|key| key_id(key) == kid)
-    }
-}
-
-impl std::fmt::Debug for TokenKeys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenKeys")
-            .field("current_kid", &key_id(&self.current))
-            .field("previous_kid", &self.previous.as_deref().map(key_id))
-            .finish()
-    }
-}
-
-/// ADR-0059 D-G: first 8 hex chars of `SHA-256(KID_LABEL ‖ 0x00 ‖ key)`.
-fn key_id(key: &[u8]) -> String {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::new()
-        .chain_update(KID_LABEL)
-        .chain_update([0u8])
-        .chain_update(key)
-        .finalize();
-    hex::encode(&digest[..4])
-}
-
-fn token_mac(key: &[u8], plain11: &str, kid: &str) -> HmacSha256 {
-    use hmac::Mac as _;
-    let mut mac =
-        <HmacSha256 as hmac::KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(MAC_LABEL);
-    mac.update(&[0u8]);
-    mac.update(plain11.as_bytes());
-    mac.update(FIELD_SEP.to_string().as_bytes());
-    mac.update(kid.as_bytes());
-    mac
-}
+/// §15.5 / ADR-0059 D-G: the consistency token's MAC and kid domain labels, byte-identical to the strings the
+/// token carried before they moved to `application::signed_token` (RYW wire v1 does not change).
+const RYW_TOKEN_LABEL: TokenLabel = TokenLabel::new(
+    b"humaux.consistency_token.v1",
+    b"humaux.consistency_token.kid.v1",
+);
 
 // ponytail: one key set per process (OnceLock); key change = restart; pass TokenKeys by value if
 // a second issuing process ever appears.
@@ -414,9 +349,7 @@ pub fn install_token_keys(keys: TokenKeys) -> Result<(), &'static str> {
     let installed = TOKEN_KEYS.get_or_init(|| offered.take().expect("runs at most once"));
     match offered {
         None => Ok(()),
-        Some(keys) if installed.current == keys.current && installed.previous == keys.previous => {
-            Ok(())
-        }
+        Some(keys) if installed.same_keys(&keys) => Ok(()),
         Some(_) => Err("a different token key set is already installed"),
     }
 }
@@ -450,31 +383,16 @@ impl QueryHmac {
     }
 }
 
-/// `HMAC-SHA256(key, label ‖ 0x00 ‖ data)`.
-fn labelled_hmac(key: &[u8], label: &[u8], data: &[u8]) -> Vec<u8> {
-    use hmac::Mac as _;
-    let mut mac =
-        <HmacSha256 as hmac::KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(label);
-    mac.update(&[0u8]);
-    mac.update(data);
-    AsRef::<[u8]>::as_ref(&mac.finalize().into_bytes()).to_vec()
-}
-
 /// ADR-0081 D-A: `k_t = HMAC(current token key, tenant label ‖ 0x00 ‖ tenant_id)`, then
 /// `HMAC(k_t, query label ‖ 0x00 ‖ query)`. No new secret; `query` is the exact byte string the query-embedding cache
 /// keys on (no case or whitespace folding).
 // ponytail: rotating the token key starts a new hash space (old rows are not re-hashed); replay compares within one
 // `key_id`. Keep the previous key's derivation here if cross-rotation comparison is ever needed.
 fn query_hmac_with(keys: &TokenKeys, tenant_id: TenantId, query: &[u8]) -> QueryHmac {
-    let tenant_key = labelled_hmac(
-        &keys.current,
-        QUERY_LOG_TENANT_LABEL,
-        tenant_id.0.as_bytes(),
-    );
+    let tenant_key = keys.current_labelled_hmac(QUERY_LOG_TENANT_LABEL, tenant_id.0.as_bytes());
     QueryHmac {
         mac: labelled_hmac(&tenant_key, QUERY_LOG_MAC_LABEL, query),
-        key_id: key_id(&keys.current),
+        key_id: keys.current_kid(&RYW_TOKEN_LABEL),
     }
 }
 
@@ -495,7 +413,6 @@ pub fn issue_consistency_token(claims: &TokenClaims) -> Result<String, RetrieveE
 /// that a gateway holding this key issued these 11 fields unchanged; it is not authorization
 /// (rejected memory 710a2548): [`validate_scope`] and RLS remain the boundary.
 fn sign_with(keys: &TokenKeys, claims: &TokenClaims) -> String {
-    use hmac::Mac as _;
     let fields = [
         claims.tenant_id.to_string(),
         claims
@@ -512,14 +429,7 @@ fn sign_with(keys: &TokenKeys, claims: &TokenClaims) -> String {
         claims.issued_at.unix_timestamp().to_string(),
         claims.expires_at.unix_timestamp().to_string(),
     ];
-    let plain11 = fields.join("\u{1}");
-    let kid = key_id(&keys.current);
-    let mac = hex::encode(
-        token_mac(&keys.current, &plain11, &kid)
-            .finalize()
-            .into_bytes(),
-    );
-    hex::encode(format!("{plain11}{FIELD_SEP}{kid}{FIELD_SEP}{mac}"))
+    keys.sign(&RYW_TOKEN_LABEL, &fields.join("\u{1}"))
 }
 
 /// Inverse of [`issue_consistency_token`] against the installed key set. Every failure mode
@@ -532,27 +442,10 @@ pub fn decode_consistency_token(token: &str) -> Result<TokenClaims, RetrieveErro
 /// §15.5 / ADR-0059 D-G: kid lookup, then constant-time MAC verification, and only then the
 /// 11-field parse — the field parser never sees unauthenticated bytes.
 fn verify_with(keys: &TokenKeys, token: &str) -> Result<TokenClaims, RetrieveError> {
-    use hmac::Mac as _;
-    if !token.len().is_multiple_of(2) || token.is_empty() {
-        return Err(RetrieveError::TokenMalformed("odd length or empty"));
-    }
-    let bytes = hex::decode(token).map_err(|_| RetrieveError::TokenMalformed("not hex"))?;
-    let signed = String::from_utf8(bytes).map_err(|_| RetrieveError::TokenMalformed("not utf8"))?;
-    let mut tail = signed.rsplitn(3, FIELD_SEP);
-    let (Some(mac_hex), Some(kid), Some(plain11)) = (tail.next(), tail.next(), tail.next()) else {
-        return Err(RetrieveError::TokenMalformed("wrong field count"));
-    };
-    let key = keys
-        .by_kid(kid)
-        .ok_or(RetrieveError::TokenMalformed("token key unknown"))?;
-    let tag = hex::decode(mac_hex)
-        .ok()
-        .filter(|t| t.len() == 32)
-        .ok_or(RetrieveError::TokenMalformed("token signature"))?;
-    token_mac(key, plain11, kid)
-        .verify_slice(&tag)
-        .map_err(|_| RetrieveError::TokenMalformed("token signature"))?;
-    parse_token_fields(plain11)
+    let plain11 = keys
+        .verify(&RYW_TOKEN_LABEL, token)
+        .map_err(RetrieveError::TokenMalformed)?;
+    parse_token_fields(&plain11)
 }
 
 /// The 11-field parser; private, called only from [`verify_with`] (architecture-check pins one
@@ -1767,6 +1660,8 @@ mod stand_in_tests {
 mod contract_tests {
     use super::*;
 
+    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
     /// The migration that currently *defines* `stream_log_state_check` — 0007 created it, 0167
     /// (§15.2's `RETIRED_FAILED` amendment) replaced it. Reading 0007 after that would pin this
     /// contract to a superseded closed set, which is the one way this mirror could go quietly
@@ -1974,7 +1869,8 @@ mod contract_tests {
     fn token_mac_covers_label_fields_and_kid() {
         use hmac::Mac as _;
         use sha2::Digest as _;
-        let keys = test_keys(None);
+        let current = random_key();
+        let keys = TokenKeys::new(current.clone(), None).unwrap();
         let token = sign_with(&keys, &sample_claims());
         let signed = String::from_utf8(hex::decode(&token).unwrap()).unwrap();
         let (rest, mac_hex) = signed.rsplit_once(FIELD_SEP).unwrap();
@@ -1983,10 +1879,10 @@ mod contract_tests {
         let digest = sha2::Sha256::new()
             .chain_update(b"humaux.consistency_token.kid.v1")
             .chain_update([0u8])
-            .chain_update(&keys.current)
+            .chain_update(&current)
             .finalize();
         assert_eq!(kid, hex::encode(&digest[..4]));
-        let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(&keys.current).unwrap();
+        let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(&current).unwrap();
         mac.update(b"humaux.consistency_token.v1\0");
         mac.update(format!("{plain11}\u{1}{kid}").as_bytes());
         assert_eq!(mac_hex, hex::encode(mac.finalize().into_bytes()));
@@ -1994,12 +1890,13 @@ mod contract_tests {
 
     #[test]
     fn token_from_previous_key_verifies_and_unknown_kid_is_refused() {
-        let old = test_keys(None);
+        let (old_key, rotated_key) = (random_key(), random_key());
+        let old = TokenKeys::new(old_key.clone(), None).unwrap();
         let claims = sample_claims();
         let token = sign_with(&old, &claims);
-        let rotated = TokenKeys::new(random_key(), Some(old.current.clone())).unwrap();
+        let rotated = TokenKeys::new(rotated_key.clone(), Some(old_key)).unwrap();
         assert_eq!(verify_with(&rotated, &token).unwrap(), claims);
-        let closed = TokenKeys::new(rotated.current.clone(), None).unwrap();
+        let closed = TokenKeys::new(rotated_key, None).unwrap();
         assert!(matches!(
             verify_with(&closed, &token),
             Err(RetrieveError::TokenMalformed("token key unknown"))
@@ -2016,11 +1913,12 @@ mod contract_tests {
 
     #[test]
     fn token_keys_debug_prints_kids_only() {
-        let keys = test_keys(Some(random_key()));
+        let (current, previous) = (random_key(), random_key());
+        let keys = TokenKeys::new(current.clone(), Some(previous.clone())).unwrap();
         let shown = format!("{keys:?}");
-        assert!(!shown.contains(&hex::encode(&keys.current)));
-        assert!(!shown.contains(&hex::encode(keys.previous.as_ref().unwrap())));
-        assert!(shown.contains(&key_id(&keys.current)));
+        assert!(!shown.contains(&hex::encode(&current)));
+        assert!(!shown.contains(&hex::encode(&previous)));
+        assert!(shown.contains("current_kid") && shown.contains("previous_kid"));
     }
 
     /// ADR-0081 D-A / D2: the log digest is the two-step keyed derivation of the card, repeatable for one tenant,
@@ -2029,13 +1927,19 @@ mod contract_tests {
     fn query_hmac_is_keyed_tenant_separated_and_not_a_plain_digest() {
         use hmac::Mac as _;
         use sha2::Digest as _;
-        let keys = test_keys(None);
+        let current = random_key();
+        let keys = TokenKeys::new(current.clone(), None).unwrap();
         let (tenant, other) = (TenantId::new(), TenantId::new());
         let query = "a distinctive recall query".as_bytes();
         let digest = query_hmac_with(&keys, tenant, query);
         assert_eq!(digest, query_hmac_with(&keys, tenant, query));
         assert_eq!(digest.mac().len(), 32);
-        assert_eq!(digest.key_id(), key_id(&keys.current));
+        let kid = sha2::Sha256::new()
+            .chain_update(b"humaux.consistency_token.kid.v1")
+            .chain_update([0u8])
+            .chain_update(&current)
+            .finalize();
+        assert_eq!(digest.key_id(), hex::encode(&kid[..4]));
         assert_ne!(digest.mac(), query_hmac_with(&keys, other, query).mac());
         assert_ne!(
             digest.mac(),
@@ -2046,7 +1950,7 @@ mod contract_tests {
             query_hmac_with(&test_keys(None), tenant, query).mac()
         );
         assert_ne!(digest.mac(), &sha2::Sha256::digest(query)[..]);
-        let mut tenant_key = <HmacSha256 as hmac::KeyInit>::new_from_slice(&keys.current).unwrap();
+        let mut tenant_key = <HmacSha256 as hmac::KeyInit>::new_from_slice(&current).unwrap();
         tenant_key.update(b"humaux.retrieval_query_log.tenant_key.v1\0");
         tenant_key.update(tenant.0.as_bytes());
         let tenant_key = tenant_key.finalize().into_bytes();

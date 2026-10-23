@@ -366,6 +366,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::public_evolve`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `contracts::config_registry`
@@ -1793,6 +1795,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `consolidation-worker::dsn`
@@ -2281,6 +2285,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::retrieve`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `cache::bounded`
@@ -2358,6 +2364,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH`
 - env `HUMAUX_GATEWAY_ALLOWED_HOSTS`
 - env `HUMAUX_GATEWAY_ALLOWED_ORIGINS`
+- env `HUMAUX_GATEWAY_AUTH_HMAC_KEY`
+- env `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
 - env `HUMAUX_GATEWAY_BIND_ADDR`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED`
@@ -3008,6 +3017,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::entitlement`
 
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -4004,6 +4015,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `contracts::config_registry`
@@ -4638,6 +4651,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::correct`
 
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -12381,6 +12396,7 @@ modules naming it:
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::retrieve`
 - `adapters::tests::auth_contract`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
@@ -13348,13 +13364,16 @@ why: token/RNG source for auth, referral codes and supersede confirm tokens
 modules naming it:
 - `application::auth`
 - `application::referral`
+- `application::signed_token`
 - `application::supersede`
+- `tests`
 
 ### humaux-application → `hmac` (normal)
-why: verification-code HMAC
+why: verification-code HMAC and the signed-token MAC
 
 modules naming it:
 - `application::auth`
+- `application::signed_token`
 
 ### humaux-application → `sha2` (normal)
 why: token/handoff sha256 digests
@@ -13366,6 +13385,7 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::referral`
+- `application::signed_token`
 - `tests`
 
 ### humaux-application → `hex` (normal)
@@ -13377,6 +13397,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::referral`
+- `application::signed_token`
 - `tests`
 
 ### humaux-application → `serde` (normal)
