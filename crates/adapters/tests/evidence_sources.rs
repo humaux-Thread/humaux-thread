@@ -1,10 +1,10 @@
 //! `adapters::tests::evidence_sources` — M06-1a (ADR-0098): `remember_sourced_in_txn` against a real Postgres, plus the
 //!   §78.2 reconciliation of `IngestSourceKind` / `IngestEventKind` with their CHECK lists.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
-//!   services=[PostgreSQL(any) r=[ops.commit_seq_seq] w=[control.memberships, control.private_reasoning_domains,
+//!   services=[PostgreSQL(any) w=[control.memberships, control.private_reasoning_domains,
 //!   control.tenants, control.users, ops.jobs, ops.outbox, private.events, private.evidence_objects,
 //!   private.evidence_sources, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_TEST_PG_DSN];
+//!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::remember, adapters::tests::support::token_keys, domain::dataclass, domain::error,
 //!   domain::evidence, domain::source, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]

@@ -4,7 +4,7 @@
 //! Invariants: [`classify_source`] is the one place an [`IngestSourceKind`] is mapped to origin, data-class floor, event kind
 //!   and visibility rule; a raw external object/thread key is never stored, only a 16-byte SHA-256 prefix; the identity
 //!   carries no agent, ingest time or project]
-//! Spec: Baseline §7.5; §8.7; §10.1; §78.2; ADR-0098
+//! Spec: Baseline §7.5; §8.7; §10.1; §78.2; ADR-0078; ADR-0098
 //!
 //! Named [`IngestSourceKind`], not `SourceKind`: `attribution::SourceKind` (ADR-0078) is the work-attribution axis and
 //! shares nothing with it.

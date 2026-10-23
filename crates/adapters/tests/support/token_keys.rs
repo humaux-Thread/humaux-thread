@@ -1,7 +1,7 @@
 //! `adapters::tests::support::token_keys` — installs one per-process random consistency-token key set for test
 //!   binaries that issue or verify tokens through the production entry points.
 //! Depends-on: crates=[humaux-adapters]; services=[]; env=[]; modules=[adapters::retrieve]
-//! Called-by: [adapters::tests::outbox_batch_remember,
+//! Called-by: [adapters::tests::evidence_sources, adapters::tests::outbox_batch_remember,
 //!   adapters::tests::private_projection_registry, adapters::tests::projection_claim, adapters::tests::projection_worker,
 //!   adapters::tests::retrieve_read_your_writes, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture]
