@@ -30,6 +30,7 @@ pub enum ScriptedOutcome {
 pub enum EmailErrorKind {
     Transport,
     Rejected,
+    SubmissionUnknown,
 }
 
 /// Records every [`OutboundEmail`] passed to `send`, in call order. Defaults to answering
@@ -89,6 +90,9 @@ impl EmailProvider for RecordingEmailProvider {
             }
             Some(ScriptedOutcome::Err(EmailErrorKind::Rejected, msg)) => {
                 Err(EmailError::Rejected(msg))
+            }
+            Some(ScriptedOutcome::Err(EmailErrorKind::SubmissionUnknown, msg)) => {
+                Err(EmailError::SubmissionUnknown(msg))
             }
         }
     }
