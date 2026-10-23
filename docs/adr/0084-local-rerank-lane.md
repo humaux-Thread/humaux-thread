@@ -466,6 +466,18 @@ are not red records.
 | provenance constructor `== 1` | `retrieval::tests::rerank_provenance_constructor::the_rendered_rerank_model_id_has_exactly_one_construction_site` | r6: a second `RerankModelId(..)` expression (the scan counts 2) | 39881528403 |
 | no Memory-text reader in the gateway | `gateway::tests::no_memory_text_reader::nothing_under_the_gateway_reads_a_memory_text` | r7: `bins/gateway/src/recall.rs` names `memory_texts_in_txn` | 39881820844 |
 
+Review round (CHANGES at 994aa1f, green run 39882174368): the fixes and their reds, cut from the fixed head, run as
+above (pre-flights 39884658512 and 39884908710 are not red records; the green of this round is the PR's final CI run,
+recorded in PR #215).
+
+| Finding | Test | Injected fault | Red run |
+|---|---|---|---|
+| P1 (§23.1③ / §23.3): a selected branch with visible Memories and no buildable document is a failure, never `not_applicable` | `recall::tests::a_selected_branch_that_cannot_score_is_a_failure_and_no_memory_is_not_applicable` | q1: return `not_run` for that case (`failure` reads `None`, not `Some(Unavailable)`) | 39885177918 |
+| the `rerank_model_id` field gets a `used` value in exactly one place | `rerank_provenance_constructor::the_rerank_model_id_field_is_given_a_used_value_in_exactly_one_place` | q2: a second `ProvenanceValue::Used` assignment (`bins/gateway/src/context.rs`; the scan counts 2). The cloud route's `rerank_model_id` (`retrieval-provider` router) is a route descriptor `Option<String>`, held out explicitly in the test | 39885439967 |
+| the policy is read on the real recall path | `semantic_recall_wiring::a_tenant_whose_policy_forbids_text_processing_gets_no_worker_call_through_recall` | q3: the call site passes `true` for the policy (one worker call where none is allowed) | 39885704699 |
+| U7 reserve for the steps after the rerank | `recall::tests::the_rerank_wait_leaves_the_reserve_and_never_outlives_the_handler_budget` | q4: no reserve (the wait reads 4 s, expected 3.5 s) | 39885986771 |
+| no budget, no call | `recall::tests::a_zero_wait_degrades_without_calling_the_worker` | q5: dial the worker with a zero wait | 39886257122 |
+
 The two rerank fault tests (`rerank_provider_timeout`, `rerank_model_mismatch`) now drive `retrieval::rerank::settle` and
 `degradations`; G-M01-4 (red-recorded by its own scratch-tree tests) holds them to that, and the two M11 rows of
 `dormant.toml` are gone. The worker's wire is checked by `the_rerank_client_speaks_the_workers_wire` against the real

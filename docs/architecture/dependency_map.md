@@ -2377,6 +2377,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS`
 - env `HUMAUX_GATEWAY_REMEMBER_WORKSPACE_ID`
 - env `HUMAUX_GATEWAY_REPLAY_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_RERANK_MODEL_SHA256`
+- env `HUMAUX_GATEWAY_RERANK_RECIPE`
+- env `HUMAUX_GATEWAY_RERANK_REPO`
+- env `HUMAUX_GATEWAY_RERANK_REVISION`
+- env `HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256`
 - env `HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_RETRIEVAL_PROFILE_PRODUCTION_ENABLED`
 - env `HUMAUX_GATEWAY_RETRIEVAL_PROFILE_QUERY_TRANSFORM`
@@ -2427,6 +2432,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `gateway::recall`
 
 #### `gateway::remember`
+
+#### `gateway::rerank_client`
 
 #### `gateway::retrieval_embedding_client`
 - service `UDS(retrieval-worker)`
@@ -2516,6 +2523,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::rerank`
 
 #### `telemetry::admission`
 
@@ -13561,6 +13570,7 @@ why: the sole fail-open exit point (abstain/DegradeCode) and the text-format fam
 modules naming it:
 - `retrieval::completeness`
 - `retrieval::envelope`
+- `retrieval::rerank`
 - `tests`
 
 ### humaux-retrieval → `humaux-domain` (normal)
@@ -13810,12 +13820,14 @@ modules naming it:
 - `tests`
 
 ### humaux-testkit → `humaux-retrieval` (dev)
-why: real-path fault tests call the production envelope functions that emit ProjectionLag, ProjectionInvisibleLoss, LaneSubstituted and SparseLaneUnavailable
+why: real-path fault tests call the production envelope and rerank functions that emit ProjectionLag, ProjectionInvisibleLoss, LaneSubstituted, SparseLaneUnavailable, RerankProviderTimeout and RerankModelMismatch
 
 modules naming it:
 - `testkit::tests::fault::lane_substituted`
 - `testkit::tests::fault::projection_invisible_loss`
 - `testkit::tests::fault::projection_lag`
+- `testkit::tests::fault::rerank_model_mismatch`
+- `testkit::tests::fault::rerank_provider_timeout`
 - `testkit::tests::fault::sparse_lane_unavailable`
 - `testkit::tests::metrics::humaux_retrieval_requests_total`
 - `testkit::tests::metrics::retrieval_completeness_total`
@@ -14247,11 +14259,14 @@ modules naming it:
 why: retrieval request/envelope/planner (sole request constructor, §55.1)
 
 modules naming it:
+- `gateway::bootstrap`
 - `gateway::context`
 - `gateway::memory`
 - `gateway::recall`
+- `gateway::rerank_client`
 - `gateway::status`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::semantic_recall_wiring`
 - `tests`
 
 ### humaux-gateway → `humaux-cache` (normal)
@@ -14269,6 +14284,7 @@ why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls
 modules naming it:
 - `gateway::bootstrap`
 - `gateway::recall`
+- `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::cross_tenant_canary`
@@ -14301,6 +14317,8 @@ why: object-safe async traits for ports and transports
 modules naming it:
 - `gateway::cached_embedding`
 - `gateway::mcp_application`
+- `gateway::recall`
+- `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
@@ -14334,6 +14352,7 @@ modules naming it:
 - `gateway::context`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 
 ### humaux-gateway → `serde_json` (normal)
@@ -14347,6 +14366,7 @@ modules naming it:
 - `gateway::memory`
 - `gateway::recall`
 - `gateway::remember`
+- `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::continuity_get`
@@ -14432,6 +14452,7 @@ modules naming it:
 - `gateway::memory`
 - `gateway::recall`
 - `gateway::remember`
+- `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -14483,9 +14504,10 @@ modules naming it:
 - `tests`
 
 ### humaux-gateway → `humaux-retrieval-worker` (dev)
-why: retrieval-worker RPC server exercised end to end in tests
+why: retrieval-worker RPC server exercised end to end in tests, and its rerank identity key names
 
 modules naming it:
+- `gateway::bootstrap`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::recall_embedding_cache`
@@ -15577,6 +15599,13 @@ services (computed):
 default run:
 - PostgreSQL
 - subprocess
+
+### `bins/gateway/tests/no_memory_text_reader.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
 
 ### `bins/gateway/tests/ops_listener.rs`
 db-bound (default run): yes
@@ -17034,6 +17063,13 @@ services (computed):
 default run:
 
 ### `crates/retrieval/tests/planner_predicate_eval.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `crates/retrieval/tests/rerank_provenance_constructor.rs`
 db-bound (default run): no
 
 services (computed):
