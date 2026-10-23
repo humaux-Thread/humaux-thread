@@ -551,7 +551,7 @@ fn onboard_tenant_creates_every_row_and_activates_verified_empty() {
         .collect();
     assert_eq!(
         grant_values,
-        [per_period.clone()],
+        std::slice::from_ref(per_period),
         "the snapshot is the one PLAN grant, verbatim"
     );
     assert!(per_period["period_start"].is_string(), "{per_period}");
