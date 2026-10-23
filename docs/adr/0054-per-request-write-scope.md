@@ -19,6 +19,19 @@
   `DEPENDENCY_UNAVAILABLE`. Consistency tokens name the stream the ticket landed on. D-A's sentence
   "the ticket lands on the derived stream" is superseded for lifecycle tickets; it still holds for
   `remember.put` and for confirm-token binding.
+- Amended by M02-2 (2026-10-23, design note M02 D8, `bins/gateway/src/auth.rs`): the statements below that
+  `mark_used` updates `api_keys` "on every request" no longer describe the code. `authenticate_service_credential`
+  still reads and validates the credential row, its epochs and the live memberships on every request and caches no
+  allow decision; a revoked or expired key fails the very next request. Only the `last_used_at` write is throttled:
+  `TouchThrottle` lets one `control.api_key_touch_last_used` call per credential through every
+  `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS` (registered default 60, accepted 0..=3600, 0 = every request),
+  remembers at most 10,000 credentials (past that the oldest mark is dropped and its credential writes once more), and
+  is consulted only after validation succeeded, so a refused credential never writes. The reason `api_keys` is not
+  locked is unchanged, the contention is smaller. Gate G-M02-2, red records on `targeted.yml`: r1 (a credential touched
+  inside the window skips validation) run 39872141317, the revoked key authenticates; r2 (the claim always succeeds)
+  runs 39872441945 (the three `TouchThrottle` unit tests) and 39872728050 (`touch_writes_once_per_interval_per_credential`,
+  a second write inside the window). The comments in migrations 0188 and 0261 that say the touch runs on every request
+  predate M02-2 and stay as written, because applied migrations are immutable.
 
 ## Context (read on `403cb43`)
 
@@ -123,7 +136,7 @@ UPDATEs `control.memberships` in the same transaction as the epoch bump; `set_wo
 UPDATEs the workspace row): the suspend waits for the write to commit, or the write sees the
 suspended row and aborts. Share locks do not conflict with each other, so concurrent writes of one
 user do not serialise. The `api_keys` row is **not** locked (`mark_used` UPDATEs it on every request
-and would serialise one credential's requests). Owner RLS: `api_keys`/`tenants` have the 0112 owner
+[M02-2, 2026-10-23: at most once per touch interval, see the header] and would serialise one credential's requests). Owner RLS: `api_keys`/`tenants` have the 0112 owner
 SELECT policies; `memberships` (0012 `_tenant_isolation`, ALL) and `workspace_memberships` (0162
 tenant ALL + restrictive self-read) are satisfied by the GUCs the caller already set.
 
@@ -372,7 +385,7 @@ statement.
   window only shrinks. The api_keys/users epochs are not readable by role_gateway outside
   `api_key_lookup(prefix)`, and the scope does not carry the prefix.
 - **Lock `api_keys` / `tenants` FOR SHARE too**: `mark_used` updates `api_keys` on every request (it
-  would serialise one credential's requests); `tenants` is one hot row per tenant (multixact churn).
+  would serialise one credential's requests) [M02-2, 2026-10-23: at most once per touch interval, see the header]; `tenants` is one hot row per tenant (multixact churn).
 - **Add `workspace_id` to the 11 confirm-gated schemas**: contracts are outside this card; the bound
   route already is the per-request workspace. An unbound PAT keeps refusing these ops (as today).
 - **Delete the two env keys now**: `xtask e2e-onboard` still passes them and unknown keys are a boot

@@ -6,7 +6,9 @@
 //!   source leaves its series (or whole family) out and is never written as 0; render() writes nothing before the
 //!   first publish while declare_families() writes only the HELP/TYPE headers (#193); the CPU busy ratio is the
 //!   delta of two readable /proc/stat samples, absent for the first sample and for a zero total delta; publish()
-//!   holds exactly one `.set(` per family]
+//!   holds exactly one `.set(` per family; the read paths (`/proc/pressure/{cpu,memory,io}`, `/proc/meminfo`,
+//!   `/proc/stat`) are fixed kernel interfaces, not business configuration (§78.1 does not apply), so they stay
+//!   [`HostSources::default()`] constants and tests inject their own paths, with no config key and no env var (#193)]
 //! Spec: Baseline §41.2; §4.4; §78.1; §78.3
 //!
 //! §4.4: "not scanned" is not "none". A host without PSI (kernel < 4.20, `psi=0`, no `full` line on older CPU
@@ -324,14 +326,34 @@ mod tests {
     const STAT_1: &str = "cpu  100 0 100 800 0 0 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0 0 0\n";
     const STAT_2: &str = "cpu  150 0 150 900 0 0 0 0 0 0\ncpu0 150 0 150 900 0 0 0 0 0 0\n";
 
+    /// A fixture directory removed when its owner leaves scope, including while a failed assertion unwinds (#193).
+    struct FixtureDir(PathBuf);
+
+    impl FixtureDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("host-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("fixture dir");
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// A fresh fixture directory laid out like `/proc`, with every source present.
-    fn fixture(tag: &str) -> (PathBuf, HostSources) {
-        let dir = std::env::temp_dir().join(format!("host-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("fixture dir");
+    fn fixture(tag: &str) -> (FixtureDir, HostSources) {
+        let dir = FixtureDir::new(tag);
         let sources = HostSources {
-            pressure: Resource::ALL.map(|r| dir.join(format!("pressure-{}", r.as_str()))),
-            meminfo: dir.join("meminfo"),
-            stat: dir.join("stat"),
+            pressure: Resource::ALL.map(|r| dir.path().join(format!("pressure-{}", r.as_str()))),
+            meminfo: dir.path().join("meminfo"),
+            stat: dir.path().join("stat"),
         };
         for p in &sources.pressure {
             std::fs::write(p, PSI).expect("psi fixture");
@@ -424,7 +446,7 @@ mod tests {
 
     #[test]
     fn sampler_first_cpu_sample_has_no_ratio_second_has() {
-        let (dir, sources) = fixture("cpu-delta");
+        let (_dir, sources) = fixture("sampler_first_cpu_sample_has_no_ratio_second_has");
         let mut sampler = HostSampler::new(sources.clone());
         let first = sampler.sample();
         assert_eq!(first.cpu_busy_ratio, None);
@@ -433,14 +455,13 @@ mod tests {
         std::fs::write(&sources.stat, STAT_2).expect("stat 2");
         assert_eq!(sampler.sample().cpu_busy_ratio, Some(0.5));
         assert_eq!(sampler.sample().cpu_busy_ratio, None, "zero total delta");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// G-M22-1: a missing source is an absent series, never 0. Fault: write 0 for a missing
     /// `/proc/pressure/cpu` ⇒ the cpu series appear with 0 ⇒ red.
     #[test]
     fn missing_pressure_file_is_absent_not_zero() {
-        let (dir, sources) = fixture("missing");
+        let (_dir, sources) = fixture("missing_pressure_file_is_absent_not_zero");
         std::fs::remove_file(&sources.pressure[0]).expect("remove cpu psi");
         let out = rendered(&HostSampler::new(sources).sample());
         assert!(!out.contains("resource=\"cpu\""), "{out}");
@@ -452,12 +473,11 @@ mod tests {
             out.contains("host_pressure_ratio{resource=\"io\",kind=\"full\"} 0.5\n"),
             "{out}"
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn malformed_and_old_kernel_files_drop_only_their_series() {
-        let (dir, sources) = fixture("malformed");
+        let (_dir, sources) = fixture("malformed_and_old_kernel_files_drop_only_their_series");
         std::fs::write(
             &sources.pressure[0],
             "some avg10=0.00 avg60=25.00 avg300=0.00 total=1\n",
@@ -476,7 +496,6 @@ mod tests {
         assert!(!out.contains("host_memory_available_bytes"), "{out}");
         assert!(!out.contains("host_cpu_busy_ratio"), "first sample: {out}");
         assert_eq!(rendered(&HostReading::default()), "");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The only lib test that publishes, so no other test races these statics.

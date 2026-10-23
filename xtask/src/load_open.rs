@@ -728,8 +728,30 @@ mod tests {
         }
     }
 
+    /// A one-level config for `report_level`; the target and `ids` are unused by the report shape.
+    fn cfg(mode: Mode) -> Config {
+        Config {
+            target: target(),
+            users: vec![2],
+            per_user: 3,
+            rate_per_user: 1.0,
+            warmup: Duration::ZERO,
+            window: Duration::ZERO,
+            settle: Duration::ZERO,
+            enumerate_tenths: 7,
+            workers: 1,
+            queue: 1,
+            mode,
+            only: None,
+            pg_dsn: String::new(),
+            host_class: None,
+            report_path: String::new(),
+            ids: Vec::new(),
+        }
+    }
+
     /// §57.1: a NoAnswer is not an answer. With N records of which K are NoAnswer, the per-response DB cost divides by
-    /// N-K, not by N.
+    /// N-K, not by N, and `report_level` publishes that denominator and the per-answered-call values.
     #[test]
     fn load_open_denominator_excludes_no_answer() {
         let mut t = Tally {
@@ -746,17 +768,35 @@ mod tests {
                 answer: if i < 3 { Outcome::Dropped } else { Outcome::Ok },
             });
         }
-        assert_eq!(answered_count(&t), 7, "3 NoAnswer records are not answered");
         let a = snap(100, 0.0, Ok((0.0, 0.0)));
         let b = snap(109, 700.0, Ok((14.0, 140.0)));
-        let cost = pg_cost(&a, &b, answered_count(&t));
-        assert_eq!(cost.txns, Some(1.0));
-        assert_eq!(cost.wal, Some(100.0));
-        assert_eq!(cost.stmts, (Some(2.0), Some(20.0)));
-        assert!(
-            cost.na.is_empty(),
-            "a positive delta has no NA: {:?}",
-            cost.na
+        let report = report_level(&cfg(Mode::Open), 2, &t, Ok((&a, &b)), "test");
+        assert_eq!(
+            report["answered"].as_u64(),
+            Some(7),
+            "report_level must publish answers, not issued calls: {report}"
+        );
+        // pg_cost subtracts the two counter reads' own commits: (109 - 100 - 2) / 7, not / 10.
+        let pg = &report["pg_per_answered_call"];
+        assert_eq!(
+            pg["txns_per_op"].as_f64(),
+            Some(1.0),
+            "txns must divide by answered calls: {report}"
+        );
+        assert_eq!(
+            pg["wal_bytes_per_op"].as_f64(),
+            Some(100.0),
+            "wal must divide by answered calls: {report}"
+        );
+        assert_eq!(
+            pg["pg_stmts_per_op"].as_f64(),
+            Some(2.0),
+            "statement calls must divide by answered calls: {report}"
+        );
+        assert_eq!(
+            pg["pg_exec_ms_per_op"].as_f64(),
+            Some(20.0),
+            "statement exec time must divide by answered calls: {report}"
         );
     }
 
