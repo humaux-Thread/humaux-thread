@@ -135,10 +135,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # #162 / §57.1: the no-python gate judges the Compose model Compose itself resolves, not a hand-written YAML
-      # subset. `--no-interpolate` keeps ${...} expressions and reads no env file or secret, while anchors, `<<`
-      # merges, `extends`, flow style, quoted keys and every profile still render (service selection is only applied
-      # by a full project load, never by `config --no-interpolate`). The gate reads
-      # target/no-python-compose/<path>.json and names a file whose JSON is absent, so it is never a silent pass.
+      # subset. Anchors, `<<` merges, `extends`, flow style, quoted keys and every profile are resolved here by the
+      # Compose CLI. `--profile '*'` keeps profiled services in the render (a future profile must not hide a service).
+      # `--no-interpolate` keeps ${...} expressions and reads no env file or secret; prod.yml is the one file with
+      # short-form `${...:?}` binds, which the runner's Compose v2.38.2 volume parser cannot read uninterpolated, so it
+      # is rendered exactly as the deploy-env step below already renders it (sizing + node example, secret-fixture
+      # paths only, no secret file read). The gate reads target/no-python-compose/<path>.json and names a file whose
+      # JSON is absent, so it is never a silent pass.
       - name: render compose files for the no-python gate
         shell: bash
         run: |
@@ -149,7 +152,12 @@ jobs:
           find deploy/compose -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
             while IFS= read -r -d '' f; do
               mkdir -p "$out/$(dirname "$f")"
-              docker compose -f "$f" config --format json --no-interpolate > "$out/$f.json"
+              if [ "$f" = deploy/compose/prod.yml ]; then
+                docker compose --env-file deploy/env/sizing-a5.env --env-file deploy/env/node.env.example \
+                  --profile '*' -f "$f" config --format json --no-env-resolution > "$out/$f.json"
+              else
+                docker compose --profile '*' -f "$f" config --format json --no-interpolate > "$out/$f.json"
+              fi
               test -s "$out/$f.json"
             done
           echo "rendered $(find "$out" -type f -name '*.json' | wc -l) compose file(s) to $out"
