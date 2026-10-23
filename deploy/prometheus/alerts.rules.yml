@@ -5,8 +5,8 @@
 # The `humaux-capacity` group is not a §42 row: it is module_design_M22 D3/D4 deploy config
 # (`thresholds live here, never in Rust`, §78.1; B23 values as starting values, X-M22-3 final)
 # over the M22-1 /proc gauges and the M22-2 tenant gauges.
-# Every alert here has a firing and a silent case in tests/alerts.test.yml, and one balanced token
-# mutation in mutations.sh that the tests must catch.
+# Every alert here has a firing and a silent case in tests/alerts.test.yml, and at least one balanced token
+# mutation in mutations.sh that the tests must catch; every recording rule has an exact-value case and one too.
 groups:
   - name: humaux-alerts
     rules:
@@ -170,8 +170,9 @@ groups:
       # every inbound attempt that reached a tool call (humaux_mcp_requests_total) plus every refusal, so a gateway whose
       # traffic is entirely refused reads 1. `changes(...) > 1` is the gate's own condition: at any traffic level a
       # single refusal is not a ratio (one attempt ⇒ 100 %) and must not page. sum() drops the reason labels.
-      # The note fixes the ratio *window* (15 m); `for:` is the minimum hold and stays below a 5 m count window so
-      # the old `increase(...) > 0` form (mutation `admission`) pages on one refusal instead of hiding behind it.
+      # `reason!="key_limit"` is D3's exclusion: quota/rate policy is not a capacity bound (§67.2).
+      # ponytail: the 2 m / 1 m holds and `changes(...) > 1` are lead-approved starting values pending X-M22-3;
+      # the note gives the ratio window and the exclusion, not a hold or a count guard.
       - alert: CapacityRejectionRatioHigh
         expr: sum(rate(admission_rejected_total{reason!="key_limit"}[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1
         for: 2m
@@ -200,10 +201,11 @@ groups:
   # (M22-2). A missing /proc source is an absent family (G-M22-1), so its rule is silent, never 0.
   - name: humaux-capacity
     rules:
-      # D4 headroom per resource: the distance to the warning line, in the resource's own unit. Memory and disk have
-      # no proportional demand series (D2 rejected node_exporter, so there is no total-bytes family), so their
-      # headroom cannot be turned into a user count; M22-4's weekly report carries the bytes next to the number.
-      # The disk floor is §42 DiskFreeLow's 7.5 GiB runbook value, not a second threshold.
+      # D4 headroom per resource: the distance to the warning line, in the resource's own unit. D4's formula is a
+      # ceiling budget over busy-window demand; only the CPU busy line (0.70) and the PSI cpu some line (0.20) have
+      # that pair, so memory and disk stay byte headroom (M22-4's weekly report carries the bytes).
+      # ponytail: the 7.5 GiB disk floor is a lead-approved starting value (the §42 DiskFreeLow runbook value)
+      # pending X-M22-3 data; it is not a second threshold.
       - record: capacity:headroom_cpu_ratio
         expr: 0.70 - host_cpu_busy_ratio
 
@@ -216,12 +218,31 @@ groups:
       - record: capacity:headroom_disk_bytes
         expr: backup_disk_free_bytes{volume="pgdata"} - 8053063680
 
-      # D4 (B23): additional users = min over resources of (safe budget − current) / (current / tenants_active_7d);
-      # the two resources with a rate budget are CPU busy (warning line 0.70) and the PSI cpu some corroboration
-      # (0.20). label_replace gives each term a distinct label so `or` keeps both; min() then collapses them to the
-      # one sample the report reads. The linear model is a ponytail ceiling: replace it after X-M22-3 if off by >25 %.
+      # D4 (B23): additional users = min over resources of (safe budget − current) / (current / tenants_active_7d).
+      # The two resources with a ceiling budget and a busy-window demand are CPU busy (0.70) and PSI cpu some (0.20).
+      # `max by (instance)` on every operand keeps the per-host series the scrape actually produces (job, mode and
+      # instance) equal on both sides of each division; without it a {job,mode,instance} operand never matches a {}
+      # tenant gauge and the term silently disappears. label_replace gives each term a resource label so `or` keeps
+      # both, and min() collapses them to the one sample the report reads.
+      # The `and on (instance) (... > 0)` guards exclude zero denominators: busy 0 gives +Inf and tenants 0 gives
+      # +Inf/NaN, and a host with no demand has no finite additional-user count, so the rule emits no sample there
+      # rather than a made-up one (§4.4 "not scanned" ≠ "none").
+      # ponytail: the linear model is a lead-approved starting value; replace it after X-M22-3 if off by >25 %.
       - record: capacity:additional_users
-        expr: min(label_replace((0.70 - host_cpu_busy_ratio) / (host_cpu_busy_ratio / tenants_active_7d), "resource", "cpu_busy", "", "") or label_replace((0.20 - min(host_pressure_ratio{resource="cpu",kind="some"})) / (min(host_pressure_ratio{resource="cpu",kind="some"}) / tenants_active_7d), "resource", "cpu_psi", "", ""))
+        expr: >-
+          min(
+          label_replace(
+          ((0.70 - max by (instance) (host_cpu_busy_ratio)) / (max by (instance) (host_cpu_busy_ratio) / max by (instance) (tenants_active_7d)))
+          and on (instance) (max by (instance) (host_cpu_busy_ratio) > 0)
+          and on (instance) (max by (instance) (tenants_active_7d) > 0),
+          "resource", "cpu_busy", "", "")
+          or
+          label_replace(
+          ((0.20 - max by (instance) (host_pressure_ratio{resource="cpu",kind="some"})) / (max by (instance) (host_pressure_ratio{resource="cpu",kind="some"}) / max by (instance) (tenants_active_7d)))
+          and on (instance) (max by (instance) (host_pressure_ratio{resource="cpu",kind="some"}) > 0)
+          and on (instance) (max by (instance) (tenants_active_7d) > 0),
+          "resource", "cpu_psi", "", "")
+          )
 
       # D3 CPU warning: >70 % busy for 15 m. `for:` is spelled in seconds on this one row so mutations.sh's
       # drop-`for:` token occurs exactly once (the `lag` row keeps the only 10 m token, ADR-0063 D-F).
@@ -232,18 +253,21 @@ groups:
           severity: warning
           resource: cpu
 
-      # D3 CPU critical: >85 % for 5 m **with** PSI cpu some >20 % as corroboration. min() drops resource/kind so the
-      # `and` matches on an empty label set; if PSI is unreadable the family is absent and this row stays silent (the
+      # D3 CPU critical: >85 % for 5 m **with** PSI cpu some >20 % as corroboration. The left side keeps the scrape
+      # labels {job,mode,instance}; `and on (instance)` matches the PSI term, which is aggregated by instance for
+      # exactly that reason (a bare min() would carry {} and the alert would never fire). The result keeps the left
+      # labels, so the alert is per host. If PSI is unreadable the family is absent and this row stays silent (the
       # M22-1 fallback covers that host, G-M22-1).
       - alert: CapacityCpuBusyCritical
-        expr: host_cpu_busy_ratio > 0.85 and min(host_pressure_ratio{resource="cpu",kind="some"}) > 0.20
+        expr: host_cpu_busy_ratio > 0.85 and on (instance) min by (instance) (host_pressure_ratio{resource="cpu",kind="some"}) > 0.20
         for: 300s
         labels:
           severity: critical
           resource: cpu
 
-      # D3 memory: MemAvailable <4 GiB warn / <2 GiB crit. The note gives no window for memory; the CPU pair's 15 m /
-      # 5 m starting values are reused unchanged (deploy config, X-M22-3).
+      # D3 memory: MemAvailable <4 GiB warn / <2 GiB crit.
+      # ponytail: the 15 m / 5 m holds are lead-approved starting values pending X-M22-3; the note gives no memory
+      # window.
       - alert: CapacityMemoryLow
         expr: host_memory_available_bytes < 4294967296
         for: 15m

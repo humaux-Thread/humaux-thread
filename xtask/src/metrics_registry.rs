@@ -60,12 +60,10 @@ const PROCESSES: [&str; 6] = [
 /// distill counters; card 37's `humaux-maintenance --serve` exports
 /// `backup_last_success_timestamp_seconds`, ADR-0064 D-K). Empty: every rule-referenced family is exported.
 ///
-/// M22-3 (module design D3) needs no row yet, and must not get one early: the two M03 latency
-/// families (point-op queue wait p95, pool acquisition p95) have no §41.2 row, and this list only
-/// exempts D8(c) (registered but unexported) — D8(a) still fails an unregistered name, so a row
-/// alone would be dead and the rule that reads it could not load. The row belongs in the change
-/// that registers the family in §41.2 and loads its rule; adding it here first would also weaken
-/// the empty-list assertion of `t_h6_d8_allowlist_is_the_only_not_applicable_path`.
+/// This list exempts D8(c) only: a family here must still be registered in §41.2, because D8(a)
+/// rejects every unregistered name in a rule `expr:` (§41.2, §57.1). A row added before that
+/// registration and its reading rule is dead weight and fails
+/// `t_h6_d8_allowlist_is_the_only_not_applicable_path`, which asserts this list is empty.
 const NOT_YET_PRODUCED: &[(&str, &str)] = &[];
 
 /// D7 / D8(c): families a process declares (`# TYPE`) whose zero-state render deliberately has no sample, because

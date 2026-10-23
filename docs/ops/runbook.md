@@ -1025,7 +1025,12 @@ inside the shared namespace, supervision.md §1); Prometheus scrapes exactly tho
   restart resets the counters and silences the alert without fixing the stage.
 - `DnsPinDeferred` (WARNING, ADR-0066 D-P): `dns_pin_deferred_total` grew while no distill output was written —
   a pinned provider address probably stopped answering; refresh the pins (§10.5).
-- `AdmissionRejected`: §8.1.
+- `CapacityRejectionRatioHigh` (WARNING) / `CapacityRejectionRatioCritical` (CRITICAL): §8.1. The ratio excludes
+  `reason="key_limit"`; `sum by (reason) (rate(admission_rejected_total[15m]))` names the bound that filled.
+- `CapacityCpuBusyHigh` / `CapacityCpuBusyCritical` / `CapacityMemoryLow` / `CapacityMemoryCritical`: the host's own
+  capacity (M22-3 D3). Read `host_cpu_busy_ratio`, `host_pressure_ratio{resource="cpu",kind="some"}` and
+  `host_memory_available_bytes`; the thresholds are B23 starting values, so a firing is real load, not a tuning
+  drift (X-M22-3 replaces them).
 
 **Manual §69 step — the external dead-man (§42.1), once per deployment and after every change to the Watchdog
 route.** Not a gate, because the endpoint is outside the bundle: stop the `alertmanager` service for 5 minutes and
@@ -1539,8 +1544,10 @@ Measured (`LOAD` lines in ADR-0065 "Measurement", each with its n):
 **Reading a gateway 503.** An MCP request refused by admission gets `503`, an integer `Retry-After` (1–30 s) and
 the text body `RATE_LIMITED`; the process is healthy and full. `/readyz` and `/livez` are outside admission, so
 only `/readyz` → `503` means "do not route here" (`docs/ops/supervision.md`).
-`admission_rejected_total{class="gateway_inbound",reason}` tells which bound refused it; the `AdmissionRejected`
-alert fires on any increase over 5 min:
+`admission_rejected_total{class="gateway_inbound",reason}` tells which bound refused it; the
+`CapacityRejectionRatioHigh` / `CapacityRejectionRatioCritical` alerts fire on refusals over attempts (a ratio, so one
+503 never pages) with `reason="key_limit"` excluded. Start with
+`sum by (reason) (rate(admission_rejected_total[15m]))` to see which bound is filling:
 
 | `reason` | What filled up | First thing to check |
 |---|---|---|
