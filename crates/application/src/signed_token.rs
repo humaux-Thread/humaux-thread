@@ -188,10 +188,10 @@ mod tests {
     const LABEL_B: TokenLabel = TokenLabel::new(b"humaux.test.b.v1", b"humaux.test.b.kid.v1");
 
     /// A fresh random 32-byte key per call; tests never use a literal key.
+    // `uuid`'s `v4` feature is only unified in by other workspace crates; `cargo test -p
+    // humaux-application --lib` (the DOD verifier path) must compile on this crate's own deps.
     fn random_key() -> Vec<u8> {
-        (0..2)
-            .flat_map(|_| *uuid::Uuid::new_v4().as_bytes())
-            .collect()
+        rand::random::<[u8; 32]>().to_vec()
     }
 
     #[test]
