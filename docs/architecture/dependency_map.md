@@ -12540,6 +12540,7 @@ modules naming it:
 - `adapters::rebuild`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
