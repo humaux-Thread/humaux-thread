@@ -256,6 +256,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -1669,6 +1670,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -2161,6 +2163,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -2842,6 +2845,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -3864,6 +3868,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -4491,6 +4496,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -9525,13 +9531,19 @@ executed by:
 ### `private.memory_text_v`
 read by:
 - process(cargo-xtask): `adapters::memory_repo`
+- process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_repo`
+- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::memory_repo`
+- process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::memory_repo`
+- process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::memory_repo`
+- process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::memory_repo`
+- process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
 
@@ -12345,6 +12357,7 @@ modules naming it:
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
+- `adapters::tests::note_text_once`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
