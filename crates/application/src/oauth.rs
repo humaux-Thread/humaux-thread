@@ -1107,6 +1107,7 @@ mod tests {
     /// One row per refusal: the mutation of an otherwise valid request, the exact reason, and whether the refusal may
     /// be redirected back to the client.
     #[test]
+    #[allow(clippy::too_many_lines)] // one exhaustive table of authorize refusals, rustfmt expands each row
     fn authorize_refusals_are_exact() {
         type Mutate = fn(&mut AuthorizeRequest<'static>);
         let table: [(&str, Mutate, OAuthReason, bool); 18] = [
@@ -1239,6 +1240,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one exhaustive table of redirect-shape refusals, rustfmt expands each row
     fn redirect_shape_refusals_are_exact() {
         for (uri, reason) in [
             (
@@ -1379,6 +1381,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one exhaustive table of exchange refusals, rustfmt expands each row
     fn code_exchange_refusals_are_exact() {
         type Mutate = fn(&mut CodeExchangeRequest<'static>);
         let table: [(&str, Mutate, OAuthReason); 8] = [
