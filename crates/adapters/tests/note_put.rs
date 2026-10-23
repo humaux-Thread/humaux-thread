@@ -1080,6 +1080,7 @@ impl Drop for RollbackOnPanic {
 
 /// G-M06-5: two principals write the same body, kind and visibility concurrently → exactly 1 Memory and 2 receipts. Both
 /// calls return the one Memory; exactly one is [`Dedupe::Existing`]. The counts are read from the rows, not the results.
+#[allow(clippy::too_many_lines)] // one gate: two live connections, a barrier, row counts, then both results
 #[test]
 fn identical_note_two_agents() {
     run_db_fixture::<Fixture, _>("identical_note_two_agents", |mut handle| {
