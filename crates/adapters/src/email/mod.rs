@@ -1,7 +1,7 @@
 //! `adapters::email` — H3: §74.6 `EmailProvider` trait + SMTP adapter + the Email Deliverability Plane (outbox /
 //!   delivery events / suppression / domain / provider health).
 //! Depends-on: crates=[async-trait]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::email::outbox, adapters::email::sink, adapters::email::smtp, adapters::email::test_double, tests]
+//! Called-by: [adapters::email::outbox, adapters::email::sink, adapters::email::smtp, adapters::email::test_double, adapters::login_repo, tests]
 //! Invariants: [no caller outside smtp/sink/test_double names a concrete provider except EmailMode::into_provider;
 //!   everything else takes &dyn EmailProvider (§74.6); the default mode is the non-sending Sink (M02 D10);
 //!   the recipient allowlist, the priority order and the send cap are decided here, never by a caller]
