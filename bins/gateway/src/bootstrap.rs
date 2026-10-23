@@ -14,6 +14,7 @@
 //!   HUMAUX_GATEWAY_CALLER_ID, HUMAUX_GATEWAY_CELL_ID, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS,
 //!   HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX,
+//!   HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
 //!   HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS,
@@ -108,6 +109,11 @@ const PREFIX: &str = "HUMAUX_GATEWAY_";
 const ENUMERATION_TTL_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS";
 const ENUMERATION_MANIFEST_CAP_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP";
 const TASK_LEASE_TTL_KEY: &str = "HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS";
+const CREDENTIAL_TOUCH_INTERVAL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS";
+/// Largest accepted credential touch interval: one hour. A technical bound, not a business limit: the stamp feeds the
+/// 24 h activity window of `ops.health_snapshot` (0261), and an interval beyond an hour would blur it by more than a
+/// twenty-fourth. Zero is accepted: it writes the stamp on every request, the behaviour before M02-2.
+const MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS: u64 = 3600;
 /// Largest accepted task-lease TTL, `u32::MAX` seconds (about 136 years). A technical bound, not a business limit:
 /// `adapters::coord_repo` adds the TTL to the DB clock through `make_interval(secs => double precision)` (§30.2), so
 /// the value must stay exact as an `f64`, its microseconds must fit the interval's `int64` field (4.3e15 here against
@@ -233,6 +239,9 @@ pub struct GatewayBootstrap {
     readiness_refresh: Duration,
     /// §30.2 / §78.1 `HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`: the lease `coordinate.task_claim` / `task_heartbeat` grant.
     task_lease_ttl: Duration,
+    /// M02 D8 / §78.1 `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`: the least time between two `last_used_at`
+    /// writes of one credential; every request still validates the credential.
+    credential_touch_interval: Duration,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS`: one memory.enumerate manifest segment's lifetime.
     enumeration_ttl: Duration,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP`: the most ids one manifest segment stores.
@@ -366,7 +375,8 @@ impl GatewayBootstrap {
             .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_PG_DSN", "connection rejected"))?;
         let guard = Arc::new(
             GatewayGuard::new(pool, self.guard)
-                .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?,
+                .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
+                .with_credential_touch_interval(self.credential_touch_interval),
         );
         let catalog = CanonicalCatalog::load().map_err(|_| {
             BootstrapError::new("canonical MCP catalog", "invalid embedded contract")
@@ -471,6 +481,8 @@ impl GatewayBootstrap {
             READINESS_REFRESH_KEY,
         )?;
         let task_lease_ttl = task_lease_ttl(required(&effective, TASK_LEASE_TTL_KEY)?)?;
+        let credential_touch_interval =
+            credential_touch_interval(required(&effective, CREDENTIAL_TOUCH_INTERVAL_KEY)?)?;
         let enumeration_ttl = seconds(
             required(&effective, ENUMERATION_TTL_KEY)?,
             ENUMERATION_TTL_KEY,
@@ -500,6 +512,7 @@ impl GatewayBootstrap {
             metrics_addr,
             readiness_refresh,
             task_lease_ttl,
+            credential_touch_interval,
             enumeration_ttl,
             enumeration_manifest_cap,
             effective_config: effective_config_rows(&registry, &raw, &effective),
@@ -1151,6 +1164,14 @@ pub fn registry() -> Vec<ConfigEntry> {
     // §30.2 / §78.1 (M29 T04a/T04b): the coord task-run lease length `coordinate.task_claim` / `task_heartbeat` hand to
     // adapters::coord_repo; `task_lease_ttl` bounds it at boot. 300 s bounds how long a crashed owner keeps a task.
     entries.push(entry_with_default(TASK_LEASE_TTL_KEY, "u64", false, "300"));
+    // M02 D8 (§78.1): the bearer hot path writes a credential's `last_used_at` at most once per this many seconds; 60 s
+    // keeps the stamp inside the minute while taking one UPDATE per request off `control.api_keys`.
+    entries.push(entry_with_default(
+        CREDENTIAL_TOUCH_INTERVAL_KEY,
+        "u64",
+        false,
+        "60",
+    ));
     for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
         entries.push(entry(capacity_key, "i64", false));
         entries.push(entry(refill_key, "i64", false));
@@ -1258,6 +1279,18 @@ fn task_lease_ttl(value: &str) -> Result<Duration, BootstrapError> {
         .filter(|secs| (1..=MAX_TASK_LEASE_TTL_SECONDS).contains(secs))
         .map(Duration::from_secs)
         .ok_or_else(|| BootstrapError::new(TASK_LEASE_TTL_KEY, "must be 1..=4294967295 seconds"))
+}
+
+/// `0..=MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS`; anything else refuses to boot naming the key.
+fn credential_touch_interval(value: &str) -> Result<Duration, BootstrapError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|secs| *secs <= MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS)
+        .map(Duration::from_secs)
+        .ok_or_else(|| {
+            BootstrapError::new(CREDENTIAL_TOUCH_INTERVAL_KEY, "must be 0..=3600 seconds")
+        })
 }
 
 fn millis(value: &str, key: &str) -> Result<Duration, BootstrapError> {
@@ -1651,6 +1684,42 @@ mod tests {
             Err(error) => panic!("the full fixture boots: {}", error.key),
         };
         assert_eq!(default.task_lease_ttl, Duration::from_secs(300));
+    }
+
+    /// G-M02-2 (M02 D8, §78.1): the credential touch interval is config. The 60 s default boots, both ends of the
+    /// range boot, and a value past an hour or one that is not a number refuses to boot naming the key. Fault: the
+    /// upper bound removed, or the default moved into code.
+    #[test]
+    fn credential_touch_interval_is_bounded_at_boot() {
+        let outcome = |value: &str| {
+            let mut values = raw();
+            values.insert(CREDENTIAL_TOUCH_INTERVAL_KEY.into(), value.into());
+            GatewayBootstrap::from_raw(values)
+                .map(|boot| boot.credential_touch_interval)
+                .map_err(|error| error.key)
+        };
+        for value in ["3601", "-1", "soon", "1.5"] {
+            assert_eq!(
+                outcome(value),
+                Err(CREDENTIAL_TOUCH_INTERVAL_KEY.to_owned()),
+                "{value:?}"
+            );
+        }
+        assert_eq!(outcome("0"), Ok(Duration::ZERO));
+        assert_eq!(outcome("3600"), Ok(Duration::from_secs(3600)));
+        let registered: Vec<_> = registry()
+            .into_iter()
+            .filter(|entry| entry.name == CREDENTIAL_TOUCH_INTERVAL_KEY)
+            .collect();
+        assert_eq!(registered.len(), 1, "declared exactly once");
+        assert_eq!(registered[0].default.as_deref(), Some("60"));
+        let mut values = raw();
+        values.remove(CREDENTIAL_TOUCH_INTERVAL_KEY);
+        assert_eq!(
+            GatewayBootstrap::from_raw(values).map(|boot| boot.credential_touch_interval),
+            Ok(Duration::from_secs(60)),
+            "unset resolves to the registered default"
+        );
     }
 
     /// Every card-38 key (ADR-0065; S3 and S4 append theirs to this one list).

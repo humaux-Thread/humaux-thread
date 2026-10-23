@@ -30,6 +30,7 @@ pub mod ledger;
 pub mod lifecycle;
 pub mod memory;
 pub mod note;
+pub mod plan;
 pub mod policy;
 pub mod public;
 pub mod relation;

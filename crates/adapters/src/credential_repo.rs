@@ -157,7 +157,8 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
 /// Reads one credential binding through the only gateway-authorized lookup.
 ///
 /// The returned record may be legacy, revoked, expired, or otherwise unauthorized. The caller
-/// must verify the HMAC and decide authorization from every returned live fact.
+/// must verify the HMAC and decide authorization from every returned live fact. It is read on
+/// every request and never cached (M02 D8): a revocation is visible to the very next call.
 pub async fn lookup(
     pool: &RuntimeDbPool,
     prefix: &str,
@@ -252,7 +253,9 @@ pub async fn load_live_workspace_ids(
 
 /// Records successful credential use through the existing gateway-only touch function.
 ///
-/// Authorization must already have succeeded; this only updates last_used_at.
+/// Authorization must already have succeeded; this only updates last_used_at, an activity projection that is never an
+/// authorization input (M02 D8). This function always writes: the caller (`gateway::auth`) decides how often, and
+/// throttling it never skips [`lookup`].
 pub async fn mark_used(pool: &RuntimeDbPool, api_key_id: Uuid) -> Result<(), ErrorCode> {
     sqlx::query("SELECT control.api_key_touch_last_used($1)")
         .bind(api_key_id)

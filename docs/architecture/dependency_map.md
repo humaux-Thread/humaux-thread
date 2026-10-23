@@ -402,6 +402,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::note`
 
+#### `domain::plan`
+
 #### `domain::policy`
 
 #### `domain::public`
@@ -852,9 +854,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
-- env `GITHUB_ACTIONS`
-- env `HUMAUX_NO_PYTHON_COMPOSE_JSON`
-- env `HUMAUX_REQUIRE_DOCKER`
 - service `PostgreSQL(any)`
 - service `subprocess(cargo)`
 
@@ -2324,6 +2323,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS`
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX`
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX`
+- env `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`
 - env `HUMAUX_GATEWAY_EMBEDDING_DIMENSION`
 - env `HUMAUX_GATEWAY_EMBEDDING_MODEL_ID`
 - env `HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION`
@@ -5242,6 +5242,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::facet_contract`
 - (no process): `adapters::tests::quota_and_rate`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
@@ -5502,6 +5503,23 @@ written by:
 
 executed by:
 
+### `control.plan_versions`
+read by:
+- (no process): `adapters::tests::facet_contract`
+
+written by:
+- (no process): `adapters::tests::plan_catalog`
+
+executed by:
+
+### `control.plans`
+read by:
+
+written by:
+- (no process): `adapters::tests::plan_catalog`
+
+executed by:
+
 ### `control.private_reasoning_domains`
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
@@ -5697,6 +5715,15 @@ written by:
 - (no process): `adapters::tests::support::public_anonymous_seam`
 
 executed by:
+
+### `control.publish_plan_version`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::plan_repo`
+- (no process): `adapters::tests::plan_catalog`
 
 ### `control.purge_idle_rate_buckets`
 read by:
@@ -11170,6 +11197,7 @@ executed by:
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
 - `adapters::tests::note_text_once`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::projection_lag`
 - `adapters::tests::provider_budget`
 - `adapters::tests::reasoning_route_foundation`
@@ -11351,6 +11379,7 @@ executed by:
 ### `PostgreSQL(role_maintenance)`
 - `adapters::health`
 - `adapters::maintenance_repo`
+- `adapters::plan_repo`
 - `adapters::postgres`
 - `adapters::provider_budget`
 - `adapters::provisioning`
@@ -11369,6 +11398,7 @@ executed by:
 - `adapters::tests::health_snapshot`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mechanism_observation`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::provider_budget`
@@ -11762,6 +11792,7 @@ modules naming it:
 - `adapters::note_repo`
 - `adapters::operation_receipt`
 - `adapters::placement_repo`
+- `adapters::plan_repo`
 - `adapters::postgres`
 - `adapters::private_inference_rpc`
 - `adapters::private_projection_registry`
@@ -11885,6 +11916,7 @@ modules naming it:
 - `adapters::note_repo`
 - `adapters::operation_receipt`
 - `adapters::placement_repo`
+- `adapters::plan_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
@@ -11949,6 +11981,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
 - `adapters::tests::project_continuity_read_0137`
@@ -12236,6 +12269,7 @@ modules naming it:
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::note_repo`
+- `adapters::plan_repo`
 - `adapters::projection_worker`
 - `adapters::provisioning`
 - `adapters::public_projection`
@@ -12279,6 +12313,7 @@ modules naming it:
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
@@ -12327,6 +12362,7 @@ why: serializable onboarding receipts
 
 modules naming it:
 - `adapters::maintenance_repo`
+- `adapters::plan_repo`
 - `adapters::provisioning`
 - `adapters::reasoning_route_onboarding`
 
@@ -12543,6 +12579,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::projection_claim`
@@ -12660,6 +12697,7 @@ modules naming it:
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
 - `adapters::tests::project_continuity_0136`
@@ -12840,6 +12878,7 @@ modules naming it:
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
 - `adapters::tests::project_continuity_0136`
@@ -12922,6 +12961,7 @@ modules naming it:
 - `adapters::tests::note_replace`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
+- `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::projection_claim`
@@ -16436,6 +16476,15 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/adapters/tests/plan_catalog.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/pool_typestate.rs`
 db-bound (default run): no

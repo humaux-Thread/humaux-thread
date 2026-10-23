@@ -339,7 +339,6 @@ processes:
 - process(cargo-xtask)
 
 modules:
-- `xtask::architecture_check`
 - `xtask::contract_impact`
 
 ### `GITLEAKS_CONFIG`
@@ -1364,6 +1363,19 @@ modules:
 - `xtask::e2e_onboard`
 
 ### `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`
 - witness: literal
 - registry: gateway
 
@@ -3474,19 +3486,6 @@ modules:
 - `private-worker::tests::support::live_minimax`
 - `xtask::e2e_onboard`
 
-### `HUMAUX_NO_PYTHON_COMPOSE_JSON`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(cargo-xtask)
-
-modules:
-- `xtask::architecture_check`
-
 ### `HUMAUX_OTHER_LIMIT`
 - witness: literal
 - registry: raw
@@ -4412,7 +4411,6 @@ processes:
 
 modules:
 - `humaux-testkit`
-- `xtask::architecture_check`
 
 ### `HUMAUX_REQUIRE_MINIMAX`
 - witness: literal
