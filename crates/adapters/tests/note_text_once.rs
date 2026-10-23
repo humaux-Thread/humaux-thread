@@ -277,7 +277,9 @@ fn enumerate_bodies(handle: &Handle, page_size: u16) -> MaterializedMemoryPage {
         .expect("memory.enumerate materializes")
 }
 
-/// The recall/context/continuity body reader (`materialize_final_bodies`, `Lifecycle::CURRENT`).
+/// The recall/context body reader (`materialize_final_bodies`, `Lifecycle::CURRENT`). Recall enters at
+/// `materialize_final_bodies_about_in_txn` and `context.assemble` at `materialize_final_bodies_in_txn`; both resolve
+/// bodies through the same `load_memories` query this calls.
 fn recall_bodies(handle: &Handle, ids: &[Uuid]) -> MaterializedBodies {
     handle
         .rt
@@ -457,7 +459,8 @@ fn g_m07_3_the_view_resolves_identity_and_legacy_text_alike() {
 }
 
 /// G-M07-3, reader half (M08-2). The body readers behind `memory.get`, `memory.enumerate` and recall/context
-/// (`materialize_final_bodies`; context.assemble and continuity call the same function) must return the view's text,
+/// (`materialize_final_bodies`; recall enters at `materialize_final_bodies_about_in_txn`, `context.assemble` at
+/// `materialize_final_bodies_in_txn`, both through the same `load_memories` query) must return the view's text,
 /// not the base columns: the stripped identity note keeps its body although its `key_claim` is gone, and the legacy
 /// twin keeps the rewritten `key_claim` rather than its Evidence payload. The unreshaped note is the control.
 #[test]
