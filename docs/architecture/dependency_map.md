@@ -261,6 +261,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -664,6 +667,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.ensure_admission_tier`
 - executes `control.ensure_user`
 - executes `control.issue_api_key`
+- executes `control.login_challenge_claim`
+- executes `control.login_challenge_issue`
+- executes `control.login_challenge_settle`
 - executes `control.maintenance_tenant_page`
 - executes `control.observe_reasoning_route_health`
 - executes `control.onboard_tenant`
@@ -1677,6 +1683,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -2157,6 +2166,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -2871,6 +2883,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -3339,6 +3354,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.ensure_admission_tier`
 - executes `control.ensure_user`
 - executes `control.issue_api_key`
+- executes `control.login_challenge_claim`
+- executes `control.login_challenge_issue`
+- executes `control.login_challenge_settle`
 - executes `control.maintenance_tenant_page`
 - executes `control.observe_reasoning_route_health`
 - executes `control.onboard_tenant`
@@ -3860,6 +3878,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -4484,6 +4505,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -4976,6 +5000,7 @@ executed by:
 
 ### `control.audit_events`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
@@ -5001,6 +5026,15 @@ read by:
 - (no process): `maintenance::tests::partitions`
 
 written by:
+
+executed by:
+
+### `control.auth_events`
+read by:
+- (no process): `adapters::tests::auth_contract`
+
+written by:
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -5198,11 +5232,13 @@ executed by:
 
 ### `control.email_challenges`
 read by:
+- (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -5289,6 +5325,37 @@ executed by:
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
+
+### `control.login_challenge_claim`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.login_challenge_issue`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- (no process): `adapters::tests::login_challenge`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.login_challenge_settle`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.maintenance_tenant_page`
 read by:
@@ -5413,6 +5480,7 @@ executed by:
 
 ### `control.operation_receipts`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
@@ -6352,6 +6420,7 @@ executed by:
 
 ### `control.usage_reservations`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
@@ -6382,6 +6451,7 @@ read by:
 - process(cargo-xtask): `xtask::e2e_onboard`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -6423,6 +6493,7 @@ written by:
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
@@ -7067,6 +7138,7 @@ read by:
 written by:
 - (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -7087,6 +7159,7 @@ read by:
 written by:
 - (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -7465,6 +7538,7 @@ executed by:
 ### `ops.outbox`
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_reads`
@@ -7480,6 +7554,7 @@ read by:
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::read_materialize`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -7488,29 +7563,34 @@ read by:
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::read_materialize`
+- process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
+- process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
@@ -8403,6 +8483,7 @@ executed by:
 
 ### `private.events`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -8520,6 +8601,7 @@ executed by:
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::memory_attribution`
@@ -8693,8 +8775,15 @@ executed by:
 
 ### `private.evidence_sources`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::remember`
 
 written by:
 - (no process): `adapters::tests::evidence_sources`
@@ -10242,6 +10331,7 @@ executed by:
 
 ### `projection.stream_log`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
@@ -10257,6 +10347,7 @@ read by:
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::read_materialize`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -10267,6 +10358,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
@@ -10275,6 +10367,7 @@ read by:
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::exact_census`
@@ -10283,6 +10376,7 @@ read by:
 - process(humaux-maintenance): `adapters::postgres`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `maintenance::drill`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10292,6 +10386,7 @@ read by:
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::postgres`
 - process(humaux-private-worker): `adapters::read_materialize`
+- process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::context_repo`
@@ -10299,6 +10394,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
+- process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 
 written by:
@@ -11157,6 +11253,7 @@ executed by:
 - `adapters::exact_census`
 - `adapters::forget_repo`
 - `adapters::jobs`
+- `adapters::login_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
@@ -11179,6 +11276,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
 - `adapters::stream_repo`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -11205,6 +11303,7 @@ executed by:
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
+- `adapters::tests::login_challenge`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
@@ -11389,12 +11488,14 @@ executed by:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_affects`
@@ -11692,6 +11793,9 @@ executed by:
 ### `fs(statvfs of the DR paths)`
 - `maintenance::serve`
 
+### `subprocess(bash)`
+- `xtask::tests::experiment_workflow`
+
 ### `subprocess(cargo)`
 - `fail-closed-macro::tests::compile_fail`
 - `xtask::architecture_check`
@@ -11856,6 +11960,7 @@ modules naming it:
 - `adapters::grep_repo`
 - `adapters::health`
 - `adapters::jobs`
+- `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
@@ -11904,12 +12009,14 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
@@ -11981,6 +12088,7 @@ modules naming it:
 - `adapters::exact_census`
 - `adapters::grep_repo`
 - `adapters::health`
+- `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
@@ -12028,6 +12136,7 @@ modules naming it:
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12035,6 +12144,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12169,6 +12279,7 @@ modules naming it:
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::forget_repo`
+- `adapters::login_repo`
 - `adapters::memory_governance_repo`
 - `adapters::model_call_ledger`
 - `adapters::private_inference_rpc`
@@ -12177,6 +12288,7 @@ modules naming it:
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::tests::auth_contract`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -12185,6 +12297,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
+- `adapters::tests::login_challenge`
 - `adapters::tests::mechanism_observation`
 - `adapters::tests::memory_affects`
 - `adapters::tests::model_call_ledger`
@@ -12340,6 +12453,7 @@ modules naming it:
 - `adapters::distill_repo`
 - `adapters::email::outbox`
 - `adapters::jobs`
+- `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::membership_repo`
@@ -12373,6 +12487,7 @@ modules naming it:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::email_outbox`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -12507,6 +12622,7 @@ modules naming it:
 - `adapters::rebuild`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
@@ -12634,6 +12750,7 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
@@ -12641,6 +12758,7 @@ modules naming it:
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12728,6 +12846,7 @@ modules naming it:
 - `adapters::consolidate_repo`
 - `adapters::postgres`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -12758,6 +12877,7 @@ modules naming it:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -12916,6 +13036,7 @@ modules naming it:
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -12930,6 +13051,7 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12940,6 +13062,7 @@ modules naming it:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
@@ -13027,12 +13150,14 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -13089,6 +13214,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::correct`
 - `application::entitlement`
+- `application::login`
 - `application::notify`
 - `application::pin`
 - `application::public_evolve`
@@ -16092,6 +16218,15 @@ default run:
 - PostgreSQL
 - Qdrant
 
+### `crates/adapters/tests/auth_contract.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/auth_scope_rls.rs`
 db-bound (default run): yes
 
@@ -16293,6 +16428,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/evidence_sources_dedupe.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/evidence_task_runs.rs`
 db-bound (default run): yes
 
@@ -16375,6 +16519,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/ledger_frontier.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/login_challenge.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -17173,6 +17326,15 @@ services (computed):
 
 default run:
 
+### `xtask/tests/experiment_workflow.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
+- subprocess
+
 ### `xtask/tests/version.rs`
 db-bound (default run): no
 
@@ -17222,7 +17384,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:41` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
-- `crates/application/src/auth.rs:494` [table-undeclared] (line) — names the table only in a panic message; no DB access here
+- `crates/application/src/auth.rs:518` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access

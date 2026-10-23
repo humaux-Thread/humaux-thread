@@ -1,7 +1,7 @@
 //! `adapters::email::outbox` — DB-backed queue + worker for `ops.email_outbox`
 //!   (`migrations/0038_email_deliverability.sql`).
 //! Depends-on: crates=[serde_json, sqlx]; services=[PostgreSQL(any) w=[ops.email_delivery_events, ops.email_outbox, ops.email_suppressions]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::email, adapters::postgres]
-//! Called-by: [tests]
+//! Called-by: [adapters::login_repo, tests]
 //! Invariants: [enqueue_in_txn is the one INSERT INTO ops.email_outbox and never calls send, so a request handler
 //!   never blocks on SMTP; a replayed idempotency_key inserts nothing; run_once claims QUEUED rows only, highest
 //!   priority first, under the SendPolicy cap and allowlist, and durably marks a row SUBMISSION_UNKNOWN before the
@@ -315,10 +315,12 @@ async fn drain_one(
         return Ok(Drained::Suppressed);
     }
 
+    // ponytail: the code is scrubbed here, before the provider call; the M22-2 renderer must read
+    // it in the claim SELECT of this same txn, before this scrub.
     sqlx::query(
         "UPDATE ops.email_outbox \
          SET state = 'SUBMISSION_UNKNOWN', provider = $2, attempt = attempt + 1, \
-             last_error = $3, sent_at = now() \
+             last_error = $3, sent_at = now(), payload = payload - 'code' \
          WHERE outbox_id = $1",
     )
     .bind(outbox_id)
@@ -400,7 +402,8 @@ async fn settle(
     let last_error = s.last_error.as_deref();
     sqlx::query(
         "UPDATE ops.email_outbox \
-         SET state = $2, provider = $3, provider_message_id = $4, last_error = $5 \
+         SET state = $2, provider = $3, provider_message_id = $4, last_error = $5, \
+             payload = payload - 'code' \
          WHERE outbox_id = $1",
     )
     .bind(outbox_id)

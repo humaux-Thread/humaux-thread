@@ -1,0 +1,107 @@
+name: experiment
+# M24-16 / M24 D9: dispatch-only runner for the xtask measurement harnesses (R11 storage, load, mutant/CodeQL timing).
+# One `cargo xtask <subcommand> <args>` on the dispatched ref; the JSON reports the harness writes under
+# `experiment-results/` come back as the `experiment-results` artifact. Nothing here is on the required check (no
+# ruleset entry, no `needs:` in ci.yml) and this workflow never dispatches ci.yml.
+#
+# The accepted subcommands are the experiment harnesses that exist in xtask today. The `options:` list below and the
+# guard's case arms are the same set; xtask/tests/experiment_workflow.rs extracts the guard from this file, runs it,
+# and asserts that equality, so a harness added to one place and not the other is red.
+#
+# The inputs reach the shell only through env vars, split on spaces and never evaluated (no `${{ }}` in `run:`), the
+# rule targeted.yml states for cargo_args. `--report` paths are relative to the workspace, e.g.
+#   gh workflow run experiment.yml -R humaux/humaux-thread --ref <branch> \
+#     -f subcommand=load -f args="--gateway-url ... --report experiment-results/load.json"
+on:
+  workflow_dispatch:
+    inputs:
+      subcommand:
+        description: xtask experiment to run
+        required: true
+        type: choice
+        options:
+          - load
+          - load-open
+          - soak
+      args:
+        description: arguments after `cargo xtask <subcommand>` (same character set as targeted.yml's cargo_args)
+        required: false
+        default: ""
+
+# The job runs code from the dispatched ref: the token stays read-only and is not persisted in the checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: experiment-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  # Same linker as ci.yml and targeted.yml, so a timing run links the way the required check does.
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+jobs:
+  experiment:
+    name: cargo xtask <experiment>
+    runs-on: ubuntu-24.04-arm
+    # A load sweep or a soak is minutes, never hours; a hung harness fails here instead of holding the runner.
+    timeout-minutes: 120
+    steps:
+      # First, before checkout and setup: a value outside the choice list is a bad dispatch and exits 2 without
+      # spending a runner on a build. §57.1: a missing value fails here, never runs as a green no-op.
+      - name: validate the subcommand (exit 2 outside the choice list)
+        shell: bash
+        env:
+          SUBCOMMAND: ${{ inputs.subcommand }}
+        run: |
+          # BEGIN experiment-subcommand-guard (xtask/tests/experiment_workflow.rs runs this block verbatim)
+          set -euo pipefail
+          case "${SUBCOMMAND:-}" in
+            load|load-open|soak)
+              echo "subcommand=$SUBCOMMAND accepted"
+              ;;
+            *)
+              echo "subcommand must be one of [load, load-open, soak], got '${SUBCOMMAND:-}'" >&2
+              exit 2
+              ;;
+          esac
+          # END experiment-subcommand-guard
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The same composite action as ci.yml and targeted.yml (pinned toolchain, lld, rust-cache, runbook §2 cluster).
+      - uses: ./.github/actions/setup
+
+      - name: cargo xtask <subcommand> <args>
+        shell: bash
+        env:
+          SUBCOMMAND: ${{ inputs.subcommand }}
+          EXPERIMENT_ARGS: ${{ inputs.args }}
+        run: |
+          # GitHub starts this shell as `bash -eo pipefail`: errexit is off so the result line is printed and the
+          # step's exit code is the harness's, not tee's (targeted.yml's `cargo test` step does the same).
+          set -uo pipefail
+          set +e
+          case "$EXPERIMENT_ARGS" in *[!A-Za-z0-9_:./=\ -]*) echo "args holds characters outside [A-Za-z0-9_:./= -]"; exit 2 ;; esac
+          mkdir -p experiment-results
+          echo "ref=$(git rev-parse HEAD) subcommand=$SUBCOMMAND"
+          # shellcheck disable=SC2086 # word splitting on purpose; no eval
+          cargo xtask "$SUBCOMMAND" $EXPERIMENT_ARGS 2>&1 | tee "$RUNNER_TEMP/experiment.out"
+          rc=${PIPESTATUS[0]}
+          echo "EXPERIMENT RESULT exit=$rc ref=$(git rev-parse HEAD) subcommand=$SUBCOMMAND"
+          exit $rc
+
+      # `always()`: a red harness still uploads whatever report it managed to write; the artifact is the evidence.
+      - name: upload the JSON results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: experiment-results
+          path: experiment-results/**/*.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -5686,6 +5686,7 @@ modules:
 - `adapters::consolidate_repo`
 - `adapters::postgres`
 - `adapters::stream_repo`
+- `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
@@ -5716,6 +5717,7 @@ modules:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
+- `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::mechanism_observation`
@@ -6018,6 +6020,18 @@ modules:
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::ops_listener`
 - `private-worker::tests::same_uid_boot`
+
+### `SUBCOMMAND`
+- witness: literal
+- registry: raw
+
+kind:
+- child
+
+processes:
+
+modules:
+- `xtask::tests::experiment_workflow`
 
 ### `no_proxy`
 - witness: literal
