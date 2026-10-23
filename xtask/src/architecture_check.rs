@@ -2080,16 +2080,15 @@ fn forbidden_lint_silencer(path: &str, silencer: &LintSilencer, lint: &str) -> O
     let line = silencer.line;
     let marker = if silencer.inner { "#!" } else { "#" };
     let kind = silencer.kind;
-    let ratcheted_group = RATCHETED_LINT_GROUPS
+    let is_ratcheted_group = RATCHETED_LINT_GROUPS
         .iter()
-        .find(|entry| entry.0 == lint)
-        .map(|entry| entry.1);
+        .any(|(_, group)| *group == lint);
     if lint == CLIPPY_ALL_GROUP {
         return Some(format!(
             "{path}:{line}: `{marker}[{kind}(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)"
         ));
     }
-    if ratcheted_group.is_some_and(|group| group == lint) {
+    if is_ratcheted_group {
         return Some(format!(
             "{path}:{line}: `{marker}[{kind}(clippy::{lint})]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)"
         ));
@@ -13740,7 +13739,7 @@ runs:
     /// The pure scanner reports `path:line` for every forbidden form, in every spelling, and nothing for a plain
     /// item-level exact allow/expect (that one is counted, not forbidden).
     #[test]
-    fn forbidden_lint_silencers_in_names_every_group_and_inner_site() {
+    fn g_m01_8_forbidden_lint_silencers_in_names_every_group_and_inner_site() {
         let files = vec![
             (
                 "a.rs".to_string(),
