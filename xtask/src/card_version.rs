@@ -114,6 +114,8 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// annotation — `NAME: &str = "V"` or `NAME: &'static str = "V"`) in `source`, in appearance
 /// order. Word-bounded so e.g. `MY_CARD_BUILDER_VERSION` never matches a search for
 /// `CARD_BUILDER_VERSION`.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn extract_const_str_values(source: &str, const_name: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();

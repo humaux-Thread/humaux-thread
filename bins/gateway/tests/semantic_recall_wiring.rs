@@ -1115,6 +1115,8 @@ fn bootstrap_wires_semantic_recall_exactly_once() {
 
 /// A stub of the retrieval-worker RPC (ADR-0012 wire shape): the first call answers a transient
 /// provider failure, every later call a fixed-vector `EMBEDDED`; `calls` counts what reached it.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 async fn spawn_flaky_worker(calls: Arc<AtomicUsize>) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let socket_path = temp_socket_path("flaky");

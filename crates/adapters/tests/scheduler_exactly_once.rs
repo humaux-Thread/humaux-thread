@@ -158,6 +158,8 @@ fn jobs_count_for_key(admin: &mut Client, key: &str) -> i64 {
 /// deterministic precondition instead of a timing guess). Each owner opens its own
 /// `RuntimeDbPool` — mirrors independent scheduler replica processes, same rationale as
 /// `jobs_claim.rs`'s `gateway_dsn` field doc.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn race_claim_and_enqueue(
     gateway_dsn: &str,
     owners: &[&str],

@@ -643,6 +643,8 @@ pub fn find_authority_struct_literals(source: &str) -> Vec<usize> {
 /// Byte range of `Authority::new`'s fn body within `source`, if `source` contains both an
 /// `impl Authority { .. }` block (word-bounded, so `impl AuthorityPolicy` is not mistaken
 /// for it) and a `fn new(` inside it.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn authority_new_body_range(source: &str) -> Option<(usize, usize)> {
     let bytes = source.as_bytes();
     let needle = "impl Authority";
@@ -3409,6 +3411,8 @@ fn m04_migration_number(path: &Path) -> Option<u32> {
 /// One migration's SQL with its comments blanked and its line numbers kept: `--` to end of line, `/* .. */` (nested)
 /// between statements, and a `--` inside a single- or double-quoted token left alone. A plan name or a price in prose
 /// is not a statement the database runs (§71.1).
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn m04_sql_code(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let at = |i: usize| chars.get(i).copied().unwrap_or('\0');
@@ -3730,6 +3734,8 @@ const T07_CATALOG_SITE: (&str, usize, usize) = ("bins/maintenance/src/rls_check.
 /// ponytail: lexes comments and literals only, so SQL assembled with `format!` / `concat!` or loaded with
 /// `include_str!` from a `.sql` file is not scanned, and a SQL `--` comment inside a literal still counts; upgrade to
 /// statement parsing if that ever shows up.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn t07_strip_comments(source: &str) -> String {
     let s: Vec<char> = source.chars().collect();
     let at = |i: usize| s.get(i).copied().unwrap_or('\0');
@@ -5525,6 +5531,8 @@ fn adr_0012_gateway_boundary_gate(root: &Path) -> Verdict {
 /// allowlist), catching a `bootstrap.rs` regression that drops
 /// `.with_access_mode(CellAccessMode::QdrantReadOnly)` or explicitly reaches for
 /// `CellAccessMode::ReadWrite` before it ever reaches a running process.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn adr_0014_gateway_qdrant_read_only_gate(root: &Path) -> Verdict {
     let dir = root.join(GATEWAY_SRC_DIR);
     if !dir.is_dir() {

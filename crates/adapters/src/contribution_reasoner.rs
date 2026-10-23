@@ -2191,6 +2191,8 @@ mod ledger_usage_tests {
     /// assertion is the tripwire that keeps it from being a silent skip: the day any other source file under this crate's `src/`
     /// names those fields, this goes red and must be replaced by real normalisation cases (write count included).
     #[test]
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn not_applicable_no_anthropic_or_deepseek_usage_adapter_in_byok() {
         // Cargo runs a package's unit tests with the package root as the working directory.
         let this = std::path::Path::new(file!())
