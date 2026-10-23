@@ -4,21 +4,24 @@
   M08 design note records the same ruling as ADR-M08-a (`module_design_M08.md:68`, `:109`). Docs only: no code, DDL,
   grant or gate changes.
 - Relates to: Baseline §6.1.1, §8.6, §6.2.0, §34.0.1, §48.2; M07 D8 (no share verb), M08 D1/D2; owner decision D2
-  (`arch_audit_SUMMARY.md:64`).
+  (`module_design_M08.md:66`, `module_design_waveB_overview.md:55`; the item it answered at `arch_audit_SUMMARY.md:64`).
 
 ## Context
 
-- 35b was the card that made the subject-visibility RLS policy set-based (`module_map_v3.md:864`); 35b-i and 35b-ii
-  merged and 35b-iii stayed open (`module_map_v3.md:10`). 35b-iii is the link-row option: expose
-  `private.memory_evidence` rows tenant-wide, ids only, so a reader can join links without first passing the
-  Memory's own visibility (`arch_audit_SUMMARY.md:42`, `:64`; `module_map_v3.md:898`).
+- 35b is the plan's "Set-based subject visibility" card (`module_map_v3.md:864`); 35b-i and 35b-ii merged and 35b-iii
+  stayed open (`module_map_v3.md:10`). 35b-iii is the link-row option: "allow tenant-wide link-row visibility (ids
+  only) for 2× bulk / 1.7× point" (`arch_audit_SUMMARY.md:64`), i.e. link existence/count for memories the caller
+  cannot see (`research_gpt_batch15_evidence_visibility.md:6`).
 - What exists today: `private.memory_evidence` is tenant-scoped through its parent Memory row
   (`migrations/0012_rls.sql:219-235`), so a link is readable exactly when its Memory is. Visibility itself is frozen at
   write into `USER_PRIVATE | WORKSPACE_SHARED | TENANT_SHARED` and decided by `can_read` (Baseline §6.1.1,
   `Baseline_2.9.md:1009-1085`); the same section refuses an RLS policy that checks `tenant_id` alone
   (`Baseline_2.9.md:1085`).
-- Owner decision D2 ruled out widening: no cross-user sharing, no share verb (M07 D8), visibility set at write and
-  only narrowing afterwards (Baseline §34.0.1, `:9338`). `module_design_waveB_overview.md:55` records the same ruling.
+- Owner decision D2 ruled out widening: "No widening, no 35b-iii" (`module_design_M08.md:66`), "35b-iii closed as
+  won't-do (already owner D2)" (`module_design_waveB_overview.md:55`) — no cross-user sharing, no share verb (M07
+  D8, `module_design_M07.md:123`), visibility set at write and only narrowing afterwards (Baseline §34.0.1, `:9338`).
+  The audit states the D2 item as "allow tenant-wide link-row visibility (ids only) for 2× bulk / 1.7× point"
+  (`arch_audit_SUMMARY.md:64`); that is the question the ruling answered.
 - The option's measured price was 2× bulk and 1.7× point cost (`arch_audit_SUMMARY.md:42`; M08 note D2, `:67-68`) for a
   capability the owner had already ruled out. The other researched shape — a SECURITY DEFINER bulk authorizer owned by
   a new non-login `role_read_authorizer` — needed a role that does not exist, which §6.2.0 forbids: its two tables are
@@ -28,11 +31,16 @@
 ## Decision
 
 D1. **35b-iii is won't-do.** No tenant-wide policy is added to `private.memory_evidence`; no runtime reader gets link
-existence, link count or Evidence ids for a Memory it cannot read. Rejected, on the M08 note's reasons: a tenant-only
-link policy (a real leak of exactly that fact, and a §6.1.1 violation, `Baseline_2.9.md:1085`); an uncorrelated `IN`
-policy (a full visible-set scan on every point read, not universal); a definer that copies visibility (a second
-authorization implementation); a per-memory visibility certificate (a heavy write-side invariant); and the new
-`role_read_authorizer` (§6.2.0). The 2× bulk / 1.7× point measurement above is the note's, not re-measured here.
+existence, link count or Evidence ids for a Memory it cannot read. The M08 note records the rejection of the policy
+itself: "Rejected: 35b-iii policy (measured 2× bulk / 1.7× point cost for a capability the owner ruled out)"
+(`module_design_M08.md:67-68`). The per-option reasons are the research note's: (a) a tenant-only link policy, "real
+leak (link existence/count for memories the caller can't see)" → reject — this ADR reads that leak as also contrary
+to §6.1.1's refusal of a `tenant_id`-only policy (`Baseline_2.9.md:1085`); (b) an uncorrelated `IN` policy, "full
+visible-set scan per point read" → not universal; (c) a definer with copied visibility, "second authorization
+impl" → reject; (d) a per-memory visibility certificate, "heavy write-side invariant" → **deferred**, not rejected;
+(e) the `role_read_authorizer` definer, which conflicts with the frozen §6.2.0 role set
+(`research_gpt_batch15_evidence_visibility.md:6`, `:11`). The 2× bulk / 1.7× point measurement above is the note's,
+not re-measured here.
 
 D2. **The need 35b-iii was meant to serve is already the read gate's job.** Link completeness is the load-bearing
 invariant of the §8.6 provenance relation (every Memory carries at least one link, `Baseline_2.9.md:2030-2060`), and
@@ -42,8 +50,7 @@ depend on the Memory policy (M08 D1, `:64-65`). The closure is gated by G-M08-1,
 grep, recall, context and continuity (`module_design_M08.md:92`).
 
 D3. **No mechanism changes here.** No policy, table, column, role or grant is added, removed or re-pinned, so §48.2's
-enumeration and §6.2.0's role set stay as they are. The row is retired, not deferred: a reversal is a new owner
-decision (D2) and a superseding ADR, not a configuration change.
+enumeration and §6.2.0's role set stay as they are. The row is retired, not deferred.
 
 ## Consequences
 
