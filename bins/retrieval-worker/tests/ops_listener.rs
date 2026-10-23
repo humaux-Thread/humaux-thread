@@ -18,7 +18,8 @@
 //!   HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR, HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR,
 //!   HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION]; modules=[humaux-testkit]
 //! Called-by: [cargo-test]
-//! Invariants: [every listener is a free loopback port taken at run time; `--serve` and the one-shot modes see
+//! Invariants: [every listener is a free loopback port reserved at run time, distinct from the other ports the
+//!   same test needs (`free_addrs`); `--serve` and the one-shot modes see
 //!   PostgreSQL and Qdrant only on ports this test bound (closed or stalling); `--serve-rpc` only connects as
 //!   role_retrieval_worker and is never sent a request; the test signals only children it spawned; a missing env is
 //!   a failure under HUMAUX_REQUIRE_DB, a named SKIP otherwise (§79.2)]
@@ -42,11 +43,20 @@ const FAMILIES: [&str; 4] = [
     "retrieval_provider_cost_total",
 ];
 
+/// `N` loopback addresses reserved while all `N` listeners are bound at once, so no two of them can be the same
+/// port. Released together on return.
+fn free_addrs<const N: usize>() -> [SocketAddr; N] {
+    let listeners: [TcpListener; N] =
+        std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").expect("reserve a loopback port"));
+    let addrs: [SocketAddr; N] =
+        std::array::from_fn(|i| listeners[i].local_addr().expect("reserve a loopback port"));
+    drop(listeners);
+    addrs
+}
+
 /// A loopback address that was bound and released: free for the child, refused while nothing listens.
 fn free_addr() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("reserve a loopback port")
+    free_addrs::<1>()[0]
 }
 
 /// One `GET`; `None` when the port refuses.
@@ -115,9 +125,11 @@ fn gitleaks(test: &str) -> Option<Vec<(&'static str, String)>> {
     Some(env)
 }
 
-/// Every key `--serve` / `--run-once` / `--readyz` need, PostgreSQL at `pg_port` and Qdrant on a closed port.
+/// Every key `--serve` / `--run-once` / `--readyz` need, PostgreSQL at `pg_port` and Qdrant on the closed
+/// `qdrant_port`; both arrive from the caller so they stay distinct from the ops ports.
 fn projection_env(
     pg_port: u16,
+    qdrant_port: u16,
     gitleaks: &[(&'static str, String)],
 ) -> Vec<(&'static str, String)> {
     let mut env: Vec<(&'static str, String)> = [
@@ -160,7 +172,7 @@ fn projection_env(
         ("HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST", "127.0.0.1".into()),
         (
             "HUMAUX_RETRIEVAL_WORKER_QDRANT_PORT",
-            free_addr().port().to_string(),
+            qdrant_port.to_string(),
         ),
         ("HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR", "127.0.0.0/8".into()),
         ("HUMAUX_RETRIEVAL_WORKER_QDRANT_TLS", "false".into()),
@@ -320,8 +332,8 @@ fn one_shot_modes_open_no_listener() {
     let stalling = TcpListener::bind("127.0.0.1:0").expect("bind a stalling PostgreSQL port");
     let pg_port = stalling.local_addr().expect("stalling port").port();
     for mode in ["--run-once", "--readyz"] {
-        let (serve, rpc) = (free_addr(), free_addr());
-        let mut env = projection_env(pg_port, &gitleaks);
+        let [serve, rpc, qdrant] = free_addrs::<3>();
+        let mut env = projection_env(pg_port, qdrant.port(), &gitleaks);
         env.extend([
             (SERVE_KEY, serve.to_string()),
             (SERVE_RPC_KEY, rpc.to_string()),
@@ -362,8 +374,8 @@ fn both_modes_serve_the_four_provider_families_on_their_own_ports() {
     let Some(gitleaks) = gitleaks(test) else {
         return;
     };
-    let (serve, rpc) = (free_addr(), free_addr());
-    let mut env = projection_env(free_addr().port(), &gitleaks);
+    let [serve, rpc, pg_down, qdrant] = free_addrs::<4>();
+    let mut env = projection_env(pg_down.port(), qdrant.port(), &gitleaks);
     env.extend([
         (SERVE_KEY, serve.to_string()),
         (SERVE_RPC_KEY, rpc.to_string()),
