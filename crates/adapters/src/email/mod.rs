@@ -1,27 +1,34 @@
 //! `adapters::email` — H3: §74.6 `EmailProvider` trait + SMTP adapter + the Email Deliverability Plane (outbox /
 //!   delivery events / suppression / domain / provider health).
 //! Depends-on: crates=[async-trait]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::email::outbox, adapters::email::smtp, adapters::email::test_double, tests]
-//! Invariants: [no caller outside smtp/test_double names a concrete provider; everything else takes &dyn
-//!   EmailProvider (§74.6), so swapping the provider never touches the outbox or handlers]
+//! Called-by: [adapters::email::outbox, adapters::email::sink, adapters::email::smtp, adapters::email::test_double, tests]
+//! Invariants: [no caller outside smtp/sink/test_double names a concrete provider except EmailMode::into_provider;
+//!   everything else takes &dyn EmailProvider (§74.6); the default mode is the non-sending Sink (M02 D10);
+//!   the recipient allowlist, the priority order and the send cap are decided here, never by a caller]
 //! Spec: Baseline §74.6
 //!
-//! Module layout: this file (trait + wire enums), [`smtp`] (lettre-backed SMTP adapter,
-//! config from parameters — never reads env directly, §74.6 task brief), [`test_double`]
-//! (in-memory [`test_double::RecordingEmailProvider`]), [`outbox`] (DB-backed `enqueue` +
-//! SKIP LOCKED worker + suppression check + delivery-event recording, `ops.email_outbox`
-//! DDL in `migrations/0038_email_deliverability.sql`).
+//! Module layout: this file (trait, wire enums, [`EmailMode`], [`RecipientAllowlist`], [`SendPolicy`]),
+//! [`smtp`] (lettre-backed SMTP adapter, config from parameters — never reads env directly, §74.6
+//! task brief), [`sink`] (writes `.eml` files, the default mode), [`test_double`] (in-memory
+//! [`test_double::RecordingEmailProvider`]), [`outbox`] (DB-backed `enqueue_in_txn` + SKIP LOCKED
+//! worker + suppression check + delivery-event recording, `ops.email_outbox` DDL in
+//! `migrations/0038_email_deliverability.sql` and `migrations/0263_email_door.sql`).
 //!
-//! §74.6 "不写死供应商": nothing outside [`smtp`]/[`test_double`] may name a concrete
+//! §74.6 "不写死供应商": nothing outside [`smtp`]/[`sink`]/[`test_double`] may name a concrete
 //! provider type — every other caller (including [`outbox`]) takes `&dyn EmailProvider`.
 
 pub mod outbox;
+pub mod sink;
 pub mod smtp;
 pub mod test_double;
 
 pub use outbox::{EnqueueOutcome, OutboxError};
+pub use sink::SinkEmailProvider;
 pub use smtp::{SmtpConfig, SmtpEmailProvider};
 pub use test_double::RecordingEmailProvider;
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 
@@ -59,6 +66,10 @@ pub struct OutboundEmail {
     /// on it. This struct does not itself enforce the separation — [`outbox::enqueue`]'s
     /// suppression check does (§74.6 Suppression / [`SuppressionScope::blocks`]).
     pub stream: EmailStream,
+    /// Full `Message-ID` header value including angle brackets, deterministic per outbox row
+    /// (`<outbox_id@sender-domain>`, M02 D10) so a resend after an unknown outcome can be
+    /// de-duplicated by the receiving side.
+    pub message_id: String,
 }
 
 /// Provider-assigned message id, opaque outside this module (stored in
@@ -78,6 +89,13 @@ pub enum EmailError {
     Transport(String),
     /// Provider rejected the message content/recipient outright (e.g. a 5xx SMTP reply).
     Rejected(String),
+    /// The connection was lost after the message body may have been transmitted, so whether
+    /// the provider accepted it is unknowable. [`outbox::run_once`] records
+    /// `SUBMISSION_UNKNOWN` and never resends it automatically (M02 D10 / M22 D7).
+    SubmissionUnknown(String),
+    /// The configured [`EmailMode`] is unusable (unknown mode name, SMTP selected without
+    /// its settings).
+    Config(String),
 }
 
 impl std::fmt::Display for EmailError {
@@ -85,6 +103,8 @@ impl std::fmt::Display for EmailError {
         match self {
             Self::Transport(m) => write!(f, "email transport error: {m}"),
             Self::Rejected(m) => write!(f, "email rejected by provider: {m}"),
+            Self::SubmissionUnknown(m) => write!(f, "email submission outcome unknown: {m}"),
+            Self::Config(m) => write!(f, "email mode misconfigured: {m}"),
         }
     }
 }
@@ -112,7 +132,8 @@ impl EmailStream {
 }
 
 /// `ops.email_outbox.state` — §74.6 Email Deliverability Plane state list, verbatim
-/// (`QUEUED -> SENT -> DELIVERED -> BOUNCED/COMPLAINED/SUPPRESSED/FAILED`).
+/// (`QUEUED -> SENT -> DELIVERED -> BOUNCED/COMPLAINED/SUPPRESSED/FAILED`), plus
+/// `SUBMISSION_UNKNOWN` (M02 D10): lost acknowledgement after DATA, terminal for the automatic path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmailOutboxState {
     Queued,
@@ -122,10 +143,11 @@ pub enum EmailOutboxState {
     Complained,
     Suppressed,
     Failed,
+    SubmissionUnknown,
 }
 
 impl EmailOutboxState {
-    pub const ALL: [EmailOutboxState; 7] = [
+    pub const ALL: [EmailOutboxState; 8] = [
         Self::Queued,
         Self::Sent,
         Self::Delivered,
@@ -133,6 +155,7 @@ impl EmailOutboxState {
         Self::Complained,
         Self::Suppressed,
         Self::Failed,
+        Self::SubmissionUnknown,
     ];
 
     pub fn as_db_str(self) -> &'static str {
@@ -144,6 +167,7 @@ impl EmailOutboxState {
             Self::Complained => "COMPLAINED",
             Self::Suppressed => "SUPPRESSED",
             Self::Failed => "FAILED",
+            Self::SubmissionUnknown => "SUBMISSION_UNKNOWN",
         }
     }
 }
@@ -159,16 +183,18 @@ pub enum DeliveryEventType {
     Complained,
     Suppressed,
     Failed,
+    SubmissionUnknown,
 }
 
 impl DeliveryEventType {
-    pub const ALL: [DeliveryEventType; 6] = [
+    pub const ALL: [DeliveryEventType; 7] = [
         Self::Sent,
         Self::Delivered,
         Self::Bounced,
         Self::Complained,
         Self::Suppressed,
         Self::Failed,
+        Self::SubmissionUnknown,
     ];
 
     pub fn as_db_str(self) -> &'static str {
@@ -179,8 +205,151 @@ impl DeliveryEventType {
             Self::Complained => "COMPLAINED",
             Self::Suppressed => "SUPPRESSED",
             Self::Failed => "FAILED",
+            Self::SubmissionUnknown => "SUBMISSION_UNKNOWN",
         }
     }
+}
+
+/// `ops.email_outbox.priority` (M02 D10 / M22 D11 storm guard): the drain takes the lowest rank
+/// first, so a login code is never queued behind a digest backlog. The wire value is the rank;
+/// `outbox::contract_tests` reconciles it with the CHECK list (§78.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmailPriority {
+    Auth,
+    Security,
+    Reminder,
+    Digest,
+}
+
+impl EmailPriority {
+    pub const ALL: [EmailPriority; 4] = [Self::Auth, Self::Security, Self::Reminder, Self::Digest];
+
+    /// Column value; lower drains first.
+    pub fn as_rank(self) -> i16 {
+        match self {
+            Self::Auth => 0,
+            Self::Security => 1,
+            Self::Reminder => 2,
+            Self::Digest => 3,
+        }
+    }
+}
+
+/// Wire value of the configured send mode (`sink` / `smtp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmailModeKind {
+    Sink,
+    Smtp,
+}
+
+impl EmailModeKind {
+    pub const ALL: [EmailModeKind; 2] = [Self::Sink, Self::Smtp];
+
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Sink => "sink",
+            Self::Smtp => "smtp",
+        }
+    }
+}
+
+/// How outbound mail leaves the process. [`EmailMode::resolve`] is the one place a mode is
+/// chosen, and an absent explicit choice is [`EmailMode::Sink`] in every profile (M02 D10):
+/// `Smtp` exists only when the owner names it and supplies its settings.
+#[derive(Debug, Clone)]
+pub enum EmailMode {
+    /// Writes `.eml` files under the directory; opens no connection.
+    Sink(PathBuf),
+    /// Submits through the configured SMTP relay.
+    Smtp(SmtpConfig),
+}
+
+impl EmailMode {
+    /// `explicit` is the owner-supplied mode name, if any. `None` selects the sink. A name that
+    /// is not one of [`EmailModeKind::ALL`], or `smtp` without `smtp` settings, is an error —
+    /// it never falls back to sending.
+    pub fn resolve(
+        explicit: Option<&str>,
+        sink_dir: PathBuf,
+        smtp: Option<SmtpConfig>,
+    ) -> Result<Self, EmailError> {
+        let Some(name) = explicit else {
+            return Ok(Self::Sink(sink_dir));
+        };
+        let kind = EmailModeKind::ALL
+            .into_iter()
+            .find(|k| k.as_wire_str() == name)
+            .ok_or_else(|| EmailError::Config(format!("unknown email mode {name:?}")))?;
+        match kind {
+            EmailModeKind::Sink => Ok(Self::Sink(sink_dir)),
+            EmailModeKind::Smtp => smtp.map(Self::Smtp).ok_or_else(|| {
+                EmailError::Config("email mode smtp requires SMTP settings".to_string())
+            }),
+        }
+    }
+
+    /// Builds the provider for this mode. The only non-test place that names a concrete
+    /// provider type (§74.6).
+    pub fn into_provider(self) -> Result<Box<dyn EmailProvider>, EmailError> {
+        match self {
+            Self::Sink(dir) => Ok(Box::new(SinkEmailProvider::new(dir))),
+            Self::Smtp(cfg) => Ok(Box::new(SmtpEmailProvider::new(&cfg)?)),
+        }
+    }
+}
+
+/// Recipients the door may deliver to. Unset allows everyone (the sink is the safety net);
+/// once set, any other recipient becomes `SUPPRESSED` at enqueue and again at send time.
+#[derive(Debug, Clone, Default)]
+pub struct RecipientAllowlist(Option<BTreeSet<String>>);
+
+impl RecipientAllowlist {
+    /// No allowlist configured.
+    pub fn allow_all() -> Self {
+        Self(None)
+    }
+
+    /// Exactly these addresses (compared ASCII case-insensitively).
+    pub fn only<I, S>(addresses: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self(Some(
+            addresses
+                .into_iter()
+                .map(|a| a.as_ref().trim().to_ascii_lowercase())
+                .filter(|a| !a.is_empty())
+                .collect(),
+        ))
+    }
+
+    /// Parses the comma-separated owner setting. `None` (unset) allows all; a present but blank
+    /// value is an empty allowlist that permits nobody (fail closed).
+    pub fn parse(setting: Option<&str>) -> Self {
+        match setting {
+            None => Self::allow_all(),
+            Some(csv) => Self::only(csv.split(',')),
+        }
+    }
+
+    /// Whether mail to `to` may be delivered.
+    pub fn permits(&self, to: &str) -> bool {
+        match &self.0 {
+            None => true,
+            Some(set) => set.contains(&to.trim().to_ascii_lowercase()),
+        }
+    }
+}
+
+/// What the worker side of the door enforces on every send.
+#[derive(Debug, Clone, Default)]
+pub struct SendPolicy {
+    /// Recipient filter, re-checked at send time.
+    pub allowlist: RecipientAllowlist,
+    /// Global per-minute send cap (M22 D11); `None` = uncapped. The value comes from
+    /// configuration, never a constant here (§78.1).
+    pub max_sends_per_minute: Option<u32>,
 }
 
 /// `ops.email_suppressions.reason` (§74.6 Suppression: "硬退信、投诉等" plus the Gmail
