@@ -12324,8 +12324,8 @@ runs:
         );
     }
 
-    /// A scratch tree holding what G-M01-4 reads: the real `degrade.rs`, the real emitter `envelope.rs`, the real fault
-    /// tests, their `fault_main.rs` and the real ledger. The gate runs over it through [`m01_4_real_path_or_dormant`],
+    /// A scratch tree holding what G-M01-4 reads: the real `degrade.rs`, the real emitters `envelope.rs` and `rerank.rs`,
+    /// the real fault tests, their `fault_main.rs` and the real ledger. The gate runs over it through [`m01_4_real_path_or_dormant`],
     /// paths and all.
     fn m01_4_tree(tag: &str) -> PathBuf {
         let tmp =
@@ -12335,6 +12335,7 @@ runs:
         let mut rels: Vec<String> = [
             DEGRADE_HOME,
             "crates/retrieval/src/envelope.rs",
+            "crates/retrieval/src/rerank.rs",
             DORMANT_FILE,
             FAULT_MAIN_FILE,
         ]

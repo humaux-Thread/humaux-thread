@@ -1706,12 +1706,15 @@ mod tests {
         ModelIdentity::new("org/model", "rev", "recipe", HASH, HASH).expect("a valid identity")
     }
 
+    /// How a [`StubPort`] answers, given the documents it was sent.
+    type Script = Box<dyn Fn(&[String]) -> RerankAnswer + Send + Sync>;
+
     /// A rerank port that counts its calls, records the documents it was sent and answers as scripted after `delay`.
     struct StubPort {
         calls: AtomicUsize,
         sent: Mutex<Vec<Vec<String>>>,
         delay: Duration,
-        answer: Box<dyn Fn(&[String]) -> RerankAnswer + Send + Sync>,
+        answer: Script,
     }
 
     #[async_trait::async_trait]
@@ -1789,11 +1792,7 @@ mod tests {
         (slots, texts)
     }
 
-    fn input<'a>(
-        lane: Option<&'a RerankLane>,
-        selected: bool,
-        depth: usize,
-    ) -> RerankStageInput<'a> {
+    fn input(lane: Option<&RerankLane>, selected: bool, depth: usize) -> RerankStageInput<'_> {
         RerankStageInput {
             lane,
             selected,
