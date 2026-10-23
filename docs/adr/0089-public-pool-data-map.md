@@ -35,7 +35,7 @@ binding column is M20-7's migration). `public.unit_fields(revision_id, field_key
 value jsonb, reason, assist RULE|MODEL|CONTRIBUTOR)`; `public.unit_conditions(revision_id, entity_id, version_range,
 platform, constraint_key, value)` — versions live here, never in tags. Per-claim evidence stays `public.claims` plus
 `provenance_edges` with a source locator. Every merge, translation or summary is a new revision, re-admitted (ADR-0090);
-the old free-text claim + support-count unit is replaced.
+the old free-text claim + support-count unit is retired by the later unit migrations.
 
 ### D-C Roots only; closure stays ADR-0008's
 

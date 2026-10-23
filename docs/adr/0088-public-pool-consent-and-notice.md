@@ -9,8 +9,8 @@
 
 ## Context
 
-- §12.1.1 opens with "默认只开放 MANUAL" and closes with "AUTO_AFTER_USER_DISTILLATION ... 保持关闭"; the code's DB
-  defaults are DISABLED/MANUAL. There is no notice version, shown/ack record, "no contribution before shown" gate or
+- §12.1.1 opens with "默认只开放 MANUAL" and closes with "AUTO_AFTER_USER_DISTILLATION ... 保持关闭"; the database
+  defaults stay DISABLED/MANUAL. There is no notice version, shown/ack record, "no contribution before shown" gate or
   withdraw-all (module design note M20, §2 and §3).
 - The owner's 2026-10-23 ruling is default-on for the cloud edition, delivered as a popup the user may close, with
   self-service off; the same model as the 2026-07-24 and 2026-10-15 rulings. The GDPR risk was explained and accepted;

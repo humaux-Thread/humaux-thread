@@ -8,10 +8,10 @@
 
 ## Context
 
-- §12.1.1 is the Phase 9 exact-byte admission path; its initial claim enters `UNDER_REVIEW`, and the pool serves a claim
-  only when the §12.6 receipt and closure checks pass. B33 found the serve predicate too weak (no epoch, payload hash or
-  authorisation per root; no manifest count), the rules missing surfaces, rights and conflicts, no counter-example
-  channel, and rerank treated as if it filtered.
+- §12.1.1 is the Phase 9 exact-byte admission path; its initial claim entered `UNDER_REVIEW`, and the pool served a
+  claim only when the §12.6 receipt and closure checks passed. B33 found the serve predicate too weak (no epoch, payload
+  hash or authorisation per root; no manifest count), the rules missing surfaces, rights and conflicts, no
+  counter-example channel, and rerank treated as if it filtered.
 - The owner ruled on 2026-10-23: admission is automatic with no review queue; the payer for model checks is the
   contributor's BYOK domain only; mixed recall becomes default-on after E-M20-4 passes, and the user can switch it off.
 
