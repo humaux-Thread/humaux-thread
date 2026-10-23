@@ -69,6 +69,10 @@ Receipts are written only by the trusted service role through one definer functi
 inputs); a user agent's PASS is material, not a receipt. Every merge, translation or summary is a new revision,
 re-admitted. `ponytail:` grant-based trust; signatures when receipts leave the database.
 
+There is no review queue: `UNDER_REVIEW` and `QUARANTINED` are retired as queue states, and claim states follow D9′ —
+`CLAIMED`, `SUPPORTED`, `DISPUTED`, `REFUTED` (D-E; `module_design_M20.md:12`, owner 6d14ec05 "automatic admission, no
+review queue").
+
 ### D-D The payer is the contributor's BYOK domain; the platform spends nothing
 
 A5 and model drafting run through gateway egress with a platform-fixed endpoint allowlist and prompt. The payer is the
