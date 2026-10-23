@@ -2,7 +2,7 @@
 //!   terms, code-exchange validation, refresh-rotation decisions and grant lifetime/epoch checks. Pure: no SQL, no clock,
 //!   no randomness; `now`, row snapshots and every lifetime come in as arguments.
 //! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[domain::error, domain::ids]
-//! Called-by: [tests]
+//! Called-by: []
 //! Invariants: [PKCE is S256 only; a redirect URI is accepted only when it is exactly registered and is https, loopback
 //!   http or a private-use scheme; `resource` is mandatory and allowlisted; a reused refresh token yields a decision that
 //!   revokes its family and grant; a grant is live only before its ceiling and while both epoch snapshots equal the live
