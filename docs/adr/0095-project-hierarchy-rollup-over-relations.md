@@ -54,25 +54,27 @@
 - Reparenting is the ADR-0078 D-G high-risk flow: a prepared manifest, a delay, a re-check, and one confirmation of one
   concrete manifest through a trusted user entry — never an agent's API-key channel.
 
-## Provisional status and cross-module note (recorded, not resolved here)
+## Provisional status and cross-module note
 
 - The owner's answer of 2026-10-22 is binding: project hierarchy (decision #2) is **provisional**; the owner asked for
-  a fresh hierarchy and canvas design (B31), and **M18 will own the hierarchy contract**.
+  a fresh hierarchy and canvas design (B31), and **M18 will own the hierarchy contract** (`module_design_M14.md:212`:
+  "Project hierarchy (decision #2) is PROVISIONAL … M18 will own the hierarchy contract".
+- **Lead ruling (2026-10-24): the M18-0 hierarchy ADR supersedes D-A–D-D of this ADR, and M29-g2 waits on it.** The
+  Project —PART_OF→ Project pair is therefore built under the M18-0 contract, not ahead of it.
 - The M18 design note (2026-10-23) proposes a single-parent tree: guest columns `parent_id`, `kind` and `version` on
   `private.continuity_projects`, a self-FK, a depth limit, `project_ancestors` / `project_subtree`, and moves under a
   tenant topology guard. It also proposes `private.project_facets(kind CHANNEL|PLATFORM)` in place of
   `project_channels`, describes this ADR's D3 as superseded, cancels M29-g2, and keeps `tasks.project_id` as the one
   writable task→project authority.
-- This ADR records M14's decision and **does not choose between the two designs**. The conflict is listed for the lead
-  in the M14-1 PR body. Whichever tree wins, M14 keeps these rollup rules: a read at query time, child rows read under
-  the child's authorization, nothing written into a parent, hidden children leaking neither content nor count, and every
-  facet reference pinned to an exact immutable version.
+- M14 keeps these rollup rules: a read at query time, child rows read under the child's authorization, nothing written
+  into a parent, hidden children leaking neither content nor count, and every facet reference pinned to an exact
+  immutable version.
 
 ## Rejected (from M14 D3)
 
 - `project_profiles.parent_project_id`, and a parent column on `continuity_projects`: a second hierarchy store beside
-  the M29 relations, which ADR-0078's Context calls "two sources of identity truth". **The M18 note proposes to reverse
-  this rejection; it is recorded here as a cross-module conflict, not resolved.**
+  the M29 relations, which ADR-0078's Context calls "two sources of identity truth". **The M18-0 hierarchy ADR
+  supersedes this rejection (lead ruling 2026-10-24; see "Provisional status and cross-module note").**
 
 ## Gates
 

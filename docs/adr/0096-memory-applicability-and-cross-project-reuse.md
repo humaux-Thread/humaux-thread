@@ -27,6 +27,9 @@
 - `scope` is a closed set: `PRODUCT_SPECIFIC` (one product or brand), `CHANNEL_GENERIC` (any project on a channel
   platform), `UNIVERSAL`. A qualifier is a closed schema v1: `implementation_languages[]` and `exclusions[]`; it is not
   free-form JSON.
+- Lead ruling (2026-10-24): SUBTREE scope (`project_scope EXACT|SUBTREE`) comes from the M18-0 hierarchy ADR, not from
+  M14-5 (`module_design_M20.md:98`: "Private applicability (M14 D4 scopes, M18 EXACT/SUBTREE) is never read as a public
+  licence").
 - `status` is a closed set: `PROPOSED`, `APPROVED`, `REJECTED`. **No row means project-local**, which is the default:
   applicability never opts a memory in by omission.
 - `assignment_method` records how the row was widened and `decision_evidence_id` points at the approval Evidence.
@@ -39,10 +42,11 @@
   instruction**, stored with the label `由聊天授权` (authorised in chat). **Agents never widen it on their own.**
 - Agents, BYOK and M15 may only `PROPOSE`; approval needs the approval Evidence. A proposal appears in reuse in a
   separate "proposed, not confirmed" bucket and is never auto-approved.
-- G-M14-8's failure mode is the other path: an approval that arrives through an agent API-key channel and is accepted
-  as an owner/console approval makes a broadened row `APPROVED`. That is refused; the chat-authorised path is labelled
-  and carries the owner's instruction, and ADR-0078 D-G's rule stands that an agent relaying the owner's words is
-  weaker proof than the owner's own confirmation.
+- G-M14-8's failure mode is the other path: an agent widening that arrives **without** the `由聊天授权` label and is
+  accepted as an owner/console approval makes a broadened row `APPROVED` (`module_design_M14.md:211`: "by an agent on
+  the owner's chat instruction (labelled 由聊天授权)"). That is refused; the chat-authorised path carries the label and
+  the owner's instruction, and ADR-0078 D-G's rule stands that an agent relaying the owner's words is weaker proof than
+  the owner's own confirmation.
 
 ### D-C Language independence
 
@@ -103,7 +107,7 @@
 |---|---|---|---|
 | G-M14-6 reuse eligibility | `crates/adapters/tests/reuse.rs` | drop the product/channel predicate | a hearing-aid product lesson is recommended for fragrance on Alibaba |
 | G-M14-7 reuse taint | the same file | check the memory's own class, not the closure | a `SENSITIVE` or affect-derived item is returned |
-| G-M14-8 approval provenance | `crates/adapters/tests/applicability.rs` | accept an approval sent on an agent API-key channel | the broadened row becomes `APPROVED` |
+| G-M14-8 approval provenance | `crates/adapters/tests/applicability.rs` | accept an agent widening WITHOUT the `由聊天授权` label | the broadened row becomes `APPROVED` |
 | G-M14-11 enum contracts | `crates/adapters/tests/facet_contract.rs` (extend) | a Rust variant with no CHECK value | the applicability `scope` / `status` sets differ from the CHECK lists |
 
 No gate exists in this PR (docs only). Each exists when M14-5 or M14-6 lands with its §80.1 inject → red → fix → green
