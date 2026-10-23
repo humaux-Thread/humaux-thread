@@ -1,7 +1,7 @@
 //! `domain::plan` — the plan catalogue shapes of §71.1: the closed vocabularies and the validated plan-version spec that a
 //!   values file seeds into `control.plan_versions` (module design M04 D2).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::plan_repo, tests, xtask::architecture_check]
+//! Called-by: [adapters::entitlement_repo, adapters::plan_repo, application::entitlement, tests, xtask::architecture_check]
 //! Invariants: [every closed vocabulary below has one wire spelling per variant, mirrored by a CHECK of migration 0262 and
 //!   reconciled by contract test (§78.2); no plan name, price, limit or block size is spelled here (§78.1): a value
 //!   arrives from the values file and is only validated for shape; a spec that fails validation is never built]

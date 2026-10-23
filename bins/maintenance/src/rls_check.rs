@@ -1,5 +1,5 @@
 //! `maintenance::rls_check` — G80-26 (§48.2) runtime DB role invariant CI enumeration gate.
-//! Depends-on: crates=[postgres]; services=[PostgreSQL(any) r=[control.anonymous_claim_trust_authorities, control.anonymous_source_lineage, control.api_keys, control.audit_event_identity, control.confirm_tokens, control.contribution_confirmations, control.credential_pepper_state, control.email_challenges, control.email_change_requests, control.memberships, control.operation_receipts, control.partition_registry, control.password_credentials, control.password_reset_challenges, control.processor_models, control.provider_accounts, control.provider_billing_accounts, control.provider_billing_instruments, control.provider_endpoints, control.public_moderator_grants, control.quota_windows, control.rate_buckets, control.reasoning_credential_bindings, control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates, control.reasoning_route_domain_receipts, control.reasoning_route_policies, control.reasoning_route_profile_receipts, control.recovery_codes, control.retention_policies, control.sessions, control.team_invitations, control.usage_reservations, control.workspace_memberships, control.workspaces, ops.anonymous_public_revocations, ops.backup_receipts, ops.backup_sets, ops.c36_scratch, ops.claim_derived_work, ops.contribution_execution_job_links, ops.data_disclosures, ops.deletion_plan_steps, ops.distill_calls, ops.distill_tenant_scheduler, ops.email_delivery_events, ops.email_domains, ops.email_outbox, ops.email_provider_health, ops.email_suppressions, ops.jobs, ops.maintenance_receipts, ops.mechanism_e2e_runs, ops.mechanism_observations, ops.memory_lifecycle_events, ops.model_call_identity, ops.model_call_ledger, ops.outbox, ops.private_inference_rpc_calls, ops.provider_arbiters, ops.provider_slots, ops.public_anonymous_dispatches, ops.public_release_revocations, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, ops.restore_drills, ops.restore_witnesses, ops.retrieval_embedding_rpc_calls, ops.retrieval_provider_budget_allocations, ops.retrieval_provider_budget_reservations, ops.retrieval_query_log, ops.schema_migrations, ops.stage_runs, ops.stage_runs_default, ops.stage_runs_p209901, ops.wal_archive_failures, ops.xtask_fx_domain_owner, ops.xtask_fx_domain_table, private.any_fourth_relation, private.comment_only, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.contribution_execution_future_probe, private.contribution_execution_sources, private.contribution_executions, private.distill_candidates, private.event_identity, private.events, private.evidence_affects, private.evidence_objects, private.evidence_projects, private.evidence_sources, private.evidence_subjects, private.evidence_task_runs, private.identity_note_materializations, private.lower, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_project_revocations, private.memory_projects, private.memory_projects_live, private.memory_records, private.memory_rollup_sources, private.memory_rollup_subjects, private.memory_rollups, private.memory_subject_mentions, private.memory_subject_presence, private.memory_subject_visibility_ok, private.memory_subjects, private.memory_text_v, private.note_heads, private.project_subject_relations, private.project_task_relations, private.read_continuity_project_storage_v1, private.retrieval_query_sources, private.some_new_table, private.some_untracked_table, private.subject_keys, private.subject_relations, private.subject_roles, private.subjects, private.task_binding_grants, projection.card_profile_policies, projection.claim_issued_tickets, projection.embedding_fingerprints, projection.family_activations, projection.memory_vectors, projection.processing_gaps, projection.rebuild_runs, projection.rebuild_tickets, projection.retire_failed_ticket, projection.stream_checkpoints, projection.stream_log, projection.stream_point_ledger, projection.tenant_placements, projection.ticket_reissues, projection.unplaced_issued_tickets, public.anonymous_claim_trust_receipts, public.anonymous_source_authority_events, public.anonymous_source_lifecycle_events, public.claim_independence_attestations, public.claim_trust_evaluation_sources, public.claim_trust_evaluations, public.current_anonymous_source_objects, public.eligible_objects, public.poisoning_signals, staging.contribution_candidate_phase9_assessments, staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources, staging.contribution_releases, staging.sanitized_public_candidates] w=[control.partition_registry, ops.jobs, ops.outbox, private.ingest_tickets] x=[control.api_key_rehash, control.assert_write_scope, control.attest_reasoning_route_health, control.audit_event_identity_claim, control.audit_event_identity_release, control.bind_reasoning_domain, control.credential_pepper_epoch, control.credential_pepper_epoch_advance, control.credential_pepper_epoch_close, control.current_reasoning_route_binding, control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.login_challenge_claim, control.login_challenge_issue, control.login_challenge_settle, control.maintenance_tenant_page, control.observe_reasoning_route_health, control.onboard_tenant, control.onboard_workspace, control.partition_adopt_leaf, control.partition_catalog_fingerprint, control.partition_create_month, control.partition_drop, control.partition_drop_check, control.partition_drop_statements, control.partition_parent, control.purge_idle_rate_buckets, control.reasoning_credential_accounts, control.reasoning_profile_capabilities, control.reasoning_profile_request_extras, control.reasoning_route_health_state, control.reasoning_route_status, control.register_reasoning_profile, control.reject_partition_key_update, control.renew_quota_period, control.resolve_user_reasoning_admission, control.retention_policy_approve, control.revoke_api_key, control.session_issue, control.session_lookup, control.session_revoke, control.session_touch, control.set_reasoning_profile_enabled, control.sweep_confirm_tokens, ops.admin_probe_snapshot, ops.admit_distill_budget, ops.auto_redrive_schema_failed, ops.begin_call, ops.c35_fault_definer_trigger, ops.c35_fault_invoker_delete, ops.c35_fault_outbox_door, ops.claim_derived_work, ops.claim_derived_work_v2, ops.contribution_reservation_authority_validate, ops.distill_scheduler_admit, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.health_snapshot, ops.model_call_identity_claim, ops.purge_expired_selection_snapshots, ops.purge_terminal_jobs, ops.renew_lease, ops.requeue_dead_distill, ops.tenants_active_counts, private.assert_contribution_prepared_route_shape, private.assert_current_contribution_reservation_authority, private.commit_contribution_candidate, private.complete_contribution_a_exact, private.complete_contribution_b_exact, private.compute_contribution_source_backing_closure_v1, private.contribution_execution_closure_seal_immutable, private.contribution_unregistered_fixture, private.declared_project_visible, private.enqueue_contribution_execution, private.event_identity_claim, private.event_identity_release, private.mark_contribution_reconciliation_required, private.memory_projects_on_supersede, private.memory_subject_visibility_ok, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.relation_principal_is_member, private.require_contribution_execution_lease, private.require_contribution_source_manifest, private.reserve_contribution_a, private.reserve_contribution_b, private.reserve_contribution_execution_call, private.revoke_attributions_on_relation_correction, private.revoke_inherited_attributions, private.settle_contribution_job_if_live, private.settle_contribution_terminal_job, private.visibility_allowed, projection.activate_empty_family, projection.claim_issued_tickets, projection.ensure_tenant_placement, projection.issue_rebuild_tickets, projection.rebuild_close, projection.rebuild_open, projection.reissue_unsettled_tickets, projection.retire_failed_ticket, projection.stream_checkpoints_workspace_write_gate, projection.stream_log_generation_never_lost, projection.stream_log_guard_state_transition, projection.stream_log_tombstone_follows_to_generation, projection.stream_point_ledger, projection.unplaced_issued_tickets, public.guard_evaluated_source_identity, public.public_receipt_matches, public.require_trust_root_seal, staging.require_phase9_exact_assessed_storage_binding], PostgreSQL(role_gateway)]; env=[CARGO_MANIFEST_DIR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_MIGRATOR_PG_DSN, HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[maintenance::migrate]
+//! Depends-on: crates=[postgres]; services=[PostgreSQL(any), PostgreSQL(role_gateway), r=[control.anonymous_claim_trust_authorities, control.anonymous_source_lineage, control.api_keys, control.audit_event_identity, control.confirm_tokens, control.contribution_confirmations, control.credential_pepper_state, control.email_challenges, control.email_change_requests, control.entitlement_grants, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations, control.oauth_grants, control.oauth_refresh_tokens, control.operation_receipts, control.partition_registry, control.password_credentials, control.password_reset_challenges, control.processor_models, control.provider_accounts, control.provider_billing_accounts, control.provider_billing_instruments, control.provider_endpoints, control.public_moderator_grants, control.quota_windows, control.rate_buckets, control.reasoning_credential_bindings, control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates, control.reasoning_route_domain_receipts, control.reasoning_route_policies, control.reasoning_route_profile_receipts, control.recovery_codes, control.retention_policies, control.sessions, control.team_invitations, control.usage_reservations, control.workspace_memberships, control.workspaces, ops.anonymous_public_revocations, ops.backup_receipts, ops.backup_sets, ops.c36_scratch, ops.claim_derived_work, ops.contribution_execution_job_links, ops.data_disclosures, ops.deletion_plan_steps, ops.distill_calls, ops.distill_tenant_scheduler, ops.email_delivery_events, ops.email_domains, ops.email_outbox, ops.email_provider_health, ops.email_suppressions, ops.jobs, ops.maintenance_receipts, ops.mechanism_e2e_runs, ops.mechanism_observations, ops.memory_lifecycle_events, ops.model_call_identity, ops.model_call_ledger, ops.outbox, ops.private_inference_rpc_calls, ops.provider_arbiters, ops.provider_slots, ops.public_anonymous_dispatches, ops.public_release_revocations, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, ops.restore_drills, ops.restore_witnesses, ops.retrieval_embedding_rpc_calls, ops.retrieval_provider_budget_allocations, ops.retrieval_provider_budget_reservations, ops.retrieval_query_log, ops.schema_migrations, ops.stage_runs, ops.stage_runs_default, ops.stage_runs_p209901, ops.wal_archive_failures, ops.xtask_fx_domain_owner, ops.xtask_fx_domain_table, private.any_fourth_relation, private.comment_only, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.contribution_execution_future_probe, private.contribution_execution_sources, private.contribution_executions, private.distill_candidates, private.event_identity, private.events, private.evidence_affects, private.evidence_objects, private.evidence_projects, private.evidence_sources, private.evidence_subjects, private.evidence_task_runs, private.identity_note_materializations, private.lower, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_project_revocations, private.memory_projects, private.memory_projects_live, private.memory_records, private.memory_rollup_sources, private.memory_rollup_subjects, private.memory_rollups, private.memory_subject_mentions, private.memory_subject_presence, private.memory_subject_visibility_ok, private.memory_subjects, private.memory_text_v, private.note_heads, private.project_subject_relations, private.project_task_relations, private.read_continuity_project_storage_v1, private.retrieval_query_sources, private.some_new_table, private.some_untracked_table, private.subject_keys, private.subject_relations, private.subject_roles, private.subjects, private.task_binding_grants, projection.card_profile_policies, projection.claim_issued_tickets, projection.embedding_fingerprints, projection.family_activations, projection.memory_vectors, projection.processing_gaps, projection.rebuild_runs, projection.rebuild_tickets, projection.retire_failed_ticket, projection.stream_checkpoints, projection.stream_log, projection.stream_point_ledger, projection.tenant_placements, projection.ticket_reissues, projection.unplaced_issued_tickets, public.anonymous_claim_trust_receipts, public.anonymous_source_authority_events, public.anonymous_source_lifecycle_events, public.claim_independence_attestations, public.claim_trust_evaluation_sources, public.claim_trust_evaluations, public.current_anonymous_source_objects, public.eligible_objects, public.poisoning_signals, staging.contribution_candidate_phase9_assessments, staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources, staging.contribution_releases, staging.sanitized_public_candidates], w=[control.partition_registry, ops.jobs, ops.outbox, private.ingest_tickets], x=[control.api_key_rehash, control.assert_write_scope, control.attest_reasoning_route_health, control.audit_event_identity_claim, control.audit_event_identity_release, control.bind_reasoning_domain, control.credential_pepper_epoch, control.credential_pepper_epoch_advance, control.credential_pepper_epoch_close, control.current_reasoning_route_binding, control.ensure_admission_tier, control.ensure_user, control.entitlement_grants_for_projection, control.issue_api_key, control.login_challenge_claim, control.login_challenge_issue, control.login_challenge_settle, control.maintenance_tenant_page, control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_rotate, control.observe_reasoning_route_health, control.onboard_tenant, control.onboard_workspace, control.partition_adopt_leaf, control.partition_catalog_fingerprint, control.partition_create_month, control.partition_drop, control.partition_drop_check, control.partition_drop_statements, control.partition_parent, control.purge_idle_rate_buckets, control.reasoning_credential_accounts, control.reasoning_profile_capabilities, control.reasoning_profile_request_extras, control.reasoning_route_health_state, control.reasoning_route_status, control.register_reasoning_profile, control.reject_partition_key_update, control.renew_quota_period, control.resolve_user_reasoning_admission, control.retention_policy_approve, control.revoke_api_key, control.session_issue, control.session_lookup, control.session_revoke, control.session_touch, control.set_reasoning_profile_enabled, control.sweep_confirm_tokens, control.write_entitlement_snapshot, ops.admin_probe_snapshot, ops.admit_distill_budget, ops.auto_redrive_schema_failed, ops.begin_call, ops.c35_fault_definer_trigger, ops.c35_fault_invoker_delete, ops.c35_fault_outbox_door, ops.claim_derived_work, ops.claim_derived_work_v2, ops.contribution_reservation_authority_validate, ops.distill_scheduler_admit, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.health_snapshot, ops.model_call_identity_claim, ops.purge_expired_selection_snapshots, ops.purge_terminal_jobs, ops.renew_lease, ops.requeue_dead_distill, ops.tenants_active_counts, private.assert_contribution_prepared_route_shape, private.assert_current_contribution_reservation_authority, private.commit_contribution_candidate, private.complete_contribution_a_exact, private.complete_contribution_b_exact, private.compute_contribution_source_backing_closure_v1, private.contribution_execution_closure_seal_immutable, private.contribution_unregistered_fixture, private.declared_project_visible, private.enqueue_contribution_execution, private.event_identity_claim, private.event_identity_release, private.mark_contribution_reconciliation_required, private.memory_projects_on_supersede, private.memory_subject_visibility_ok, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.relation_principal_is_member, private.require_contribution_execution_lease, private.require_contribution_source_manifest, private.reserve_contribution_a, private.reserve_contribution_b, private.reserve_contribution_execution_call, private.revoke_attributions_on_relation_correction, private.revoke_inherited_attributions, private.settle_contribution_job_if_live, private.settle_contribution_terminal_job, private.visibility_allowed, projection.activate_empty_family, projection.claim_issued_tickets, projection.ensure_tenant_placement, projection.issue_rebuild_tickets, projection.rebuild_close, projection.rebuild_open, projection.reissue_unsettled_tickets, projection.retire_failed_ticket, projection.stream_checkpoints_workspace_write_gate, projection.stream_log_generation_never_lost, projection.stream_log_guard_state_transition, projection.stream_log_tombstone_follows_to_generation, projection.stream_point_ledger, projection.unplaced_issued_tickets, public.guard_evaluated_source_identity, public.public_receipt_matches, public.require_trust_root_seal, staging.require_phase9_exact_assessed_storage_binding]]; env=[CARGO_MANIFEST_DIR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_MIGRATOR_PG_DSN, HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[maintenance::migrate]
 //! Called-by: [maintenance::main, maintenance::migrate, xtask::dep_map, xtask::rls_check]
 //! Invariants: [any catalog cell that disagrees with §48.2 / §62 grants is fail, named by role and table]
 //! Spec: Baseline §48.2; §62; §6.2.0; §6.2.2; ADR-0061 D-D; ADR-0063 D-L; ADR-0066 D-Q
@@ -1763,6 +1763,16 @@ const NAMED_NO_NON_OWNER_GRANTS: &[&str] = &[
     // 0230 (ADR-0063 D-B): the ledger identity rows are written only by the owner claim trigger of
     // ops.model_call_ledger; the five referencers reach them only through their FKs.
     "ops.model_call_identity",
+    // 0267 (M04-2, §76): the raw per-source grants. No runtime role reads them; the owner definers
+    // control.entitlement_grants_for_projection (read) and control.onboard_tenant (write) are the only paths.
+    "control.entitlement_grants",
+    // 0268 (M02-8, M02 D3/D4/D5): the OAuth Authorization Server tables. Codes and refresh tokens are stored as digests, but
+    // a digest is still a bearer verifier (§6.2.1), so no runtime role reads or writes any of the four: the nine
+    // control.oauth_* doors (owner SECURITY DEFINER, EXECUTE role_gateway) are the whole path.
+    "control.oauth_client_registrations",
+    "control.oauth_authorization_codes",
+    "control.oauth_grants",
+    "control.oauth_refresh_tokens",
 ];
 
 /// The §6.2.2 column set — "T" in the §48.2 "表集合派生" check's `S \ T == ∅`. Single
@@ -3320,6 +3330,32 @@ const R3_PRIVATE_WORKER_FUNCTIONS: &[(&str, &[&str])] = &[
     ("control.session_lookup(bytea)", &["role_gateway"]),
     ("control.session_touch(uuid,integer)", &["role_gateway"]),
     ("control.session_revoke(uuid)", &["role_gateway"]),
+    // 0268 (M02-8): the OAuth persistence doors — the only access to the four control.oauth_* tables, role_gateway alone,
+    // owner SECURITY DEFINER, search_path=pg_catalog.
+    (
+        "control.oauth_client_register(text,text,text[],jsonb,timestamptz)",
+        &["role_gateway"],
+    ),
+    ("control.oauth_client_lookup(text)", &["role_gateway"]),
+    (
+        "control.oauth_code_issue(bytea,text,text,text,text,uuid,uuid,uuid,text[],integer)",
+        &["role_gateway"],
+    ),
+    ("control.oauth_code_consume(bytea)", &["role_gateway"]),
+    (
+        "control.oauth_grant_issue(uuid,uuid,uuid,text,text,text[],bytea,integer,integer)",
+        &["role_gateway"],
+    ),
+    ("control.oauth_grant_lookup(uuid)", &["role_gateway"]),
+    ("control.oauth_grant_revoke(uuid,text)", &["role_gateway"]),
+    (
+        "control.oauth_refresh_family_revoke(uuid,text)",
+        &["role_gateway"],
+    ),
+    (
+        "control.oauth_refresh_rotate(bytea,bytea,integer)",
+        &["role_gateway"],
+    ),
 ];
 
 fn check_r3_health_resolver_contract(
@@ -5178,7 +5214,7 @@ pub fn check_partition_leaves(client: &mut impl GenericClient) -> GateResult {
 const ONBOARDING_FUNCTIONS: [&str; 8] = [
     "control.ensure_admission_tier(text,text,uuid,text,bigint,bigint)",
     "control.ensure_user(text,text)",
-    "control.onboard_tenant(text,uuid,text,text,bigint,timestamptz,timestamptz,text,text,bigint,bigint,text[])",
+    "control.onboard_tenant(text,uuid,text,text,text,integer,timestamptz,timestamptz,text,text,bigint,bigint,text[])",
     "control.onboard_workspace(uuid,text,uuid,text[])",
     "control.issue_api_key(uuid,uuid,uuid,text,bytea,text[])",
     "control.revoke_api_key(uuid,text)",
@@ -5186,6 +5222,43 @@ const ONBOARDING_FUNCTIONS: [&str; 8] = [
     "projection.activate_empty_family(uuid,uuid,text,text,text,text,text,uuid,bigint,timestamptz)",
 ];
 const ONBOARDING_EXECUTORS: &[&str] = &["role_maintenance"];
+
+/// §76 / M04-2 (migration 0267): the projector's two owner doors, the only path to the raw grants and to a stored
+/// snapshot; executable by `role_maintenance` only.
+const ENTITLEMENT_DOOR_FUNCTIONS: [&str; 2] = [
+    "control.entitlement_grants_for_projection(uuid)",
+    "control.write_entitlement_snapshot(uuid,jsonb,uuid[],timestamptz)",
+];
+
+/// §76 / M04-2 (0267): each projector door is owner-owned, SECURITY DEFINER, `search_path=pg_catalog`, EXECUTE held by
+/// exactly `role_maintenance`, PUBLIC revoked (same helper as [`ONBOARDING_FUNCTIONS`]). Missing ⇒ `not_applicable`
+/// naming the function (§57.1).
+pub fn check_entitlement_doors(client: &mut impl GenericClient) -> GateResult {
+    let check = "§76 entitlement projector doors";
+    let missing: Vec<String> = match client.query(
+        "SELECT f FROM unnest($1::text[]) AS f WHERE to_regprocedure(f) IS NULL",
+        &[&ENTITLEMENT_DOOR_FUNCTIONS.to_vec()],
+    ) {
+        Ok(rows) => rows.iter().map(|r| r.get(0)).collect(),
+        Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+    };
+    if !missing.is_empty() {
+        return not_applicable(check, format!("missing {}", missing.join(", ")));
+    }
+    let mut problems = Vec::new();
+    for function in ENTITLEMENT_DOOR_FUNCTIONS {
+        check_owner_definer_function(client, &mut problems, function, ONBOARDING_EXECUTORS);
+    }
+    if problems.is_empty() {
+        pass(
+            check,
+            "2 projector doors (grants read / snapshot write): owner SECURITY DEFINER, search_path pinned, \
+             EXECUTE exactly {role_maintenance}, PUBLIC revoked",
+        )
+    } else {
+        fail(check, problems.join("; "))
+    }
+}
 const WRITE_GATE_FN: &str = "projection.stream_checkpoints_workspace_write_gate()";
 
 /// ADR-0060 D-H (migration 0208, card 33b): the operator reasoning-route doors and their read-only
@@ -5756,6 +5829,7 @@ pub fn run(args: &[String]) -> i32 {
             results.push(check_distill_dispatch_v2_boundary(&mut client));
             results.push(check_api_key_rehash_boundary(&mut client));
             results.push(check_reasoning_route_doors(&mut client));
+            results.push(check_entitlement_doors(&mut client));
             results.push(check_health_reader_boundary(&mut client));
             results.push(check_maintenance_doors(&mut client));
             results.push(check_maintenance_delete_doors(&mut client));
@@ -7214,6 +7288,72 @@ mod tests {
                 red.detail
             );
             txn.batch_execute("ROLLBACK TO SAVEPOINT r3_definer_fault")
+                .expect("restore");
+        }
+    }
+
+    /// G-M04-13 (§76, 0267): no runtime role reads or writes the raw entitlement grants. Over-grants (rolled back) of
+    /// SELECT to the gateway and INSERT to the maintenance role turn the grant-equality gate red naming the table and the
+    /// role; the clean tree is green.
+    #[test]
+    fn entitlement_grants_are_owner_only() {
+        txn_or_skip!(client, txn);
+        assert_eq!(check_grant_equality(&mut txn).status, GateStatus::Pass);
+        for (fault, role) in [
+            (
+                "GRANT SELECT ON control.entitlement_grants TO role_gateway",
+                "role_gateway",
+            ),
+            (
+                "GRANT INSERT ON control.entitlement_grants TO role_maintenance",
+                "role_maintenance",
+            ),
+        ] {
+            txn.batch_execute(&format!("SAVEPOINT entitlement_grants_fault; {fault}"))
+                .expect("fault");
+            let red = check_grant_equality(&mut txn);
+            assert_eq!(red.status, GateStatus::Fail, "{fault}: {}", red.detail);
+            assert!(
+                red.detail.contains("control.entitlement_grants") && red.detail.contains(role),
+                "{}",
+                red.detail
+            );
+            txn.batch_execute("ROLLBACK TO SAVEPOINT entitlement_grants_fault")
+                .expect("restore");
+        }
+        assert_eq!(check_grant_equality(&mut txn).status, GateStatus::Pass);
+    }
+
+    /// §76 (0267): the two projector doors are role_maintenance-only. Faults (rolled back): grant the snapshot writer to
+    /// role_gateway, or revoke the grants reader from role_maintenance → red naming the function and the role.
+    #[test]
+    fn entitlement_doors_are_maintenance_only() {
+        txn_or_skip!(client, txn);
+        let clean = check_entitlement_doors(&mut txn);
+        assert_eq!(clean.status, GateStatus::Pass, "{}", clean.detail);
+        for (fault, signature, role) in [
+            (
+                "GRANT EXECUTE ON FUNCTION {f} TO {r}",
+                ENTITLEMENT_DOOR_FUNCTIONS[1],
+                "role_gateway",
+            ),
+            (
+                "REVOKE EXECUTE ON FUNCTION {f} FROM {r}",
+                ENTITLEMENT_DOOR_FUNCTIONS[0],
+                "role_maintenance",
+            ),
+        ] {
+            let sql = fault.replace("{f}", signature).replace("{r}", role);
+            txn.batch_execute(&format!("SAVEPOINT entitlement_door_fault; {sql}"))
+                .expect("fault");
+            let red = check_entitlement_doors(&mut txn);
+            assert_eq!(red.status, GateStatus::Fail, "{sql}: {}", red.detail);
+            assert!(
+                red.detail.contains(signature) && red.detail.contains(role),
+                "{}",
+                red.detail
+            );
+            txn.batch_execute("ROLLBACK TO SAVEPOINT entitlement_door_fault")
                 .expect("restore");
         }
     }
