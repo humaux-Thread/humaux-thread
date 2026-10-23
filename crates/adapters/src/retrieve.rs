@@ -1,7 +1,7 @@
 //! `adapters::retrieve` — §15.5 Read-your-writes (`consistency_token` issue/decode/scope-check) and the PostgreSQL
 //!   delta overlay `recall`/`context` fall back to when serving Qdrant has not yet caught up to a token's write
 //!   (T3.8).
-//! Depends-on: crates=[hex, hmac, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
+//! Depends-on: crates=[hex, hmac, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
