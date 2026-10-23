@@ -2,9 +2,9 @@
 //!   Postgres as role_gateway through the three `control.login_challenge_*` doors and the email door.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(any) w=[control.auth_events, control.email_challenges, control.user_emails, control.users,
-//!   ops.email_delivery_events, ops.email_outbox], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::email, adapters::login_repo, adapters::postgres, application::auth, application::login,
-//!   humaux-testkit]
+//!   ops.email_delivery_events, ops.email_outbox] x=[control.login_challenge_issue], PostgreSQL(role_gateway)];
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email, adapters::login_repo, adapters::postgres, application::auth,
+//!   application::login, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [a consumed code fails on the second verify; the attempt after the cap fails even with the right code;
 //!   an existing and an unknown mailbox get the identical response and an unknown one enqueues nothing; two concurrent
@@ -95,7 +95,7 @@ impl DbIntegrationFixture for LoginFixture {
             .get(0);
         if !migrated {
             return Err(DbFixtureSkipReason::IsolationSetupFailed(
-                "control.login_challenge_issue is missing: apply migration 0266 first".to_string(),
+                "the login challenge doors are missing: apply migration 0266 first".to_string(),
             ));
         }
 

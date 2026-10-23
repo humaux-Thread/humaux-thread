@@ -1,7 +1,7 @@
 //! `adapters::email::outbox` — DB-backed queue + worker for `ops.email_outbox`
 //!   (`migrations/0038_email_deliverability.sql`).
 //! Depends-on: crates=[serde_json, sqlx]; services=[PostgreSQL(any) w=[ops.email_delivery_events, ops.email_outbox, ops.email_suppressions]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::email, adapters::postgres]
-//! Called-by: [tests]
+//! Called-by: [adapters::login_repo, tests]
 //! Invariants: [enqueue_in_txn is the one INSERT INTO ops.email_outbox and never calls send, so a request handler
 //!   never blocks on SMTP; a replayed idempotency_key inserts nothing; run_once claims QUEUED rows only, highest
 //!   priority first, under the SendPolicy cap and allowlist, and durably marks a row SUBMISSION_UNKNOWN before the
