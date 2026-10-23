@@ -292,6 +292,15 @@ fn recall_bodies(handle: &Handle, ids: &[Uuid]) -> MaterializedBodies {
         .expect("final bodies")
 }
 
+/// A static item label; the item itself may carry Evidence payload, which a panic message must not print.
+fn item_kind(item: &MaterializedItem) -> &'static str {
+    match item {
+        MaterializedItem::Memory { .. } => "memory",
+        MaterializedItem::TemporaryEvidence { .. } => "temporary_evidence",
+        MaterializedItem::ArtifactUnavailable { .. } => "artifact_unavailable",
+    }
+}
+
 /// `memory_id → content` for the Memory items `items` holds, asserting every item is a Memory.
 fn memory_contents(items: &[MaterializedItem]) -> BTreeMap<Uuid, serde_json::Value> {
     let mut contents = BTreeMap::new();
@@ -303,7 +312,10 @@ fn memory_contents(items: &[MaterializedItem]) -> BTreeMap<Uuid, serde_json::Val
                     "one Memory item per id"
                 );
             }
-            other => panic!("a body read returns Memory items only, got {other:?}"),
+            other => panic!(
+                "a body read returns Memory items only, got {}",
+                item_kind(other)
+            ),
         }
     }
     contents
