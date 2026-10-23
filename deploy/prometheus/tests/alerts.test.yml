@@ -697,12 +697,12 @@ tests:
       - expr: capacity:headroom_cpu_ratio
         eval_time: 5m
         exp_samples:
-          - labels: 'capacity:headroom_cpu_ratio'
+          - labels: 'capacity:headroom_cpu_ratio{}'
             value: 0.19999999999999996
       - expr: capacity:headroom_memory_bytes
         eval_time: 5m
         exp_samples:
-          - labels: 'capacity:headroom_memory_bytes'
+          - labels: 'capacity:headroom_memory_bytes{}'
             value: 4294967296
       - expr: capacity:headroom_psi_cpu_ratio
         eval_time: 5m
@@ -717,7 +717,7 @@ tests:
       - expr: capacity:additional_users
         eval_time: 5m
         exp_samples:
-          - labels: 'capacity:additional_users'
+          - labels: 'capacity:additional_users{}'
             value: 15.999999999999996
 
   # capacity CPU warning (M22-3 D3): 0.75 busy crosses 0.70; pending inside the 15 m `for:` at 14 m, firing at 16 m.
@@ -787,8 +787,8 @@ tests:
         alertname: CapacityCpuBusyCritical
         exp_alerts: []
 
-  # capacity memory (M22-3 D3): 3 GiB available is under both the 4 GiB warning and the 2 GiB critical lines, pending
-  # inside each window; 8 GiB is above both and stays silent.
+  # capacity memory warning (M22-3 D3): 3 GiB available is under the 4 GiB warning line — pending inside the 15 m
+  # `for:` at 14 m, firing at 16 m; it is above the 2 GiB critical line, so Critical stays silent here.
   - interval: 1m
     input_series:
       - series: 'host_memory_available_bytes'
@@ -803,6 +803,16 @@ tests:
           - exp_labels:
               severity: warning
               resource: memory
+      - eval_time: 6m
+        alertname: CapacityMemoryCritical
+        exp_alerts: []
+
+  # capacity memory critical: 1.5 GiB is under the 2 GiB line — pending inside the 5 m `for:` at 4 m, firing at 6 m.
+  - interval: 1m
+    input_series:
+      - series: 'host_memory_available_bytes'
+        values: '1610612736x20'
+    alert_rule_test:
       - eval_time: 4m
         alertname: CapacityMemoryCritical
         exp_alerts: []
