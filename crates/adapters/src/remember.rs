@@ -1,6 +1,6 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[control.private_reasoning_domains] w=[private.events, private.evidence_projects, private.evidence_sources,
+//!   r=[control.private_reasoning_domains, ops.outbox, private.evidence_sources, projection.stream_log] w=[private.events, private.evidence_projects, private.evidence_sources,
 //!   private.evidence_task_runs, private.ingest_tickets] x=[private.declared_project_visible]];
 //!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres,
 //!   adapters::retrieve,
@@ -13,7 +13,8 @@
 //!   and nothing commits; private.evidence_task_runs is written only here, from a VerifiedTaskRun consumed by value;
 //!   private.evidence_projects is written only here, from a DeclaredProject consumed by value;
 //!   private.evidence_sources is written only here, by remember_sourced_in_txn after the unchanged remember_in_txn, so a
-//!   sourced write is the unsourced write plus one row (ADR-0098)]
+//!   sourced write is the unsourced write plus one row (ADR-0098); the dedupe read [`find_source_in_txn`] runs only under
+//!   the identity's advisory lock, taken by operation_receipt (M06-1b)]
 //! Spec: Baseline §34.2; §60.1; §60; §34.1; §30.2; §6.1.4
 //!
 //! [`remember`] is `role_gateway`'s single write path for Evidence acceptance. It runs against
@@ -698,16 +699,118 @@ async fn insert_evidence_source_in_txn(
     .map(|_| ())
 }
 
-/// [`remember_in_txn`] for Evidence relayed from an external object (ADR-0098): applies the one source classification
-/// ([`classify_source`], §7.5 / §8.7) to `cmd` before any write, runs the unchanged [`remember_in_txn`], then records the
-/// source identity row in the same transaction. A refused classification is [`RememberError::Source`] and nothing is
-/// written. There is no dedupe here: a repeated identity hits the table's UNIQUE and surfaces as [`RememberError::Db`].
-// ponytail: no dedupe yet, upgrade path is M06-1b (advisory lock, existing-Evidence receipt, SOURCE_VERSION_CONFLICT).
+/// What a source identity already holds (ADR-0098 D1): the Evidence, the digest it was stored under and the stream
+/// coordinates of its acceptance, which a dedupe-hit receipt must repeat (0114/0265 trigger).
+#[derive(Debug, Clone)]
+pub struct SourceHit {
+    /// The Evidence the identity points at.
+    pub evidence_id: Uuid,
+    /// `payload_sha256` stored with the identity row (32 bytes).
+    pub payload_sha256: Vec<u8>,
+    /// `projection.stream_log.scope_kind` of the Evidence's accepted ticket.
+    pub scope_kind: String,
+    /// `projection.stream_log.scope_id`.
+    pub scope_id: Uuid,
+    /// `projection.stream_log.domain`.
+    pub domain: String,
+    /// `projection.stream_log.projection_kind`.
+    pub projection_kind: String,
+    /// `projection.stream_log.projection_version`.
+    pub projection_version: String,
+    /// `projection.stream_log.stream_seq`.
+    pub stream_seq: i64,
+    /// `projection.stream_log.commit_seq`.
+    pub commit_seq: i64,
+}
+
+/// ADR-0098 D1: the identity's existing Evidence under the transaction's tenant and owner RLS context, with its live
+/// `EVIDENCE_ACCEPTED` stream row. `None` = the identity is unused (or its ticket is tombstoned, so a receipt could not
+/// point at it; the UNIQUE then refuses a write). The caller holds the identity's advisory lock (M06-1b).
+pub async fn find_source_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    owner: Uuid,
+    source: &SourceIdentity,
+) -> Result<Option<SourceHit>, sqlx::Error> {
+    let Some(row) = sqlx::query(
+        "SELECT s.evidence_id, s.payload_sha256, l.scope_kind, l.scope_id, l.domain, l.projection_kind, \
+                l.projection_version, l.stream_seq, l.commit_seq \
+           FROM private.evidence_sources s \
+           JOIN ops.outbox o ON o.tenant_id = s.tenant_id AND o.evidence_id = s.evidence_id \
+                AND o.event_type = 'EVIDENCE_ACCEPTED' \
+           JOIN projection.stream_log l ON l.tenant_id = o.tenant_id AND l.commit_seq = o.commit_seq \
+          WHERE s.tenant_id = $1 AND s.owner_user_id = $2 AND s.source_kind = $3 AND s.object_key_d16 = $4 \
+            AND s.source_version = $5 AND l.state <> 'TOMBSTONED' \
+          ORDER BY o.commit_seq LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(owner)
+    .bind(source.kind().db_code())
+    .bind(source.object_key_d16().as_bytes().as_slice())
+    .bind(source.version())
+    .fetch_optional(&mut **txn)
+    .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(SourceHit {
+        evidence_id: row.try_get("evidence_id")?,
+        payload_sha256: row.try_get("payload_sha256")?,
+        scope_kind: row.try_get("scope_kind")?,
+        scope_id: row.try_get("scope_id")?,
+        domain: row.try_get("domain")?,
+        projection_kind: row.try_get("projection_kind")?,
+        projection_version: row.try_get("projection_version")?,
+        stream_seq: row.try_get("stream_seq")?,
+        commit_seq: row.try_get("commit_seq")?,
+    }))
+}
+
+/// The unchanged [`remember_in_txn`] on an already classified `cmd`, then the identity row in the same transaction
+/// (ADR-0098 D3). The one place a sourced Evidence is written; the UNIQUE on the identity is the backstop of the
+/// advisory lock callers take first.
+pub(crate) async fn write_sourced_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    cmd: RememberCommand,
+    source: &SourceIdentity,
+    owner: Uuid,
+) -> Result<RememberPending, RememberError> {
+    let tenant_id = cmd.tenant_id;
+    let payload = cmd.payload_sha256;
+    let pending = remember_in_txn(txn, cmd).await?;
+    insert_evidence_source_in_txn(
+        txn,
+        tenant_id,
+        owner,
+        source,
+        pending.accepted().evidence_id,
+        &payload,
+    )
+    .await?;
+    Ok(pending)
+}
+
+/// [`remember_in_txn`] for Evidence relayed from an external object (ADR-0098): [`classify_sourced_command`] before any
+/// write, then [`write_sourced_in_txn`]. A refused classification is [`RememberError::Source`] and nothing is written.
+/// There is no dedupe here: a repeated identity hits the table's UNIQUE and surfaces as [`RememberError::Db`]; the
+/// dedupe (advisory lock, existing-Evidence receipt, `SOURCE_VERSION_CONFLICT`) lives in
+/// `operation_receipt::remember_sourced_atomically`, the one entry that holds a receipt (M06-1b).
 pub async fn remember_sourced_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mut cmd: RememberCommand,
     source: &SourceIdentity,
 ) -> Result<RememberPending, RememberError> {
+    let owner = classify_sourced_command(&mut cmd, source)?;
+    write_sourced_in_txn(txn, cmd, source, owner).await
+}
+
+/// ADR-0098 D2: applies the one source classification ([`classify_source`], §7.5 / §8.7) to `cmd` in place and returns
+/// the owner user the source row belongs to (`authorization_user_id`). A refused classification, or a headless command,
+/// is [`RememberError::Source`] and nothing has been written. Idempotent: classifying a classified command is a no-op.
+pub fn classify_sourced_command(
+    cmd: &mut RememberCommand,
+    source: &SourceIdentity,
+) -> Result<Uuid, RememberError> {
     let owner = cmd
         .authorization_user_id
         .ok_or(RememberError::Source(ErrorCode::InvalidInput))?;
@@ -725,20 +828,7 @@ pub async fn remember_sourced_in_txn(
         cmd.origin_class = origin_class;
     }
     cmd.data_class = classified.data_class.as_str().to_owned();
-
-    let tenant_id = cmd.tenant_id;
-    let payload = cmd.payload_sha256;
-    let pending = remember_in_txn(txn, cmd).await?;
-    insert_evidence_source_in_txn(
-        txn,
-        tenant_id,
-        owner,
-        source,
-        pending.accepted().evidence_id,
-        &payload,
-    )
-    .await?;
-    Ok(pending)
+    Ok(owner)
 }
 
 /// Public one-shot wrapper. It preserves the original accepted response and owns the commit;

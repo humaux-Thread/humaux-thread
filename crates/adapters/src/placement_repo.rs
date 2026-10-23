@@ -1,21 +1,26 @@
-//! `adapters::placement_repo` — the gateway's read-only lookup of §17.3 `projection.tenant_placements` (migration
-//!   0068).
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) r=[projection.tenant_placements]]; env=[]; modules=[adapters::postgres, adapters::qdrant, domain::error, domain::ids]
-//! Called-by: [adapters::stream_repo, gateway::recall]
-//! Invariants: [SELECT-only on projection.tenant_placements under role_gateway; a missing row means not indexed yet
-//!   and the caller must answer DependencyUnavailable, never fall back to another tenant's placement]
-//! Spec: Baseline §6.2.1
+//! `adapters::placement_repo` — §17.3 `projection.tenant_placements` access: the gateway's read-only lookup and the
+//!   projection worker's point-counter writer (migration 0068).
+//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) r=[projection.tenant_placements] w=[projection.tenant_placements]]; env=[]; modules=[adapters::postgres, adapters::qdrant, domain::error, domain::ids]
+//! Called-by: [adapters::private_projection_registry, adapters::stream_repo, gateway::recall]
+//! Invariants: [the gateway read is SELECT-only under role_gateway and a missing row means not indexed yet, never a
+//!   fallback to another tenant's placement; the one counter writer moves point_count/bytes_estimate only inside the
+//!   caller's binding transaction, only by a delta that caller's own point write produced, and never below zero]
+//! Spec: Baseline §6.2.1; §17.3
 //!
-//! `role_gateway` holds only `SELECT` on this table (§6.2.1 domain default; `adapters::qdrant`'s
-//! own module doc names itself the sole writer, worker-side) — this module never issues an
-//! `INSERT`/`UPDATE`/`DELETE` against it. It exists so `bins/gateway/src/recall.rs` can resolve
-//! a tenant's placement per request instead of holding one fixed `TenantPlacementRow` for the
-//! life of the process (a single-tenant assumption the previous `SemanticRecallRuntime` shape
-//! made): a row's absence means "not indexed yet for this tenant/family", which the caller must
-//! treat as `DependencyUnavailable`, never a cross-tenant fallback to somebody else's placement.
+//! Two callers, two grant shapes. `role_gateway` holds only `SELECT` on this table (§6.2.1 domain
+//! default), so the read half exists so `bins/gateway/src/recall.rs` can resolve a tenant's
+//! placement per request instead of holding one fixed `TenantPlacementRow` for the life of the
+//! process (a single-tenant assumption the previous `SemanticRecallRuntime` shape made): a row's
+//! absence means "not indexed yet for this tenant/family", which the caller must treat as
+//! `DependencyUnavailable`, never a cross-tenant fallback to somebody else's placement.
+//!
+//! The write half is [`add_point_counters`], called by `adapters::private_projection_registry`
+//! inside the transaction that binds or retires the point being counted. It reads no Qdrant state:
+//! the worker's own committed writes are the only evidence §17.3's two bookkeeping columns need, so
+//! the projection hot path adds no count scan.
 
-use sqlx::Row;
 use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::TenantId;
@@ -57,6 +62,63 @@ pub async fn tenant_placement(
     .map_err(db_error)?;
     txn.commit().await.map_err(db_error)?;
     row.as_ref().map(from_row).transpose()
+}
+
+/// The §17.1 retrieval family every private-memory point belongs to — the one `projection.tenant_placements`
+/// row `adapters::private_projection_registry`'s bindings are counted into (migration 0068's
+/// `private_memory_v1` CHECK value). Public knowledge and code projection are other families with their own
+/// writers; the private registry never moves their counters.
+pub(crate) const PRIVATE_PROJECTION_FAMILY: RetrievalFamily = RetrievalFamily::PrivateMemoryV1;
+
+/// The dense-vector bytes one point contributes to §17.3 `bytes_estimate`: the f32 array the worker actually
+/// upserts, 4 bytes per dimension. Payload and HNSW bytes are measured by R11-H and deliberately not guessed
+/// here (module design M10 D5); this is the one per-point size both a registration and a retirement know
+/// without reading Qdrant.
+pub(crate) const fn point_vector_bytes(dimension: i64) -> i64 {
+    dimension.saturating_mul(4)
+}
+
+/// Moves one tenant's §17.3 `point_count`/`bytes_estimate` by the delta one successful point write produced
+/// (`+1` per newly bound point, `-1` per binding this transaction retires), inside the caller's already-open
+/// transaction. `adapters::private_projection_registry` calls it in the same transaction as the binding row, so a
+/// committed counter and a committed binding cannot disagree, and a replayed registration (`AlreadyRegistered`)
+/// moves nothing — one point is counted once (§17.3's `point_count` is a placement fact, not a write counter).
+///
+/// No Qdrant read: the caller's own committed writes are the whole input, which is what keeps the projection hot
+/// path free of a collection count scan. The table's blanket tenant RLS policy (0012) admits the row only with
+/// `humaux.tenant_id` already set by the caller's authorization context, and `role_retrieval_worker` holds the
+/// domain-default `R+W` on `projection.*` (0011) the update needs.
+///
+/// A counter never goes below zero (clamped, not an error): a promoted or re-onboarded row can be reset under a
+/// lease, and these columns are §17.3 bookkeeping — the binding row, never the counter, decides what is served.
+///
+/// Returns the affected row count; `0` means the tenant has no placement row for `family`. Provisioning creates
+/// that row before any ticket (`projection.ensure_tenant_placement`, 0186) and the resident claim joins it, so only
+/// a test-shaped caller reaches the no-row case, and it must stay a no-op rather than fail the point write.
+// ponytail: the counters are per `(tenant, projection_family)`, not per collection generation; a generation
+// switch (M10-3/M10-4) counts a rebuild's new collection into the same row until a per-generation placement row
+// exists.
+pub(crate) async fn add_point_counters(
+    txn: &mut Transaction<'_, Postgres>,
+    tenant_id: TenantId,
+    family: RetrievalFamily,
+    point_delta: i64,
+    byte_delta: i64,
+) -> Result<u64, sqlx::Error> {
+    // dep: PostgreSQL(any) — the caller's transaction, RLS-bound to `tenant_id`
+    Ok(sqlx::query(
+        "UPDATE projection.tenant_placements \
+            SET point_count = GREATEST(point_count + $3, 0), \
+                bytes_estimate = GREATEST(bytes_estimate + $4, 0) \
+          WHERE tenant_id = $1 AND projection_family = $2",
+    )
+    .bind(tenant_id.0)
+    .bind(family.as_db_str())
+    .bind(point_delta)
+    .bind(byte_delta)
+    .execute(&mut **txn)
+    .await?
+    .rows_affected())
 }
 
 /// The one parser of a `projection.tenant_placements` row shape. `pub(crate)` so

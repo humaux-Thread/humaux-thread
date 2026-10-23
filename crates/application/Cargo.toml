@@ -21,16 +21,16 @@ humaux-domain = { path = "../domain" }
 humaux-retrieval = { path = "../retrieval" }
 # why: password hashing for auth.rs's H2 state machine; used-by: [application::auth]
 argon2 = "0.5"
-# why: token/RNG source for auth, referral codes and supersede confirm tokens; used-by: [application::auth, application::referral, application::supersede]
+# why: token/RNG source for auth, referral codes and supersede confirm tokens; used-by: [application::auth, application::referral, application::signed_token, application::supersede]
 rand = "0.9"
 # §74.2/§73.5: HMAC-SHA256 keyed hash for verification codes, same construction and version
 # pins as `crates/protocol` already resolved for `control.api_keys.key_hash` — reused, not a
 # second independent version in the dependency graph.
-# why: verification-code HMAC; used-by: [application::auth]
+# why: verification-code HMAC and the signed-token MAC; used-by: [application::auth, application::signed_token]
 hmac = "0.13"
-# why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::referral]
+# why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::referral, application::signed_token]
 sha2 = "0.11"
-# why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::referral]
+# why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::referral, application::signed_token]
 hex = "0.4"
 # why: wire/DTO (de)serialization for continuity handoff and notify payloads; used-by: [application::continuity, application::notify]
 serde = { version = "1", features = ["derive"] }
