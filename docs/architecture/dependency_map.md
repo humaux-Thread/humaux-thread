@@ -8859,6 +8859,14 @@ written by:
 
 executed by:
 
+### `private.identity_note_body_sha256`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::note_put`
+
 ### `private.identity_note_materializations`
 read by:
 - (no process): `adapters::tests::note_put`
