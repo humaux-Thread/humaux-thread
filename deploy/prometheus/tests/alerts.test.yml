@@ -546,39 +546,159 @@ tests:
         alertname: DiskFreeLow
         exp_alerts: []
 
-  # admission rejected fire (§42 injection: admission capped at 1, two concurrent requests ⇒ one 503): the gateway
-  # exports the seeded zero series; one queue_full refusal at 10m fires the row with that reason's labels, and the
-  # other reasons stay silent.
+  # capacity rejection ratio (M22-3 D3, G-M22-3): 1 queue_full refusal per minute against 10 admitted tool calls per
+  # minute is 1/11 ≈ 9.1 % — over the 0.5 % warning line. `changes() > 1` makes the condition true at 2 m; the 2 m
+  # `for:` fires exactly at 4 m, so 3 m is pending (a 1 m hold would already fire there) and 4 m is firing (a 3 m
+  # hold would still be pending). The same input is over the 2 % critical line; its 1 m hold fires at 3 m, so 2 m is
+  # pending and 3 m is firing. Series carry the production scrape labels (job/mode/instance, prometheus.yml).
   - interval: 1m
     input_series:
-      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="queue_full"}'
-        values: '0x9 1x20'
-      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="wait_timeout"}'
-        values: '0x30'
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0+1x20'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+10x20'
     alert_rule_test:
-      - eval_time: 12m
-        alertname: AdmissionRejected
+      - eval_time: 3m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: CapacityRejectionRatioHigh
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: humaux-gateway
-              class: gateway_inbound
-              reason: queue_full
+      - eval_time: 2m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
 
-  # admission rejected silent: no 503 at all (every series flat at its seeded 0), and 5 minutes after the last
-  # refusal the increase is 0 again.
+  # capacity rejection ratio silent below the warning line: 1 refusal per minute against 250 admitted calls per minute
+  # is 1/251 ≈ 0.4 %, under 0.5 %; both rows stay silent even though the count is well over `changes() > 1`.
   - interval: 1m
     input_series:
-      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="queue_full"}'
-        values: '0x9 1x30'
-      - series: 'admission_rejected_total{job="humaux-gateway",class="gateway_inbound",reason="key_limit"}'
-        values: '0x40'
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="wait_timeout"}'
+        values: '0+1x20'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+250x20'
     alert_rule_test:
       - eval_time: 5m
-        alertname: AdmissionRejected
+        alertname: CapacityRejectionRatioHigh
         exp_alerts: []
-      - eval_time: 25m
-        alertname: AdmissionRejected
+      - eval_time: 4m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+
+  # reason!="key_limit" (D3): 100 key_limit refusals per minute, no admitted call, no capacity refusal. The quota/rate
+  # policy is excluded from the numerator and `changes()` on the filtered family is 0, so both rows stay silent. A
+  # rule that forgets the exclusion (mutation cap_rej_filter) reads 100/100 = 1 and pages.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="key_limit"}'
+        values: '0+100x20'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+
+  # `changes(...) > 1` matters: one queue_full refusal against 10 admitted calls per minute is a 1/11 ≈ 9 % ratio —
+  # over both lines — but a single change must not page at any eval. Dropping the count guard (mutation cap_changes)
+  # fires High at 10 m.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0x5 1x20'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+10x25'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+
+  # High threshold pinned just below 0.5 %: 1 refusal/min against 260 admitted/min is 1/261 ≈ 0.383 % — silent at
+  # 20 m, when the 15 m window is steady and `changes() > 1`.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0+1x30'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+260x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+
+  # High threshold pinned just above 0.5 %: 1 refusal/min against 160 admitted/min is 1/161 ≈ 0.621 % — firing at
+  # 20 m (the 2 m hold has long elapsed).
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0+1x30'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+160x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # Critical threshold pinned just below 2 %: 1 refusal/min against 55 admitted/min is 1/56 ≈ 1.786 % — silent.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0+1x30'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+55x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+
+  # Critical threshold pinned just above 2 %: 1 refusal/min against 46 admitted/min is 1/47 ≈ 2.128 % — firing.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0+1x30'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+46x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+
+  # G-M22-3 one rejection never pages: one queue_full refusal at 10 m against 600 admitted calls per minute is
+  # 1/9001 ≈ 0.01 % over the High 15 m window (1/3001 over the Critical 5 m window), and `changes() > 1` is false
+  # for that single refusal anyway. The refusal lands at 10 m, not 11: expanding `0x9` is ten samples (a n+1 times
+  # includes both ends). Replacing the High expression with `increase(admission_rejected_total[5m]) > 0` makes that
+  # refusal active at 10 m and firing at 12 m (mutation `admission`), so this block is the red record for the gate.
+  - interval: 1m
+    input_series:
+      - series: 'admission_rejected_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",class="gateway_inbound",reason="queue_full"}'
+        values: '0x9 1x20'
+      - series: 'humaux_mcp_requests_total{job="humaux-gateway",mode="serve",instance="127.0.0.1:19101",tool="recall",result="ok",plan_class="unclassified"}'
+        values: '0+600x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CapacityRejectionRatioHigh
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: CapacityRejectionRatioCritical
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CapacityRejectionRatioHigh
         exp_alerts: []
 
   # DNS pin deferred fire (§42 injection, ADR-0066 D-P: the pinned address stops answering ⇒ every distill call is a
@@ -642,4 +762,229 @@ tests:
     alert_rule_test:
       - eval_time: 80m
         alertname: QuotaWindowRenewalMissing
+        exp_alerts: []
+
+  # M22-3 D4 recording rules on fixed production-shaped series (exact values, not "exists"): the scrape labels are
+  # {job="humaux-maintenance", mode="health-serve", instance="127.0.0.1:19107"} for the /proc and tenant gauges and
+  # {job="humaux-maintenance", mode="serve", instance="127.0.0.1:19108"} for the DR disk gauge (prometheus.yml,
+  # render.sh). 0.50 busy with 40 weekly tenants ⇒ (0.70−0.50)/(0.50/40) ≈ 16 additional users; the literal is the
+  # float64 the rule computes (0.70−0.50 rounds just below 0.2 and promtool compares exactly unless fuzzy_compare is
+  # on). PSI cpu some 0.10 ⇒ (0.20−0.10)/(0.10/40) = 40, so the min is the CPU-busy term. MemAvailable 8 GiB ⇒ 4 GiB
+  # headroom; PGDATA 8 GiB against the 7.5 GiB §42 floor ⇒ 512 MiB.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.5x10'
+      - series: 'host_memory_available_bytes{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '8589934592x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.1x10'
+      - series: 'host_pressure_ratio{resource="memory",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.1x10'
+      - series: 'tenants_active_7d{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '40x10'
+      - series: 'backup_disk_free_bytes{volume="pgdata",job="humaux-maintenance",mode="serve",instance="127.0.0.1:19108"}'
+        values: '8589934592x10'
+    promql_expr_test:
+      - expr: capacity:headroom_cpu_ratio
+        eval_time: 5m
+        exp_samples:
+          - labels: 'capacity:headroom_cpu_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+            value: 0.19999999999999996
+      - expr: capacity:headroom_memory_bytes
+        eval_time: 5m
+        exp_samples:
+          - labels: 'capacity:headroom_memory_bytes{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+            value: 4294967296
+      - expr: capacity:headroom_psi_cpu_ratio
+        eval_time: 5m
+        exp_samples:
+          - labels: 'capacity:headroom_psi_cpu_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+            value: 0.1
+      - expr: capacity:headroom_disk_bytes
+        eval_time: 5m
+        exp_samples:
+          - labels: 'capacity:headroom_disk_bytes{volume="pgdata",job="humaux-maintenance",mode="serve",instance="127.0.0.1:19108"}'
+            value: 536870912
+      - expr: capacity:additional_users
+        eval_time: 5m
+        exp_samples:
+          - labels: 'capacity:additional_users{}'
+            value: 15.999999999999996
+
+  # D4 min is over both budgeted resources: with CPU busy 0.50 (term 16) and PSI 0.15 (term 13.333333333333337), the
+  # PSI term is the limiting one and must appear. The production {job,mode,instance} labels are what dropped it before
+  # the per-instance aggregation.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.5x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.15x10'
+      - series: 'tenants_active_7d{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '40x10'
+    promql_expr_test:
+      - expr: capacity:additional_users
+        eval_time: 5m
+        exp_samples:
+          - labels: 'capacity:additional_users{}'
+            value: 13.333333333333337
+
+  # D4 zero-denominator guard, idle host: busy 0 and PSI 0 with 40 tenants would be +Inf; the rule emits no sample
+  # (an idle host has no finite additional-user count), never Inf/NaN.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0x10'
+      - series: 'tenants_active_7d{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '40x10'
+    promql_expr_test:
+      - expr: capacity:additional_users
+        eval_time: 5m
+        exp_samples: []
+
+  # D4 zero-denominator guard, zero weekly tenants: busy 0.50 and PSI 0.10 would be Inf/NaN; no sample.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.5x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.1x10'
+      - series: 'tenants_active_7d{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0x10'
+    promql_expr_test:
+      - expr: capacity:additional_users
+        eval_time: 5m
+        exp_samples: []
+
+  # capacity CPU warning (M22-3 D3): 0.75 busy crosses 0.70; pending at 14 m, firing exactly when the 15 m `for:`
+  # elapses at 15 m (a 14 m hold would already fire at 14 m; a 16 m hold would still be pending at 15 m).
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.75x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CapacityCpuBusyHigh
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: CapacityCpuBusyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              resource: cpu
+              job: humaux-maintenance
+              mode: health-serve
+              instance: 127.0.0.1:19107
+
+  # capacity CPU warning silent below the line: 0.65 busy never crosses 0.70.
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.65x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: CapacityCpuBusyHigh
+        exp_alerts: []
+
+  # capacity CPU critical (M22-3 D3): 0.90 busy and PSI cpu some 0.25 fire after the 5 m `for:`; 0.90 with PSI 0.10
+  # (corroboration missing) and 0.80 with PSI 0.90 (busy below the line) both stay silent. The left side keeps the
+  # production scrape labels and `and on (instance)` matches the per-instance PSI term, so the alert is per host
+  # (removing `on (instance)` is mutation cap_crit_and and turns this firing case silent).
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.90x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.25x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              resource: cpu
+              job: humaux-maintenance
+              mode: health-serve
+              instance: 127.0.0.1:19107
+
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.90x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.10x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'host_cpu_busy_ratio{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.80x10'
+      - series: 'host_pressure_ratio{resource="cpu",kind="some",job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '0.90x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CapacityCpuBusyCritical
+        exp_alerts: []
+
+  # capacity memory warning (M22-3 D3): 3 GiB available is under the 4 GiB warning line — pending at 14 m, firing
+  # when the 15 m hold elapses at 15 m; it is above the 2 GiB critical line, so Critical stays silent here.
+  - interval: 1m
+    input_series:
+      - series: 'host_memory_available_bytes{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '3221225472x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CapacityMemoryLow
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: CapacityMemoryLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              resource: memory
+              job: humaux-maintenance
+              mode: health-serve
+              instance: 127.0.0.1:19107
+      - eval_time: 6m
+        alertname: CapacityMemoryCritical
+        exp_alerts: []
+
+  # capacity memory critical: 1.5 GiB is under the 2 GiB line — pending at 4 m, firing when the 5 m hold elapses.
+  - interval: 1m
+    input_series:
+      - series: 'host_memory_available_bytes{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '1610612736x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CapacityMemoryCritical
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: CapacityMemoryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              resource: memory
+              job: humaux-maintenance
+              mode: health-serve
+              instance: 127.0.0.1:19107
+
+  - interval: 1m
+    input_series:
+      - series: 'host_memory_available_bytes{job="humaux-maintenance",mode="health-serve",instance="127.0.0.1:19107"}'
+        values: '8589934592x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: CapacityMemoryLow
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CapacityMemoryCritical
         exp_alerts: []
