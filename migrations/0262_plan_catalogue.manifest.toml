@@ -1,0 +1,66 @@
+# §46.1 migration manifest. Card M04-1: the plan catalogue — control.plans and control.plan_versions (global tables, the
+# control-domain default grants, no RLS), the invoker-rights trigger plan_versions_pin that keeps a version's commercial
+# columns immutable, and the owner door control.publish_plan_version (SECURITY DEFINER, search_path pg_catalog, PUBLIC has
+# no EXECUTE, role_maintenance the only non-owner EXECUTE). No role, no existing table and no existing grant is touched.
+# §46 forward-fix (EXPAND_CONTRACT, number 0262).
+
+migration_id = "0262_plan_catalogue"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database that already has either table or the door, or that lacks the two roles the ownership and the grant
+# name (a missing role would otherwise fail inside ALTER OWNER / GRANT without naming the check).
+precheck = """
+select to_regclass('control.plans') is null
+   and to_regclass('control.plan_versions') is null
+   and to_regprocedure('control.publish_plan_version(text,integer,bigint,text,text,jsonb,integer,jsonb,boolean)') is null
+   and to_regprocedure('control.plan_versions_pin()') is null
+   and exists (select 1 from pg_roles where rolname = 'role_migration_owner')
+   and exists (select 1 from pg_roles where rolname = 'role_maintenance')
+ as precheck_ok
+"""
+
+# Fails on: a table not owned by role_migration_owner or missing one of its eleven named constraints (the closed-set
+# CHECKs included); a missing or disabled pin trigger, or a trigger function that is not owner-owned, not
+# search_path-pinned or executable by PUBLIC; the door not owner-owned / not a definer / without its pinned search_path /
+# executable by PUBLIC or by any role but role_maintenance; any login role or PUBLIC holding INSERT, UPDATE, DELETE or
+# TRUNCATE on either table (the door is the only writer).
+postcheck = """
+with login_role(r) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+  ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'),
+  ('public'))
+select (select count(*) = 2 from pg_class c
+         where c.oid in (to_regclass('control.plans'), to_regclass('control.plan_versions'))
+           and c.relkind = 'r' and pg_get_userbyid(c.relowner) = 'role_migration_owner')
+ and (select count(*) = 2 from pg_constraint
+       where conrelid = to_regclass('control.plans') and conname in ('plans_plan_key_unique', 'plans_plan_key_shape'))
+ and (select count(*) = 9 from pg_constraint
+       where conrelid = to_regclass('control.plan_versions')
+         and conname in ('plan_versions_plan_version_unique', 'plan_versions_version_positive',
+                         'plan_versions_price_nonnegative', 'plan_versions_currency_v1_check',
+                         'plan_versions_interval_v1_check', 'plan_versions_lease_block_positive',
+                         'plan_versions_template_keys_v1_check', 'plan_versions_provider_modes_v1_check',
+                         'plan_versions_lifecycle'))
+ and exists (select 1 from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+              where t.tgrelid = to_regclass('control.plan_versions')
+                and t.tgname = 'plan_versions_pin' and t.tgenabled = 'O'
+                and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+                and 'search_path=pg_catalog' = any(coalesce(p.proconfig, '{}'))
+                and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                                 where x.grantee = 0 and x.privilege_type = 'EXECUTE'))
+ and coalesce((select pg_get_userbyid(p.proowner) = 'role_migration_owner' and p.prosecdef
+     and 'search_path=pg_catalog' = any(coalesce(p.proconfig, '{}'))
+     and not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                      where x.grantee = 0 and x.privilege_type = 'EXECUTE')
+     and (select bool_and(has_function_privilege(l.r, p.oid, 'EXECUTE') = (l.r = 'role_maintenance'))
+            from login_role l where l.r <> 'public')
+   from pg_proc p
+  where p.oid = to_regprocedure('control.publish_plan_version(text,integer,bigint,text,text,jsonb,integer,jsonb,boolean)')), false)
+ and not exists (select 1 from login_role l
+                  cross join (values ('control.plans'), ('control.plan_versions')) t(name)
+                  cross join (values ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) v(verb)
+                  where has_table_privilege(l.r, t.name, v.verb))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: DROP FUNCTION control.publish_plan_version(text,integer,bigint,text,text,jsonb,integer,jsonb,boolean); DROP TABLE control.plan_versions; DROP FUNCTION control.plan_versions_pin(); DROP TABLE control.plans — safe while no subscription pins a plan_version_id (none exists at 0262); after that, retire the version (retired_at) instead of dropping."
+backup_restore_requirement = "none: two new empty tables, one trigger function and one door; no existing row is read, copied, rewritten or deleted."
