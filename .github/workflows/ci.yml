@@ -510,20 +510,14 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          # retrieval-provider: four lib tests (adapters::tests::dashscope_query_sut_…,
-          # dispatched_transport_failure_…, mark_failure_stops_…, persistent_budget_rejection_…)
-          # hard-code the machine-local `127.0.0.1:61719` request-guard container
-          # (adapters.rs checked_query_dsn) instead of accepting the repo-wide isolated
-          # database like g80_31_handoff.rs does, so under HUMAUX_REQUIRE_DB they can only
-          # fail here. Skipped BY NAME, not by unsetting the require flag (§79.2); the
-          # portability defect is a follow-up card. Everything else in the package runs.
+          # §79.2: every humaux-retrieval-provider test runs; none is skipped by name (M24-8).
           # One -p set for both nextest invocations (T-CI-1): cargo unifies features per selected package set, `-p humaux-gateway`
           # turns on tokio's rt-multi-thread / signal / macros that `-p humaux-retrieval-provider` alone does not, and tokio, sqlx,
           # reqwest and every workspace crate above them were compiled twice (31 s; diag run 39433240461). Same tests, selected by -E.
           # ponytail: CI no longer builds humaux-retrieval-provider's tests with its own feature set; a dependency feature it
           # forgets to declare stays green here and fails `cargo nextest run -p humaux-retrieval-provider` alone. Add a
           # provider-only `cargo check --tests -p humaux-retrieval-provider` to lint if that ever bites.
-          cargo nextest run --profile ci -p humaux-retrieval-provider -p humaux-gateway -E 'package(=humaux-retrieval-provider) & not (test(=adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport) | test(=adapters::tests::dispatched_transport_failure_consumes_budget) | test(=adapters::tests::mark_failure_stops_before_transport_and_releases_budget) | test(=adapters::tests::persistent_budget_rejection_stops_before_transport_and_disclosure))' || rc=1
+          cargo nextest run --profile ci -p humaux-retrieval-provider -p humaux-gateway -E 'package(=humaux-retrieval-provider)' || rc=1
           cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-provider.xml" 2>/dev/null || true
           # -j 1: gateway tests spawn the real binary and assert 2 s / 5 s barriers; under -j 2 one missed its PG barrier
           # (run 38644754111, native_mcp_context_records_final_metric_only_after_quota_settlement).

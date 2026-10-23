@@ -6,12 +6,13 @@
 #   (a) the token occurs exactly once and the substituted file differs (`cmp`), else "did not apply";
 #   (b) the pinned `promtool check rules` accepts the mutated file, else "breaks syntax" (a broken
 #       mutation is not a red: promtool exits 1 for a load error and for a failed test alike, W6);
-#   (c) the pinned `promtool test rules` exits 1 AND prints `alertname: <expected>, time:` (W6).
+#   (c) the pinned `promtool test rules` exits 1 AND prints `alertname: <expected>, time:` for an alert row,
+#       or `expr: "<expected>", time:` for a recording-rule row (W6).
 # Before any row: the promtool pin is checked, and the unmutated tree must pass test-rules.sh in the
 # same copy layout ("baseline red in copy" otherwise), so a path or layout error is never read as red.
-# Rows: `id|rule-file|from|to|expected-alertname`; rows-file overrides the built-in 36 (selftest.sh);
-# every `absent(...)` branch of CoreMetricAbsent, HealthGaugesAbsent, MaintenanceCountersAbsent and PartitionHorizonAbsent
-# has its own row.
+# Rows: `id|rule-file|from|to|expected`; `expected` is an alert name, or `expr:<record>` for a recording
+# rule; rows-file overrides the built-in 49 (selftest.sh); every `absent(...)` branch of CoreMetricAbsent,
+# HealthGaugesAbsent, MaintenanceCountersAbsent and PartitionHorizonAbsent has its own row.
 #
 # Exit codes: 0 = every row printed `mutation=<id> red`; 1 = a row did not apply, broke syntax or
 #             was NOT-DETECTED, or the baseline failed; 2 = not_applicable (promtool pin unset);
@@ -74,9 +75,22 @@ not_offsite|alerts.rules.yml|label_replace(vector(0),|label_replace(vector(0) < 
 drill|alerts.rules.yml|691200|1382400|RestoreDrillFailure
 wal_failing|alerts.rules.yml|wal_archive_failing > 0|wal_archive_failing > 1|WalArchiveFailing
 budget_low|alerts.rules.yml|backup_budget_headroom_bytes < 0|backup_budget_headroom_bytes > 0|BackupBudgetLow
-disk_free_low|alerts.rules.yml|8053063680|0|DiskFreeLow
-admission|alerts.rules.yml|increase(admission_rejected_total[5m]) > 0|increase(admission_rejected_total[5m]) < 0|AdmissionRejected
+disk_free_low|alerts.rules.yml|{volume="pgdata"} < 8053063680|{volume="pgdata"} < 0|DiskFreeLow
+admission|alerts.rules.yml|sum(rate(admission_rejected_total{reason!="key_limit"}[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1|increase(admission_rejected_total[5m]) > 0|CapacityRejectionRatioHigh
 dns_pin_and|alerts.rules.yml|> 0 and increase(private_distill_outputs_total[30m]) == 0|> 0|DnsPinDeferred
+cap_for|alerts.rules.yml|for: 900s|for: 0m|CapacityCpuBusyHigh
+cap_threshold|alerts.rules.yml|host_cpu_busy_ratio > 0.70|host_cpu_busy_ratio > 0.85|CapacityCpuBusyHigh
+cap_crit_and|alerts.rules.yml|and on (instance) min by (instance) (host_pressure_ratio{resource="cpu",kind="some"}) > 0.20|and min by (instance) (host_pressure_ratio{resource="cpu",kind="some"}) > 0.20|CapacityCpuBusyCritical
+cap_mem_low|alerts.rules.yml|host_memory_available_bytes < 4294967296|host_memory_available_bytes < 3221225472|CapacityMemoryLow
+cap_mem_crit|alerts.rules.yml|host_memory_available_bytes < 2147483648|host_memory_available_bytes < 1073741824|CapacityMemoryCritical
+cap_rej_crit|alerts.rules.yml|> 0.02|> 0.20|CapacityRejectionRatioCritical
+cap_rej_filter|alerts.rules.yml|sum(rate(admission_rejected_total{reason!="key_limit"}[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1|sum(rate(admission_rejected_total[15m])) / (sum(rate(humaux_mcp_requests_total[15m])) + sum(rate(admission_rejected_total[15m]))) > 0.005 and sum(changes(admission_rejected_total[15m])) > 1|CapacityRejectionRatioHigh
+cap_changes|alerts.rules.yml| and sum(changes(admission_rejected_total{reason!="key_limit"}[15m])) > 1||CapacityRejectionRatioHigh
+rec_cpu|alerts.rules.yml|0.70 - host_cpu_busy_ratio|0.80 - host_cpu_busy_ratio|expr:capacity:headroom_cpu_ratio
+rec_mem|alerts.rules.yml|host_memory_available_bytes - 4294967296|host_memory_available_bytes - 3221225472|expr:capacity:headroom_memory_bytes
+rec_psi|alerts.rules.yml|0.20 - host_pressure_ratio{resource="cpu",kind="some"}|0.30 - host_pressure_ratio{resource="cpu",kind="some"}|expr:capacity:headroom_psi_cpu_ratio
+rec_disk|alerts.rules.yml|backup_disk_free_bytes{volume="pgdata"} - 8053063680|backup_disk_free_bytes{volume="pgdata"} - 4294967296|expr:capacity:headroom_disk_bytes
+rec_users|alerts.rules.yml|(0.70 - max by (instance) (host_cpu_busy_ratio))|(0.80 - max by (instance) (host_cpu_busy_ratio))|expr:capacity:additional_users
 ROWS
 fi
 # ponytail: `dead` uses `> 2`, not `> 1`: measured, delta() extrapolates a 0→1 step over [15m] at 1m
@@ -110,13 +124,17 @@ while IFS='|' read -r id file from to alert; do
     echo "mutation=$id fail — mutation $id breaks syntax"
     fail=1; continue
   fi
+  case "$alert" in
+    expr:*) needle="expr: \"${alert#expr:}\", time:" ;;
+    *) needle="alertname: $alert, time:" ;;
+  esac
   sh "$src/pinned-tool.sh" promtool test rules "$d"/tests/*.yml >"$d.out" 2>&1
   rc=$?
-  if [ "$rc" -eq 1 ] && grep -qF "alertname: $alert, time:" "$d.out"; then
-    echo "mutation=$id red ($alert: $(grep -F "alertname: $alert, time:" "$d.out" | head -1 | sed 's/^ *//'))"
+  if [ "$rc" -eq 1 ] && grep -qF "$needle" "$d.out"; then
+    echo "mutation=$id red ($alert: $(grep -F "$needle" "$d.out" | head -1 | sed 's/^ *//'))"
     red=$((red + 1))
   else
-    echo "mutation=$id NOT-DETECTED (promtool test rules exit $rc, no 'alertname: $alert, time:' line)"
+    echo "mutation=$id NOT-DETECTED (promtool test rules exit $rc, no '$needle' line)"
     fail=1
   fi
 done <"$rows"

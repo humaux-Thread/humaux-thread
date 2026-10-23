@@ -1,0 +1,60 @@
+# §46.1 migration manifest. Card M02-8: OAuth Authorization Server persistence. Four new control tables
+# (oauth_client_registrations, oauth_authorization_codes, oauth_grants, oauth_refresh_tokens) that no runtime role can touch
+# and nine owner SECURITY DEFINER doors (EXECUTE role_gateway only) as the whole read and write path. No existing table, grant
+# or row is read, rewritten or deleted (number 0268).
+
+migration_id = "0268_oauth_persistence"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless the parents exist and neither a table nor a door is already there.
+precheck = """
+select to_regclass('control.users') is not null
+   and to_regclass('control.tenants') is not null
+   and to_regclass('control.workspaces') is not null
+   and to_regclass('control.oauth_client_registrations') is null
+   and to_regclass('control.oauth_authorization_codes') is null
+   and to_regclass('control.oauth_grants') is null
+   and to_regclass('control.oauth_refresh_tokens') is null
+   and to_regprocedure('control.oauth_code_consume(bytea)') is null
+   and to_regprocedure('control.oauth_refresh_rotate(bytea,bytea,integer)') is null
+ as precheck_ok
+"""
+
+# Fails on: a table that is missing or not owner-owned; any ACL entry on a table for a non-owner grantee (PUBLIC included);
+# RLS not enabled and forced on the two tenant-scoped tables; a door that is not owner-owned SECURITY DEFINER with
+# search_path=pg_catalog; any EXECUTE on a door for a grantee other than the owner and role_gateway (PUBLIC included).
+postcheck = """
+with tbls(name) as (values
+  ('control.oauth_client_registrations'), ('control.oauth_authorization_codes'),
+  ('control.oauth_grants'), ('control.oauth_refresh_tokens')),
+doors(sig) as (values
+  ('control.oauth_client_register(text,text,text[],jsonb,timestamptz)'),
+  ('control.oauth_client_lookup(text)'),
+  ('control.oauth_code_issue(bytea,text,text,text,text,uuid,uuid,uuid,text[],integer)'),
+  ('control.oauth_code_consume(bytea)'),
+  ('control.oauth_grant_issue(uuid,uuid,uuid,text,text,text[],bytea,integer,integer)'),
+  ('control.oauth_grant_lookup(uuid)'),
+  ('control.oauth_grant_revoke(uuid,text)'),
+  ('control.oauth_refresh_family_revoke(uuid,text)'),
+  ('control.oauth_refresh_rotate(bytea,bytea,integer)'))
+select (select count(*) = 4 from tbls t join pg_class c on c.oid = to_regclass(t.name)
+         where pg_get_userbyid(c.relowner) = 'role_migration_owner')
+   and not exists (select 1 from tbls t join pg_class c on c.oid = to_regclass(t.name)
+                    cross join lateral aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+                    where a.grantee <> c.relowner)
+   and (select count(*) = 2 from pg_class c
+         where c.oid in (to_regclass('control.oauth_authorization_codes'), to_regclass('control.oauth_grants'))
+           and c.relrowsecurity and c.relforcerowsecurity)
+   and (select count(*) = 9 from doors d join pg_proc p on p.oid = to_regprocedure(d.sig)
+         where p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+           and 'search_path=pg_catalog' = any (coalesce(p.proconfig, array[]::text[])))
+   and not exists (select 1 from doors d join pg_proc p on p.oid = to_regprocedure(d.sig)
+                    cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                    where a.privilege_type = 'EXECUTE' and a.grantee <> p.proowner
+                      and (a.grantee = 0 or pg_get_userbyid(a.grantee) <> 'role_gateway'))
+   and (select count(*) = 9 from doors d where has_function_privilege('role_gateway', to_regprocedure(d.sig), 'EXECUTE'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: dropping the doors and the four tables is safe while nothing calls them, but a stored grant or refresh row means every connected client must sign in again, and a later migration must decide those rows first."
+backup_restore_requirement = "none: four new empty tables and nine functions; no existing row is read, copied, rewritten or deleted."

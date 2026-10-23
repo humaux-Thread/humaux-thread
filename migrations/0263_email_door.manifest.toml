@@ -1,0 +1,43 @@
+# §46.1 migration manifest. Card M02-4: the §74.6 email door. ops.email_outbox gains idempotency_key (UNIQUE) and priority;
+# the outbox state set and the delivery-event set gain SUBMISSION_UNKNOWN; the queue index is rebuilt on (priority,
+# created_at) and a sent_at index backs the per-minute send cap. Additive columns and a widened CHECK: no row is read,
+# rewritten or deleted, no table or grant is added (number 0263).
+
+migration_id = "0263_email_door"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless both tables and the two CHECKs this migration replaces exist, and the new columns are not already there.
+precheck = """
+select to_regclass('ops.email_outbox') is not null
+   and to_regclass('ops.email_delivery_events') is not null
+   and exists (select 1 from pg_constraint where conrelid = to_regclass('ops.email_outbox')
+                and conname = 'email_outbox_state_check')
+   and exists (select 1 from pg_constraint where conrelid = to_regclass('ops.email_delivery_events')
+                and conname = 'email_delivery_events_event_type_check')
+   and not exists (select 1 from pg_attribute where attrelid = to_regclass('ops.email_outbox')
+                    and attname in ('idempotency_key', 'priority') and not attisdropped)
+ as precheck_ok
+"""
+
+# Fails on: a missing column, the UNIQUE on idempotency_key or the priority CHECK; a state or event CHECK that does not
+# name SUBMISSION_UNKNOWN; the rebuilt queue index not keyed on (priority, created_at) or the sent_at index missing.
+postcheck = """
+select (select count(*) = 2 from pg_attribute where attrelid = to_regclass('ops.email_outbox')
+         and attname in ('idempotency_key', 'priority') and not attisdropped)
+   and exists (select 1 from pg_constraint where conrelid = to_regclass('ops.email_outbox')
+                and conname = 'email_outbox_idempotency_key_key' and contype = 'u')
+   and exists (select 1 from pg_constraint where conrelid = to_regclass('ops.email_outbox')
+                and conname = 'email_outbox_priority_check' and contype = 'c')
+   and exists (select 1 from pg_constraint where conrelid = to_regclass('ops.email_outbox')
+                and conname = 'email_outbox_state_check' and pg_get_constraintdef(oid) like '%SUBMISSION_UNKNOWN%')
+   and exists (select 1 from pg_constraint where conrelid = to_regclass('ops.email_delivery_events')
+                and conname = 'email_delivery_events_event_type_check'
+                and pg_get_constraintdef(oid) like '%SUBMISSION_UNKNOWN%')
+   and exists (select 1 from pg_indexes where schemaname = 'ops' and indexname = 'idx_email_outbox_queued'
+                and indexdef like '%(priority, created_at)%')
+   and exists (select 1 from pg_indexes where schemaname = 'ops' and indexname = 'idx_email_outbox_sent_at')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: a row already in SUBMISSION_UNKNOWN blocks narrowing the CHECKs back, so a later migration must first decide those rows (operator resolves each as SENT or FAILED) and only then re-create the narrower CHECK. Dropping idempotency_key re-opens duplicate sends on a replayed enqueue."
+backup_restore_requirement = "none: additive columns and a widened CHECK; no row is read, copied, rewritten or deleted."

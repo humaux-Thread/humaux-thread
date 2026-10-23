@@ -4,7 +4,8 @@
 //! Depends-on: crates=[async-trait, lettre]; services=[]; env=[]; modules=[adapters::email]
 //! Called-by: []
 //! Invariants: [configuration comes only from the SmtpConfig parameter, never from env; an SMTP refusal is
-//!   EmailError::Rejected and a transport failure is surfaced, never retried silently here]
+//!   EmailError::Rejected, a 4xx is Transport, any other failure is SubmissionUnknown; nothing is retried here;
+//!   the deterministic Message-ID is always set]
 //! Spec: none
 //!
 //! Built on
@@ -74,7 +75,11 @@ impl EmailProvider for SmtpEmailProvider {
             EmailError::Transport(format!("invalid from address {}: {e}", mail.from))
         })?;
 
-        let builder = Message::builder().to(to).from(from).subject(mail.subject);
+        let builder = Message::builder()
+            .to(to)
+            .from(from)
+            .subject(mail.subject)
+            .message_id(Some(mail.message_id));
         let message = match mail.body_html {
             Some(html) => builder
                 .multipart(MultiPart::alternative_plain_html(mail.body_text, html))
@@ -84,11 +89,20 @@ impl EmailProvider for SmtpEmailProvider {
                 .map_err(|e| EmailError::Rejected(format!("message build failed: {e}")))?,
         };
 
-        let response = self
-            .transport
-            .send(message)
-            .await
-            .map_err(|e| EmailError::Transport(e.to_string()))?;
+        let response = self.transport.send(message).await.map_err(|e| {
+            // M02 D10: only a definite SMTP reply is classified. A 5xx is a refusal and a 4xx means
+            // "not accepted", both safe to act on; any other failure (I/O, TLS, timeout) may have
+            // happened after DATA, so it is SubmissionUnknown and never auto-resent.
+            // ponytail: connect-phase failures land here too until X-M22-2 shows lettre can tell
+            // them apart; the cost is a login code the operator must re-issue, never a duplicate.
+            if e.is_permanent() {
+                EmailError::Rejected(e.to_string())
+            } else if e.is_transient() {
+                EmailError::Transport(e.to_string())
+            } else {
+                EmailError::SubmissionUnknown(e.to_string())
+            }
+        })?;
         if !response.is_positive() {
             return Err(EmailError::Rejected(format!(
                 "SMTP server rejected message: {:?}",

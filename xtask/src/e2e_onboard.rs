@@ -7,7 +7,7 @@
 //!   control.workspace_memberships, control.workspaces, ops.commit_seq_seq, ops.outbox, private.evidence_objects,
 //!   projection.family_activations, projection.private_memory_points, projection.stream_checkpoints]
 //!   w=[projection.stream_log, projection.tenant_placements] x=[control.ensure_user, control.issue_quota_window,
-//!   control.onboard_tenant], Qdrant(*), subprocess(cargo), subprocess(humaux-gateway),
+//!   control.onboard_tenant, control.publish_plan_version], Qdrant(*), subprocess(cargo), subprocess(humaux-gateway),
 //!   subprocess(humaux-maintenance), subprocess(id), subprocess(xtask), PostgreSQL(role_maintenance)];
 //!   env=[CARGO_TARGET_DIR, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
@@ -113,6 +113,14 @@ const PRIVATE_WORKER_DSN: &str = "PRIVATE_WORKER_PG_DSN";
 /// not already carry the key.
 const DASHSCOPE_KEY_FILE: &str = "/Volumes/data/humaux-thread/.env.local";
 const MINIMAX_KEY_FILE: &str = "/Volumes/data/viral-skill-eval/.env";
+/// The plan every tenant of this rehearsal is granted; the run publishes it as the database owner before onboarding.
+const E2E_PLAN_KEY: &str = "e2e_onboard_plan";
+
+/// Publishes [`E2E_PLAN_KEY`] version 1 through the owner door (§71.1); the window limit is the rehearsal's own.
+const E2E_PLAN_PUBLISH_SQL: &str = "SELECT control.publish_plan_version('e2e_onboard_plan', 1, 0, 'USD', 'month', \
+     '{\"mcp.billable_operations.per_period\": {\"limit\": 1000, \"period\": \"subscription_period\", \
+     \"charge_policy\": \"success_only\"}}'::jsonb, 16, '{}'::jsonb, true)";
+
 /// §19 frozen embedding lane (the rehearsal's values).
 const EMB_PROVIDER: &str = "dashscope";
 const EMB_MODEL: &str = "text-embedding-v4";
@@ -429,8 +437,10 @@ fn onboard_args(name: &str) -> Vec<String> {
         name,
         "--owner-email",
         &format!("owner-{name}@c28.invalid"),
-        "--plan-limit",
-        "1000",
+        "--plan",
+        E2E_PLAN_KEY,
+        "--plan-version",
+        "1",
         "--period-end",
         "2099-01-01T00:00:00Z",
         "--scopes",
@@ -539,7 +549,7 @@ fn provisioning_tenant(client: &mut Client, name: &str) -> Result<(Uuid, Uuid, U
         let row = txn
             .query_one(
                 "SELECT tenant_id, workspace_id FROM control.onboard_tenant($1, $2, 'default', \
-                 'default', 1000, now() - interval '1 second', now() + interval '1 day', $3, $4, \
+                 'default', 'e2e_onboard_plan', 1, now() - interval '1 second', now() + interval '1 day', $3, $4, \
                  1000000, 10000, ARRAY['private_memory','PRIVATE_MEMORY','v1'])",
                 &[&name, &user, &EMB_PROVIDER, &EMB_REGION],
             )
@@ -632,6 +642,15 @@ pub fn run(_args: &[String]) -> i32 {
         );
         return 1;
     };
+    // dep: PostgreSQL(owner) — the plan the rehearsal's tenants are granted, through the owner door
+    let published = owner.batch_execute(E2E_PLAN_PUBLISH_SQL);
+    if !report.step(
+        "plan_publish",
+        published.is_ok(),
+        format!("{E2E_PLAN_KEY} v1 published: {published:?}"),
+    ) {
+        return 1;
+    }
 
     // ---- 3. deploy-init + onboard tenant t1 (+ two more for n=3 wall clock) ------------------
     let out = run.run_maintenance(

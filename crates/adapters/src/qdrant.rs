@@ -1221,11 +1221,10 @@ impl PromotionState {
 /// the mechanical half of it (§6.2.1 domain default — this table has no
 /// `projection.tenant_placements` row in §6.2.2's per-table override matrix, so it falls
 /// through to the domain default: only `role_gateway` (read-only `R`) and
-/// `role_retrieval_worker` (`R+W`) can touch it at all). The Rust-side half — no second module
-/// in this workspace constructing an `UPDATE projection.tenant_placements` statement — is this
-/// module's job once the write path lands (blocked on the same missing HTTP client the module
-/// doc explains, since a placement write needs a live Qdrant `point_count`/collection read to
-/// be honest, not a value invented at insert time).
+/// `role_retrieval_worker` (`R+W`) can touch it at all). The Rust-side half is that the one
+/// `UPDATE` lives in `adapters::placement_repo::add_point_counters`, called by
+/// `adapters::private_projection_registry` in the transaction binding its point — the counters
+/// are the worker's own write ledger (§17.3, card M10-5), never a Qdrant read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantPlacementRow {
     pub tenant_id: TenantId,
