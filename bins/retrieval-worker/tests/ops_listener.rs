@@ -48,7 +48,7 @@ const FAMILIES: [&str; 4] = [
 fn free_addrs<const N: usize>() -> [SocketAddr; N] {
     let listeners: [TcpListener; N] =
         std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").expect("reserve a loopback port"));
-    let addrs =
+    let addrs: [SocketAddr; N] =
         std::array::from_fn(|i| listeners[i].local_addr().expect("reserve a loopback port"));
     drop(listeners);
     addrs
