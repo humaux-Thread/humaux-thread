@@ -43,11 +43,16 @@ runs:
         PROMTOOL_TARBALL_SHA256: ${{ inputs.promtool_tarball_sha256 }}
       run: |
         set -euo pipefail
+        test "$(uname -m)" = aarch64
         dl="$HOME/.humaux-promtool"
-        mkdir -p "$dl"
         tarball="$dl/prometheus-${PROMTOOL_VERSION}.linux-arm64.tar.gz"
+        # A miss downloads into RUNNER_TEMP and enters the cached path only after the sha256 check, so a failed
+        # download is never what the cache post-step saves. A hit is verified again below.
         if [ ! -f "$tarball" ]; then
-          curl --fail --location --silent --show-error --retry 3 "$PROMTOOL_TARBALL_URL" -o "$tarball"
+          curl --fail --location --silent --show-error --retry 3 "$PROMTOOL_TARBALL_URL" -o "$RUNNER_TEMP/promtool.tar.gz"
+          printf '%s  %s\n' "$PROMTOOL_TARBALL_SHA256" "$RUNNER_TEMP/promtool.tar.gz" | sha256sum --check --strict
+          mkdir -p "$dl"
+          mv "$RUNNER_TEMP/promtool.tar.gz" "$tarball"
         fi
         printf '%s  %s\n' "$PROMTOOL_TARBALL_SHA256" "$tarball" | sha256sum --check --strict
         dir="$RUNNER_TEMP/prometheus-${PROMTOOL_VERSION}"
