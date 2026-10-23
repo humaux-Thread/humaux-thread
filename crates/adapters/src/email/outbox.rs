@@ -315,10 +315,12 @@ async fn drain_one(
         return Ok(Drained::Suppressed);
     }
 
+    // ponytail: the code is scrubbed here, before the provider call; the M22-2 renderer must read
+    // it in the claim SELECT of this same txn, before this scrub.
     sqlx::query(
         "UPDATE ops.email_outbox \
          SET state = 'SUBMISSION_UNKNOWN', provider = $2, attempt = attempt + 1, \
-             last_error = $3, sent_at = now() \
+             last_error = $3, sent_at = now(), payload = payload - 'code' \
          WHERE outbox_id = $1",
     )
     .bind(outbox_id)
@@ -400,7 +402,8 @@ async fn settle(
     let last_error = s.last_error.as_deref();
     sqlx::query(
         "UPDATE ops.email_outbox \
-         SET state = $2, provider = $3, provider_message_id = $4, last_error = $5 \
+         SET state = $2, provider = $3, provider_message_id = $4, last_error = $5, \
+             payload = payload - 'code' \
          WHERE outbox_id = $1",
     )
     .bind(outbox_id)
