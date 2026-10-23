@@ -457,30 +457,43 @@ fn sourced_put_waits_on_identity_lock() {
             ))
         });
 
-        let waiting = |handle: &mut Handle| -> i64 {
-            handle
+        // (ungranted advisory requests on exactly this key, of which those the backend reports as `Lock/advisory`,
+        // and the wait events seen for diagnostics)
+        let waiting = |handle: &mut Handle| -> (i64, i64, String) {
+            let row = handle
                 .admin
                 .query_one(
-                    "SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid = a.pid \
-                      WHERE a.wait_event_type = 'Lock' AND a.wait_event = 'advisory' \
-                        AND l.locktype = 'advisory' AND NOT l.granted \
+                    "SELECT count(*), \
+                            count(*) FILTER (WHERE a.wait_event_type = 'Lock' AND a.wait_event = 'advisory'), \
+                            coalesce(string_agg(coalesce(a.wait_event_type, 'NULL') || '/' || coalesce(a.wait_event, 'NULL'), ','), '') \
+                       FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid \
+                      WHERE l.locktype = 'advisory' AND NOT l.granted \
                         AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended($1,0)",
                     &[&lock_text],
                 )
-                .expect("pg_stat_activity")
-                .get(0)
+                .expect("pg_locks / pg_stat_activity");
+            (row.get(0), row.get(1), row.get(2))
         };
-        let mut seen = 0;
+        let mut seen = (0, 0, String::new());
         for _ in 0..50 {
             seen = waiting(&mut handle);
-            if seen == 1 {
+            if seen.0 == 1 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        assert_eq!(seen, 1, "the put's backend waits on the advisory lock");
+        assert_eq!(
+            seen,
+            (1, 1, "Lock/advisory".to_string()),
+            "the put's backend is waiting on the identity's advisory lock (finished: {})",
+            putter.is_finished()
+        );
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(waiting(&mut handle), 1, "the put is still waiting");
+        assert_eq!(
+            waiting(&mut handle),
+            (1, 1, "Lock/advisory".to_string()),
+            "the put is still waiting"
+        );
         assert!(
             !putter.is_finished(),
             "the put has not completed while the lock is held"
