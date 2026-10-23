@@ -132,6 +132,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -258,6 +259,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -354,6 +356,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::public_evolve`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -1608,6 +1612,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -1673,6 +1678,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -1778,6 +1784,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::correct`
 
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -2092,6 +2100,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -2167,6 +2176,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -2268,6 +2278,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::retrieve`
 
+#### `application::signed_token`
+
 #### `application::supersede`
 
 #### `cache::bounded`
@@ -2345,6 +2357,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH`
 - env `HUMAUX_GATEWAY_ALLOWED_HOSTS`
 - env `HUMAUX_GATEWAY_ALLOWED_ORIGINS`
+- env `HUMAUX_GATEWAY_AUTH_HMAC_KEY`
+- env `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
 - env `HUMAUX_GATEWAY_BIND_ADDR`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED`
@@ -2742,6 +2757,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -2850,6 +2866,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -2988,6 +3005,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::correct`
 
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -3809,6 +3828,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -3874,6 +3894,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -3979,6 +4000,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::correct`
 
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -4418,6 +4441,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
+- writes `projection.tenant_placements`
 - service `PostgreSQL(any)`
 
 #### `adapters::postgres`
@@ -4503,6 +4527,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
+- reads `private.memory_text_v`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -4615,6 +4640,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::correct`
 
 #### `application::pin`
+
+#### `application::signed_token`
 
 #### `application::supersede`
 
@@ -9557,13 +9584,19 @@ executed by:
 ### `private.memory_text_v`
 read by:
 - process(cargo-xtask): `adapters::memory_repo`
+- process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_repo`
+- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::memory_repo`
+- process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::memory_repo`
+- process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::memory_repo`
+- process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::memory_repo`
+- process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
 
@@ -10555,6 +10588,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::projection_claim`
+- (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::tenant_placements_migration`
@@ -10565,9 +10599,15 @@ written by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::rebuild_cli`
+- process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-consolidation-worker): `adapters::placement_repo`
+- process(humaux-gateway): `adapters::placement_repo`
+- process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
+- process(humaux-private-worker): `adapters::placement_repo`
+- process(humaux-retrieval-worker): `adapters::placement_repo`
 
 executed by:
 
@@ -12320,6 +12360,7 @@ modules naming it:
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::retrieve`
 - `adapters::tests::auth_contract`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
@@ -12377,6 +12418,7 @@ modules naming it:
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
+- `adapters::tests::note_text_once`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
@@ -13276,13 +13318,16 @@ why: token/RNG source for auth, referral codes and supersede confirm tokens
 modules naming it:
 - `application::auth`
 - `application::referral`
+- `application::signed_token`
 - `application::supersede`
+- `tests`
 
 ### humaux-application → `hmac` (normal)
-why: verification-code HMAC
+why: verification-code HMAC and the signed-token MAC
 
 modules naming it:
 - `application::auth`
+- `application::signed_token`
 
 ### humaux-application → `sha2` (normal)
 why: token/handoff sha256 digests
@@ -13294,6 +13339,7 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::referral`
+- `application::signed_token`
 - `tests`
 
 ### humaux-application → `hex` (normal)
@@ -13305,6 +13351,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::referral`
+- `application::signed_token`
 - `tests`
 
 ### humaux-application → `serde` (normal)
