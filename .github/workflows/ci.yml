@@ -106,6 +106,10 @@ jobs:
       # REST port of the qdrant service above (tests default to 6333; stated here so
       # the service block and the tests cannot drift apart silently).
       HUMAUX_TEST_QDRANT_PORT: "6333"
+      # T-LANG-1: the one path the Compose render step below writes and `cargo xtask architecture-check` reads. Relative
+      # to the workspace root on both sides; a missing or extra render is a gate failure in this job, never a silent
+      # `not_applicable`.
+      HUMAUX_NO_PYTHON_COMPOSE_JSON: target/no-python-compose
 
     steps:
       # partitions.rs::registry_survives_a_logical_dump_and_restore execs pg_dump / pg_restore
@@ -137,20 +141,32 @@ jobs:
       # #162 / §57.1: the no-python gate judges the Compose model Compose itself resolves, not a hand-written YAML
       # subset. Anchors, `<<` merges, `extends`, flow style, quoted keys and every profile are resolved here by the
       # Compose CLI. `--profile '*'` keeps profiled services in the render (a future profile must not hide a service).
-      # `--no-interpolate` keeps ${...} expressions and reads no env file or secret; prod.yml is the one file with
-      # short-form `${...:?}` binds, which the runner's Compose v2.38.2 volume parser cannot read uninterpolated, so it
-      # is rendered exactly as the deploy-env step below already renders it (sizing + node example, secret-fixture
-      # paths only, no secret file read). The gate reads target/no-python-compose/<path>.json and names a file whose
-      # JSON is absent, so it is never a silent pass.
+      # `--no-interpolate` keeps ${...} expressions and reads no env file; prod.yml is the one file with short-form
+      # `${...:?}` binds, which the runner's Compose v2.38.2 volume parser cannot read uninterpolated, so it is rendered
+      # the way the deploy-env step below renders it (sizing + node.env.example). node.env.example points
+      # HUMAUX_SECRETS_DIR at deploy/env/secret-fixture, so Compose opens and inlines those placeholder env files; every
+      # value in them is empty, which is why no real secret is read — not because no secret file is opened. The gate
+      # reads $HUMAUX_NO_PYTHON_COMPOSE_JSON/<path>.json; with this job's HUMAUX_REQUIRE_DOCKER it fails naming a file
+      # whose JSON is absent or whose render the scan does not know, so the render and scan sets cannot drift and
+      # `not_applicable` never becomes a silent pass. The discovery rule here must equal is_compose_file in xtask.
       - name: render compose files for the no-python gate
         shell: bash
         run: |
           set -euo pipefail
           docker compose version
-          out="$PWD/target/no-python-compose"
+          out="$HUMAUX_NO_PYTHON_COMPOSE_JSON"
           rm -rf "$out"
-          find deploy/compose -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
+          find deploy -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
             while IFS= read -r -d '' f; do
+              case "$f" in
+                deploy/compose/*) ;;
+                *)
+                  case "${f##*/}" in
+                    compose*.yml|compose*.yaml|docker-compose*.yml|docker-compose*.yaml) ;;
+                    *) continue ;;
+                  esac
+                  ;;
+              esac
               mkdir -p "$out/$(dirname "$f")"
               if [ "$f" = deploy/compose/prod.yml ]; then
                 docker compose --env-file deploy/env/sizing-a5.env --env-file deploy/env/node.env.example \

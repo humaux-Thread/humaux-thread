@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[domain::affect, domain::confirm, domain::subject, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::subject, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §52.4
@@ -8793,15 +8793,24 @@ const NO_PYTHON_ALLOWED_PREFIXES: [&str; 5] = [
 /// `config/` are the system.
 const NO_PYTHON_SOURCE_ROOTS: [&str; 4] = ["crates", "bins", "migrations", "config"];
 
-/// Where the compose documents live (`deploy/compose/*.yml`): only files Compose itself can render. ci.yml's lint job
-/// renders exactly this set with `docker compose config --format json`, so anchors, `<<` merges, `extends`, flow style
-/// and quoted keys are resolved by Compose and never by a hand-written YAML subset (xtask takes no new dependency).
+/// Where Compose documents are discovered: every `.yml` / `.yaml` under `deploy/compose/`, plus a Compose-named file
+/// (`compose*.{yml,yaml}` or `docker-compose*.{yml,yaml}`) anywhere else under `deploy/`. That is the old scanner's
+/// `deploy/**` scope restricted to documents Compose itself can render; Prometheus / Qdrant YAML is not a Compose
+/// document and is not fed to the CLI. ci.yml's lint job renders exactly this set ([`is_compose_file`]), so anchors,
+/// `<<` merges, `extends`, flow style and quoted keys are resolved by Compose and never by a hand-written YAML subset
+/// (xtask takes no new dependency).
+const NO_PYTHON_COMPOSE_ROOT: &str = "deploy";
+
+/// The directory whose every `.yml` / `.yaml` is a Compose document (the node's deploy bundle).
 const NO_PYTHON_COMPOSE_DIR: &str = "deploy/compose";
 
-/// Where ci.yml's lint job writes each rendered compose document, at
-/// `<repo-relative path>.json` (`target/no-python-compose/deploy/compose/prod.yml.json`). Under `target/`, so a tree
-/// without the render has no JSON at all and the gate is `not_applicable`, naming each file (§57.1), never a silent
-/// pass.
+/// The env var ci.yml sets to the directory it renders each Compose document into, at `<repo-relative path>.json`. One
+/// name for producer and consumer, so the render step and this gate cannot drift; unset (a local run) it falls back to
+/// [`NO_PYTHON_COMPOSE_JSON_DIR`]. A relative value resolves against the workspace root, exactly as the shell step that
+/// writes it.
+const NO_PYTHON_COMPOSE_JSON_ENV: &str = "HUMAUX_NO_PYTHON_COMPOSE_JSON";
+
+/// The fallback render directory (`target/no-python-compose/deploy/compose/prod.yml.json`), under `target/`.
 const NO_PYTHON_COMPOSE_JSON_DIR: &str = "target/no-python-compose";
 
 /// Roots whose files are scanned for a Python shebang regardless of extension. Dockerfiles are scanned from the repo
@@ -8820,13 +8829,43 @@ fn no_python_allowed(path: &str) -> bool {
         .any(|prefix| path.starts_with(prefix))
 }
 
-/// `Dockerfile`, `Dockerfile-<suffix>`, `Dockerfile.<suffix>`, `<name>.dockerfile` or Buildah's `Containerfile`.
+/// `Dockerfile`, `Dockerfile.<suffix>`, `Dockerfile-<suffix>`, `<name>.Dockerfile`, `<name>.dockerfile`, Buildah's
+/// `Containerfile` or `Containerfile.<suffix>`. A `.md` suffix is documentation, not a build file, so it is not scanned.
 fn is_dockerfile_name(name: &str) -> bool {
-    name == "Dockerfile"
-        || name == "Containerfile"
-        || name.starts_with("Dockerfile-")
-        || name.starts_with("Dockerfile.")
-        || name.ends_with(".dockerfile")
+    !name.ends_with(".md")
+        && (name == "Dockerfile"
+            || name.starts_with("Dockerfile.")
+            || name.starts_with("Dockerfile-")
+            || name.ends_with(".Dockerfile")
+            || name.ends_with(".dockerfile")
+            || name == "Containerfile"
+            || name.starts_with("Containerfile."))
+}
+
+/// Whether a repo-relative `deploy/` path is a Compose document the gate judges and ci.yml renders. Every
+/// `deploy/compose/*.{yml,yaml}` is one; elsewhere under `deploy/` only a Compose-named file is.
+fn is_compose_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+        return false;
+    }
+    path.strip_prefix(NO_PYTHON_COMPOSE_DIR)
+        .is_some_and(|rest| rest.starts_with('/'))
+        || name.starts_with("compose")
+        || name.starts_with("docker-compose")
+}
+
+/// Every Compose document under [`NO_PYTHON_COMPOSE_ROOT`] (the [`walk_all_files`] set: no dot-directories, no
+/// `target`), sorted.
+fn walk_compose_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    walk_all_files(&root.join(NO_PYTHON_COMPOSE_ROOT), &mut files);
+    let mut out: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|path| is_compose_file(&display(root, path)))
+        .collect();
+    out.sort();
+    out
 }
 
 /// Every regular file under `dir`, skipping `target`/`node_modules` and every dot-directory: `.git`, but also a local
@@ -9108,18 +9147,49 @@ fn read_for_shebang(
     read
 }
 
+/// The render directory: [`NO_PYTHON_COMPOSE_JSON_ENV`] when the CI step set it (a relative value against the
+/// workspace root, as the shell step resolves it), otherwise [`NO_PYTHON_COMPOSE_JSON_DIR`].
+fn no_python_compose_json_dir(root: &Path) -> PathBuf {
+    match std::env::var(NO_PYTHON_COMPOSE_JSON_ENV) {
+        Ok(dir) if !dir.is_empty() => {
+            let dir = PathBuf::from(dir);
+            if dir.is_absolute() {
+                dir
+            } else {
+                root.join(dir)
+            }
+        }
+        _ => root.join(NO_PYTHON_COMPOSE_JSON_DIR),
+    }
+}
+
+/// Whether a missing render is a failure instead of `not_applicable`: CI declares the dependency
+/// (`GITHUB_ACTIONS=true`, or the `HUMAUX_REQUIRE_DOCKER=1` the lint job already sets), so a dropped render step or a
+/// path drift cannot turn the gate green (§57.1 第2条, T-LANG-1).
+fn no_python_render_required() -> bool {
+    std::env::var("GITHUB_ACTIONS").is_ok_and(|value| value == "true")
+        || std::env::var("HUMAUX_REQUIRE_DOCKER").is_ok_and(|value| value == "1")
+}
+
 /// T-LANG-1 / `no-python-in-system`: no `*.py` under `crates/` `bins/` `migrations/` `config/`; no `python` / `pip` in
-/// any `Dockerfile`, `Dockerfile-*`, `*.dockerfile` or `Containerfile` in the repo (dot-directories such as a nested
-/// `.worktrees/` are not walked); a compose service in every `deploy/compose/*.yml` rendered by Compose
-/// ([`NO_PYTHON_COMPOSE_JSON_DIR`]) fails on a Python image, `command:` or `entrypoint:` unless its own `profiles:` are
-/// rehearsal / test only; no Python shebang in `crates/`, `bins/` or `deploy/`. `not_applicable` when none of the
-/// scanned directories exists, or when a compose file has no rendered JSON, and it names the missing objects
-/// (§57.1 第2条).
+/// any `Dockerfile`, `Dockerfile-*`, `*.Dockerfile`, `*.dockerfile` or `Containerfile` in the repo (dot-directories
+/// such as a nested `.worktrees/` are not walked); a compose service in every Compose document under `deploy/`
+/// (discovered by [`is_compose_file`], rendered into [`NO_PYTHON_COMPOSE_JSON_ENV`]) fails on a Python image, `command:`
+/// or `entrypoint:` unless its own `profiles:` are rehearsal / test only; no Python shebang in `crates/`, `bins/` or
+/// `deploy/`. A missing render is `not_applicable` naming the file outside CI and a failure inside it, and a rendered
+/// file the scan does not know is a failure, so the render set and the scan set cannot drift. `not_applicable` when
+/// none of the scanned directories exists (§57.1 第2条).
 fn no_python_in_system(root: &Path) -> Verdict {
+    no_python_in_system_with(root, no_python_render_required())
+}
+
+/// [`no_python_in_system`] with the render requirement injected, so a scratch-tree test does not depend on the
+/// environment it runs in.
+fn no_python_in_system_with(root: &Path, require_render: bool) -> Verdict {
     let dirs: Vec<&str> = NO_PYTHON_SOURCE_ROOTS
         .iter()
         .copied()
-        .chain([NO_PYTHON_COMPOSE_DIR])
+        .chain([NO_PYTHON_COMPOSE_ROOT])
         .collect();
     if !dirs.iter().any(|dir| root.join(dir).is_dir()) {
         return Verdict::NotApplicable(dirs.join(", "));
@@ -9132,8 +9202,8 @@ fn no_python_in_system(root: &Path) -> Verdict {
     let mut docker_paths = Vec::new();
     walk_dockerfiles(root, &mut docker_paths);
     docker_paths.sort();
-    let mut compose_paths = walk_files(&root.join(NO_PYTHON_COMPOSE_DIR), &["yml", "yaml"]);
-    compose_paths.sort();
+    let compose_paths = walk_compose_files(root);
+    let json_dir = no_python_compose_json_dir(root);
     let mut shebang_paths = Vec::new();
     for dir in NO_PYTHON_SHEBANG_ROOTS {
         walk_all_files(&root.join(dir), &mut shebang_paths);
@@ -9141,14 +9211,32 @@ fn no_python_in_system(root: &Path) -> Verdict {
     let mut problems = Vec::new();
     let mut compose_files = Vec::new();
     let mut unrendered = Vec::new();
+    let mut scanned = Vec::new();
     for path in &compose_paths {
         let shown = display(root, path);
-        let json = root
-            .join(NO_PYTHON_COMPOSE_JSON_DIR)
-            .join(format!("{shown}.json"));
+        let json = json_dir.join(format!("{shown}.json"));
         match fs::read_to_string(&json) {
-            Ok(rendered) => compose_files.push((shown, rendered)),
-            Err(_) => unrendered.push(shown),
+            Ok(rendered) => compose_files.push((shown.clone(), rendered)),
+            Err(_) if require_render => problems.push(format!(
+                "{shown}: missing rendered compose config at {}; CI must render every scanned compose file (T-LANG-1)",
+                display(root, &json)
+            )),
+            Err(_) => unrendered.push(shown.clone()),
+        }
+        scanned.push(shown);
+    }
+    for json in walk_files(&json_dir, &["json"]) {
+        let Some(rendered) = display(&json_dir, &json)
+            .strip_suffix(".json")
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if require_render && !scanned.iter().any(|compose| compose == &rendered) {
+            problems.push(format!(
+                "{}.json: rendered compose config for no scanned compose file ({rendered}); the render set and the scan set must be identical (T-LANG-1)",
+                rendered
+            ));
         }
     }
     let dockerfiles = read_for_no_python(root, &docker_paths, &mut problems);
@@ -9607,7 +9695,7 @@ pub fn run(_args: &[String]) -> i32 {
             m24_7_global_db_completeness(&root),
         ),
         (
-            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in any Dockerfile, Dockerfile-*, *.dockerfile or Containerfile; a compose service in Compose's rendered deploy/compose/*.yml is limited to the rehearsal / test profiles; no Python shebang under crates, bins, deploy; CI, scripts, rehearsal and experiments may use Python)",
+            "T-LANG-1 / no-python-in-system (no *.py under crates, bins, migrations, config; no python in any Dockerfile, Dockerfile-*, *.Dockerfile, *.dockerfile or Containerfile; a compose service in every Compose document under deploy/ rendered by Compose is limited to the rehearsal / test profiles; a missing render fails in CI and is not_applicable elsewhere; the render set must equal the scan set; no Python shebang under crates, bins, deploy; CI, scripts, rehearsal and experiments may use Python)",
             no_python_in_system(&root),
         ),
         (
@@ -9673,12 +9761,13 @@ mod tests {
     }
 
     /// Without the lint job's render, every real compose file is named and nothing is judged: `not_applicable`, never a
-    /// pass (§57.1). An actual Python source / Dockerfile / shebang problem in the real tree would still be `fail`, so
-    /// this also asserts the real tree carries none of those.
+    /// pass (§57.1). The requirement is injected as false: this test runs in a job where CI does set the require flag,
+    /// and its subject is the non-CI three-state, not the environment. An actual Python source / Dockerfile / shebang
+    /// problem in the real tree would still be `fail`, so this also asserts the real tree carries none of those.
     #[test]
     fn no_python_gate_names_the_real_compose_json_it_needs() {
         assert_eq!(
-            no_python_in_system(&real_root()),
+            no_python_in_system_with(&real_root(), false),
             Verdict::NotApplicable(
                 "compose config JSON for deploy/compose/a5-load.yml, deploy/compose/backup.yml, deploy/compose/dev.yml, deploy/compose/drill.yml, deploy/compose/prod.yml".to_string()
             )
@@ -9731,6 +9820,7 @@ mod tests {
             "svc/img/Dockerfile",
             "svc/img/Dockerfile-dev",
             "svc/img/Dockerfile.release",
+            "svc/img/build.Dockerfile",
             "svc/img/build.dockerfile",
             "svc/img/Containerfile",
         ] {
@@ -9741,12 +9831,6 @@ mod tests {
             let red = no_python_problems(&[], &dirty, &[], &[]);
             assert_eq!(red.len(), 1, "{name}: {red:?}");
             assert!(red[0].starts_with(&format!("{name}:2:")), "{name}: {red:?}");
-        }
-        for name in ["svc/img/makefile", "svc/img/Dockerfilex"] {
-            assert!(
-                !is_dockerfile_name(name),
-                "{name} is not a product image file name"
-            );
         }
         let tooling = vec![(
             "scripts/Dockerfile".to_string(),
@@ -9768,7 +9852,7 @@ mod tests {
             "FROM debian\nRUN pip install x\n",
         )
         .unwrap();
-        let verdict = no_python_in_system(&dir);
+        let verdict = no_python_in_system_with(&dir, false);
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(
             verdict,
@@ -9777,6 +9861,33 @@ mod tests {
                     .to_string()
             ])
         );
+    }
+
+    /// The file-name filter itself, one exact expectation per documented form: `Dockerfile`, `Dockerfile.<suffix>`,
+    /// `Dockerfile-<suffix>`, `<name>.Dockerfile`, `<name>.dockerfile`, `Containerfile` and `Containerfile.<suffix>`.
+    /// `Dockerfile.md` is a doc, not a build file, so it is false. A name handed to [`no_python_problems`] bypasses this
+    /// filter, so this table is the only proof the walk's positives and negatives are the intended set.
+    #[test]
+    fn dockerfile_name_filter_covers_every_documented_form() {
+        let cases: [(&str, bool); 14] = [
+            ("Dockerfile", true),
+            ("Dockerfile.dev", true),
+            ("Dockerfile.release", true),
+            ("Dockerfile-", true),
+            ("Dockerfile-dev", true),
+            ("svc/build.Dockerfile", true),
+            ("build.Dockerfile", true),
+            ("svc/build.dockerfile", true),
+            ("Containerfile", true),
+            ("Containerfile.prod", true),
+            ("Dockerfile.md", false),
+            ("Dockerfilex", false),
+            ("notDockerfile.txt", false),
+            ("makefile", false),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(is_dockerfile_name(name), expected, "{name}");
+        }
     }
 
     /// #162: the anchor/`<<`-inherited image the line scanner lost is just `image` in Compose's own render, and the
@@ -9926,13 +10037,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(
-            no_python_in_system(&dir),
-            Verdict::NotApplicable("crates, bins, migrations, config, deploy/compose".to_string())
+            no_python_in_system_with(&dir, false),
+            Verdict::NotApplicable("crates, bins, migrations, config, deploy".to_string())
         );
         fs::create_dir_all(dir.join("crates/x")).unwrap();
-        assert_eq!(no_python_in_system(&dir), Verdict::Pass);
+        assert_eq!(no_python_in_system_with(&dir, false), Verdict::Pass);
         fs::write(dir.join("crates/x/foo.py"), "print(1)\n").unwrap();
-        let verdict = no_python_in_system(&dir);
+        let verdict = no_python_in_system_with(&dir, false);
         fs::remove_dir_all(&dir).unwrap();
         assert!(
             matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("crates/x/foo.py:")),
@@ -9940,8 +10051,8 @@ mod tests {
         );
     }
 
-    /// A compose file with no render is `not_applicable` naming it; the render ci.yml writes (its exact path) makes the
-    /// same tree pass, and a Python service in that render fails.
+    /// A compose file with no render is `not_applicable` naming it outside CI; the render ci.yml writes (its exact path)
+    /// makes the same tree pass, and a Python service in that render fails.
     #[test]
     fn no_python_gate_names_a_compose_file_without_a_render() {
         let dir = std::env::temp_dir().join(format!("np-compose-json-{}", std::process::id()));
@@ -9950,7 +10061,7 @@ mod tests {
         fs::create_dir_all(dir.join("deploy/compose")).unwrap();
         fs::write(dir.join("deploy/compose/prod.yml"), "services: {}\n").unwrap();
         assert_eq!(
-            no_python_in_system(&dir),
+            no_python_in_system_with(&dir, false),
             Verdict::NotApplicable("compose config JSON for deploy/compose/prod.yml".to_string())
         );
 
@@ -9961,18 +10072,101 @@ mod tests {
             np_json(r#""gateway":{"image":"humaux-gateway:1"}"#),
         )
         .unwrap();
-        assert_eq!(no_python_in_system(&dir), Verdict::Pass);
+        assert_eq!(no_python_in_system_with(&dir, false), Verdict::Pass);
 
         fs::write(
             rendered.join("prod.yml.json"),
             np_json(r#""sink":{"image":"python:3.13-slim"}"#),
         )
         .unwrap();
-        let verdict = no_python_in_system(&dir);
+        let verdict = no_python_in_system_with(&dir, false);
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(
             verdict,
             Verdict::Fail(vec![np_image_problem("sink", "python:3.13-slim")])
+        );
+    }
+
+    /// The discovery rule restores the old `deploy/**` scope for Compose files: every file of `deploy/compose/` plus a
+    /// Compose-named file elsewhere; a Prometheus / Qdrant / rules YAML is not a Compose document.
+    #[test]
+    fn compose_discovery_covers_every_compose_document_under_deploy() {
+        let cases: [(&str, bool); 12] = [
+            ("deploy/compose/a5-load.yml", true),
+            ("deploy/compose/prod.yml", true),
+            ("deploy/compose/backup.yaml", true),
+            ("deploy/compose/nested/dev.yml", true),
+            ("deploy/other/compose.yml", true),
+            ("deploy/other/compose.override.yaml", true),
+            ("deploy/other/docker-compose.yml", true),
+            ("deploy/rehearsal/compose.yml", true),
+            ("deploy/prometheus/prometheus.yml", false),
+            ("deploy/prometheus/alerts.rules.yml", false),
+            ("deploy/qdrant/config.yaml", false),
+            ("deploy/compose/README.md", false),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(is_compose_file(path), expected, "{path}");
+        }
+    }
+
+    /// r3 shape: with the require flag set (CI), every scanned Compose document must have its render; a missing one is
+    /// a failure naming the file, never `not_applicable`. A rendered file the scan does not know is a failure too, so
+    /// the render set and the scan set cannot drift.
+    #[test]
+    fn no_python_gate_requires_every_render_in_ci() {
+        let dir = std::env::temp_dir().join(format!("np-compose-required-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("crates/x")).unwrap();
+        fs::create_dir_all(dir.join("deploy/compose")).unwrap();
+        fs::create_dir_all(dir.join("deploy/other")).unwrap();
+        fs::write(dir.join("deploy/compose/prod.yml"), "services: {}\n").unwrap();
+        fs::write(
+            dir.join("deploy/other/compose.override.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        let rendered = dir.join("target/no-python-compose/deploy");
+        fs::create_dir_all(rendered.join("compose")).unwrap();
+        fs::create_dir_all(rendered.join("other")).unwrap();
+        fs::write(
+            rendered.join("compose/prod.yml.json"),
+            np_json(r#""gateway":{"image":"humaux-gateway:1"}"#),
+        )
+        .unwrap();
+        fs::write(
+            rendered.join("other/compose.override.yml.json"),
+            np_json(r#""sink":{"image":"alpine:3"}"#),
+        )
+        .unwrap();
+        assert_eq!(no_python_in_system_with(&dir, true), Verdict::Pass);
+
+        fs::remove_file(rendered.join("compose/prod.yml.json")).unwrap();
+        assert_eq!(
+            no_python_in_system_with(&dir, true),
+            Verdict::Fail(vec![
+                "deploy/compose/prod.yml: missing rendered compose config at target/no-python-compose/deploy/compose/prod.yml.json; CI must render every scanned compose file (T-LANG-1)".to_string(),
+            ])
+        );
+        fs::write(
+            rendered.join("compose/prod.yml.json"),
+            np_json(r#""gateway":{"image":"humaux-gateway:1"}"#),
+        )
+        .unwrap();
+        assert_eq!(no_python_in_system_with(&dir, true), Verdict::Pass);
+
+        fs::write(
+            rendered.join("compose/stale.yml.json"),
+            np_json(r#""sink":{"image":"alpine:3"}"#),
+        )
+        .unwrap();
+        let drifted = no_python_in_system_with(&dir, true);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            drifted,
+            Verdict::Fail(vec![
+                "deploy/compose/stale.yml.json: rendered compose config for no scanned compose file (deploy/compose/stale.yml); the render set and the scan set must be identical (T-LANG-1)".to_string()
+            ])
         );
     }
 
@@ -9989,7 +10183,7 @@ mod tests {
             "FROM debian\nRUN pip install x\n",
         )
         .unwrap();
-        let verdict = no_python_in_system(&dir);
+        let verdict = no_python_in_system_with(&dir, false);
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(verdict, Verdict::Pass);
     }
@@ -10022,7 +10216,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("bins/gateway")).unwrap();
         fs::write(dir.join("bins/gateway/run"), "#!/usr/bin/env python3\n").unwrap();
-        let verdict = no_python_in_system(&dir);
+        let verdict = no_python_in_system_with(&dir, false);
         fs::remove_dir_all(&dir).unwrap();
         assert!(
             matches!(&verdict, Verdict::Fail(p) if p.len() == 1 && p[0].starts_with("bins/gateway/run:1:")),
