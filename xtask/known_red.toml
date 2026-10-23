@@ -44,11 +44,6 @@ owner = "M19"
 reason = "no verifier registered in crates/testkit/src/dod.rs; tombstone/purge has no production caller yet (card 43)"
 
 [[dod]]
-id = "DOD-013"
-owner = "M08"
-reason = "no verifier registered in crates/testkit/src/dod.rs; adapters/tests/retrieve_read_your_writes.rs exists"
-
-[[dod]]
 id = "DOD-014"
 owner = "M13"
 reason = "no verifier registered in crates/testkit/src/dod.rs; adapters/tests/projection_lag.rs exists (ADR-0057)"
