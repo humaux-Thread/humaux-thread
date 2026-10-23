@@ -507,43 +507,77 @@ pub fn session_cookie_attributes(same_site: SameSitePolicy) -> String {
     format!("Secure; HttpOnly; SameSite={}; Path=/", same_site.as_str())
 }
 
-/// Double-submit CSRF cookie name. Unlike [`SESSION_COOKIE_NAME`] this cookie is NOT
-/// `HttpOnly` — the client script must read it to echo it back in [`CSRF_HEADER_NAME`] on
-/// every state-changing request (§73.6: "SameSite 只是 defense in depth", this pair is the
-/// actual enforcement). Carries the `__Host-` prefix for the same reason the session cookie
-/// does: without it, any sibling subdomain (or anything that can write a cookie for the
-/// parent domain — an unrelated subdomain takeover/XSS, or a plain-HTTP write since nothing
-/// else forces this cookie `Secure`) can overwrite it in the victim's browser and forge the
-/// matching pair — `verify_csrf_token` only compares cookie against header, nothing binds
-/// either to the session. `__Host-` only requires `Secure; Path=/;` no `Domain` — the
-/// cookie stays JS-readable, the double-submit echo still works.
-pub const CSRF_COOKIE_NAME: &str = "__Host-humaux_csrf";
+/// §73.6 / M02 D6: request header carrying the session-bound CSRF token. It is a header only, never a cookie: the
+/// value is `application::session::csrf_token` of the caller's own session, so a token cannot be replayed onto
+/// another session.
 pub const CSRF_HEADER_NAME: &str = "x-humaux-csrf-token";
 
-/// §73.6 fixed CSRF-cookie attribute string. Deliberately no `HttpOnly` (see
-/// [`CSRF_COOKIE_NAME`]); `SameSite` is caller judgement same as
-/// [`session_cookie_attributes`].
-pub fn csrf_cookie_attributes(same_site: SameSitePolicy) -> String {
-    format!("Secure; SameSite={}; Path=/", same_site.as_str())
+/// `Sec-Fetch-Site` request header (Fetch Metadata), set by the browser and not forgeable from page script.
+pub const FETCH_SITE_HEADER_NAME: &str = "sec-fetch-site";
+
+/// The `Sec-Fetch-Site` value of one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchSite {
+    /// `same-origin`.
+    SameOrigin,
+    /// `same-site`: another origin of the same registrable domain (a sibling subdomain).
+    SameSite,
+    /// `cross-site`.
+    CrossSite,
+    /// `none`: user-initiated navigation (typed URL, bookmark).
+    None,
+    /// The header is absent: not a Fetch-Metadata browser.
+    Absent,
+    /// A value outside the spec'd set.
+    Unrecognised,
 }
 
-/// Hex-encodes caller-supplied random bytes into a CSRF token. The RNG call itself stays with
-/// the caller (I/O-adjacent, out of scope for a pure function); 32 bytes is the caller's
-/// contract, not enforced here beyond the fixed-size input type.
-pub fn generate_csrf_token(random_bytes: &[u8; 32]) -> String {
-    random_bytes.iter().map(|b| format!("{b:02x}")).collect()
+impl FetchSite {
+    /// Parses the raw header value; `None` is an absent header.
+    pub fn from_header(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            None => Self::Absent,
+            Some("same-origin") => Self::SameOrigin,
+            Some("same-site") => Self::SameSite,
+            Some("cross-site") => Self::CrossSite,
+            Some("none") => Self::None,
+            Some(_) => Self::Unrecognised,
+        }
+    }
 }
 
-/// Constant-time double-submit compare: the cookie value and the header value must be equal
-/// and non-empty. Length is checked first (safe to leak — token length is fixed and public,
-/// §73.6 is about the token *value*, not its length), the byte comparison itself never
-/// short-circuits so its timing does not depend on how many leading bytes matched.
-pub fn verify_csrf_token(cookie_value: &str, header_value: &str) -> bool {
-    if cookie_value.is_empty() || cookie_value.len() != header_value.len() {
+/// RFC 9110 §9.2.1 safe methods are never CSRF-checked; every other method (and any unknown one) is state-changing.
+pub fn method_is_state_changing(method: &str) -> bool {
+    !["GET", "HEAD", "OPTIONS", "TRACE"]
+        .iter()
+        .any(|safe| method.eq_ignore_ascii_case(safe))
+}
+
+/// §73.6 / M02 D6 CSRF decision for one request. A state-changing method passes only when BOTH hold:
+/// (a) `Sec-Fetch-Site` is `same-origin` or `none` (an absent header fails closed, `same-site` is refused: a sibling
+/// subdomain is not this origin), and (b) `header_value` equals `expected`, the token minted for THIS session
+/// (`application::session::csrf_token`), compared without an early exit. A safe method always passes.
+pub fn verify_csrf(
+    method: &str,
+    site: FetchSite,
+    header_value: Option<&str>,
+    expected: &str,
+) -> bool {
+    if !method_is_state_changing(method) {
+        return true;
+    }
+    if !matches!(site, FetchSite::SameOrigin | FetchSite::None) {
         return false;
     }
+    let Some(presented) = header_value else {
+        return false;
+    };
+    if expected.is_empty() || presented.len() != expected.len() {
+        return false;
+    }
+    // Length is public (fixed-size HMAC hex); the bytes never short-circuit.
     let mut diff = 0u8;
-    for (a, b) in cookie_value.bytes().zip(header_value.bytes()) {
+    for (a, b) in presented.bytes().zip(expected.bytes()) {
         diff |= a ^ b;
     }
     diff == 0
@@ -1066,42 +1100,75 @@ mod tests {
         assert!(attrs.contains("SameSite=Strict"));
     }
 
-    /// 注错红转绿 (§73.6 major): an unprefixed CSRF cookie is forgeable by cookie injection
-    /// (sibling subdomain, or a plain-HTTP write) since `verify_csrf_token` only checks
-    /// cookie==header with no binding to the session — `__Host-` is what stops that.
+    const EXPECTED: &str = "a1b2c3";
+
     #[test]
-    fn csrf_cookie_name_has_host_prefix() {
-        assert!(CSRF_COOKIE_NAME.starts_with("__Host-"));
+    fn csrf_header_must_equal_the_expected_token_on_a_state_changing_method() {
+        let site = FetchSite::SameOrigin;
+        assert!(verify_csrf("POST", site, Some(EXPECTED), EXPECTED));
+        assert!(!verify_csrf("POST", site, Some("a1b2c4"), EXPECTED));
+        assert!(!verify_csrf("POST", site, Some("a1b2"), EXPECTED));
+        assert!(!verify_csrf("POST", site, None, EXPECTED));
+        assert!(!verify_csrf("POST", site, Some(""), ""));
+    }
+
+    /// 注错红转绿 (§73.6): the site gate is independent of the token; a correct token on a cross-site, same-site,
+    /// header-less or unrecognised request is still refused, `none` (user navigation) passes.
+    #[test]
+    fn fetch_site_gates_state_changing_methods() {
+        for site in [
+            FetchSite::CrossSite,
+            FetchSite::SameSite,
+            FetchSite::Absent,
+            FetchSite::Unrecognised,
+        ] {
+            assert!(
+                !verify_csrf("DELETE", site, Some(EXPECTED), EXPECTED),
+                "{site:?}"
+            );
+        }
+        assert!(verify_csrf(
+            "PUT",
+            FetchSite::None,
+            Some(EXPECTED),
+            EXPECTED
+        ));
     }
 
     #[test]
-    fn csrf_cookie_attributes_are_secure_not_httponly() {
-        let attrs = csrf_cookie_attributes(SameSitePolicy::Strict);
-        assert!(attrs.contains("Secure"));
-        assert!(attrs.contains("Path=/"));
-        assert!(attrs.contains("SameSite=Strict"));
-        assert!(!attrs.contains("HttpOnly"));
+    fn safe_methods_skip_the_csrf_check() {
+        for method in ["GET", "head", "OPTIONS", "TRACE"] {
+            assert!(!method_is_state_changing(method), "{method}");
+            assert!(verify_csrf(method, FetchSite::CrossSite, None, EXPECTED));
+        }
+        for method in ["POST", "PUT", "PATCH", "DELETE", "BREW"] {
+            assert!(method_is_state_changing(method), "{method}");
+        }
     }
 
     #[test]
-    fn csrf_token_round_trips() {
-        let bytes = [7u8; 32];
-        let token = generate_csrf_token(&bytes);
-        assert!(verify_csrf_token(&token, &token));
-    }
-
-    /// 注错红转绿: a missing/empty CSRF token must fail closed, not vacuously succeed on an
-    /// empty/empty comparison.
-    #[test]
-    fn empty_csrf_tokens_are_rejected() {
-        assert!(!verify_csrf_token("", ""));
-        assert!(!verify_csrf_token("abc", ""));
-    }
-
-    #[test]
-    fn mismatched_csrf_tokens_are_rejected() {
-        let a = generate_csrf_token(&[1u8; 32]);
-        let b = generate_csrf_token(&[2u8; 32]);
-        assert!(!verify_csrf_token(&a, &b));
+    fn fetch_site_header_parses_the_spec_set_exactly() {
+        let parsed: Vec<FetchSite> = [
+            Some("same-origin"),
+            Some("same-site"),
+            Some("cross-site"),
+            Some("none"),
+            None,
+            Some("Same-Origin"),
+        ]
+        .into_iter()
+        .map(FetchSite::from_header)
+        .collect();
+        assert_eq!(
+            parsed,
+            vec![
+                FetchSite::SameOrigin,
+                FetchSite::SameSite,
+                FetchSite::CrossSite,
+                FetchSite::None,
+                FetchSite::Absent,
+                FetchSite::Unrecognised,
+            ]
+        );
     }
 }
