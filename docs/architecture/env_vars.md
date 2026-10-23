@@ -1168,6 +1168,51 @@ modules:
 - `gateway::tests::mcp_gateway`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_GATEWAY_AUTH_HMAC_KEY`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
+
+### `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
+
 ### `HUMAUX_GATEWAY_B`
 - witness: literal
 - registry: raw
