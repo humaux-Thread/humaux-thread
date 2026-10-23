@@ -7,7 +7,7 @@
 //!   control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.onboard_tenant,
 //!   control.onboard_workspace, control.revoke_api_key, control.set_workspace_membership, ops.requeue_dead_distill,
 //!   projection.activate_empty_family, projection.ensure_tenant_placement], Qdrant(*)]; env=[];
-//!   modules=[adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, application::auth, domain::audit,
+//!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, application::auth, domain::audit,
 //!   domain::identity, domain::ids, domain::ticket_family, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, projection::serving]
 //! Called-by: [adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild,
@@ -64,6 +64,7 @@ use sqlx::Row;
 use sqlx::types::time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::entitlement_repo::{self, RecomputeOutcome};
 use crate::membership_repo::{self, AdminAction, MembershipRepoError, MembershipRequest};
 use crate::postgres::MaintenanceDbPool;
 use crate::qdrant::{
@@ -557,7 +558,10 @@ pub struct TenantRequest<'a> {
     pub owner_email: &'a str,
     pub workspace_name: &'a str,
     pub reasoning_domain_name: &'a str,
-    pub plan_limit: i64,
+    /// The plan the tenant is granted (`control.plans.plan_key`); the version must be offered (§71.1).
+    pub plan_key: &'a str,
+    /// The pinned version of [`Self::plan_key`].
+    pub plan_version: i32,
     pub period_start: OffsetDateTime,
     pub period_end: OffsetDateTime,
     pub provider_id: &'a str,
@@ -597,13 +601,14 @@ pub async fn onboard_tenant(
 
     let tenant = sqlx::query(
         "SELECT tenant_id, workspace_id, reasoning_domain_id, created \
-           FROM control.onboard_tenant($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+           FROM control.onboard_tenant($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(request.name)
     .bind(owner_user_id)
     .bind(request.workspace_name)
     .bind(request.reasoning_domain_name)
-    .bind(request.plan_limit)
+    .bind(request.plan_key)
+    .bind(request.plan_version)
     .bind(request.period_start)
     .bind(request.period_end)
     .bind(request.provider_id)
@@ -619,6 +624,19 @@ pub async fn onboard_tenant(
     let created: bool = tenant.try_get("created")?;
     // Already installed by the definer; restated so every later statement's scope is explicit.
     set_tenant(&mut txn, tenant_id).await?;
+    if created {
+        // §76: onboarding writes the PLAN grants; the snapshot is the projector's, in this same transaction.
+        let outcome = entitlement_repo::recompute_in_txn(&mut txn, TenantId(tenant_id))
+            .await
+            .map_err(|code| {
+                ProvisioningError::Refused(format!("entitlement recompute: {code:?}"))
+            })?;
+        if outcome != RecomputeOutcome::Written {
+            return Err(ProvisioningError::Refused(format!(
+                "entitlement recompute wrote no snapshot: {outcome:?}"
+            )));
+        }
+    }
 
     let mut placements = Vec::new();
     for family in TicketFamily::ALL {

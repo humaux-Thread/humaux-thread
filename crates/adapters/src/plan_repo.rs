@@ -2,7 +2,7 @@
 //!   catalogue through the one owner door `control.publish_plan_version` (module design M04 D2, card M04-1).
 //! Depends-on: crates=[humaux-domain, serde, serde_json, sqlx]; services=[PostgreSQL(role_maintenance)
 //!   x=[control.publish_plan_version]]; env=[]; modules=[adapters::postgres, domain::error, domain::plan]
-//! Called-by: [tests]
+//! Called-by: [tests, xtask::e2e_seed]
 //! Invariants: [the door is the only writer of the catalogue and only role_maintenance can call it; the whole file is
 //!   seeded in one transaction, so a refused version leaves none behind; a version that is already stored is verified
 //!   against the file, never rewritten: any difference in price, currency, interval, template or lease block is

@@ -1,8 +1,10 @@
 //! `application::entitlement` — H5: §76 Entitlement Projector（Phase 2 wave 实现；判据出处见 spec 家章）.
-//! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::ids]
-//! Called-by: []
-//! Invariants: []
-//! Spec: §76
+//! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::ids, domain::plan]
+//! Called-by: [adapters::entitlement_repo, tests]
+//! Invariants: [project is the only constructor of EntitlementSnapshot; carry_period_boundaries only rewrites the
+//!   per-period window boundaries of a snapshot project built, from the snapshot it replaces, so a recompute never moves
+//!   a window the renewal door has already advanced (§72.2.1)]
+//! Spec: §76; §72.2.1
 //!
 //! §76 pipeline: Payment/Subscription feeds Base Entitlements, joined by Promotion/Coupon,
 //! Referral Reward, and Manual Admin Grant; all four flow into one Effective Entitlement
@@ -24,6 +26,7 @@
 //! rule this comment freezes is for whichever adapter crate wires persistence later.
 
 use humaux_domain::ids::TenantId;
+use humaux_domain::plan::EntitlementKey;
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
@@ -38,6 +41,21 @@ pub enum GrantSource {
 }
 
 impl GrantSource {
+    /// Every source, in the order of `control.entitlement_grants`' `source` CHECK; reconciled with it by contract test
+    /// (§78.2).
+    pub const ALL: [GrantSource; 5] = [
+        Self::Plan,
+        Self::Promotion,
+        Self::Referral,
+        Self::Admin,
+        Self::Trial,
+    ];
+
+    /// The source a `control.entitlement_grants.source` value spells, or `None` for any other text.
+    pub fn from_db_str(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|source| source.as_str() == text)
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Plan => "PLAN",
@@ -140,6 +158,30 @@ pub fn project(
         source_grant_ids,
         computed_at: now,
     }
+}
+
+/// §72.2.1: a quota window the renewal door has already issued keeps its boundaries. The per-period entitlement of
+/// `snapshot` takes `period_start` / `period_end` from `current` (the stored `effective` object) when both exist there,
+/// replacing whatever the winning grant carried: grants name the plan's terms, the snapshot row names where the
+/// subscription period stands. A snapshot without a per-period entitlement, or no stored snapshot, is returned as is.
+///
+/// ponytail: the stored boundaries always win, so a recompute cannot move a period; a subscription start that must move
+/// it needs its own door, not a second path through here.
+pub fn carry_period_boundaries(
+    mut snapshot: EntitlementSnapshot,
+    current: Option<&serde_json::Value>,
+) -> EntitlementSnapshot {
+    let key = EntitlementKey::PerPeriod.wire();
+    let stored = current
+        .and_then(|effective| effective.get(key))
+        .and_then(|policy| Some((policy.get("period_start")?, policy.get("period_end")?)));
+    if let (Some((start, end)), Some(serde_json::Value::Object(policy))) =
+        (stored, snapshot.effective.get_mut(key))
+    {
+        policy.insert("period_start".to_owned(), start.clone());
+        policy.insert("period_end".to_owned(), end.clone());
+    }
+    snapshot
 }
 
 #[cfg(test)]
@@ -323,5 +365,73 @@ mod tests {
         };
         let snapshot = project(tenant, &[g1, g2], now);
         assert_eq!(snapshot.source_grant_ids, expected_ids);
+    }
+
+    #[test]
+    fn grant_source_spellings_round_trip_and_unknown_text_is_refused() {
+        let spelled: Vec<&str> = GrantSource::ALL.map(GrantSource::as_str).to_vec();
+        assert_eq!(spelled, ["PLAN", "PROMOTION", "REFERRAL", "ADMIN", "TRIAL"]);
+        for source in GrantSource::ALL {
+            assert_eq!(GrantSource::from_db_str(source.as_str()), Some(source));
+        }
+        assert_eq!(GrantSource::from_db_str("plan"), None);
+        assert_eq!(GrantSource::from_db_str("COUPON"), None);
+    }
+
+    fn per_period_snapshot(tenant: TenantId, policy: serde_json::Value) -> EntitlementSnapshot {
+        EntitlementSnapshot {
+            tenant_id: tenant,
+            effective: BTreeMap::from([
+                (EntitlementKey::PerPeriod.wire().to_owned(), policy),
+                (EntitlementKey::Byok.wire().to_owned(), json!(true)),
+            ]),
+            source_grant_ids: Vec::new(),
+            computed_at: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn stored_period_boundaries_replace_the_grants_and_nothing_else_moves() {
+        let tenant = TenantId::new();
+        let from_grant = json!({
+            "limit": 7, "period": "subscription_period", "charge_policy": "success_only",
+            "period_start": "2030-01-01T00:00:00.000Z", "period_end": "2030-02-01T00:00:00.000Z",
+        });
+        let stored = json!({ "mcp.billable_operations.per_period": {
+            "limit": 1, "period_start": "2030-03-01T00:00:00.000Z", "period_end": "2030-04-01T00:00:00.000Z",
+        }});
+        let carried =
+            carry_period_boundaries(per_period_snapshot(tenant, from_grant), Some(&stored));
+        assert_eq!(
+            carried.effective,
+            BTreeMap::from([
+                (
+                    "mcp.billable_operations.per_period".to_owned(),
+                    json!({
+                        "limit": 7, "period": "subscription_period", "charge_policy": "success_only",
+                        "period_start": "2030-03-01T00:00:00.000Z", "period_end": "2030-04-01T00:00:00.000Z",
+                    })
+                ),
+                ("feature.byok".to_owned(), json!(true)),
+            ])
+        );
+    }
+
+    #[test]
+    fn without_a_stored_period_the_snapshot_is_returned_unchanged() {
+        let tenant = TenantId::new();
+        let policy = json!({ "limit": 7, "period_start": "a", "period_end": "b" });
+        let snapshot = per_period_snapshot(tenant, policy);
+        assert_eq!(carry_period_boundaries(snapshot.clone(), None), snapshot);
+        let half = json!({ "mcp.billable_operations.per_period": { "period_start": "x" } });
+        assert_eq!(
+            carry_period_boundaries(snapshot.clone(), Some(&half)),
+            snapshot
+        );
+        let other_key = json!({ "feature.byok": true });
+        assert_eq!(
+            carry_period_boundaries(snapshot.clone(), Some(&other_key)),
+            snapshot
+        );
     }
 }
