@@ -3311,6 +3311,15 @@ const R3_PRIVATE_WORKER_FUNCTIONS: &[(&str, &[&str])] = &[
         "control.login_challenge_settle(uuid,boolean)",
         &["role_gateway"],
     ),
+    // 0270 (M02-6): the console session's only write path onto control.sessions — role_gateway alone, owner SECURITY
+    // DEFINER, search_path=pg_catalog.
+    (
+        "control.session_issue(uuid,bytea,integer)",
+        &["role_gateway"],
+    ),
+    ("control.session_lookup(bytea)", &["role_gateway"]),
+    ("control.session_touch(uuid,integer)", &["role_gateway"]),
+    ("control.session_revoke(uuid)", &["role_gateway"]),
 ];
 
 fn check_r3_health_resolver_contract(
