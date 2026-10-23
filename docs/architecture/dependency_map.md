@@ -11817,6 +11817,9 @@ executed by:
 ### `fs(statvfs of the DR paths)`
 - `maintenance::serve`
 
+### `subprocess(bash)`
+- `xtask::tests::experiment_workflow`
+
 ### `subprocess(cargo)`
 - `fail-closed-macro::tests::compile_fail`
 - `xtask::architecture_check`
@@ -17347,6 +17350,15 @@ db-bound (default run): no
 services (computed):
 
 default run:
+
+### `xtask/tests/experiment_workflow.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
+- subprocess
 
 ### `xtask/tests/version.rs`
 db-bound (default run): no
