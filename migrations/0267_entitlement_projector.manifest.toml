@@ -1,0 +1,61 @@
+# §46.1 migration manifest. Card M04-2: the entitlement projector's persistence. control.entitlement_grants leaves the
+# control-domain default (no non-owner role reads or writes the raw grants, §76); two owner doors serve the projector —
+# control.entitlement_grants_for_projection (read one tenant's grants) and control.write_entitlement_snapshot (store the
+# projection, idempotent); control.onboard_tenant is replaced by a version that takes a plan version (p_plan_key,
+# p_plan_version instead of p_plan_limit) and writes PLAN grants, not a snapshot. Each function: owner
+# role_migration_owner, SECURITY DEFINER, search_path pg_catalog, PUBLIC has no EXECUTE, role_maintenance the only
+# non-owner EXECUTE. No table is created. §46 forward-fix (EXPAND_CONTRACT, number 0267).
+
+migration_id = "0267_entitlement_projector"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database that already has either new door or the new onboarding signature, one that lacks the old onboarding
+# door being replaced, the grants and snapshot tables, the plan catalogue the new onboarding reads, or the two roles the
+# ownership and the grants name.
+precheck = """
+select to_regprocedure('control.entitlement_grants_for_projection(uuid)') is null
+   and to_regprocedure('control.write_entitlement_snapshot(uuid,jsonb,uuid[],timestamptz)') is null
+   and to_regprocedure('control.onboard_tenant(text,uuid,text,text,text,integer,timestamptz,timestamptz,text,text,bigint,bigint,text[])') is null
+   and to_regprocedure('control.onboard_tenant(text,uuid,text,text,bigint,timestamptz,timestamptz,text,text,bigint,bigint,text[])') is not null
+   and to_regclass('control.entitlement_grants') is not null
+   and to_regclass('control.entitlement_snapshots') is not null
+   and to_regclass('control.plan_versions') is not null
+   and to_regclass('control.plans') is not null
+   and exists (select 1 from pg_roles where rolname = 'role_migration_owner')
+   and exists (select 1 from pg_roles where rolname = 'role_maintenance')
+ as precheck_ok
+"""
+
+# Fails on: any of the three functions not owner-owned, not a definer, without the pinned search_path, executable by PUBLIC
+# or by any login role but role_maintenance; the old onboarding signature still present; any login role or PUBLIC holding
+# any table-level or column-level privilege on control.entitlement_grants.
+postcheck = """
+with login_role(r) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'),
+  ('role_public_worker'), ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin')),
+fns as (select p.* from pg_proc p where p.oid in (
+  to_regprocedure('control.entitlement_grants_for_projection(uuid)'),
+  to_regprocedure('control.write_entitlement_snapshot(uuid,jsonb,uuid[],timestamptz)'),
+  to_regprocedure('control.onboard_tenant(text,uuid,text,text,text,integer,timestamptz,timestamptz,text,text,bigint,bigint,text[])')))
+select (select count(*) = 3 from fns f
+         where pg_get_userbyid(f.proowner) = 'role_migration_owner' and f.prosecdef
+           and 'search_path=pg_catalog' = any(coalesce(f.proconfig, '{}'))
+           and not exists (select 1 from aclexplode(coalesce(f.proacl, acldefault('f', f.proowner))) x
+                            where x.grantee = 0 and x.privilege_type = 'EXECUTE'))
+ and not exists (select 1 from fns f cross join login_role l
+                  where has_function_privilege(l.r, f.oid, 'EXECUTE') <> (l.r = 'role_maintenance'))
+ and to_regprocedure('control.onboard_tenant(text,uuid,text,text,bigint,timestamptz,timestamptz,text,text,bigint,bigint,text[])') is null
+ and not exists (select 1 from login_role l
+                  where has_any_column_privilege(l.r, 'control.entitlement_grants', 'SELECT')
+                     or has_any_column_privilege(l.r, 'control.entitlement_grants', 'INSERT')
+                     or has_any_column_privilege(l.r, 'control.entitlement_grants', 'UPDATE')
+                     or has_any_column_privilege(l.r, 'control.entitlement_grants', 'REFERENCES')
+                     or has_table_privilege(l.r, 'control.entitlement_grants', 'DELETE')
+                     or has_table_privilege(l.r, 'control.entitlement_grants', 'TRUNCATE'))
+ and not exists (select 1 from aclexplode(coalesce(
+                   (select c.relacl from pg_class c where c.oid = to_regclass('control.entitlement_grants')),
+                   '{}'::aclitem[])) x where x.grantee = 0)
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: the old onboarding signature and 0033's default grants are not restored. To retire the projector, DROP FUNCTION control.write_entitlement_snapshot(uuid,jsonb,uuid[],timestamptz) and control.entitlement_grants_for_projection(uuid); control.onboard_tenant keeps writing PLAN grants, which stay valid input for any later projector."
+backup_restore_requirement = "none: three new functions, one replaced function and a REVOKE; no row is read, copied, rewritten or deleted."
