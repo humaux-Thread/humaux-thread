@@ -88,3 +88,35 @@ the whole transaction back (G-M06-7).
     at `evidence_sources.rs:381` with `left: [1, 1, 1, 0], right: [1, 1, 1, 1]`. Run 39912676269 (same mutation): the
     existing `outbox_batch_remember::m09_1_ticket_door_*` failed at `outbox_batch_remember.rs:830` with `left: 0, right: 1`.
   - Green: the PR's CI on the unmutated branch.
+
+## Amendment 2026-10-23 — dedupe, `SOURCE_VERSION_CONFLICT` and the receipt trigger (card M06-1b, migration 0265)
+
+Status stays Accepted. Nothing above is reversed; this records what D3 deferred to 1b.
+
+- **Where the dedupe lives.** `operation_receipt::remember_sourced_atomically` is the one entry that holds a receipt, so
+  the dedupe is there, not in `remember_sourced_in_txn` (which keeps the UNIQUE as its backstop, G-M06-7 unchanged).
+  Order in the receipt transaction: receipt lookup (a committed key replays as before) → classification
+  (`classify_sourced_command`; a refusal is `INVALID_INPUT` even for a would-be hit) → blocking
+  `pg_advisory_xact_lock` on `(tenant, owner user, source kind, object-key digest, version)` through the same
+  `hashtextextended(text, 0)` helper as the receipt key (the receipt key keeps its `pg_try_` form) → one read of
+  `evidence_sources` joined to the Evidence's live `EVIDENCE_ACCEPTED` ticket.
+- **Three outcomes.** Unused: the Evidence and identity row are written (`Dedupe::New`). Same bytes (`payload_sha256`
+  equal): no Evidence, ticket or outbox row; the call still reserves and consumes its own BMO unit, writes its own audit
+  rows and a NEW receipt pointing at the existing Evidence, and answers through the same readable-Evidence and token
+  rules as a replay (`Dedupe::Existing`). Different bytes: the adapter returns `CONFLICT` with
+  `ConflictReason::SOURCE_VERSION_CONFLICT` (`SourcedPutError`); the gateway renders it through the existing `ErrorCode`
+  path once M06-2 exposes the sourced entry on the wire (1301, a new `13xx` ingest partition of the §52 D-B
+  sub-reasons; `ErrorCode` stays at 18); nothing is written, the stored bytes are untouched and the operation key stays
+  unused. There is no `ON CONFLICT DO UPDATE` anywhere on this path, and `role_gateway` holds no UPDATE or DELETE on
+  `evidence_sources`.
+- **Migration 0265.** `CREATE OR REPLACE FUNCTION control.check_operation_receipt()` keeps the 0114 predicate and adds one
+  `OR`: an `evidence_sources` row for NEW's evidence with `owner_user_id = NEW.user_id` in the same tenant. Owner, EXECUTE
+  revocation and the trigger binding are untouched; no table is rewritten and no grant is added. Without it a second agent's
+  dedupe-hit receipt (the Evidence names the first agent) and every Email, Chat and Calendar receipt (`ExternalContent`) is
+  refused by the trigger with `23514`.
+- **Limits (`ponytail:`).** A dedupe hit must repeat the stored ticket's stream scope, because the receipt row repeats the
+  Evidence's own `stream_log` coordinates; another scope is `CONFLICT`. A task run, project or note cannot ride on a sourced
+  put (`INVALID_INPUT`). A replay of a dedupe-hit key reports `Dedupe::New` (`replayed` is its answer).
+- **Gates.** G-M06-1 `two_agents_one_message` and G-M06-2 `same_key_new_bytes_conflicts` in
+  `crates/adapters/tests/evidence_sources_dedupe.rs` (it needs the receipt fixture, so it is not in
+  `evidence_sources.rs`). Red records: see the PR body of M06-1b.

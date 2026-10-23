@@ -148,7 +148,7 @@ pub const CONCEPT_PAIRS: [ConceptPair; 2] = [
 /// `reason` field the gateway surfaces in `structuredContent {code:"CONFLICT", reason:<u16>,
 /// reason_label:<SCREAMING_SNAKE>}`. It is NOT a 19th `ErrorCode` variant — the ALL/as_str
 /// gate (§52.4 G52-2) is untouched. The u16 space is partitioned by leading digit: 10xx
-/// lifecycle restore, 11xx distill candidate, 12xx generic state.
+/// lifecycle restore, 11xx distill candidate, 12xx generic state, 13xx ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConflictReason(pub u16);
 
@@ -179,9 +179,12 @@ impl ConflictReason {
     /// §6.3 "last OWNER cannot silently leave": the mutation would leave the tenant with no
     /// `ACTIVE` `OWNER`.
     pub const LAST_OWNER: ConflictReason = ConflictReason(1204);
+    /// ADR-0098 D1: a source identity already holds an Evidence with different bytes; nothing was written and the
+    /// stored bytes are untouched (M06-1b).
+    pub const SOURCE_VERSION_CONFLICT: ConflictReason = ConflictReason(1301);
 
     /// Every defined reason, for table-driven lookups and the label mapping.
-    pub const ALL: [ConflictReason; 10] = [
+    pub const ALL: [ConflictReason; 11] = [
         Self::UNDO_WINDOW_EXPIRED,
         Self::TARGET_NOT_CURRENT,
         Self::ERASE_TERMINAL,
@@ -192,6 +195,7 @@ impl ConflictReason {
         Self::NOT_REVERSIBLE,
         Self::TRANSITION_NOT_ALLOWED,
         Self::LAST_OWNER,
+        Self::SOURCE_VERSION_CONFLICT,
     ];
 
     /// The raw numeric reason surfaced in `structuredContent.reason`.
@@ -213,6 +217,7 @@ impl ConflictReason {
             1202 => "NOT_REVERSIBLE",
             1203 => "TRANSITION_NOT_ALLOWED",
             1204 => "LAST_OWNER",
+            1301 => "SOURCE_VERSION_CONFLICT",
             _ => return None,
         })
     }
@@ -274,6 +279,12 @@ mod tests {
         assert_eq!(ConflictReason::CANDIDATE_EXPIRED.code(), 1102);
         assert_eq!(ConflictReason::ALREADY_IN_STATE.code(), 1201);
         assert_eq!(ConflictReason::NOT_REVERSIBLE.code(), 1202);
+        assert_eq!(ConflictReason::SOURCE_VERSION_CONFLICT.code(), 1301);
+        assert_eq!(
+            ConflictReason::SOURCE_VERSION_CONFLICT.label(),
+            Some("SOURCE_VERSION_CONFLICT")
+        );
+        assert_eq!(ConflictReason::ALL.len(), 11);
         let mut labels = std::collections::HashSet::new();
         let mut codes = std::collections::HashSet::new();
         for reason in ConflictReason::ALL {
