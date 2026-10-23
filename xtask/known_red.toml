@@ -289,9 +289,9 @@ reason = "due since Phase 4; no gate or test is tied to this name; M05 (trust do
 
 [[lint_allows]]
 lint = "too_many_lines"
-count = 211
+count = 212
 owner = "M01-6"
-reason = "pre-existing population measured 2026-10-23 on the merge of card/m01-6-nesting-ratchet with main b8818779 (211 attributes: single-line as well as multi-line and multi-lint forms such as #[allow(clippy::too_many_arguments, clippy::too_many_lines)]); the note's 160 was the 4af8822 count and main added one more on the way here; M01-6 adds no too_many_lines allow, the size budget shrinks in later cards"
+reason = "pre-existing population measured 2026-10-23 on the merge of card/m01-6-nesting-ratchet with main b8818779 (211 attributes: single-line as well as multi-line and multi-lint forms such as #[allow(clippy::too_many_arguments, clippy::too_many_lines)]); the note's 160 was the 4af8822 count and main added one more on the way here. The 212th is main 5a3a2bb6 (PR #258 M04-2 entitlement projector), crates/adapters/tests/entitlement_projector.rs:427, merged into this branch by 75528ae4; M01-6 itself adds no too_many_lines allow, the size budget shrinks in later cards"
 
 [[lint_allows]]
 lint = "excessive_nesting"
