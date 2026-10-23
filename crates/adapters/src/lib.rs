@@ -32,6 +32,7 @@ pub mod disclosure;
 pub mod distill_reasoner;
 pub mod distill_repo;
 pub mod email;
+pub mod entitlement_repo;
 pub mod evidence_repo;
 pub mod exact_census;
 pub mod forget_repo;
