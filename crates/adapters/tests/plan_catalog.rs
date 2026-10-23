@@ -175,6 +175,11 @@ fn sqlstate(error: &postgres::Error) -> Option<&str> {
     error.code().map(SqlState::code)
 }
 
+/// The server's message of a refused statement (`postgres::Error` displays only "db error").
+fn message(error: &postgres::Error) -> &str {
+    error.as_db_error().map_or("", |db| db.message())
+}
+
 /// The constraint a refused statement violated.
 fn violated(error: &postgres::Error) -> Option<&str> {
     error.as_db_error().and_then(|db| db.constraint())
@@ -328,10 +333,10 @@ fn assert_the_owner_cannot_rewrite_remove_or_retire_a_draft(
                 &[],
             )
             .expect_err(set);
-        assert_eq!(sqlstate(&error), Some(CHECK_VIOLATION), "{set}: {error}");
+        assert_eq!(sqlstate(&error), Some(CHECK_VIOLATION), "{set}: {error:?}");
         assert!(
-            error.to_string().contains("never changes"),
-            "{set}: {error}"
+            message(&error).contains("never changes"),
+            "{set}: {error:?}"
         );
     }
     let removal = h
@@ -342,7 +347,7 @@ fn assert_the_owner_cannot_rewrite_remove_or_retire_a_draft(
         )
         .expect_err("a version is never removed");
     assert_eq!(sqlstate(&removal), Some(CHECK_VIOLATION));
-    assert!(removal.to_string().contains("never removed"), "{removal}");
+    assert!(message(&removal).contains("never removed"), "{removal:?}");
     assert_eq!(h.versions(), baseline);
 
     let draft = h
@@ -352,7 +357,11 @@ fn assert_the_owner_cannot_rewrite_remove_or_retire_a_draft(
             &[],
         )
         .expect_err("a draft cannot be retired");
-    assert_eq!(violated(&draft), Some("plan_versions_lifecycle"), "{draft}");
+    assert_eq!(
+        violated(&draft),
+        Some("plan_versions_lifecycle"),
+        "{draft:?}"
+    );
 }
 
 /// Publishing is a repeat call with the flag set and happens once, the provider mapping moves in the same call, a
@@ -405,7 +414,7 @@ fn assert_publish_and_retire_move_once(h: &mut Handle, baseline: &[VersionRow]) 
         )
         .expect_err("retired_at is set once");
     assert_eq!(sqlstate(&again), Some(CHECK_VIOLATION));
-    assert!(again.to_string().contains("set once"), "{again}");
+    assert!(message(&again).contains("set once"), "{again:?}");
     assert_eq!(h.text_of("retired_at", 200), retired_at);
 }
 
@@ -478,7 +487,7 @@ fn the_template_key_set_is_closed() {
             assert_eq!(
                 violated(&error),
                 Some("plan_versions_template_keys_v1_check"),
-                "{template}: {error}"
+                "{template}: {error:?}"
             );
         }
         let mapping = insert_version(&mut h.admin, 200, &json!({}), &json!({ "staging": "x" }))
@@ -486,7 +495,7 @@ fn the_template_key_set_is_closed() {
         assert_eq!(
             violated(&mapping),
             Some("plan_versions_provider_modes_v1_check"),
-            "{mapping}"
+            "{mapping:?}"
         );
 
         let key_shape = h
@@ -499,7 +508,7 @@ fn the_template_key_set_is_closed() {
         assert_eq!(
             violated(&key_shape),
             Some("plans_plan_key_shape"),
-            "{key_shape}"
+            "{key_shape:?}"
         );
 
         let stored: i64 = h
