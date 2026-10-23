@@ -472,6 +472,58 @@ async fn move_placement_counters(
     Ok(())
 }
 
+/// ADR-0049: an identical registration of a RETIRED binding is a restore — the source is live again under the same
+/// identity (`memory.restore` flips status back without touching `updated_at`), so the binding comes back with it
+/// rather than staying retired behind an `AlreadyRegistered` nobody could resolve (card 24 rehearsal 2026-09-26:
+/// `restored_memory_is_servable_again = 0`). An already-live binding is a no-op.
+///
+/// §17.3: only a binding that actually came back is a new point; an already-live replay moves no counter, so one
+/// point is counted once.
+async fn revive_registered_binding(
+    txn: &mut Txn<'_>,
+    registration: &PrivateMemoryPointRegistration,
+    vector: Option<&StoredVector>,
+) -> Result<RegistrationOutcome, PrivateProjectionRegistryError> {
+    let revived = sqlx::query(
+        "UPDATE projection.private_memory_points \
+            SET projection_live = true, retired_at = NULL \
+          WHERE point_id = $1 AND NOT projection_live",
+    )
+    .bind(registration.point_id.0)
+    .execute(&mut **txn)
+    .await?
+    .rows_affected();
+    // ADR-0064 D-B backfill-on-touch: a binding registered before card 37 takes this vector's key.
+    if let Some(stored) = vector {
+        sqlx::query(
+            "UPDATE projection.private_memory_points \
+                SET fingerprint_sha256 = $2, input_sha256 = $3 \
+              WHERE point_id = $1 AND fingerprint_sha256 IS NULL",
+        )
+        .bind(registration.point_id.0)
+        .bind(&stored.fingerprint_sha256[..])
+        .bind(&stored.input_sha256[..])
+        .execute(&mut **txn)
+        .await?;
+    }
+    if revived == 1 {
+        let dimension = vector.and_then(|stored| i64::try_from(stored.vector.len()).ok());
+        move_placement_counters(
+            txn,
+            &registration.family,
+            &registration.embedding_version,
+            1,
+            dimension,
+        )
+        .await?;
+    }
+    Ok(if revived == 1 {
+        RegistrationOutcome::Revived
+    } else {
+        RegistrationOutcome::AlreadyRegistered
+    })
+}
+
 /// Registers one exact PG source binding without a stored vector (a legacy row, ADR-0064 D-G). The projection
 /// worker calls [`register_private_memory_point_with_vector`]; this form stays for callers that bind no vector.
 pub async fn register_private_memory_point(
@@ -568,51 +620,9 @@ pub async fn register_private_memory_point_with_vector(
 
     if let Some(existing) = point_binding_in_txn(&mut txn, registration.point_id).await? {
         if binding_matches(&existing, registration)? {
-            // ADR-0049: an identical registration of a RETIRED binding is a restore — the
-            // source is live again under the same identity (`memory.restore` flips status
-            // back without touching `updated_at`), so the binding comes back with it rather
-            // than staying retired behind an `AlreadyRegistered` nobody could resolve
-            // (card 24 rehearsal 2026-09-26: `restored_memory_is_servable_again = 0`).
-            let revived = sqlx::query(
-                "UPDATE projection.private_memory_points \
-                    SET projection_live = true, retired_at = NULL \
-                  WHERE point_id = $1 AND NOT projection_live",
-            )
-            .bind(registration.point_id.0)
-            .execute(&mut *txn)
-            .await?;
-            // ADR-0064 D-B backfill-on-touch: a binding registered before card 37 takes this vector's key.
-            if let (Some(fingerprint), Some(input)) = (fingerprint, input) {
-                sqlx::query(
-                    "UPDATE projection.private_memory_points \
-                        SET fingerprint_sha256 = $2, input_sha256 = $3 \
-                      WHERE point_id = $1 AND fingerprint_sha256 IS NULL",
-                )
-                .bind(registration.point_id.0)
-                .bind(fingerprint)
-                .bind(input)
-                .execute(&mut *txn)
-                .await?;
-            }
-            let revived_count = revived.rows_affected();
-            // §17.3: only a binding that actually came back is a new point; an already-live replay
-            // (`AlreadyRegistered`) moves no counter — one point is counted once.
-            if revived_count == 1 {
-                move_placement_counters(
-                    &mut txn,
-                    &registration.family,
-                    &registration.embedding_version,
-                    1,
-                    stored_dimension,
-                )
-                .await?;
-            }
+            let outcome = revive_registered_binding(&mut txn, registration, vector).await?;
             txn.commit().await?;
-            return Ok(if revived_count == 1 {
-                RegistrationOutcome::Revived
-            } else {
-                RegistrationOutcome::AlreadyRegistered
-            });
+            return Ok(outcome);
         }
         return Err(PrivateProjectionRegistryError::PointIdCollision);
     }
