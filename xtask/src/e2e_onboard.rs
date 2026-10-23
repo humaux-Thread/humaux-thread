@@ -7,7 +7,7 @@
 //!   control.workspace_memberships, control.workspaces, ops.commit_seq_seq, ops.outbox, private.evidence_objects,
 //!   projection.family_activations, projection.private_memory_points, projection.stream_checkpoints]
 //!   w=[projection.stream_log, projection.tenant_placements] x=[control.ensure_user, control.issue_quota_window,
-//!   control.onboard_tenant], Qdrant(*), subprocess(cargo), subprocess(humaux-gateway),
+//!   control.onboard_tenant, control.publish_plan_version], Qdrant(*), subprocess(cargo), subprocess(humaux-gateway),
 //!   subprocess(humaux-maintenance), subprocess(id), subprocess(xtask), PostgreSQL(role_maintenance)];
 //!   env=[CARGO_TARGET_DIR, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
@@ -113,7 +113,6 @@ const PRIVATE_WORKER_DSN: &str = "PRIVATE_WORKER_PG_DSN";
 /// not already carry the key.
 const DASHSCOPE_KEY_FILE: &str = "/Volumes/data/humaux-thread/.env.local";
 const MINIMAX_KEY_FILE: &str = "/Volumes/data/viral-skill-eval/.env";
-/// §19 frozen embedding lane (the rehearsal's values).
 /// The plan every tenant of this rehearsal is granted; the run publishes it as the database owner before onboarding.
 const E2E_PLAN_KEY: &str = "e2e_onboard_plan";
 
@@ -122,6 +121,7 @@ const E2E_PLAN_PUBLISH_SQL: &str = "SELECT control.publish_plan_version('e2e_onb
      '{\"mcp.billable_operations.per_period\": {\"limit\": 1000, \"period\": \"subscription_period\", \
      \"charge_policy\": \"success_only\"}}'::jsonb, 16, '{}'::jsonb, true)";
 
+/// §19 frozen embedding lane (the rehearsal's values).
 const EMB_PROVIDER: &str = "dashscope";
 const EMB_MODEL: &str = "text-embedding-v4";
 const EMB_REV: &str = "2026-08";

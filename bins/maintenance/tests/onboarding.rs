@@ -1,14 +1,14 @@
 //! `maintenance::tests::onboarding` — real-PostgreSQL / real-Qdrant tests of the `humaux-maintenance` binary
 //!   (ADR-0053).
 //! Depends-on: crates=[humaux-protocol, humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(owner)
-//!   r=[control.api_keys, control.audit_events, control.credential_pepper_state, control.entitlement_snapshots, control.memberships,
+//!   r=[control.api_keys, control.audit_events, control.credential_pepper_state, control.entitlement_grants, control.entitlement_snapshots, control.memberships,
 //!   control.private_reasoning_domains, control.quota_windows, control.retrieval_provider_admission_limits,
 //!   control.tenants, control.user_emails, control.users, control.workspace_memberships, ops.commit_seq_seq,
 //!   ops.schema_migrations,
 //!   projection.family_activations, projection.tenant_placements] w=[control.workspaces, ops.jobs, ops.outbox,
 //!   private.evidence_objects, projection.stream_checkpoints, projection.stream_log]
 //!   x=[control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.onboard_tenant,
-//!   control.onboard_workspace, control.revoke_api_key, projection.activate_empty_family,
+//!   control.onboard_workspace, control.publish_plan_version, control.revoke_api_key, projection.activate_empty_family,
 //!   projection.ensure_tenant_placement], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*),
 //!   subprocess(humaux-maintenance)];
 //!   env=[CARGO_BIN_EXE_humaux-maintenance, CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_CREDENTIAL_PEPPER_HEX,
@@ -538,17 +538,23 @@ fn onboard_tenant_creates_every_row_and_activates_verified_empty() {
     assert_eq!(per_period["period"], "subscription_period");
     assert_eq!(per_period["charge_policy"], "success_only");
     assert_eq!(per_period["period_end"], "2099-01-01T00:00:00.000Z");
-    assert!(per_period["period_start"].is_string(), "{per_period}");
-    let grants: i64 = f
+    let grant_values: Vec<Value> = f
         .db()
-        .query_one(
-            "SELECT count(*) FROM control.entitlement_grants \
+        .query(
+            "SELECT value::text FROM control.entitlement_grants \
               WHERE tenant_id = $1 AND source = 'PLAN' AND revoked_at IS NULL",
             &[&tenant],
         )
         .expect("grants")
-        .get(0);
-    assert_eq!(grants, 1);
+        .iter()
+        .map(|row| serde_json::from_str(&row.get::<_, String>(0)).expect("grant value is JSON"))
+        .collect();
+    assert_eq!(
+        grant_values,
+        [per_period.clone()],
+        "the snapshot is the one PLAN grant, verbatim"
+    );
+    assert!(per_period["period_start"].is_string(), "{per_period}");
 
     // The printed key authenticates against the stored §73.5 hash; the receipt has only the
     // fingerprint.

@@ -1,6 +1,6 @@
 //! `application::entitlement` — H5: §76 Entitlement Projector（Phase 2 wave 实现；判据出处见 spec 家章）.
 //! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::ids, domain::plan]
-//! Called-by: [adapters::entitlement_repo]
+//! Called-by: [adapters::entitlement_repo, tests]
 //! Invariants: [project is the only constructor of EntitlementSnapshot; carry_period_boundaries only rewrites the
 //!   per-period window boundaries of a snapshot project built, from the snapshot it replaces, so a recompute never moves
 //!   a window the renewal door has already advanced (§72.2.1)]

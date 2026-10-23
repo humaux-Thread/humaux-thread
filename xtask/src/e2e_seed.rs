@@ -631,11 +631,6 @@ struct Seeded {
     extra_workspaces: Vec<(Uuid, String)>,
 }
 
-/// The seed as a thin wrapper over `humaux_adapters::provisioning` — the same doors
-/// `humaux-maintenance` uses, no INSERT of its own: deploy tiers (1e9, never torn down), the
-/// tenant (random `e2e-seed-<uuid>` name, a throwaway `@e2e.invalid` owner), the quota window,
-/// the extra workspaces with their own keys, the collection and the VerifiedEmpty activation of
-/// every workspace (so the later `projection-serve` calls print "already serving").
 /// Publishes the seed's plan version 1 through the owner door (`plan_repo::seed`, as `role_maintenance`) and returns its
 /// plan key. The key carries the window limit, so a rerun with another `--limit` publishes another plan instead of
 /// conflicting with the pinned one (§71.1: a pinned version never changes).
@@ -665,6 +660,11 @@ pub(crate) async fn publish_seed_plan(
     Ok(plan_key)
 }
 
+/// The seed as a thin wrapper over `humaux_adapters::provisioning` — the same doors
+/// `humaux-maintenance` uses, no INSERT of its own: deploy tiers (1e9, never torn down), the
+/// tenant (random `e2e-seed-<uuid>` name, a throwaway `@e2e.invalid` owner), the quota window,
+/// the extra workspaces with their own keys, the collection and the VerifiedEmpty activation of
+/// every workspace (so the later `projection-serve` calls print "already serving").
 #[allow(clippy::too_many_lines)] // the seed's onboarding sequence, one step per library call
 async fn provision(
     maintenance: &MaintenanceDbPool,

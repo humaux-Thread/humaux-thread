@@ -1,6 +1,6 @@
 //! `adapters::entitlement_repo` — the persisted entitlement projector: reads a tenant's grants through the owner door,
 //!   runs `application::entitlement::project`, and stores the snapshot through the owner door (module design M04 D3, C2).
-//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, time, uuid];
+//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, uuid];
 //!   services=[PostgreSQL(role_maintenance) r=[control.entitlement_snapshots]
 //!   x=[control.entitlement_grants_for_projection, control.write_entitlement_snapshot]]; env=[];
 //!   modules=[adapters::postgres, application::entitlement, domain::error, domain::ids, domain::plan]

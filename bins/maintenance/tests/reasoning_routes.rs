@@ -5,7 +5,7 @@
 //!   control.reasoning_route_bindings, control.reasoning_route_candidates, control.reasoning_route_policies,
 //!   ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, ops.schema_migrations]
 //!   x=[control.ensure_admission_tier, control.ensure_user, control.onboard_tenant,
-//!   control.resolve_user_reasoning_admission], PostgreSQL(role_maintenance), subprocess(humaux-maintenance)];
+//!   control.publish_plan_version, control.resolve_user_reasoning_admission], PostgreSQL(role_maintenance), subprocess(humaux-maintenance)];
 //!   env=[CARGO_BIN_EXE_humaux-maintenance, CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN];
 //!   modules=[humaux-testkit]
 //! Called-by: [cargo-test]

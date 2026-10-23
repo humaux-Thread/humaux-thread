@@ -4,9 +4,10 @@
 //!   to the projector; no runtime role reads the raw grants (G-M04-13).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, tokio,
 //!   uuid]; services=[PostgreSQL(owner) w=[control.entitlement_grants, control.entitlement_snapshots, control.tenants]
-//!   x=[control.ensure_admission_tier, control.ensure_user, control.onboard_tenant], PostgreSQL(role_maintenance)];
+//!   x=[control.ensure_admission_tier, control.ensure_user, control.entitlement_grants_for_projection,
+//!   control.onboard_tenant, control.write_entitlement_snapshot], PostgreSQL(role_maintenance)];
 //!   env=[]; modules=[adapters::entitlement_repo, adapters::plan_repo, adapters::postgres,
-//!   adapters::tests::support::throwaway_db, application::entitlement, domain::ids, domain::plan, humaux-testkit]
+//!   adapters::tests::support::throwaway_db, application::entitlement, domain::error, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns its throwaway database humaux_thread_m04_ent_<pid>_<n>, created and migrated by the
 //!   fixture and dropped by its Drop even on panic; recompute runs as role_maintenance through entitlement_repo, the
@@ -315,6 +316,7 @@ fn no_runtime_role_reads_the_grants_and_the_doors_pin_the_tenant() {
                 "role_admin",
                 "role_maintenance",
             ] {
+                // dep: PostgreSQL(owner) — SET LOCAL ROLE to each runtime role, rolled back with the transaction
                 let mut txn = h.admin.transaction().expect("txn");
                 txn.batch_execute(&format!("SET LOCAL ROLE {role}"))
                     .expect("set role");
@@ -327,6 +329,7 @@ fn no_runtime_role_reads_the_grants_and_the_doors_pin_the_tenant() {
                 );
             }
             for role in ["role_gateway", "role_private_worker", "role_admin"] {
+                // dep: PostgreSQL(owner) — SET LOCAL ROLE to a role without EXECUTE, rolled back with the transaction
                 let mut txn = h.admin.transaction().expect("txn");
                 txn.batch_execute(&format!("SET LOCAL ROLE {role}"))
                     .expect("set role");
@@ -343,6 +346,7 @@ fn no_runtime_role_reads_the_grants_and_the_doors_pin_the_tenant() {
                 );
             }
             // role_maintenance holds the doors, but only for the tenant its GUC names.
+            // dep: PostgreSQL(owner) — SET LOCAL ROLE role_maintenance, rolled back with the transaction
             let mut txn = h.admin.transaction().expect("txn");
             txn.batch_execute("SET LOCAL ROLE role_maintenance")
                 .expect("set role");
@@ -363,6 +367,7 @@ fn no_runtime_role_reads_the_grants_and_the_doors_pin_the_tenant() {
                 "{error}"
             );
             drop(txn);
+            // dep: PostgreSQL(owner) — SET LOCAL ROLE role_maintenance, rolled back with the transaction
             let mut txn = h.admin.transaction().expect("txn");
             txn.batch_execute("SET LOCAL ROLE role_maintenance")
                 .expect("set role");
