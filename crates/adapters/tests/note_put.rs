@@ -1,7 +1,7 @@
 //! `adapters::tests::note_put` — ADR-0067 card 40a acceptance for `memory.note_put`'s storage path (G01-G10, G16, G17, G22,
 //!   the fault pair lives in G16 and the worker test d13), against a real PostgreSQL and an actual `role_gateway` login.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
-//!   services=[PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
+//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
+//!   services=[PostgreSQL(owner), PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
 //!   ops.distill_calls, ops.model_call_ledger, private.distill_candidates, private.events, private.evidence_objects,
 //!   private.identity_note_materializations, projection.stream_log] w=[ops.distill_tenant_scheduler, ops.jobs, ops.outbox,
 //!   private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::attribution_repo, adapters::note_repo, adapters::operation_receipt,
@@ -16,12 +16,12 @@
 //! Read-back is always from the database row, and the digest is recomputed by PostgreSQL's `sha256` over the read-back text,
 //! so neither the write path nor the Rust digest function can vouch for itself.
 
-use std::sync::mpsc;
+use std::sync::{Arc, Barrier, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use humaux_adapters::{
     note_repo::NoteIntake,
-    operation_receipt::{self, AtomicRememberRequest, NOTE_OPERATION},
+    operation_receipt::{self, AtomicRememberRequest, Dedupe, NOTE_OPERATION},
     postgres::RuntimeDbPool,
     remember::RememberCommand,
 };
@@ -30,8 +30,8 @@ use humaux_domain::{
     authority::AuthorityClass,
     error::ErrorCode,
     evidence::{EvidenceOriginClass, payload_sha256},
-    identity::AuthorizationScope,
-    ids::{TenantId, WorkspaceId},
+    identity::{AuthorizationScope, BoundedSet, PrincipalId},
+    ids::{TenantId, UserId, WorkspaceId},
     memory::{MemoryType, facet_for},
     note::{DEFAULT_AUTHORITY, MAX_BODY_BYTES, NoteBody, NoteKind, note_title},
 };
@@ -46,6 +46,11 @@ mod operation_receipt_fixture;
 use operation_receipt_fixture::{DOMAIN, Fixture, Handle, PROJECTION_KIND, PROJECTION_VERSION};
 
 fn finished_audit(handle: &Handle, request_id: Uuid) -> AuditEvent {
+    finished_audit_for(handle, handle.principal_id, request_id)
+}
+
+/// The same audit row for a chosen principal: the M06-3 gate runs two agents under one owner user.
+fn finished_audit_for(handle: &Handle, principal: Uuid, request_id: Uuid) -> AuditEvent {
     let mut metadata = AuditMetadata::new();
     metadata
         .insert("role", "member")
@@ -55,7 +60,7 @@ fn finished_audit(handle: &Handle, request_id: Uuid) -> AuditEvent {
         ts: SystemTime::now(),
         tenant_id: TenantId(handle.tenant_id),
         actor_type: "user".into(),
-        actor_id: handle.principal_id.to_string(),
+        actor_id: principal.to_string(),
         action: McpAuditAction::McpRequestFinished.as_str().into(),
         resource_type: "mcp".into(),
         resource_id: NOTE_OPERATION.into(),
@@ -80,6 +85,33 @@ fn note_request(
     kind: NoteKind,
     requested: AuthorityClass,
 ) -> (AtomicRememberRequest, NoteIntake) {
+    note_request_for(
+        handle,
+        handle.principal_id,
+        "WORKSPACE_SHARED",
+        None,
+        key,
+        fingerprint,
+        body,
+        kind,
+        requested,
+    )
+}
+
+/// [`note_request`] for a chosen principal and visibility: M06-3's two agents share one owner user, and a `USER_PRIVATE`
+/// note's visibility user is that owner.
+#[allow(clippy::too_many_arguments)]
+fn note_request_for(
+    handle: &Handle,
+    principal: Uuid,
+    visibility_class: &str,
+    visibility_user_id: Option<Uuid>,
+    key: &str,
+    fingerprint: &str,
+    body: &str,
+    kind: NoteKind,
+    requested: AuthorityClass,
+) -> (AtomicRememberRequest, NoteIntake) {
     let raw = serde_json::to_vec(&serde_json::Value::String(body.to_owned())).expect("string");
     let request_id = Uuid::new_v4();
     let command = RememberCommand {
@@ -95,11 +127,15 @@ fn note_request(
         payload_sha256: payload_sha256(&raw),
         data_class: "INTERNAL".into(),
         origin_class: EvidenceOriginClass::AuthenticatedAgent,
-        origin_principal_id: Some(handle.principal_id),
+        origin_principal_id: Some(principal),
         origin_connector_id: None,
-        visibility_class: "WORKSPACE_SHARED".into(),
-        visibility_user_id: None,
-        visibility_workspace_id: Some(handle.workspace_id),
+        visibility_class: visibility_class.into(),
+        visibility_user_id,
+        visibility_workspace_id: if visibility_class == "WORKSPACE_SHARED" {
+            Some(handle.workspace_id)
+        } else {
+            None
+        },
         reasoning_domain_id: handle.reasoning_domain_id,
         occurred_at: Some(OffsetDateTime::now_utc()),
         event_kind: "MANUAL_NOTE".into(),
@@ -119,7 +155,7 @@ fn note_request(
             reservation_ttl: Duration::from_secs(30),
             replay_ttl: Duration::from_secs(60),
             command,
-            finished_audit: finished_audit(handle, request_id),
+            finished_audit: finished_audit_for(handle, principal, request_id),
         },
         NoteIntake {
             kind,
@@ -998,5 +1034,266 @@ fn g01_nothing_is_visible_or_stored_before_commit_and_the_memory_is_readable_aft
                 before.links + 1
             )
         );
+    });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// G-M06-5 / M06-3: exact-duplicate identity notes (ADR-0067 D3).
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The caller's own scope for one of the gate's two agents: same tenant/user/workspace, distinct principal.
+fn scope_for(handle: &Handle, principal: Uuid) -> AuthorizationScope {
+    AuthorizationScope::new(
+        TenantId(handle.tenant_id),
+        PrincipalId(principal),
+        Some(UserId(handle.user_id)),
+        BoundedSet::new([WorkspaceId(handle.workspace_id)]).expect("one workspace"),
+    )
+}
+
+/// Issue #251: the admin transaction that holds the advisory lock must roll back on a panic. Without this, `Handle::drop`
+/// runs its cleanup DELETEs inside the still-open transaction and the fixture tenant's rows are left behind.
+struct RollbackOnPanic {
+    client: Client,
+    open: bool,
+}
+
+impl RollbackOnPanic {
+    fn begin(mut client: Client) -> Self {
+        client
+            .batch_execute("BEGIN")
+            .expect("owner opens a transaction");
+        Self { client, open: true }
+    }
+
+    fn commit(mut self) {
+        self.client
+            .batch_execute("COMMIT")
+            .expect("owner releases the lock");
+        self.open = false;
+    }
+}
+
+impl Drop for RollbackOnPanic {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = self.client.batch_execute("ROLLBACK");
+        }
+    }
+}
+
+/// G-M06-5: two principals write the same body, kind and visibility concurrently → exactly 1 Memory and 2 receipts. Both
+/// calls return the one Memory; exactly one is [`Dedupe::Existing`]. The counts are read from the rows, not the results.
+#[test]
+fn identical_note_two_agents() {
+    run_db_fixture::<Fixture, _>("identical_note_two_agents", |mut handle| {
+        handle.seed_current_entitlement_and_window(10);
+        let body = "one decision, restated by two agents";
+        let kind = NoteKind::Decision;
+        let principals = [Uuid::new_v4(), Uuid::new_v4()];
+        let barrier = Arc::new(Barrier::new(principals.len()));
+        let before = residue(&mut handle);
+
+        let mut workers = Vec::new();
+        for (index, principal) in principals.into_iter().enumerate() {
+            // dep: PostgreSQL(role_gateway) — one real connection per concurrent agent.
+            let dsn = handle.gateway_application_dsn(&format!("note-dedupe-{index}"));
+            let auth = scope_for(&handle, principal);
+            let fingerprint = payload_sha256(format!("{index}:{body}").as_bytes()).to_hex();
+            let (request, note) = note_request_for(
+                &handle,
+                principal,
+                "USER_PRIVATE",
+                Some(handle.user_id),
+                &format!("dedupe-key-{index}"),
+                &fingerprint,
+                body,
+                kind,
+                DEFAULT_AUTHORITY,
+            );
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("runtime");
+                // dep: PostgreSQL(role_gateway) — the agent's own connection under test.
+                let pool = rt
+                    .block_on(RuntimeDbPool::connect(&dsn))
+                    .expect("agent connection");
+                barrier.wait();
+                rt.block_on(operation_receipt::note_put_atomically(
+                    &pool,
+                    &auth,
+                    request,
+                    note,
+                    &humaux_adapters::attribution_repo::AttributionLadder,
+                ))
+            }));
+        }
+        let outcomes: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker joined"))
+            .collect();
+
+        let after = residue(&mut handle);
+        assert_eq!(
+            after.memories - before.memories,
+            1,
+            "two identical notes are exactly one Memory"
+        );
+        assert_eq!(
+            after.receipts - before.receipts,
+            2,
+            "each agent's operation has its own receipt"
+        );
+        assert_eq!(
+            after.evidence - before.evidence,
+            1,
+            "only the first call wrote Evidence"
+        );
+        assert_eq!(
+            after.contracts - before.contracts,
+            1,
+            "only the first call wrote a contract"
+        );
+
+        let stored: Vec<operation_receipt::AtomicRememberResult> = outcomes
+            .into_iter()
+            .map(|outcome| outcome.expect("both notes commit"))
+            .collect();
+        assert_eq!(
+            stored[0].memory_id, stored[1].memory_id,
+            "both calls answer the same Memory"
+        );
+        assert!(
+            stored[0].memory_id.is_some(),
+            "a note call always names its Memory"
+        );
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|result| result.dedupe == Dedupe::Existing)
+                .count(),
+            1,
+            "exactly one call is the dedupe hit"
+        );
+    });
+}
+
+#[allow(clippy::too_many_lines)] // one causal chain: hold, poll, still held, release, commit
+/// M06-3 deterministic lock-wait test: an admin transaction holds the exact-duplicate key, the put must park on
+/// `Lock/advisory`, write nothing, and finish after the holder commits. The key text is built here independently of the
+/// production constructor, so adding a principal to that constructor makes this assertion see zero waiters.
+#[test]
+fn note_put_waits_on_exact_dedupe_lock() {
+    run_db_fixture::<Fixture, _>("note_put_waits_on_exact_dedupe_lock", |mut handle| {
+        handle.seed_current_entitlement_and_window(10);
+        let body = "held before the exact-duplicate lock";
+        let kind = NoteKind::Decision;
+        let principal = Uuid::new_v4();
+        let digest = hex::encode(NoteBody::new(body).expect("valid body").sha256());
+        // ADR-0067 D3: tenant, visibility scope, note_kind, body SHA-256; no principal.
+        let lock_text = format!(
+            "identity-note:{}:USER_PRIVATE:{}::{kind}:{digest}",
+            handle.tenant_id,
+            handle.user_id,
+            kind = kind.wire(),
+        );
+        // dep: PostgreSQL(role_gateway) — the put's own connection.
+        let dsn = handle.gateway_application_dsn("note-dedupe-lock");
+        let auth = scope_for(&handle, principal);
+        let (request, note) = note_request_for(
+            &handle,
+            principal,
+            "USER_PRIVATE",
+            Some(handle.user_id),
+            "dedupe-lock-key",
+            &"b".repeat(64),
+            body,
+            kind,
+            DEFAULT_AUTHORITY,
+        );
+        let before = residue(&mut handle);
+
+        // dep: PostgreSQL(owner) — a second session holds the same key; the guard rolls it back on any panic (#251).
+        let mut lock = RollbackOnPanic::begin(handle.owner_client().expect("owner connection"));
+        lock.client
+            .execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                &[&lock_text],
+            )
+            .expect("owner takes the exact-duplicate key");
+
+        let putter = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            // dep: PostgreSQL(role_gateway) — the put's own connection under test.
+            let pool = rt
+                .block_on(RuntimeDbPool::connect(&dsn))
+                .expect("agent connection");
+            rt.block_on(operation_receipt::note_put_atomically(
+                &pool,
+                &auth,
+                request,
+                note,
+                &humaux_adapters::attribution_repo::AttributionLadder,
+            ))
+        });
+
+        // (ungranted advisory requests on exactly this key, of which those the backend reports as `Lock/advisory`, and the
+        // wait events seen for diagnostics)
+        let waiting = |handle: &mut Handle| -> (i64, i64, String) {
+            let row = handle
+                .admin
+                .query_one(
+                    "SELECT count(*), \
+                            count(*) FILTER (WHERE a.wait_event_type = 'Lock' AND a.wait_event = 'advisory'), \
+                            coalesce(string_agg(coalesce(a.wait_event_type, 'NULL') || '/' || coalesce(a.wait_event, 'NULL'), ','), '') \
+                       FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid \
+                      WHERE l.locktype = 'advisory' AND NOT l.granted \
+                        AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended($1,0)",
+                    &[&lock_text],
+                )
+                .expect("pg_locks / pg_stat_activity");
+            (row.get(0), row.get(1), row.get(2))
+        };
+        let mut seen = (0, 0, String::new());
+        for _ in 0..50 {
+            seen = waiting(&mut handle);
+            if seen.0 == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(
+            seen,
+            (1, 1, "Lock/advisory".to_string()),
+            "the note put's backend is waiting on the exact-duplicate key (finished: {})",
+            putter.is_finished()
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            waiting(&mut handle),
+            (1, 1, "Lock/advisory".to_string()),
+            "the note put is still waiting"
+        );
+        assert!(
+            !putter.is_finished(),
+            "the note put has not completed while the lock is held"
+        );
+        assert_eq!(
+            residue(&mut handle),
+            before,
+            "a waiting note put has written nothing"
+        );
+
+        lock.commit();
+        let stored = putter
+            .join()
+            .expect("put thread")
+            .expect("the note commits after release");
+        assert_eq!(stored.dedupe, Dedupe::New);
+        let after = residue(&mut handle);
+        assert_eq!(after.memories - before.memories, 1);
+        assert_eq!(after.evidence - before.evidence, 1);
+        assert_eq!(after.contracts - before.contracts, 1);
+        assert_eq!(after.receipts - before.receipts, 1);
     });
 }
