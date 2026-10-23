@@ -1051,21 +1051,9 @@ fn seed_memory_linked_to_evidence(admin: &mut Client, tenant_id: Uuid, evidence_
     memory_id
 }
 
-/// §15.5 / §69 DOD-013: the token is the one `remember` returned (never a test-minted one),
-/// and the write must come back on that same call's next `recall_with_overlay` — as the exact
-/// `memory_id` linked to the Evidence, not merely a non-empty candidate list.
-// Single sequential e2e narrative: fixture setup -> remember -> Memory link -> recall. Same
-// shape and same allow as `g23_2_legal_deletion_contrast_stays_closed_across_four_lanes`.
-#[allow(clippy::too_many_lines)]
-#[test]
-fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
-    const TEST: &str = "g23_4_remember_token_recall_returns_the_exact_memory_id";
-    let Some((dsn, mut admin)) = skip_unless_both_reachable(TEST) else {
-        return;
-    };
-    token_keys::install();
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-
+/// Seeds the tenant, user, membership and private reasoning domain the DOD-013 write needs and
+/// returns the `TenantCleanup` guard that removes them even when an assertion fails.
+fn seed_ryw_fixture(dsn: &str, admin: &mut Client) -> (Uuid, Uuid, Uuid, TenantCleanup) {
     let tenant_id = Uuid::new_v4();
     admin
         .execute(
@@ -1073,7 +1061,7 @@ fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
             &[&tenant_id, &format!("g23_4 ryw {tenant_id}")],
         )
         .expect("insert tenant");
-    let mut cleanup = TenantCleanup::new(&dsn, tenant_id);
+    let mut cleanup = TenantCleanup::new(dsn, tenant_id);
 
     let user_id: Uuid = admin
         .query_one(
@@ -1099,6 +1087,60 @@ fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
         )
         .expect("insert private reasoning domain");
 
+    (tenant_id, user_id, reasoning_domain_id, cleanup)
+}
+
+/// The single `remember` command the DOD-013 case issues: one fixed scope/domain pair,
+/// `DirectUserInput` origin and TENANT_SHARED visibility under the caller's own user.
+fn ryw_remember_command(
+    tenant_id: Uuid,
+    user_id: Uuid,
+    reasoning_domain_id: Uuid,
+    content: &str,
+) -> RememberCommand {
+    RememberCommand {
+        tenant_id,
+        authorization_user_id: Some(user_id),
+        scope_kind: RYW_SCOPE_KIND.to_string(),
+        scope_id: tenant_id,
+        domain: RYW_DOMAIN.to_string(),
+        projection_kind: RYW_PROJECTION_KIND.to_string(),
+        projection_version: RYW_PROJECTION_VERSION.to_string(),
+        consistency_token_expires_at: OffsetDateTime::now_utc()
+            + std::time::Duration::from_secs(300),
+        batch_id: None,
+        payload_sha256: payload_sha256(content.as_bytes()),
+        data_class: "INTERNAL".to_string(),
+        origin_class: EvidenceOriginClass::DirectUserInput,
+        origin_principal_id: Some(user_id),
+        origin_connector_id: None,
+        visibility_class: "TENANT_SHARED".to_string(),
+        visibility_user_id: None,
+        visibility_workspace_id: None,
+        reasoning_domain_id,
+        occurred_at: None,
+        event_kind: "USER_MESSAGE".to_string(),
+        event_payload: serde_json::json!({ "content": content }),
+        subjects: humaux_domain::subject::SubjectDeclaration::default(),
+        affects: Vec::new(),
+        mood_half_life: None,
+    }
+}
+
+/// §15.5 / §69 DOD-013: the token is the one `remember` returned (never a test-minted one),
+/// and the write must come back on that same call's next `recall_with_overlay` — as the exact
+/// `memory_id` linked to the Evidence, not merely a non-empty candidate list.
+#[test]
+fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
+    const TEST: &str = "g23_4_remember_token_recall_returns_the_exact_memory_id";
+    let Some((dsn, mut admin)) = skip_unless_both_reachable(TEST) else {
+        return;
+    };
+    token_keys::install();
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+
+    let (tenant_id, user_id, reasoning_domain_id, _cleanup) = seed_ryw_fixture(&dsn, &mut admin);
+
     // dep: PostgreSQL(role_gateway) — the real remember/recall entry points run under this role
     let gateway = rt
         .block_on(RuntimeDbPool::connect(&dsn_as_role(&dsn, "role_gateway")))
@@ -1121,33 +1163,7 @@ fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
     let accepted = rt
         .block_on(remember::remember(
             &gateway,
-            RememberCommand {
-                tenant_id,
-                authorization_user_id: Some(user_id),
-                scope_kind: RYW_SCOPE_KIND.to_string(),
-                scope_id: tenant_id,
-                domain: RYW_DOMAIN.to_string(),
-                projection_kind: RYW_PROJECTION_KIND.to_string(),
-                projection_version: RYW_PROJECTION_VERSION.to_string(),
-                consistency_token_expires_at: OffsetDateTime::now_utc()
-                    + std::time::Duration::from_secs(300),
-                batch_id: None,
-                payload_sha256: payload_sha256(content.as_bytes()),
-                data_class: "INTERNAL".to_string(),
-                origin_class: EvidenceOriginClass::DirectUserInput,
-                origin_principal_id: Some(user_id),
-                origin_connector_id: None,
-                visibility_class: "TENANT_SHARED".to_string(),
-                visibility_user_id: None,
-                visibility_workspace_id: None,
-                reasoning_domain_id,
-                occurred_at: None,
-                event_kind: "USER_MESSAGE".to_string(),
-                event_payload: serde_json::json!({ "content": content }),
-                subjects: humaux_domain::subject::SubjectDeclaration::default(),
-                affects: Vec::new(),
-                mood_half_life: None,
-            },
+            ryw_remember_command(tenant_id, user_id, reasoning_domain_id, content),
         ))
         .expect("real remember write must commit");
     let memory_id = seed_memory_linked_to_evidence(&mut admin, tenant_id, accepted.evidence_id);
