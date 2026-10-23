@@ -384,6 +384,10 @@ struct Proxy {
 }
 
 impl Proxy {
+    // ponytail: the accept loop and its nested per-connection spawn nest past clippy.toml's ceiling of 5
+    // (§78.4 / G-M01-8) and M01-6 refactors nothing; extract the connection pump when this proxy is next
+    // touched.
+    #[allow(clippy::excessive_nesting)]
     fn open(listen: SocketAddr, upstream: String) -> Self {
         let listener = TcpListener::bind(listen).expect("bind the proxy port");
         listener.set_nonblocking(true).expect("nonblocking accept");

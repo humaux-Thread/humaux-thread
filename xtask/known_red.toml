@@ -295,7 +295,7 @@ reason = "pre-existing population measured 2026-10-23 on the merge of card/m01-6
 
 [[lint_allows]]
 lint = "excessive_nesting"
-count = 5
+count = 7
 owner = "M01-6"
-reason = "exactly five allows, each a measured site: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list (4 blocks over clippy.toml's threshold of 5, CI run 39954828293); crates/infra-cell/src/transport.rs::{rebinding_between_successive_calls_is_rejected_by_the_same_resolver, stable_resolution_to_a_cell_address_succeeds_on_every_call} (2 blocks, CI run 39957055872); bins/maintenance/src/deploy_check.rs::host_network_dsn_reasons and bins/maintenance/src/migration_manifest.rs::statement_separator (3 blocks, CI run 39965486805); allow-with-ponytail because M01-6 refactors nothing"
+reason = "exactly seven allows, each a measured site: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list (4 blocks over clippy.toml's threshold of 5, CI run 39954828293); crates/infra-cell/src/transport.rs::{rebinding_between_successive_calls_is_rejected_by_the_same_resolver, stable_resolution_to_a_cell_address_succeeds_on_every_call} (2 blocks, run 39957055872); bins/maintenance/src/{deploy_check.rs::host_network_dsn_reasons, migration_manifest.rs::statement_separator} (3 blocks, run 39965486805); bins/maintenance/tests/serve.rs::Proxy::open and crates/adapters/tests/support/operation_receipt_fixture.rs::Handle::drop (2 blocks, run 39968731760); allow-with-ponytail because M01-6 refactors nothing"
 

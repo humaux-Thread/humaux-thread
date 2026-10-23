@@ -307,6 +307,9 @@ impl DbIntegrationFixture for Fixture {
 
 impl Drop for Handle {
     #[allow(clippy::too_many_lines)]
+    // ponytail: the continuity-cleanup branch nests past clippy.toml's ceiling of 5 (§78.4 / G-M01-8) and
+    // M01-6 refactors nothing; lift the trigger-disable + delete batch into a helper when this fixture changes.
+    #[allow(clippy::excessive_nesting)]
     fn drop(&mut self) {
         if self._serial.is_some() {
             SERIAL_HELD.with(|held| held.set(false));
