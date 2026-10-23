@@ -10,13 +10,35 @@
 //!
 //! Compiled and run standalone by `cargo xtask metrics-registry` (`run_witness_probe`).
 
+use std::path::{Path, PathBuf};
+
 use humaux_telemetry::host::{HostSampler, HostSources, publish, render};
+
+/// A fixture directory removed when its owner leaves scope, including while a failed assertion unwinds (#193).
+struct FixtureDir(PathBuf);
+
+impl FixtureDir {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("witness-host-mem-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for FixtureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// The exposition after one sample of `meminfo` (`None` = no such file).
 fn exposition(meminfo: Option<&str>) -> String {
-    let dir = std::env::temp_dir().join(format!("witness-host-mem-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("fixture dir");
-    let path = dir.join("meminfo");
+    let dir = FixtureDir::new("host_memory_available_bytes");
+    let path = dir.path().join("meminfo");
     let _ = std::fs::remove_file(&path);
     if let Some(text) = meminfo {
         std::fs::write(&path, text).expect("meminfo fixture");
@@ -28,7 +50,6 @@ fn exposition(meminfo: Option<&str>) -> String {
     publish(&HostSampler::new(sources).sample());
     let mut out = String::new();
     render(&mut out);
-    let _ = std::fs::remove_dir_all(dir);
     out
 }
 

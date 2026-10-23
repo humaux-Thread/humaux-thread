@@ -5,23 +5,31 @@
 //!   domain::identity, domain::ids, domain::memory, domain::subject, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, projection::card, projection::dense]
 //! Called-by: [cargo-test]
-//! Invariants: [no DB and no network: only request/response JSON shaping and the §17.4 confirmation contract;
-//!   unexpected shapes and non-success statuses must map to the typed QdrantTransportError]
+//! Invariants: [no DB and no external service: request/response JSON shaping, the §17.4 confirmation contract and one
+//!   loopback stub that records what `ensure_collection_for` sends; unexpected shapes and non-success statuses must
+//!   map to the typed QdrantTransportError]
 //! Spec: Baseline §17.4; §17.1; §17.7; §23.4; ADR-0055; ADR-0086
 //!
-//! No DB, no network: everything this
+//! No DB, no external service: everything this
 //! file exercises is request/response JSON shaping and the §17.4 confirmation contract, none
 //! of which needs the still-missing HTTP client (see `crates/adapters/src/qdrant.rs`'s module
 //! doc for why that dependency is not in this build). The genuinely Qdrant-reachability-gated
 //! assertions (§17.1 cross-tenant filter proof, §23.4 injection 2 against a real cluster) are
 //! in `tests/qdrant_live.rs`, which reports `not_applicable` naming the missing HTTP client —
-//! this file is not where that gap is papered over.
+//! this file is not where that gap is papered over. The ADR-0086 D-D test binds one loopback
+//! stub, so it needs no Qdrant service and records the exact requests the production face sends.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
-use humaux_adapters::provisioning::{collection_setup_puts, collection_setup_puts_for};
+use humaux_adapters::provisioning::{
+    QdrantFace, collection_generation, collection_setup_puts, collection_setup_puts_for,
+    ensure_collection_for,
+};
 use humaux_adapters::qdrant::{
     CollectionSpec, DenseQuery, DenseQueryVersions, Distance, PlacementClass, PointId,
     PromotionState, QdrantOperation, QdrantPointPayload, QdrantTransportError, ReadConsistency,
@@ -924,5 +932,239 @@ fn setup_puts_create_the_collection_then_the_tenant_index_before_anything_else()
         "the sparse vector closes the sequence"
     );
     assert_eq!(puts.len(), 5);
-    assert!(puts.iter().all(|(path, _)| !path.contains("/points")));
+}
+
+/// A loopback stand-in for Qdrant on `127.0.0.1`: it records every request and keeps the one collection's live
+/// definition, so a test can see both the wire sequence and the resulting `vectors.datatype`.
+struct SetupStub {
+    port: u16,
+    requests: Arc<Mutex<Vec<(String, String)>>>,
+    live: Arc<Mutex<serde_json::Value>>,
+}
+
+impl SetupStub {
+    fn start() -> Self {
+        let live = Arc::new(Mutex::new(serde_json::json!({
+            "config": {"params": {
+                "vectors": {"size": 1024, "distance": "Cosine", "datatype": "float32"},
+                "sparse_vectors": {"bm25": {"modifier": "idf"}},
+            }},
+            "payload_schema": {
+                "tenant_id": {"data_type": "keyword", "params": {"is_tenant": true}},
+                "subject_ids": {"data_type": "uuid", "params": {}},
+                "memory_id": {"data_type": "keyword", "params": {}},
+            },
+        })));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the setup stub");
+        let port = listener.local_addr().expect("stub address").port();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (observed, state) = (Arc::clone(&requests), Arc::clone(&live));
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (observed, state) = (Arc::clone(&observed), Arc::clone(&state));
+                thread::spawn(move || serve_setup_request(stream, &observed, &state));
+            }
+        });
+        Self {
+            port,
+            requests,
+            live,
+        }
+    }
+
+    fn requests(&self) -> Vec<(String, String)> {
+        self.requests.lock().expect("request lock").clone()
+    }
+
+    fn clear(&self) {
+        self.requests.lock().expect("request lock").clear();
+    }
+
+    fn live_datatype(&self) -> String {
+        self.live.lock().expect("live lock")["config"]["params"]["vectors"]["datatype"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    }
+}
+
+fn serve_setup_request(
+    mut stream: TcpStream,
+    observed: &Mutex<Vec<(String, String)>>,
+    live: &Mutex<serde_json::Value>,
+) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("stub read timeout");
+    let mut raw = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut chunk).expect("read request headers");
+        if n == 0 {
+            return;
+        }
+        raw.extend_from_slice(&chunk[..n]);
+        if let Some(position) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..header_end]);
+    let mut lines = head.lines();
+    let mut request_line = lines.next().expect("request line").split_whitespace();
+    let method = request_line.next().expect("method").to_owned();
+    let path = request_line.next().expect("path").to_owned();
+    let content_length = lines
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    while raw.len() < header_end + content_length {
+        let n = stream.read(&mut chunk).expect("read request body");
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&chunk[..n]);
+    }
+    observed
+        .lock()
+        .expect("request lock")
+        .push((method.clone(), path.clone()));
+
+    let body = &raw[header_end..];
+    let mut state = live.lock().expect("live lock");
+    let (status, response) = match (method.as_str(), path.as_str()) {
+        ("GET", "/collections/private_memory_v1") => {
+            if state.is_null() {
+                (
+                    404,
+                    serde_json::json!({"status": {"error": "collection not found"}}),
+                )
+            } else {
+                let result = (*state).clone();
+                (200, serde_json::json!({"result": result}))
+            }
+        }
+        ("PUT", "/collections/private_memory_v1") => {
+            let create: serde_json::Value =
+                serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+            *state = serde_json::json!({
+                "config": {"params": {
+                    "vectors": create["vectors"].clone(),
+                    "sparse_vectors": create["sparse_vectors"].clone(),
+                }},
+                "payload_schema": {},
+            });
+            (200, serde_json::json!({"result": true}))
+        }
+        ("DELETE", "/collections/private_memory_v1") => {
+            *state = serde_json::Value::Null;
+            (200, serde_json::json!({"result": true}))
+        }
+        ("PUT", path) if path.ends_with("/index?wait=true") => {
+            let index: serde_json::Value =
+                serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+            if let Some(field) = index["field_name"].as_str() {
+                let mut params = index["field_schema"].clone();
+                if let Some(object) = params.as_object_mut() {
+                    object.remove("type");
+                }
+                state["payload_schema"][field] = serde_json::json!({
+                    "data_type": index["field_schema"]["type"],
+                    "params": params,
+                });
+            }
+            (200, serde_json::json!({"result": true}))
+        }
+        ("PUT", path) if path.ends_with("/vectors/bm25?wait=true") => {
+            let vector: serde_json::Value =
+                serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+            state["config"]["params"]["sparse_vectors"]["bm25"] = vector["sparse"].clone();
+            (200, serde_json::json!({"result": true}))
+        }
+        _ => (200, serde_json::json!({"result": true})),
+    };
+    drop(state);
+
+    let payload = response.to_string();
+    let reason = if status == 200 { "OK" } else { "Not Found" };
+    let wire = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    let _ = stream.write_all(wire.as_bytes());
+    let _ = stream.flush();
+}
+
+/// ADR-0086 D-D: an existing collection is left untouched whatever its datatype. The stub's live collection is
+/// `float32` while the spec asks for `turbo4`; no DELETE and no collection-root PUT may be sent, and the live
+/// datatype must stay `float32`. The four index/sparse PUTs are the existing ensure contract and are idempotent.
+/// Fault: recreate on the datatype difference => DELETE/root PUT appear and `live_datatype` becomes `turbo4`.
+#[tokio::test]
+async fn ensure_collection_for_leaves_an_existing_collection_of_another_datatype_untouched() {
+    let stub = SetupStub::start();
+    let face = QdrantFace::new("127.0.0.1", stub.port, "127.0.0.1/32").expect("stub face");
+    let before = collection_generation(&face, "private_memory_v1", 1024)
+        .await
+        .expect("the seeded collection reads");
+    stub.clear();
+
+    let spec = CollectionSpec::resolve(
+        RetrievalFamily::PrivateMemoryV1,
+        1024,
+        &collection_raw(&[("qdrant.collection.datatype", "turbo4")]),
+    )
+    .expect("turbo4 spec");
+    let receipt = ensure_collection_for(&face, &spec)
+        .await
+        .expect("ensure reads the existing collection");
+
+    assert!(!receipt.created, "an existing collection is not recreated");
+    let mutations: Vec<_> = stub
+        .requests()
+        .into_iter()
+        .filter(|(method, path)| {
+            method.as_str() == "DELETE"
+                || (method.as_str() == "PUT" && path.as_str() == "/collections/private_memory_v1")
+        })
+        .collect();
+    assert!(
+        mutations.is_empty(),
+        "no delete and no recreate may be sent for an existing collection: {mutations:?}"
+    );
+    assert_eq!(receipt.generation, before.0, "the generation is unchanged");
+    assert_eq!(
+        stub.live_datatype(),
+        "float32",
+        "the live datatype stays the existing one, not the spec's"
+    );
+    assert_eq!(
+        stub.requests(),
+        vec![
+            (
+                "GET".to_owned(),
+                "/collections/private_memory_v1".to_owned()
+            ),
+            (
+                "PUT".to_owned(),
+                "/collections/private_memory_v1/index?wait=true".to_owned()
+            ),
+            (
+                "PUT".to_owned(),
+                "/collections/private_memory_v1/index?wait=true".to_owned()
+            ),
+            (
+                "PUT".to_owned(),
+                "/collections/private_memory_v1/index?wait=true".to_owned()
+            ),
+            (
+                "PUT".to_owned(),
+                "/collections/private_memory_v1/vectors/bm25?wait=true".to_owned()
+            ),
+            (
+                "GET".to_owned(),
+                "/collections/private_memory_v1".to_owned()
+            ),
+        ],
+        "the existing collection receives only the idempotent index/sparse PUTs"
+    );
 }

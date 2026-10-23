@@ -38,6 +38,13 @@ const FAMILIES: [&str; 11] = [
     "tenants_active_1d",
     "tenants_active_7d",
 ];
+/// The M22-1 host families, declared by `--metrics-families` but not guaranteed to have a sample
+/// at the first scrape (the CPU ratio needs two `/proc/stat` readings, #193).
+const HOST_FAMILIES: [&str; 3] = [
+    "host_pressure_ratio",
+    "host_memory_available_bytes",
+    "host_cpu_busy_ratio",
+];
 
 fn value(metrics: &str, series: &str) -> Option<f64> {
     metrics
@@ -248,18 +255,19 @@ fn sigterm_exits_zero_and_closes_the_port() {
     );
 }
 
-/// T-M5: `--metrics-families` needs no environment and prints the eleven families at zero state.
+/// T-M5: `--metrics-families` needs no environment and prints the fourteen families at zero state
+/// (eleven SQL-backed gauges plus the three host families declared header-only, #193).
 #[test]
-fn metrics_families_prints_eleven_families_without_env() {
+fn metrics_families_prints_fourteen_families_without_env() {
     let out = run(&["--metrics-families"], &[]);
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         text.lines().filter(|l| l.starts_with("# TYPE ")).count(),
-        11,
+        14,
         "{text}"
     );
-    for family in FAMILIES {
+    for family in FAMILIES.into_iter().chain(HOST_FAMILIES) {
         assert!(text.contains(&format!("# TYPE {family} ")), "{family}");
     }
 }

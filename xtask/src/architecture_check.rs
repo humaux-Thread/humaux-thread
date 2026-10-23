@@ -9317,10 +9317,14 @@ fn action_input_default(action: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Every pin `action` declares: each `inputs.<prefix>_url` default and its `<prefix>_sha256` default, keyed by the
-/// sha input (`ort_sha256` / `rerank_sha256`). `Err` names the missing input: a pin that cannot be read is
-/// `not_applicable`, never a pass (§57.1 第2条).
-fn action_pins(action: &str) -> Result<Vec<(String, ArtifactPin)>, String> {
+/// Readable pins keyed by sha input, plus the url inputs whose default or sha256 default is missing.
+type ActionPins = (Vec<(String, ArtifactPin)>, Vec<String>);
+
+/// Every readable pin `action` declares: each `inputs.<prefix>_url` default and its `<prefix>_sha256` default,
+/// keyed by the sha input (`ort_sha256` / `rerank_sha256`). The second element names a url input whose default or
+/// sha256 default is missing: with at least one readable pin those are `fail` lines, not `not_applicable`
+/// (§57.1 第2条). `Err` only when the action has no `_url` input at all.
+fn action_pins(action: &str) -> Result<ActionPins, String> {
     let url_inputs: Vec<String> = action_input_names(action)
         .into_iter()
         .filter(|name| name.ends_with("_url"))
@@ -9329,20 +9333,23 @@ fn action_pins(action: &str) -> Result<Vec<(String, ArtifactPin)>, String> {
         return Err(format!("{RERANK_PARITY_ACTION}: inputs.*_url"));
     }
     let mut pins = Vec::new();
+    let mut unreadable = Vec::new();
     for url_input in url_inputs {
         let Some(url) = action_input_default(action, &url_input) else {
-            return Err(format!(
+            unreadable.push(format!(
                 "{RERANK_PARITY_ACTION}: inputs.{url_input}.default"
             ));
+            continue;
         };
         let prefix = url_input
             .strip_suffix("_url")
             .expect("filtered by ends_with(\"_url\")");
         let sha_input = format!("{prefix}_sha256");
         let Some(sha256) = action_input_default(action, &sha_input) else {
-            return Err(format!(
+            unreadable.push(format!(
                 "{RERANK_PARITY_ACTION}: inputs.{sha_input}.default"
             ));
+            continue;
         };
         pins.push((
             sha_input,
@@ -9352,14 +9359,14 @@ fn action_pins(action: &str) -> Result<Vec<(String, ArtifactPin)>, String> {
             },
         ));
     }
-    Ok(pins)
+    Ok((pins, unreadable))
 }
 
-/// Pins equal (`Ok` empty), a URL or sha256 differs (`Ok` one reason per differing pin, naming both files and the
-/// action input), or an object is missing (`Err`, naming it). The same sha256 under another URL is a URL difference,
-/// not a missing pin: §57.1 第2条 reserves `not_applicable` for an object that is absent. ADR-0084 D-B / T-CI-4: the
-/// image's `rerank-fetch` stage and `.github/actions/rerank-parity/action.yml` must fetch the same bytes, so
-/// G-RET-11/G-RET-14 and the release image cannot drift apart.
+/// Pins equal (`Ok` empty), a URL or sha256 differs (`Ok` one reason per unmatched pin on either side, naming both
+/// files and the action input), or ALL pins on one side are absent (`Err`, naming it). §57.1 第2条 reserves
+/// `not_applicable` for an object that is absent, so two pins that both differ are a `fail`, not a missing object.
+/// ADR-0084 D-B / T-CI-4: the image's `rerank-fetch` stage and `.github/actions/rerank-parity/action.yml` must fetch
+/// the same bytes, so G-RET-11/G-RET-14 and the release image cannot drift apart.
 fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, String> {
     let Some(stage) = rerank_fetch_stage(dockerfile) else {
         return Err(format!(
@@ -9372,8 +9379,21 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
             "{RERANK_DOCKERFILE}: `ADD --checksum=sha256:<sha256> <url>` pin in the {RERANK_STAGE} stage"
         ));
     }
-    let declared = action_pins(action)?;
-    let mut problems = Vec::new();
+    let (declared, unreadable) = action_pins(action)?;
+    if declared.is_empty() {
+        return Err(unreadable
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| format!("{RERANK_PARITY_ACTION}: inputs.*_url")));
+    }
+    let mut problems: Vec<String> = unreadable
+        .into_iter()
+        .map(|missing| {
+            format!(
+                "{RERANK_DOCKERFILE}: no `ADD --checksum` pin comparable with {missing} — the image and the parity test must fetch the same artifact"
+            )
+        })
+        .collect();
     for (sha_key, pin) in &declared {
         let matching: Vec<&ArtifactPin> =
             image.iter().filter(|found| found.url == pin.url).collect();
@@ -9386,10 +9406,11 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
                 ));
                 continue;
             }
-            return Err(format!(
-                "{RERANK_DOCKERFILE}: `ADD --checksum` pin for {} (action input {sha_key})",
+            problems.push(format!(
+                "{RERANK_DOCKERFILE}: no `ADD --checksum` pin for {} (action input {RERANK_PARITY_ACTION} inputs.{sha_key}) — the image and the parity test must fetch the same artifact",
                 pin.url
             ));
+            continue;
         }
         for found in matching {
             if found.sha256 != pin.sha256 {
@@ -9405,12 +9426,12 @@ fn rerank_pin_problems(dockerfile: &str, action: &str) -> Result<Vec<String>, St
             continue;
         }
         // The URL difference was reported above while the bytes are still pinned; a sha256 that appears in neither
-        // file is a missing action input, not a differing value.
+        // file is an unmatched image pin, not an absent action input.
         if declared.iter().any(|(_, found)| found.sha256 == pin.sha256) {
             continue;
         }
-        return Err(format!(
-            "{RERANK_PARITY_ACTION}: inputs.*_url default for {}",
+        problems.push(format!(
+            "{RERANK_DOCKERFILE}: `ADD --checksum` for {} has no {RERANK_PARITY_ACTION} `inputs.*_url` pin — the image and the parity test must fetch the same artifact",
             pin.url
         ));
     }
@@ -9987,9 +10008,107 @@ runs:
         );
     }
 
-    /// A missing file, stage, pin or action input is `not_applicable` naming the object — never a silent pass (§57.1).
+    /// Write a rerank Dockerfile/action pair into a unique temp root and run the gate over it, so tests exercise the
+    /// same three-state mapping `run()` uses.
+    fn rerank_verdict(tag: &str, dockerfile: &str, action: &str) -> Verdict {
+        let dir = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for (path, text) in [
+            (RERANK_DOCKERFILE, dockerfile),
+            (RERANK_PARITY_ACTION, action),
+        ] {
+            let p = dir.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        }
+        let verdict = rerank_pin_parity(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        verdict
+    }
+
+    /// URL and sha256 both differ — one artifact version bumped in one file only. Both sides still carry pins, so
+    /// the gate is `fail`, one line per unmatched pin, each naming both files and its action input, not
+    /// `not_applicable` (#200, §57.1 第2条).
     #[test]
-    fn rerank_pin_gate_is_not_applicable_when_an_object_is_missing() {
+    fn rerank_pin_gate_fails_when_url_and_sha_both_differ() {
+        let action = RERANK_ACTION_FIXTURE
+            .replace(
+                "default: https://example.test/rerank.tar.gz",
+                "default: https://example.test/rerank-v2.tar.gz",
+            )
+            .replace(
+                "default: cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f",
+                "default: cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c20",
+            );
+        let verdict = rerank_verdict("rerank-both-differ", RERANK_DOCKERFILE_FIXTURE, &action);
+        assert!(
+            matches!(&verdict, Verdict::Fail(_)),
+            "both pins differ must be fail, got {verdict:?}"
+        );
+        let Verdict::Fail(lines) = verdict else {
+            unreachable!("checked above")
+        };
+        assert_eq!(
+            lines.len(),
+            2,
+            "one fail per unmatched pin (action side + image side): {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| l.contains(RERANK_DOCKERFILE)
+                && l.contains(RERANK_PARITY_ACTION)
+                && l.contains("inputs.")),
+            "every fail names both files and its action input: {lines:?}"
+        );
+        let image_url = "https://example.test/rerank.tar.gz";
+        let action_url = "https://example.test/rerank-v2.tar.gz";
+        assert_eq!(
+            lines.iter().filter(|l| l.contains(action_url)).count(),
+            1,
+            "the action-side unmatched pin names only the action URL: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.contains(image_url)).count(),
+            1,
+            "the image-side unmatched pin names only the image URL: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains("inputs.rerank_sha256"))
+                .count(),
+            1,
+            "the action-side line names its sha input: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("inputs.*_url")).count(),
+            1,
+            "the image-side line names the url-input family: {lines:?}"
+        );
+    }
+
+    /// `_url` inputs exist but no default is readable: there is nothing to compare, so the gate is `not_applicable`
+    /// naming the missing default, never a pass or a `fail` with an empty problem list (§57.1 第2条).
+    #[test]
+    fn rerank_pin_gate_is_not_applicable_when_every_action_default_is_missing() {
+        let no_defaults = RERANK_ACTION_FIXTURE
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("default:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            rerank_verdict(
+                "rerank-no-defaults",
+                RERANK_DOCKERFILE_FIXTURE,
+                &no_defaults
+            ),
+            Verdict::NotApplicable(format!("{RERANK_PARITY_ACTION}: inputs.ort_url.default"))
+        );
+    }
+
+    /// A missing file, stage, or ALL pins on one side is `not_applicable` naming the object — never a silent pass.
+    /// One unmatched pin while the other side still has pins is a `fail` instead (§57.1 第2条; #200).
+    #[test]
+    fn rerank_pin_gate_is_not_applicable_only_when_an_object_is_absent() {
         assert_eq!(
             rerank_pin_parity(Path::new("/nonexistent-humaux-ds-ci-194")),
             Verdict::NotApplicable(RERANK_DOCKERFILE.to_string())
@@ -9999,22 +10118,55 @@ runs:
             rerank_pin_problems(&no_stage, RERANK_ACTION_FIXTURE).unwrap_err(),
             format!("{RERANK_DOCKERFILE}: `FROM … AS {RERANK_STAGE}` stage")
         );
+        let no_image_pin = RERANK_DOCKERFILE_FIXTURE
+            .lines()
+            .filter(|line| !line.starts_with("ADD --checksum"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let missing = rerank_pin_problems(&no_image_pin, RERANK_ACTION_FIXTURE).unwrap_err();
+        assert!(missing.contains(RERANK_DOCKERFILE), "{missing}");
+        assert!(missing.contains("ADD --checksum"), "{missing}");
+        let no_action_pin = RERANK_ACTION_FIXTURE.replace("_url:", "_renamed:");
+        assert_eq!(
+            rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, &no_action_pin).unwrap_err(),
+            format!("{RERANK_PARITY_ACTION}: inputs.*_url")
+        );
+        // One image pin gone while the image still carries the other: both sides have pins, so it is a failure.
         let no_pin = RERANK_DOCKERFILE_FIXTURE
             .lines()
             .filter(|line| !line.contains("rerank.tar.gz"))
             .collect::<Vec<_>>()
             .join("\n");
-        let missing = rerank_pin_problems(&no_pin, RERANK_ACTION_FIXTURE).unwrap_err();
-        assert!(missing.contains(RERANK_DOCKERFILE), "{missing}");
+        let unmatched = rerank_pin_problems(&no_pin, RERANK_ACTION_FIXTURE)
+            .expect("one missing pin is a failure, not a missing object");
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].contains(RERANK_DOCKERFILE), "{unmatched:?}");
+        assert!(unmatched[0].contains(RERANK_PARITY_ACTION), "{unmatched:?}");
         assert!(
-            missing.contains("https://example.test/rerank.tar.gz"),
-            "{missing}"
+            unmatched[0].contains("inputs.rerank_sha256"),
+            "{unmatched:?}"
         );
+        assert!(
+            unmatched[0].contains("https://example.test/rerank.tar.gz"),
+            "{unmatched:?}"
+        );
+        // One action pin unreadable while the action still carries the other: also a failure.
         let no_sha_input =
             RERANK_ACTION_FIXTURE.replace("  rerank_sha256:", "  rerank_sha256_renamed:");
-        assert_eq!(
-            rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, &no_sha_input).unwrap_err(),
-            format!("{RERANK_PARITY_ACTION}: inputs.rerank_sha256.default")
+        let unreadable = rerank_pin_problems(RERANK_DOCKERFILE_FIXTURE, &no_sha_input)
+            .expect("an unreadable pin beside a readable one is a failure");
+        assert_eq!(unreadable.len(), 2, "{unreadable:?}");
+        assert!(
+            unreadable
+                .iter()
+                .all(|p| p.contains(RERANK_DOCKERFILE) && p.contains(RERANK_PARITY_ACTION)),
+            "{unreadable:?}"
+        );
+        assert!(
+            unreadable
+                .iter()
+                .any(|p| p.contains("inputs.rerank_sha256")),
+            "{unreadable:?}"
         );
     }
 

@@ -10,7 +10,8 @@
 //!   answers 503 with the error and the age, never the last good values; the first sample is taken before the
 //!   listener binds; both keys are required with no code default; the host gauges are read from /proc on every tick,
 //!   first one included, whatever the database answered, and a source that cannot be read leaves its series out
-//!   (never 0, M22-1); HUMAUX_MIGRATOR_PG_DSN in the environment refuses
+//!   (never 0, M22-1); `--metrics-families` declares the three host families header-only even when no
+//!   sample exists (#193); HUMAUX_MIGRATOR_PG_DSN in the environment refuses
 //!   boot before anything else (ADR-0063 D-H); SIGTERM / SIGINT close the port and exit 0]
 //! Spec: Baseline §41.2; §53.5; §42; §78.1; ADR-0061 D-B; ADR-0061 D-D; ADR-0063 D-H
 //!
@@ -41,7 +42,18 @@ const SAMPLE_SECONDS: &str = "HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS";
 const PG_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";
 
 /// `--metrics-families`: the zero-state exposition this process serves (ADR-0061 D-C, read by D-H).
+/// The host families are declared header-only because they may have no sample on a host without
+/// `/proc` (the macOS rehearsal); the checker counts them exported through its absence list (#193).
 pub(crate) fn metrics_families() -> String {
+    let mut out = String::new();
+    health::render(&mut out);
+    host::declare_families(&mut out);
+    out
+}
+
+/// `/metrics`: the last published sample. A host series with no parsed value stays out, unlike the
+/// declaration [`metrics_families`] prints (#193, §4.4: an empty family is not a zero).
+fn live_metrics() -> String {
     let mut out = String::new();
     health::render(&mut out);
     host::render(&mut out);
@@ -50,13 +62,7 @@ pub(crate) fn metrics_families() -> String {
 
 fn verdict(last: &Mutex<Last>, interval: Duration) -> std::result::Result<String, String> {
     let bound = format!("2 x {SAMPLE_SECONDS}");
-    resident::verdict(
-        last,
-        "health sample",
-        2 * interval,
-        &bound,
-        metrics_families,
-    )
+    resident::verdict(last, "health sample", 2 * interval, &bound, live_metrics)
 }
 
 fn status(started: SystemTime, last: &Mutex<Last>, interval: Duration) -> String {
@@ -185,4 +191,37 @@ pub(crate) async fn serve() -> Result<Output> {
         "outcome": "stopped",
         "samples": samples,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #193: `/metrics` renders the last publish, not the declaration. Before the first host reading
+    /// `host::render` writes nothing (§4.4), so the live body carries no bare host HELP/TYPE header while
+    /// `--metrics-families` does. Fault: `verdict` passes `metrics_families` instead of `live_metrics` ⇒ a
+    /// bare host header appears ⇒ red.
+    #[test]
+    fn live_metrics_before_the_first_host_reading_has_no_bare_host_headers() {
+        const HOST: [&str; 3] = [
+            "host_pressure_ratio",
+            "host_memory_available_bytes",
+            "host_cpu_busy_ratio",
+        ];
+        let declared = metrics_families();
+        for family in HOST {
+            assert!(
+                declared.contains(&format!("# TYPE {family} ")),
+                "{family} is not declared\n{declared}"
+            );
+        }
+        let last = resident::Last::ok();
+        let live = verdict(&last, Duration::from_secs(2)).expect("/metrics is ready");
+        for family in HOST {
+            assert!(
+                !live.contains(&format!("# TYPE {family}")),
+                "a bare {family} declaration leaked into the live scrape\n{live}"
+            );
+        }
+    }
 }
