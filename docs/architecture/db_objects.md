@@ -1033,6 +1033,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::provisioning`
@@ -1056,6 +1057,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::provisioning`
@@ -1072,9 +1074,6 @@ executed by:
 - created in: 0033_entitlement_projector
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
-- role_gateway: SELECT
-- role_maintenance: SELECT
 - role_migration_owner: DELETE
 - role_migration_owner: INSERT
 - role_migration_owner: MAINTAIN
@@ -1083,15 +1082,38 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: SELECT
-- role_public_worker: SELECT
-- role_retrieval_worker: SELECT
+
+read by:
+- (no process): `maintenance::tests::onboarding`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::entitlement_projector`
+
+executed by:
+
+### `control.entitlement_grants_for_projection`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0267_entitlement_projector
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
 
 read by:
 
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
+- process(cargo-xtask): `adapters::entitlement_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::entitlement_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.entitlement_snapshot_drop_stale_successor`
 - kind: function
@@ -1134,15 +1156,18 @@ grants (runtime roles):
 
 read by:
 - (no process): `maintenance::tests::onboarding`
+- process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(humaux-consolidation-worker): `adapters::request_guard_repo`
 - process(humaux-gateway): `adapters::request_guard_repo`
+- process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::request_guard_repo`
 - process(humaux-private-worker): `adapters::request_guard_repo`
 - process(humaux-retrieval-worker): `adapters::request_guard_repo`
 
 written by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::quota_and_rate`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -1592,6 +1617,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::provisioning`
@@ -2404,8 +2430,11 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::plan_repo`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `maintenance::tests::onboarding`
+- (no process): `maintenance::tests::reasoning_routes`
+- process(cargo-xtask): `adapters::plan_repo`
+- process(cargo-xtask): `xtask::e2e_onboard`
 
 ### `control.purge_idle_rate_buckets`
 - kind: function (SECURITY DEFINER)
@@ -3803,6 +3832,7 @@ written by:
 - (no process): `adapters::tests::coord_task_run`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -4261,6 +4291,28 @@ written by:
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
+
+### `control.write_entitlement_snapshot`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0267_entitlement_projector
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::entitlement_projector`
+- process(cargo-xtask): `adapters::entitlement_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::entitlement_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `coord.canvas_elements`
 - kind: table
