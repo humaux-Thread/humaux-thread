@@ -456,8 +456,10 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::auth_contract`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -977,11 +979,13 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
+- (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -1270,6 +1274,67 @@ executed by:
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
+
+### `control.login_challenge_claim`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0266_login_challenge
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.login_challenge_issue`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0266_login_challenge
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- (no process): `adapters::tests::login_challenge`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.login_challenge_settle`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0266_login_challenge
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::login_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.maintenance_tenant_page`
 - kind: function (SECURITY DEFINER)
@@ -3909,6 +3974,7 @@ read by:
 - process(cargo-xtask): `xtask::e2e_onboard`
 
 written by:
+- (no process): `adapters::tests::login_challenge`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -4010,6 +4076,7 @@ written by:
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
@@ -5476,6 +5543,7 @@ read by:
 written by:
 - (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
@@ -5531,6 +5599,7 @@ read by:
 written by:
 - (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- (no process): `adapters::tests::login_challenge`
 
 executed by:
 
