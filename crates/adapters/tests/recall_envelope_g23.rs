@@ -3,15 +3,19 @@
 //!   is missing rather than silently passing).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval,
 //!   humaux-telemetry, humaux-testkit, postgres, serde_json, sqlx, tokio, uuid]; services=[PostgreSQL(owner)
-//!   r=[projection.processing_gaps] w=[control.tenants, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::forget_repo, adapters::postgres, adapters::qdrant, domain::authority, domain::dataclass,
-//!   domain::identity, domain::ids, domain::memory, humaux-testkit, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, projection::card, projection::sparse, projection::stream, retrieval::completeness,
-//!   retrieval::envelope, telemetry::degrade]
+//!   r=[projection.processing_gaps] w=[control.memberships, control.private_reasoning_domains, control.tenants,
+//!   control.users, ops.jobs, ops.outbox, private.artifacts, private.events, private.evidence_objects,
+//!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
+//!   PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
+//!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::forget_repo, adapters::postgres, adapters::qdrant,
+//!   adapters::remember, adapters::retrieve, adapters::tests::support::token_keys, domain::authority,
+//!   domain::dataclass, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject,
+//!   humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
+//!   projection::serving, projection::sparse, projection::stream, retrieval::completeness, retrieval::envelope,
+//!   telemetry::degrade]
 //! Called-by: [cargo-test]
-//! Invariants: [PostgreSQL unreachable or role denied -> the call fails and surfaces the error to the caller; no silent fallback; Qdrant unreachable -> QdrantTransportError to the caller, no fallback search]
-//! Spec: Baseline §15.2; §17.4; §17.6
+//! Invariants: [PostgreSQL unreachable or role denied -> the call fails and surfaces the error to the caller; no silent fallback; Qdrant unreachable -> QdrantTransportError to the caller, no fallback search; the token a write returned must surface that write's exact memory_id on the next recall]
+//! Spec: Baseline §15.2; §15.5; §17.4; §17.6; §69
 //!
 //! Every ledger read below is independent, hand-rolled SQL against the admin connection —
 //! mirroring `stream_repo.rs`'s own `seed_log_row`/`seed_checkpoint`/`log_state` helpers,
@@ -1092,6 +1096,7 @@ fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
         )
         .expect("insert private reasoning domain");
 
+    // dep: PostgreSQL(role_gateway) — the real remember/recall entry points run under this role
     let gateway = rt
         .block_on(RuntimeDbPool::connect(&dsn_as_role(&dsn, "role_gateway")))
         .expect("role_gateway pool");
