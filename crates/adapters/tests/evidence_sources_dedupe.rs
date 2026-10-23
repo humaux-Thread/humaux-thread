@@ -426,8 +426,7 @@ fn sourced_put_waits_on_identity_lock() {
             hex::encode(source.object_key_d16().as_bytes()),
             source.version()
         );
-        let app_name = format!("evidence-sources-lock-{}", Uuid::new_v4().simple());
-        let dsn = handle.gateway_application_dsn(&app_name);
+        let dsn = handle.gateway_application_dsn("evidence-sources-lock");
         let auth = auth_for(&handle, agent);
         let put_request = request(&handle, agent, "k-lock", "locked body");
         let before = counts(&mut handle);
@@ -462,9 +461,11 @@ fn sourced_put_waits_on_identity_lock() {
             handle
                 .admin
                 .query_one(
-                    "SELECT count(*) FROM pg_stat_activity \
-                      WHERE application_name = $1 AND wait_event_type = 'Lock' AND wait_event = 'advisory'",
-                    &[&app_name],
+                    "SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid = a.pid \
+                      WHERE a.wait_event_type = 'Lock' AND a.wait_event = 'advisory' \
+                        AND l.locktype = 'advisory' AND NOT l.granted \
+                        AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended($1,0)",
+                    &[&lock_text],
                 )
                 .expect("pg_stat_activity")
                 .get(0)
