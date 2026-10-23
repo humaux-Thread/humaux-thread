@@ -37,14 +37,22 @@ fn leading_spaces(line: &str) -> usize {
 /// unambiguous: moving the guard away from them fails here instead of silently testing nothing.
 fn guard_script() -> String {
     let lines: Vec<&str> = WORKFLOW.lines().collect();
-    let begin = lines
-        .iter()
-        .position(|line| line.trim_end().ends_with(GUARD_BEGIN))
-        .expect("experiment.yml must carry the guard BEGIN sentinel");
-    let end = lines
-        .iter()
-        .position(|line| line.trim_end().ends_with(GUARD_END))
-        .expect("experiment.yml must carry the guard END sentinel");
+    let sentinel = |needle: &str| {
+        let hits: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(needle))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "experiment.yml must carry {needle} exactly once"
+        );
+        hits[0]
+    };
+    let begin = sentinel(GUARD_BEGIN);
+    let end = sentinel(GUARD_END);
     assert!(begin < end, "the guard's sentinels are out of order");
     let indent = leading_spaces(lines[begin]);
     assert!(indent > 0, "the guard must be a `run: |` block scalar");
@@ -70,7 +78,7 @@ fn choice_list() -> Vec<String> {
     let lines: Vec<&str> = WORKFLOW.lines().collect();
     let subcommand = lines
         .iter()
-        .position(|line| line.trim_end() == "subcommand:")
+        .position(|line| line.trim() == "subcommand:")
         .expect("experiment.yml must declare the subcommand input");
     let input_indent = leading_spaces(lines[subcommand]);
     let mut options = None;
@@ -78,7 +86,7 @@ fn choice_list() -> Vec<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if line.trim_end() == "options:" {
+        if line.trim() == "options:" {
             options = Some(index);
             break;
         }
