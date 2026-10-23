@@ -3,7 +3,8 @@
 //!   the renewal door advanced, leaves a grantless tenant alone; onboarding grants a plan version and leaves the snapshot
 //!   to the projector; no runtime role reads the raw grants (G-M04-13).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, tokio,
-//!   uuid]; services=[PostgreSQL(owner) w=[control.entitlement_grants, control.entitlement_snapshots, control.tenants]
+//!   uuid]; services=[PostgreSQL(owner) r=[control.plans] w=[control.entitlement_grants,
+//!   control.entitlement_snapshots, control.plan_versions, control.tenants]
 //!   x=[control.ensure_admission_tier, control.ensure_user, control.entitlement_grants_for_projection,
 //!   control.onboard_tenant, control.write_entitlement_snapshot], PostgreSQL(role_maintenance)];
 //!   env=[]; modules=[adapters::entitlement_repo, adapters::plan_repo, adapters::postgres,
