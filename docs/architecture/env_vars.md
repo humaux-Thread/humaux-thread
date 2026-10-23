@@ -173,6 +173,7 @@ modules:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
@@ -5704,6 +5705,7 @@ modules:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
