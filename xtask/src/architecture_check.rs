@@ -10042,7 +10042,7 @@ pub fn run(_args: &[String]) -> i32 {
             m09_1_ticket_doors(&root),
         ),
         (
-            "M04 D2 / G-M04-1 (plans are data: no plan_key of the values file and no price_cents / lease_block integer literal in crates and bins non-test code, or in migrations above 0262)",
+            "M04 D2 / G-M04-1 (plans are data: no plan_key of the values file and no price_cents / lease_block integer literal in crates and bins non-test code, or in migrations above the scan floor)",
             m04_1_plans_are_data(&root),
         ),
         (
