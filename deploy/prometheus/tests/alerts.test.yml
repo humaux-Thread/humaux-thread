@@ -675,9 +675,10 @@ tests:
         exp_alerts: []
 
   # M22-3 D4 recording rules on fixed input series (exact values, not "exists"): 0.50 busy with 40 weekly tenants ⇒
-  # (0.70−0.50)/(0.50/40) = 16 additional users; PSI cpu some 0.10 ⇒ (0.20−0.10)/(0.10/40) = 40, so the min is the
-  # CPU-busy term's 16. MemAvailable 8 GiB ⇒ 4 GiB headroom; PSI headroom is 0.20−0.10; PGDATA 8 GiB against the
-  # 7.5 GiB §42 floor ⇒ 512 MiB.
+  # (0.70−0.50)/(0.50/40) ≈ 16 additional users; the literal is the float64 the rule computes (0.70−0.50 rounds just
+  # below 0.2 and promtool compares exactly unless fuzzy_compare is on). PSI cpu some 0.10 ⇒ (0.20−0.10)/(0.10/40) =
+  # 40, so the min is the CPU-busy term. MemAvailable 8 GiB ⇒ 4 GiB headroom; PGDATA 8 GiB against the 7.5 GiB §42
+  # floor ⇒ 512 MiB.
   - interval: 1m
     input_series:
       - series: 'host_cpu_busy_ratio'
@@ -696,28 +697,28 @@ tests:
       - expr: capacity:headroom_cpu_ratio
         eval_time: 5m
         exp_samples:
-          - labels: '{}'
-            value: 0.2
+          - labels: 'capacity:headroom_cpu_ratio'
+            value: 0.19999999999999996
       - expr: capacity:headroom_memory_bytes
         eval_time: 5m
         exp_samples:
-          - labels: '{}'
+          - labels: 'capacity:headroom_memory_bytes'
             value: 4294967296
       - expr: capacity:headroom_psi_cpu_ratio
         eval_time: 5m
         exp_samples:
-          - labels: '{resource="cpu",kind="some"}'
+          - labels: 'capacity:headroom_psi_cpu_ratio{resource="cpu",kind="some"}'
             value: 0.1
       - expr: capacity:headroom_disk_bytes
         eval_time: 5m
         exp_samples:
-          - labels: '{volume="pgdata"}'
+          - labels: 'capacity:headroom_disk_bytes{volume="pgdata"}'
             value: 536870912
       - expr: capacity:additional_users
         eval_time: 5m
         exp_samples:
-          - labels: '{}'
-            value: 16
+          - labels: 'capacity:additional_users'
+            value: 15.999999999999996
 
   # capacity CPU warning (M22-3 D3): 0.75 busy crosses 0.70; pending inside the 15 m `for:` at 14 m, firing at 16 m.
   - interval: 1m
