@@ -22,9 +22,9 @@
 - Retention has a register and an executor (`bins/maintenance/src/retention.rs`, ADR-0063 D-H/D-I; one-shot superuser,
   owner functions), but `control.retention_policies` v2 holds 0 rows and EVENTS / AUDIT_EVENTS are excluded from drops
   by CHECK. The PITR-coverage hold and the partition-error mapping are unmerged.
-- §6.2.1 and §37.2 let runtime roles hold no DELETE and name the migration owner's partition drop as the only physical
-  delete. The owner's account-deletion ruling (immediate deletion of live data) therefore had no physical path; the
-  earlier plan promised logical deletion only. Restores had no mechanism against resurrecting deleted data.
+- §6.2.1 and §37.2 require runtime roles to hold no DELETE and name the migration owner's partition drop as the only
+  physical delete. The owner's account-deletion ruling (immediate deletion of live data) therefore had no physical path;
+  the earlier plan promised logical deletion only. Restores had no mechanism against resurrecting deleted data.
 - A large library must be compressed automatically, with the user emailed **before** compression; stopping payment
   keeps all data (Free), and account deletion deletes live data immediately while backups age out by rotation. Deleting
   production data stays an owner act (module design note M19 §12).
@@ -167,8 +167,9 @@ assert exact counts and sets, never a non-empty check.
 
 ## Baseline text changed in this PR
 
-- §6.2.1, the fenced global-constraint block: "物理删行唯一出口" becomes two exits, with the ADR-0092 door named as
-  owner-owned, `role_maintenance` EXECUTE only, frozen targets only, and its §6.2.2 row landing with M19-5.
+- §6.2.1, the fenced global-constraint block: "物理删行唯一出口" becomes an explicit list of three exits — the
+  partition drop, the ADR-0062 sweep doors and the ADR-0092 door named as owner-owned, `role_maintenance` EXECUTE only,
+  frozen targets only, with its §6.2.2 row landing with M19-5.
 - §37, new closing paragraphs after the `DeletionGraph` states: the five scopes and the frozen closure, the two-step
   confirm bound to `manifest_hash`, logical-at-commit / physical-by-door, the erasure ledger and restore re-apply, the
   retention register, compression with notice first. Normative detail stays in this ADR.
