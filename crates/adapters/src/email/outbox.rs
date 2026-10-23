@@ -149,7 +149,7 @@ pub async fn enqueue_in_txn(
     req: &EnqueueRequest,
     allowlist: &RecipientAllowlist,
 ) -> Result<EnqueueOutcome, OutboxError> {
-    if suppressed_on(&mut **txn, &req.to_email, req.stream).await? {
+    if suppressed_on(txn, &req.to_email, req.stream).await? {
         return Ok(EnqueueOutcome::Suppressed);
     }
     let allowed = allowlist.permits(&req.to_email);
