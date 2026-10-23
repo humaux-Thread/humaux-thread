@@ -3,15 +3,19 @@
 //!   is missing rather than silently passing).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval,
 //!   humaux-telemetry, humaux-testkit, postgres, serde_json, sqlx, tokio, uuid]; services=[PostgreSQL(owner)
-//!   r=[projection.processing_gaps] w=[control.tenants, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::forget_repo, adapters::postgres, adapters::qdrant, domain::authority, domain::dataclass,
-//!   domain::identity, domain::ids, domain::memory, humaux-testkit, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, projection::card, projection::sparse, projection::stream, retrieval::completeness,
-//!   retrieval::envelope, telemetry::degrade]
+//!   r=[projection.processing_gaps] w=[control.memberships, control.private_reasoning_domains, control.tenants,
+//!   control.users, ops.jobs, ops.outbox, private.artifacts, private.events, private.evidence_objects,
+//!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
+//!   PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
+//!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::forget_repo, adapters::postgres, adapters::qdrant,
+//!   adapters::remember, adapters::retrieve, adapters::tests::support::token_keys, domain::authority,
+//!   domain::dataclass, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject,
+//!   humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
+//!   projection::serving, projection::sparse, projection::stream, retrieval::completeness, retrieval::envelope,
+//!   telemetry::degrade]
 //! Called-by: [cargo-test]
-//! Invariants: [PostgreSQL unreachable or role denied -> the call fails and surfaces the error to the caller; no silent fallback; Qdrant unreachable -> QdrantTransportError to the caller, no fallback search]
-//! Spec: Baseline §15.2; §17.4; §17.6
+//! Invariants: [PostgreSQL unreachable or role denied -> the call fails and surfaces the error to the caller; no silent fallback; Qdrant unreachable -> QdrantTransportError to the caller, no fallback search; the token a write returned must surface that write's exact memory_id on the next recall]
+//! Spec: Baseline §15.2; §15.5; §17.4; §17.6; §69
 //!
 //! Every ledger read below is independent, hand-rolled SQL against the admin connection —
 //! mirroring `stream_repo.rs`'s own `seed_log_row`/`seed_checkpoint`/`log_state` helpers,
@@ -21,8 +25,9 @@
 //! build_projection_block`) is the real production code path under test — only the IO is
 //! test-local.
 //!
-//! Four cases, one shared fixture shape (100 `DONE`, 0 `TOMBSTONED`, 0 `SKIPPED_BY_POLICY`, 0
-//! gaps, 0 pending — "100 条全部提交且 search-visible 已确认", §23.4's own precondition):
+//! Four §23.4 G23-2 cases share one fixture shape (100 `DONE`, 0 `TOMBSTONED`, 0
+//! `SKIPPED_BY_POLICY`, 0 gaps, 0 pending — "100 条全部提交且 search-visible 已确认", §23.4's
+//! own precondition):
 //! 1. **Injection 1**: bypass `retention::tombstone`, delete 10 Qdrant points directly.
 //! 2. **Injection 2**: only 93 of 100 points ever make it into the index (an adapter that acks
 //!    before search-visible confirmation, §17.4).
@@ -40,20 +45,28 @@
 //!    ids. The boundary-B/boundary-C `visible` counts both go through the production
 //!    `qdrant::count_visible`, the *same* call before and after §37 step 5's physical purge —
 //!    proving it purge-order-independent rather than asserted so.
+//!
+//! A fifth case covers G-M08-5 / §69 DOD-013 (§15.5): a real `remember` write, the opaque
+//! consistency token it returns, and the very next `recall_with_overlay` must return the exact
+//! `memory_id` linked to that Evidence. It needs PostgreSQL but no Qdrant index; the shared
+//! skip helper is used unchanged so "no DB" is still a declared-dependency failure (§79.2).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpStream;
 use std::time::{Duration, SystemTime};
 
 use humaux_adapters::forget_repo;
-use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_adapters::postgres::{MaintenanceDbPool, RuntimeDbPool};
 use humaux_adapters::qdrant::{
     Distance, IndexablePayload, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
     VisibleCountFilter, condition_to_filter, count, count_visible, create_collection_body,
     ha_profile_for, overlay_filter, tenant_index_body, upsert,
 };
+use humaux_adapters::remember::{self, RememberCommand};
+use humaux_adapters::retrieve;
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus};
 use humaux_domain::dataclass::DataClass;
+use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId, VisibilityClass};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_domain::memory::MemoryType;
@@ -63,6 +76,7 @@ use humaux_infra_cell::{
     authorize_cell_access,
 };
 use humaux_projection::card::EgressDisposition;
+use humaux_projection::serving::StreamFamily;
 use humaux_projection::sparse::build_sparse_lane;
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::completeness::LedgerClosure;
@@ -73,6 +87,9 @@ use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::{Client, NoTls};
 use sqlx::types::time::OffsetDateTime;
 use uuid::Uuid;
+
+#[path = "support/token_keys.rs"]
+mod token_keys;
 
 /// `PointId::to_json` is adapters-crate-private; this file is a separate compilation unit
 /// (an integration test only sees `humaux_adapters`'s public API) so it needs its own copy
@@ -298,30 +315,67 @@ fn read_ledger(admin: &mut Client, k: &StreamKey) -> LedgerReads {
 /// ONE batch whose failure is printed — a leaked fixture-only `(domain, projection_kind)` checkpoint makes
 /// `ops.health_snapshot` / `ops.admin_probe_snapshot` fail closed on the shared dev DB (ADR-0061 D-D, §78.2) — and the
 /// tenant row in a separate best-effort batch. Owns its own connection so the test keeps `&mut admin`.
+///
+/// The batch is a superset of the original stream-only one: the DOD-013 case writes a real `remember` Evidence,
+/// outbox row and Memory, and those parents must be deleted before the tenant (their FKs are `RESTRICT`, not
+/// cascade). Extra users are tracked explicitly because `control.users` is cluster-global, not tenant-owned.
 struct TenantCleanup {
     admin: Client,
     tenant_id: Uuid,
+    user_ids: Vec<Uuid>,
 }
 
 impl TenantCleanup {
     fn new(dsn: &str, tenant_id: Uuid) -> Self {
         // dep: PostgreSQL(owner) — fixture cleanup connection
         let admin = Client::connect(dsn, NoTls).expect("cleanup connection");
-        Self { admin, tenant_id }
+        Self {
+            admin,
+            tenant_id,
+            user_ids: Vec::new(),
+        }
+    }
+
+    /// Track one `control.users` row this fixture created; `Drop` removes it after memberships.
+    fn track_user(&mut self, user_id: Uuid) {
+        self.user_ids.push(user_id);
     }
 }
 
 impl Drop for TenantCleanup {
     fn drop(&mut self) {
         if let Err(error) = self.admin.batch_execute(&format!(
-            "DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
-             DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}';",
+            // Clear a possibly aborted owner transaction before deleting recorded identities.
+            "ROLLBACK; \
+             DELETE FROM ops.jobs WHERE tenant_id = '{0}'; \
+             DELETE FROM private.artifacts WHERE artifact_id IN \
+               (SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = '{0}'); \
+             DELETE FROM private.memory_evidence WHERE memory_id IN \
+               (SELECT memory_id FROM private.memory_records WHERE tenant_id = '{0}') \
+               OR evidence_id IN (SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = '{0}'); \
+             DELETE FROM private.memory_records WHERE tenant_id = '{0}'; \
+             DELETE FROM ops.outbox WHERE tenant_id = '{0}'; \
+             DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
+             DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}'; \
+             DELETE FROM private.events WHERE event_id IN \
+               (SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = '{0}'); \
+             DELETE FROM private.evidence_objects WHERE tenant_id = '{0}'; \
+             DELETE FROM control.private_reasoning_domains WHERE tenant_id = '{0}'; \
+             DELETE FROM control.memberships WHERE tenant_id = '{0}';",
             self.tenant_id
         )) {
             eprintln!(
                 "recall_envelope_g23 cleanup failed for tenant {}: {error}",
                 self.tenant_id
             );
+        }
+        for user_id in &self.user_ids {
+            if let Err(error) = self
+                .admin
+                .execute("DELETE FROM control.users WHERE user_id=$1", &[user_id])
+            {
+                eprintln!("recall_envelope_g23 user cleanup failed for {user_id}: {error}");
+            }
         }
         let _ = self.admin.batch_execute(&format!(
             "DELETE FROM control.tenants WHERE tenant_id = '{}';",
@@ -955,4 +1009,196 @@ fn g23_2_legal_deletion_contrast_stays_closed_across_four_lanes() {
 fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
     let sep = if admin_dsn.contains('?') { '&' } else { '?' };
     format!("{admin_dsn}{sep}options=-c%20role%3D{role}")
+}
+
+// ============================================================================
+// G-M08-5 / §69 DOD-013 (§15.5): write then the very next recall with the token
+// `remember` returned must return the exact Memory linked to that write.
+// ============================================================================
+
+const RYW_SCOPE_KIND: &str = "tenant";
+const RYW_DOMAIN: &str = "knowledge";
+const RYW_PROJECTION_KIND: &str = "ingest";
+const RYW_PROJECTION_VERSION: &str = "v1";
+
+/// Seeds the Memory that distillation would create for `evidence_id` and its `PRIMARY`
+/// `private.memory_evidence` link, in one transaction so the deferred §8.6
+/// "every Memory has Evidence" trigger sees the pair at commit.
+fn seed_memory_linked_to_evidence(admin: &mut Client, tenant_id: Uuid, evidence_id: Uuid) -> Uuid {
+    let mut txn = admin.transaction().expect("memory fixture transaction");
+    let memory_id: Uuid = txn
+        .query_one(
+            "INSERT INTO private.memory_records \
+               (tenant_id, memory_type, content, visibility_class, authority_class, confidence, \
+                status, asserted_at) \
+             VALUES ($1, 'FACT', $2, 'TENANT_SHARED', 'PrivateKnowledge', $3, 'active', now()) \
+             RETURNING memory_id",
+            &[
+                &tenant_id,
+                &serde_json::json!({"title": "g23_4 read-your-writes", "key_claim": "g23_4"}),
+                &0.9_f32,
+            ],
+        )
+        .expect("insert the Memory distillation would create")
+        .get(0);
+    txn.execute(
+        "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, ordinal) \
+         VALUES ($1, $2, 'PRIMARY', 0)",
+        &[&memory_id, &evidence_id],
+    )
+    .expect("link the Memory to the write's Evidence");
+    txn.commit().expect("Memory and link commit together");
+    memory_id
+}
+
+/// Seeds the tenant, user, membership and private reasoning domain the DOD-013 write needs and
+/// returns the `TenantCleanup` guard that removes them even when an assertion fails.
+fn seed_ryw_fixture(dsn: &str, admin: &mut Client) -> (Uuid, Uuid, Uuid, TenantCleanup) {
+    let tenant_id = Uuid::new_v4();
+    admin
+        .execute(
+            "INSERT INTO control.tenants (tenant_id, name, state) VALUES ($1, $2, 'ACTIVE')",
+            &[&tenant_id, &format!("g23_4 ryw {tenant_id}")],
+        )
+        .expect("insert tenant");
+    let mut cleanup = TenantCleanup::new(dsn, tenant_id);
+
+    let user_id: Uuid = admin
+        .query_one(
+            "INSERT INTO control.users(state) VALUES ('ACTIVE') RETURNING user_id",
+            &[],
+        )
+        .expect("insert user")
+        .get(0);
+    cleanup.track_user(user_id);
+    admin
+        .execute(
+            "INSERT INTO control.memberships(tenant_id,user_id,role,state) \
+             VALUES($1,$2,'member','ACTIVE')",
+            &[&tenant_id, &user_id],
+        )
+        .expect("insert membership");
+    let reasoning_domain_id = Uuid::new_v4();
+    admin
+        .execute(
+            "INSERT INTO control.private_reasoning_domains \
+               (reasoning_domain_id, tenant_id, name) VALUES ($1, $2, 'default')",
+            &[&reasoning_domain_id, &tenant_id],
+        )
+        .expect("insert private reasoning domain");
+
+    (tenant_id, user_id, reasoning_domain_id, cleanup)
+}
+
+/// The single `remember` command the DOD-013 case issues: one fixed scope/domain pair,
+/// `DirectUserInput` origin and TENANT_SHARED visibility under the caller's own user.
+fn ryw_remember_command(
+    tenant_id: Uuid,
+    user_id: Uuid,
+    reasoning_domain_id: Uuid,
+    content: &str,
+) -> RememberCommand {
+    RememberCommand {
+        tenant_id,
+        authorization_user_id: Some(user_id),
+        scope_kind: RYW_SCOPE_KIND.to_string(),
+        scope_id: tenant_id,
+        domain: RYW_DOMAIN.to_string(),
+        projection_kind: RYW_PROJECTION_KIND.to_string(),
+        projection_version: RYW_PROJECTION_VERSION.to_string(),
+        consistency_token_expires_at: OffsetDateTime::now_utc()
+            + std::time::Duration::from_secs(300),
+        batch_id: None,
+        payload_sha256: payload_sha256(content.as_bytes()),
+        data_class: "INTERNAL".to_string(),
+        origin_class: EvidenceOriginClass::DirectUserInput,
+        origin_principal_id: Some(user_id),
+        origin_connector_id: None,
+        visibility_class: "TENANT_SHARED".to_string(),
+        visibility_user_id: None,
+        visibility_workspace_id: None,
+        reasoning_domain_id,
+        occurred_at: None,
+        event_kind: "USER_MESSAGE".to_string(),
+        event_payload: serde_json::json!({ "content": content }),
+        subjects: humaux_domain::subject::SubjectDeclaration::default(),
+        affects: Vec::new(),
+        mood_half_life: None,
+    }
+}
+
+/// §15.5 / §69 DOD-013: the token is the one `remember` returned (never a test-minted one),
+/// and the write must come back on that same call's next `recall_with_overlay` — as the exact
+/// `memory_id` linked to the Evidence, not merely a non-empty candidate list.
+#[test]
+fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
+    const TEST: &str = "g23_4_remember_token_recall_returns_the_exact_memory_id";
+    let Some((dsn, mut admin)) = skip_unless_both_reachable(TEST) else {
+        return;
+    };
+    token_keys::install();
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+
+    let (tenant_id, user_id, reasoning_domain_id, _cleanup) = seed_ryw_fixture(&dsn, &mut admin);
+
+    // dep: PostgreSQL(role_gateway) — the real remember/recall entry points run under this role
+    let gateway = rt
+        .block_on(RuntimeDbPool::connect(&dsn_as_role(&dsn, "role_gateway")))
+        .expect("role_gateway pool");
+    let auth = AuthorizationScope::new(
+        TenantId(tenant_id),
+        PrincipalId(user_id),
+        Some(UserId(user_id)),
+        BoundedSet::new(Vec::<WorkspaceId>::new()).expect("empty workspace set is valid"),
+    );
+    let family = StreamFamily::new(
+        TenantId(tenant_id),
+        RYW_SCOPE_KIND,
+        tenant_id,
+        RYW_DOMAIN,
+        RYW_PROJECTION_KIND,
+    );
+
+    let content = "g23_4 read-your-writes";
+    let accepted = rt
+        .block_on(remember::remember(
+            &gateway,
+            ryw_remember_command(tenant_id, user_id, reasoning_domain_id, content),
+        ))
+        .expect("real remember write must commit");
+    let memory_id = seed_memory_linked_to_evidence(&mut admin, tenant_id, accepted.evidence_id);
+
+    let envelope = rt
+        .block_on(retrieve::recall_with_overlay(
+            &gateway,
+            &accepted.consistency_token,
+            &auth,
+            &family,
+        ))
+        .expect("the token returned by real remember must be accepted by the very next recall");
+
+    assert!(
+        !envelope.served_by_projection,
+        "no serving checkpoint exists yet, so the delta overlay is the only path to the write"
+    );
+    assert_eq!(
+        envelope.overlay.len(),
+        1,
+        "the just-written Evidence must come back on the next recall"
+    );
+    let candidate = &envelope.overlay[0];
+    assert_eq!(
+        candidate.evidence_id, accepted.evidence_id,
+        "the overlay candidate is the Evidence remember just wrote"
+    );
+    assert_eq!(
+        candidate.processing_state,
+        retrieve::ProcessingState::Issued,
+        "the freshly written row is still ISSUED, not settled"
+    );
+    assert_eq!(
+        candidate.memory_ids,
+        vec![memory_id],
+        "the exact memory_id linked to the write must be returned, not merely a non-empty list"
+    );
 }
