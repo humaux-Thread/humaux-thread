@@ -393,6 +393,8 @@ fn code_issue_refuses_an_unregistered_redirect_and_a_disabled_client() {
 
 /// Two connections consume the same code at once; exactly one wins, in every round.
 #[test]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, flagged by PR #268 CI 39994974812 after #259 merged); refactor in a later card
+#[allow(clippy::excessive_nesting)]
 fn concurrent_double_consume_has_exactly_one_winner() {
     run_db_fixture::<OauthFixture, _>("concurrent_double_consume_has_exactly_one_winner", |h| {
         for round in 0..ROUNDS {

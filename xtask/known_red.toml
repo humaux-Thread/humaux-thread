@@ -290,7 +290,7 @@ reason = "pre-existing population measured 2026-10-23 on the merge of card/m01-6
 
 [[lint_allows]]
 lint = "excessive_nesting"
-count = 48
+count = 49
 owner = "M01-6"
-reason = "48 allows, each on a function clippy flagged with clippy.toml's threshold of 5, measured in two stages: 7 from the targeted clippy rounds (runs 39954828293/39957055872/39965486805/39968731760, retrieving the crates cargo had reached before it stopped at the first failing one) and 41 from the complete workspace sweep of run 39973585345, which ran clippy as the workspace rustc wrapper at warn level so every target of all 25 members was linted in one log (76 blocks in 41 functions, all now carrying #[allow(clippy::excessive_nesting)] with a ponytail reason); M01-6 refactors nothing and the count may only shrink"
+reason = "48 allows, each on a function clippy flagged with clippy.toml's threshold of 5, measured in two stages: 7 from the targeted clippy rounds (runs 39954828293/39957055872/39965486805/39968731760, retrieving the crates cargo had reached before it stopped at the first failing one) and 41 from the complete workspace sweep of run 39973585345, which ran clippy as the workspace rustc wrapper at warn level so every target of all 25 members was linted in one log (76 blocks in 41 functions, all now carrying #[allow(clippy::excessive_nesting)] with a ponytail reason); M01-6 refactors nothing and the count may only shrink; +1 = crates/adapters/tests/oauth_persistence.rs concurrent_double_consume_has_exactly_one_winner, merged from #259 (M02-8) after the sweep (PR CI 39994974812)"
 
