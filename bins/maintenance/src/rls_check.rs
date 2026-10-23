@@ -3300,6 +3300,17 @@ const R3_PRIVATE_WORKER_FUNCTIONS: &[(&str, &[&str])] = &[
         "control.reasoning_route_health_state(uuid,bigint)",
         &["role_private_worker"],
     ),
+    // 0266 (M02-5): the passwordless login challenge's only write path onto control.email_challenges and
+    // control.auth_events — role_gateway alone, owner SECURITY DEFINER, search_path=pg_catalog.
+    (
+        "control.login_challenge_issue(text,text,integer,integer,integer)",
+        &["role_gateway"],
+    ),
+    ("control.login_challenge_claim(text)", &["role_gateway"]),
+    (
+        "control.login_challenge_settle(uuid,boolean)",
+        &["role_gateway"],
+    ),
 ];
 
 fn check_r3_health_resolver_contract(

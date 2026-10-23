@@ -27,7 +27,8 @@ use std::time::{Duration, SystemTime};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 use hmac::{Hmac, KeyInit, Mac};
-use rand::{Rng, RngCore};
+use rand::rngs::OsRng;
+use rand::{RngCore, TryRngCore};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -103,6 +104,8 @@ pub struct AuthConfig {
     pub signup_challenge: ChallengePolicy,
     pub reset_challenge: ChallengePolicy,
     pub email_change_challenge: ChallengePolicy,
+    /// M02 D2 passwordless login code: TTL, attempt cap and resend cooldown.
+    pub login_challenge: ChallengePolicy,
     /// §74.4 default session lifetime for a freshly issued session row.
     pub session_ttl: Duration,
 }
@@ -121,6 +124,7 @@ impl Default for AuthConfig {
             signup_challenge: ChallengePolicy::default(),
             reset_challenge: ChallengePolicy::default(),
             email_change_challenge: ChallengePolicy::default(),
+            login_challenge: ChallengePolicy::default(),
             // §74.4 — a real deployment overrides this, same status as every other field's
             // default; 30 days is this module's own baseline recommendation, not a spec-frozen
             // number.
@@ -305,6 +309,12 @@ impl CodeHash {
         &self.0
     }
 
+    /// Rewraps a digest read back from a `code_hash` column so [`CodeHash::verify`] can compare a
+    /// candidate against it.
+    pub fn from_stored(digest: String) -> Self {
+        Self(digest)
+    }
+
     /// Hashes `candidate` under the same `pepper` and compares against `self` in constant time
     /// (byte-length-fixed hex digests on both sides, so this is not a variable-length-
     /// comparison side channel — XOR-accumulate rather than `==` purely so a future refactor to
@@ -349,14 +359,28 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Generates a new 6-digit code (cryptographically random via `rand`'s OS-backed generator)
-/// and its keyed hash. The plaintext is returned solely for the caller to hand to an
-/// [`EmailNotifier`]; the hash is what a caller persists.
+/// Digits in a generated verification code.
+const VERIFICATION_CODE_DIGITS: usize = 6;
+
+/// Generates a new 6-digit code and its keyed hash. The digits come from the operating system's
+/// CSPRNG (never a seeded or thread-local generator, §74.2) by rejection sampling, so every digit
+/// is uniform. The plaintext is returned solely for the caller to put in the outbound mail body;
+/// the hash is what a caller persists.
 pub fn generate_verification_code(pepper: &[u8]) -> (PlaintextCode, CodeHash) {
-    let mut rng = rand::rng();
-    let code: String = (0..6)
-        .map(|_| char::from(b'0' + rng.random_range(0..10)))
-        .collect();
+    let mut code = String::with_capacity(VERIFICATION_CODE_DIGITS);
+    while code.len() < VERIFICATION_CODE_DIGITS {
+        let mut block = [0u8; 16];
+        // A failed OS RNG read must not degrade into a weaker source: fail closed.
+        OsRng
+            .try_fill_bytes(&mut block)
+            .expect("OS CSPRNG unavailable");
+        for byte in block {
+            // 250 = 25 * 10: bytes at or above it would bias the low digits.
+            if byte < 250 && code.len() < VERIFICATION_CODE_DIGITS {
+                code.push(char::from(b'0' + byte % 10));
+            }
+        }
+    }
     let hash = CodeHash(hmac_sha256_hex(pepper, &code));
     (PlaintextCode(code), hash)
 }
@@ -754,16 +778,19 @@ pub enum AuthEventType {
     PasswordResetCompleted,
     EmailChangeRequested,
     EmailChangeCompleted,
+    /// A login code was issued (M02-5); the code itself never appears in the event.
+    LoginCodeSent,
 }
 
 impl AuthEventType {
-    /// All ten variants, declaration order — matches
-    /// `migrations/0035_email_auth_identity.sql`'s `event_type` CHECK list order verbatim,
+    /// All eleven variants, declaration order — the first ten match
+    /// `migrations/0035_email_auth_identity.sql`'s `event_type` CHECK list order verbatim, the
+    /// eleventh is 0266's addition,
     /// verified against the migration file's actual text by
     /// `auth_event_type_db_strings_match_migration_check_constraint` rather than against a
     /// second hand-copied string list (§78.2 — the failure mode a copy-vs-copy comparison
     /// cannot catch is exactly "someone edited the migration and forgot the copy").
-    pub const ALL: [AuthEventType; 10] = [
+    pub const ALL: [AuthEventType; 11] = [
         Self::SignupStarted,
         Self::EmailChallengeSent,
         Self::EmailVerified,
@@ -774,6 +801,7 @@ impl AuthEventType {
         Self::PasswordResetCompleted,
         Self::EmailChangeRequested,
         Self::EmailChangeCompleted,
+        Self::LoginCodeSent,
     ];
 
     /// SQL CHECK-constraint spelling, verbatim (`migrations/0035_email_auth_identity.sql`).
@@ -789,6 +817,7 @@ impl AuthEventType {
             Self::PasswordResetCompleted => "PASSWORD_RESET_COMPLETED",
             Self::EmailChangeRequested => "EMAIL_CHANGE_REQUESTED",
             Self::EmailChangeCompleted => "EMAIL_CHANGE_COMPLETED",
+            Self::LoginCodeSent => "LOGIN_CODE_SENT",
         }
     }
 }
@@ -1489,13 +1518,13 @@ mod tests {
     fn auth_event_type_db_strings_match_migration_check_constraint() {
         let migration_sql = include_str!("../../../migrations/0035_email_auth_identity.sql");
         let db_values = extract_check_in_values(migration_sql, "event_type");
-        let rust_values: Vec<String> = AuthEventType::ALL
-            .iter()
-            .map(|v| v.as_db_str().to_string())
-            .collect();
+        // 0035 is the baseline list; 0266 widened it by `LOGIN_CODE_SENT`, whose exact-set contract
+        // lives in `adapters/tests/auth_contract.rs` (G-M02-16).
+        let baseline = &AuthEventType::ALL[..AuthEventType::ALL.len() - 1];
+        let rust_values: Vec<String> = baseline.iter().map(|v| v.as_db_str().to_string()).collect();
         assert_eq!(
             db_values.len(),
-            AuthEventType::ALL.len(),
+            baseline.len(),
             "count drift between AuthEventType::ALL and the migration's event_type CHECK list"
         );
         assert_eq!(
