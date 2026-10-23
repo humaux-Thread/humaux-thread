@@ -8,7 +8,7 @@
 //!   env=[CARGO_MANIFEST_DIR];
 //!   modules=[adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo,
-//!   domain::affect, domain::error,
+//!   application::signed_token, domain::affect, domain::error,
 //!   domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving,
 //!   projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, tests, maintenance::switch_visible]
