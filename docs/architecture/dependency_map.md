@@ -260,6 +260,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -1678,6 +1681,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -2157,6 +2163,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -2870,6 +2879,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -3861,6 +3873,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -4484,6 +4499,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::remember`
 - reads `control.private_reasoning_domains`
+- reads `ops.outbox`
+- reads `private.evidence_sources`
+- reads `projection.stream_log`
 - writes `private.events`
 - writes `private.evidence_projects`
 - writes `private.evidence_sources`
@@ -4976,6 +4994,7 @@ executed by:
 
 ### `control.audit_events`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
@@ -5455,6 +5474,7 @@ executed by:
 
 ### `control.operation_receipts`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
@@ -6394,6 +6414,7 @@ executed by:
 
 ### `control.usage_reservations`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
@@ -7511,6 +7532,7 @@ executed by:
 ### `ops.outbox`
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_reads`
@@ -7526,6 +7548,7 @@ read by:
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::read_materialize`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -7534,29 +7557,34 @@ read by:
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::read_materialize`
+- process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
+- process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
@@ -8449,6 +8477,7 @@ executed by:
 
 ### `private.events`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -8566,6 +8595,7 @@ executed by:
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::memory_attribution`
@@ -8739,8 +8769,15 @@ executed by:
 
 ### `private.evidence_sources`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::remember`
 
 written by:
 - (no process): `adapters::tests::evidence_sources`
@@ -10288,6 +10325,7 @@ executed by:
 
 ### `projection.stream_log`
 read by:
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
@@ -10303,6 +10341,7 @@ read by:
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::read_materialize`
+- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -10313,6 +10352,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
@@ -10321,6 +10361,7 @@ read by:
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::exact_census`
@@ -10329,6 +10370,7 @@ read by:
 - process(humaux-maintenance): `adapters::postgres`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `maintenance::drill`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10338,6 +10380,7 @@ read by:
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::postgres`
 - process(humaux-private-worker): `adapters::read_materialize`
+- process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::context_repo`
@@ -10345,6 +10388,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
+- process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 
 written by:
@@ -11431,6 +11475,7 @@ executed by:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -11948,6 +11993,7 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
@@ -12074,6 +12120,7 @@ modules naming it:
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -12424,6 +12471,7 @@ modules naming it:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::email_outbox`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -12558,6 +12606,7 @@ modules naming it:
 - `adapters::rebuild`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::note_history`
 - `adapters::tests::note_reads`
 - `adapters::tests::note_replace`
@@ -12685,6 +12734,7 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
@@ -12985,6 +13035,7 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
@@ -13083,6 +13134,7 @@ modules naming it:
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
@@ -16352,6 +16404,15 @@ services (computed):
 default run:
 
 ### `crates/adapters/tests/evidence_sources.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/evidence_sources_dedupe.rs`
 db-bound (default run): yes
 
 services (computed):
