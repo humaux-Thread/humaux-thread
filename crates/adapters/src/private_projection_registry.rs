@@ -436,10 +436,9 @@ async fn identity_binding_in_txn(
 /// background job or Qdrant count scan is needed (module design M10 B27, card M10-5). `points` is `+1` for one
 /// newly bound point and `-n` for the live bindings a retirement took.
 ///
-/// `known_dimension` is the registered vector's width. A retirement holds no vector and reads the label's bound
-/// width from `projection.embedding_fingerprints` instead (0232: one width per `embedding_version`). A label with
-/// no bound fingerprint moves the point count but adds no vector bytes, the same way a vectorless registration
-/// does.
+/// `known_dimension` is the registered vector's width. A retirement or vectorless registration reads the label's
+/// bound width from `projection.embedding_fingerprints` instead (0232: one width per `embedding_version`). Only a
+/// label with no bound fingerprint moves the point count without moving vector bytes.
 ///
 /// The retire side moves on the binding's transition, not on the later Qdrant delete: a delete that never lands
 /// leaves an orphan the resolver no longer serves, and a retried retirement finds no live row and subtracts
