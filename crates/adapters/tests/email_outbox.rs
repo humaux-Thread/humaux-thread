@@ -820,6 +820,99 @@ fn submission_unknown_is_never_resent() {
     });
 }
 
+/// M02-5: the plaintext login code is scrubbed from `payload` at the earliest point it is not
+/// needed — in the in-flight UPDATE (covers the crash case) and in settle (SENT / FAILED /
+/// SUPPRESSED) — never left behind past the row's life.
+#[test]
+fn login_code_is_scrubbed_from_payload_in_every_state() {
+    let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    run_db_fixture::<OutboxFixture, _>(
+        "login_code_is_scrubbed_from_payload_in_every_state",
+        |mut handle| {
+            let has_code = |h: &mut Handle, to: &str| -> bool {
+                h.admin
+                    .query_one(
+                        "SELECT payload ? 'code' FROM ops.email_outbox WHERE to_email = $1",
+                        &[&to],
+                    )
+                    .expect("row")
+                    .get(0)
+            };
+            let seed = |h: &mut Handle, tag: &str| -> String {
+                let to = unique_email(tag);
+                let mut r = req(h, &to, EmailStream::Transactional);
+                r.payload = serde_json::json!({ "code": "123456", "keep": "x" });
+                h.rt.block_on(outbox::enqueue(
+                    &h.gateway,
+                    &r,
+                    &RecipientAllowlist::allow_all(),
+                ))
+                .expect("seed a QUEUED row");
+                assert!(has_code(h, &to), "precondition: code present while QUEUED");
+                to
+            };
+
+            // (state, payload ? 'code') per case, asserted exactly.
+            let mut observed: Vec<(String, bool)> = Vec::new();
+
+            let to = seed(&mut handle, "scrub-sent");
+            assert_eq!(
+                drain(
+                    &handle,
+                    &RecordingEmailProvider::new(),
+                    &SendPolicy::default(),
+                    10
+                ),
+                1
+            );
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            let to = seed(&mut handle, "scrub-failed");
+            let failing = RecordingEmailProvider::new();
+            failing.push_outcome(ScriptedOutcome::Err(
+                EmailErrorKind::Rejected,
+                "550 mailbox unavailable".to_string(),
+            ));
+            assert_eq!(drain(&handle, &failing, &SendPolicy::default(), 10), 1);
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            let to = seed(&mut handle, "scrub-suppressed");
+            let policy = SendPolicy {
+                allowlist: RecipientAllowlist::only(["nobody@example.invalid"]),
+                max_sends_per_minute: None,
+            };
+            assert_eq!(
+                drain(&handle, &RecordingEmailProvider::new(), &policy, 10),
+                1
+            );
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            let to = seed(&mut handle, "scrub-crash");
+            let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle.rt.block_on(outbox::run_once(
+                    &handle.worker,
+                    &CrashingProvider,
+                    &SendPolicy::default(),
+                    10,
+                    Some(handle.user_id),
+                ))
+            }));
+            assert!(crashed.is_err(), "the provider panic must reach the caller");
+            observed.push((state_of(&mut handle, &to), has_code(&mut handle, &to)));
+
+            assert_eq!(
+                observed,
+                vec![
+                    ("SENT".to_string(), false),
+                    ("FAILED".to_string(), false),
+                    ("SUPPRESSED".to_string(), false),
+                    ("SUBMISSION_UNKNOWN".to_string(), false),
+                ]
+            );
+        },
+    );
+}
+
 /// M22 D11 (the door half): the drain takes AUTH before DIGEST regardless of arrival order.
 #[test]
 fn drain_takes_highest_priority_first() {
