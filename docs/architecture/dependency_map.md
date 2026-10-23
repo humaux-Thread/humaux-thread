@@ -5859,12 +5859,14 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
 
 ### `control.plans`
 read by:
+- (no process): `adapters::tests::entitlement_projector`
 
 written by:
 - (no process): `adapters::tests::plan_catalog`
