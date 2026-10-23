@@ -289,13 +289,13 @@ reason = "due since Phase 4; no gate or test is tied to this name; M05 (trust do
 
 [[lint_allows]]
 lint = "too_many_lines"
-count = 210
+count = 211
 owner = "M01-6"
-reason = "pre-existing population measured 2026-10-23 on card/m01-6-nesting-ratchet (210 attributes: 181 single-allow lines plus 29 multi-line or multi-lint forms such as #[allow(clippy::too_many_arguments, clippy::too_many_lines)]); M01-6 adds no too_many_lines allow, the size budget shrinks in later cards"
+reason = "pre-existing population measured 2026-10-23 on the merge of card/m01-6-nesting-ratchet with main b8818779 (211 attributes: single-line as well as multi-line and multi-lint forms such as #[allow(clippy::too_many_arguments, clippy::too_many_lines)]); the note's 160 was the 4af8822 count and main added one more on the way here; M01-6 adds no too_many_lines allow, the size budget shrinks in later cards"
 
 [[lint_allows]]
 lint = "excessive_nesting"
-count = 3
+count = 5
 owner = "M01-6"
-reason = "exactly three allows, each a measured site: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list (4 blocks over clippy.toml's threshold of 5, CI run 39954828293) and the two spawned accept loops of crates/infra-cell/src/transport.rs::{rebinding_between_successive_calls_is_rejected_by_the_same_resolver, stable_resolution_to_a_cell_address_succeeds_on_every_call} (2 blocks, CI run 39957055872); all test fixtures, allowed with a ponytail reason because M01-6 refactors nothing"
+reason = "exactly five allows, each a measured site: crates/retrieval/tests/planner_predicate_eval.rs::parse_sql_value_list (4 blocks over clippy.toml's threshold of 5, CI run 39954828293); crates/infra-cell/src/transport.rs::{rebinding_between_successive_calls_is_rejected_by_the_same_resolver, stable_resolution_to_a_cell_address_succeeds_on_every_call} (2 blocks, CI run 39957055872); bins/maintenance/src/deploy_check.rs::host_network_dsn_reasons and bins/maintenance/src/migration_manifest.rs::statement_separator (3 blocks, CI run 39965486805); allow-with-ponytail because M01-6 refactors nothing"
 
