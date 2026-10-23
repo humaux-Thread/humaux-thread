@@ -21,7 +21,7 @@ humaux-domain = { path = "../domain" }
 humaux-retrieval = { path = "../retrieval" }
 # why: password hashing for auth.rs's H2 state machine; used-by: [application::auth]
 argon2 = "0.5"
-# why: token/RNG source for auth, referral codes and supersede confirm tokens; used-by: [application::auth, application::referral, application::supersede]
+# why: token/RNG source for auth, referral codes and supersede confirm tokens; used-by: [application::auth, application::referral, application::signed_token, application::supersede]
 rand = "0.9"
 # §74.2/§73.5: HMAC-SHA256 keyed hash for verification codes, same construction and version
 # pins as `crates/protocol` already resolved for `control.api_keys.key_hash` — reused, not a
@@ -47,7 +47,7 @@ thiserror = "2"
 async-trait = "0.1"
 # `consolidate::PrivateReasoningDomainId`'s inner id — same pin as `humaux-domain`'s existing
 # `uuid = "1.25.0"`, no new independent version in the dependency graph.
-# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::pin, application::public_evolve, application::retrieval_embedding_port, application::signed_token]
+# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::pin, application::public_evolve, application::retrieval_embedding_port]
 uuid = "1.25.0"
 
 [dev-dependencies]
