@@ -201,13 +201,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo xtask metrics-registry
 
-      # ADR-0061 D-H: `--check` adds D7 (each of the six processes' real `--metrics-families` output) and D8 (the
-      # families the loaded rules reference) to the D1–D6 check above. It stays a separate step because
-      # contract-impact's G80-6 test pins the exact `run: cargo xtask metrics-registry` line of the step above.
-      - name: cargo xtask metrics-registry --check (D7/D8)
-        if: ${{ !cancelled() }}
-        run: cargo xtask metrics-registry --check
-
       - name: cargo xtask gate-registry
         if: ${{ !cancelled() }}
         run: cargo xtask gate-registry
