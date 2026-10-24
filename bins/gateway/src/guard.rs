@@ -192,6 +192,10 @@ const COORDINATE_TASK_KEYS: [&str; 5] = [
     "coordinate.task_complete",
     "coordinate.task_fail",
 ];
+
+/// Its own narrow admitted-write set (ADR-0094 D-A): `continuity.publish` writes project continuity, which is neither
+/// a memory write nor a coordination write, so it is never folded into either closed list above.
+const CONTINUITY_PUBLISH_KEYS: [&str; 1] = ["continuity.publish"];
 // §41.2: plan classes are not modelled yet; every call is `unclassified` (guard.rs record sites).
 const PLAN_CLASS: &str = "unclassified";
 const AUTH_FLOW: &str = "service_credential";
@@ -616,10 +620,10 @@ impl GatewayGuard {
 
     /// A non-destructive admitted write (§6.1.3 / ADR-0028 D-F: the `SubjectWriteOp` registry
     /// ops — `memory.subject_register` / `memory.subject_link_key`; ADR-0078 Q10: the five
-    /// `coordinate.task_*` ops). Same admission, rate, entitlement, BMO reservation/settlement
-    /// and finished audit as a local read; no confirm gate because nothing is deleted, superseded
-    /// or hidden. The handler owns its own transaction; an error there settles as a refused write
-    /// (reservation released).
+    /// `coordinate.task_*` ops; ADR-0094 D-A: `continuity.publish`). Same admission, rate,
+    /// entitlement, BMO reservation/settlement and finished audit as a local read; no confirm gate
+    /// because nothing is deleted, superseded or hidden. The handler owns its own transaction; an
+    /// error there settles as a refused write (reservation released).
     pub(crate) async fn run_local_write<T, F, Fut>(
         &self,
         context: &McpHttpContext,
@@ -634,12 +638,14 @@ impl GatewayGuard {
     {
         let result = async {
             let admitted = self.admit(context, operation, requested_workspace).await?;
-            // ADR-0028 D-F / ADR-0030 D-C / ADR-0078 Q10: the closed non-destructive write sets (subject
-            // registry ops, affect annotation, coordinate.task_*) — never a generic "any write"
+            // ADR-0028 D-F / ADR-0030 D-C / ADR-0078 Q10 / ADR-0094 D-A: the closed non-destructive write sets (subject
+            // registry ops, affect annotation, coordinate.task_*, continuity.publish) — never a generic "any write"
             // admission. The contract's `meter_kind` is the charge: a task op may be zeroControl
             // (heartbeat, §33), every other write is ordinary1.
             let key = operation.operation_key();
-            let admissible = if COORDINATE_TASK_KEYS.contains(&key) {
+            let admissible = if CONTINUITY_PUBLISH_KEYS.contains(&key) {
+                operation.meter_kind() == MeterKind::Ordinary
+            } else if COORDINATE_TASK_KEYS.contains(&key) {
                 matches!(
                     operation.meter_kind(),
                     MeterKind::Ordinary | MeterKind::Zero

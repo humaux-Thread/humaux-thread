@@ -761,6 +761,134 @@ mod tests {
         }
     }
 
+    #[test]
+    fn continuity_publish_contract_is_slot_version_free_and_typed() {
+        let catalog = CanonicalCatalog::load().expect("catalog");
+        let project_id = "018d32a7-0000-7000-8000-000000000001";
+        let memory_id = "018d32a7-0000-7000-8000-000000000002";
+        let evidence_id = "018d32a7-0000-7000-8000-000000000003";
+        let publish = json!({
+            "project_id": project_id,
+            "facet_kind": "DECISIONS",
+            "body": {"items":[{"source_id":"s-1","text":"one"}]},
+            "sources": {
+                "memories":[{"memory_id":memory_id,"content_sha256":"ab".repeat(32)}],
+                "evidence":[{"evidence_id":evidence_id,"payload_sha256":"cd".repeat(32)}]
+            },
+            "removals": ["s-0"]
+        });
+        let descriptor = catalog
+            .validate(ToolName::Continuity, &publish)
+            .expect("continuity.publish");
+        assert_eq!(descriptor.operation_key(), "continuity.publish");
+        assert_eq!(descriptor.required_scope(), "memory:write");
+        assert_eq!(descriptor.meter_kind(), MeterKind::Ordinary);
+
+        let mut with_slot_version = publish.clone();
+        with_slot_version["expected_slot_version"] = json!(0);
+        let mut empty_sources = publish.clone();
+        empty_sources["sources"] = json!({"memories":[],"evidence":[]});
+        let mut reserved_facet = publish.clone();
+        reserved_facet["facet_kind"] = json!("ACTIVE_TASKS");
+        let mut scoreless_source = publish.clone();
+        scoreless_source["sources"]["memories"][0]
+            .as_object_mut()
+            .expect("memory source")
+            .remove("content_sha256");
+        let mut scalar_with_removal = publish.clone();
+        scalar_with_removal["facet_kind"] = json!("GOAL");
+        for invalid in [
+            with_slot_version,
+            empty_sources,
+            reserved_facet,
+            scoreless_source,
+            scalar_with_removal,
+        ] {
+            assert!(
+                matches!(
+                    catalog.validate(ToolName::Continuity, &invalid),
+                    Err(ErrorCode::InvalidInput)
+                ),
+                "{invalid} must be refused"
+            );
+        }
+
+        let published = json!({
+            "contract_version": "1",
+            "project_id": project_id,
+            "facet_kind": "DECISIONS",
+            "facet_version_id": memory_id,
+            "facet_version": 1,
+            "slot_version": 1,
+            "body_sha256": "ab".repeat(32)
+        });
+        catalog
+            .validate_output(ToolName::Continuity, &published)
+            .expect("published result");
+        for (reason, label) in [
+            (1401, "FACET_SLOT_VERSION_CONFLICT"),
+            (1402, "FACET_MERGE_RETRY_EXHAUSTED"),
+        ] {
+            catalog
+                .validate_output(
+                    ToolName::Continuity,
+                    &json!({
+                        "code": "CONFLICT",
+                        "reason": reason,
+                        "reason_label": label,
+                        "current_slot_version": 3
+                    }),
+                )
+                .expect("typed conflict result");
+        }
+
+        let mut zero_slot = published.clone();
+        zero_slot["slot_version"] = json!(0);
+        let mut reserved_published = published.clone();
+        reserved_published["facet_kind"] = json!("ACTIVE_TASKS");
+        let mut uppercase_hash = published.clone();
+        uppercase_hash["body_sha256"] = json!("AB".repeat(32));
+        let mut extra_field = published.clone();
+        extra_field["body"] = json!({});
+        let mut wrong_reason_label = json!({
+            "code": "CONFLICT",
+            "reason": 1401,
+            "reason_label": "FACET_SLOT_VERSION_CONFLICT",
+            "current_slot_version": 3
+        });
+        wrong_reason_label["reason_label"] = json!("FACET_MERGE_RETRY_EXHAUSTED");
+        let mut negative_slot = json!({
+            "code": "CONFLICT",
+            "reason": 1401,
+            "reason_label": "FACET_SLOT_VERSION_CONFLICT",
+            "current_slot_version": 3
+        });
+        negative_slot["current_slot_version"] = json!(-1);
+        let not_conflict = json!({
+            "code": "FORBIDDEN",
+            "reason": 1401,
+            "reason_label": "FACET_SLOT_VERSION_CONFLICT",
+            "current_slot_version": 3
+        });
+        for fault in [
+            zero_slot,
+            reserved_published,
+            uppercase_hash,
+            extra_field,
+            wrong_reason_label,
+            negative_slot,
+            not_conflict,
+        ] {
+            assert!(
+                matches!(
+                    catalog.validate_output(ToolName::Continuity, &fault),
+                    Err(ErrorCode::Internal)
+                ),
+                "{fault} must be refused"
+            );
+        }
+    }
+
     fn minimal_memory_envelope() -> Value {
         json!({
             "items": [],

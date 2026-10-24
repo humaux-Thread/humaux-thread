@@ -19,6 +19,77 @@
         }
       },
       "additionalProperties": false
+    },
+    {
+      "x-humaux-operation": {
+        "operation_key": "continuity.publish",
+        "required_scope": "memory:write",
+        "feature_key": "mcp.billable_operations.per_period",
+        "meter_kind": "ordinary1"
+      },
+      "description": "ADR-0094: one source-backed facet publication. The expected slot version is never a tool input — the server reads it inside the write transaction.",
+      "required": ["project_id","facet_kind","body","sources"],
+      "properties": {
+        "workspace_id": {"type":"string","format":"uuid"},
+        "project_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$"
+        },
+        "facet_kind": {"enum":["GOAL","CURRENT_STATE","DECISIONS","REJECTIONS","CONSTRAINTS","KNOWN_ISSUES","NEXT_ACTIONS","PROCEDURES","OUTCOMES"]},
+        "body": {},
+        "sources": {
+          "type": "object",
+          "required": ["memories","evidence"],
+          "properties": {
+            "memories": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/MemorySource"}
+            },
+            "evidence": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/EvidenceSource"}
+            }
+          },
+          "additionalProperties": false,
+          "anyOf": [
+            {"properties":{"memories":{"minItems":1}}},
+            {"properties":{"evidence":{"minItems":1}}}
+          ]
+        },
+        "removals": {
+          "type": "array",
+          "items": {"type":"string","minLength":1,"maxLength":256},
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {"required":["facet_kind"],"properties":{"facet_kind":{"enum":["GOAL","CURRENT_STATE"]}}},
+          "then": {"not":{"required":["removals"]}}
+        }
+      ],
+      "additionalProperties": false
     }
-  ]
+  ],
+  "$defs": {
+    "MemorySource": {
+      "type": "object",
+      "required": ["memory_id","content_sha256"],
+      "properties": {
+        "memory_id": {"type":"string","format":"uuid"},
+        "content_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "EvidenceSource": {
+      "type": "object",
+      "required": ["evidence_id","payload_sha256"],
+      "properties": {
+        "evidence_id": {"type":"string","format":"uuid"},
+        "payload_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  }
 }
