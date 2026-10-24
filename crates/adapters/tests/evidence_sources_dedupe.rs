@@ -45,6 +45,31 @@ use operation_receipt_fixture::{
     DOMAIN, Fixture, Handle, OPERATION, PROJECTION_KIND, PROJECTION_VERSION,
 };
 
+// §79.2: fixture cleanup must run outside the owner's lock transaction, including during unwinding.
+struct RollbackOnPanic<'a>(&'a mut Handle);
+
+impl std::ops::Deref for RollbackOnPanic<'_> {
+    type Target = Handle;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl std::ops::DerefMut for RollbackOnPanic<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+
+impl Drop for RollbackOnPanic<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.admin.batch_execute("ROLLBACK") {
+            eprintln!("identity-lock transaction rollback failed: {error}");
+        }
+    }
+}
+
 /// `[evidence_objects, evidence_sources, stream_log, outbox, operation_receipts, usage_reservations, audit_events]`.
 type Counts = [i64; 7];
 
@@ -431,6 +456,7 @@ fn sourced_put_waits_on_identity_lock() {
         let put_request = request(&handle, agent, "k-lock", "locked body");
         let before = counts(&mut handle);
 
+        let mut handle = RollbackOnPanic(&mut handle);
         handle
             .admin
             .batch_execute("BEGIN")
@@ -511,5 +537,43 @@ fn sourced_put_waits_on_identity_lock() {
         let stored = stored(putter.join().expect("put thread"), "put after release");
         assert_eq!(stored.dedupe, Dedupe::New);
         assert_eq!(delta(counts(&mut handle), before), [1, 1, 1, 1, 1, 1, 3]);
+    });
+}
+
+/// §79.2: unwinding releases the identity lock while the owner's connection remains alive for cleanup.
+#[test]
+fn identity_lock_guard_rolls_back_on_panic() {
+    run_db_fixture::<Fixture, _>("identity_lock_guard_rolls_back_on_panic", |mut handle| {
+        let mut observer = handle.owner_client().expect("fresh owner connection");
+        let lock_text = format!("evidence-source:panic:{}", handle.tenant_id);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rollback = RollbackOnPanic(&mut handle);
+            rollback
+                .0
+                .admin
+                .batch_execute("BEGIN")
+                .expect("owner transaction");
+            rollback
+                .0
+                .admin
+                .execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                    &[&lock_text],
+                )
+                .expect("owner takes the identity lock");
+            panic!("deliberate panic after taking the identity lock");
+        }));
+        assert!(panic.is_err(), "the lock holder panicked");
+        let free: bool = observer
+            .query_one(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))",
+                &[&lock_text],
+            )
+            .expect("fresh connection probes the identity lock")
+            .get(0);
+        assert!(
+            free,
+            "unwinding released the identity lock before fixture cleanup"
+        );
     });
 }

@@ -546,6 +546,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::membership_repo`
 - process(humaux-maintenance): `adapters::membership_repo`
@@ -2238,6 +2239,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
@@ -2282,6 +2284,7 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::entitlement_projector`
 
 written by:
 - (no process): `adapters::tests::plan_catalog`
@@ -3926,6 +3929,87 @@ executed by:
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.session_issue`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- (no process): `adapters::tests::console_session`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.session_lookup`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.session_revoke`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.session_touch`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.sessions`
 - kind: table
 - owner: role_migration_owner
@@ -3951,6 +4035,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::console_session`
 
 executed by:
 
@@ -4396,6 +4481,7 @@ read by:
 written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::confirm_token_retention`
+- (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
