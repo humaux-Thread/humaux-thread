@@ -5735,6 +5735,7 @@ modules:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::confirm_token_retention`
+- `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -5776,6 +5777,7 @@ modules:
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::note_chunk_count_parity`
 - `adapters::tests::note_text_once`
+- `adapters::tests::oauth_persistence`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_assessed_contract`
