@@ -4,7 +4,7 @@
 //!   expected-uid and host-network-DSN cross-checks when both are given, `--release` (four identity comparisons
 //!   against the build's release manifest plus the checkout-tree comparison, review fix 9), `--running`
 //!   (`docker inspect` of the running project against the compose values) and `--secrets-readable` (names only).
-//! Depends-on: crates=[serde_json]; services=[subprocess(docker), fs(env_file of the compose document)]; env=[]; modules=[]
+//! Depends-on: crates=[humaux_adapters, serde_json]; services=[subprocess(docker), fs(env_file of the compose document)]; env=[]; modules=[adapters::retrieve]
 //! Called-by: [maintenance::main, xtask::dep_map]
 //! Invariants: [every check reports ALL its failing reasons, never just the first; a reason carries names (service,
 //!   key, file, target) and never a value; a compose document with a resolved secret value is refused
@@ -176,6 +176,23 @@ fn must_be_set(key: &str) -> bool {
 const AUTH_HMAC_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
 /// The gateway key that turns the auth surface on (`bins/gateway` bootstrap, registered default `false`).
 const AUTH_SURFACE_ENABLED: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
+
+/// ADR-0059 D-G / M02 D3: apply bootstrap's security floor to decoded bytes; malformed hex remains boot's check.
+fn auth_key_too_short(value: &str) -> bool {
+    if !value.len().is_multiple_of(2) {
+        return false;
+    }
+    let bytes: Option<Vec<u8>> = value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        })
+        .collect();
+    bytes.is_some_and(|bytes| humaux_adapters::retrieve::TokenKeys::new(bytes, None).is_err())
+}
 
 /// Whether any of `sources` sets [`AUTH_SURFACE_ENABLED`] to `true` for process `p`.
 fn auth_surface_enabled(sources: &[&[EnvFile]], p: &str) -> bool {
@@ -983,6 +1000,11 @@ pub fn presence_reasons(
                 && !(key == AUTH_HMAC_KEY && !auth_surface_enabled(&[values, secrets, compose], p))
             {
                 reasons.push(format!("secret_empty:{p}:{key}"));
+            } else if key == AUTH_HMAC_KEY
+                && auth_surface_enabled(&[values, secrets, compose], p)
+                && all.iter().any(|value| auth_key_too_short(value))
+            {
+                reasons.push(format!("secret_short:{p}:{key}"));
             }
         }
     }
@@ -2571,8 +2593,8 @@ mod tests {
 
     /// M02-3: the gateway's auth MAC key may be empty while the auth surface is off (absent or `false`), and is
     /// `secret_empty` the moment `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED=true` (values or compose) with the key still
-    /// empty; a set key is green. Another empty secret stays red either way.
-    /// Fault: treat the auth key as optional when the surface is on ⇒ red.
+    /// empty; ADR-0059 D-G requires a decoded key at the security floor. Another empty secret stays red either way.
+    /// Fault: remove the key-length validation ⇒ the exact short-key refusal is red.
     #[test]
     fn env_auth_key_is_required_only_when_the_auth_surface_is_on() {
         let examples = files(&[(
@@ -2606,7 +2628,12 @@ mod tests {
         };
         assert_eq!(reasons("false", ""), Vec::<String>::new());
         assert_eq!(reasons("false", "k"), Vec::<String>::new());
-        assert_eq!(reasons("true", "k"), Vec::<String>::new());
+        assert_eq!(reasons("false", &"ab".repeat(16)), Vec::<String>::new());
+        assert_eq!(
+            reasons("true", &"ab".repeat(16)),
+            vec!["secret_short:gateway:HUMAUX_GATEWAY_AUTH_HMAC_KEY".to_owned()]
+        );
+        assert_eq!(reasons("true", &"ab".repeat(32)), Vec::<String>::new());
         assert_eq!(
             reasons("true", ""),
             vec!["secret_empty:gateway:HUMAUX_GATEWAY_AUTH_HMAC_KEY".to_owned()]
