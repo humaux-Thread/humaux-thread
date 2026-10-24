@@ -60,9 +60,17 @@ fn runtime() -> Runtime {
 }
 
 fn gateway_pool(rt: &Runtime, dsn: &str) -> RuntimeDbPool {
-    // dep: PostgreSQL(role_gateway) — open a role-scoped PG connection/pool for this test
+    // dep: PostgreSQL(role_gateway) — the typed pool `register_project` takes
     rt.block_on(RuntimeDbPool::connect(dsn))
         .expect("role_gateway pool")
+}
+
+/// A plain `role_gateway` pool: the door takes a caller-owned transaction, so the test opens it on
+/// its own connection (the typed wrappers deliberately do not expose theirs, §6.2.3).
+fn gateway_raw(rt: &Runtime, dsn: &str) -> sqlx::Pool<sqlx::Postgres> {
+    // dep: PostgreSQL(role_gateway) — caller-owned write transactions for the publish door
+    rt.block_on(sqlx::Pool::<sqlx::Postgres>::connect(dsn))
+        .expect("role_gateway raw pool")
 }
 
 struct Handle {
@@ -240,14 +248,13 @@ fn command<'a>(
 
 fn one_publish(
     rt: &Runtime,
-    pool: &RuntimeDbPool,
+    pool: &sqlx::Pool<sqlx::Postgres>,
     scope: &AuthorizationScope,
     command: &PublishContinuityFacet<'_>,
 ) -> Result<PublishFacetOutcome, ErrorCode> {
     rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — one write transaction per publish attempt
         let mut tx = pool
-            .pool()
             .begin()
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
@@ -394,7 +401,7 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
         let scope_a = scope.clone();
         let winner = thread::spawn(move || {
             let rt = runtime();
-            let pool = gateway_pool(&rt, &dsn);
+            let pool = gateway_raw(&rt, &dsn);
             let body = json!({"goal": "writer a"});
             let command = command(
                 workspace,
@@ -406,7 +413,7 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
             );
             let (mut tx, outcome) = rt.block_on(async {
                 // dep: PostgreSQL(role_gateway) — the winner's slot lock is held until it commits
-                let mut tx = pool.pool().begin().await.expect("winner begin");
+                let mut tx = pool.begin().await.expect("winner begin");
                 let outcome =
                     continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
                 (tx, outcome)
@@ -435,7 +442,7 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
         let scope_b = scope.clone();
         let loser = thread::spawn(move || {
             let rt = runtime();
-            let pool = gateway_pool(&rt, &dsn);
+            let pool = gateway_raw(&rt, &dsn);
             let body = json!({"goal": "writer b"});
             let command = command(
                 workspace,
@@ -447,7 +454,7 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
             );
             rt.block_on(async {
                 // dep: PostgreSQL(role_gateway) — the loser blocks on the winner's slot lock
-                let mut tx = pool.pool().begin().await.expect("loser begin");
+                let mut tx = pool.begin().await.expect("loser begin");
                 let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
                     .fetch_one(&mut *tx)
                     .await
@@ -516,7 +523,7 @@ fn g_m14_2_eighty_writers_union_exactly() {
             let barrier = Arc::clone(&barrier);
             writers.push(thread::spawn(move || {
                 let rt = runtime();
-                let pool = gateway_pool(&rt, &dsn);
+                let pool = gateway_raw(&rt, &dsn);
                 let body =
                     json!({"items":[{"source_id": format!("writer-{index:02}"), "text": "union"}]});
                 let memories = [ContinuityMemorySource {
@@ -598,7 +605,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
         let scope_a = scope.clone();
         let winner = thread::spawn(move || {
             let rt = runtime();
-            let pool = gateway_pool(&rt, &dsn);
+            let pool = gateway_raw(&rt, &dsn);
             let body = json!({"items":[{"source_id":"a","text":"winner"}]});
             let command = command(
                 workspace,
@@ -610,7 +617,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
             );
             let (mut tx, outcome) = rt.block_on(async {
                 // dep: PostgreSQL(role_gateway) — the winner's slot lock is held until it commits
-                let mut tx = pool.pool().begin().await.expect("winner begin");
+                let mut tx = pool.begin().await.expect("winner begin");
                 let outcome =
                     continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
                 (tx, outcome)
@@ -639,7 +646,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
         let scope_b = scope.clone();
         let loser = thread::spawn(move || {
             let rt = runtime();
-            let pool = gateway_pool(&rt, &dsn);
+            let pool = gateway_raw(&rt, &dsn);
             let body = json!({"items":[{"source_id":"b","text":"loser"}]});
             let command = command(
                 workspace,
@@ -651,7 +658,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
             );
             rt.block_on(async {
                 // dep: PostgreSQL(role_gateway) — the loser blocks on the winner's slot lock
-                let mut tx = pool.pool().begin().await.expect("loser begin");
+                let mut tx = pool.begin().await.expect("loser begin");
                 let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
                     .fetch_one(&mut *tx)
                     .await
@@ -711,14 +718,14 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
         let scope = fixture.scope();
         let memories = fixture.memory_source();
         let rt = runtime();
-        let pool = gateway_pool(&rt, &fixture.gateway_dsn);
+        let pool = gateway_raw(&rt, &fixture.gateway_dsn);
         let empty = json!({"items":[]});
         let removals = vec!["a".to_string()];
         for (kind, removals) in [
             (ContinuityFacetKind::ActiveTasks, &[][..]),
             (ContinuityFacetKind::Goal, &removals[..]),
         ] {
-            let command = command(
+            let input = command(
                 fixture.workspace,
                 fixture.project,
                 kind,
@@ -727,12 +734,12 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
                 removals,
             );
             assert_eq!(
-                one_publish(&rt, &pool, &scope, &command),
+                one_publish(&rt, &pool, &scope, &input),
                 Err(ErrorCode::InvalidInput)
             );
         }
         let malformed = json!({"items":[{"text":"no source id"}]});
-        let command = command(
+        let input = command(
             fixture.workspace,
             fixture.project,
             ContinuityFacetKind::Decisions,
@@ -741,11 +748,11 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
             &[],
         );
         assert_eq!(
-            one_publish(&rt, &pool, &scope, &command),
+            one_publish(&rt, &pool, &scope, &input),
             Err(ErrorCode::InvalidInput)
         );
         let goal = json!({"goal":"published"});
-        let command = command(
+        let input = command(
             fixture.workspace,
             fixture.project,
             ContinuityFacetKind::Goal,
@@ -754,7 +761,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
             &[],
         );
         assert!(matches!(
-            one_publish(&rt, &pool, &scope, &command),
+            one_publish(&rt, &pool, &scope, &input),
             Ok(PublishFacetOutcome::Published(_))
         ));
         let mut admin = fixture.admin();
