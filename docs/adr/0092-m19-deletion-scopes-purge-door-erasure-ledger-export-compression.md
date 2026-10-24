@@ -85,7 +85,8 @@ name matching.
 The confirm transaction moves the tenant to `DELETING`, revokes every credential and session (M02 port) in the same
 transaction, and tombstones every seq. The daemon (M21) runs this request ahead of all other work (B17 priority:
 revocation/forget first): public contributions revoked first through `PublicRevocationPort::revoke_scope` (M20; order
-per ADR-0091 D-E and module_design_M20.md:140, "revoke_scope runs BEFORE M19's purge (FKs)") → purge door
+per ADR-0091 D-E (ADR-0091 lands with PR #237) and module_design_M20.md:140, "revoke_scope runs BEFORE M19's purge
+(FKs)") → purge door
 (PostgreSQL) → Qdrant delete-by-tenant filter (M10 guest) → object prefix, all versions (M17; receipt is a no-op until
 the object store exists) → cache epoch bump (M12) → disclosure ledger: per processor `DONE` / `EXTERNAL_PENDING` /
 `PARTIAL_CANNOT_ERASE` (open research R1–R2) → `COMPLETED`. The completion census requires every table with `tenant_id`
@@ -253,15 +254,16 @@ Any deletion, purge or retention drop against production data, including the fir
 and `account.delete`; `retention execute` on production; the first live send of a compression notice or an export-ready
 email; live provider keys in tests.
 
-- **Owner ruling (2026-10-24):** account deletion covers the new system only. The 1,041 legacy originals in the old
-  MinIO are deleted when the old system is retired as a whole, an owner step in the M25 retirement runbook; the new
-  system never writes to or deletes from the old store. The deletion receipt discloses this, and the TENANT completion
-  census excludes the old MinIO and carries the disclosure line instead (module_design_M17.md:192-198, C-M17-6).
+- **Owner ruling (2026-10-24, AskUserQuestion; recorded in this PR's body):** account deletion covers the new system
+  only. The 1,041 legacy originals in the old MinIO are deleted when the old system is retired as a whole, an owner step
+  in the M25 retirement runbook; the new system never writes to or deletes from the old store. The deletion receipt
+  discloses this, and the TENANT completion census excludes the old MinIO and carries the disclosure line instead
+  (module_design_M17.md:192-198, C-M17-6: deleting there is owner-only).
 
 ## Open research
 
 1. Alibaba Model Studio text-embedding-v4 (DashScope): are request inputs retained or logged, for how long, and is there
-   a customer deletion procedure? (sets the disclosure-ledger state at step 8 of a deletion)
+   a customer deletion procedure? (sets the disclosure-ledger state at step 6 of a deletion)
 2. Resend: are sent message bodies stored, for how long, and can they be deleted by API? (notification copies of a
    deleted account)
 3. With Creem as merchant of record, which payment records must we (not Creem) keep after an account is deleted, and for
