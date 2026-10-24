@@ -253,8 +253,10 @@ Any deletion, purge or retention drop against production data, including the fir
 and `account.delete`; `retention execute` on production; the first live send of a compression notice or an export-ready
 email; live provider keys in tests.
 
-- **Owner-gated:** account deletion does not yet cover the 1,041 legacy originals in the old MinIO; deleting them is
-  real-data deletion and stays owner-only, pending the owner's decision (module_design_M17.md:192-198, C-M17-6).
+- **Owner ruling (2026-10-24):** account deletion covers the new system only. The 1,041 legacy originals in the old
+  MinIO are deleted when the old system is retired as a whole, an owner step in the M25 retirement runbook; the new
+  system never writes to or deletes from the old store. The deletion receipt discloses this, and the TENANT completion
+  census excludes the old MinIO and carries the disclosure line instead (module_design_M17.md:192-198, C-M17-6).
 
 ## Open research
 
