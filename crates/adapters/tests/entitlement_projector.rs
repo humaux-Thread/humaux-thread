@@ -3,7 +3,8 @@
 //!   the renewal door advanced, leaves a grantless tenant alone; onboarding grants a plan version and leaves the snapshot
 //!   to the projector; no runtime role reads the raw grants (G-M04-13).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, tokio,
-//!   uuid]; services=[PostgreSQL(owner) w=[control.entitlement_grants, control.entitlement_snapshots, control.tenants]
+//!   uuid]; services=[PostgreSQL(owner) r=[control.plans] w=[control.entitlement_grants,
+//!   control.entitlement_snapshots, control.plan_versions, control.tenants]
 //!   x=[control.ensure_admission_tier, control.ensure_user, control.entitlement_grants_for_projection,
 //!   control.onboard_tenant, control.write_entitlement_snapshot], PostgreSQL(role_maintenance)];
 //!   env=[]; modules=[adapters::entitlement_repo, adapters::plan_repo, adapters::postgres,
@@ -421,8 +422,8 @@ fn grant_source_enum_matches_the_check() {
 
 /// §71.1 / §76: onboarding grants a plan version — one PLAN grant per template key, the per-period one carrying the
 /// onboarding period — and writes no snapshot; the projector then stores exactly the plan's terms. A draft, an unknown
-/// plan and a plan without a per-period window are refused and leave no tenant behind. Fault: write the snapshot in the
-/// door, or grant a draft ⇒ red.
+/// plan, a retired or future plan version and a plan without a per-period window are refused and leave no tenant
+/// behind. Fault: write the snapshot in the door, or grant a draft, retired or future version ⇒ red.
 #[test]
 #[allow(clippy::too_many_lines)] // One real-PG oracle: exact grants, refusals, and the projector's stored terms.
 fn onboarding_grants_the_plan_and_the_projector_stores_its_terms() {
@@ -442,10 +443,36 @@ fn onboarding_grants_the_plan_and_the_projector_stores_its_terms() {
                       "lease_block": 4, "published": false, "provider_product_ref": {},
                       "entitlement_template": {
                         PER_PERIOD: { "limit": 5, "period": "subscription_period", "charge_policy": "success_only" } } },
+                    { "plan_key": "t_retired", "version": 1, "price_cents": 0, "currency": "USD", "billing_interval": "month",
+                      "lease_block": 4, "published": false, "provider_product_ref": {},
+                      "entitlement_template": {
+                        PER_PERIOD: { "limit": 5, "period": "subscription_period", "charge_policy": "success_only" } } },
+                    { "plan_key": "t_future", "version": 1, "price_cents": 0, "currency": "USD", "billing_interval": "month",
+                      "lease_block": 4, "published": false, "provider_product_ref": {},
+                      "entitlement_template": {
+                        PER_PERIOD: { "limit": 5, "period": "subscription_period", "charge_policy": "success_only" } } },
                     { "plan_key": "t_flat", "version": 1, "price_cents": 0, "currency": "USD", "billing_interval": "month",
                       "lease_block": 4, "published": true, "provider_product_ref": {},
                       "entitlement_template": { EMERGENCY: { "limit": 2 } } },
                 ]),
+            );
+            // §71.1: set each draft's publication once (0262); retirement follows publication in the past.
+            assert_eq!(
+                h.admin.execute(
+                    "UPDATE control.plan_versions v SET valid_from = clock_timestamp() - interval '2 days', \
+                     retired_at = clock_timestamp() - interval '1 day' FROM control.plans p \
+                     WHERE v.plan_id = p.plan_id AND p.plan_key = 't_retired' AND v.version = 1",
+                    &[],
+                ).expect("publish and retire the plan version"),
+                1
+            );
+            assert_eq!(
+                h.admin.execute(
+                    "UPDATE control.plan_versions v SET valid_from = clock_timestamp() + interval '1 day' \
+                     FROM control.plans p WHERE v.plan_id = p.plan_id AND p.plan_key = 't_future' AND v.version = 1",
+                    &[],
+                ).expect("publish the future plan version"),
+                1
             );
             h.admin
                 .batch_execute(
@@ -484,6 +511,8 @@ fn onboarding_grants_the_plan_and_the_projector_stores_its_terms() {
             for (name, plan, reason) in [
                 ("draft tenant", "t_draft", "plan_version_not_offered"),
                 ("unknown tenant", "t_nowhere", "plan_version_not_offered"),
+                ("retired tenant", "t_retired", "plan_version_not_offered"),
+                ("future tenant", "t_future", "plan_version_not_offered"),
                 ("flat tenant", "t_flat", "plan_version_without_period_quota"),
             ] {
                 let refused = onboard(&mut h, name, plan).expect_err(plan);
@@ -499,7 +528,7 @@ fn onboarding_grants_the_plan_and_the_projector_stores_its_terms() {
                 .admin
                 .query_one(
                     "SELECT count(*) FROM control.tenants \
-                      WHERE name IN ('draft tenant', 'unknown tenant', 'flat tenant')",
+                      WHERE name IN ('draft tenant', 'unknown tenant', 'retired tenant', 'future tenant', 'flat tenant')",
                     &[],
                 )
                 .expect("count")

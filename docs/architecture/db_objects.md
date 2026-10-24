@@ -546,6 +546,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::membership_repo`
 - process(humaux-maintenance): `adapters::membership_repo`
@@ -2238,6 +2239,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
@@ -2282,6 +2284,7 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::entitlement_projector`
 
 written by:
 - (no process): `adapters::tests::plan_catalog`
@@ -3926,6 +3929,87 @@ executed by:
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.session_issue`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- (no process): `adapters::tests::console_session`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.session_lookup`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.session_revoke`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.session_touch`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0270_console_session
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::session_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.sessions`
 - kind: table
 - owner: role_migration_owner
@@ -3951,6 +4035,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::console_session`
 
 executed by:
 
@@ -4396,6 +4481,7 @@ read by:
 written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::confirm_token_retention`
+- (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
@@ -6862,6 +6948,7 @@ read by:
 - (no process): `gateway::tests::read_decoupling`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
+- process(cargo-xtask): `adapters::note_repo`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::retrieve`
@@ -6871,6 +6958,7 @@ read by:
 - process(cargo-xtask): `xtask::soak`
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
+- process(humaux-consolidation-worker): `adapters::note_repo`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::retrieve`
@@ -6878,12 +6966,14 @@ read by:
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::memory_governance_repo`
+- process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
+- process(humaux-maintenance): `adapters::note_repo`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
 - process(humaux-maintenance): `adapters::remember`
@@ -6892,12 +6982,14 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
+- process(humaux-private-worker): `adapters::note_repo`
 - process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
+- process(humaux-retrieval-worker): `adapters::note_repo`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::remember`
 - process(humaux-retrieval-worker): `adapters::retrieve`
@@ -9530,6 +9622,25 @@ written by:
 
 executed by:
 
+### `private.identity_note_body_sha256`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0269_identity_note_exact_dedupe
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+- role_private_worker: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::note_put`
+
 ### `private.identity_note_materializations`
 - kind: table
 - owner: role_migration_owner
@@ -10212,6 +10323,7 @@ read by:
 - process(cargo-xtask): `adapters::affect_repo`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::exact_census`
+- process(cargo-xtask): `adapters::note_repo`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::private_projection_registry`
 - process(cargo-xtask): `adapters::read_gate`
@@ -10227,6 +10339,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-consolidation-worker): `adapters::contribution_reasoner`
 - process(humaux-consolidation-worker): `adapters::exact_census`
+- process(humaux-consolidation-worker): `adapters::note_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::private_projection_registry`
 - process(humaux-consolidation-worker): `adapters::read_gate`
@@ -10239,6 +10352,7 @@ read by:
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::grep_repo`
+- process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::private_projection_registry`
@@ -10253,6 +10367,7 @@ read by:
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::note_repo`
 - process(humaux-maintenance): `adapters::postgres`
 - process(humaux-maintenance): `adapters::private_projection_registry`
 - process(humaux-maintenance): `adapters::projection_worker`
@@ -10269,6 +10384,7 @@ read by:
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_reasoner`
 - process(humaux-private-worker): `adapters::exact_census`
+- process(humaux-private-worker): `adapters::note_repo`
 - process(humaux-private-worker): `adapters::postgres`
 - process(humaux-private-worker): `adapters::private_projection_registry`
 - process(humaux-private-worker): `adapters::read_gate`
@@ -10280,6 +10396,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::affect_repo`
 - process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
+- process(humaux-retrieval-worker): `adapters::note_repo`
 - process(humaux-retrieval-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::private_projection_registry`
 - process(humaux-retrieval-worker): `adapters::projection_worker`
@@ -12346,6 +12463,7 @@ read by:
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
+- process(cargo-xtask): `adapters::note_repo`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `adapters::remember`
@@ -12357,6 +12475,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::context_repo`
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
+- process(humaux-consolidation-worker): `adapters::note_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-consolidation-worker): `adapters::remember`
@@ -12365,6 +12484,7 @@ read by:
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::memory_governance_repo`
+- process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::read_materialize`
@@ -12374,6 +12494,7 @@ read by:
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
+- process(humaux-maintenance): `adapters::note_repo`
 - process(humaux-maintenance): `adapters::postgres`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::rebuild`
@@ -12385,6 +12506,7 @@ read by:
 - process(humaux-private-worker): `adapters::context_repo`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
+- process(humaux-private-worker): `adapters::note_repo`
 - process(humaux-private-worker): `adapters::postgres`
 - process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-private-worker): `adapters::remember`
@@ -12393,6 +12515,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
+- process(humaux-retrieval-worker): `adapters::note_repo`
 - process(humaux-retrieval-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::remember`
