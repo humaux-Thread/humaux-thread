@@ -1,7 +1,7 @@
 //! `public-pool::tests::mechanism_observation` — §1.14 actual database reads, least-privilege admin and real
 //!   reviewed-public execution.
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-public-pool, postgres, serde_json, tokio, uuid];
+//!   humaux-infra-cell, postgres, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_admin), PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_public_worker) r=[private.memory_records, public.claims, staging.contribution_releases]
 //!   w=[control.public_moderator_grants, ops.mechanism_e2e_runs, ops.mechanism_observations, public.provenance_edges,

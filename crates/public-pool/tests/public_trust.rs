@@ -1,6 +1,6 @@
 //! `public-pool::tests::public_trust` — Phase 9 real PostgreSQL acceptance for public trust decisions and typed serving
 //!   hydration.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-public-pool, postgres, uuid]; services=[PostgreSQL(any)
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, uuid]; services=[PostgreSQL(any)
 //!   r=[control.anonymous_source_lineage, ops.outbox, ops.public_release_revocations, public.eligible_objects,
 //!   public.poisoning_signals, public.public_receipt_matches] w=[control.memberships,
 //!   control.public_moderator_grants, public.claim_trust_evaluation_sources, public.claim_trust_evaluations,

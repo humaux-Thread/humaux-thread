@@ -1,6 +1,6 @@
 //! `public-pool::tests::public_runtime_qdrant` — Real PostgreSQL + same-cell Qdrant acceptance for the Phase 9 bounded
 //!   public worker.
-//! Depends-on: crates=[humaux-adapters, humaux-infra-cell, humaux-public-pool, serde_json, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-infra-cell, serde_json, uuid];
 //!   services=[PostgreSQL(role_public_worker) r=[control.anonymous_source_lineage, public.claims], Qdrant(*)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo, adapters::postgres,
 //!   adapters::tests::support::contribution_fixture, infra-cell::transport, public-pool::public_projection,

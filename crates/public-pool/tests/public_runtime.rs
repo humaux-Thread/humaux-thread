@@ -1,5 +1,5 @@
 //! `public-pool::tests::public_runtime` — Phase 9 public-runtime real PostgreSQL tests.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, humaux-public-pool, postgres, sqlx, tokio, uuid];
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, postgres, sqlx, tokio, uuid];
 //!   services=[PostgreSQL(any) r=[control.anonymous_claim_trust_authorities, control.anonymous_source_lineage,
 //!   ops.outbox, public.anonymous_source_lifecycle_events, public.claim_independence_attestations,
 //!   public.claim_trust_evaluation_sources, public.claim_trust_evaluations, public.claims,

@@ -1,5 +1,5 @@
 //! `public-pool::tests::public_provenance` — Real-PostgreSQL tests of the public provenance target contract and its typed-root closure.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-public-pool, postgres, uuid]; services=[PostgreSQL(any)
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, uuid]; services=[PostgreSQL(any)
 //!   r=[staging.contribution_releases] w=[control.public_moderator_grants, public.claims, public.provenance_edges,
 //!   public.source_closure, public.sources, public.syntheses, public.synthesis_inputs]
 //!   x=[public.current_public_roots], PostgreSQL(role_private_worker), PostgreSQL(role_public_worker)];

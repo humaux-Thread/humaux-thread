@@ -33,7 +33,7 @@ sha2 = "0.11"
 # why: printable digest encoding; used-by: [public-pool::public_projection, public-pool::public_repo]
 hex = "0.4"
 # `now_v7` mints evaluation ids; `from_u128` is test-only in public_evolve.
-# why: id minting/binding; used-by: [public-pool::public_evolve, public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, tests]
+# why: id minting/binding; used-by: [public-pool::public_evolve, public-pool::public_projection, public-pool::public_provenance, tests]
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
 
 [dev-dependencies]

@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 # Phase 2 identity/entitlement modules (§74/§75/§76). Versions: latest stable.
-# why: domain types every use case reads/returns; used-by: [application::affect, application::archive, application::auth, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::entitlement, application::notify, application::pin, application::public_evolve, application::referral, application::retrieval_embedding_port, application::supersede]
+# why: domain types every use case reads/returns; used-by: [application::affect, application::archive, application::auth, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::entitlement, application::notify, application::pin, application::referral, application::retrieval_embedding_port, application::supersede]
 humaux-domain = { path = "../domain" }
 # §25.3 continuity：assemble_handoff 产出 retrieval::handoff::Handoff（G80-31 字节域）。
 # retrieval 只依赖 domain+telemetry，无环。
@@ -47,7 +47,7 @@ thiserror = "2"
 async-trait = "0.1"
 # `consolidate::PrivateReasoningDomainId`'s inner id — same pin as `humaux-domain`'s existing
 # `uuid = "1.25.0"`, no new independent version in the dependency graph.
-# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::pin, application::public_evolve, application::retrieval_embedding_port]
+# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::pin, application::retrieval_embedding_port]
 uuid = "1.25.0"
 
 [dev-dependencies]

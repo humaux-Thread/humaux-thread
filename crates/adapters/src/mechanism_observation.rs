@@ -4,7 +4,7 @@
 //!   public.corroborated, public.eligible_objects] w=[ops.mechanism_e2e_runs, ops.mechanism_observations]]; env=[];
 //!   modules=[adapters::postgres, contracts::mechanism_registry, domain::error, domain::identity, domain::public,
 //!   infra-cell::resource]
-//! Called-by: [admin::mechanism, tests, xtask::mechanism_registry]
+//! Called-by: [admin::mechanism, public-pool::public_repo, tests, xtask::mechanism_registry]
 //! Invariants: [reads use the dedicated read-only identity; recording runs on role_maintenance through an existing
 //!   authorized operation; no SQL or shell executor is exposed; bad input is InvalidInput]
 //! Spec: none

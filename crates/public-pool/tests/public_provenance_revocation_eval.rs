@@ -1,6 +1,6 @@
 //! `public-pool::tests::public_provenance_revocation_eval` — Fixed four case local synthetic benchmark for §69
 //!   `public_provenance_revocation`.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-public-pool, postgres, sha2, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, sha2, uuid];
 //!   services=[PostgreSQL(any) r=[public.claim_trust_evaluations, public.claims]
 //!   w=[control.public_moderator_grants, public.provenance_edges], PostgreSQL(role_public_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo, adapters::postgres,

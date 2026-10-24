@@ -1,7 +1,7 @@
 //! `public-pool::tests::support::public_anonymous_seam` — Shared helpers for the Phase 9 **anonymous** public seam:
 //!   assessed prepare -> confirm -> finalize -> `run_anonymous_once` admission -> `control.anonymous_source_lineage`
 //!   read-back -> `evaluate_anonymous_claim`.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, humaux-public-pool, postgres,
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, postgres,
 //!   sha2, uuid]; services=[PostgreSQL(owner) r=[control.anonymous_source_lineage, public.claims,
 //!   public.provenance_edges, public.sources] w=[control.public_moderator_grants, ops.jobs]
 //!   x=[public.phase9_public_coverage_for_probe]]; env=[HUMAUX_TEST_PG_DSN];

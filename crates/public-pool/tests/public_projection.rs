@@ -1,5 +1,5 @@
 //! `public-pool::tests::public_projection` — Real Qdrant acceptance tests for the public projection adapter (§17.6).
-//! Depends-on: crates=[humaux-infra-cell, humaux-public-pool, humaux-testkit, serde_json, tokio, uuid]; services=[Qdrant(*)];
+//! Depends-on: crates=[humaux-infra-cell, humaux-testkit, serde_json, tokio, uuid]; services=[Qdrant(*)];
 //!   env=[HUMAUX_TEST_QDRANT_PORT]; modules=[humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, public-pool::public_projection]
 //! Called-by: [cargo-test]
 //! Invariants: [writes only the public payload contract into a throwaway collection; no Qdrant port goes through
