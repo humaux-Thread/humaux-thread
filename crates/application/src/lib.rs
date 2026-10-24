@@ -1,7 +1,7 @@
 //! `humaux-application` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[];
 //!   env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-private-worker)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-private-worker), crate(humaux-public-pool)]
 //! Invariants: []
 //! Spec: §58; §3; §78.3
 //!
@@ -24,7 +24,6 @@ pub mod ingest;
 pub mod login;
 pub mod notify;
 pub mod pin;
-pub mod public_evolve;
 pub mod referral;
 pub mod remember;
 pub mod retrieval_embedding_port;

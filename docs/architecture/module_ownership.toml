@@ -49,6 +49,8 @@ humaux-consolidation-worker = "M15"
 # ponytail: a row of the private repository only; the open-source export has no cloud package, so it is dropped
 # at the split (ADR-0074 "Split checklist", card M24-14).
 humaux-public-worker = "M20"
+# ponytail: cloud-only like the worker above; no core crate depends on it (G-M01-2), dropped at the split (M24-14).
+humaux-public-pool = "M20"
 humaux-maintenance = "M21"
 humaux-admin = "M22"
 humaux-worker = "M06"

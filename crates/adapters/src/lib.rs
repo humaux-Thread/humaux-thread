@@ -1,6 +1,6 @@
 //! `humaux-adapters` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::distill_repo, adapters::maintenance_repo, adapters::model_call_ledger, crate(humaux-admin), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-public-worker), crate(humaux-retrieval-provider), crate(humaux-retrieval-worker), crate(xtask)]
+//! Called-by: [adapters::distill_repo, adapters::maintenance_repo, adapters::model_call_ledger, crate(humaux-admin), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-provider), crate(humaux-retrieval-worker), crate(xtask)]
 //! Invariants: [crate root: the module list plus [`Counter`], the process-local cell of the three §41.2 private-plane
 //!   counters (ADR-0061 card 34b) and of the two maintenance counters (ADR-0062 D-S); Domain/Application never import this crate's HTTP/SQL/Qdrant drivers (§3/§78.3)]
 //! Spec: Baseline §3; §78.3; §41.2; ADR-0061 D-A; ADR-0061 D-C
@@ -58,9 +58,6 @@ pub mod private_projection_registry;
 pub mod projection_worker;
 pub mod provider_budget;
 pub mod provisioning;
-pub mod public_projection;
-pub mod public_provenance;
-pub mod public_repo;
 pub mod qdrant;
 pub mod quota_repo;
 pub mod read_gate;

@@ -1367,12 +1367,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "humaux-public-pool"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "humaux-adapters",
+ "humaux-application",
+ "humaux-contracts",
+ "humaux-domain",
+ "humaux-infra-cell",
+ "humaux-testkit",
+ "postgres",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "humaux-public-worker"
 version = "0.1.0"
 dependencies = [
  "humaux-adapters",
  "humaux-domain",
  "humaux-infra-cell",
+ "humaux-public-pool",
  "tokio",
  "uuid",
 ]

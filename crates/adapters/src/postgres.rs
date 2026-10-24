@@ -6,7 +6,7 @@
 //!   PostgreSQL(role_private_worker), PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker),
 //!   PostgreSQL(owner)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::error]
-//! Called-by: [adapters::affect_repo, adapters::batch, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::credential_repo, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::email::outbox, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::health, adapters::jobs, adapters::login_repo, adapters::maintenance_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::model_call_ledger, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::private_inference_rpc, adapters::private_projection_registry, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::public_provenance, adapters::public_repo, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_embedding_rpc, adapters::retrieval_query_source, adapters::retrieve, adapters::role_hygiene, adapters::scheduler, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::stream_repo, adapters::subject_repo, admin::mechanism, admin::probe, consolidation-worker::inference_client, consolidation-worker::main, gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::retrieval_embedding_client, gateway::status, humaux-consolidation-worker, humaux-private-worker, maintenance::backup, maintenance::drill, maintenance::health_serve, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::roles, maintenance::serve, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, public-worker::main, retrieval-provider::adapters, retrieval-worker::main, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::mechanism_registry]
+//! Called-by: [adapters::affect_repo, adapters::batch, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::credential_repo, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::email::outbox, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::health, adapters::jobs, adapters::login_repo, adapters::maintenance_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::model_call_ledger, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::private_inference_rpc, adapters::private_projection_registry, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_embedding_rpc, adapters::retrieval_query_source, adapters::retrieve, adapters::role_hygiene, adapters::scheduler, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::stream_repo, adapters::subject_repo, admin::mechanism, admin::probe, consolidation-worker::inference_client, consolidation-worker::main, gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::retrieval_embedding_client, gateway::status, humaux-consolidation-worker, humaux-private-worker, maintenance::backup, maintenance::drill, maintenance::health_serve, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::roles, maintenance::serve, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, public-pool::public_provenance, public-pool::public_repo, public-worker::main, retrieval-provider::adapters, retrieval-worker::main, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::mechanism_registry]
 //! Invariants: [the only file that names sqlx::PgPool: eight typed pools, one per role (§6.2.3), each connect checks
 //!   current_user and fails with PoolInitError::RoleMismatch on a wrong role; no raw-pool accessor leaves the crate;
 //!   the ninth, MigratorDbPool, refuses every §6.2.0 role and any principal without CREATEROLE (ADR-0059 D-E);
@@ -364,6 +364,28 @@ impl PublicWorkerDbPool {
         &self.0
     }
 }
+
+/// Cloud-edition escape hatch (feature `cloud-raw-pool`, see the crate manifest): the wrapped pool of the four
+/// roles `humaux-public-pool::public_repo` queries through. Each pool stays the one its role connected as, so no
+/// cross-role pool is reachable this way (G6-DB1).
+#[cfg(feature = "cloud-raw-pool")]
+macro_rules! cloud_raw_pool {
+    ($($pool:ty),+) => {$(
+        impl $pool {
+            /// The wrapped `sqlx` pool, for `humaux-public-pool` only.
+            pub fn raw_pool(&self) -> &PgPool {
+                &self.0
+            }
+        }
+    )+};
+}
+#[cfg(feature = "cloud-raw-pool")]
+cloud_raw_pool!(
+    PublicWorkerDbPool,
+    PrivateWorkerDbPool,
+    RetrievalWorkerDbPool,
+    RuntimeDbPool
+);
 
 /// `role_migration_owner`: NOLOGIN, never a pool identity (ADR-0059 D-A); named here so the
 /// migrator check can refuse every member of the frozen role set (§6.2.0).

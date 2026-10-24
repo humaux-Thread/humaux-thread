@@ -1131,7 +1131,7 @@ const BOUNDARY_TABLE: &[BoundaryRule] = &[
     },
     BoundaryRule {
         dep: "sqlx",
-        allowed_in: &["humaux-adapters"],
+        allowed_in: &["humaux-adapters", "humaux-public-pool"],
         dev_exempt: true,
         family: true,
         why: "§78: Postgres access lives in the postgres adapter (dev-dependencies are testing)",
