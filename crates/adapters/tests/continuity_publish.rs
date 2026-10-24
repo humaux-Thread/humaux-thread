@@ -1,7 +1,8 @@
 //! `adapters::tests::continuity_publish` — M14-2 gates G-M14-1 and G-M14-2 against a real PostgreSQL.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio,
 //!   uuid]; services=[PostgreSQL(owner) r=[private.memory_records] w=[control.private_reasoning_domains,
-//!   control.tenants, control.workspaces, private.memory_records], PostgreSQL(role_gateway)
+//!   control.tenants, control.workspaces, private.evidence_objects, private.memory_evidence,
+//!   private.memory_records], PostgreSQL(role_gateway)
 //!   r=[private.continuity_facet_slots, private.continuity_facet_versions]];
 //!   env=[HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[adapters::continuity_repo, adapters::postgres,
 //!   domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit, testkit::fixture_purge]
@@ -152,8 +153,9 @@ impl DbIntegrationFixture for Fixture {
         let domain = Uuid::now_v7();
         let project = Uuid::now_v7();
         let content = json!({"continuity": "publish source"});
-        seed(&mut admin, tenant, workspace, domain, memory, &content)
-            .map_err(|error| DbFixtureSkipReason::IsolationSetupFailed(error.to_string()))?;
+        seed(&mut admin, tenant, workspace, domain, memory, &content).map_err(|error| {
+            DbFixtureSkipReason::IsolationSetupFailed(format!("seed: {error:?}"))
+        })?;
         let memory_hash: Vec<u8> = admin
             .query_one(
                 "SELECT sha256(convert_to(content::text,'UTF8')) \
@@ -203,6 +205,10 @@ fn seed(
     memory: Uuid,
     content: &Value,
 ) -> Result<(), postgres::Error> {
+    let evidence = Uuid::now_v7();
+    let evidence_hash = vec![0x5a_u8; 32];
+    // §8.6: the deferred `memory_records_requires_evidence` trigger needs the link by COMMIT.
+    admin.batch_execute("BEGIN")?;
     admin.execute(
         "INSERT INTO control.tenants(tenant_id,name,state) VALUES($1,$2,'ACTIVE')",
         &[&tenant, &format!("e2e-continuity-publish {tenant}")],
@@ -217,12 +223,24 @@ fn seed(
         &[&domain, &tenant],
     )?;
     admin.execute(
+        "INSERT INTO private.evidence_objects( \
+          evidence_id,tenant_id,evidence_kind,payload_sha256,data_class,origin_class, \
+          visibility_class,reasoning_domain_id) \
+         VALUES($1,$2,'EVENT',$3,'PRIVATE','AuthenticatedAgent','TENANT_SHARED',$4)",
+        &[&evidence, &tenant, &evidence_hash, &domain],
+    )?;
+    admin.execute(
         "INSERT INTO private.memory_records( \
           memory_id,tenant_id,memory_type,content,visibility_class,authority_class, \
           confidence,status,asserted_at) \
          VALUES($1,$2,'DECISION',$3,'TENANT_SHARED','ProjectDecision',1,'active',now())",
         &[&memory, &tenant, content],
     )?;
+    admin.execute(
+        "INSERT INTO private.memory_evidence(memory_id,evidence_id,role) VALUES($1,$2,'SUPPORTING')",
+        &[&memory, &evidence],
+    )?;
+    admin.batch_execute("COMMIT")?;
     Ok(())
 }
 
