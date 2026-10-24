@@ -31,5 +31,6 @@ pub mod remember;
 pub mod retrieval_embedding_port;
 pub mod retrieve;
 pub mod scheduler;
+pub mod session;
 pub mod signed_token;
 pub mod supersede;

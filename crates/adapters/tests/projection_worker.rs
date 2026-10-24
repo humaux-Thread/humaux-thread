@@ -41,7 +41,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use humaux_adapters::postgres::{RetrievalWorkerDbPool, RuntimeDbPool};
 use humaux_adapters::private_projection_registry::{
-    bind_embedding_fingerprint, worker_fingerprint_inputs,
+    PrivateMemoryPointRegistration, ProjectionPointId, RegistrationOutcome,
+    bind_embedding_fingerprint, register_private_memory_point, retire_private_memory_point,
+    worker_fingerprint_inputs,
 };
 use humaux_adapters::projection_worker::{CardEmbedder, ProjectionWorkerDeps, run_once};
 use humaux_adapters::qdrant::{
@@ -51,6 +53,7 @@ use humaux_adapters::qdrant::{
     tenant_index_body,
 };
 use humaux_adapters::remember::{self, RememberCommand};
+use humaux_domain::authority::MemoryId;
 use humaux_domain::egress::ProcessorId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
@@ -3383,6 +3386,191 @@ fn point_count_written() {
     });
 }
 
+/// §17.3 / ADR-0068: the legacy registration uses the registry's exact live source fence.
+fn registration_for(
+    handle: &mut Handle,
+    scope_id: Uuid,
+    label: &str,
+    memory_id: Uuid,
+) -> PrivateMemoryPointRegistration {
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT (extract(epoch FROM updated_at) * 1000000)::bigint, \
+                    sha256(convert_to(content::text, 'UTF8')) \
+               FROM private.memory_records WHERE memory_id = $1",
+            &[&memory_id],
+        )
+        .expect("the Memory row");
+    let micros: i64 = row.get(0);
+    let updated_at = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000)
+        .expect("a valid timestamp");
+    PrivateMemoryPointRegistration::deterministic(
+        StreamFamily::new(
+            TenantId(handle.tenant_id),
+            "workspace",
+            scope_id,
+            "private_memory",
+            "PRIVATE_MEMORY",
+        ),
+        "v1".to_owned(),
+        label.to_owned(),
+        MemoryId(memory_id),
+        updated_at,
+        row.get(1),
+    )
+}
+
+/// §17.3: the single-point API retires exactly one binding and its label's dense bytes; replay moves nothing.
+#[test]
+fn point_count_single_retire() {
+    run_db_fixture::<Fixture, _>("point_count_single_retire", |mut handle| {
+        let (scope_id, deps, gov, memory_a, _memory_b) = placement_gate_fixture(&mut handle);
+        let outcome = handle
+            .rt
+            .block_on(run_once(&deps, 10))
+            .expect("indexing pass");
+        assert_eq!((outcome.done, outcome.failed), (2, 0), "{outcome:?}");
+        assert_eq!(placement_counts(&mut handle), (2, 32));
+        let point = ProjectionPointId::new(point_id_for_memory(&mut handle, memory_a));
+        let auth = gov.scope(scope_id);
+        let retired = handle.rt.block_on(retire_private_memory_point(
+            &deps.pool,
+            &auth,
+            &deps.family,
+            &deps.projection_version,
+            &deps.embedding_version,
+            point,
+        ));
+        assert_eq!(retired.map_err(|error| error.to_string()), Ok(true));
+        assert_eq!(
+            placement_counts(&mut handle),
+            (1, 16),
+            "one retire subtracts exactly one point and 16 bytes"
+        );
+        assert_eq!(live_binding_count(&mut handle), 1);
+        let replay = handle.rt.block_on(retire_private_memory_point(
+            &deps.pool,
+            &auth,
+            &deps.family,
+            &deps.projection_version,
+            &deps.embedding_version,
+            point,
+        ));
+        assert_eq!(replay.map_err(|error| error.to_string()), Ok(false));
+        assert_eq!(
+            placement_counts(&mut handle),
+            (1, 16),
+            "replay subtracts nothing"
+        );
+    });
+}
+
+/// §17.3: a reset placement still permits retirement, clamping both bookkeeping columns at zero.
+#[test]
+fn point_count_retire_clamps_at_zero() {
+    run_db_fixture::<Fixture, _>("point_count_retire_clamps_at_zero", |mut handle| {
+        let (scope_id, deps, gov, memory_a, _memory_b) = placement_gate_fixture(&mut handle);
+        let outcome = handle
+            .rt
+            .block_on(run_once(&deps, 10))
+            .expect("indexing pass");
+        assert_eq!((outcome.done, outcome.failed), (2, 0), "{outcome:?}");
+        assert_eq!(placement_counts(&mut handle), (2, 32));
+        // §17.3: a promoted/re-onboarded placement can have reset bookkeeping while a binding remains live.
+        assert_eq!(
+            handle
+                .admin
+                .execute(
+                    "UPDATE projection.tenant_placements SET point_count = 0, bytes_estimate = 0 \
+                     WHERE tenant_id = $1 AND projection_family = 'private_memory_v1'",
+                    &[&handle.tenant_id],
+                )
+                .expect("reset placement counters"),
+            1
+        );
+        assert_eq!(placement_counts(&mut handle), (0, 0));
+        let point = ProjectionPointId::new(point_id_for_memory(&mut handle, memory_a));
+        let retired = handle.rt.block_on(retire_private_memory_point(
+            &deps.pool,
+            &gov.scope(scope_id),
+            &deps.family,
+            &deps.projection_version,
+            &deps.embedding_version,
+            point,
+        ));
+        assert_eq!(
+            retired.map_err(|error| error.to_string()),
+            Ok(true),
+            "zero-clamped retirement must commit, not fail a nonnegative CHECK"
+        );
+        assert_eq!(
+            placement_counts(&mut handle),
+            (0, 0),
+            "neither counter can become negative"
+        );
+        assert_eq!(
+            live_binding_count(&mut handle),
+            1,
+            "the retirement committed"
+        );
+    });
+}
+
+/// §17.3: independent worker connections racing on one tenant must preserve both registration deltas.
+#[test]
+fn point_count_two_workers_one_tenant() {
+    run_db_fixture::<Fixture, _>("point_count_two_workers_one_tenant", |mut handle| {
+        let (scope_id, deps, gov, memory_a, memory_b) = placement_gate_fixture(&mut handle);
+        let registration_a =
+            registration_for(&mut handle, scope_id, &deps.embedding_version, memory_a);
+        let registration_b =
+            registration_for(&mut handle, scope_id, &deps.embedding_version, memory_b);
+        assert_eq!(placement_counts(&mut handle), (0, 0));
+        let auth = gov.scope(scope_id);
+        let retrieval_dsn = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_DSN")
+            .expect("HUMAUX_RETRIEVAL_WORKER_PG_DSN must be set for this test");
+        let results = handle.rt.block_on(async {
+            // dep: PostgreSQL(role_retrieval_worker) — a second independent pool, not a clone of worker one's pool.
+            let second_pool = RetrievalWorkerDbPool::connect(&retrieval_dsn)
+                .await
+                .expect("second worker connects");
+            let barrier = tokio::sync::Barrier::new(2);
+            let (first, second) = tokio::time::timeout(Duration::from_secs(30), async {
+                tokio::join!(
+                    async {
+                        barrier.wait().await;
+                        register_private_memory_point(&deps.pool, &auth, &registration_a).await
+                    },
+                    async {
+                        barrier.wait().await;
+                        register_private_memory_point(&second_pool, &auth, &registration_b).await
+                    },
+                )
+            })
+            .await
+            .expect("both concurrent registrations finish");
+            [
+                first.map_err(|error| error.to_string()),
+                second.map_err(|error| error.to_string()),
+            ]
+        });
+        assert_eq!(
+            results,
+            [
+                Ok(RegistrationOutcome::Inserted),
+                Ok(RegistrationOutcome::Inserted)
+            ]
+        );
+        assert_eq!(
+            placement_counts(&mut handle),
+            (2, 32),
+            "both vectorless registrations use the bound 4-d label width"
+        );
+        assert_eq!(live_binding_count(&mut handle), 2);
+    });
+}
+
 /// ADR-0068 card 40d-1b-ii: the worker's note chunk path, asserted on real registry rows, real Qdrant points and the
 /// inputs a provider spy actually received.
 mod note_chunk_projection {
@@ -3686,42 +3874,6 @@ mod note_chunk_projection {
             .0;
         deps.embedder = spy.clone();
         (deps, fingerprint)
-    }
-
-    /// The legacy registration of `memory_id` as the registry derives it from the live source fence.
-    fn registration_for(
-        handle: &mut Handle,
-        scope_id: Uuid,
-        label: &str,
-        memory_id: Uuid,
-    ) -> PrivateMemoryPointRegistration {
-        let row = handle
-            .admin
-            .query_one(
-                "SELECT (extract(epoch FROM updated_at) * 1000000)::bigint, \
-                        sha256(convert_to(content::text, 'UTF8')) \
-                   FROM private.memory_records WHERE memory_id = $1",
-                &[&memory_id],
-            )
-            .expect("the Memory row");
-        let micros: i64 = row.get(0);
-        let updated_at =
-            time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000)
-                .expect("a valid timestamp");
-        PrivateMemoryPointRegistration::deterministic(
-            StreamFamily::new(
-                TenantId(handle.tenant_id),
-                "workspace",
-                scope_id,
-                "private_memory",
-                "PRIVATE_MEMORY",
-            ),
-            "v1".to_owned(),
-            label.to_owned(),
-            MemoryId(memory_id),
-            updated_at,
-            row.get(1),
-        )
     }
 
     /// The v2 ids of a note's `count` chunk slots.
