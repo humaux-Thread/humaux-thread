@@ -1,11 +1,14 @@
 //! `adapters::note_repo` — the verbatim note lane's write half: the identity contract and the one authorised Memory of
-//!   `memory.note_put`, written inside the caller's Evidence transaction (ADR-0067 D-A/D-B/D-C/D-E).
-//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects, private.identity_note_materializations] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
+//!   `memory.note_put`, written inside the caller's Evidence transaction (ADR-0067 D-A/D-B/D-C/D-E), plus the exact-duplicate
+//!   key of a create (M06-3).
+//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.identity_note_materializations, private.memory_records, projection.stream_log] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
 //! Called-by: [adapters::operation_receipt, adapters::remember, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [no SQL here commits; the Memory is written only through memory_repo::insert_memory_in_txn (the workspace's single
 //!   memory INSERT); the contract row is written after the Memory and before the EVIDENCE_ACCEPTED outbox row so the 0235
 //!   enqueue trigger skips distill; the authority decision precedes every write; a replacement supersedes exactly the
-//!   CAS-checked head in one guarded UPDATE and moves the head row in the same transaction (ADR-0067 D-J)]
+//!   CAS-checked head in one guarded UPDATE and moves the head row in the same transaction (ADR-0067 D-J); an exact-duplicate
+//!   note is the same tenant, visibility scope, note_kind and body SHA-256 with an active unarchived first version, and the
+//!   advisory-lock text of that key has exactly one constructor here and carries no principal (ADR-0067 D3, M06-3)]
 //! Spec: Baseline §8.5; §10.1; §34; ADR-0067
 //!
 //! [`NoteIntake`] is everything the gateway edge decided about one note (kind, title, validated body, requested authority);
@@ -19,6 +22,7 @@ use humaux_domain::evidence::EvidenceOriginClass;
 use humaux_domain::note::{
     NoteBody, NoteKind, POLICY_VERSION, REPRESENTATION, STRATEGY_IDENTITY_NOTE_V1, authorize_note,
 };
+use sqlx::Row;
 use sqlx::types::Uuid;
 
 use crate::memory_repo::{self, AttributionSource, LoadedEvidence, NewMemory};
@@ -55,6 +59,115 @@ pub enum NoteLineage {
 /// [`RememberError::Note`]`(FORBIDDEN)` — raised before the first write, so nothing is stored.
 pub(crate) fn authorize(note: &NoteIntake) -> Result<AuthorityClass, RememberError> {
     authorize_note(note.kind, note.requested).map_err(|_| RememberError::Note(ErrorCode::Forbidden))
+}
+
+/// §34.0.1 / ADR-0067 D3: the exact-duplicate note of a create as the receipt and its stream coordinates name it. `None`
+/// from [`find_exact_note_in_txn`] means the key is unused (or its EVIDENCE_ACCEPTED ticket is tombstoned, so a receipt
+/// could not point at it; the 0269 UNIQUE then refuses the duplicate insert).
+#[derive(Debug)]
+pub(crate) struct ExactNoteHit {
+    /// The existing first version's Evidence.
+    pub evidence_id: Uuid,
+    /// The Memory that Evidence materialised; for a first version this is also the note's `note_id`.
+    pub memory_id: Uuid,
+    /// `private.evidence_objects.data_class` of the existing Evidence (the hit's answer, not the request's default).
+    pub data_class: String,
+    /// `projection.stream_log.scope_kind` of the existing Evidence's accepted ticket (0114 repeats it in the receipt).
+    pub scope_kind: String,
+    /// `projection.stream_log.scope_id`.
+    pub scope_id: Uuid,
+    /// `projection.stream_log.domain`.
+    pub domain: String,
+    /// `projection.stream_log.projection_kind`.
+    pub projection_kind: String,
+    /// `projection.stream_log.projection_version`.
+    pub projection_version: String,
+    /// `projection.stream_log.stream_seq`.
+    pub stream_seq: i64,
+    /// `projection.stream_log.commit_seq`.
+    pub commit_seq: i64,
+}
+
+/// ADR-0067 D3 / M06-3: the one advisory-lock text of an exact-duplicate note key. D3's owner is the note's visibility
+/// user (a note row stores no separate owner column; for `USER_PRIVATE` that user is the owner, and a wider class is owned
+/// by its workspace/tenant scope), so the text is the full D3 key: tenant, visibility scope, note_kind, body SHA-256. No
+/// principal, operation key, project, title or time appears, so every agent writing one body queues on one key.
+pub(crate) fn exact_dedupe_lock_key(
+    tenant_id: Uuid,
+    visibility_class: &str,
+    visibility_user_id: Option<Uuid>,
+    visibility_workspace_id: Option<Uuid>,
+    kind: NoteKind,
+    body_sha256: &[u8; 32],
+) -> String {
+    format!(
+        "identity-note:{tenant_id}:{visibility_class}:{}:{}:{}:{}",
+        visibility_user_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        visibility_workspace_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        kind.wire(),
+        hex::encode(body_sha256)
+    )
+}
+
+/// ADR-0067 D3 / M06-3: the active, unarchived first version of a note with exactly this tenant, visibility scope,
+/// `note_kind` and body SHA-256, with the live `EVIDENCE_ACCEPTED` ticket a receipt can repeat. A replacement head is not
+/// a candidate: its `note_id <> memory_id`, and a create that matched it would answer a `memory_id` its caller reads as
+/// `note_id` (the response carries no second id). The caller holds [`exact_dedupe_lock_key`] in this transaction; the 0269
+/// UNIQUE index is the backstop.
+pub(crate) async fn find_exact_note_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    cmd: &RememberCommand,
+    note: &NoteIntake,
+) -> Result<Option<ExactNoteHit>, sqlx::Error> {
+    let Some(row) = sqlx::query(
+        "SELECT c.evidence_id, m.memory_id, e.data_class, l.scope_kind, l.scope_id, l.domain, \
+                l.projection_kind, l.projection_version, l.stream_seq, l.commit_seq \
+           FROM private.memory_records m \
+           JOIN private.identity_note_materializations c \
+             ON c.tenant_id = m.tenant_id AND c.output_memory_id = m.memory_id \
+           JOIN private.evidence_objects e \
+             ON e.tenant_id = c.tenant_id AND e.evidence_id = c.evidence_id \
+           JOIN ops.outbox o \
+             ON o.tenant_id = e.tenant_id AND o.evidence_id = e.evidence_id \
+            AND o.event_type = 'EVIDENCE_ACCEPTED' \
+           JOIN projection.stream_log l \
+             ON l.tenant_id = o.tenant_id AND l.commit_seq = o.commit_seq \
+          WHERE m.tenant_id = $1 AND m.status = 'active' AND m.archived_at IS NULL \
+            AND m.note_kind = $2 AND m.note_id = m.memory_id \
+            AND m.visibility_class = $3 \
+            AND m.visibility_user_id IS NOT DISTINCT FROM $4 \
+            AND m.visibility_workspace_id IS NOT DISTINCT FROM $5 \
+            AND c.body_sha256 = $6 AND l.state <> 'TOMBSTONED' \
+          ORDER BY o.commit_seq LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(note.kind.wire())
+    .bind(&cmd.visibility_class)
+    .bind(cmd.visibility_user_id)
+    .bind(cmd.visibility_workspace_id)
+    .bind(note.body.sha256().as_slice())
+    .fetch_optional(&mut **txn)
+    .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ExactNoteHit {
+        evidence_id: row.try_get("evidence_id")?,
+        memory_id: row.try_get("memory_id")?,
+        data_class: row.try_get("data_class")?,
+        scope_kind: row.try_get("scope_kind")?,
+        scope_id: row.try_get("scope_id")?,
+        domain: row.try_get("domain")?,
+        projection_kind: row.try_get("projection_kind")?,
+        projection_version: row.try_get("projection_version")?,
+        stream_seq: row.try_get("stream_seq")?,
+        commit_seq: row.try_get("commit_seq")?,
+    }))
 }
 
 /// The Memory's `content` jsonb (ADR-0067 D-E): the body is `key_claim`, byte for byte.
