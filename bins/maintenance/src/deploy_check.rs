@@ -4,7 +4,7 @@
 //!   expected-uid and host-network-DSN cross-checks when both are given, `--release` (four identity comparisons
 //!   against the build's release manifest plus the checkout-tree comparison, review fix 9), `--running`
 //!   (`docker inspect` of the running project against the compose values) and `--secrets-readable` (names only).
-//! Depends-on: crates=[humaux_adapters, serde_json]; services=[subprocess(docker), fs(env_file of the compose document)]; env=[]; modules=[adapters::retrieve]
+//! Depends-on: crates=[humaux-adapters, serde_json]; services=[subprocess(docker), fs(env_file of the compose document)]; env=[]; modules=[adapters::retrieve]
 //! Called-by: [maintenance::main, xtask::dep_map]
 //! Invariants: [every check reports ALL its failing reasons, never just the first; a reason carries names (service,
 //!   key, file, target) and never a value; a compose document with a resolved secret value is refused
