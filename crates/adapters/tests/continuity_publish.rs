@@ -1,11 +1,10 @@
 //! `adapters::tests::continuity_publish` — M14-2 gates G-M14-1 and G-M14-2 against a real PostgreSQL.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio,
-//!   uuid]; services=[PostgreSQL(owner) r=[control.workspaces] w=[control.private_reasoning_domains,
-//!   control.tenants, private.memory_records], PostgreSQL(role_gateway)
-//!   r=[private.continuity_facet_slots, private.continuity_facet_versions] x=[private.publish_continuity_facet,
-//!   private.read_continuity_project_storage_v1, private.register_continuity_project]];
+//!   uuid]; services=[PostgreSQL(owner) r=[private.memory_records] w=[control.private_reasoning_domains,
+//!   control.tenants, control.workspaces, private.memory_records], PostgreSQL(role_gateway)
+//!   r=[private.continuity_facet_slots, private.continuity_facet_versions]];
 //!   env=[HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[adapters::continuity_repo, adapters::postgres,
-//!   domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit]
+//!   domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [G-M14-1: two overlapping publishes of one scalar slot leave exactly one version, one winner and one
 //!   typed CONFLICT carrying that version; G-M14-2: 80 concurrent list writers leave exactly 80 items (the full union)
@@ -106,6 +105,7 @@ impl Drop for Handle {
             eprintln!("continuity_publish cleanup: tenant id is not canonical");
             return;
         };
+        // dep: PostgreSQL(owner) — purge this test's rows with the owner connection
         let Ok(mut admin) = Client::connect(&self.admin_dsn, NoTls) else {
             eprintln!("continuity_publish cleanup: admin connect failed");
             return;
@@ -127,21 +127,16 @@ impl DbIntegrationFixture for Fixture {
     fn isolate() -> Result<Self::Handle, DbFixtureSkipReason> {
         let admin_dsn =
             std::env::var("HUMAUX_TEST_PG_DSN").map_err(|_| DbFixtureSkipReason::NoDatabaseUrl)?;
+        // dep: PostgreSQL(owner) — the fixture seeds and later purges with the owner connection
         let mut admin = Client::connect(&admin_dsn, NoTls)
             .map_err(|error| DbFixtureSkipReason::ConnectFailed(error.to_string()))?;
-        let migrated: bool = admin
-            .query_one(
-                "SELECT to_regprocedure('private.publish_continuity_facet(uuid,uuid,uuid,uuid,uuid,\
-                 text,bigint,text,jsonb,uuid[],bytea[],uuid[],bytea[])') IS NOT NULL",
-                &[],
-            )
-            .map_err(|error| DbFixtureSkipReason::IsolationSetupFailed(error.to_string()))?
-            .get(0);
-        if !migrated {
-            return Err(DbFixtureSkipReason::IsolationSetupFailed(
-                "missing object: private.publish_continuity_facet (migration 0136)".to_string(),
-            ));
-        }
+        admin
+            .query_opt("SELECT 1 FROM private.continuity_facet_slots LIMIT 1", &[])
+            .map_err(|error| {
+                DbFixtureSkipReason::IsolationSetupFailed(format!(
+                    "missing object: private.continuity_facet_slots (migration 0136): {error}"
+                ))
+            })?;
         let tenant = Uuid::now_v7();
         let workspace = Uuid::now_v7();
         let principal = Uuid::now_v7();
@@ -250,6 +245,7 @@ fn one_publish(
     command: &PublishContinuityFacet<'_>,
 ) -> Result<PublishFacetOutcome, ErrorCode> {
     rt.block_on(async {
+        // dep: PostgreSQL(role_gateway) — one write transaction per publish attempt
         let mut tx = pool
             .pool()
             .begin()
@@ -409,6 +405,7 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
                 &[],
             );
             let (mut tx, outcome) = rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — the winner's slot lock is held until it commits
                 let mut tx = pool.pool().begin().await.expect("winner begin");
                 let outcome =
                     continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
@@ -449,6 +446,7 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
                 &[],
             );
             rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — the loser blocks on the winner's slot lock
                 let mut tx = pool.pool().begin().await.expect("loser begin");
                 let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
                     .fetch_one(&mut *tx)
@@ -569,8 +567,14 @@ fn g_m14_2_eighty_writers_union_exactly() {
         let expected: Vec<String> = (0..WRITERS)
             .map(|index| format!("writer-{index:02}"))
             .collect();
+        let body = current_body(&mut admin, project, "DECISIONS");
         assert_eq!(
-            source_ids(&current_body(&mut admin, project, "DECISIONS")),
+            body["items"].as_array().expect("items").len(),
+            WRITERS,
+            "the merged body must hold exactly one item per writer"
+        );
+        assert_eq!(
+            source_ids(&body),
             expected,
             "exactly the union of all 80 writers"
         );
@@ -605,6 +609,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
                 &[],
             );
             let (mut tx, outcome) = rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — the winner's slot lock is held until it commits
                 let mut tx = pool.pool().begin().await.expect("winner begin");
                 let outcome =
                     continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
@@ -645,6 +650,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
                 &[],
             );
             rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — the loser blocks on the winner's slot lock
                 let mut tx = pool.pool().begin().await.expect("loser begin");
                 let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
                     .fetch_one(&mut *tx)

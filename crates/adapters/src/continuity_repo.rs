@@ -1,6 +1,6 @@
 //! `adapters::continuity_repo` — Typed role_gateway bindings for Project Continuity registration and facet publication.
-//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) r=[private.read_continuity_project_storage_v1] x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[]; modules=[adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
-//! Called-by: [gateway::continuity]
+//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[]; modules=[adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
+//! Called-by: [gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [registration and facet publication go only through the SECURITY DEFINER functions; the slot version a
 //!   publication is checked against is the door's own in-transaction read, never a caller value (§25.3.1, ADR-0094
 //!   D-C); scalar facets never retry, list facets merge-and-retry at most three times; their SQLSTATEs map to

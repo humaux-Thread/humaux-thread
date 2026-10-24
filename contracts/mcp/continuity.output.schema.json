@@ -145,6 +145,16 @@
         "reason_label": {"enum":["FACET_SLOT_VERSION_CONFLICT","FACET_MERGE_RETRY_EXHAUSTED"]},
         "current_slot_version": {"type":"integer","minimum":0}
       },
+      "allOf": [
+        {
+          "if": {"required":["reason"],"properties":{"reason":{"const":1401}}},
+          "then": {"properties":{"reason_label":{"const":"FACET_SLOT_VERSION_CONFLICT"}}}
+        },
+        {
+          "if": {"required":["reason"],"properties":{"reason":{"const":1402}}},
+          "then": {"properties":{"reason_label":{"const":"FACET_MERGE_RETRY_EXHAUSTED"}}}
+        }
+      ],
       "additionalProperties": false
     }
   },
