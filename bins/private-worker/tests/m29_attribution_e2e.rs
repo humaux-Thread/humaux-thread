@@ -1357,7 +1357,10 @@ fn usage(h: &mut Handle) -> (i64, i64, i64) {
 /// E-D: the corpus in tenant F (T07's deterministic FakeProvider) and tenant L (`live`), each drained before the next
 /// is written (the claim serves every tenant), then G-N09-4 per message. `real`: L must have dialed MiniMax, so the
 /// non-vacuity row check and the measurement line apply.
-#[allow(clippy::too_many_lines)] // one experiment, read top to bottom
+#[allow(clippy::too_many_lines)]
+// one experiment, read top to bottom
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn e_d(name: &str, live: &Arc<Counted>, real: bool) {
     run_db_fixture::<Fixture, _>(name, |mut hf| {
         let Ok(mut hl) = Fixture::isolate() else {

@@ -17883,9 +17883,9 @@ default run:
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_registry.rs:173` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
-- `crates/retrieval/tests/planner_predicate_eval.rs:218` [table-write] (line) — parses migration SQL text; no DB connection
-- `crates/retrieval/tests/planner_predicate_eval.rs:219` [table-undeclared] (line) — parses migration SQL text; no DB connection
-- `crates/retrieval/tests/planner_predicate_eval.rs:351` [table-undeclared] (line) — parses migration SQL text; no DB connection
+- `crates/retrieval/tests/planner_predicate_eval.rs:222` [table-write] (line) — parses migration SQL text; no DB connection
+- `crates/retrieval/tests/planner_predicate_eval.rs:223` [table-undeclared] (line) — parses migration SQL text; no DB connection
+- `crates/retrieval/tests/planner_predicate_eval.rs:355` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/testkit/Cargo.toml:19` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
 - `xtask/src/dep_map.rs:11` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
 - `xtask/src/dep_map.rs:12` [table-write] (file) — unit-test fixtures spell write statements in strings

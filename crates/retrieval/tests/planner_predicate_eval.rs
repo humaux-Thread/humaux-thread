@@ -112,6 +112,10 @@ mod migration_fixture {
 
     /// Parses a comma-separated SQL value list (`VALUES (...)` tuple contents): each value is
     /// `NULL`, a quoted string, or `ARRAY[...]` of quoted strings.
+    // ponytail: the ARRAY[...] scan nests past clippy.toml's ceiling of 5 (4 blocks, §78.4 / G-M01-8) and M01-6
+    // refactors nothing; the allow is the pinned exception. Upgrade: lift the ARRAY branch into its own fn when
+    // this parser is next touched.
+    #[allow(clippy::excessive_nesting)]
     fn parse_sql_value_list(chars: &[char]) -> Vec<SqlValue> {
         let mut out = Vec::new();
         let n = chars.len();

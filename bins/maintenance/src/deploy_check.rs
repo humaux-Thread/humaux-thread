@@ -1100,6 +1100,9 @@ fn dsn_host(dsn: &str) -> Option<&str> {
 /// ADR-0066 D-J, review fix 6 (S9 B1: `dr backup run` could not reach `pg:5432`): a service in the host's network
 /// namespace cannot resolve a compose service name, so no `*_DSN` in a secret file it loads may name one —
 /// `host_network_dsn_internal:<service>:secrets/<file>:<key>`. An empty value (the placeholder fixture) is not judged.
+// ponytail: the service/file/entry scan nests past clippy.toml's ceiling of 5 (§78.4 / G-M01-8) and M01-6
+// refactors nothing; lift the per-file entry check into its own fn when this rule is next changed.
+#[allow(clippy::excessive_nesting)]
 pub fn host_network_dsn_reasons(doc: &Value, secrets: &[EnvFile]) -> Vec<String> {
     let names: Vec<&str> = services(doc).map(|(name, _)| name.as_str()).collect();
     let mut reasons = Vec::new();

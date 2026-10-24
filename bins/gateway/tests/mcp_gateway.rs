@@ -10531,7 +10531,10 @@ fn listed_subject_ids(listed: &Value) -> BTreeSet<String> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One HTTP fixture pair carries the whole card-8 gateway gate.
+#[allow(clippy::too_many_lines)]
+// One HTTP fixture pair carries the whole card-8 gateway gate.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn native_mcp_subject_registry_declaration_and_linkage_acceptance() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
         .lock()
@@ -11722,7 +11725,10 @@ fn percentile_p50(samples: &mut [Duration]) -> Duration {
 /// replays never collide (ADR-0031 D-C, ADR-0032 D-C).
 #[test]
 #[ignore = "lane(a:request_guard) requires the isolated request-guard PostgreSQL fixture, pinned scanner and disposable Qdrant"]
-#[allow(clippy::too_many_lines)] // ADR-0031: one live oracle keeps three pairs, four routes, 18 interleaved tasks and the cross-pair/unprovisioned refusals causally ordered against ONE gateway process (same precedent as the real-Qdrant live test).
+#[allow(clippy::too_many_lines)]
+// ADR-0031: one live oracle keeps three pairs, four routes, 18 interleaved tasks and the cross-pair/unprovisioned refusals causally ordered against ONE gateway process (same precedent as the real-Qdrant live test).
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn native_mcp_one_process_serves_three_stream_pairs_per_request() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
         .lock()

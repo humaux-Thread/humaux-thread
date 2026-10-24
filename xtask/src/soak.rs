@@ -2196,6 +2196,8 @@ fn config_summary(cfg: &Config) -> serde_json::Value {
     })
 }
 
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn drive(cfg: &Config, db: &mut Client) -> Result<Series, String> {
     let shared = Mutex::new(Shared::default());
     let chaos_starts: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
