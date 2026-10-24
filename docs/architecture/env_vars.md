@@ -437,10 +437,10 @@ processes:
 - process(humaux-admin)
 
 modules:
-- `adapters::tests::mechanism_observation`
 - `admin::mechanism`
 - `admin::probe`
 - `admin::tests::probes`
+- `public-pool::tests::mechanism_observation`
 - `xtask::mechanism_registry`
 - `xtask::serial_lane`
 
@@ -2919,7 +2919,6 @@ processes:
 
 modules:
 - `adapters::tests::exact_completeness_eval`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::provider_budget`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::retrieval_query_sources`
@@ -2944,6 +2943,7 @@ modules:
 - `maintenance::tests::rebuild_cli`
 - `maintenance::tests::support::containers`
 - `maintenance::tests::support::throwaway`
+- `public-pool::tests::mechanism_observation`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
 - `xtask::serial_lane`
@@ -3541,7 +3541,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
-- `adapters::tests::mechanism_observation`
+- `public-pool::tests::mechanism_observation`
 - `xtask::serial_lane`
 
 ### `HUMAUX_MECHANISM_FIXTURE`
@@ -3555,7 +3555,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
-- `adapters::tests::mechanism_observation`
+- `public-pool::tests::mechanism_observation`
 - `xtask::serial_lane`
 
 ### `HUMAUX_MIGRATOR_PG_DSN`
@@ -4273,7 +4273,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
-- `adapters::tests::public_provenance`
+- `public-pool::tests::public_provenance`
 - `xtask::serial_lane`
 
 ### `HUMAUX_PUBLIC_WORKER_CALLER`
@@ -5766,7 +5766,6 @@ modules:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
@@ -5790,11 +5789,6 @@ modules:
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
 - `adapters::tests::public_contribution_contract`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_runtime_qdrant`
-- `adapters::tests::public_trust`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::read_gate_closure`
 - `adapters::tests::reasoning_route_foundation`
@@ -5817,7 +5811,6 @@ modules:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
-- `adapters::tests::support::public_anonymous_seam`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::task_grant_contract`
 - `adapters::tests::tenant_placements_migration`
@@ -5844,6 +5837,13 @@ modules:
 - `private-worker::tests::m29_attribution_e2e`
 - `private-worker::tests::start_manual_contribution_command_0131`
 - `private-worker::tests::support::double_spend`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::public_trust`
+- `public-pool::tests::support::public_anonymous_seam`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`
@@ -5868,10 +5868,8 @@ processes:
 
 modules:
 - `adapters::tests::private_projection_registry`
-- `adapters::tests::public_projection`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::recall_envelope_g23`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::visible_index_count`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
@@ -5879,6 +5877,8 @@ modules:
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
 - `maintenance::tests::onboarding`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::support::public_qdrant_fixture`
 - `public-worker::tests::readyz_probe`
 - `retrieval-worker::tests::readyz_probe`
 - `xtask::dep_map`
