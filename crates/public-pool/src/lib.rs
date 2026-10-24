@@ -1,7 +1,6 @@
 //! `humaux-public-pool` — the cloud edition's governed public knowledge pool (M20): admission, receipts, revocation,
 //!   projection and provenance probes over the `public.*` schema.
-//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, humaux-infra-cell, serde_json, sha2, sqlx,
-//!   uuid]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: [crate(humaux-public-worker)]
 //! Invariants: [`edition = "cloud"`: no core crate (domain, adapters, application, bins of the core edition) depends on
 //!   this crate (G-M01-2); the `public.*` writers run only on `PublicWorkerDbPool`]
