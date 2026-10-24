@@ -58,9 +58,10 @@
 
 - The owner's answer of 2026-10-22 is binding: project hierarchy (decision #2) is **provisional**; the owner asked for
   a fresh hierarchy and canvas design (B31), and **M18 will own the hierarchy contract** (`module_design_M14.md:212`:
-  "Project hierarchy (decision #2) is PROVISIONAL … M18 will own the hierarchy contract".
+  "Project hierarchy (decision #2) is PROVISIONAL … M18 will own the hierarchy contract").
 - **Lead ruling (2026-10-24): the M18-0 hierarchy ADR supersedes D-A–D-D of this ADR, and M29-g2 waits on it.** The
   Project —PART_OF→ Project pair is therefore built under the M18-0 contract, not ahead of it.
+- This ADR records M14's decision and **does not choose between the two designs**.
 - The M18 design note (2026-10-23) proposes a single-parent tree: guest columns `parent_id`, `kind` and `version` on
   `private.continuity_projects`, a self-FK, a depth limit, `project_ancestors` / `project_subtree`, and moves under a
   tenant topology guard. It also proposes `private.project_facets(kind CHANNEL|PLATFORM)` in place of
