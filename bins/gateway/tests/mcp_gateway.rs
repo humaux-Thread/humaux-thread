@@ -14469,7 +14469,10 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
                     .expect("memory count")
                     .get(0)
             });
-            assert_eq!(memories, 3, "only the three accepted notes exist");
+            // M06-3 (ADR-0067 D3): the two "\u0061" / "a" spellings decode to one body under one note_kind and visibility,
+            // so the second call is an exact-duplicate hit and the tenant holds two notes, not three (the digest assertion
+            // above still proves the wire escape decodes before hashing).
+            assert_eq!(memories, 2, "only the two accepted notes exist");
 
             // The closed enums refuse unknown spellings; the new fields are not accepted on remember.put (G25).
             let (status, bad_kind) = raw_request(

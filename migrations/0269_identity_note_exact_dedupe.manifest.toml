@@ -1,0 +1,74 @@
+# §46.1 migration manifest. Card M06-3 / ADR-0067 D3: one UNIQUE partial index on private.memory_records for the exact
+# duplicate of an identity note (tenant, visibility scope, note_kind, body SHA-256, active unarchived first version), and
+# CREATE OR REPLACE of control.check_operation_receipt (0114/0265) adding one OR: a receipt may point at another principal's
+# note Evidence through its identity-note contract, under the trigger's invoker RLS. One new pure helper
+# (private.identity_note_body_sha256(jsonb), IMMUTABLE, EXECUTE to the two Memory writers) exists only because convert_to
+# is not marked IMMUTABLE and cannot be an index expression. No other grant, trigger binding or policy changes. No DML.
+# §46 forward-fix (EXPAND_CONTRACT, number 0269).
+
+migration_id = "0269_identity_note_exact_dedupe"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the note lane or the 0114/0265 function, one that already carries 0269, or one that already
+# holds two active first-version notes under one D3 key (the UNIQUE would abort while building).
+precheck = """
+select to_regclass('private.memory_records') is not null
+ and to_regclass('private.identity_note_materializations') is not null
+ and to_regprocedure('control.check_operation_receipt()') is not null
+ and to_regclass('private.memory_records_identity_note_exact_key') is null
+ and to_regprocedure('private.identity_note_body_sha256(jsonb)') is null
+ and position('private.identity_note_materializations' in pg_get_functiondef('control.check_operation_receipt()'::regprocedure)) = 0
+ and not exists (
+   select 1 from private.memory_records
+    where status = 'active' and archived_at is null and note_kind is not null and note_id = memory_id
+    group by tenant_id, visibility_class, visibility_user_id, visibility_workspace_id, note_kind,
+             sha256(convert_to(content->>'key_claim', 'UTF8'))
+   having count(*) > 1)
+ as precheck_ok
+"""
+
+# Fails on: a missing/non-unique/non-partial index, a lost expression or NULLS NOT DISTINCT, a predicate that stops keying
+# first versions or surviving archive, the 0114 principal arm or 0265 source arm dropped, the note arm missing, a wrong
+# owner, a SECURITY DEFINER function (the arm must stay an invoker read), EXECUTE open to PUBLIC, or the trigger binding lost.
+postcheck = """
+select (select count(*) = 1 from pg_index i
+          join pg_class c on c.oid = i.indexrelid
+          join pg_class t on t.oid = i.indrelid
+          join pg_namespace ns on ns.oid = t.relnamespace
+         where ns.nspname = 'private' and t.relname = 'memory_records'
+           and c.relname = 'memory_records_identity_note_exact_key'
+           and i.indisunique and i.indpred is not null and i.indexprs is not null
+           and pg_get_indexdef(i.indexrelid) like '%NULLS NOT DISTINCT%'
+           and pg_get_indexdef(i.indexrelid) like '%visibility_class%'
+           and pg_get_indexdef(i.indexrelid) like '%visibility_user_id%'
+           and pg_get_indexdef(i.indexrelid) like '%visibility_workspace_id%'
+           and pg_get_indexdef(i.indexrelid) like '%note_kind%'
+           and pg_get_indexdef(i.indexrelid) like '%identity_note_body_sha256%'
+           and pg_get_indexdef(i.indexrelid) like '%note_id = memory_id%'
+           and pg_get_indexdef(i.indexrelid) like '%archived_at IS NULL%'
+           and pg_get_indexdef(i.indexrelid) like '%status = ''active''%')
+ and (select count(*) = 1 from pg_proc p
+       where p.oid = to_regprocedure('control.check_operation_receipt()')
+         and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and not p.prosecdef
+         and position('e.origin_principal_id=NEW.principal_id AND e.origin_class=''AuthenticatedAgent''' in pg_get_functiondef(p.oid)) > 0
+         and position('src.owner_user_id=NEW.user_id' in pg_get_functiondef(p.oid)) > 0
+         and position('private.identity_note_materializations' in pg_get_functiondef(p.oid)) > 0
+         and position('n.evidence_id=e.evidence_id' in pg_get_functiondef(p.oid)) > 0
+         and position('m.note_id=m.memory_id' in pg_get_functiondef(p.oid)) > 0)
+ and (select count(*) = 1 from pg_proc p
+       where p.oid = to_regprocedure('private.identity_note_body_sha256(jsonb)')
+         and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and p.provolatile = 'i' and p.proisstrict and p.proparallel = 's')
+ and has_function_privilege('role_gateway', 'private.identity_note_body_sha256(jsonb)', 'EXECUTE')
+ and has_function_privilege('role_private_worker', 'private.identity_note_body_sha256(jsonb)', 'EXECUTE')
+ and not has_function_privilege('public', 'private.identity_note_body_sha256(jsonb)', 'EXECUTE')
+ and not has_function_privilege('public', 'control.check_operation_receipt()', 'EXECUTE')
+ and (select count(*) = 1 from pg_trigger
+       where tgrelid = 'control.operation_receipts'::regclass
+         and tgname = 'operation_receipt_integrity' and not tgisinternal)
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback by DROP INDEX private.memory_records_identity_note_exact_key, DROP FUNCTION private.identity_note_body_sha256(jsonb) and CREATE OR REPLACE FUNCTION control.check_operation_receipt() with the 0265 body; the note dedupe then relies on the advisory lock alone and a second agent's duplicate-note receipt fails at its receipt INSERT. Deploy that only together with removing the M06-3 hit path in adapters::operation_receipt. Receipts and notes already written are never discarded."
+backup_restore_requirement = "standard pre-deploy snapshot; no dedicated restore drill required. The index build is additive; the precheck refuses a database that already holds duplicate keys, so it cannot abort half-way on existing rows."
