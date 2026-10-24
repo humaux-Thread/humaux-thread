@@ -179,7 +179,7 @@ const AUTH_SURFACE_ENABLED: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
 
 /// ADR-0059 D-G / M02 D3: apply bootstrap's security floor to decoded bytes; malformed hex remains boot's check.
 fn auth_key_too_short(value: &str) -> bool {
-    if !value.len().is_multiple_of(2) {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return false;
     }
     let bytes: Option<Vec<u8>> = value
