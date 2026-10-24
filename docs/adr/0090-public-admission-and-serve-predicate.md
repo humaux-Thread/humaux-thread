@@ -70,7 +70,7 @@ inputs); a user agent's PASS is material, not a receipt. Every merge, translatio
 re-admitted. `ponytail:` grant-based trust; signatures when receipts leave the database.
 
 There is no review queue: `UNDER_REVIEW` and `QUARANTINED` are retired as queue states, and claim states follow D9′ —
-`CLAIMED`, `SUPPORTED`, `DISPUTED`, `REFUTED` (D-E; `module_design_M20.md:12`, owner 6d14ec05 "automatic admission, no
+`CLAIMED`, `SUPPORTED`, `DISPUTED`, `REFUTED` (D-E; `module_design_M20.md:11-12`, owner 6d14ec05 "automatic admission, no
 review queue").
 
 ### D-D The payer is the contributor's BYOK domain; the platform spends nothing

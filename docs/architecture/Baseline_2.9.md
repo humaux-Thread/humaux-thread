@@ -3650,7 +3650,7 @@ Release 创建/撤销属于 private worker（精确授权唯一见 §6.2.2），
 
 授权沿 §11.2.1 的真实 domain owner → bound profile，不以「同用户存在某个相同版本 profile」替代绑定。直接用户必须是该 domain owner；Phase 9 新 contribution root 与 preview/confirm/finalize/replay 的共同入口还必须满足 `AuthorizationScope.principal() == AuthorizationScope.user_id()`。`USER_REASONING` grant 仍是通用 reasoning-domain facility，但无论 grant 是否有效，headless/delegated principal 都不能据此创建或继续用户公共贡献。candidate 仍保存准备时 self principal 与允许的 workspace scope；finalize 复核当前 self scope 与全部 direct/backing source visibility，原确认不扩大权限。短事务共享 `ops.lock_contribution_inputs()`，策略、身份、profile/domain、grant、Evidence/Memory 与 memory_evidence 关系变更均加入同一锁协议；provider/scanner 不持该锁。候选的 source_count 与规范化 manifest hash 在延迟约束中封口，不允许确认前后追加来源。异步 A/B 的 final reservation authority 与 strict route expectation 唯一见 §11.2.5，不在本节复制字段清单。此全局短锁只用于正确性，细分前须测量竞争。
 
-公共入口只消费已授权的匿名 envelope 字段，不能接受 release ID、调用者正文或保护侧 bytes/hash/rights。匿名 PublicSource、初始 claim、direct provenance 与 ADMIT lifecycle fact 同事务且幂等；初始 claim 记为 CLAIMED（未验证），不因扫描通过而自动成为 SUPPORTED；准入是自动链，每条规则写版本化 receipt，unchecked 记为 NOT_RUN 而不是 pass；不存在审核队列，UNDER_REVIEW、QUARANTINED 作为队列状态退役，claim 状态按 D9′ 为 CLAIMED、SUPPORTED、DISPUTED、REFUTED（ADR-0090；module_design_M20.md:12，6d14ec05「automatic admission, no review queue」）。
+公共入口只消费已授权的匿名 envelope 字段，不能接受 release ID、调用者正文或保护侧 bytes/hash/rights。匿名 PublicSource、初始 claim、direct provenance 与 ADMIT lifecycle fact 同事务且幂等；初始 claim 记为 CLAIMED（未验证），不因扫描通过而自动成为 SUPPORTED；准入是自动链，每条规则写版本化 receipt，unchecked 记为 NOT_RUN 而不是 pass；不存在审核队列，UNDER_REVIEW、QUARANTINED 作为队列状态退役，claim 状态按 D9′ 为 CLAIMED、SUPPORTED、DISPUTED、REFUTED（ADR-0090；module_design_M20.md:11-12，6d14ec05「automatic admission, no review queue」）。
 
 ## 12.2 Phase 10 Public Evolution（disabled until separately enabled）
 
@@ -3818,7 +3818,7 @@ PUBLIC_STAGING
 
 `public.claim_trust_evaluations` 是 append-only 评估，target 为 claim/synthesis XOR，绑定正文 hash、策略版本、审核身份、根集合与解释维度；`public.claim_trust_evaluation_sources` 是该次评估的不可变根 receipt，不是第二个可变 closure。`public.poisoning_signals` 保存具体风险及检查版本，未检查维度为 NULL/NOT_RUN，不能写成零风险。当前 target 只通过 revision CAS 指向一条完整 receipt。已有正文被评估后不可就地改写；换正文创建新对象，旧对象保留追溯。
 
-support_count 是根数。independent_support_count 是把已验证的同组织、规范 URL、内容 hash、文档 fingerprint、上游根关联连通后得到的组数；衍生 synthesis 不额外投票。缺身份显式标记 incomplete；此数不是统计独立性或严格下界。trusted_source_count 必须来自明确 source policy，不能凭来源类型或账户数猜测；本阶段无校准自动 promotion。不存在审核队列：UNDER_REVIEW、QUARANTINED 作为队列状态退役，claim 状态按 D9′ 为 CLAIMED、SUPPORTED、DISPUTED、REFUTED；人工评估的 SUPPORTED 仍要求服务端核验当前有效的 global moderator grant、用户与 membership，不能只保护 SUPPORTED 而让任意用户改写审核状态（ADR-0090；module_design_M20.md:12，6d14ec05「automatic admission, no review queue」）。contradiction_count 与具体 relation/signal 对应，不合成神奇总分。
+support_count 是根数。independent_support_count 是把已验证的同组织、规范 URL、内容 hash、文档 fingerprint、上游根关联连通后得到的组数；衍生 synthesis 不额外投票。缺身份显式标记 incomplete；此数不是统计独立性或严格下界。trusted_source_count 必须来自明确 source policy，不能凭来源类型或账户数猜测；本阶段无校准自动 promotion。不存在审核队列：UNDER_REVIEW、QUARANTINED 作为队列状态退役，claim 状态按 D9′ 为 CLAIMED、SUPPORTED、DISPUTED、REFUTED（ADR-0090；module_design_M20.md:11-12，6d14ec05「automatic admission, no review queue」）。contradiction_count 与具体 relation/signal 对应，不合成神奇总分。
 
 所有公共读取（包括向量候选 hydrate）用新的 READ COMMITTED 单 SQL 重新验证：SUPPORTED、当前 receipt/revision、正文 hash、receipt 根与当前 closure/直接 provenance 图一致、根非空、没有 §13 撤销事实。候选/缓存/Qdrant 命中不是授权。准入时图修改与评估串行化；图变化会使旧 receipt 失效，不能靠过期 closure 隐藏被撤销的根。
 
