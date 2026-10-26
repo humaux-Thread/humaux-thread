@@ -222,7 +222,7 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
     tokio::select! {
         result = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(shutdown).into_future() => { result?; },
-        result = runtime.watch_session_lock() => { result?; },
+        result = runtime.watch_session_lock() => { result.map_err(|code| std::io::Error::other(code.as_str()))?; },
     }
     Ok(())
 }

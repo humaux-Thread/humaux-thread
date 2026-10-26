@@ -58,7 +58,7 @@ async fn g_m03_9_policy_429_capacity_503_retry_after_and_zero_handler_calls() {
     );
     let admission = Arc::new(Admission::new(AdmissionSettings {
         concurrency: 1,
-        queue_depth: 0,
+        queue_depth: 1,
         max_wait: Duration::from_millis(5),
         per_key_limit: 1,
         body_read_timeout: Duration::from_secs(1),
@@ -87,7 +87,7 @@ async fn g_m03_9_policy_429_capacity_503_retry_after_and_zero_handler_calls() {
         0
     );
     assert_eq!(called.load(Ordering::SeqCst), 1);
-    let ticket = admission.enter(0).await.unwrap();
+    let ticket = admission.enter(42).await.unwrap();
     let (status, headers, body) = request(addr).await;
     assert_eq!(
         (status, body.as_str()),

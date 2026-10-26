@@ -115,7 +115,7 @@ fn terminate_lock(admin: &mut Client, key: i64) {
     );
     let low =
         i64::from(u32::try_from(u64::from_ne_bytes(key.to_ne_bytes()) & 0xffff_ffff).unwrap());
-    let rows = admin.query("SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 1 AND granted", &[&high, &low]).unwrap();
+    let rows = admin.query("SELECT pg_terminate_backend(pid, 5000) FROM pg_locks WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 1 AND granted", &[&high, &low]).unwrap();
     assert_eq!(rows.len(), 1, "terminate exactly the owned session");
     assert!(rows[0].get::<_, bool>(0));
 }
