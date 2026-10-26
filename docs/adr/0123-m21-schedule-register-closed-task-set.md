@@ -2,8 +2,8 @@
 
 - Status: Accepted (2026-10-26). Card M21-1 (docs plus the G-M21-1 xtask gate, wave F, module M21). Content
   authority: module design note M21 §8 D1–D8 (:115-143) and the frozen Baseline §65 table. This ADR records those
-  decisions and re-decides none of them. No task, door, cadence value, migration or code under `bins/maintenance`
-  lands with this card (note :168).
+  decisions and re-decides none of them. No maintenance task lands with this card (note :168); its files are the ADR,
+  the register and the xtask gate.
 - Amends: ADR-0062 D-C (the closed `MaintenanceTask` list): a §65 daily job is a resident task whose
   `EVERY_SECONDS` cadence is compared on the DB clock, so no scheduler library enters the daemon (note :115-116,
   :119).
@@ -103,8 +103,8 @@ Rejected: per-module binaries (seven images, seven credential sets on a 4-vCPU n
   recorded by the note's job table, and an unmapped §65 row turns G-M21-1 red (note :120-121).
 - Cost: adding a job means an owner door (owner module) + a variant + keys + a register row (G-M21-1) (note
   :202-203); cadence values stay in `values/maintenance.env` (note :202-203).
-- Neutral for this card: no task, door, cadence value or migration lands (note :168); the gate's own injected-red
-  record is produced on the card, not in this ADR.
+- Neutral for this card: no maintenance task lands (note :168); the gate's own injected-red record is produced on the
+  card, not in this ADR.
 
 ## Gates
 
