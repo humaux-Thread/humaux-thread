@@ -613,6 +613,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::confirm_token_retention`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `gateway::tests::mcp_gateway`
@@ -901,6 +902,24 @@ executed by:
 - process(humaux-private-worker): `adapters::distill_repo`
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
+### `control.deletion_request_accept`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0278_deletion_accept
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::forget_repo`
+
 ### `control.deletion_request_freeze`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -948,6 +967,7 @@ read by:
 - (no process): `adapters::forget_repo`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
 
@@ -978,6 +998,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
 
@@ -5500,6 +5521,7 @@ read by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -5877,6 +5899,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_repo`
 
 executed by:
@@ -6755,6 +6778,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `gateway::tests::mcp_gateway`
 
 executed by:
@@ -7044,6 +7068,7 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
@@ -10213,6 +10238,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -10520,6 +10546,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -11981,6 +12008,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::projection_worker`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::rebuild_cli`
@@ -12342,6 +12370,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::support::a2_fixture`
 
 executed by:
@@ -12386,6 +12415,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::support::a2_fixture`
 
 executed by:
@@ -12532,6 +12562,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -12720,6 +12751,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
