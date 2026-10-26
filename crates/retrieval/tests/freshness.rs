@@ -1,6 +1,6 @@
 //! `retrieval::tests::freshness` — §21.5 / ADR-0111 pure policy contract and G-M13-6 envelope orthogonality.
 //! Depends-on: crates=[humaux-contracts, humaux-domain, serde_json]; services=[]; env=[];
-//!   modules=[contracts::freshness, domain::memory, retrieval::completeness, retrieval::envelope, retrieval::request, retrieval::signals]
+//!   modules=[contracts::freshness, domain::memory, domain::selection, retrieval::completeness, retrieval::envelope, retrieval::request, retrieval::signals]
 //! Called-by: [cargo-test]
 //! Invariants: [freshness never changes completeness; domain MemoryType set exhaustively loads]
 //! Spec: Baseline §21.5; §23.3; §80.1; ADR-0111
