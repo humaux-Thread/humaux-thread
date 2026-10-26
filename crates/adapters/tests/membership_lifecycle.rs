@@ -1,8 +1,8 @@
 //! `adapters::tests::membership_lifecycle` — §6.3 membership lifecycle admin path (ADR-0033, card 12): live-DB
 //!   acceptance for `adapters::membership_repo` under the real `role_maintenance` login.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, uuid];
-//!   services=[PostgreSQL(any) r=[control.audit_events, public.humaux_test_membership_fault_] w=[control.memberships,
-//!   control.users]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::membership_repo,
+//!   services=[PostgreSQL(any) r=[public.humaux_test_membership_fault_] w=[control.audit_events,
+//!   control.memberships, control.tenants, control.users]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::membership_repo,
 //!   adapters::tests::support::operation_receipt_fixture, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [removing the last ACTIVE OWNER is Conflict(LastOwner) with only a DENIED row; the state change and
@@ -166,14 +166,19 @@ fn conflict(
     }
 }
 
-/// Owner-installed failing trigger; dropped on `Drop` so a failing assertion never leaves it.
+/// Owner-installed failing trigger, scoped to one row key so another test binary's rows on the shared table are
+/// not refused; dropped on `Drop` so a failing assertion never leaves it.
 struct FaultTrigger {
     admin_dsn: String,
     drop_sql: String,
 }
 
 impl FaultTrigger {
-    fn install(handle: &mut Handle, table: &str, event: &str) -> Self {
+    /// `scope` is `(NEW column, value)`: `tenant_id` for a tenant-wide table, `user_id` for `control.users`, which
+    /// has no tenant column (migrations/0003_control_core.sql:32-39). An unscoped trigger on the shared
+    /// `control.audit_events` failed a concurrent e2e-seed onboarding another tenant (run 39993476256).
+    fn install(handle: &mut Handle, table: &str, event: &str, scope: (&str, Uuid)) -> Self {
+        let (column, value) = scope;
         let tag = Uuid::now_v7().simple().to_string();
         let function = format!("public.humaux_test_membership_fault_{tag}");
         let trigger = format!("humaux_test_membership_fault_{tag}");
@@ -183,7 +188,7 @@ impl FaultTrigger {
                 "CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ \
                  BEGIN RAISE EXCEPTION 'injected membership fault' USING ERRCODE='23514'; END $$; \
                  CREATE TRIGGER {trigger} BEFORE {event} ON {table} \
-                 FOR EACH ROW EXECUTE FUNCTION {function}()"
+                 FOR EACH ROW WHEN (NEW.{column} = '{value}'::uuid) EXECUTE FUNCTION {function}()"
             ))
             .expect("owner installs fault trigger");
         Self {
@@ -215,6 +220,91 @@ fn check_def(handle: &mut Handle, conname: &str) -> String {
         )
         .expect("constraint exists")
         .get(0)
+}
+
+/// #273 F3 regression: [`FaultTrigger`] must be scoped to the fixture's own rows. On the shared test database an
+/// unscoped `control.audit_events` trigger refused a concurrent e2e-seed onboarding of another tenant (run
+/// 39993476256); the scoped trigger still refuses this tenant's (and this user's) row.
+#[test]
+fn flake_273_fault_trigger_is_scoped_to_the_fixture_tenant_and_user() {
+    run_db_fixture::<Fixture, _>(
+        "flake_273_fault_trigger_is_scoped_to_the_fixture_tenant_and_user",
+        |mut handle| {
+            let tenant = handle.tenant_id;
+            let (ours, other) = (Uuid::new_v4(), Uuid::new_v4());
+            {
+                let _fault = FaultTrigger::install(
+                    &mut handle,
+                    "control.users",
+                    "UPDATE OF security_epoch",
+                    ("user_id", ours),
+                );
+                let mut txn = handle.admin.transaction().expect("owner transaction");
+                txn.batch_execute(&format!(
+                    "INSERT INTO control.users(user_id,state) VALUES ('{ours}','ACTIVE'), ('{other}','ACTIVE')"
+                ))
+                .expect("two probe users");
+                assert_eq!(
+                    txn.execute(
+                        "UPDATE control.users SET security_epoch=1 WHERE user_id=$1",
+                        &[&other],
+                    )
+                    .expect("another user's epoch write commits"),
+                    1
+                );
+                let refused = txn
+                    .execute(
+                        "UPDATE control.users SET security_epoch=1 WHERE user_id=$1",
+                        &[&ours],
+                    )
+                    .expect_err("the scoped user's epoch write is refused");
+                assert_eq!(
+                    refused.code(),
+                    Some(&postgres::error::SqlState::CHECK_VIOLATION)
+                );
+                assert_eq!(
+                    refused.as_db_error().map(postgres::error::DbError::message),
+                    Some("injected membership fault")
+                );
+                txn.rollback().expect("roll back the probe users");
+            }
+            {
+                let _fault = FaultTrigger::install(
+                    &mut handle,
+                    "control.audit_events",
+                    "INSERT",
+                    ("tenant_id", tenant),
+                );
+                let mut txn = handle.admin.transaction().expect("owner transaction");
+                let other_tenant: Uuid = txn
+                    .query_one(
+                        "INSERT INTO control.tenants(name) VALUES ('fault-scope-other') RETURNING tenant_id",
+                        &[],
+                    )
+                    .expect("another tenant")
+                    .get(0);
+                assert_eq!(
+                    txn.execute(
+                        "INSERT INTO control.audit_events(tenant_id,action) VALUES ($1,'FAULT_SCOPE_OTHER')",
+                        &[&other_tenant],
+                    )
+                    .expect("another tenant's audit row commits"),
+                    1
+                );
+                let refused = txn
+                    .execute(
+                        "INSERT INTO control.audit_events(tenant_id,action) VALUES ($1,'FAULT_SCOPE_SELF')",
+                        &[&tenant],
+                    )
+                    .expect_err("this tenant's audit row is refused");
+                assert_eq!(
+                    refused.code(),
+                    Some(&postgres::error::SqlState::CHECK_VIOLATION)
+                );
+                txn.rollback().expect("roll back the other tenant");
+            }
+        },
+    );
 }
 
 #[test]
@@ -481,8 +571,12 @@ fn membership_lifecycle_last_owner_atomic_epoch_bump_and_typed_edges() {
             // ---- atomicity, both directions (card 12 fault-injection acceptance).
             // (a) epoch write fails ⇒ the state change rolls back with it.
             {
-                let _fault =
-                    FaultTrigger::install(&mut handle, "control.users", "UPDATE OF security_epoch");
+                let _fault = FaultTrigger::install(
+                    &mut handle,
+                    "control.users",
+                    "UPDATE OF security_epoch",
+                    ("user_id", peer),
+                );
                 let removed = mutate(&mut handle, peer, MembershipMutation::Remove);
                 assert!(
                     matches!(removed, Err(MembershipRepoError::Db(_))),
@@ -497,7 +591,13 @@ fn membership_lifecycle_last_owner_atomic_epoch_bump_and_typed_edges() {
             }
             // (b) audit insert fails ⇒ state change AND epoch bump roll back (neither).
             {
-                let _fault = FaultTrigger::install(&mut handle, "control.audit_events", "INSERT");
+                let tenant = handle.tenant_id;
+                let _fault = FaultTrigger::install(
+                    &mut handle,
+                    "control.audit_events",
+                    "INSERT",
+                    ("tenant_id", tenant),
+                );
                 let removed = mutate(&mut handle, peer, MembershipMutation::Remove);
                 assert!(
                     matches!(removed, Err(MembershipRepoError::Db(_))),
