@@ -1694,7 +1694,7 @@ mod tests {
     /// (run 39960284181). One session advisory lock in the `postgres` database — the key `throwaway_db.rs`'s
     /// in-process `CLUSTER_DDL` cannot cover across processes — serializes them; dropping `cluster_lock` releases it.
     fn apply_every_migration(owner: &mut Client, cluster_dsn: &str) {
-        // dep: PostgreSQL(owner) — one session advisory lock in the `postgres` database around the migration bodies
+        // dep: PostgreSQL(any) — one session advisory lock in the `postgres` database around the migration bodies
         let mut cluster_lock = Client::connect(cluster_dsn, NoTls).expect("cluster lock connect");
         cluster_lock
             .batch_execute("SELECT pg_advisory_lock(5212157086801349959)")
@@ -1744,7 +1744,7 @@ mod tests {
             &humaux_maintenance::throwaway::database_dsn(&base, "postgres"),
             "e2e_seed_migration_lock_probe",
         );
-        // dep: PostgreSQL(owner) — a second session holds the cluster DDL lock the migration must wait for
+        // dep: PostgreSQL(any) — a second session holds the cluster DDL lock the migration must wait for
         let mut holder = Client::connect(&postgres_dsn, NoTls).expect("lock holder connect");
         holder
             .batch_execute("SELECT pg_advisory_lock(5212157086801349959)")
