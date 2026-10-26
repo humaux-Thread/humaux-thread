@@ -61,6 +61,7 @@
 //! The database fixture owns only isolated seed and cleanup rows. Every request below travels
 //! through the loopback native MCP adapter and a real `role_gateway` runtime pool.
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream},
@@ -85,7 +86,6 @@ use humaux_adapters::{
         Distance, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
         create_collection_body, ha_profile_for, subject_index_body, tenant_index_body, upsert,
     },
-    quota_repo::RatePolicy,
 };
 use humaux_domain::{
     affect::{AffectAnnotation, AffectKind, BasisPoints, EmotionLabel},
@@ -207,6 +207,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: 50_000,
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),
@@ -5593,6 +5594,10 @@ impl GatewayProcessConfig {
     fn for_fixture(handle: &Handle, address: SocketAddr) -> Self {
         let mut values = BTreeMap::from([
             ("HUMAUX_GATEWAY_BIND_ADDR".into(), address.to_string()),
+            (
+                "HUMAUX_GATEWAY_DEPLOYMENT".into(),
+                Uuid::now_v7().to_string(),
+            ),
             ("HUMAUX_GATEWAY_ALLOWED_HOSTS".into(), HOST.into()),
             ("HUMAUX_GATEWAY_ALLOWED_ORIGINS".into(), ORIGIN.into()),
             (

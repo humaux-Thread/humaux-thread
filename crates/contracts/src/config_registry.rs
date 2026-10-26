@@ -482,3 +482,42 @@ mod tests {
         );
     }
 }
+
+/// M03 registered start values (§78.1; ADR-0100); X-RATE remains owner-gated.
+pub fn gateway_limiter_registry() -> Vec<ConfigEntry> {
+    // ponytail: conservative start values, X-RATE certifies; account 128/20 is the B23 starting point.
+    let mut entries = Vec::new();
+    for (tier, capacity, refill) in [
+        ("PREAUTH_IP", "256", "128"),
+        ("CREDENTIAL", "64", "20"),
+        ("USER", "128", "20"),
+        ("TENANT", "128", "20"),
+        ("OPERATION", "64", "20"),
+    ] {
+        for (suffix, default) in [("CAPACITY", capacity), ("REFILL_PER_SECOND", refill)] {
+            entries.push(gateway_limiter_entry(
+                &format!("HUMAUX_GATEWAY_RATE_{tier}_{suffix}"),
+                "i64",
+                default,
+            ));
+        }
+    }
+    entries.extend([
+        gateway_limiter_entry("HUMAUX_GATEWAY_RATE_MAX_SUBJECTS", "usize", "50000"),
+        gateway_limiter_entry("HUMAUX_GATEWAY_DEPLOYMENT", "string", "default"),
+        gateway_limiter_entry("HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS", "u64", "5"),
+    ]);
+    entries
+}
+
+fn gateway_limiter_entry(name: &str, type_name: &str, default: &str) -> ConfigEntry {
+    ConfigEntry {
+        name: name.to_owned(),
+        type_name: type_name.to_owned(),
+        default: Some(default.to_owned()),
+        scope: "process".to_owned(),
+        secret: false,
+        reloadability: "static".to_owned(),
+        owner_module: "gateway.bootstrap".to_owned(),
+    }
+}

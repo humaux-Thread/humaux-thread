@@ -24,9 +24,7 @@ use humaux_adapters::{
     note_repo::NoteIntake,
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult},
     postgres::RuntimeDbPool,
-    quota_repo::{
-        self, QuotaReservation, RateCharge, RatePolicy, RateSubject, SHARED_RATE_OPERATION,
-    },
+    quota_repo::{self, QuotaReservation},
     remember::RememberCommand,
     request_guard_repo::{self, AuditTenant, EffectiveEntitlementFacts},
 };
@@ -54,6 +52,8 @@ use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
+use crate::limiter::{Limiter, RatePolicy, Subject};
+
 use crate::auth::{
     AuthenticatedServiceCredential, CredentialScope, TouchThrottle, authenticate_service_credential,
 };
@@ -69,6 +69,8 @@ pub struct GuardSettings {
     pub global_emergency_allowlist: Vec<Cidr>,
     pub tenant_network: BTreeMap<Uuid, TenantNetworkPolicy>,
     pub rates: GuardRatePolicies,
+    /// Registered limiter subject cap (§78.1; ADR-0100).
+    pub rate_max_subjects: usize,
     pub reservation_ttl: Duration,
     pub handler_timeout: Duration,
     pub finalize_timeout: Duration,
@@ -241,6 +243,7 @@ pub struct GatewayGuard {
     metrics: GuardMetrics,
     /// M02 D8: when a credential's `last_used_at` is written again; never consulted for a validity decision.
     touch: TouchThrottle,
+    limiter: Limiter,
 }
 
 struct AdmittedOperation {
@@ -323,7 +326,13 @@ impl GatewayGuard {
         {
             return Err(ErrorCode::InvalidInput);
         }
+        let r = &settings.rates;
+        let limiter = Limiter::new(
+            [r.preauth_ip, r.credential, r.user, r.tenant, r.operation],
+            settings.rate_max_subjects,
+        )?;
         Ok(Self {
+            limiter,
             pool: Arc::new(pool),
             settings,
             metrics: GuardMetrics::default(),
@@ -382,22 +391,14 @@ impl GatewayGuard {
         )
     }
 
-    /// ADR-0065 D-D: the post-auth charges of one request in one transaction; a denial counts
-    /// `rate_limit_rejected_total` under the scope of the charge that was denied, as the sequential path did.
-    async fn rate(&self, charges: Vec<(RateCharge<'_>, &'static str)>) -> Result<(), ErrorCode> {
-        let (charges, scopes): (Vec<_>, Vec<_>) = charges.into_iter().unzip();
-        match quota_repo::consume_rate_batch(&self.pool, &charges, self.settings.rates.lock_timeout)
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err((code, i)) => {
-                if code == ErrorCode::RateLimited {
-                    self.metrics
-                        .increment(&families::RATE_LIMIT_REJECTED_TOTAL, &[scopes[i]]);
-                }
-                Err(code)
+    fn rate(&self, subjects: &[Subject]) -> Result<(), ErrorCode> {
+        self.limiter.check(subjects).map_err(|denial| {
+            if denial.code == ErrorCode::RateLimited {
+                self.metrics
+                    .increment(&families::RATE_LIMIT_REJECTED_TOTAL, &[denial.scope]);
             }
-        }
+            denial.code
+        })
     }
 
     async fn authenticate(
@@ -464,21 +465,10 @@ impl GatewayGuard {
         let result = if !self.network_allowed(&network, None) {
             Err(ErrorCode::Forbidden)
         } else {
-            let rates = &self.settings.rates;
-            let result = quota_repo::consume_rate(
-                &self.pool,
-                RateSubject::PreauthIp(network.client_ip, rates.preauth_ipv6_prefix_bits),
-                SHARED_RATE_OPERATION,
-                "preauth",
-                rates.preauth_ip,
-                rates.lock_timeout,
-            )
-            .await;
-            if result == Err(ErrorCode::RateLimited) {
-                self.metrics
-                    .increment(&families::RATE_LIMIT_REJECTED_TOTAL, &["ip"]);
-            }
-            result
+            self.rate(&[Subject::ip(
+                network.client_ip,
+                self.settings.rates.preauth_ipv6_prefix_bits,
+            )?])
         };
         if let Err(code) = result {
             self.audit(
@@ -527,58 +517,21 @@ impl GatewayGuard {
         result
     }
 
-    /// ADR-0065 D-D: credential/shared, user (when present), tenant, credential/operation — the evaluation order of
-    /// the former four transactions; the repository takes their locks in tier order.
+    /// Preserve the §72.3 credential/user/account/operation coverage with zero PG rate I/O (ADR-0100).
     async fn postauth_rate(
         &self,
         auth: &AuthorizationScope,
         operation: &str,
     ) -> Result<(), ErrorCode> {
-        let rates = &self.settings.rates;
-        let credential = || RateSubject::Credential {
-            auth,
-            credential_id: auth.principal().0,
-        };
-        let charge = |subject, operation, bucket_key, policy| RateCharge {
-            subject,
-            operation,
-            bucket_key,
-            policy,
-        };
-        let mut charges = vec![(
-            charge(
-                credential(),
-                SHARED_RATE_OPERATION,
-                "credential",
-                rates.credential,
-            ),
-            "credential",
-        )];
-        if auth.user_id().is_some() {
-            charges.push((
-                charge(
-                    RateSubject::User(auth),
-                    SHARED_RATE_OPERATION,
-                    "user",
-                    rates.user,
-                ),
-                "user",
-            ));
+        let tenant = auth.tenant_id().0;
+        let credential = auth.principal().0;
+        let mut subjects = vec![Subject::Credential(tenant, credential)];
+        if let Some(user) = auth.user_id() {
+            subjects.push(Subject::User(tenant, user.0));
         }
-        charges.push((
-            charge(
-                RateSubject::Tenant(auth),
-                SHARED_RATE_OPERATION,
-                "tenant",
-                rates.tenant,
-            ),
-            "tenant",
-        ));
-        charges.push((
-            charge(credential(), operation, "operation", rates.operation),
-            "operation",
-        ));
-        self.rate(charges).await
+        subjects.push(Subject::Account(tenant));
+        subjects.push(Subject::Operation(tenant, credential, operation.to_owned()));
+        self.rate(&subjects)
     }
 
     /// Only local reads with no external provider cost can use this entry.

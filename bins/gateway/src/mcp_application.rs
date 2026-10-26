@@ -2988,7 +2988,7 @@ mod tests {
         time::Duration,
     };
 
-    use humaux_adapters::{postgres::RuntimeDbPool, quota_repo::RatePolicy};
+    use humaux_adapters::postgres::RuntimeDbPool;
     use humaux_domain::{
         context::ContextBudget,
         dataclass::DataClass,
@@ -3076,6 +3076,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("invalid W2 barrier configuration: {error}"))
     }
 
+    use crate::limiter::RatePolicy;
+
     fn rate() -> RatePolicy {
         RatePolicy::new(10_000, 10_000).expect("nonbinding continuity fixture rate")
     }
@@ -3094,6 +3096,7 @@ mod tests {
                     global_denylist: vec![],
                     global_emergency_allowlist: vec![],
                     tenant_network: BTreeMap::new(),
+                    rate_max_subjects: 50_000,
                     rates: GuardRatePolicies {
                         preauth_ip: rate(),
                         credential: rate(),

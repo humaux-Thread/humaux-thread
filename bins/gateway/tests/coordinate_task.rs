@@ -17,9 +17,10 @@
 //! Faults these gates are built for: the gateway or repository accepting a stale holder's token (G-T04b-2), a run that
 //! belongs to another task (G-T04b-3), and `coordinate.task_heartbeat` being charged one BMO (G-T04b-1).
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 
-use humaux_adapters::{postgres::RuntimeDbPool, quota_repo::RatePolicy};
+use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_gateway::{
     context::ContextBootstrap,
@@ -73,6 +74,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: 50_000,
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),

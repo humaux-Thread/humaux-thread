@@ -51,6 +51,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net",
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
+# why: freeze the production limiter clock for exact hierarchy/restart assertions; used-by: [tests]
+tokio = { version = "1", features = ["test-util"] }
 # why: shared DB-bound test harness (skip_or_fail, fixtures); used-by: [gateway::mcp_application, tests]
 humaux-testkit = { path = "../../crates/testkit" }
 # §4.2 / ADR-0012: the gateway binary itself never links the provider/model-descriptor code —

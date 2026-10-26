@@ -61,6 +61,7 @@
 //! process. A tenant-specific network-policy loader needs a separate approved
 //! authorization and acceptance gate before this bootstrap can serve it.
 
+use crate::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{IpAddr, SocketAddr},
@@ -70,14 +71,13 @@ use std::{
 
 use humaux_adapters::{
     attribution_repo::AttributionLadder,
-    postgres::{PoolSettings, RuntimeDbPool},
-    quota_repo::RatePolicy,
+    postgres::{PoolSettings, RuntimeDbPool, SessionLock},
     retrieve::{TokenKeys, install_token_keys},
 };
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_cache::CacheConfig;
 use humaux_contracts::config_registry::{
-    ConfigEntry, effective_config_fingerprint, resolve_effective_config,
+    ConfigEntry, effective_config_fingerprint, gateway_limiter_registry, resolve_effective_config,
 };
 use humaux_contracts::retrieval_config::{
     RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
@@ -139,8 +139,10 @@ const MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS: u64 = 3600;
 /// 2162). A larger value cannot be a lease anyone reclaims from a crashed owner. Zero is refused too: a lease that has
 /// already expired when it is granted.
 const MAX_TASK_LEASE_TTL_SECONDS: u64 = 4_294_967_295;
-/// ADR-0065 D-B: the `application_name` of every gateway session — the process identity in `pg_stat_activity`
-/// (the name `/status` reports), not a tunable.
+const DEPLOYMENT_KEY: &str = "HUMAUX_GATEWAY_DEPLOYMENT";
+const SESSION_LOCK_CHECK_KEY: &str = "HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS";
+const RATE_MAX_SUBJECTS_KEY: &str = "HUMAUX_GATEWAY_RATE_MAX_SUBJECTS";
+/// ADR-0065 D-B: process identity in `pg_stat_activity`, never a tunable.
 const APPLICATION_NAME: &str = "humaux-gateway";
 
 /// ADR-0078 D-A / D-D: the gateway's one M29 attribution implementation. Every Memory door caller in this process
@@ -228,6 +230,8 @@ pub struct GatewayBootstrap {
     bind_addr: SocketAddr,
     http: McpHttpConfig,
     pg_dsn: String,
+    deployment: String,
+    session_lock_check: Duration,
     /// ADR-0065 D-A / D-B: the `role_gateway` pool's size and session timeouts, from the `PG_*` keys.
     pool_settings: PoolSettings,
     /// ADR-0065 D-C: the §67.2 admission bounds, from the five `ADMISSION_*` keys.
@@ -297,6 +301,8 @@ struct SemanticRecallConfig {
 /// Ready-to-serve components for `main`: bind [`Self::bind_addr`], then serve
 /// [`Self::adapter`] through axum's `into_make_service_with_connect_info`.
 pub struct GatewayRuntime {
+    session_lock: SessionLock,
+    session_lock_check: Duration,
     bind_addr: SocketAddr,
     adapter: McpAdapter,
     config_fingerprint: String,
@@ -310,6 +316,14 @@ pub struct GatewayRuntime {
 }
 
 impl GatewayRuntime {
+    /// Fail closed when the dedicated singleton session dies; never reconnect (ADR-0100).
+    pub async fn watch_session_lock(&mut self) -> Result<(), humaux_domain::error::ErrorCode> {
+        loop {
+            tokio::time::sleep(self.session_lock_check).await;
+            self.session_lock.check().await?;
+        }
+    }
+
     /// M02 D3: hands the auth-surface key set to the auth wiring once (`None` when the surface is off, or after the
     /// first call).
     pub fn take_auth_keys(&mut self) -> Option<TokenKeys> {
@@ -403,6 +417,9 @@ impl GatewayBootstrap {
         let pool = RuntimeDbPool::connect_with(&self.pg_dsn, &self.pool_settings)
             .await
             .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_PG_DSN", "connection rejected"))?;
+        let session_lock = acquire_gateway_lock(&pool, &self.deployment)
+            .await
+            .map_err(|_| BootstrapError::new(DEPLOYMENT_KEY, "gateway singleton lock rejected"))?;
         let guard = Arc::new(
             GatewayGuard::new(pool, self.guard)
                 .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
@@ -467,6 +484,8 @@ impl GatewayBootstrap {
         }
         let application = Arc::new(application);
         Ok(GatewayRuntime {
+            session_lock,
+            session_lock_check: self.session_lock_check,
             bind_addr: self.bind_addr,
             adapter: McpAdapter::new(application, advertised, self.http),
             config_fingerprint: self.config_fingerprint,
@@ -542,6 +561,11 @@ impl GatewayBootstrap {
             bind_addr: parse_bind_addr(required(&effective, "HUMAUX_GATEWAY_BIND_ADDR")?)?,
             http: parse_http(&effective)?,
             pg_dsn: required(&effective, "HUMAUX_GATEWAY_PG_DSN")?.to_owned(),
+            deployment: required(&effective, DEPLOYMENT_KEY)?.to_owned(),
+            session_lock_check: seconds(
+                required(&effective, SESSION_LOCK_CHECK_KEY)?,
+                SESSION_LOCK_CHECK_KEY,
+            )?,
             pool_settings,
             admission,
             guard,
@@ -565,6 +589,31 @@ impl GatewayBootstrap {
             effective_config: effective_config_rows(&registry, &raw, &effective),
         })
     }
+}
+
+/// The gateway boot lock, scoped to its deployment; no SQLx escapes the adapter (§67.2; ADR-0100).
+/// A second gateway gets the exact existing `Conflict` error; a dead session is `DependencyUnavailable`.
+pub async fn acquire_gateway_lock(
+    pool: &RuntimeDbPool,
+    deployment: &str,
+) -> Result<SessionLock, humaux_domain::error::ErrorCode> {
+    use humaux_domain::error::ErrorCode;
+    use sha2::{Digest, Sha256};
+    if deployment.trim().is_empty() {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let digest = Sha256::digest(
+        [
+            b"humaux-gateway-singleton\0".as_slice(),
+            deployment.as_bytes(),
+        ]
+        .concat(),
+    );
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    pool.try_session_lock(i64::from_be_bytes(bytes))
+        .await?
+        .ok_or(ErrorCode::Conflict)
 }
 
 /// ADR-0061 D-B: the ops listener binds loopback only, on a fixed port Prometheus can target.
@@ -739,6 +788,10 @@ fn parse_guard(effective: &BTreeMap<String, String>) -> Result<GuardSettings, Bo
             "HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST",
         )?,
         tenant_network: BTreeMap::new(),
+        rate_max_subjects: parse_usize(
+            required(effective, RATE_MAX_SUBJECTS_KEY)?,
+            RATE_MAX_SUBJECTS_KEY,
+        )?,
         rates: GuardRatePolicies {
             preauth_ip: rate(effective, RATE_BUCKET_KEYS[0])?,
             credential: rate(effective, RATE_BUCKET_KEYS[1])?,
@@ -1327,10 +1380,7 @@ pub fn registry() -> Vec<ConfigEntry> {
         false,
         "60",
     ));
-    for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
-        entries.push(entry(capacity_key, "i64", false));
-        entries.push(entry(refill_key, "i64", false));
-    }
+    entries.extend(gateway_limiter_registry());
     entries.extend(retrieval_profile_registry().into_iter().map(|mut entry| {
         entry.name = retrieval_env_key(&entry.name);
         entry

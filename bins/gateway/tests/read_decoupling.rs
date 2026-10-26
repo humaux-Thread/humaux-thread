@@ -21,6 +21,7 @@
 //! "no embedding call on the B path" is an observed count, not an inference; the one test that
 //! needs a real index face creates and deletes its own Qdrant collection.
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
@@ -36,7 +37,6 @@ use humaux_adapters::{
     qdrant::{
         Distance, ShardingMethod, create_collection_body, subject_index_body, tenant_index_body,
     },
-    quota_repo::RatePolicy,
 };
 use humaux_application::retrieval_embedding_port::{
     RetrievalEmbeddingInput, RetrievalEmbeddingOutcome, RetrievalEmbeddingPort,
@@ -104,6 +104,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: 50_000,
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),

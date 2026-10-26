@@ -27,6 +27,7 @@
 //! migration 0012), so the gateway test only sees a dropped predicate when RLS fails too; the lane test takes RLS out of
 //! the path and drives the product repo functions directly, where one dropped predicate is visible on its own.
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
@@ -39,7 +40,7 @@ use std::{
 
 use humaux_adapters::{
     context_repo::fetch_frozen, continuity_read::PostgresContinuityReadPort,
-    postgres::RuntimeDbPool, quota_repo::RatePolicy, read_gate::materialize_memory_get,
+    postgres::RuntimeDbPool, read_gate::materialize_memory_get,
 };
 use humaux_application::{
     continuity::ContinuityReadPort,
@@ -120,6 +121,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: 50_000,
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),
