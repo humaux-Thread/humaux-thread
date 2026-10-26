@@ -18,6 +18,10 @@ workspace = true
 # crate's own `[dev-dependencies]` self-reference below, never a default feature, so it never
 # reaches a production build.
 test-support = ["humaux-domain/test-support"]
+# ADR-0073 D-B: `humaux-public-pool` (cloud) runs its own SQL on the role-bound pools, so it needs the wrapped `PgPool`
+# that `pool()` keeps `pub(crate)`. The feature adds `raw_pool()` on exactly the four wrappers `public_repo` uses;
+# only that cloud crate enables it, so a core-only build keeps G6-DB1's closed set.
+cloud-raw-pool = []
 
 [dependencies]
 # §6.2.3 Typed DB Pool: sole encapsulation point is postgres.rs; runtime-tokio matches the
@@ -76,7 +80,7 @@ humaux-infra-cell = { path = "../infra-cell" }
 # crate; adding it here so `email::mod` can `use` it directly instead of hand-rolling a
 # boxed-future trait (which would also lose dyn-compatibility, needed so `outbox::run_once`
 # can take `&dyn EmailProvider`).
-# why: dyn-compatible async trait objects (EmailProvider et al.); used-by: [adapters::email, adapters::context_repo]
+# why: dyn-compatible async trait objects (EmailProvider et al.); used-by: [adapters::email, adapters::context_repo, adapters::mechanism_observation]
 async-trait = "0.1"
 # H3 SMTP reference adapter (task brief item 1: "SMTP adapter（lettre...)"). `rustls` over
 # `native-tls` to avoid an OpenSSL build dependency, matching this crate's existing TLS

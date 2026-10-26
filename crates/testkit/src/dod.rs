@@ -248,7 +248,7 @@ pub const PHASE_9: &[DodVerifier] = &[
         // independence; missing identities remain explicitly incomplete (§12.6).
         fault: "copied_content_does_not_gain_support_from_distinct_publisher_ids",
         kind: "test",
-        verifier_ref: "test-lib::humaux-application::public_evolve::tests",
+        verifier_ref: "test-lib::humaux-public-pool::public_evolve::tests",
     },
     DodVerifier {
         id: "DOD-053",
@@ -257,7 +257,7 @@ pub const PHASE_9: &[DodVerifier] = &[
         // serving assertion; restoring its exact definition/owner/ACL returned green.
         fault: "quarantine_is_durable_but_not_retrievable_and_revoked_or_disabled_moderator_cannot_mutate",
         kind: "test",
-        verifier_ref: "test-ignored-bin::humaux-adapters::public_trust",
+        verifier_ref: "test-ignored-bin::humaux-public-pool::public_trust",
     },
     DodVerifier {
         id: "DOD-054",
@@ -268,7 +268,7 @@ pub const PHASE_9: &[DodVerifier] = &[
         // and serving eligibility. It does not claim coverage beyond this verifier's cases.
         fault: "assessed_anonymous_lifecycle_tracks_supported_revision_and_revocation_fails_closed",
         kind: "test",
-        verifier_ref: "test-ignored-bin::humaux-adapters::public_runtime::assessed_anonymous_lifecycle_tracks_supported_revision_and_revocation_fails_closed",
+        verifier_ref: "test-ignored-bin::humaux-public-pool::public_runtime::assessed_anonymous_lifecycle_tracks_supported_revision_and_revocation_fails_closed",
     },
     DodVerifier {
         id: "DOD-055",
@@ -278,6 +278,6 @@ pub const PHASE_9: &[DodVerifier] = &[
         // not start resident evolution.
         fault: "real_observation_freshness_and_denominator_never_use_bootstrap",
         kind: "test",
-        verifier_ref: "test-ignored-bin::humaux-adapters::mechanism_observation::real_observation_freshness_and_denominator_never_use_bootstrap",
+        verifier_ref: "test-ignored-bin::humaux-public-pool::mechanism_observation::real_observation_freshness_and_denominator_never_use_bootstrap",
     },
 ];

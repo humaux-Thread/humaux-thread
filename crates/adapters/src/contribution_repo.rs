@@ -526,7 +526,7 @@ fn minimum_source_depths(
     Ok(roots)
 }
 
-/// Legacy moderation facade is closed; use [`crate::public_repo::evaluate_claim`], which
+/// Legacy moderation facade is closed; use `humaux_public_pool::public_repo::evaluate_claim`, which
 /// requires the tenant, expected revision, authorization and trust receipt.
 pub async fn set_moderation_state(
     _pool: &PublicWorkerDbPool,

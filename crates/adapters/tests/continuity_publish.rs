@@ -12,10 +12,13 @@
 //!   in 80 versions, and a conflicted list writer retries and unions the winner's item; the block is proved through
 //!   pg_blocking_pids, never a sleep; every fixture tenant is purged by the one fixture purge; a missing database is a
 //!   failure when HUMAUX_REQUIRE_DB=1, never a silent pass; g_m14_2_eighty_writers_union_exactly is lane(a:shared_db)
-//!   (it holds 80 concurrent connections; max_connections 100), so it runs alone in `cargo xtask serial-lane`]
+//!   (it holds exactly one gateway session per writer — 80 live sessions at the start barrier and 80 distinct
+//!   gateway backends across the run, never more — and max_connections is 100), so it runs alone in
+//!   `cargo xtask serial-lane`]
 //! Spec: Baseline §25.3.1; §52 D-B; §79.2; §80.1; ADR-0094
 
 use std::{
+    collections::BTreeSet,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -30,7 +33,7 @@ use humaux_adapters::{
         self, ContinuityMemorySource, PublishContinuityFacet, PublishFacetOutcome,
         RegisterContinuityProject,
     },
-    postgres::RuntimeDbPool,
+    postgres::{PoolSettings, RuntimeDbPool},
 };
 use humaux_domain::{
     continuity::{ContinuityFacetKind, ContinuityPublishState, ProjectId},
@@ -41,6 +44,7 @@ use humaux_domain::{
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, fixture_purge, run_db_fixture};
 use postgres::{Client, NoTls};
 use serde_json::{Value, json};
+use sqlx::postgres::PgPoolOptions;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
@@ -48,6 +52,10 @@ const WRITERS: usize = 80;
 const WRITER_ATTEMPTS: usize = 100;
 const THREAD_TIMEOUT: Duration = Duration::from_secs(60);
 const BLOCK_TIMEOUT: Duration = Duration::from_secs(15);
+/// `application_name` of every G-M14-2 writer session: what the test's exact-80 count filters on.
+/// `pg_stat_activity.usename` cannot name the gateway — the role is entered through `options=-c role=…`
+/// (`dsn_as_role`), so the login role is the owner's.
+const WRITER_APP_NAME: &str = "g_m14_2_writer";
 
 fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
     let sep = if admin_dsn.contains('?') { '&' } else { '?' };
@@ -62,17 +70,62 @@ fn runtime() -> Runtime {
 }
 
 fn gateway_pool(rt: &Runtime, dsn: &str) -> RuntimeDbPool {
-    // dep: PostgreSQL(role_gateway) — the typed pool `register_project` takes
-    rt.block_on(RuntimeDbPool::connect(dsn))
-        .expect("role_gateway pool")
+    // dep: PostgreSQL(role_gateway) — the typed pool `register_project` takes: exactly one session, and
+    // the pool is dropped at the end of `Fixture::isolate`, before any G-M14-2 writer opens its own
+    rt.block_on(RuntimeDbPool::connect_with(
+        dsn,
+        &PoolSettings {
+            max_connections: 1,
+            min_connections: 1,
+            acquire_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(600),
+            statement_timeout: Duration::from_secs(30),
+            idle_in_transaction_timeout: Duration::from_secs(30),
+            application_name: "continuity_publish_fixture".to_owned(),
+        },
+    ))
+    .expect("role_gateway pool")
 }
 
-/// A plain `role_gateway` pool: the door takes a caller-owned transaction, so the test opens it on
-/// its own connection (the typed wrappers deliberately do not expose theirs, §6.2.3).
+/// Exactly one `role_gateway` session: the door takes a caller-owned transaction, so a caller needs
+/// one. `max_connections(1)` is the invariant, not a tuning knob — sqlx returns a finished
+/// transaction's connection on a spawned task, so with its default ceiling of 10 the next acquire can
+/// open a second backend while the first is still returning.
 fn gateway_raw(rt: &Runtime, dsn: &str) -> sqlx::Pool<sqlx::Postgres> {
     // dep: PostgreSQL(role_gateway) — caller-owned write transactions for the publish door
-    rt.block_on(sqlx::Pool::<sqlx::Postgres>::connect(dsn))
-        .expect("role_gateway raw pool")
+    rt.block_on(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .connect(dsn),
+    )
+    .expect("role_gateway raw pool")
+}
+
+/// A G-M14-2 writer's only session: one connection, named so the test can count its own sessions.
+fn writer_pool(rt: &Runtime, dsn: &str) -> sqlx::Pool<sqlx::Postgres> {
+    let sep = if dsn.contains('?') { '&' } else { '?' };
+    // dep: PostgreSQL(role_gateway) — one session per writer; every retried transaction reuses it
+    rt.block_on(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .connect(&format!("{dsn}{sep}application_name={WRITER_APP_NAME}")),
+    )
+    .expect("role_gateway writer pool")
+}
+
+/// The `application_name`-tagged sessions of this test's writers in `pg_stat_activity`.
+fn writer_sessions(admin: &mut Client) -> i64 {
+    admin
+        .query_one(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE application_name=$1 AND datname=current_database()",
+            &[&WRITER_APP_NAME],
+        )
+        .expect("writer sessions")
+        .get(0)
 }
 
 struct Handle {
@@ -274,11 +327,16 @@ fn one_publish(
     pool: &sqlx::Pool<sqlx::Postgres>,
     scope: &AuthorizationScope,
     command: &PublishContinuityFacet<'_>,
-) -> Result<PublishFacetOutcome, ErrorCode> {
+) -> Result<(PublishFacetOutcome, i32), ErrorCode> {
     rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — one write transaction per publish attempt
         let mut tx = pool
             .begin()
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        // The session that served this attempt: exactly one per writer when the pool ceiling is one.
+        let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *tx)
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
         let outcome = continuity_repo::publish_facets_in_txn(&mut tx, scope, command).await?;
@@ -291,7 +349,7 @@ fn one_publish(
                 .await
                 .map_err(|_| ErrorCode::DependencyUnavailable)?;
         }
-        Ok(outcome)
+        Ok((outcome, backend))
     })
 }
 
@@ -393,7 +451,9 @@ impl StartBarrier {
         true
     }
 
-    fn release_when_ready(&self) -> bool {
+    /// Blocks until every writer has arrived, without releasing them: the test reads the barrier's
+    /// session count there, the only instant at which every writer is connected and none has published.
+    fn wait_ready(&self) -> bool {
         let deadline = Instant::now() + THREAD_TIMEOUT;
         while self.ready.load(Ordering::SeqCst) < self.parties {
             if Instant::now() > deadline {
@@ -401,8 +461,11 @@ impl StartBarrier {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        self.release.store(true, Ordering::SeqCst);
         true
+    }
+
+    fn release(&self) {
+        self.release.store(true, Ordering::SeqCst);
     }
 }
 
@@ -525,17 +588,24 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
 }
 
 /// One writer's bounded retry: publish, accept a lost CAS and retry, or fail after `WRITER_ATTEMPTS`.
+/// Returns every gateway backend the writer used: with a one-connection pool that set has exactly one id.
 fn publish_until_settled(
     rt: &Runtime,
     pool: &sqlx::Pool<sqlx::Postgres>,
     scope: &AuthorizationScope,
     command: &PublishContinuityFacet<'_>,
     index: usize,
-) -> Result<(), String> {
+) -> Result<BTreeSet<i32>, String> {
+    let mut backends = BTreeSet::new();
     for _ in 0..WRITER_ATTEMPTS {
         match one_publish(rt, pool, scope, command) {
-            Ok(PublishFacetOutcome::Published(_)) => return Ok(()),
-            Ok(PublishFacetOutcome::Conflict { .. }) => {}
+            Ok((PublishFacetOutcome::Published(_), backend)) => {
+                backends.insert(backend);
+                return Ok(backends);
+            }
+            Ok((PublishFacetOutcome::Conflict { .. }, backend)) => {
+                backends.insert(backend);
+            }
             Err(error) => return Err(format!("writer {index}: {error:?}")),
         }
     }
@@ -565,7 +635,7 @@ fn g_m14_2_eighty_writers_union_exactly() {
             let barrier = Arc::clone(&barrier);
             writers.push(thread::spawn(move || {
                 let rt = runtime();
-                let pool = gateway_raw(&rt, &dsn);
+                let pool = writer_pool(&rt, &dsn);
                 let body =
                     json!({"items":[{"source_id": format!("writer-{index:02}"), "text": "union"}]});
                 let memories = [ContinuityMemorySource {
@@ -586,18 +656,32 @@ fn g_m14_2_eighty_writers_union_exactly() {
                 publish_until_settled(&rt, &pool, &scope, &command, index)
             }));
         }
+        let mut admin = fixture.admin();
         assert!(
-            barrier.release_when_ready(),
+            barrier.wait_ready(),
             "all {WRITERS} writers must open a connection before any publishes"
         );
+        let at_barrier = writer_sessions(&mut admin);
+        assert_eq!(
+            at_barrier, WRITERS as i64,
+            "each of the {WRITERS} writers must hold exactly one gateway session"
+        );
+        barrier.release();
+        let mut backends = BTreeSet::new();
         for writer in writers {
-            writer
-                .join()
-                .expect("writer thread")
-                .expect("writer published");
+            backends.extend(
+                writer
+                    .join()
+                    .expect("writer thread")
+                    .expect("writer published"),
+            );
         }
+        assert_eq!(
+            backends.len(),
+            WRITERS,
+            "the {WRITERS} writers must use exactly one gateway session each"
+        );
 
-        let mut admin = fixture.admin();
         assert_eq!(
             version_census(&mut admin, project, "DECISIONS"),
             (WRITERS as i64, 1, WRITERS as i64)
@@ -684,7 +768,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
                 removals,
             );
             assert_eq!(
-                one_publish(&rt, &pool, &scope, &input),
+                one_publish(&rt, &pool, &scope, &input).map(|(outcome, _)| outcome),
                 Err(ErrorCode::InvalidInput)
             );
         }
@@ -698,7 +782,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
             &[],
         );
         assert_eq!(
-            one_publish(&rt, &pool, &scope, &input),
+            one_publish(&rt, &pool, &scope, &input).map(|(outcome, _)| outcome),
             Err(ErrorCode::InvalidInput)
         );
         let goal = json!({"goal":"published"});
@@ -712,7 +796,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
         );
         assert!(matches!(
             one_publish(&rt, &pool, &scope, &input),
-            Ok(PublishFacetOutcome::Published(_))
+            Ok((PublishFacetOutcome::Published(_), _))
         ));
         let mut admin = fixture.admin();
         assert_eq!(

@@ -1,7 +1,7 @@
 //! `domain::public` — the type surface of §12's Public Contribution Pipeline: "用户知识进入 公共域必须是一个明确 Release 行为"
 //!   (spec:2659).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[domain::authority]
-//! Called-by: [adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::public_repo, application::contribute, tests]
+//! Called-by: [adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::mechanism_observation, application::contribute, public-pool::public_repo, tests]
 //! Invariants: []
 //! Spec: Baseline §3; §12; §12.1
 //!
