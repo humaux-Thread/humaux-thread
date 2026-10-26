@@ -8184,8 +8184,9 @@ fn w2_continuity_contract_from(
         );
     }
     for needle in [
-        "SUPPORTED_OPERATION_KEYS: [&str; 27]",
+        "SUPPORTED_OPERATION_KEYS: [&str; 28]",
         "\"continuity.get\" =>",
+        "\"continuity.publish\" =>",
     ] {
         if !dispatch.contains(needle) {
             failures.push(format!("Gateway continuity dispatch missing `{needle}`"));
@@ -8194,10 +8195,11 @@ fn w2_continuity_contract_from(
     if dispatch
         .matches("catalog.validate_output(ToolName::Continuity, &value)")
         .count()
-        != 2
+        != 3
     {
         failures.push(
-            "Gateway continuity dispatch must validate both Continuity result paths".to_string(),
+            "Gateway continuity dispatch must validate all three Continuity result paths"
+                .to_string(),
         );
     }
     for source in [application, adapter, gateway, guard, dispatch] {
@@ -11535,8 +11537,9 @@ runs:
             (5, "WorkspaceAdmission::PreserveContinuityFilter => None"),
             (5, "operation.operation_key() != \"continuity.get\""),
             (6, "catalog.validate_output(ToolName::Continuity, &value)"),
-            (6, "SUPPORTED_OPERATION_KEYS: [&str; 27]"),
+            (6, "SUPPORTED_OPERATION_KEYS: [&str; 28]"),
             (6, "\"continuity.get\" =>"),
+            (6, "\"continuity.publish\" =>"),
         ] {
             let mut broken = sources.clone();
             broken[index] = broken[index].replacen(needle, "", 1);
@@ -11587,8 +11590,8 @@ runs:
         let shrunk = dispatch
             .replace("    DestructiveOp::MemoryConfirm.operation_key(),\n", "")
             .replace(
+                "SUPPORTED_OPERATION_KEYS: [&str; 28]",
                 "SUPPORTED_OPERATION_KEYS: [&str; 27]",
-                "SUPPORTED_OPERATION_KEYS: [&str; 26]",
             );
         assert!(
             matches!(
@@ -11600,8 +11603,8 @@ runs:
 
         // (2) the array's declared length stops matching its entries.
         let miscounted = dispatch.replace(
-            "SUPPORTED_OPERATION_KEYS: [&str; 27]",
             "SUPPORTED_OPERATION_KEYS: [&str; 28]",
+            "SUPPORTED_OPERATION_KEYS: [&str; 29]",
         );
         assert!(
             matches!(
