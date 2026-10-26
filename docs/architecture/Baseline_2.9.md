@@ -7118,7 +7118,7 @@ GitHub App 只作为官方 Cloud 的 reference adapter：
 
 其他 Git provider 必须实现同一个 `RepositorySourceProvider` Contract，不进入 Domain 分支。
 
-ADR-0114（M16）修订 §27：代码来源定为客户端推送（owner 829c952f），§27.1/§27.2/§27.6 的 provider 方向据此推迟（重开需 provider ADR）；snapshot identity、overlay、不可信输入、完整性分母与 SCIP 后置方向随之改写。判据见 ADR-0114。
+ADR-0114（M16）修订 §27：代码来源定为客户端推送（owner 829c952f），§27.1/§27.2/§27.6 的 provider 方向据此推迟（重开需 provider ADR）；snapshot identity、overlay、不可信输入、完整性分母与 SCIP 后置的判据见 ADR-0114。
 
 ---
 

@@ -6,8 +6,8 @@
   → lead decision 03b9aca9 → spec / ADR-0078 D-B → research B30 §code graph → plan v2 cards 46/47 and R-46 as evidence.
 - Amends: Baseline §27 and §33 Tool 7 (note :172); one pointer each (provider fetch / webhook / reconcile deferred; identity, overlays, completeness
   denominators, ingestion security; Tool 7 operation set v2). Frozen judge text is not rewritten.
-- Relates to: Baseline §4.2, §4.3, §6.1.1, §17.1, §34.0.1, §49, §57.1, §78.1, §78.2, §80.1; ADR-0078 D-B; ADR-0050 (tri-state gates, a missing DB is a
-  fail); ADR-0066 D-B (parse-sandbox budget line). Cross-module: module design notes M17, M18, M19, M28, M29, M12, M10.
+- Relates to: Baseline §4.2, §4.3, §6.1.1, §17.1, §34.0.1, §49, §57.1, §78.1, §78.2, §80.1; ADR-0078 D-B; ADR-0050 (tri-state gates; no DSN is `not_applicable`, an
+  unreachable DSN is a fail); ADR-0066 D-B (parse-sandbox budget line). Cross-module: module design notes M17, M18, M19, M28, M29, M12, M10.
 
 ## Context
 
@@ -30,7 +30,7 @@ One extractor version makes snapshots comparable; the only client that could ext
 Rejected: server git fetch / GitHub App (owner); client-side extraction (unverifiable, drift); per-file Evidence rows (~3k per push break R11 and the
 stream).
 ### D-B  Five new tables replace the 0006 skeletons
-`code_snapshots`, `code_files`, `code_symbols`, `code_edges`, `code_active_snapshots`; `tenant_id` in every PK and every FK composite (files `(tenant,
+`code_snapshots`, `code_files`, `code_symbols`, `code_edges`, `code_active_snapshots`; `tenant_id` in every PK and composite FKs (files `(tenant,
 snapshot_id)`, symbols `(tenant, snapshot_id, file_id)`, edges `(…, from_symbol_id)` / `(…, to_symbol_id)`). FORCE RLS: tenant predicate AND repository
 visible; `worktree_overlays` retires (D-H). Closed sets are CHECK **and** Rust enum (§78.2): `edge_kind` = §27's six, `evidence_level` {syntax_candidate,
 semantic_resolved, runtime_observed}, kind {COMMIT, WORKTREE}, state {BUILDING, READY, FAILED, EXPIRED} (note D2, :61-68; lead 03b9aca9).
@@ -110,12 +110,13 @@ on M01, M04, M08, M12, M17, M18, M29; never on M28 crates (cloud) or M10/M11 unt
 
 - Positive: one digest, one verified publish and one active-row CAS per snapshot; queries read one fixed snapshot; each run's overlay is isolated; links are
   exact anchors; code never becomes a second Memory authority.
-- Cost: content dedup belongs to M17; extraction is serial per node; caps, TTL and K are config that X-M16-1 and X-M16-3 measure (note :208, :210); PageRank
-  parameters are config-registry items (note :232).
+- Cost: content dedup belongs to M17; caps, TTL and K are config that X-M16-1 and X-M16-3 measure (note :208, :210); PageRank
+  parameters are config-registry items (note :231).
 - Neutral for this card: docs only; no table, migration, contract, gate or config key changes.
+
 Asks M17: ObjectStore content once per (tenant, repository, sha256) and the C-M17-3 sandbox runner (note :81, :151-152). Asks M18: `coord.task_runs`/`tasks`
-FKs (note :114, :158). Asks M19: code tables in the purge catalog (note :138-139, :149-150). Asks M28: C-M28-3 shape, C-M28-4 subject door, C-M16-4 reuse if
-M28-13 wants it (note :125-127, :148-149). Asks M29: the Project —TARGETS→ Repository kernel pair and ADR-0078 D-B amendment via guest M16-13 (note
+FKs (note :114, :158). Asks M19: code tables in the purge catalog (note :138-139, :149-150). Asks M28: C-M28-3 shape, C-M28-4 subject door (note :125-127). Offers M28: C-M16-4 for
+M28-13 reuse, M28 owner decides (note :148-149). Asks M29: the Project —TARGETS→ Repository kernel pair and ADR-0078 D-B amendment via guest M16-13 (note
 :127-129, :184). Asks M12: cache repo_map by (snapshot, focus, budget, algorithm version) (note :103-104). Asks M10: `code_v1` generation spec for
 conditional M16-14, after X-M16-2 (note :140-141, :185). Offers M14/M13: C-M16-2 freshness envelope + §27.5 denominators (note :147).
 
@@ -166,8 +167,7 @@ no live keys); a future GitHub App needs live keys and is out of scope (note :22
 - **U1** tree-sitter/grammar ABI on arm64 → R1; fallback as above (note :213).
 - **U2** sandbox network isolation inside Compose → M17 U2; fallback per M17 (note :214).
 - **U3** sandbox memory: 512 MiB sizing line vs §4.3 `RLIMIT_AS = 1 GiB` → X-M16-1; until then 512 MiB (the tighter value), POISON above it (note :215-216).
-- **U4** M18 `coord.task_runs` shape when M16-9 lands → overlay `run_id` stays nullable and per-run views wait for it; the final `run_id` shape stays open
-  (note :217).
+- **U4** M18 `coord.task_runs` shape when M16-9 lands → overlay `run_id` stays nullable and per-run views wait for it (note :217).
 - **U5** workspace vs project scoping → workspace (existing column); project via M16-13 only (note :218-219).
 
 ## References
