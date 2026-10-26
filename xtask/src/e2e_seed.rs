@@ -1688,7 +1688,17 @@ mod tests {
     /// Every migration body in file order on the throwaway `owner` is connected to, as
     /// `rls_check::tests::migrated_bodies` does (`migrate::run` reads a cwd-relative directory; the manifests are
     /// `migrate`'s own test).
-    fn apply_every_migration(owner: &mut Client) {
+    ///
+    /// 0201's `ALTER ROLE` (like every GRANT/REVOKE on a role) writes the cluster-global `pg_authid` tuple, so two
+    /// test binaries migrating their own throwaway databases concurrently end in `XX000 tuple concurrently updated`
+    /// (run 39960284181). One session advisory lock in the `postgres` database — the key `throwaway_db.rs`'s
+    /// in-process `CLUSTER_DDL` cannot cover across processes — serializes them; dropping `cluster_lock` releases it.
+    fn apply_every_migration(owner: &mut Client, cluster_dsn: &str) {
+        // dep: PostgreSQL(owner) — one session advisory lock in the `postgres` database around the migration bodies
+        let mut cluster_lock = Client::connect(cluster_dsn, NoTls).expect("cluster lock connect");
+        cluster_lock
+            .batch_execute("SELECT pg_advisory_lock(5212157086801349959)")
+            .expect("cluster migration lock");
         owner
             .batch_execute(
                 "CREATE SCHEMA IF NOT EXISTS ops; CREATE TABLE IF NOT EXISTS ops.schema_migrations \
@@ -1708,6 +1718,62 @@ mod tests {
                 .batch_execute(&std::fs::read_to_string(&body).expect("migration body"))
                 .unwrap_or_else(|e| panic!("apply {}: {e:?}", body.display()));
         }
+    }
+
+    /// The `postgres` DSN gets an `application_name` so the lock probe below can count exactly its own waiting
+    /// session in `pg_locks` even when another binary is queued on the same cluster lock.
+    fn with_application_name(dsn: &str, name: &str) -> String {
+        let separator = if dsn.contains('?') { '&' } else { '?' };
+        format!("{dsn}{separator}application_name={name}")
+    }
+
+    /// #273 F2: [`apply_every_migration`] must take the cross-process cluster DDL lock before it applies 0201's
+    /// cluster-global `ALTER ROLE`. 0201 updates the one shared `pg_authid` tuple; without the lock two binaries
+    /// migrating their own throwaway databases on parallel threads race into `XX000 tuple concurrently updated`
+    /// (run 39960284181). The probe holds the lock on a second session and asserts the migration blocks on it.
+    #[test]
+    fn flake_273_every_migration_waits_for_the_cluster_ddl_lock() {
+        let Some((_db, dsn)) = humaux_maintenance::throwaway::throwaway(
+            "flake_273_every_migration_waits_for_the_cluster_ddl_lock",
+            "migrate_lock",
+        ) else {
+            return;
+        };
+        let base = std::env::var(DSN_ENV).expect("throwaway() read HUMAUX_TEST_PG_DSN");
+        let postgres_dsn = with_application_name(
+            &humaux_maintenance::throwaway::database_dsn(&base, "postgres"),
+            "e2e_seed_migration_lock_probe",
+        );
+        // dep: PostgreSQL(owner) — a second session holds the cluster DDL lock the migration must wait for
+        let mut holder = Client::connect(&postgres_dsn, NoTls).expect("lock holder connect");
+        holder
+            .batch_execute("SELECT pg_advisory_lock(5212157086801349959)")
+            .expect("hold the cluster DDL lock");
+        let migrating_dsn = dsn.clone();
+        let migrating = std::thread::spawn(move || {
+            // dep: PostgreSQL(any) — the owner session that runs the migration bodies
+            let mut owner = Client::connect(&migrating_dsn, NoTls).expect("owner connect");
+            apply_every_migration(&mut owner, &postgres_dsn);
+        });
+        let waiting = (0..100).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let count: i64 = holder
+                .query_one(
+                    "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) \
+                     WHERE l.locktype='advisory' AND NOT l.granted AND a.application_name=$1",
+                    &[&"e2e_seed_migration_lock_probe"],
+                )
+                .expect("lock read")
+                .get(0);
+            (count == 1).then_some(())
+        });
+        assert_eq!(
+            waiting,
+            Some(()),
+            "the migration did not wait for the cluster DDL lock"
+        );
+        drop(holder);
+        migrating.join().expect("migration thread");
     }
 
     /// A fixture tenant (`e2e-fixture …`, the purge's predicate) on the throwaway.
@@ -1747,7 +1813,10 @@ mod tests {
         };
         // dep: PostgreSQL(any) — superuser on the throwaway database (migrate, fixture tenants, purges)
         let mut owner = Client::connect(&dsn, NoTls).expect("owner connect");
-        apply_every_migration(&mut owner);
+        apply_every_migration(
+            &mut owner,
+            &humaux_maintenance::throwaway::database_dsn(&dsn, "postgres"),
+        );
 
         let (a, b) = (
             fixture_tenant(&mut owner, "a"),
@@ -1833,7 +1902,10 @@ mod tests {
         };
         // dep: PostgreSQL(any) — superuser on the throwaway database (migrate, seed residue, teardown, scan)
         let mut owner = Client::connect(&dsn, NoTls).expect("owner connect");
-        apply_every_migration(&mut owner);
+        apply_every_migration(
+            &mut owner,
+            &humaux_maintenance::throwaway::database_dsn(&dsn, "postgres"),
+        );
         let maintenance_dsn =
             humaux_testkit::role_login_dsn(&dsn, "role_maintenance", |n| std::env::var(n).ok())
                 .unwrap_or_else(|missing| panic!("missing object: {missing} (ADR-0059 D-D)"));

@@ -541,17 +541,39 @@ fn kib(source: &Source, script: &str) -> i64 {
         * 1024
 }
 
-/// Fills the repository filesystem with a test-owned file outside `repo/` until `free` bytes remain.
+/// Headroom the filler leaves unallocated: the repository can grow between the `df` reading and `fallocate` (an
+/// in-flight `archive-push` writes a WAL segment), so requesting the whole observed difference can ask for bytes
+/// already gone and fail ENOSPC (run 40058742422).
+const FILLER_HEADROOM: i64 = 8 << 20;
+
+/// Bytes `fallocate` must request so that `free` bytes remain after the allocation plus [`FILLER_HEADROOM`].
+fn filler_bytes(now: i64, free: i64) -> i64 {
+    now - free - FILLER_HEADROOM
+}
+
+/// Fills the repository filesystem with a test-owned file outside `repo/` down to `free` bytes plus
+/// [`FILLER_HEADROOM`] that a concurrent repository write may take before the allocation lands.
 fn fill_to(source: &Source, free: i64) {
     let now = kib(
         source,
         "df -Pk /var/lib/pgbackrest | tail -1 | awk '{print $4}'",
     );
-    assert!(now > free, "tmpfs too small: free {now} <= {free}");
-    source.sh(&format!(
-        "fallocate -l {} /var/lib/pgbackrest/filler",
-        now - free
-    ));
+    let filler = filler_bytes(now, free);
+    assert!(
+        filler > 0,
+        "tmpfs too small: free {now} <= {free} + {FILLER_HEADROOM}"
+    );
+    source.sh(&format!("fallocate -l {filler} /var/lib/pgbackrest/filler"));
+}
+
+/// #273 F5: the filler never requests the whole observed difference, so a repository write between `df` and
+/// `fallocate` cannot make the request exceed the free space (run 40058742422).
+#[test]
+fn flake_273_filler_keeps_headroom_for_a_concurrent_repository_write() {
+    // The T-J13 96 MiB tmpfs with its 4 MiB target: the filler holds 8 MiB back, never the 92 MiB difference.
+    assert_eq!(filler_bytes(96 << 20, 4 << 20), (96 - 4 - 8) << 20);
+    // The T-J8 256 MiB tmpfs: still exactly the observed difference minus the fixed headroom.
+    assert_eq!(filler_bytes(256 << 20, 32 << 20), (256 - 32 - 8) << 20);
 }
 
 /// T-J8 (10.11 I): PGDATA on its volume, the repository on a 256 MiB tmpfs, a database of >= 64 MiB seeded with
@@ -586,7 +608,9 @@ fn a_backup_that_would_break_the_budget_is_refused_before_writing() {
         "du -sk /var/lib/postgresql/18/docker/base | cut -f1",
     );
     assert!(estimate >= 64 << 20, "database >= 64 MiB: {estimate}");
-    fill_to(&source, estimate + MIN_FREE - (8 << 20));
+    // `fill_to` leaves `FILLER_HEADROOM` unallocated, so ask that much below the 8 MiB safety margin this test
+    // wants between the estimate and the floor.
+    fill_to(&source, estimate + MIN_FREE - (8 << 20) - FILLER_HEADROOM);
     let repo_before = source.sh("du -sk /var/lib/pgbackrest/repo | cut -f1");
     let started = source.psql("select pg_postmaster_start_time()");
 
