@@ -16,7 +16,9 @@ runtime_roles(name) as (values
   ('role_public_worker'),('role_retrieval_worker'),('role_batch_issuer'),('role_maintenance'))
 select (select count(*)=2 from functions f join pg_proc p on p.oid=to_regprocedure(f.signature)
     where p.prosecdef and p.provolatile='v'
-      and p.proconfig @> array['search_path=pg_catalog','humaux.continuity_publish=1']::text[]
+      and p.proconfig = case when f.signature='private.publish_continuity_facet(uuid,uuid,uuid,uuid,uuid,text,bigint,text,jsonb,uuid[],bytea[],uuid[],bytea[])'
+        then array['search_path=pg_catalog','humaux.continuity_publish=1']::text[]
+        else array['search_path=pg_catalog']::text[] end
       and pg_get_userbyid(p.proowner)='role_migration_owner')
   and not exists(select 1 from functions f cross join runtime_roles r
     where has_function_privilege(r.name,f.signature,'EXECUTE') is distinct from (r.name='role_gateway'))

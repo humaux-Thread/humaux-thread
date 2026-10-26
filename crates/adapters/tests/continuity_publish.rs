@@ -300,7 +300,8 @@ fn seed(
         &[&memory, &tenant, content],
     )?;
     admin.execute(
-        "INSERT INTO private.memory_evidence(memory_id,evidence_id,role) VALUES($1,$2,'SUPPORTING')",
+        "INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+         VALUES($1,$2,'SUPPORTING','IMMUTABLE')",
         &[&memory, &evidence],
     )?;
     admin.batch_execute("COMMIT")?;
@@ -973,8 +974,8 @@ fn seed_merge_memory(admin: &mut Client, handle: &Handle) -> ContinuityMemorySou
         &[&id, &handle.tenant]).unwrap();
     admin
         .execute(
-            "INSERT INTO private.memory_evidence(memory_id,evidence_id,role) \
-         SELECT $1,evidence_id,'SUPPORTING' FROM private.memory_evidence WHERE memory_id=$2",
+            "INSERT INTO private.memory_evidence(memory_id,evidence_id,role,grounding_mode) \
+         SELECT $1,evidence_id,'SUPPORTING','IMMUTABLE' FROM private.memory_evidence WHERE memory_id=$2",
             &[&id, &handle.memory],
         )
         .unwrap();
@@ -1156,6 +1157,11 @@ fn private_merge_scenario(handle: Handle, with_memory: bool) {
         .unwrap(),
         PublishFacetOutcome::Published(_)
     ));
+    assert_eq!(
+        merge_read(&fixture.handle, fixture.user_a)["status"],
+        "CURRENT",
+        "G-289-b: A's initial immutable fixture must be readable"
+    );
     assert_merge_stale(&fixture.handle, fixture.user_b);
     let result = merge_publish(
         &fixture,
@@ -1173,7 +1179,7 @@ fn private_merge_scenario(handle: Handle, with_memory: bool) {
     let facet = merge_read(&fixture.handle, fixture.user_a);
     assert_eq!(
         facet["status"], "CURRENT",
-        "G-289-b: A retains authorized merged access"
+        "G-289-b: A retains authorized merged access: {facet}"
     );
     assert_eq!(
         facet["current"]["body"],
@@ -1266,7 +1272,7 @@ fn g_289_d_invisible_caller_links_still_raise_23514() {
                 fixture.handle.memory_source().to_vec()
             };
             let sources = if evidence {
-                vec![fixture.evidence_a.clone()]
+                vec![fixture.evidence_a]
             } else {
                 vec![]
             };
