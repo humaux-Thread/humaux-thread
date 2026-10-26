@@ -181,6 +181,9 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
   one SELECT holder (no new grant). No wire or MCP output carries it until a recall output card has a user story for
   it. The xtask arm `m29_attribution_reader` keeps it the one non-test read of the view and forbids a non-test
   `FROM` / `JOIN` of `private.memory_projects` (the writers' `INSERT INTO` is no read).
+- **Amended (M29-g1, ADR-0110 D-F):** `private.memory_in_project(tenant, memory, project)` (migration 0282, invoker,
+  EXECUTE `role_gateway`) is the one SQL-side read of `memory_projects_live`; xtask G-M29-7 keeps it single and
+  table-free.
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
   from it. Dependent continuity outputs keep the existing `continuity_facet_memory_links` + sha check and read as
@@ -323,6 +326,7 @@ module gates there needs its own spec change.
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
 | G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved`; end to end (T07): a put with no ground whose text names the project is distilled into a Memory the reader reports `unresolved`, and the trap project has zero rows tenant-wide | "take the most recent project" |
 | G-N09-4 formal attribution does not depend on a model | design v0.2 §15.8: with the provider off Distill writes no Memory, so "row-for-row identical with models off" is not testable as written; the testable form is (a) the same fixture in two tenants whose providers return different memory text gives, per message, the same projection (projects by fixture role, `source_kind`, `rule_id_ver`, the decision Evidence's message), and (b) provider calls == Distill jobs run (a failed attempt and its retry counted), with correction, relation correction, revocation and reads adding 0 provider calls and 0 `ops.model_call_ledger` rows. E-D reruns the criterion on real corpus | (a) A3 skips a project named in the memory text; (b) one more provider call before the Memory INSERT (make A3 call a model once) |
+| G-M29-7 SQL-side reader single and table-free | `private.memory_in_project` is created by exactly one `CREATE OR REPLACE` in `migrations/*.sql`, in `0282_memory_in_project.sql`, which reads `private.memory_projects_live` and never `private.memory_projects` (xtask `m29_attribution_reader_sql`); the predicate is true only for a live link in the session tenant, false for a revoked, unresolved, other-project or other-tenant one, and only `role_gateway` holds EXECUTE (`adapters::tests::memory_in_project`) | (1) the body reads the table; (2) a second `CREATE OR REPLACE` in another migration; (3) the EXECUTE grant goes to PUBLIC |
 
 **E-D (M29 T08): G-N09-4 under a real model.** `m29_attribution_e2e::g_n09_4_live_minimax`, run by the CI `live` job
 (`--include-ignored live`), puts one corpus through the real `remember_*_atomically` in two tenants and drains Distill

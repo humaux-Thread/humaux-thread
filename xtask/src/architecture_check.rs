@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4
@@ -4354,6 +4354,10 @@ fn t07_tokens(text: &str) -> (usize, usize) {
 /// [`T07_CATALOG_SITE`] bound aside. `not_applicable` only when the view is
 /// read nowhere and the home file does not exist, naming that file (§57.1 第2条); a direct table read is red
 /// regardless.
+///
+/// This is the Rust leg. The one SQL-side read path of the view is `private.memory_in_project` (ADR-0110 D-F,
+/// migration 0282); its sibling leg [`m29_attribution_reader_sql`] (G-M29-7) keeps it single and table-free. Rust
+/// callers of that function are not T07 tokens (they name the function, not the view) and need no change here.
 fn m29_attribution_reader(root: &Path) -> Verdict {
     let gate = "M29 T07 / ADR-0078 D-D reader";
     let files = door_production_sources(root);
@@ -4396,6 +4400,75 @@ fn m29_attribution_reader(root: &Path) -> Verdict {
     if !(total == 1 && readers.iter().all(|(disp, _)| disp == T07_READER_HOME)) {
         problems.push(format!(
             "{gate}: expected exactly 1 read of private.memory_projects_live in non-test code, in {T07_READER_HOME}; found {total}: {readers:?}"
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// Home of the one SQL-side read of `private.memory_projects_live`: `private.memory_in_project` (ADR-0110 D-F, M13 note
+/// D7, migration 0282).
+const T07_PREDICATE_HOME: &str = "migrations/0282_memory_in_project.sql";
+/// The predicate's defining statement as [`t07_sql_normalised`] spells it. `OR REPLACE` is the one form that can
+/// silently redefine the function in a later migration; a plain `CREATE FUNCTION` twin fails at migrate time.
+const T07_PREDICATE_NEEDLE: &str = "create or replace function private.memory_in_project(";
+
+/// [`t07_normalised`] of a `.sql` file: `--` line comments are dropped first (the Rust lexer does not know them);
+/// `/* */` blocks, SQL quoting, case and spacing are [`t07_normalised`]'s.
+///
+/// ponytail: a `--` inside a string literal cuts its line short, so a read after it on that line is missed; upgrade to
+/// SQL-aware lexing if a migration ever spells one (`migration_rehearsal` already lexes SQL for its own scan).
+fn t07_sql_normalised(sql: &str) -> String {
+    let code: Vec<&str> = sql
+        .lines()
+        .map(|line| line.split("--").next().unwrap_or(""))
+        .collect();
+    t07_normalised(&code.join("\n"))
+}
+
+/// G-M29-7 (ADR-0078 D-D reader, ADR-0110 D-F): the SQL leg of [`m29_attribution_reader`]. In `migrations/*.sql` the
+/// predicate's [`T07_PREDICATE_NEEDLE`] occurs `== 1` times, in [`T07_PREDICATE_HOME`], and that file reads
+/// `private.memory_projects_live` (`>= 1` view tokens) and never `private.memory_projects` (`== 0` table tokens, per
+/// [`t07_tokens`]). A missing home file is red naming it: the card that adds this leg delivers the file, so there is no
+/// `not_applicable` here (§57.1 第2条).
+///
+/// ponytail: other migrations' trigger and definer bodies that read the view (0255's revocation functions, 0256's A3')
+/// are writer internals and are not counted; a duplicate spelled `ALTER` or `DROP` + plain `CREATE` is invisible to the
+/// needle (upgrade to DDL parsing if one ever appears).
+fn m29_attribution_reader_sql(root: &Path) -> Verdict {
+    let gate = "M29 G-M29-7 / ADR-0110 D-F SQL reader";
+    let mut sites: Vec<(String, usize)> = Vec::new();
+    let mut home: Option<String> = None;
+    for (path, source) in read_files(&walk_files(&root.join("migrations"), &["sql"])) {
+        let disp = display(root, &path);
+        let text = t07_sql_normalised(&source);
+        let n = text.matches(T07_PREDICATE_NEEDLE).count();
+        if n > 0 {
+            sites.push((disp.clone(), n));
+        }
+        if disp == T07_PREDICATE_HOME {
+            home = Some(text);
+        }
+    }
+    let Some(home) = home else {
+        return Verdict::Fail(vec![format!(
+            "{gate}: missing object: the predicate's home file {T07_PREDICATE_HOME}"
+        )]);
+    };
+    let mut problems = Vec::new();
+    let total: usize = sites.iter().map(|(_, n)| n).sum();
+    if !(total == 1 && sites.iter().all(|(disp, _)| disp == T07_PREDICATE_HOME)) {
+        problems.push(format!(
+            "{gate}: expected exactly 1 `{T07_PREDICATE_NEEDLE}` in migrations/*.sql, in {T07_PREDICATE_HOME}; found {total}: {sites:?}"
+        ));
+    }
+    let (table, view) = t07_tokens(&home);
+    if table != 0 || view == 0 {
+        problems.push(format!(
+            "{gate}: {T07_PREDICATE_HOME} must read private.memory_projects_live and never private.memory_projects; found {table} table token(s) and {view} view token(s)"
         ));
     }
     if problems.is_empty() {
@@ -10972,6 +11045,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "M29 T07 / ADR-0078 D-D reader (no direct private.memory_projects read; one memory_projects_live reader, in attribution_repo.rs, non-test code)",
             m29_attribution_reader(&root),
+        ),
+        (
+            "M29 G-M29-7 / ADR-0110 D-F (the memory_in_project predicate is the one SQL-side read of memory_projects_live: one CREATE OR REPLACE in migrations/*.sql, in 0282, reading the view and never the table)",
+            m29_attribution_reader_sql(&root),
         ),
         (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
@@ -17573,6 +17650,114 @@ async fn serving_version_in_txn() {}
             }
             other => panic!("expected Fail, got {other:?}"),
         }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 G-M29-7 / ADR-0110 D-F: the SQL leg of the reader arm ---------------------------------------------------
+
+    /// The predicate's home as 0282 leaves it, reduced: one `CREATE OR REPLACE`, the view in its body, and the table
+    /// named only in a `--` comment.
+    const G7_PREDICATE: &str = "-- reads private.memory_projects in this comment only\nCREATE OR REPLACE FUNCTION private.memory_in_project(p_tenant_id uuid, p_memory_id uuid, p_project_id uuid)\nRETURNS boolean LANGUAGE sql STABLE SET search_path = pg_catalog AS $$\n  SELECT EXISTS (SELECT 1 FROM private.memory_projects_live l WHERE l.tenant_id = p_tenant_id)\n$$;\n";
+    /// A second `CREATE OR REPLACE` of the predicate, spelled across lines and in capitals.
+    const G7_TWIN: &str = "CREATE\n  OR REPLACE FUNCTION\n  private.memory_in_project(a uuid) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;\n";
+    const G7_TWIN_FILE: &str = "migrations/0283_twin.sql";
+
+    /// The problem lines of a red verdict (any other verdict panics).
+    fn g7_lines(root: &Path) -> Vec<String> {
+        match m29_attribution_reader_sql(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The tree as G-M29-7 leaves it: one `CREATE OR REPLACE`, in 0282, reading the view and never the table.
+    #[test]
+    fn g_m29_7_sql_leg_real_repo_passes() {
+        assert_eq!(m29_attribution_reader_sql(&real_root()), Verdict::Pass);
+    }
+
+    /// The reduced fixture passes (so each red below is its one mutation), and a table read or a second `CREATE` inside
+    /// a `--` comment or a `/* */` block is no read and no site.
+    #[test]
+    fn g_m29_7_sql_leg_accepts_the_predicate_and_ignores_comments() {
+        let tmp = fresh_tmp("g7-sql-ok");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        assert_eq!(m29_attribution_reader_sql(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            G7_TWIN_FILE,
+            "-- CREATE OR REPLACE FUNCTION private.memory_in_project(\n/* FROM private.memory_projects\n   CREATE OR REPLACE FUNCTION private.memory_in_project( */\nSELECT 1;\n",
+        );
+        assert_eq!(m29_attribution_reader_sql(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: the predicate reads the base table instead of the view, spelled plainly, quoted, or with spaces around the dot
+    /// -> 红 each time, naming the table token.
+    #[test]
+    fn g_m29_7_sql_leg_fails_when_the_predicate_reads_the_table() {
+        let tmp = fresh_tmp("g7-sql-table");
+        for read in [
+            "private.memory_projects l",
+            "\"private\".\"memory_projects\" l",
+            "private . memory_projects l",
+        ] {
+            let body = G7_PREDICATE.replace("private.memory_projects_live l", read);
+            m07_write(&tmp, T07_PREDICATE_HOME, &body);
+            let lines = g7_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{read}: {lines:?}");
+            assert!(
+                lines[0].contains("found 1 table token(s)"),
+                "{read}: {lines:?}"
+            );
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`== 1` pinned from above): a second `CREATE OR REPLACE` of the predicate in another migration -> 红, `found 2`,
+    /// naming that file.
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_second_create_in_another_migration() {
+        let tmp = fresh_tmp("g7-sql-second");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        m07_write(&tmp, G7_TWIN_FILE, G7_TWIN);
+        let lines = g7_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains(G7_TWIN_FILE), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: no home file -> 红 naming it (never `not_applicable`, §57.1), on an empty root, on a root with other
+    /// migrations, and when the predicate is created in another file only (`found 1`, not in the home).
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_missing_home() {
+        let tmp = fresh_tmp("g7-sql-home");
+        fs::create_dir_all(&tmp).unwrap();
+        let empty = g7_lines(&tmp);
+        assert!(empty[0].contains(T07_PREDICATE_HOME), "{empty:?}");
+        m07_write(&tmp, "migrations/0001_x.sql", "SELECT 1;\n");
+        let others = g7_lines(&tmp);
+        assert!(others[0].contains(T07_PREDICATE_HOME), "{others:?}");
+        m07_write(&tmp, G7_TWIN_FILE, G7_TWIN);
+        let elsewhere = g7_lines(&tmp);
+        assert!(elsewhere[0].contains(T07_PREDICATE_HOME), "{elsewhere:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`>= 1` pinned from below): the predicate's body reads another relation, and the view survives only in a
+    /// `--` comment -> 红, `0 view token(s)`.
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_body_without_the_view() {
+        let tmp = fresh_tmp("g7-sql-view");
+        let body = G7_PREDICATE.replace(
+            "FROM private.memory_projects_live l",
+            "FROM private.memory_records l -- not private.memory_projects_live",
+        );
+        m07_write(&tmp, T07_PREDICATE_HOME, &body);
+        let lines = g7_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("0 view token(s)"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 
