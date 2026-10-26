@@ -1937,6 +1937,19 @@ modules:
 - `gateway::bootstrap`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND`
 - witness: literal
 - registry: gateway
@@ -1968,19 +1981,6 @@ modules:
 - `gateway::tests::mcp_gateway`
 - `xtask::e2e_onboard`
 
-### `HUMAUX_GATEWAY_RATE_MAX_SUBJECTS`
-- witness: literal
-- registry: gateway
-
-kind:
-- runtime
-
-processes:
-- process(humaux-gateway)
-
-modules:
-- `gateway::bootstrap`
-
 ### `HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY`
 - witness: literal
 - registry: gateway
@@ -1995,6 +1995,19 @@ processes:
 modules:
 - `gateway::bootstrap`
 - `xtask::e2e_onboard`
+
+### `HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND`
 - witness: literal
@@ -2042,6 +2055,19 @@ modules:
 - `gateway::bootstrap`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND`
 - witness: literal
 - registry: gateway
@@ -2072,6 +2098,19 @@ modules:
 - `gateway::bootstrap`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND`
 - witness: literal
 - registry: gateway
@@ -2101,6 +2140,19 @@ processes:
 modules:
 - `gateway::bootstrap`
 - `xtask::e2e_onboard`
+
+### `HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND`
 - witness: literal
@@ -2506,6 +2558,19 @@ processes:
 modules:
 - `gateway::bootstrap`
 - `gateway::tests::singleton`
+
+### `HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`
 - witness: literal

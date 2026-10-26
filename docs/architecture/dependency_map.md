@@ -2359,17 +2359,21 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_QDRANT_PORT`
 - env `HUMAUX_GATEWAY_QDRANT_TLS`
 - env `HUMAUX_GATEWAY_RATE_CREDENTIAL_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS`
-- env `HUMAUX_GATEWAY_RATE_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS`
 - env `HUMAUX_GATEWAY_RATE_PREAUTH_IP_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_TENANT_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_USER_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`
 - env `HUMAUX_GATEWAY_REMEMBER_DATA_CLASS`
@@ -2397,6 +2401,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID`
 - env `HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH`
 - env `HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS`
+- env `HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS`
 - env `HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_TOKEN_HMAC_KEY`
 - env `HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS`
@@ -11552,6 +11557,7 @@ executed by:
 - `gateway::tests::exit_codes`
 - `gateway::tests::ops_listener`
 - `gateway::tests::singleton`
+- `gateway::tests::support::guard_limiter`
 - `humaux-telemetry`
 - `infra-egress::http`
 - `infra-egress::resolver`
@@ -15160,6 +15166,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
+- `gateway::tests::support::guard_limiter`
 - `tests`
 
 ### humaux-gateway → `sha2` (normal)
@@ -15228,6 +15235,7 @@ modules naming it:
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
+- `gateway::tests::support::guard_limiter`
 - `tests`
 
 ### humaux-gateway → `uuid` (normal)
@@ -15285,6 +15293,7 @@ modules naming it:
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
+- `gateway::tests::support::guard_limiter`
 - `tests`
 
 ### humaux-gateway → `humaux-testkit` (dev)
