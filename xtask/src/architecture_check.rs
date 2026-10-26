@@ -7,7 +7,7 @@
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
-//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the real-path
+//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9, the real-path
 //! fault gate G-M01-4 (M01 D4, ADR-0077) and the §78.4 allow-count ratchet G-M01-8 (M01 D6).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
@@ -1089,6 +1089,150 @@ fn m01_2_core_cloud_edges(root: &Path) -> Verdict {
 }
 
 // ============================================================================
+// G-M01-9: the adapters `cloud-raw-pool` feature has exactly one enabler (§58, §6.2.3)
+// ============================================================================
+
+/// Package that owns the feature `cloud-raw-pool` (it exposes `raw_pool()` on the pool wrappers).
+const RAW_POOL_OWNER: &str = "humaux-adapters";
+
+/// The feature whose enablers G-M01-9 pins.
+const RAW_POOL_FEATURE: &str = "cloud-raw-pool";
+
+/// The only workspace package allowed to enable [`RAW_POOL_FEATURE`] (M20-2).
+const RAW_POOL_ENABLERS: &[&str] = &["humaux-public-pool"];
+
+/// Whether one `[features]` value forwards `<local>/cloud-raw-pool` (or the `?` weak form) for a `local`
+/// dependency name that resolves to the owner. Cargo writes the dependency's LOCAL name here, not its package name.
+fn forwards_raw_pool(value: &serde_json::Value, owner_locals: &BTreeSet<&str>) -> bool {
+    let Some(v) = value.as_str() else {
+        return false;
+    };
+    let Some(local) = v
+        .strip_suffix(&format!("/{RAW_POOL_FEATURE}"))
+        .map(|l| l.strip_suffix('?').unwrap_or(l))
+    else {
+        return false;
+    };
+    owner_locals.contains(local)
+}
+
+/// Whether package `pkg` enables the feature: a dependency edge on the owner (any kind, renamed or
+/// target-specific) listing it in `features`, or a `[features]` entry forwarding to it through the dependency's
+/// local name. `Err` is a shape problem.
+fn enables_raw_pool(name: &str, pkg: &serde_json::Value) -> Result<bool, String> {
+    let deps = pkg
+        .get("dependencies")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| format!("package `{name}` has no `dependencies` array in cargo metadata"))?;
+    let mut owner_locals = BTreeSet::new();
+    for dep in deps {
+        let dep_name = dep
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| format!("package `{name}` lists a dependency without a `name`"))?;
+        if dep_name != RAW_POOL_OWNER {
+            continue;
+        }
+        let local = dep
+            .get("rename")
+            .and_then(|r| r.as_str())
+            .unwrap_or(dep_name);
+        owner_locals.insert(local);
+        let on_feature = dep
+            .get("features")
+            .and_then(|f| f.as_array())
+            .is_some_and(|f| f.iter().any(|x| x.as_str() == Some(RAW_POOL_FEATURE)));
+        if on_feature {
+            return Ok(true);
+        }
+    }
+    let forwarded = pkg
+        .get("features")
+        .and_then(|f| f.as_object())
+        .is_some_and(|f| {
+            f.values().any(|v| {
+                v.as_array()
+                    .is_some_and(|a| a.iter().any(|x| forwards_raw_pool(x, &owner_locals)))
+            })
+        });
+    Ok(forwarded)
+}
+
+/// Feature keys of the owner (other than the definition itself) that switch [`RAW_POOL_FEATURE`] on, `default`
+/// included: the owner must not enable its own feature.
+fn owner_self_enablers(pkg: &serde_json::Value) -> Vec<String> {
+    let Some(features) = pkg.get("features").and_then(|f| f.as_object()) else {
+        return Vec::new();
+    };
+    features
+        .iter()
+        .filter(|(key, _)| key.as_str() != RAW_POOL_FEATURE)
+        .filter(|(_, v)| {
+            v.as_array()
+                .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(RAW_POOL_FEATURE)))
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// G-M01-9 pure comparator (§58, §6.2.3): the set of workspace packages enabling
+/// `humaux-adapters/cloud-raw-pool` equals [`RAW_POOL_ENABLERS`] exactly. Walks the same
+/// `cargo metadata --no-deps` document as G-M01-2. An extra enabler and a missing one both fail.
+pub fn raw_pool_enablers_from(metadata_json: &str) -> Verdict {
+    let packages = match metadata_packages(metadata_json) {
+        Ok(p) => p,
+        Err(e) => return Verdict::Fail(vec![e]),
+    };
+    let mut enablers = BTreeSet::new();
+    let mut self_enabled = Vec::new();
+    for pkg in &packages {
+        let Some(name) = package_name(pkg) else {
+            return Verdict::Fail(vec![
+                "cargo metadata lists a package without a `name`".to_string(),
+            ]);
+        };
+        if name == RAW_POOL_OWNER {
+            self_enabled.extend(owner_self_enablers(pkg).into_iter().map(|key| {
+                format!(
+                    "`{RAW_POOL_OWNER}` feature `{key}` switches on `{RAW_POOL_FEATURE}` itself (G-M01-9, §6.2.3: only a consumer may enable it)"
+                )
+            }));
+        }
+        match enables_raw_pool(name, pkg) {
+            Ok(true) => {
+                enablers.insert(name);
+            }
+            Ok(false) => {}
+            Err(e) => return Verdict::Fail(vec![e]),
+        }
+    }
+    let expected: BTreeSet<&str> = RAW_POOL_ENABLERS.iter().copied().collect();
+    if enablers == expected && self_enabled.is_empty() {
+        return Verdict::Pass;
+    }
+    let mut out = self_enabled;
+    for name in enablers.difference(&expected) {
+        out.push(format!(
+            "package `{name}` enables `{RAW_POOL_OWNER}/{RAW_POOL_FEATURE}`; only {RAW_POOL_ENABLERS:?} may (G-M01-9, §6.2.3: raw_pool() leaves the crate only for the public pool)"
+        ));
+    }
+    for name in expected.difference(&enablers) {
+        out.push(format!(
+            "package `{name}` no longer enables `{RAW_POOL_OWNER}/{RAW_POOL_FEATURE}`; the enabler set must equal {RAW_POOL_ENABLERS:?} exactly (G-M01-9)"
+        ));
+    }
+    Verdict::Fail(out)
+}
+
+/// G-M01-9 over the real workspace.
+fn m01_9_raw_pool_enablers(root: &Path) -> Verdict {
+    match workspace_metadata_json(root) {
+        Ok(json) => raw_pool_enablers_from(&json),
+        Err(e) => Verdict::Fail(vec![e]),
+    }
+}
+
+// ============================================================================
 // M01 D5 — G-M01-3: crate boundary table (§78 Boundary Lints, generalising the §78.3 domain rule)
 // ============================================================================
 
@@ -1133,7 +1277,7 @@ const BOUNDARY_TABLE: &[BoundaryRule] = &[
     },
     BoundaryRule {
         dep: "sqlx",
-        allowed_in: &["humaux-adapters"],
+        allowed_in: &["humaux-adapters", "humaux-public-pool"],
         dev_exempt: true,
         family: true,
         why: "§78: Postgres access lives in the postgres adapter (dev-dependencies are testing)",
@@ -10378,6 +10522,10 @@ pub fn run(_args: &[String]) -> i32 {
             m01_3_crate_boundary(&root),
         ),
         (
+            "M01 / G-M01-9 (the set of packages enabling humaux-adapters/cloud-raw-pool equals {humaux-public-pool})",
+            m01_9_raw_pool_enablers(&root),
+        ),
+        (
             "M01 D4 / G-M01-4 (a DegradeCode variant with a production emit site is tested through it, not through abstain; the others are rows of tests/fault/dormant.toml)",
             m01_4_real_path_or_dormant(&root),
         ),
@@ -13160,7 +13308,183 @@ runs:
         assert_eq!(m01_3_crate_boundary(&real_root()), Verdict::Pass);
     }
 
-    // -- M01 D4 / G-M01-4: real path or declared dormant ----------------------------------
+    /// `run()` must list G-M01-9 exactly once.
+    #[test]
+    fn run_wires_the_raw_pool_gate_exactly_once() {
+        assert_eq!(own_source_count("m01_9_raw_pool_", "enablers(&root),"), 1);
+    }
+
+    /// The real workspace: only `humaux-public-pool` enables the feature.
+    #[test]
+    fn g_m01_9_real_repo_passes() {
+        assert_eq!(m01_9_raw_pool_enablers(&real_root()), Verdict::Pass);
+    }
+
+    fn rp_dep(features: &[&str], kind: Option<&str>) -> serde_json::Value {
+        rp_dep_as(features, kind, None, None)
+    }
+
+    /// A dependency on the owner with an optional local `rename` and `target` platform.
+    fn rp_dep_as(
+        features: &[&str],
+        kind: Option<&str>,
+        rename: Option<&str>,
+        target: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": "humaux-adapters", "kind": kind, "features": features,
+            "rename": rename, "target": target,
+        })
+    }
+
+    fn rp_pkg(
+        name: &str,
+        deps: Vec<serde_json::Value>,
+        features: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({"name": name, "dependencies": deps, "features": features})
+    }
+
+    fn rp_owner() -> serde_json::Value {
+        rp_pkg(
+            "humaux-public-pool",
+            vec![rp_dep(&["cloud-raw-pool"], None)],
+            serde_json::json!({}),
+        )
+    }
+
+    #[test]
+    fn g_m01_9_passes_with_exactly_the_public_pool() {
+        let other = rp_pkg(
+            "humaux-cache",
+            vec![rp_dep(&[], None)],
+            serde_json::json!({}),
+        );
+        let doc = ed_doc(&[rp_owner(), other]);
+        assert_eq!(raw_pool_enablers_from(&doc), Verdict::Pass);
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_direct_enabler_of_every_kind() {
+        for kind in [None, Some("dev"), Some("build")] {
+            let dep = rp_dep(&["cloud-raw-pool"], kind);
+            let other = rp_pkg("humaux-cache", vec![dep], serde_json::json!({}));
+            let out = fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), other])));
+            assert_eq!(out.lines().count(), 1, "{out}");
+            assert!(out.contains("package `humaux-cache` enables"), "{out}");
+        }
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_forwarding_feature_entry() {
+        for fwd in [
+            "humaux-adapters/cloud-raw-pool",
+            "humaux-adapters?/cloud-raw-pool",
+        ] {
+            let dep = rp_dep(&[], None);
+            let other = rp_pkg("humaux-cache", vec![dep], serde_json::json!({"x": [fwd]}));
+            let out = fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), other])));
+            assert_eq!(out.lines().count(), 1, "{out}");
+            assert!(out.contains("package `humaux-cache` enables"), "{out}");
+        }
+    }
+
+    /// Verdict lines for `humaux-cache` built from `deps` and `features`, next to the legitimate owner.
+    fn rp_cache_fail(deps: Vec<serde_json::Value>, features: serde_json::Value) -> String {
+        let other = rp_pkg("humaux-cache", deps, features);
+        fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), other])))
+    }
+
+    fn assert_only_cache_enables(out: &str) {
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.contains("package `humaux-cache` enables"), "{out}");
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_renamed_dependency_enabling_the_feature() {
+        let dep = rp_dep_as(&["cloud-raw-pool"], None, Some("alias"), None);
+        assert_only_cache_enables(&rp_cache_fail(vec![dep], serde_json::json!({})));
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_renamed_forwarding_feature() {
+        for fwd in ["alias/cloud-raw-pool", "alias?/cloud-raw-pool"] {
+            let dep = rp_dep_as(&[], None, Some("alias"), None);
+            let out = rp_cache_fail(vec![dep], serde_json::json!({"x": [fwd]}));
+            assert_only_cache_enables(&out);
+        }
+    }
+
+    #[test]
+    fn g_m01_9_ignores_a_forward_through_an_unrelated_local_name() {
+        let dep = rp_dep_as(&[], None, Some("alias"), None);
+        let other = rp_pkg(
+            "humaux-cache",
+            vec![dep],
+            serde_json::json!({"x": ["other/cloud-raw-pool"]}),
+        );
+        let doc = ed_doc(&[rp_owner(), other]);
+        assert_eq!(raw_pool_enablers_from(&doc), Verdict::Pass);
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_target_specific_enabler() {
+        let dep = rp_dep_as(&["cloud-raw-pool"], None, None, Some("cfg(unix)"));
+        assert_only_cache_enables(&rp_cache_fail(vec![dep], serde_json::json!({})));
+    }
+
+    #[test]
+    fn g_m01_9_fails_when_the_owner_defaults_the_feature_on() {
+        let owner = rp_pkg(
+            "humaux-adapters",
+            vec![],
+            serde_json::json!({"cloud-raw-pool": [], "default": ["cloud-raw-pool"]}),
+        );
+        let out = fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), owner])));
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(
+            out.contains("`humaux-adapters` feature `default` switches on"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn g_m01_9_passes_when_the_owner_only_defines_the_feature() {
+        let owner = rp_pkg(
+            "humaux-adapters",
+            vec![],
+            serde_json::json!({"cloud-raw-pool": [], "default": []}),
+        );
+        let doc = ed_doc(&[rp_owner(), owner]);
+        assert_eq!(raw_pool_enablers_from(&doc), Verdict::Pass);
+    }
+
+    #[test]
+    fn g_m01_9_fails_when_the_public_pool_stops_enabling() {
+        let pool = rp_pkg(
+            "humaux-public-pool",
+            vec![rp_dep(&[], None)],
+            serde_json::json!({}),
+        );
+        let out = fail_lines(raw_pool_enablers_from(&ed_doc(&[pool])));
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(
+            out.contains("package `humaux-public-pool` no longer enables"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn g_m01_9_fails_closed_on_a_malformed_document() {
+        assert!(matches!(
+            raw_pool_enablers_from("not json"),
+            Verdict::Fail(_)
+        ));
+        let doc = ed_doc(&[serde_json::json!({"name": "a"})]);
+        assert!(matches!(raw_pool_enablers_from(&doc), Verdict::Fail(_)));
+    }
+
+    // -- M01 D4 / G-M01-4: real path or dormant ----------------------------------
 
     fn m01_4_names(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_string()).collect()

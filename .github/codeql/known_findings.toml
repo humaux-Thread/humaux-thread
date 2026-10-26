@@ -113,7 +113,7 @@ reason = "SET LOCAL humaux.tenant_id = typed Uuid: the RLS tenant GUC, a public 
 
 [[finding]]
 rule = "rust/cleartext-storage-database"
-path = "crates/adapters/src/public_repo.rs"
+path = "crates/public-pool/src/public_repo.rs"
 count = 1
 verdict = "FP"
 owner = "M20"

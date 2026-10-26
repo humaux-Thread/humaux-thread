@@ -1,7 +1,7 @@
-//! `adapters::public_projection` — Public Qdrant projection writes (§17.6).
-//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-infra-cell, serde_json, sha2, uuid];
-//!   services=[Qdrant(*)]; env=[]; modules=[adapters::public_repo, adapters::qdrant, domain::error,
-//!   infra-cell::permit, infra-cell::transport]
+//! `public-pool::public_projection` — Public Qdrant projection writes (§17.6).
+//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, humaux-infra-cell, serde_json, sha2, uuid];
+//!   services=[Qdrant(*)]; env=[]; modules=[adapters::qdrant, domain::error, infra-cell::permit,
+//!   infra-cell::transport, public-pool::public_repo]
 //! Called-by: [public-worker::main, tests]
 //! Invariants: [writes only the public payload contract through the same-cell transport; no dense vector, private
 //!   payload, tenant or database seam; a Qdrant failure is DependencyUnavailable]
@@ -18,10 +18,11 @@ use sha2::{Digest, Sha256};
 use std::num::NonZeroU32;
 use uuid::Uuid;
 
+use humaux_adapters::qdrant::QdrantTransportError;
+
 use crate::public_repo::{
     EligibleObject, ProjectionIdentity, ProjectionWriteOutcome, PublicProjectionPort,
 };
-use crate::qdrant::QdrantTransportError;
 
 /// The six fields persisted on a public projection point (§17.6).
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -45,7 +45,7 @@
 //! [`StreamKey`]) — never "every ISSUED row across every tenant/stream in one call". A caller
 //! (the `humaux-retrieval-worker` binary) instantiates one [`ProjectionWorkerDeps`] per stream
 //! it is responsible for and calls [`run_once`] on a timer/loop, same shape
-//! `humaux_adapters::public_repo::run_once` already uses for the public plane.
+//! `humaux_public_pool::public_repo::run_once` already uses for the public plane.
 //!
 //! ## Per-row order (§17.4, verbatim in the task card)
 //!
@@ -1862,7 +1862,7 @@ fn worker_authorization_scope(
 /// returning `(stream_seq, commit_seq, attempts)`. Unleased on purpose — it takes only rows no
 /// `--serve` process holds (`lease_owner IS NULL`) and whose backoff has elapsed; a second
 /// concurrent `run_once` against the same key would race it (single-worker-per-key assumption,
-/// same as `humaux_adapters::public_repo`'s own `run_once`). The resident path claims instead
+/// same as `humaux_public_pool::public_repo`'s own `run_once`). The resident path claims instead
 /// ([`stream_repo::claim_issued`]).
 async fn fetch_issued_rows(
     pool: &RetrievalWorkerDbPool,

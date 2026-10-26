@@ -1,6 +1,6 @@
-//! `adapters::public_repo` — Phase 9 public admission, receipt evaluation, revocation, and explicit outbox dispatch
+//! `public-pool::public_repo` — Phase 9 public admission, receipt evaluation, revocation, and explicit outbox dispatch
 //!   (§12.6 / §13 / §14 / §31).
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx];
+//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(any) r=[control.memberships, control.public_moderator_grants, control.users,
 //!   ops.public_release_revocations, public.eligible_objects, public.relations, public.synthesis_inputs,
 //!   staging.contribution_releases] w=[public.claim_trust_evaluation_sources, public.claim_trust_evaluations,
@@ -13,9 +13,9 @@
 //!   public.admit_anonymous_dispatch, public.carry_forward_anonymous_claim_lifecycle, public.current_public_roots,
 //!   public.evaluate_anonymous_claim, public.public_projection_identities, public.revoke_anonymous_dispatch,
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
-//!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
-//!   application::public_evolve, domain::error, domain::identity, domain::ids, domain::public]
-//! Called-by: [adapters::mechanism_observation, adapters::public_projection, public-worker::main, tests]
+//!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::mechanism_observation,
+//!   adapters::postgres, domain::error, domain::identity, domain::ids, domain::public, public-pool::public_evolve]
+//! Called-by: [public-pool::public_projection, public-worker::main, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
 //! Spec: none
@@ -24,7 +24,10 @@
 //! remains the serving authority: no function reads private rows or accepts caller-provided
 //! released content or scanner outcomes.
 
-use humaux_application::public_evolve::{self, RootIdentity};
+use humaux_adapters::{
+    mechanism_observation::PublicClaimEvaluator,
+    postgres::{PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool},
+};
 use humaux_domain::{
     error::ErrorCode, identity::AuthorizationScope, ids::TenantId, public::ModerationState,
 };
@@ -32,9 +35,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, types::Uuid};
 
-use crate::postgres::{
-    PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool,
-};
+use crate::public_evolve::{self, RootIdentity};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -117,24 +118,24 @@ impl AnonymousDispatchJob {
     }
 }
 
-/// Authenticated, revision-pinned manual review request.  `expected_body_sha256` is the
-/// database body's SHA-256, never a digest supplied in place of the stored body (§12.6).
-#[derive(Clone, Debug)]
-pub struct EvaluateClaim<'a> {
-    pub claim_id: Uuid,
-    pub expected_revision: i64,
-    pub expected_body_sha256: &'a [u8],
-    pub policy_version: &'a str,
-    pub rationale: &'a str,
-    pub target_state: ModerationState,
-}
+/// The review request and result types are defined beside the evaluator trait in `humaux-adapters`
+/// (core) so `mechanism_observation` can name them without depending on this crate.
+pub use humaux_adapters::mechanism_observation::{EvaluateClaim, EvaluationResult};
 
-/// Immutable review result linked from the current object revision.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvaluationResult {
-    pub evaluation_id: Uuid,
-    pub object_revision: i64,
-    pub moderation_state: String,
+/// The evaluator `PublicObservationRecorder` is wired with on cloud entry points: forwards to [`evaluate_claim`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PublicRepoEvaluator;
+
+#[async_trait::async_trait]
+impl PublicClaimEvaluator for PublicRepoEvaluator {
+    async fn evaluate_claim(
+        &self,
+        pool: &PublicWorkerDbPool,
+        authorization: &AuthorizationScope,
+        input: &EvaluateClaim<'_>,
+    ) -> Result<EvaluationResult, ErrorCode> {
+        evaluate_claim(pool, authorization, input).await
+    }
 }
 
 /// Immutable identity of one public revision.  It is the complete identity accepted by a
@@ -199,7 +200,7 @@ pub async fn admit_release(
     release_id: Uuid,
 ) -> Result<AdmittedRelease, ErrorCode> {
     // dep: PostgreSQL(role_public_worker) — transaction entry for `admit_release`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     set_tenant_local(&mut txn, tenant_id).await?;
     let admitted = admit_release_in_txn(&mut txn, tenant_id, release_id).await?;
     txn.commit().await.map_err(db_error)?;
@@ -382,7 +383,7 @@ pub async fn evaluate_claim(
     let tenant_id = authorization.tenant_id();
     let evaluator_user_id = authorization.user_id().ok_or(ErrorCode::Unauthorized)?;
     // dep: PostgreSQL(role_public_worker) — transaction entry for `evaluate_claim`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     set_tenant_local(&mut txn, tenant_id).await?;
     set_user_local(&mut txn, evaluator_user_id.0).await?;
     let result = evaluate_claim_in_txn(&mut txn, tenant_id, evaluator_user_id.0, input).await?;
@@ -412,7 +413,7 @@ pub async fn evaluate_anonymous_claim(
     }
     let evaluator_user_id = authorization.user_id().ok_or(ErrorCode::Unauthorized)?;
     // dep: PostgreSQL(role_private_worker) — transaction entry for `evaluate_anonymous_claim`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     set_tenant_local(&mut txn, authorization.tenant_id()).await?;
     set_user_local(&mut txn, evaluator_user_id.0).await?;
     let row = sqlx::query(
@@ -696,7 +697,7 @@ pub async fn hydrate_gateway(
     expected: &ProjectionIdentity,
 ) -> Result<Option<EligibleObject>, ErrorCode> {
     // dep: PostgreSQL(role_gateway) — transaction entry for `hydrate_gateway`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     set_read_committed(&mut txn).await?;
     let hydrated = hydrate_strict_in_txn(&mut txn, expected).await?;
     txn.commit().await.map_err(db_error)?;
@@ -710,7 +711,7 @@ pub async fn hydrate_retrieval(
     expected: &ProjectionIdentity,
 ) -> Result<Option<EligibleObject>, ErrorCode> {
     // dep: PostgreSQL(role_retrieval_worker) — transaction entry for `hydrate_retrieval`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     set_read_committed(&mut txn).await?;
     let hydrated = hydrate_strict_in_txn(&mut txn, expected).await?;
     txn.commit().await.map_err(db_error)?;
@@ -776,7 +777,7 @@ pub async fn drain_outbox(
     let count: i64 = sqlx::query_scalar("SELECT ops.dispatch_public_outbox($1,$2)")
         .bind(tenant_id.0)
         .bind(limit)
-        .fetch_one(pool.pool())
+        .fetch_one(pool.raw_pool())
         .await
         .map_err(db_error)?;
     u64::try_from(count).map_err(|_| ErrorCode::Internal)
@@ -956,7 +957,7 @@ pub async fn run_once(
     .bind(lease_owner)
     .bind(60.0)
     .bind(limit)
-    .fetch_all(pool.pool())
+    .fetch_all(pool.raw_pool())
     .await
     .map_err(db_error)?;
     let claimed = rows
@@ -987,7 +988,7 @@ async fn execute_claimed_job(
     projection: &dyn PublicProjectionPort,
 ) -> Result<bool, ErrorCode> {
     // dep: PostgreSQL(role_public_worker) — transaction entry for `execute_claimed_job`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     set_tenant_local(&mut txn, tenant_id).await?;
     if !public_dispatch_live_lease(&mut txn, tenant_id, job, lease_owner).await? {
         return Ok(false);
@@ -1080,7 +1081,7 @@ pub async fn run_anonymous_once(
     .bind(lease_owner)
     .bind(60.0)
     .bind(limit)
-    .fetch_all(pool.pool())
+    .fetch_all(pool.raw_pool())
     .await
     .map_err(db_error)?;
     let claimed = rows
@@ -1110,7 +1111,7 @@ async fn execute_anonymous_dispatch(
     projection: &dyn PublicProjectionPort,
 ) -> Result<bool, ErrorCode> {
     // dep: PostgreSQL(role_public_worker) — transaction entry for `execute_anonymous_dispatch`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    let mut txn = pool.raw_pool().begin().await.map_err(db_error)?;
     if !anonymous_dispatch_live_lease(&mut txn, job, lease_owner).await? {
         return Ok(false);
     }
@@ -1223,7 +1224,7 @@ async fn fail_public_dispatch_job(
     .bind(job.job_id)
     .bind(lease_owner)
     .bind(job.attempt)
-    .fetch_one(pool.pool())
+    .fetch_one(pool.raw_pool())
     .await
     .map_err(db_error)?;
     Ok(())
@@ -1267,7 +1268,7 @@ async fn fail_anonymous_dispatch(
     .bind(job.dispatch_id)
     .bind(lease_owner)
     .bind(job.attempt)
-    .fetch_one(pool.pool())
+    .fetch_one(pool.raw_pool())
     .await
     .map_err(db_error)?;
     Ok(())

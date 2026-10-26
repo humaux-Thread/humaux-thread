@@ -1,6 +1,6 @@
-//! `adapters::tests::public_projection` — Real Qdrant acceptance tests for the public projection adapter (§17.6).
-//! Depends-on: crates=[humaux-adapters, humaux-infra-cell, humaux-testkit, serde_json, tokio, uuid]; services=[Qdrant(*)];
-//!   env=[HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::public_projection, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport]
+//! `public-pool::tests::public_projection` — Real Qdrant acceptance tests for the public projection adapter (§17.6).
+//! Depends-on: crates=[humaux-infra-cell, humaux-testkit, serde_json, tokio, uuid]; services=[Qdrant(*)];
+//!   env=[HUMAUX_TEST_QDRANT_PORT]; modules=[humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, public-pool::public_projection]
 //! Called-by: [cargo-test]
 //! Invariants: [writes only the public payload contract into a throwaway collection; no Qdrant port goes through
 //!   skip_or_fail (red under HUMAUX_REQUIRE_QDRANT)]
@@ -11,12 +11,12 @@ use std::net::TcpStream;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use humaux_adapters::public_projection::PublicProjectionAdapter;
 use humaux_infra_cell::{
     CallerId, CellId, HttpIntraCellTransport, IntraCellHttpTransport, IntraCellMethod,
     IntraCellRequest, IntraCellResource, IntraCellResourceRegistry, ResourceEntry,
     authorize_cell_access,
 };
+use humaux_public_pool::public_projection::PublicProjectionAdapter;
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -160,7 +160,7 @@ async fn delete_collection(
     );
 }
 
-fn payload(readback: &humaux_adapters::public_projection::PublicProjectionReadback) -> &Value {
+fn payload(readback: &humaux_public_pool::public_projection::PublicProjectionReadback) -> &Value {
     readback
         .payload
         .as_ref()
