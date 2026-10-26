@@ -298,7 +298,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::confirm_token_repo`
@@ -660,7 +659,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1651,6 +1649,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -4761,6 +4760,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -4875,6 +4875,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -5327,7 +5328,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -5722,6 +5722,7 @@ grants (runtime roles):
 
 read by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -6969,7 +6970,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 
 read by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -7266,6 +7266,7 @@ written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8813,6 +8814,7 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -8842,6 +8844,7 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -9175,100 +9178,6 @@ written by:
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
-
-### `private.curation_candidate_targets`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0277_curation_candidates
-
-grants (runtime roles):
-- role_gateway: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::candidate_repo`
-- (no process): `adapters::tests::candidates`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `private.curation_candidates`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0277_curation_candidates
-
-grants (runtime roles):
-- role_gateway: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::candidate_repo`
-- (no process): `adapters::tests::candidates`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `private.curation_transition_allowed`
-- kind: function
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0277_curation_candidates
-
-grants (runtime roles):
-- role_gateway: EXECUTE
-- role_migration_owner: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::candidates`
-
-### `private.decide_curation_candidate`
-- kind: function (SECURITY DEFINER)
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0277_curation_candidates
-
-grants (runtime roles):
-- role_gateway: EXECUTE
-- role_migration_owner: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::candidate_repo`
 
 ### `private.decide_memory_applicability`
 - kind: function (SECURITY DEFINER)
@@ -10727,7 +10636,6 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -10834,7 +10742,6 @@ read by:
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -11427,24 +11334,6 @@ written by:
 
 executed by:
 
-### `private.propose_curation_candidate`
-- kind: function (SECURITY DEFINER)
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0277_curation_candidates
-
-grants (runtime roles):
-- role_gateway: EXECUTE
-- role_migration_owner: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::candidate_repo`
-
 ### `private.propose_memory_applicability`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -11481,6 +11370,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
@@ -13058,6 +12948,7 @@ written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`

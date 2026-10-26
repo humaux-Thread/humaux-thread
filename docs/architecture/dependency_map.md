@@ -564,8 +564,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
-- reads `private.curation_candidate_targets`
-- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -810,6 +808,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::edge`
 - env `CARGO_MANIFEST_DIR`
 
+#### `protocol::error_map`
+
+#### `protocol::mcp`
+
+#### `protocol::mcp_catalog`
+
 #### `retrieval::candidate`
 
 #### `retrieval::compiler`
@@ -846,8 +850,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_facet_slots`
 - reads `private.continuity_facet_versions`
 - reads `private.continuity_projects`
-- reads `private.curation_candidate_targets`
-- reads `private.curation_candidates`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
 - reads `private.nodes`
@@ -1188,6 +1190,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `xtask::rls_check`
 - env `CARGO_MANIFEST_DIR`
 - env `HUMAUX_TEST_PG_DSN`
+
+#### `xtask::schedule_register`
+- env `CARGO_MANIFEST_DIR`
+- env `GITHUB_ACTIONS`
 
 #### `xtask::serial_lane`
 - reads `ops.schema_migrations`
@@ -3291,8 +3297,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
-- reads `private.curation_candidate_targets`
-- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -5019,7 +5023,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::confirm_token_repo`
@@ -5167,7 +5170,6 @@ executed by:
 
 ### `control.confirm_tokens`
 read by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -5578,6 +5580,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -6894,6 +6897,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -6965,6 +6969,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -7140,7 +7145,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -7348,6 +7352,7 @@ executed by:
 ### `ops.commit_seq_seq`
 read by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7851,7 +7856,6 @@ executed by:
 
 ### `ops.memory_lifecycle_events`
 read by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8013,6 +8017,7 @@ written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8666,6 +8671,7 @@ executed by:
 
 ### `private.continuity_facet_evidence_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -8679,6 +8685,7 @@ executed by:
 
 ### `private.continuity_facet_memory_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -8818,46 +8825,6 @@ written by:
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
-
-### `private.curation_candidate_targets`
-read by:
-- (no process): `adapters::candidate_repo`
-- (no process): `adapters::tests::candidates`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `private.curation_candidates`
-read by:
-- (no process): `adapters::candidate_repo`
-- (no process): `adapters::tests::candidates`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `private.curation_transition_allowed`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::candidates`
-
-### `private.decide_curation_candidate`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::candidate_repo`
 
 ### `private.decide_memory_applicability`
 read by:
@@ -9733,7 +9700,6 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -9840,7 +9806,6 @@ read by:
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -10171,14 +10136,6 @@ written by:
 
 executed by:
 
-### `private.propose_curation_candidate`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::candidate_repo`
-
 ### `private.propose_memory_applicability`
 read by:
 
@@ -10195,6 +10152,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
@@ -10993,6 +10951,7 @@ written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
@@ -11807,7 +11766,6 @@ executed by:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12077,7 +12035,6 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12547,7 +12504,6 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12685,7 +12641,6 @@ modules naming it:
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
 - `adapters::byok`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12748,7 +12703,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -12915,6 +12869,7 @@ modules naming it:
 - `adapters::session_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::console_session`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -13099,7 +13054,6 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_execution_0131`
@@ -13259,7 +13213,6 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13279,7 +13232,6 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13358,7 +13310,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13473,7 +13424,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13583,7 +13533,6 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13603,7 +13552,6 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13664,7 +13612,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -16435,6 +16382,7 @@ modules naming it:
 - `xtask::dep_map`
 - `xtask::known_red`
 - `xtask::r4_fault_manifest`
+- `xtask::schedule_register`
 
 ### xtask → `humaux-contracts` (normal)
 why: reuse the typed features.toml parser instead of a second one
@@ -16510,6 +16458,7 @@ why: reuse compute_api_key_hash instead of re-deriving the keyed hash
 
 modules naming it:
 - `tests`
+- `xtask::architecture_check`
 - `xtask::e2e_seed`
 - `xtask::load`
 
@@ -17206,15 +17155,6 @@ db-bound (default run): no
 services (computed):
 
 default run:
-
-### `crates/adapters/tests/candidates.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
 
 ### `crates/adapters/tests/confirm_token_retention.rs`
 db-bound (default run): yes
