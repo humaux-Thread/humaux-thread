@@ -8,6 +8,9 @@ use crate::architecture_check::{Verdict, workspace_root};
 use crate::vocab_model::Vocabulary;
 use std::{fs, path::Path, process::Command};
 
+// §57.1: a missing-object diagnostic, not a database read or serving grant.
+const ZERO_USE_MISSING: &str = concat!("public.", "unit_classifications");
+
 fn check(root: &Path) -> Verdict {
     let read = |name: &str| {
         fs::read_to_string(root.join("contracts/public").join(name))
@@ -84,8 +87,7 @@ pub fn run(_args: &[String]) -> i32 {
         Verdict::Pass => {
             println!("vocab-check: pass — G-M20-16 ids, labels, replacements, BROADER DAG");
             println!(
-                "vocab-check: not_applicable — zero-use (missing object: {}.{}; M20-18)",
-                "public", "unit_classifications"
+                "vocab-check: not_applicable — zero-use (missing object: {ZERO_USE_MISSING}; M20-18)"
             );
             0
         }
