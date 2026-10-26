@@ -487,12 +487,7 @@ impl GatewayBootstrap {
         let registry = registry();
         let effective = resolve_effective_config(&registry, &raw)
             .map_err(|error| BootstrapError::new(error.entry_name, "missing or undeclared"))?;
-        humaux_contracts::config_registry::continuity_list_merge_attempts(
-            effective
-                .get(humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS)
-                .map(String::as_str),
-        )
-        .map_err(|error| BootstrapError::new(error.entry_name, "must be a positive integer"))?;
+        validate_continuity_config(&effective)?;
         let remember_policy = parse_remember_policy(&effective)?;
         let context_bootstrap = parse_context_bootstrap(&effective, &remember_policy)?;
         let guard = parse_guard(&effective)?;
@@ -571,6 +566,19 @@ impl GatewayBootstrap {
             effective_config: effective_config_rows(&registry, &raw, &effective),
         })
     }
+}
+
+fn validate_continuity_config(effective: &BTreeMap<String, String>) -> Result<(), BootstrapError> {
+    use humaux_contracts::config_registry::{
+        CONTINUITY_LIST_MERGE_ATTEMPTS, continuity_list_merge_attempts,
+    };
+    continuity_list_merge_attempts(
+        effective
+            .get(CONTINUITY_LIST_MERGE_ATTEMPTS)
+            .map(String::as_str),
+    )
+    .map(|_| ())
+    .map_err(|error| BootstrapError::new(error.entry_name, "must be a positive integer"))
 }
 
 /// ADR-0061 D-B: the ops listener binds loopback only, on a fixed port Prometheus can target.
