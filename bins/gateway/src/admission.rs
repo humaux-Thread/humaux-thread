@@ -3,7 +3,7 @@
 //!   overflow is HTTP 503 + `Retry-After` + the pre-parse `RATE_LIMITED` body.
 //! Depends-on: crates=[axum, humaux-domain, humaux-telemetry, sha2, tokio]; services=[HTTP(loopback)]; env=[];
 //!   modules=[domain::error, telemetry::admission]
-//! Called-by: [gateway::bootstrap, gateway::main]
+//! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [no admission state is touched before the whole body is read; the permit, the waiter count and the
 //!   per-key count are released by Drop on every path (success, refusal, a client that disconnects while queued, a
 //!   handler panic); an admitted request's permit and key slot live in the task that runs it until the handler
