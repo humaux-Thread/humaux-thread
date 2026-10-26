@@ -427,6 +427,7 @@ fn freeze(h: &Handle, root: Uuid, evidence: bool) -> FrozenDeletion {
             sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
                 .await
                 .expect("gateway connection");
+        // dep: PostgreSQL(role_gateway) — the same caller-owned transaction
         let mut txn = connection.begin().await.expect("begin");
         let frozen = if evidence {
             forget_repo::freeze_evidence_closure_in_txn(&mut txn, &h.auth, &[root]).await
@@ -473,6 +474,7 @@ fn accept(
             sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
                 .await
                 .expect("gateway connection");
+        // dep: PostgreSQL(role_gateway) — the same caller-owned transaction
         let mut txn = connection.begin().await.expect("begin");
         let result = forget_repo::accept_in_txn(&mut txn, &h.auth, request.request_id, claim).await;
         if result.is_ok() {
@@ -689,6 +691,7 @@ fn owner_arm_keeps_gateway_update_refused_and_maintenance_tombstone_working() {
                     sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
                         .await
                         .expect("gateway connection");
+                // dep: PostgreSQL(role_gateway) — the same caller-owned transaction
                 let mut txn = connection.begin().await.expect("begin");
                 sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
                     .bind(h.tenant_id.to_string())
