@@ -21,12 +21,7 @@
 [[dod]]
 id = "DOD-006"
 owner = "M13"
-reason = "no verifier registered in crates/testkit/src/dod.rs; stream_seq ledger capability exists (migrations/0007, G80-4/25/28)"
-
-[[dod]]
-id = "DOD-007"
-owner = "M13"
-reason = "no verifier registered in crates/testkit/src/dod.rs; ledger::close and classify sole sites exist (domain/src/ledger.rs, retrieval/src/completeness.rs)"
+reason = "no verifier registered in crates/testkit/src/dod.rs; the dense-ledger proof is the DB-backed crates/adapters/tests/stream_repo.rs advance_prefix test, which the known-red lint job (no PostgreSQL) cannot execute (#353)"
 
 [[dod]]
 id = "DOD-008"
