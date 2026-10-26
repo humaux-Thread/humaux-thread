@@ -3,7 +3,8 @@
 //!   into `ops.email_outbox`, and the test reads the code from that payload.
 //! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-protocol, humaux-testkit, postgres, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(any) w=[control.auth_events, control.email_challenges, control.sessions,
-//!   control.user_emails, control.users, ops.email_delivery_events, ops.email_outbox], PostgreSQL(role_gateway)];
+//!   control.user_emails, control.users, ops.email_delivery_events, ops.email_outbox]
+//!   x=[control.login_challenge_issue, control.session_issue], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email, adapters::postgres, adapters::session_repo, application::auth,
 //!   application::session, application::signed_token, gateway::auth_pages, gateway::guard, gateway::limiter,
 //!   humaux-testkit, protocol::edge]

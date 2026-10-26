@@ -1,7 +1,7 @@
 //! `gateway::auth_pages` — M02 D1/D2 `/auth/*` SSR pages: email → code → console session, and logout (ADR-0125).
 //! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, uuid];
 //!   services=[]; env=[]; modules=[adapters::email, adapters::login_repo, adapters::postgres, adapters::session_repo,
-//!   application::auth, application::login, application::session, application::signed_token, domain::error,
+//!   application::auth, application::session, application::signed_token, domain::error,
 //!   gateway::guard, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [every /auth/* request passes the pre-auth guard entry exactly once before any handler runs and every
