@@ -6,7 +6,7 @@
 //!   module's own `state <> 'TOMBSTONED'` knowledge instead of a caller re-deriving it.
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::error, domain::identity, projection::stream]
 //! Called-by: [tests]
-//! Invariants: [every call opens its own transaction and sets humaux.tenant_id first; the * -> TOMBSTONED edge and
+//! Invariants: [maintenance calls open their own transaction and set humaux.tenant_id first; request calls use the caller-owned transaction and set its AuthorizationScope; the * -> TOMBSTONED edge and
 //!   plan-step bookkeeping run only on role_maintenance; a PG error aborts the step so the plan stays resumable; a
 //!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes
 //!   (scope, roots) and derives the targets, hash and requester itself, after every root passed the caller's own
@@ -19,15 +19,10 @@
 //! §3/§78.3); this module is the only place that decision turns into SQL — same split as
 //! `stream_repo.rs`'s `advance_prefix`/`sweep_lost` wrapping `humaux_projection::stream`.
 //!
-//! Every function opens its own transaction and issues `SET LOCAL humaux.tenant_id` before
-//! touching `projection.stream_log` / `control.deletion_requests` / `ops.deletion_plan_steps`
-//! — all three carry a `tenant_id` column and a `FORCE`d RLS policy (0007/0012/0054); same
-//! technique as `stream_repo::set_tenant_local` (each file keeps its own copy on purpose, see
-//! that module's doc).
-//!
-//! Runs under [`MaintenanceDbPool`] (`role_maintenance`) — the only role
-//! `stream_log_guard_state_transition` (0011) permits to make the `* -> TOMBSTONED` edge, and
-//! the only role granted `EXECUTE` on 0054's two `SECURITY DEFINER` bookkeeping functions.
+//! Maintenance entry points require [`MaintenanceDbPool`] (`role_maintenance`): 0011 permits only that role to make
+//! the `* -> TOMBSTONED` edge, and 0054 grants only it the bookkeeping doors. Their transactions install the tenant
+//! before touching FORCE-RLS tables (§6.2). Freeze and preview instead require the caller-owned `role_gateway`
+//! transaction with the caller's AuthorizationScope (ADR-0092 D-A); tenant RLS alone never proves root readability.
 
 use sqlx::Row;
 use sqlx::types::Uuid;
