@@ -1037,6 +1037,8 @@ impl ElevatedActor {
             | DestructiveOp::MemoryCorrect
             | DestructiveOp::MemoryConfirm
             | DestructiveOp::MemoryReject
+            | DestructiveOp::MemoryForget
+            | DestructiveOp::AccountDelete
             | DestructiveOp::MemoryNoteReplace => Err(CandidateRejection::MissingConfirmation),
         }
     }
@@ -1095,6 +1097,8 @@ impl ConfirmedUserActor {
             // card 22b: a bind confirmation is not a pin confirmation, in this direction too.
             | DestructiveOp::MemoryBind
             | DestructiveOp::MemoryUnbind
+            | DestructiveOp::MemoryForget
+            | DestructiveOp::AccountDelete
             | DestructiveOp::MemoryNoteReplace => Err(CandidateRejection::MissingConfirmation),
         }
     }
