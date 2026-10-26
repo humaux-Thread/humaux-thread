@@ -71,6 +71,13 @@ Reads, re-embeds and dedup re-imports never move `latest_evidence_at` (B20 red 1
   thresholds (note `:153`).
 - Asks M11: a rank multiplier is not part of this policy; ranking it needs M11's own eval (note `:76`).
 - Asks M15: B20's `last_verified_at` columns need a writer when revalidation lands (note `:77`).
+- One classifier (lead ruling 2026-10-26, cross-note): the M15 note's D6 specifies the same §21.5 classifier
+  (its contract C-M15-2, cards M15-2a/2b). This ADR's classifier is that contract; M13-4a/4b are its only
+  implementation and wiring cards. M15-2a folds into M13-4a: M15 D6 start values that name an existing
+  MemoryType become policy rows, and the others are listed open. M15-2b shrinks to the `last_verified_at` +
+  `verification_evidence_id` guest columns, landing with their first writer. The classifier's input then becomes
+  the later of the evidence `occurred_at` and `last_verified_at`. M15's G-M15-3 (crates/domain/tests/freshness.rs)
+  is an alias of G-M13-5/6, not a second gate.
 - Asks M14: facet freshness is the freshness of the facet's source memories (U4; note `:160`–`:161`).
 - Asks M26: render `freshness.policy_id` and the age next to the class on the wire (note `:72`–`:74`).
 - Neutral: nothing compiles or runs for this card; no migration, code or gate lands with it.
