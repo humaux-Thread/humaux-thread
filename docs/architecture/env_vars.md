@@ -890,6 +890,27 @@ processes:
 modules:
 - `gateway::mcp_application`
 
+### `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-consolidation-worker)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+- process(humaux-private-worker)
+- process(humaux-public-worker)
+- process(humaux-retrieval-worker)
+
+modules:
+- `adapters::continuity_repo`
+- `contracts::config_registry`
+- `gateway::bootstrap`
+
 ### `HUMAUX_CONTINUITY_RESTART_PHASE`
 - witness: literal
 - registry: raw

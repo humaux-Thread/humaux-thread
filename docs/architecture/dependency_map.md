@@ -374,6 +374,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::feature_registry`
 
@@ -1849,6 +1850,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -2038,6 +2040,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - executes `private.register_continuity_project`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - service `PostgreSQL(any)`
 
 #### `adapters::coord_repo`
@@ -2327,6 +2330,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `cache::key`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -2390,6 +2394,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `gateway::auth`
 
 #### `gateway::bootstrap`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_ADMISSION_CONCURRENCY`
 - env `HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS`
@@ -3059,6 +3064,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -4077,6 +4083,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -4334,6 +4341,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::public_evolve`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `domain::affect`
 
@@ -4717,6 +4725,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -12674,6 +12683,7 @@ modules naming it:
 why: shared contract types for the mechanism-observation adapter
 
 modules naming it:
+- `adapters::continuity_repo`
 - `adapters::mechanism_observation`
 - `adapters::qdrant`
 - `adapters::tests::mechanism_observation`
