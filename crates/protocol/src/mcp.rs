@@ -433,11 +433,12 @@ async fn native_request_boundary(
         .await
     {
         let mapping = error_map::lookup(code);
-        return (
+        let response = (
             StatusCode::from_u16(mapping.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             code.as_str(),
         )
             .into_response();
+        return with_capacity_retry(response);
     }
     if !has_required_native_metadata(&bytes) {
         return StatusCode::BAD_REQUEST.into_response();
@@ -448,6 +449,16 @@ async fn native_request_boundary(
         .await;
     if let Ok(status) = StatusCode::from_u16(status.load(Ordering::Acquire)) {
         *response.status_mut() = status;
+    }
+    with_capacity_retry(response)
+}
+
+// §67.2 / ADR-0100: capacity refusals at both protocol stages carry a bounded retry hint.
+fn with_capacity_retry(mut response: Response) -> Response {
+    if response.status() == StatusCode::SERVICE_UNAVAILABLE {
+        response
+            .headers_mut()
+            .insert("retry-after", "1".parse().expect("static header"));
     }
     response
 }

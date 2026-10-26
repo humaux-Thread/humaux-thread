@@ -40,7 +40,7 @@ async fn request(addr: std::net::SocketAddr) -> (u16, Vec<String>, String) {
 #[tokio::test]
 async fn g_m03_9_policy_429_capacity_503_retry_after_and_zero_handler_calls() {
     let policy = RatePolicy::new(1, 1).unwrap();
-    let limiter = Arc::new(Limiter::new([policy; 5], 100).unwrap());
+    let limiter = Arc::new(Limiter::new([policy; 5], [100; 5]).unwrap());
     let subject = Subject::Account(Uuid::now_v7());
     let called = Arc::new(AtomicUsize::new(0));
     let count = called.clone();

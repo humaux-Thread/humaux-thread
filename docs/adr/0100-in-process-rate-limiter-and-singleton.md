@@ -9,13 +9,13 @@ The PG rate buckets add transactions to every gateway request. M03 D1 moves only
 
 ## Decision
 
-Use atomic hierarchical token buckets for IP, credential, user, account and operation. New buckets receive one refill-second, capped at burst. The subject cap evicts only fully replenished idle buckets; pressure otherwise fails closed. Values live in the typed config registry (§78.1).
+Use atomic hierarchical token buckets for IP, credential, user, account and operation. New buckets receive one refill-second, capped at burst. ADR-0065 W-10 is preserved: canonical IPv4 remains unchanged; loopback `::1` and link-local `fe80::/10` retain /128 keys; other IPv6 uses the registered prefix. Five registered subject caps isolate IP, credential, user, account and operation (10,000 each). Pressure probes at most 32 entries per pressured tier using a rotating idle queue; only fully replenished unrequested buckets are evicted, otherwise capacity fails closed with 503, Retry-After and `rate_limit_rejected_total{scope="capacity"}`. The bounded probe ceiling may conservatively refuse despite an idle entry further in the queue; indexed idle deadlines are the upgrade path. Values live in the typed config registry (§78.1).
 
-Boot takes a session advisory lock over SHA-256 of a fixed label and the registered deployment value. A detached pool connection owns the lease and closes on Drop. Another gateway in the same deployment refuses boot with `Conflict`; the heartbeat checks that original session and returns `DependencyUnavailable` on loss, causing a nonzero process exit. No SQLx type crosses the adapter boundary.
+Boot takes a session advisory lock over SHA-256 of a fixed label and the registered deployment value. A detached pool connection owns the lease and closes on Drop. Another gateway in the same deployment refuses boot with `Conflict`; the heartbeat checks that original session and returns `DependencyUnavailable` on loss, causing a nonzero process exit. Each heartbeat is bounded by the registered `HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS` (start 2 seconds); timeout is session loss. No SQLx type crosses the adapter boundary.
 
 ## Ceilings
 
-Single gateway; restart loses bucket state and starts conservatively. Upgrade to two gateways plus Valkey when a second node is needed or certified gateway CPU exceeds 70% for 15 minutes. B23 account start values are burst 128/refill 20 per second; X-RATE replay remains owner-gated and UNCERTIFIED. The dedicated session adds one connection beyond the reusable pool ceiling (D8).
+Single gateway; restart loses bucket state and starts conservatively. Upgrade to two gateways plus Valkey when a second node is needed or certified gateway CPU exceeds 70% for 15 minutes. B23 account start values are burst 128/refill 20 per second; X-RATE replay remains owner-gated and UNCERTIFIED. The dedicated session adds one connection beyond the reusable pool ceiling (D8). `bins/maintenance/src/deploy_check.rs` validates deploy inputs and process isolation, but does not sum per-process pool maxima, so there is no aggregate there to amend; the future D8 budget gate must count gateway pool maximum + 1.
 
 ## Gates
 

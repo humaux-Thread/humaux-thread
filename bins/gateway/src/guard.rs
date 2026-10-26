@@ -69,8 +69,8 @@ pub struct GuardSettings {
     pub global_emergency_allowlist: Vec<Cidr>,
     pub tenant_network: BTreeMap<Uuid, TenantNetworkPolicy>,
     pub rates: GuardRatePolicies,
-    /// Registered limiter subject cap (§78.1; ADR-0100).
-    pub rate_max_subjects: usize,
+    /// Registered IP / credential / user / account / operation subject caps (§78.1; ADR-0100).
+    pub rate_max_subjects: [usize; 5],
     pub reservation_ttl: Duration,
     pub handler_timeout: Duration,
     pub finalize_timeout: Duration,
@@ -164,7 +164,14 @@ fn label_values(f: &Family) -> Vec<Vec<&'static str>> {
         "mcp_quota_reservations_total" => vec![vec!["ok", "denied"]],
         "mcp_bmo_consumed_total" => vec![vec![PLAN_CLASS]],
         "rate_limit_rejected_total" => {
-            vec![vec!["ip", "credential", "user", "tenant", "operation"]]
+            vec![vec![
+                "ip",
+                "credential",
+                "user",
+                "tenant",
+                "operation",
+                "capacity",
+            ]]
         }
         other => unreachable!("{other} is not a guard family"),
     }
@@ -393,7 +400,10 @@ impl GatewayGuard {
 
     fn rate(&self, subjects: &[Subject]) -> Result<(), ErrorCode> {
         self.limiter.check(subjects).map_err(|denial| {
-            if denial.code == ErrorCode::RateLimited {
+            if matches!(
+                denial.code,
+                ErrorCode::RateLimited | ErrorCode::DependencyUnavailable
+            ) {
                 self.metrics
                     .increment(&families::RATE_LIMIT_REJECTED_TOTAL, &[denial.scope]);
             }
@@ -1632,7 +1642,7 @@ mod tests {
             ("mcp_authz_denied_total", ErrorCode::ALL.len()),
             ("mcp_quota_reservations_total", 2),
             ("mcp_bmo_consumed_total", 1),
-            ("rate_limit_rejected_total", 5),
+            ("rate_limit_rejected_total", 6),
         ];
         for (family, n) in expected {
             assert!(

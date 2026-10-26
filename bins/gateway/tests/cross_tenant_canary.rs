@@ -121,7 +121,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
-                rate_max_subjects: 50_000,
+                rate_max_subjects: [50_000; 5],
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),

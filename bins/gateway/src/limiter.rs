@@ -2,11 +2,15 @@
 //! Depends-on: crates=[humaux-domain, tokio, uuid]; services=[]; env=[]; modules=[domain::error]
 //! Called-by: [gateway::guard, gateway::bootstrap, tests]
 //! Invariants: [no PG I/O; never an allow decision beyond rate; one mutex makes tier charges atomic;
-//!   buckets start at one refill-second; only fully replenished buckets may be evicted]
+//!   buckets start at one refill-second; per-tier caps; at most 32 idle probes per pressured tier; only replenished buckets may be evicted]
 //! Spec: Baseline §67.2; §72.3; §73.3; §78.1; ADR-0100
 
 use humaux_domain::error::ErrorCode;
-use std::{collections::HashMap, net::IpAddr, sync::Mutex};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::IpAddr,
+    sync::Mutex,
+};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -50,13 +54,16 @@ pub enum Subject {
 }
 
 impl Subject {
-    /// Mask a trusted IPv6 source to the registered prefix; IPv4 is unchanged (§73.3).
+    /// ADR-0065 W-10: canonical IPv4, /128 local IPv6, registered prefix otherwise (§73.3).
     pub fn ip(ip: IpAddr, bits: u8) -> Result<Self, ErrorCode> {
         if !(1..=128).contains(&bits) {
             return Err(ErrorCode::InvalidInput);
         }
-        Ok(Self::Ip(match ip {
-            IpAddr::V6(ip) => IpAddr::V6((u128::from(ip) & (u128::MAX << (128 - bits))).into()),
+        Ok(Self::Ip(match ip.to_canonical() {
+            // ADR-0065 W-10 / §73.3: loopback and link-local clients retain /128 identities.
+            IpAddr::V6(ip) if !ip.is_loopback() && !ip.is_unicast_link_local() => {
+                IpAddr::V6((u128::from(ip) & (u128::MAX << (128 - bits))).into())
+            }
             ip => ip,
         }))
     }
@@ -102,58 +109,99 @@ impl Bucket {
     }
 }
 
+// ponytail: pressure probes at most 32 buckets per tier per request; replace with indexed idle deadlines
+// if bounded false-capacity refusals under churn become material (§67.2; ADR-0100).
+const EVICTION_PROBES: usize = 32;
+
+#[derive(Default)]
+struct Tier {
+    buckets: HashMap<Subject, Bucket>,
+    idle: VecDeque<Subject>,
+}
+
+impl Tier {
+    fn make_room(
+        &mut self,
+        now: Instant,
+        policy: RatePolicy,
+        cap: usize,
+        missing: usize,
+        protected: &[Subject],
+    ) -> bool {
+        let probes = self.idle.len().min(EVICTION_PROBES);
+        for _ in 0..probes {
+            if self.buckets.len().saturating_add(missing) <= cap {
+                break;
+            }
+            let Some(subject) = self.idle.pop_front() else {
+                break;
+            };
+            if !protected.contains(&subject)
+                && self.buckets[&subject].credit(now, policy) == policy.capacity
+            {
+                self.buckets.remove(&subject);
+            } else {
+                self.idle.push_back(subject);
+            }
+        }
+        self.buckets.len().saturating_add(missing) <= cap
+    }
+}
+
 /// One gateway's bounded limiter; a second authority is forbidden by its boot lease (ADR-0100).
 pub struct Limiter {
     policies: [RatePolicy; 5],
-    max_subjects: usize,
-    buckets: Mutex<HashMap<Subject, Bucket>>,
+    max_subjects: [usize; 5],
+    tiers: Mutex<[Tier; 5]>,
 }
 
 impl Limiter {
-    /// Tier order is IP / credential / user / account / operation (§72.3).
-    pub fn new(policies: [RatePolicy; 5], max_subjects: usize) -> Result<Self, ErrorCode> {
-        if max_subjects == 0 {
+    /// Policies and isolated caps in IP / credential / user / account / operation order (§72.3).
+    pub fn new(policies: [RatePolicy; 5], max_subjects: [usize; 5]) -> Result<Self, ErrorCode> {
+        if max_subjects.contains(&0) {
             return Err(ErrorCode::InvalidInput);
         }
         Ok(Self {
             policies,
             max_subjects,
-            buckets: Mutex::new(HashMap::new()),
+            tiers: Mutex::new(std::array::from_fn(|_| Tier::default())),
         })
     }
 
     /// Atomically charge every unique tier or none. Memory pressure cannot reset an active bucket (§72.3).
     pub fn check(&self, subjects: &[Subject]) -> Result<(), RateLimited> {
-        let mut buckets = self.buckets.lock().map_err(|_| RateLimited {
+        let mut tiers = self.tiers.lock().map_err(|_| RateLimited {
             code: ErrorCode::Internal,
             scope: "capacity",
         })?;
         let now = Instant::now();
-        let missing = subjects
-            .iter()
-            .enumerate()
-            .filter(|(i, s)| !buckets.contains_key(*s) && !subjects[..*i].contains(s))
-            .count();
-        if buckets.len().saturating_add(missing) > self.max_subjects {
-            // ponytail: idle eviction scans only under pressure; shard after certified gateway CPU exceeds 70%.
-            buckets.retain(|s, b| {
-                b.credit(now, self.policies[s.tier()]) < self.policies[s.tier()].capacity
-            });
-        }
-        let missing = subjects
-            .iter()
-            .enumerate()
-            .filter(|(i, s)| !buckets.contains_key(*s) && !subjects[..*i].contains(s))
-            .count();
-        if buckets.len().saturating_add(missing) > self.max_subjects {
-            return Err(RateLimited {
-                code: ErrorCode::DependencyUnavailable,
-                scope: "capacity",
-            });
+        for (index, tier) in tiers.iter_mut().enumerate() {
+            let missing = subjects
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| {
+                    s.tier() == index
+                        && !tier.buckets.contains_key(*s)
+                        && !subjects[..*i].contains(s)
+                })
+                .count();
+            if !tier.make_room(
+                now,
+                self.policies[index],
+                self.max_subjects[index],
+                missing,
+                subjects,
+            ) {
+                return Err(RateLimited {
+                    code: ErrorCode::DependencyUnavailable,
+                    scope: "capacity",
+                });
+            }
         }
         for subject in subjects {
             let policy = self.policies[subject.tier()];
-            let credit = buckets
+            let credit = tiers[subject.tier()]
+                .buckets
                 .get(subject)
                 .map_or(policy.refill * TOKEN, |b| b.credit(now, policy))
                 .min(policy.capacity);
@@ -169,7 +217,11 @@ impl Limiter {
                 continue;
             }
             let policy = self.policies[subject.tier()];
-            let b = buckets.entry(subject.clone()).or_insert(Bucket {
+            let tier = &mut tiers[subject.tier()];
+            if !tier.buckets.contains_key(subject) {
+                tier.idle.push_back(subject.clone());
+            }
+            let b = tier.buckets.entry(subject.clone()).or_insert(Bucket {
                 credit: (policy.refill * TOKEN).min(policy.capacity),
                 updated: now,
             });

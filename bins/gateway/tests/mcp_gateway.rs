@@ -193,39 +193,40 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
-    Arc::new(
-        GatewayGuard::new(
-            runtime,
-            GuardSettings {
-                credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
-                credential_pepper_previous: None,
-                trusted_proxies: TrustedProxyConfig {
-                    trusted_proxy_cidrs: vec![],
-                    max_forwarded_hops: 1,
-                },
-                global_denylist: vec![],
-                global_emergency_allowlist: vec![],
-                tenant_network: BTreeMap::new(),
-                rate_max_subjects: 50_000,
-                rates: GuardRatePolicies {
-                    preauth_ip: rate(),
-                    credential: rate(),
-                    user: rate(),
-                    tenant: rate(),
-                    operation: rate(),
-                    lock_timeout: Duration::from_secs(2),
-                    preauth_ipv6_prefix_bits: 64,
-                },
-                reservation_ttl: Duration::from_secs(30),
-                handler_timeout: Duration::from_secs(5),
-                finalize_timeout: Duration::from_secs(2),
-                replay_ttl: Duration::from_secs(60),
-            },
-        )
-        .expect("explicit guard settings"),
-    )
+fn guard_settings() -> GuardSettings {
+    GuardSettings {
+        credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
+        credential_pepper_previous: None,
+        trusted_proxies: TrustedProxyConfig {
+            trusted_proxy_cidrs: vec![],
+            max_forwarded_hops: 1,
+        },
+        global_denylist: vec![],
+        global_emergency_allowlist: vec![],
+        tenant_network: BTreeMap::new(),
+        rate_max_subjects: [50_000; 5],
+        rates: GuardRatePolicies {
+            preauth_ip: rate(),
+            credential: rate(),
+            user: rate(),
+            tenant: rate(),
+            operation: rate(),
+            lock_timeout: Duration::from_secs(2),
+            preauth_ipv6_prefix_bits: 64,
+        },
+        reservation_ttl: Duration::from_secs(30),
+        handler_timeout: Duration::from_secs(5),
+        finalize_timeout: Duration::from_secs(2),
+        replay_ttl: Duration::from_secs(60),
+    }
 }
+
+fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+    Arc::new(GatewayGuard::new(runtime, guard_settings()).expect("explicit guard settings"))
+}
+
+#[path = "support/guard_limiter.rs"]
+mod guard_limiter;
 
 fn application(handle: &Handle, runtime: RuntimeDbPool) -> GatewayMcpApplication {
     application_with_budget(
@@ -278,6 +279,14 @@ fn application_with_budget(
     runtime: RuntimeDbPool,
     budget: ContextBudget,
 ) -> GatewayMcpApplication {
+    application_with_guard(handle, guard(runtime), budget)
+}
+
+fn application_with_guard(
+    handle: &Handle,
+    request_guard: Arc<GatewayGuard>,
+    budget: ContextBudget,
+) -> GatewayMcpApplication {
     // The fixture handle's pair is provisioned like a deployed one (governance writes admit
     // provisioned pairs only, ADR-0054 D-A).
     provision_stream_pair(handle, handle.workspace_id);
@@ -302,7 +311,7 @@ fn application_with_budget(
     .expect("actual executable identity");
     GatewayMcpApplication::new(
         CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
+        request_guard,
         policy,
         RememberEventKind::UserMessage,
         context_bootstrap,

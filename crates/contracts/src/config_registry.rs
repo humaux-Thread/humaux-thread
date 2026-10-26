@@ -329,7 +329,8 @@ pub fn resolve_collection_config(
 /// Process bootstrap supplies its private key names so shared defaults do not declare other processes
 /// as readers of gateway-only inputs (§50; ADR-0066 D-T).
 pub fn gateway_limiter_registry(
-    [max_subjects, deployment, heartbeat]: [&str; 3],
+    max_subjects: [&str; 5],
+    [deployment, heartbeat, timeout]: [&str; 3],
 ) -> Vec<ConfigEntry> {
     // ponytail: conservative start values, X-RATE certifies; account 128/20 is the B23 starting point.
     let mut entries = Vec::new();
@@ -349,10 +350,11 @@ pub fn gateway_limiter_registry(
         }
     }
     entries.extend([
-        gateway_limiter_entry(max_subjects, "usize", "50000"),
         gateway_limiter_entry(deployment, "string", "default"),
         gateway_limiter_entry(heartbeat, "u64", "5"),
+        gateway_limiter_entry(timeout, "u64", "2"),
     ]);
+    entries.extend(max_subjects.map(|key| gateway_limiter_entry(key, "usize", "10000")));
     entries
 }
 

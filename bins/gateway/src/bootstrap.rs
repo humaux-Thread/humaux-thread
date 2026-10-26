@@ -141,7 +141,14 @@ const MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS: u64 = 3600;
 const MAX_TASK_LEASE_TTL_SECONDS: u64 = 4_294_967_295;
 const DEPLOYMENT_KEY: &str = "HUMAUX_GATEWAY_DEPLOYMENT";
 const SESSION_LOCK_CHECK_KEY: &str = "HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS";
-const RATE_MAX_SUBJECTS_KEY: &str = "HUMAUX_GATEWAY_RATE_MAX_SUBJECTS";
+const RATE_MAX_SUBJECTS_KEYS: [&str; 5] = [
+    "HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS",
+];
+const SESSION_LOCK_TIMEOUT_KEY: &str = "HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS";
 /// ADR-0065 D-B: process identity in `pg_stat_activity`, never a tunable.
 const APPLICATION_NAME: &str = "humaux-gateway";
 
@@ -232,6 +239,7 @@ pub struct GatewayBootstrap {
     pg_dsn: String,
     deployment: String,
     session_lock_check: Duration,
+    session_lock_timeout: Duration,
     /// ADR-0065 D-A / D-B: the `role_gateway` pool's size and session timeouts, from the `PG_*` keys.
     pool_settings: PoolSettings,
     /// ADR-0065 D-C: the §67.2 admission bounds, from the five `ADMISSION_*` keys.
@@ -303,6 +311,7 @@ struct SemanticRecallConfig {
 pub struct GatewayRuntime {
     session_lock: SessionLock,
     session_lock_check: Duration,
+    session_lock_timeout: Duration,
     bind_addr: SocketAddr,
     adapter: McpAdapter,
     config_fingerprint: String,
@@ -320,7 +329,9 @@ impl GatewayRuntime {
     pub async fn watch_session_lock(&mut self) -> Result<(), humaux_domain::error::ErrorCode> {
         loop {
             tokio::time::sleep(self.session_lock_check).await;
-            self.session_lock.check().await?;
+            tokio::time::timeout(self.session_lock_timeout, self.session_lock.check())
+                .await
+                .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)??;
         }
     }
 
@@ -486,6 +497,7 @@ impl GatewayBootstrap {
         Ok(GatewayRuntime {
             session_lock,
             session_lock_check: self.session_lock_check,
+            session_lock_timeout: self.session_lock_timeout,
             bind_addr: self.bind_addr,
             adapter: McpAdapter::new(application, advertised, self.http),
             config_fingerprint: self.config_fingerprint,
@@ -565,6 +577,10 @@ impl GatewayBootstrap {
             session_lock_check: seconds(
                 required(&effective, SESSION_LOCK_CHECK_KEY)?,
                 SESSION_LOCK_CHECK_KEY,
+            )?,
+            session_lock_timeout: seconds(
+                required(&effective, SESSION_LOCK_TIMEOUT_KEY)?,
+                SESSION_LOCK_TIMEOUT_KEY,
             )?,
             pool_settings,
             admission,
@@ -788,10 +804,12 @@ fn parse_guard(effective: &BTreeMap<String, String>) -> Result<GuardSettings, Bo
             "HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST",
         )?,
         tenant_network: BTreeMap::new(),
-        rate_max_subjects: parse_usize(
-            required(effective, RATE_MAX_SUBJECTS_KEY)?,
-            RATE_MAX_SUBJECTS_KEY,
-        )?,
+        rate_max_subjects: RATE_MAX_SUBJECTS_KEYS
+            .map(|key| parse_usize(required(effective, key)?, key))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| BootstrapError::new("rate subject caps", "expected five tier caps"))?,
         rates: GuardRatePolicies {
             preauth_ip: rate(effective, RATE_BUCKET_KEYS[0])?,
             credential: rate(effective, RATE_BUCKET_KEYS[1])?,
@@ -1380,11 +1398,14 @@ pub fn registry() -> Vec<ConfigEntry> {
         false,
         "60",
     ));
-    entries.extend(gateway_limiter_registry([
-        RATE_MAX_SUBJECTS_KEY,
-        DEPLOYMENT_KEY,
-        SESSION_LOCK_CHECK_KEY,
-    ]));
+    entries.extend(gateway_limiter_registry(
+        RATE_MAX_SUBJECTS_KEYS,
+        [
+            DEPLOYMENT_KEY,
+            SESSION_LOCK_CHECK_KEY,
+            SESSION_LOCK_TIMEOUT_KEY,
+        ],
+    ));
     entries.extend(retrieval_profile_registry().into_iter().map(|mut entry| {
         entry.name = retrieval_env_key(&entry.name);
         entry
@@ -1768,13 +1789,16 @@ mod tests {
     };
 
     #[test]
-    fn limiter_registry_has_exactly_the_thirteen_expected_defaults() {
-        let entries = gateway_limiter_registry([
-            RATE_MAX_SUBJECTS_KEY,
-            DEPLOYMENT_KEY,
-            SESSION_LOCK_CHECK_KEY,
-        ]);
-        assert_eq!(entries.len(), 13);
+    fn limiter_registry_has_exactly_the_eighteen_expected_defaults() {
+        let entries = gateway_limiter_registry(
+            RATE_MAX_SUBJECTS_KEYS,
+            [
+                DEPLOYMENT_KEY,
+                SESSION_LOCK_CHECK_KEY,
+                SESSION_LOCK_TIMEOUT_KEY,
+            ],
+        );
+        assert_eq!(entries.len(), 18);
         let actual: BTreeMap<_, _> = entries
             .into_iter()
             .map(|entry| (entry.name, entry.default.unwrap()))
@@ -1790,9 +1814,14 @@ mod tests {
             ("HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND", "20"),
             ("HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY", "64"),
             ("HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND", "20"),
-            ("HUMAUX_GATEWAY_RATE_MAX_SUBJECTS", "50000"),
+            ("HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS", "10000"),
             ("HUMAUX_GATEWAY_DEPLOYMENT", "default"),
             ("HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS", "5"),
+            ("HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS", "2"),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
