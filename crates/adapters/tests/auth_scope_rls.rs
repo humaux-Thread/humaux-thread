@@ -631,6 +631,8 @@ impl BackendTap {
     /// Server to client, frame boundaries tracked from the first byte. Frames before the open question's marker are
     /// forwarded untouched; from the marker on they are withheld, the marker's own `DataRow` is skipped, and the answer
     /// (first column of the last `DataRow`) is sent at the next `ReadyForQuery`.
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn relay_backend<R: Read, W: Write>(
         from_server: &mut R,
         to_client: &mut W,

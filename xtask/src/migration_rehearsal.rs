@@ -63,6 +63,8 @@ const KNOWN_CONSTANT_AGGREGATE_ORDER: &[(&str, usize)] = &[("0224_partition_mach
 /// `sql` lowercased, with `--` / nested `/* */` comments and the insides of `'…'` literals and `"…"` identifiers
 /// blanked to spaces (newlines kept), so byte offsets and line numbers still match `sql`. `$$` bodies are code and
 /// stay. E-string backslash escapes are not read.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn blank_comments_and_literals(sql: &str) -> Vec<u8> {
     let b = sql.as_bytes();
     let mut out = b.to_ascii_lowercase();

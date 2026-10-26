@@ -286,6 +286,8 @@ pub struct Response {
 }
 
 /// Read exactly one response from a keep-alive stream: Content-Length, chunked, or close-delimited.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn read_response<R: BufRead>(r: &mut R) -> Result<Response, String> {
     let mut line = String::new();
     if r.read_line(&mut line)
@@ -2186,6 +2188,8 @@ mod tests {
     }
 
     #[test]
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn a_503_pauses_the_client_for_retry_after() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();

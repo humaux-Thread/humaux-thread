@@ -1212,7 +1212,7 @@ runtime role      对任何 schema 的任何表：无 DELETE / TRUNCATE / DDL
 role_batch_issuer 同上，且域默认全 —— 它只在 §6.2.2 里有一行非空
 role_admin        无 INSERT / UPDATE / DELETE / TRUNCATE / DDL，不继承其他角色
 role_maintenance  无 DELETE / TRUNCATE；修复只能靠 UPDATE，且只在 §6.2.2 逐条列出的表上有 UPDATE
-物理删行唯一出口  migration owner + partition drop（§48.1）；或 §6.2.2 逐条列出的 owner SECURITY DEFINER 清扫门（ADR-0062 闭集，单条语句、LIMIT、回执；role_maintenance 只有 EXECUTE）；partition drop 只经 control.partition_drop（invoker、仅超级用户可执行、库内重推策略/截止月/最新叶/持有/行数，ADR-0063）由超级用户 migrator 主体在操作员 shell 短命执行；常驻进程环境含 HUMAUX_MIGRATOR_PG_DSN 即拒绝启动
+物理删行出口        migration owner + partition drop（§48.1）；§6.2.2 逐条列出的 owner SECURITY DEFINER 清扫门（ADR-0062 闭集，单条语句、LIMIT、回执；role_maintenance 只有 EXECUTE）；以及 ADR-0092 的删除请求门（owner SECURITY DEFINER，EXECUTE 只给 role_maintenance，只删该请求冻结的目标集；其 §6.2.2 行与 rls-check 闭集随 M19-5 的迁移落地，在那之前这里只记设计、不新增授权行）；partition drop 只经 control.partition_drop（invoker、仅超级用户可执行、库内重推策略/截止月/最新叶/持有/行数，ADR-0063）由超级用户 migrator 主体在操作员 shell 短命执行；常驻进程环境含 HUMAUX_MIGRATOR_PG_DSN 即拒绝启动
 逻辑删除唯一出口  retention::tombstone —— 改 state，不删行（§37.2）
 ```
 
@@ -3619,7 +3619,7 @@ MANUAL
 AUTO_AFTER_USER_DISTILLATION
 ```
 
-必须保存 policy snapshot + consent/grant version。
+必须保存 policy snapshot + consent/grant version；云版另存 notice 版本与 SHOWN/ACK/TOGGLE/WITHDRAW 事件，toggle 与 withdraw-all 是两个独立动作（ADR-0088）。
 
 ContributionRelease 与私人来源之间不存 `source_ids[]`。唯一关系：
 
@@ -3638,17 +3638,19 @@ Release 创建/撤销属于 private worker（精确授权唯一见 §6.2.2），
 
 `PLATFORM_POLICY` 和 `PROTECTED_LINEAGE` 在受保护上下文中验证 release `ACTIVE`、双 scan `PASSED`、非空 rights_basis，并只把已封口的匿名 envelope 交给 `PublicWorkerDbPool`。public worker 不被授予 release/lineage/private 读取或 staging UPDATE；它不得用真实租户、行锁或 SECURITY DEFINER 绕过该界线。受保护的 release 锁、RLS 与创建/撤销规则仍由本节前两段和 §6.2.2 的既有入口定义。跨租户已公开 claim 可以在后续公共合成中组合，不把 public 改成租户域。
 
+本节表的逻辑分层是 `knowledge_public` / `knowledge_guard` / `knowledge_private`，D1' 表图与归属见 ADR-0089；不新建物理 schema，`public.*` 仍是唯一 servable 层。
+
 ### 12.1.1 精确字节准入（Phase 9）
 
-默认只开放 MANUAL。服务端以真实 AuthorizationScope 读取有效用户、membership、当前 contribution policy/version、同一 reasoning domain/profile 与来源当前 hash。Phase 9 必经 §7.1 的两段 USER_REASONING contract：先生成 public-safe probe，确定性 scan 只以该 probe 通过生产 `PublicCoveragePort` 选择 bounded/versioned `PublicCoverageDigest`，再以 digest binding 返回 novelty/quality/generality/grounding 四个 typed assessment 与 distilled candidate。任何 gate、probe/digest binding、payload hash 或 provider trace 不完整都不进入 storage；candidate 与 assessment binding 必须同事务持久化。
+核心版默认只开放 MANUAL（数据库默认 DISABLED），永不 AUTO；云版在用户对当前 notice 版本有 SHOWN 事件后默认开放 `AUTO_AFTER_USER_DISTILLATION`，用户可自行关闭（ADR-0088）。服务端以真实 AuthorizationScope 读取有效用户、membership、当前 contribution policy/version、同一 reasoning domain/profile 与来源当前 hash。Phase 9 必经 §7.1 的两段 USER_REASONING contract：先生成 public-safe probe，确定性 scan 只以该 probe 通过生产 `PublicCoveragePort` 选择 bounded/versioned `PublicCoverageDigest`，再以 digest binding 返回 novelty/quality/generality/grounding 四个 typed assessment 与 distilled candidate。任何 gate、probe/digest binding、payload hash 或 provider trace 不完整都不进入 storage；candidate 与 assessment binding 必须同事务持久化。
 
-候选随后必须通过有版本的确定性隐私规则和固定版本/二进制摘要的 Gitleaks stdin 扫描，失败、超时、未配置均禁止发布。扫描返回不可反序列化的 receipt；API 不接受调用者的 PASSED。扫描不证明不存在所有敏感信息，用户必须预览并确认精确 payload SHA-256。
+候选随后必须通过有版本的确定性隐私规则和固定版本/二进制摘要的 Gitleaks stdin 扫描，失败、超时、未配置均禁止发布。扫描返回不可反序列化的 receipt；API 不接受调用者的 PASSED。扫描不证明不存在所有敏感信息，用户必须预览并确认精确 payload SHA-256。云版 AUTO 路径不以逐条确认作为前置，其前置是当前 notice 版本的 SHOWN 事件；逐条预览/确认仍是 MANUAL 与 legacy 路径的精确字节检查（ADR-0088）。
 
-私有 candidate/confirmation/release 记录仍保存来源 hash、policy/version、actor/profile、rights 与 scan receipt。0120 另以 `control.anonymous_source_lineage` 为每个 release 发行 database-generated UUIDv4 `anonymous_source_id`，并在 `staging.sanitized_public_candidates` 保存只含匿名 content/policy/assessment digest 的 sealed envelope；0121 保存两段 USER_REASONING 的 probe/coverage/assessment binding；0122 以匿名 source、envelope digest 与 revision 封口 dispatch。`control.contribution_confirmations` 保存认证用户对 candidate/hash/policy 的不可变确认。Gateway 不读 staging；预览走已认证 private-worker。存储和最终提交都重查来源、授权与策略；assessed finalize 在同事务创建 release、release_sources、lineage、sealed envelope 与 `PUBLIC_ANONYMOUS_RELEASE(revision=1)`，legacy candidate 在 expand window 才写 `PUBLIC_RELEASE`。相同 candidate 重试返回同一 release。已有 release 缺少 assessment receipt 时不回填虚构通过值，不能被匿名公共入口消费。AUTO_AFTER_USER_DISTILLATION 在经验证的版本化策略投入之前保持关闭。
+私有 candidate/confirmation/release 记录仍保存来源 hash、policy/version、actor/profile、rights 与 scan receipt。0120 另以 `control.anonymous_source_lineage` 为每个 release 发行 database-generated UUIDv4 `anonymous_source_id`，并在 `staging.sanitized_public_candidates` 保存只含匿名 content/policy/assessment digest 的 sealed envelope；0121 保存两段 USER_REASONING 的 probe/coverage/assessment binding；0122 以匿名 source、envelope digest 与 revision 封口 dispatch。`control.contribution_confirmations` 保存认证用户对 candidate/hash/policy 的不可变确认。Gateway 不读 staging；预览走已认证 private-worker。存储和最终提交都重查来源、授权与策略；assessed finalize 在同事务创建 release、release_sources、lineage、sealed envelope 与 `PUBLIC_ANONYMOUS_RELEASE(revision=1)`，legacy candidate 在 expand window 才写 `PUBLIC_RELEASE`。相同 candidate 重试返回同一 release。已有 release 缺少 assessment receipt 时不回填虚构通过值，不能被匿名公共入口消费。核心版的 AUTO_AFTER_USER_DISTILLATION 保持关闭；云版只在版本化 notice 投入且当前版本有 SHOWN 事件后打开，未 SHOWN 的租户不被 sweep 选中（ADR-0088）。
 
 授权沿 §11.2.1 的真实 domain owner → bound profile，不以「同用户存在某个相同版本 profile」替代绑定。直接用户必须是该 domain owner；Phase 9 新 contribution root 与 preview/confirm/finalize/replay 的共同入口还必须满足 `AuthorizationScope.principal() == AuthorizationScope.user_id()`。`USER_REASONING` grant 仍是通用 reasoning-domain facility，但无论 grant 是否有效，headless/delegated principal 都不能据此创建或继续用户公共贡献。candidate 仍保存准备时 self principal 与允许的 workspace scope；finalize 复核当前 self scope 与全部 direct/backing source visibility，原确认不扩大权限。短事务共享 `ops.lock_contribution_inputs()`，策略、身份、profile/domain、grant、Evidence/Memory 与 memory_evidence 关系变更均加入同一锁协议；provider/scanner 不持该锁。候选的 source_count 与规范化 manifest hash 在延迟约束中封口，不允许确认前后追加来源。异步 A/B 的 final reservation authority 与 strict route expectation 唯一见 §11.2.5，不在本节复制字段清单。此全局短锁只用于正确性，细分前须测量竞争。
 
-公共入口只消费已授权的匿名 envelope 字段，不能接受 release ID、调用者正文或保护侧 bytes/hash/rights。匿名 PublicSource、初始 claim、direct provenance 与 ADMIT lifecycle fact 同事务且幂等；初始 claim 进入 UNDER_REVIEW，不因扫描通过而自动成为 SUPPORTED。
+公共入口只消费已授权的匿名 envelope 字段，不能接受 release ID、调用者正文或保护侧 bytes/hash/rights。匿名 PublicSource、初始 claim、direct provenance 与 ADMIT lifecycle fact 同事务且幂等；初始 claim 记为 CLAIMED（未验证），不因扫描通过而自动成为 SUPPORTED；准入是自动链，每条规则写版本化 receipt，unchecked 记为 NOT_RUN 而不是 pass；不存在审核队列，UNDER_REVIEW、QUARANTINED 作为队列状态退役，claim 状态按 D9′ 为 CLAIMED、SUPPORTED、DISPUTED、REFUTED（ADR-0090；module_design_M20.md:11-12，6d14ec05「automatic admission, no review queue」）。
 
 ## 12.2 Phase 10 Public Evolution（disabled until separately enabled）
 
@@ -3681,11 +3683,15 @@ source_closure(S2) = {A, B, C}
 
 禁止递归后失去原始 provenance。
 
+递归本身不构成服务许可：M20 池的每次 merge、translation 或 summary 都是绑定一个 unit 的新 revision，并重新准入；准入输入只取 claims（roots，≤ 64），concept depth ≤ 3，`servable_revision` 是唯一公共读权威（ADR-0089、ADR-0090）。
+
 **物化闭包的唯一物理契约（ADR-0008）**：直接边为 `public.provenance_edges`（claim -> PublicSource）与 `public.synthesis_inputs`（synthesis -> claim 或 synthesis，XOR）。`public.source_closure` 只存派生的根 PublicSource 集：`claim_id? / synthesis_id?` 恰好一个、`root_source_id`、`depth >= 1`、`is_current`、`computed_at`。claim 的直接来源 depth=1，每层 synthesis 增 1；同根多路取最短距离。匿名用户根在 public.* 只保留 §70.5 的 anonymous root；它到 release/private source 的关系只在 `PROTECTED_LINEAGE`，非用户公共来源保留原始 PublicSource。
 
 每个 target/root pair 终生只一行：claim 与 synthesis 各自的唯一索引仅以 target 非 NULL 为谓词，**不含 is_current**。刷新先完整验证，再把目标旧行置 false、UPSERT 新集合为 true；无物理 DELETE，也不把 synthesis 的 union 写回子 claim。is_current 表示输入图版本，不表示来源当前许可有效；撤销根仍保留给 §13 影响分析。
 
 刷新事务用 REPEATABLE READ，但必须在第一个 SELECT（含 set_config/advisory SELECT）之前，按固定顺序对 provenance_edges / sources / synthesis_inputs 取 SHARE 表锁，再对 closure 取 SHARE ROW EXCLUSIVE；之后读图。输入写入与刷新串行化，环、任一可达无根分支或不存在的目标均失败并保留原闭包。短时表锁是当前实现的明确取舍；只有实测锁竞争影响 SLO 时才升级为版本化细粒度协议，不声称已量测吞吐。
+
+上述闭包仍是唯一物理契约；M20 不新增闭包写入路径，synthesis-of-synthesis 的输出只有通过 ADR-0090 的准入后才可服务。
 
 
 ## 12.4 Public Source Acquisition（Phase 10 only）
@@ -3812,7 +3818,7 @@ PUBLIC_STAGING
 
 `public.claim_trust_evaluations` 是 append-only 评估，target 为 claim/synthesis XOR，绑定正文 hash、策略版本、审核身份、根集合与解释维度；`public.claim_trust_evaluation_sources` 是该次评估的不可变根 receipt，不是第二个可变 closure。`public.poisoning_signals` 保存具体风险及检查版本，未检查维度为 NULL/NOT_RUN，不能写成零风险。当前 target 只通过 revision CAS 指向一条完整 receipt。已有正文被评估后不可就地改写；换正文创建新对象，旧对象保留追溯。
 
-support_count 是根数。independent_support_count 是把已验证的同组织、规范 URL、内容 hash、文档 fingerprint、上游根关联连通后得到的组数；衍生 synthesis 不额外投票。缺身份显式标记 incomplete；此数不是统计独立性或严格下界。trusted_source_count 必须来自明确 source policy，不能凭来源类型或账户数猜测；本阶段无校准自动 promotion。人工评估的 UNDER_REVIEW、QUARANTINED、SUPPORTED 均要求服务端核验当前有效的 global moderator grant、用户与 membership；不能只保护 SUPPORTED 而让任意用户改写审核状态。contradiction_count 与具体 relation/signal 对应，不合成神奇总分。
+support_count 是根数。independent_support_count 是把已验证的同组织、规范 URL、内容 hash、文档 fingerprint、上游根关联连通后得到的组数；衍生 synthesis 不额外投票。缺身份显式标记 incomplete；此数不是统计独立性或严格下界。trusted_source_count 必须来自明确 source policy，不能凭来源类型或账户数猜测；本阶段无校准自动 promotion。不存在审核队列：UNDER_REVIEW、QUARANTINED 作为队列状态退役，claim 状态按 D9′ 为 CLAIMED、SUPPORTED、DISPUTED、REFUTED（ADR-0090；module_design_M20.md:11-12，6d14ec05「automatic admission, no review queue」）。contradiction_count 与具体 relation/signal 对应，不合成神奇总分。
 
 所有公共读取（包括向量候选 hydrate）用新的 READ COMMITTED 单 SQL 重新验证：SUPPORTED、当前 receipt/revision、正文 hash、receipt 根与当前 closure/直接 provenance 图一致、根非空、没有 §13 撤销事实。候选/缓存/Qdrant 命中不是授权。准入时图修改与评估串行化；图变化会使旧 receipt 失效，不能靠过期 closure 隐藏被撤销的根。
 
@@ -3826,6 +3832,8 @@ support_count 是根数。independent_support_count 是把已验证的同组织�
 ACTIVE -> REVOKED
 ```
 
+M20 池区分三条撤回路径：W1 常规（item 或 all；写 `WITHDRAWN`、bump epoch、从存活 roots 重建 dependants；已按 CC BY 授权的副本不召回，adopter 保留已保存副本）；W2 纠错（新 revision，claim 记为 REFUTED/corrected，经 M22 door 通知 adopters）；W3 事故（隐私、IP 或秘密：经 coordinator 立即 `SUSPENDED`，随后物理删除公共正文、向量与 adopters 保存的公共快照，adopter 自己的笔记保留，content-free facts 保留）。账户删除（M19）= 对该租户 roots 的 W3。字段与状态见 ADR-0091。
+
 撤销流程：
 
 ```text
@@ -3836,6 +3844,8 @@ release revoked
   -> Phase 10 only: query source_closure
   -> Phase 10 only: mark/recompute/invalidate/rebuild affected public syntheses
 ```
+
+所有出站面（`public_read`、mixed recall、cards、exports）由单节点 disclosure coordinator 统一把关：从 hydrate 到 flush 的 write-preferring barrier；撤回收 `NOTIFY` 后先 drain in-flight，再 adopt `public.pool_epoch`，`ops.public_revocation_acks` 只在 drain 后写；listener 丢失时公共 lane 不服务（现有 `DegradeCode`）。M20 的 `PublicRevocationPort::revoke_scope` 在 M19 purge 之前运行（FK），restore 重放幂等（ADR-0091）。
 
 Legacy 撤销事务 append `ops.public_release_revocations(release_id,revoke_event_id)`；assessed 撤销事务与 REVOKED 状态原子写 `PUBLIC_ANONYMOUS_REVOKE`，其 owner trigger 同事务 append `ops.anonymous_public_revocations(anonymous_source_id,candidate_envelope_sha256,revoke_event_id)`。两种事实均不可删除/改写，delivery 清理不得使它们失效。匿名 fence 不含 tenant、release、contributor 或正文；public serving 只读该 fence，public worker 只能用 job 中的匿名三元组调用精确 definer 函数。新读快照在撤销 commit 之后即拒绝相关对象，不等待异步 worker；已开始的旧快照不在这一保证内。
 
@@ -9588,7 +9598,7 @@ envelope（§23）分母随之改写为 `expected − deleted`，并新增 envel
 
 ## 37.2 机制而非纪律
 
-runtime role 对 `projection.stream_log` 只有 `SELECT` / `UPDATE`，**没有 `DELETE`**（并入 §48.2 role invariant 的 CI 枚举）；物理删行只在 migration owner。删除路径唯一出口 `retention::tombstone(scope, seq)`，它在同一事务里只做一件事：把 `state` 改成 `TOMBSTONED`，没有第二个函数能改这张表的 `state`。绕过它是权限错误 + 编译错误，不是评审意见。
+runtime role 对 `projection.stream_log` 只有 `SELECT` / `UPDATE`，**没有 `DELETE`**（并入 §48.2 role invariant 的 CI 枚举）；物理删行只在 migration owner —— 分区 drop（§48.1），或 ADR-0092 的删除请求门（owner SECURITY DEFINER、EXECUTE 只给 `role_maintenance`、只删该请求冻结的目标集）。runtime role 的 DELETE 禁令与本节其余判据不变。删除路径唯一出口 `retention::tombstone(scope, seq)`，它在同一事务里只做一件事：把 `state` 改成 `TOMBSTONED`，没有第二个函数能改这张表的 `state`。绕过它是权限错误 + 编译错误，不是评审意见。
 
 **本节冻结：不存在 `deleted_count` 列，`retention::tombstone` 不递增任何计数器。** `deleted` 是现算量 `count(state = 'TOMBSTONED')`，与 `done` / `skipped` 同取自 `projection.stream_log`（取数面见 §23.1② 那张五行表）。判据与 §15.3 删 `open_gap_count` 逐字同型：一个能从 `state` 现算出来的计数一旦落成物化列，就是同一事实的第二真源，只能靠「每次都记得一起改」保持一致 —— 而那正是本节要消灭的纪律。tombstone 事务少写一次 `deleted_count += 1`（或重放、补偿事务多写一次），`deleted` 就与 `count(state = 'TOMBSTONED')` 永久分叉；而 §23 的 A1、以及 A2 的**账本那一侧**由同一个 `LedgerCounts` 渲染（`visible` 不在其中，字段集冻结见 §22.5 与 §23.1② 的 architecture-check），两条断言会被同一个分叉一起带偏，谁都观察不到自己错了。**验收闸**：architecture-check 断言 `projection.stream_log` 的列集合逐字等于 §15.1 DDL 的列（原 12 列 + 0167 的两个 §15.2.1 审计列 `retired_at` / `retired_by` + 0176 的四个租约/重试列 `lease_owner` / `lease_expires_at` / `attempts` / `next_attempt_at`（ADR-0052）+ 0223 的 `lost_at`（LOST 转换时刻，ADR-0062 D-N），共 19；这七列都是关于一次转换的事实，不是能从 `state` 现算的计数，故不在本节要消灭的「第二真源」之列），多一列少一列即红；注错：加一列 `deleted_count bigint` ⇒ 20 != 19 ⇒ 红。同一条闸顺带盯住 `status`：它同样不在这 19 列里。
 
@@ -9656,6 +9666,18 @@ FAILED
 ```
 
 “已删除”必须对应明确完成条件，不能 API 请求一返回 200 就宣称所有第三方和备份都物理消失。
+
+ADR-0092 把删除请求统一成一条流水线：一个请求一行（`MEMORY` / `EVIDENCE_CLOSURE` / `SUBJECT` / `DOCUMENT` / `TENANT` 五种 scope），冻结的目标集单独存放，0054 的逐 `stream_seq` 行降为其中一行目标。闭包按 scope 取：单条 Memory 保留来源 Evidence（`source_retained`）；Evidence 闭包从显式根出发；文档按 ADR-0079 D-J 的闭包 C；一个人的删除取该 subject 关联的 Evidence（任意 role）与 `memory_subjects` 背后 Memory 的 Evidence；只要一条 Memory 的任一输入落在闭包里，整条 Memory 失去可见性（ADR-0079 的共同依赖）。闭包一旦变化，第二次确认即拒绝。
+
+删除是两次调用：第一次返回影响预览（调用者有权读到对象的计数与标题，`restore_supported:false`，多人来源逐条列出）与绑定预览摘要的确认 token；第二次执行。两轮之间闭包变了即拒绝。账号删除另需一次新鲜的登录证明。见 §33.10 规则 9 与 ADR-0018。
+
+确认事务提交时先把闭包里**每一个** outbox seq 置为 tombstone（第 1 步，全部 event_type，ADR-0079 D-J），追加 `FORGOTTEN` 生命周期事件（只记 id），overlay 从这一刻起隐藏全部目标；晚到的 distill / consolidation / rollup / projection publish 在自己的提交事务里复核输入，命中即 `STALE_INPUT`，不另设 fence 表。物理删行只走 ADR-0092 的一扇 owner SECURITY DEFINER 窄门：EXECUTE 只给 `role_maintenance`，只删该请求冻结的目标集，按外键顺序执行；runtime role 的 DELETE 禁令不变（§6.2.1、§37.2）。
+
+恢复不得复活已删除数据：删除完成时写一条内容无关的 erasure ledger（request id、scope、目标 id 的 sha256 集、完成时刻），在任何早于该时刻的备份仍可能被恢复期间保留。每份备份清单带一份副本；恢复流程在开放服务之前重放 ledger，恢复演练必须断言这一点（ADR-0092 的 Gates 表）。M23 v2 在导出卷上加一份 erasure journal 覆盖上一个已验证导出之后的删除，M19-9 写它。
+
+保留登记按 ADR-0063 的机器执行，但 §37 开头清单里的用户知识（events、evidence、memories、messages）的保留值是 keep-forever（owner）：永不按年龄删除；operational 表按 ADR-0063 的每表全租户策略，值由 owner 用 `retention approve` 批准，且没有 PITR-coverage hold 不得 drop。容量压缩按「计划 → 通知 → 邮件已接受 → 等待期 → 执行」：计划列动作、字节估算与保证，通知发给已验证地址，只有投递商明确接受且等待期已过才执行；动作只允许不丢当前知识的项（改编码、退役被替换/归档/已遗忘记忆的向量点、删可重建的派生产物），永不删 Evidence 或当前 Memory；磁盘压力只阻断新的写入。
+
+用户导出见 §81 的 Export Manifest v1：按用户自身 RLS 上下文生成，逐实体 JSONL 加一份带计数与逐文件 sha256 的清单，不含向量。
 
 ---
 
@@ -16618,6 +16640,8 @@ optional export
 ```
 
 因为权威 Projection 可以从 PostgreSQL/Memory 重建。
+
+ADR-0092 把这份清单定成 **Export Manifest v1**：一个异步导出任务在用户自己的 RLS 上下文里生成 tar，逐实体一个 JSONL（租户/工作区元数据、带 payload 的 Evidence、Memory 修订与 provenance、subjects/relations、生命周期事件、applications/acceptances、tasks/canvas/handoffs、M17 落地后的 artifact 字节、processor/projection 元数据以指纹表示），外加 `manifest.json`（版本、计数、逐文件 sha256）。不含向量（可重嵌入、厂商相关）。产物存节点导出目录（M17 之后为对象存储），经 M26 的签名控制台 URL 一次性下载，7 天后过期（配置项）；「导出就绪」走 M22 通知。磁盘占用超过 65% 守护线时拒绝这类占空间的工作。导入是 M25 的重放路径，消费同一个 schema：`contracts/export/manifest.v1.schema.json`（带指纹）。
 
 
 ## Cloud 与 OSS Contract Parity
