@@ -30,6 +30,7 @@
 - Lead ruling (2026-10-24): SUBTREE scope (`project_scope EXACT|SUBTREE`) comes from the M18-0 hierarchy ADR, not from
   M14-5 (`module_design_M20.md:98`: "Private applicability (M14 D4 scopes, M18 EXACT/SUBTREE) is never read as a public
   licence").
+- **Amended by ADR-0101 (M18, 2026-10-24):** the hierarchy ADR named in the ruling above is ADR-0101; `project_scope EXACT|SUBTREE` stays M14-owned.
 - `status` is a closed set: `PROPOSED`, `APPROVED`, `REJECTED`. **No row means project-local**, which is the default:
   applicability never opts a memory in by omission.
 - `assignment_method` records how the row was widened and `decision_evidence_id` points at the approval Evidence.
