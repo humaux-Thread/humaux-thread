@@ -5778,6 +5778,7 @@ modules:
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
+- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -5872,6 +5873,7 @@ modules:
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`
 - `retrieval-worker::tests::rpc_readyz`
+- `testkit::tests::disposable_guard`
 - `xtask::dep_map`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
