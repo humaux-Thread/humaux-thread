@@ -18,7 +18,7 @@
 //! | | (c) no row (unresolved) -> false | the predicate answers true for a memory with no row |
 //! | | (d) another project -> false | the project leg dropped |
 //! | | (e) another tenant -> false | the view stops being `security_invoker`, or the tenant leg and RLS both dropped |
-//! | `g_m29_7_execute_is_role_gateway_only` | (f) other roles get 42501 | the EXECUTE grant goes to PUBLIC |
+//! | `g_m29_7_execute_is_role_gateway_only` | (f) other roles get 42501 | a later migration grants EXECUTE to PUBLIC (the 0282 postcheck refuses it inside 0282 itself) |
 //!
 //! Skip contract (§79.2): no DSN / unreachable => visible SKIP.
 

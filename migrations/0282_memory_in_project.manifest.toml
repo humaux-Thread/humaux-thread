@@ -14,17 +14,23 @@ select to_regprocedure('private.memory_in_project(uuid,uuid,uuid)') is null
 """
 
 # Fails on: a predicate that is missing, not LANGUAGE sql, SECURITY DEFINER, not STABLE, not boolean, without the
-# pinned search_path, not owned by role_migration_owner, or not executable by role_gateway. The ACL (nobody else, PUBLIC
-# included) and the body (the view, never the table) are left to adapters::tests::memory_in_project cases (b) and (f)
-# and to xtask G-M29-7 (ADR-0078 red records), so each fault reaches its gate instead of stopping the migration.
+# pinned search_path or not owned by role_migration_owner; and an ACL other than EXECUTE for role_gateway alone (PUBLIC and
+# every other runtime role refused), as 0256's postcheck. The ACL is also asserted by adapters::tests::memory_in_project
+# case (f), which sees a grant made by a LATER migration; the body (the live view, never the base table) is left to that
+# test's case (b) and to xtask G-M29-7, so a body fault reaches its gate instead of stopping the migration.
 postcheck = """
+with r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+                   ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
 select (select count(*) = 1 from pg_proc p
          where p.oid = to_regprocedure('private.memory_in_project(uuid,uuid,uuid)')
            and p.prolang = (select oid from pg_language where lanname = 'sql')
            and not p.prosecdef and p.provolatile = 's' and p.prorettype = 'boolean'::regtype
            and p.proconfig = array['search_path=pg_catalog']
            and pg_get_userbyid(p.proowner) = 'role_migration_owner')
- and has_function_privilege('role_gateway', 'private.memory_in_project(uuid,uuid,uuid)', 'EXECUTE')
+ and not has_function_privilege('public', 'private.memory_in_project(uuid,uuid,uuid)', 'EXECUTE')
+ and not exists (select 1 from r
+                  where has_function_privilege(r.role, 'private.memory_in_project(uuid,uuid,uuid)', 'EXECUTE')
+                        is distinct from (r.role = 'role_gateway'))
  as postcheck_ok
 """
 

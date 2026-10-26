@@ -4412,12 +4412,18 @@ fn m29_attribution_reader(root: &Path) -> Verdict {
 /// Home of the one SQL-side read of `private.memory_projects_live`: `private.memory_in_project` (ADR-0110 D-F, M13 note
 /// D7, migration 0282).
 const T07_PREDICATE_HOME: &str = "migrations/0282_memory_in_project.sql";
-/// The predicate's defining statement as [`t07_sql_normalised`] spells it. `OR REPLACE` is the one form that can
-/// silently redefine the function in a later migration; a plain `CREATE FUNCTION` twin fails at migrate time.
-const T07_PREDICATE_NEEDLE: &str = "create or replace function private.memory_in_project(";
+/// The predicate's defining statements as [`t07_sql_normalised`] spells them, counted together. `OR REPLACE` can
+/// silently redefine the function in a later migration, and a plain `CREATE FUNCTION` with a different argument list
+/// is an overload that migrates fine (one with the same list fails at migrate time).
+const T07_PREDICATE_NEEDLES: [&str; 2] = [
+    "create or replace function private.memory_in_project(",
+    "create function private.memory_in_project(",
+];
 
 /// [`t07_normalised`] of a `.sql` file: `--` line comments are dropped first (the Rust lexer does not know them);
-/// `/* */` blocks, SQL quoting, case and spacing are [`t07_normalised`]'s.
+/// `/* */` blocks, SQL quoting, case and spacing are [`t07_normalised`]'s. Its quote-to-space step runs after
+/// [`door_normalised`] has collapsed the space before `(`, so `"private"."memory_in_project"(` would read
+/// `memory_in_project (`; the collapse is applied once more here.
 ///
 /// ponytail: a `--` inside a string literal cuts its line short, so a read after it on that line is missed; upgrade to
 /// SQL-aware lexing if a migration ever spells one (`migration_rehearsal` already lexes SQL for its own scan).
@@ -4426,18 +4432,18 @@ fn t07_sql_normalised(sql: &str) -> String {
         .lines()
         .map(|line| line.split("--").next().unwrap_or(""))
         .collect();
-    t07_normalised(&code.join("\n"))
+    t07_normalised(&code.join("\n")).replace(" (", "(")
 }
 
 /// G-M29-7 (ADR-0078 D-D reader, ADR-0110 D-F): the SQL leg of [`m29_attribution_reader`]. In `migrations/*.sql` the
-/// predicate's [`T07_PREDICATE_NEEDLE`] occurs `== 1` times, in [`T07_PREDICATE_HOME`], and that file reads
-/// `private.memory_projects_live` (`>= 1` view tokens) and never `private.memory_projects` (`== 0` table tokens, per
-/// [`t07_tokens`]). A missing home file is red naming it: the card that adds this leg delivers the file, so there is no
+/// predicate's [`T07_PREDICATE_NEEDLES`] (both `CREATE` forms, summed) occur `== 1` times, in [`T07_PREDICATE_HOME`],
+/// and that file reads `private.memory_projects_live` (`>= 1` view tokens) and never `private.memory_projects` (`== 0`
+/// table tokens, per [`t07_tokens`]); the two checks report separately, so each has its own red. A missing home file is red naming it: the card that adds this leg delivers the file, so there is no
 /// `not_applicable` here (§57.1 第2条).
 ///
 /// ponytail: other migrations' trigger and definer bodies that read the view (0255's revocation functions, 0256's A3')
-/// are writer internals and are not counted; a duplicate spelled `ALTER` or `DROP` + plain `CREATE` is invisible to the
-/// needle (upgrade to DDL parsing if one ever appears).
+/// are writer internals and are not counted; a duplicate that is not spelled `CREATE [OR REPLACE] FUNCTION` (a `DROP`
+/// plus a dynamic `EXECUTE`, say) is invisible to the needles (upgrade to DDL parsing if one ever appears).
 fn m29_attribution_reader_sql(root: &Path) -> Verdict {
     let gate = "M29 G-M29-7 / ADR-0110 D-F SQL reader";
     let mut sites: Vec<(String, usize)> = Vec::new();
@@ -4445,7 +4451,10 @@ fn m29_attribution_reader_sql(root: &Path) -> Verdict {
     for (path, source) in read_files(&walk_files(&root.join("migrations"), &["sql"])) {
         let disp = display(root, &path);
         let text = t07_sql_normalised(&source);
-        let n = text.matches(T07_PREDICATE_NEEDLE).count();
+        let n: usize = T07_PREDICATE_NEEDLES
+            .iter()
+            .map(|needle| text.matches(needle).count())
+            .sum();
         if n > 0 {
             sites.push((disp.clone(), n));
         }
@@ -4462,13 +4471,18 @@ fn m29_attribution_reader_sql(root: &Path) -> Verdict {
     let total: usize = sites.iter().map(|(_, n)| n).sum();
     if !(total == 1 && sites.iter().all(|(disp, _)| disp == T07_PREDICATE_HOME)) {
         problems.push(format!(
-            "{gate}: expected exactly 1 `{T07_PREDICATE_NEEDLE}` in migrations/*.sql, in {T07_PREDICATE_HOME}; found {total}: {sites:?}"
+            "{gate}: expected exactly 1 `create [or replace] function private.memory_in_project(` in migrations/*.sql, in {T07_PREDICATE_HOME}; found {total}: {sites:?}"
         ));
     }
     let (table, view) = t07_tokens(&home);
-    if table != 0 || view == 0 {
+    if table != 0 {
         problems.push(format!(
-            "{gate}: {T07_PREDICATE_HOME} must read private.memory_projects_live and never private.memory_projects; found {table} table token(s) and {view} view token(s)"
+            "{gate}: {T07_PREDICATE_HOME} reads the base table private.memory_projects ({table} table token(s)); the predicate reads the live view only"
+        ));
+    }
+    if view == 0 {
+        problems.push(format!(
+            "{gate}: {T07_PREDICATE_HOME} never reads private.memory_projects_live (0 view token(s))"
         ));
     }
     if problems.is_empty() {
@@ -17959,8 +17973,8 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    /// 注错: the predicate reads the base table instead of the view, spelled plainly, quoted, or with spaces around the dot
-    /// -> 红 each time, naming the table token.
+    /// 注错: the predicate reads the base table instead of the view, spelled plainly, quoted, or with spaces around the
+    /// dot -> 红 each time with both problems: the table token and the missing view.
     #[test]
     fn g_m29_7_sql_leg_fails_when_the_predicate_reads_the_table() {
         let tmp = fresh_tmp("g7-sql-table");
@@ -17972,11 +17986,29 @@ async fn serving_version_in_txn() {}
             let body = G7_PREDICATE.replace("private.memory_projects_live l", read);
             m07_write(&tmp, T07_PREDICATE_HOME, &body);
             let lines = g7_lines(&tmp);
+            assert_eq!(lines.len(), 2, "{read}: {lines:?}");
+            assert!(lines[0].contains("1 table token(s)"), "{read}: {lines:?}");
+            assert!(lines[1].contains("0 view token(s)"), "{read}: {lines:?}");
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`table == 0` pinned on its own, review rv-366 P1-1): the body keeps the view and also joins the base table,
+    /// spelled in the same three ways -> 红 with the table problem alone.
+    #[test]
+    fn g_m29_7_sql_leg_fails_when_the_predicate_also_reads_the_table() {
+        let tmp = fresh_tmp("g7-sql-both");
+        for read in [
+            "private.memory_projects t",
+            "\"private\".\"memory_projects\" t",
+            "private . memory_projects t",
+        ] {
+            let joined = format!("private.memory_projects_live l JOIN {read} ON true");
+            let body = G7_PREDICATE.replace("private.memory_projects_live l", &joined);
+            m07_write(&tmp, T07_PREDICATE_HOME, &body);
+            let lines = g7_lines(&tmp);
             assert_eq!(lines.len(), 1, "{read}: {lines:?}");
-            assert!(
-                lines[0].contains("found 1 table token(s)"),
-                "{read}: {lines:?}"
-            );
+            assert!(lines[0].contains("1 table token(s)"), "{read}: {lines:?}");
         }
         fs::remove_dir_all(&tmp).ok();
     }
@@ -17988,6 +18020,48 @@ async fn serving_version_in_txn() {}
         let tmp = fresh_tmp("g7-sql-second");
         m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
         m07_write(&tmp, G7_TWIN_FILE, G7_TWIN);
+        let lines = g7_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains(G7_TWIN_FILE), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (review rv-366 P1-2): a second `CREATE OR REPLACE` with the name quoted in any of the three ways, or with a
+    /// space before the `(`, in another migration -> 红, `found 2`, naming that file (quote stripping must not hide the
+    /// `(` from the needle).
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_quoted_second_create() {
+        let tmp = fresh_tmp("g7-sql-quoted");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        for name in [
+            "\"private\".\"memory_in_project\"(a uuid)",
+            "private.\"memory_in_project\"(a uuid)",
+            "\"private\".memory_in_project (a uuid)",
+        ] {
+            let twin = format!(
+                "CREATE OR REPLACE FUNCTION {name} RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;\n"
+            );
+            m07_write(&tmp, G7_TWIN_FILE, &twin);
+            let lines = g7_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{name}: {lines:?}");
+            assert!(lines[0].contains("found 2"), "{name}: {lines:?}");
+            assert!(lines[0].contains(G7_TWIN_FILE), "{name}: {lines:?}");
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (review rv-366 P2-1): a plain `CREATE FUNCTION` overload with another argument list, reading the base table,
+    /// in a second migration -> 红, `found 2`: it migrates fine, so only the count can refuse it.
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_plain_create_overload() {
+        let tmp = fresh_tmp("g7-sql-overload");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        m07_write(
+            &tmp,
+            G7_TWIN_FILE,
+            "CREATE FUNCTION private.memory_in_project(a uuid, b uuid) RETURNS boolean LANGUAGE sql AS $$ SELECT EXISTS (SELECT 1 FROM private.memory_projects) $$;\n",
+        );
         let lines = g7_lines(&tmp);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("found 2"), "{lines:?}");
