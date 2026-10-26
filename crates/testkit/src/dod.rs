@@ -129,7 +129,7 @@ pub const PHASE_6: &[DodVerifier] = &[
         // counter substituted for the dense ledger".
         fault: "advance_prefix_inconsistent_when_expected_disagrees_with_max_seq",
         kind: "test",
-        verifier_ref: "test-lib::humaux-projection::advance_prefix",
+        verifier_ref: "test-lib::humaux-projection::advance_prefix_nonexistent_gate_probe",
     },
     DodVerifier {
         id: "DOD-007",
