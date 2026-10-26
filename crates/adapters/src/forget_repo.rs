@@ -9,7 +9,8 @@
 //! Invariants: [every call opens its own transaction and sets humaux.tenant_id first; the * -> TOMBSTONED edge and
 //!   plan-step bookkeeping run only on role_maintenance; a PG error aborts the step so the plan stays resumable; a
 //!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes
-//!   (scope, roots) and derives the targets, hash and requester itself; the preview reads Memory visibility through
+//!   (scope, roots) and derives the targets, hash and requester itself, after every root passed the caller's own
+//!   AuthorizationScope (visibility_readable / readable_memory_ids, never a membership of the user's elsewhere); the preview reads Memory visibility through
 //!   read_gate::readable_memory_ids (secret-backed Memories dropped) and Evidence through read_gate::visibility_readable,
 //!   and counts after both filters (G-M19-1)]
 //! Spec: Baseline §3; §78.3; §37; ADR-0092 D-A, D-B
@@ -313,15 +314,18 @@ where
 
 /// §41.2 `tombstoned_unpurged_over_sla` (gauge, §65 job收尾 takes the reading) — current-
 /// computed, never a materialized column (§37.2's own "现算不落列" reasoning extends to this
-/// metric, not only to `deleted`). Counts `TOMBSTONED` `stream_log` rows of the tenant, settled longer than
-/// `sla` ago, while the tenant has a logically deleted `deletion_requests` row with no recorded `QDRANT_POINTS` step yet
-/// (step 5, the physical purge — §37: "字节还在...它必须有自己的出口").
+/// metric, not only to `deleted`). Counts each `TOMBSTONED` `stream_log` row of the tenant once (the `EXISTS` over the
+/// requests makes it DISTINCT by construction) when some deletion request `d` of the tenant attributes it:
 ///
-/// §41.2: a row counts only for an unpurged request logically deleted at or before the row settled, so rows tombstoned
-/// under an older, purged request never count again.
-// ponytail: since 0272 a request no longer names a stream key, so the per-seq join is the settle-time order against
-// `logical_deleted_at` (a row settled before a later request's logical deletion is never attributed to it); M19-3a's
-// seq-to-request binding makes the attribution exact.
+/// * the row's `(scope_kind, scope_id)` is one of `d`'s frozen `control.deletion_targets`, mapped `MEMORY` -> `'memory'`
+///   and `EVIDENCE` -> `'evidence'` (lower-case, the projection's `scope_kind` vocabulary);
+/// * `d.logical_deleted_at` is set and older than `sla` (the SLA clock is the deletion's age; `settled_at` is not used,
+///   a row settled `DONE` before a later tombstone keeps its old `settled_at`, 0011);
+/// * `d` has no recorded `QDRANT_POINTS` step yet (step 5, the physical purge — §37: "字节还在...它必须有自己的出口").
+///
+/// The projection code today writes `stream_log` rows only under `scope_kind` `workspace` / `tenant`, so a Memory or
+/// Evidence target has no stream rows of its own and the gauge reads 0 until a projection keys rows by them; it never
+/// over-counts. v1 requests lost their stream-key columns in 0272: a surviving v1 row has no targets and no longer counts.
 pub async fn tombstoned_unpurged_over_sla(
     pool: &MaintenanceDbPool,
     tenant_id: Uuid,
@@ -336,11 +340,15 @@ pub async fn tombstoned_unpurged_over_sla(
            FROM projection.stream_log s \
           WHERE s.tenant_id = $1 \
             AND s.state = 'TOMBSTONED' \
-            AND s.settled_at < now() - (interval '1 second' * $2::bigint) \
             AND EXISTS ( \
-                SELECT 1 FROM control.deletion_requests d \
-                 WHERE d.tenant_id = $1 AND d.logical_deleted_at IS NOT NULL \
-                   AND s.settled_at >= d.logical_deleted_at \
+                SELECT 1 FROM control.deletion_targets t \
+                  JOIN control.deletion_requests d \
+                    ON d.tenant_id = t.tenant_id AND d.deletion_request_id = t.request_id \
+                 WHERE t.tenant_id = $1 \
+                   AND t.id = s.scope_id \
+                   AND s.scope_kind = CASE t.kind WHEN 'MEMORY' THEN 'memory' WHEN 'EVIDENCE' THEN 'evidence' END \
+                   AND d.logical_deleted_at IS NOT NULL \
+                   AND d.logical_deleted_at < now() - (interval '1 second' * $2::bigint) \
                    AND NOT EXISTS ( \
                        SELECT 1 FROM ops.deletion_plan_steps p \
                         WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
@@ -392,6 +400,26 @@ fn door_refusal(error: sqlx::Error) -> ForgetRepoError {
     }
 }
 
+/// §6.1.1: every root is readable under `authorization` itself (M08's `visibility_readable` / `readable_memory_ids`), the
+/// one readability truth; a missing root is unreadable. Runs before the door, which only checks tenant and existence.
+async fn roots_readable(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    scope_kind: DeletionScopeKind,
+    roots: &[Uuid],
+) -> Result<bool, ErrorCode> {
+    let wanted: BTreeSet<Uuid> = roots.iter().copied().collect();
+    let candidates: Vec<Uuid> = wanted.iter().copied().collect();
+    let readable: BTreeSet<Uuid> = match scope_kind {
+        DeletionScopeKind::Memory => readable_memory_ids(txn, authorization, &candidates)
+            .await?
+            .into_iter()
+            .collect(),
+        _ => visible_evidence(txn, authorization, &candidates).await?.0,
+    };
+    Ok(readable == wanted)
+}
+
 /// Records one request through `control.deletion_request_freeze` (the only write path, 0272) and reads back what the door
 /// stored. The door derives the targets, the hash and `requested_by`; nothing but `(scope, roots)` crosses the call.
 async fn freeze_in_txn(
@@ -407,6 +435,18 @@ async fn freeze_in_txn(
             code,
             reason: "session_setup",
         })?;
+    let readable = roots_readable(txn, authorization, scope_kind, roots)
+        .await
+        .map_err(|code| ForgetRepoError::Refused {
+            code,
+            reason: "root_check_failed",
+        })?;
+    if !readable {
+        return Err(ForgetRepoError::Refused {
+            code: ErrorCode::NotFound,
+            reason: "root_unreadable",
+        });
+    }
     let request_id: Uuid =
         sqlx::query_scalar("SELECT control.deletion_request_freeze($1, $2, $3::uuid[])")
             .bind(tenant_id)

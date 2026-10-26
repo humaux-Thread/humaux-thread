@@ -9,7 +9,9 @@ class = "EXPAND_CONTRACT"
 
 # Refuses a database whose deletion_requests is not the 0054/0055 v1 shape, one that already carries 0272, or one that holds ANY v1
 # row (M19 D1: "0 rows, refuse otherwise"; the SQL file also raises '0272: control.deletion_requests holds v1 per-seq rows; M19 D1
-# requires 0 rows, refusing to migrate').
+# requires 0 rows, refusing to migrate'). row_security is read while a statement is rewritten, so a set_config in the same statement
+# cannot switch it off for a table read in that statement; the row count therefore runs as its own query (query_to_xml), planned only
+# after the leading set_config term has been evaluated.
 precheck = """
 select (select set_config('row_security', 'off', true)) = 'off'
  and to_regclass('control.deletion_requests') is not null
@@ -19,7 +21,7 @@ select (select set_config('row_security', 'off', true)) = 'off'
               and attname = 'stream_seq' and not attisdropped)
  and not exists (select 1 from pg_attribute where attrelid = to_regclass('control.deletion_requests')
                   and attname = 'manifest_hash' and not attisdropped)
- and not exists (select 1 from control.deletion_requests)
+ and (xpath('/row/n/text()', query_to_xml('select count(*) as n from control.deletion_requests', false, true, '')))[1]::text = '0'
  as precheck_ok
 """
 
@@ -80,6 +82,12 @@ select (select count(*) = 0 from pg_attribute
  and (select count(*) = 1 from pg_index i
        where i.indexrelid = to_regclass('control.deletion_requests_open_manifest_uq') and i.indisunique
          and pg_get_expr(i.indpred, i.indrelid) like '%REQUESTED%')
+ and (select array_agg(a.attname::text order by k.ord)
+             = array['tenant_id', 'scope_kind', 'scope_id', 'requested_by', 'manifest_hash']::text[]
+        from pg_index i
+        cross join lateral unnest(i.indkey::int2[]) with ordinality as k(attnum, ord)
+        join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+       where i.indexrelid = to_regclass('control.deletion_requests_open_manifest_uq'))
  as postcheck_ok
 """
 

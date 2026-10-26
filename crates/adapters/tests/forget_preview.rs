@@ -41,14 +41,18 @@ struct Handle {
     requester: Uuid,
     reader: Uuid,
     other_reader: Uuid,
+    /// Extra tenants a test seeded (a root of another tenant); purged on Drop with the fixture tenant.
+    foreign_tenants: Vec<Uuid>,
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        let purged = purge_tenant_fixture_sql(&self.tenant_id.to_string())
-            .and_then(|sql| self.admin.batch_execute(&sql).map_err(|e| e.to_string()));
-        if let Err(e) = purged {
-            eprintln!("forget_preview cleanup ({}): {e}", self.tenant_id);
+        for tenant in std::iter::once(self.tenant_id).chain(self.foreign_tenants.clone()) {
+            let purged = purge_tenant_fixture_sql(&tenant.to_string())
+                .and_then(|sql| self.admin.batch_execute(&sql).map_err(|e| e.to_string()));
+            if let Err(e) = purged {
+                eprintln!("forget_preview cleanup ({tenant}): {e}");
+            }
         }
         let users = vec![self.requester, self.reader, self.other_reader];
         if let Err(e) = self.admin.execute(
@@ -132,6 +136,7 @@ impl DbIntegrationFixture for Fixture {
             requester,
             reader,
             other_reader,
+            foreign_tenants: Vec::new(),
         })
     }
 }
@@ -173,6 +178,38 @@ fn seed_evidence_class(h: &mut Handle, label: &str, vis: Vis, data_class: &str) 
             ],
         )
         .expect("seed evidence")
+        .get(0)
+}
+
+/// A TENANT_SHARED Evidence row in a second tenant the handle purges on Drop.
+fn seed_foreign_tenant_root(h: &mut Handle) -> Uuid {
+    let tenant: Uuid = h
+        .admin
+        .query_one(
+            "INSERT INTO control.tenants (name) VALUES ('e2e-fixture forget_preview foreign') RETURNING tenant_id",
+            &[],
+        )
+        .expect("seed foreign tenant")
+        .get(0);
+    h.foreign_tenants.push(tenant);
+    let domain: Uuid = h
+        .admin
+        .query_one(
+            "INSERT INTO control.private_reasoning_domains (tenant_id, name) \
+             VALUES ($1, 'forget_preview foreign') RETURNING reasoning_domain_id",
+            &[&tenant],
+        )
+        .expect("seed foreign reasoning domain")
+        .get(0);
+    h.admin
+        .query_one(
+            "INSERT INTO private.evidence_objects (tenant_id, evidence_kind, payload_sha256, data_class, \
+               origin_class, visibility_class, reasoning_domain_id) \
+             VALUES ($1, 'EVENT', sha256('foreign root'::bytea), 'INTERNAL', 'DirectUserInput', \
+               'TENANT_SHARED', $2) RETURNING evidence_id",
+            &[&tenant, &domain],
+        )
+        .expect("seed foreign evidence")
         .get(0)
 }
 
@@ -476,18 +513,11 @@ fn a_forged_root_or_hash_cannot_be_frozen() {
                 "{label}"
             );
         }
-        // Another tenant's session cannot reach this tenant's root either.
-        let foreign_tenant = Uuid::new_v4();
-        let foreign = freeze_with(
-            &h.rt,
-            &h.gateway_pool,
-            &auth_in(foreign_tenant, requester, &[]),
-            &[seeded.root],
-        );
-        let (code, _) = refusal(foreign);
-        assert!(
-            code == ErrorCode::NotFound || code == ErrorCode::Forbidden,
-            "a foreign tenant is refused, got {code:?}"
+        let foreign_root = seed_foreign_tenant_root(&mut h);
+        assert_eq!(
+            refusal(freeze_as(&h, requester, &[foreign_root])),
+            (ErrorCode::NotFound, "root_unreadable"),
+            "a real root of another tenant"
         );
         assert_eq!(request_count(&mut h), before, "a refusal stores nothing");
 
@@ -664,8 +694,13 @@ fn other_workspace_evidence_never_counts_for_a_scoped_caller() {
             let shared = seed_evidence(&mut h, "tenant shared", Vis::Tenant);
             seed_memory(&mut h, "m1", Vis::Workspace(w1), &[in_w1]);
             seed_memory(&mut h, "m2", Vis::Workspace(w2), &[in_w2]);
-            let frozen =
-                freeze_as(&h, reader, &[in_w1, in_w2, shared]).expect("freeze as a member of both");
+            let frozen = freeze_with(
+                &h.rt,
+                &h.gateway_pool,
+                &auth(&h, reader, &[w1, w2]),
+                &[in_w1, in_w2, shared],
+            )
+            .expect("freeze under a scope that reads both workspaces");
             assert_eq!(frozen.targets.len(), 5, "3 Evidence + 2 Memories");
 
             let scoped = preview_with(&h, &auth(&h, reader, &[w1]), frozen.request_id);
@@ -680,6 +715,54 @@ fn other_workspace_evidence_never_counts_for_a_scoped_caller() {
             assert_eq!(both.evidence_count, 3);
             assert_eq!(both.memory_count, 2);
             assert_eq!(both.memory_titles, sorted(&["m1", "m2"]));
+        },
+    );
+}
+
+/// The caller's AuthorizationScope, not any workspace membership of the user, decides which roots may be frozen: a
+/// W1-scoped key of a user who is also a W2 member cannot freeze W2 Evidence or a W2 Memory, and nothing is stored.
+#[test]
+fn a_scoped_caller_cannot_freeze_another_workspaces_root() {
+    run_db_fixture::<Fixture, _>(
+        "a_scoped_caller_cannot_freeze_another_workspaces_root",
+        |mut h| {
+            let reader = h.reader;
+            let w1 = seed_workspace_with_member(&mut h, reader);
+            let w2 = seed_workspace_with_member(&mut h, reader);
+            let in_w1 = seed_evidence(&mut h, "in w1", Vis::Workspace(w1));
+            let in_w2 = seed_evidence(&mut h, "in w2", Vis::Workspace(w2));
+            let memory_w2 = seed_memory(&mut h, "m2", Vis::Workspace(w2), &[in_w2]);
+            let scoped = auth(&h, reader, &[w1]);
+            let before = request_count(&mut h);
+
+            let refused = freeze_with(&h.rt, &h.gateway_pool, &scoped, &[in_w2]);
+            assert_eq!(
+                refusal(refused),
+                (ErrorCode::NotFound, "root_unreadable"),
+                "a W2 Evidence root under a W1 scope"
+            );
+            let mixed = freeze_with(&h.rt, &h.gateway_pool, &scoped, &[in_w1, in_w2]);
+            assert_eq!(
+                refusal(mixed),
+                (ErrorCode::NotFound, "root_unreadable"),
+                "one unreadable root refuses the whole freeze"
+            );
+            let memory = h.rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — a W2 Memory root under a W1 scope
+                let mut txn = h.gateway_pool.begin().await.expect("begin");
+                forget_repo::freeze_memory_in_txn(&mut txn, &scoped, memory_w2).await
+            });
+            assert_eq!(
+                refusal(memory),
+                (ErrorCode::NotFound, "root_unreadable"),
+                "a W2 Memory root under a W1 scope"
+            );
+            assert_eq!(request_count(&mut h), before, "a refusal stores nothing");
+
+            let allowed = freeze_with(&h.rt, &h.gateway_pool, &scoped, &[in_w1])
+                .expect("the W1 root is inside the scope");
+            assert_eq!(allowed.targets.len(), 1);
+            assert_eq!(request_count(&mut h), before + 1);
         },
     );
 }

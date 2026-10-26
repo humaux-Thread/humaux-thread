@@ -38,7 +38,7 @@ pub fn require_disposable(conn: &mut Client) -> Result<String, String> {
         Ok(name)
     } else {
         Err(format!(
-            "refusing a destructive test leg on database {name:?}: its name does not start with {DISPOSABLE_DB_PREFIX:?} (M19 D11)"
+            "refusing a destructive test leg on database {name:?}: its name is neither {DISPOSABLE_DB_PREFIX:?} nor {DISPOSABLE_DB_PREFIX:?}_<suffix> (M19 D11)"
         ))
     }
 }

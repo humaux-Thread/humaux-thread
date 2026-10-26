@@ -17,17 +17,17 @@
 -- it takes (scope_kind, scope roots) and nothing else the caller could forge: it computes the targets and manifest_hash itself
 -- (the closure is the explicit roots plus every Memory with ANY memory_evidence input among them, whole; never the generic
 -- DERIVED_FROM closure, ADR-0092 D-A / ADR-0079 D-J) under a tenant-only predicate, independent of the caller's visibility, and
--- takes requested_by from the session (humaux.user_id). Every root must exist in the session tenant and be readable by the
--- caller under the §6.1.1 visibility rule (the SQL home of read_gate::visibility_readable, private.visibility_allowed), else the
--- door refuses with SQLSTATE P0002 and a machine-readable reason. A partial UNIQUE index over the open request makes a
+-- takes requested_by from the session (humaux.user_id). Every root must exist in the session tenant, else the door refuses
+-- with SQLSTATE P0002 and a machine-readable reason. Readability is NOT judged here: the caller's AuthorizationScope is the
+-- authority (read_gate::visibility_readable / readable_memory_ids, M08), and the adapter refuses an unreadable root before it
+-- calls the door; a second any-workspace-membership rule here would be wider than the scope. A partial UNIQUE index over the
+-- open request makes a
 -- concurrent duplicate freeze return the existing request_id. The door is not a purge: physical deletion stays with M19-5's
 -- purge door (D3).
 --
 -- Owner role_migration_owner is NOBYPASSRLS: memory_records carries a cluster-wide owner arm (0163), so every Memory read below
--- filters on the session tenant explicitly; evidence_objects has no owner arm, so the root check reads it under the caller's
--- visibility (and re-applies private.visibility_allowed so other owner policies cannot widen it).
--- ponytail: the Memory-root check omits the §6.1.3 subject term (private.memory_subject_visibility_ok is tenant-wide today),
--- upgrade when per-subject ACLs land.
+-- filters on the session tenant explicitly; evidence_objects has no owner arm, so the existence check reads it under the table's
+-- own RLS (a row RLS hides counts as missing, fail-closed).
 -- deletion_targets is a §6.2.2 named table: SELECT for role_gateway (the preview reads the frozen closure) and role_maintenance
 -- (the executor), nothing for any other role; tenant_id is carried for FORCE RLS and tied to the request by a composite FK.
 
@@ -141,23 +141,15 @@ BEGIN
   END IF;
 
   IF p_scope_kind = 'MEMORY' THEN
-    -- §8.6: the Memory is readable and every backing Evidence row is readable too; a Memory with no backing row fails closed.
+    -- A Memory with no backing row fails closed; the caller-scope readability verdict is the adapter's (see the header).
     IF NOT EXISTS (
       SELECT 1 FROM private.memory_records m
        WHERE m.tenant_id = p_tenant_id AND m.memory_id = v_roots[1]
-         AND private.visibility_allowed(m.visibility_class, true, m.visibility_user_id = v_user,
-               EXISTS (SELECT 1 FROM control.workspace_memberships wm
-                        WHERE wm.tenant_id = m.tenant_id AND wm.workspace_id = m.visibility_workspace_id
-                          AND wm.user_id = v_user AND wm.state = 'ACTIVE'))
          AND EXISTS (SELECT 1 FROM private.memory_evidence me WHERE me.memory_id = m.memory_id)
          AND NOT EXISTS (
            SELECT 1 FROM private.memory_evidence me
              LEFT JOIN private.evidence_objects eo
                ON eo.evidence_id = me.evidence_id AND eo.tenant_id = p_tenant_id
-              AND private.visibility_allowed(eo.visibility_class, true, eo.visibility_user_id = v_user,
-                    EXISTS (SELECT 1 FROM control.workspace_memberships wm
-                             WHERE wm.tenant_id = eo.tenant_id AND wm.workspace_id = eo.visibility_workspace_id
-                               AND wm.user_id = v_user AND wm.state = 'ACTIVE'))
             WHERE me.memory_id = m.memory_id AND eo.evidence_id IS NULL)
     ) THEN
       RAISE EXCEPTION 'deletion_request_freeze: NOT_FOUND root_unreadable' USING ERRCODE = 'no_data_found';
@@ -166,11 +158,7 @@ BEGIN
     v_ids := v_roots;
   ELSE
     IF (SELECT count(*) FROM private.evidence_objects eo
-         WHERE eo.tenant_id = p_tenant_id AND eo.evidence_id = ANY (v_roots)
-           AND private.visibility_allowed(eo.visibility_class, true, eo.visibility_user_id = v_user,
-                 EXISTS (SELECT 1 FROM control.workspace_memberships wm
-                          WHERE wm.tenant_id = eo.tenant_id AND wm.workspace_id = eo.visibility_workspace_id
-                            AND wm.user_id = v_user AND wm.state = 'ACTIVE'))) <> cardinality(v_roots) THEN
+         WHERE eo.tenant_id = p_tenant_id AND eo.evidence_id = ANY (v_roots)) <> cardinality(v_roots) THEN
       RAISE EXCEPTION 'deletion_request_freeze: NOT_FOUND root_unreadable' USING ERRCODE = 'no_data_found';
     END IF;
     SELECT array_agg(t.kind), array_agg(t.id) INTO v_kinds, v_ids
@@ -216,7 +204,7 @@ $$;
 
 COMMENT ON FUNCTION control.deletion_request_freeze(uuid, text, uuid[]) IS
   'ADR-0092 D-A: records one deletion request and its frozen target list. Takes (scope_kind, roots) only: computes the closure '
-  'and manifest_hash itself, requested_by from the session, refuses an unreadable root with P0002. Idempotent for an open '
+  'and manifest_hash itself, requested_by from the session, refuses a missing root with P0002 (caller-scope readability is the adapter''s). Idempotent for an open '
   'request with the same (tenant, scope, requester, manifest). Not a purge.';
 
 ALTER FUNCTION control.deletion_request_freeze(uuid, text, uuid[]) OWNER TO role_migration_owner;

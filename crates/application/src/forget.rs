@@ -469,7 +469,8 @@ pub fn evidence_closure_targets(
 const MANIFEST_HASH_DOMAIN: &[u8] = b"humaux.deletion.manifest.v1\n";
 
 /// `manifest_hash` of a frozen closure: SHA-256 over the canonical, sorted, duplicate-free `(kind, id)` list. The sole
-/// producer of the value stored in `control.deletion_requests.manifest_hash` and later bound into the confirm token.
+/// reference encoding of the value stored in `control.deletion_requests.manifest_hash` (written by the freeze door, which
+/// computes the same bytes in SQL; `forget_repo` re-checks the match on every freeze) and later bound into the confirm token.
 pub fn manifest_hash(targets: &[DeletionTarget]) -> [u8; 32] {
     let canonical: BTreeSet<(&'static str, Uuid)> = targets
         .iter()
