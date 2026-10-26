@@ -2,7 +2,7 @@
 
 - Status: Accepted (2026-10-23). Card M23-1 (docs only, wave F, module M23). Content authority: module design note M23
   v2, §3 (C7 v2, C-M23-0, C-M23-4), §7 D1–D11, §9 and §13. This ADR records those decisions and re-decides none of
-  them. No code, migration, gate or deployment lands with it.
+  them, except the labelled lead ruling on issue #332 (D-A, D-F). No code, migration, gate or deployment lands with it.
 - Supersedes in scope: ADR-0064 (note :192). One pointer line is added to ADR-0064; its text is not rewritten.
 - Amends: Baseline §44 (backup/DR) and §66 (automatic operation); the C7 recovery contract shared with M10 (note :46,
   :192). The M10 note's ADR-M10-b has no real ADR id in this tree; the C7 amendment is recorded here only.
@@ -49,11 +49,18 @@ the table's owner module in M23-2 (note :87-88). Rejected: a physical full (owne
 schema-wide dump (drags derived data) (note :88).
 
 **Lead ruling (2026-10-26, issue #332; draft authority, the owner may revise):** the catalog is closed under foreign
-keys. A NOT NULL foreign key from a KNOWLEDGE table makes the referenced table KNOWLEDGE. The note's EXCLUDED list
-breaks this rule for `private.processing_runs`: `private.observations.processing_run_id` references it NOT NULL
-(migrations/0005_private_pipeline.sql:33). So `processing_runs` moves to KNOWLEDGE. A nullable foreign key from
-KNOWLEDGE to an EXCLUDED table is a catalog error unless its catalog row names the restore action `set_null`. M23-2's
-catalog review applies this rule to every row.
+keys. For every NOT NULL foreign key from a KNOWLEDGE table, the referenced table is KNOWLEDGE too, or the
+referencing table leaves KNOWLEDGE; the catalog row records which. `private.processing_runs` moves to KNOWLEDGE:
+`private.observations.processing_run_id` references it NOT NULL (migrations/0005_private_pipeline.sql:33), and
+observations without their run lose provenance. Every other crossing is resolved by this rule in M23-2's catalog
+review, not here. The crossings known on 2026-10-26 (static read of `migrations/*.sql`):
+`private.evidence_task_runs` → EXCLUDED `coord.task_runs` (0251:32, :39); and, to tables in neither list,
+`private.evidence_objects` → `control.private_reasoning_domains` (0004:31, 0159:24-28),
+`private.memory_consolidation_inputs` → `private.memory_consolidation_runs` (0005:64), and
+`control.contribution_confirmations` → `staging.contribution_candidates` (0107:125-126). A nullable foreign key from
+KNOWLEDGE to a non-KNOWLEDGE table (known: three to `staging.contribution_releases`, 0104:48-50, 0106:73, 0106:115)
+is a catalog error unless its catalog row names the restore action `set_null`. M23-2 or M23-5 decides where that
+action runs, before the restore FK audit.
 
 ### D-B Format: PG logical, `pg_dump -Fd --compress=zstd:3`, data-only, as the superuser
 
@@ -109,7 +116,7 @@ The `dr` target is rebuilt FROM the pg image (the same PG 18.6 `pg_dump`/`pg_res
 `humaux-maintenance` (note :120-121). Drill: `initdb` on a temporary directory → `migrate` to `schema_version` →
 create `partition_months` → `pg_restore --data-only --disable-triggers` → per-table counts equal the manifest →
 journal re-apply → `rls-check` → witness rows (note :121-123).
-Lead ruling (#332): before the counts are accepted, the drill audits every foreign key among the restored tables
+Lead ruling (2026-10-26, #332; draft authority): before the counts are accepted, the drill audits every foreign key among the restored tables
 and fails naming any constraint with an orphan row, because `--disable-triggers` skips FK checks and equal counts
 do not prove referential integrity. The nightly drill is PG-only; the Qdrant rebuild leg
 runs in CI/conformance with a stub or local embedder, with no weekly paid re-embed (note :123-124). The testkit
@@ -140,8 +147,8 @@ pepper rotation unaffected — with every agent re-keying after a restore, and D
 (note :134-135). The owner answered Q3 on 2026-10-23: the export carries API-key **hashes** (never plaintext), so
 agents keep working after a restore (note :254).
 
-**Lead question (unresolved):** D-A excludes credentials/sessions/challenges (note :85-86) and D-G records that
-agents get new API keys after a restore (note :131), while the Q3 answer has the export carrying API-key hashes
+**Lead question (unresolved):** D-A excludes credentials/sessions/challenges (note :85-86) and D-G records the note's D7 step
+"agents get new API keys" (note :130-131) beside the Q3 answer, which has the export carrying API-key hashes
 (note :254). The exclusion and the answer are both recorded here; this ADR does not resolve the tension.
 
 ### D-J Schedule: `dr serve` inside the compose bundle
