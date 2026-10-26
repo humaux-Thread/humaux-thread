@@ -1,7 +1,7 @@
-//! `gateway::tests::guard_limiter` — Real MCP guard wiring and subject-cap refusals (§72.3; ADR-0100).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-protocol, humaux-testkit, serde_json, tokio, uuid];
-//!   services=[PostgreSQL(role_gateway), HTTP(loopback)]; env=[]; modules=[gateway::guard, gateway::limiter]
-//! Called-by: [tests]
+//! `gateway::tests::support::guard_limiter` — Real MCP guard wiring and subject-cap refusals (§72.3; ADR-0100).
+//! Depends-on: crates=[serde_json, tokio];
+//!   services=[HTTP(loopback)]; env=[]; modules=[gateway::tests::mcp_gateway]
+//! Called-by: [gateway::tests::mcp_gateway]
 //! Invariants: [each case isolates one production guard tier; frozen time prevents refill during DB I/O]
 //! Spec: Baseline §72.3; §79; §80.1; ADR-0065 W-10; ADR-0100
 

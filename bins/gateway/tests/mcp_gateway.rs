@@ -50,7 +50,7 @@
 //!   contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm,
 //!   domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids,
 //!   domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::mcp_application,
-//!   gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan,
+//!   gateway::recall, gateway::remember, gateway::tests::support::guard_limiter, gateway::retrieval_embedding_client, humaux-local-secret-scan,
 //!   humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
 //!   projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters,
 //!   retrieval-provider::contract, retrieval-worker::rpc, retrieval::completeness, retrieval::request]
