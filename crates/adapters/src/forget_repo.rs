@@ -317,9 +317,11 @@ where
 /// metric, not only to `deleted`). Tenant-grain and fail-loud: counts the tenant's `TOMBSTONED` `stream_log` rows with
 /// `settled_at` older than `sla` (a row settled `DONE` before a later tombstone keeps its old `settled_at`, 0011) iff
 /// the tenant has a deletion request `d` with `d.logical_deleted_at` set and older than `sla` and no recorded
-/// `QDRANT_POINTS` step (step 5, the physical purge — §37: "字节还在...它必须有自己的出口"). No such request ⇒ 0;
+/// `QDRANT_POINTS` step with outcome `DONE` (step 5, the physical purge — §37: "字节还在...它必须有自己的出口"). No such request ⇒ 0;
 /// otherwise `> 0`, which is §42's "tombstone 超 SLA 未 purge". The count is not a per-row attribution and may
 /// include rows of other, already purged requests of the same tenant (0272 dropped the per-row stream key).
+/// A never-DONE row gets `settled_at` at tombstone time (0011): it counts after that timestamp ages past the SLA,
+/// giving a bounded false zero until then (§41.2 / #315).
 pub async fn tombstoned_unpurged_over_sla(
     pool: &MaintenanceDbPool,
     tenant_id: Uuid,
@@ -344,7 +346,7 @@ pub async fn tombstoned_unpurged_over_sla(
                    AND NOT EXISTS ( \
                        SELECT 1 FROM ops.deletion_plan_steps p \
                         WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
-                          AND p.step = 'QDRANT_POINTS' \
+                          AND p.step = 'QDRANT_POINTS' AND p.outcome = 'DONE' \
                    ) \
             )",
     )
