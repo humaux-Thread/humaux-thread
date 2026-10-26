@@ -5061,8 +5061,9 @@ fn m13_3_path_sites(source: &str, path: &str, from: usize, to: usize) -> Vec<usi
 /// Byte ranges of the bodies of every `impl` block in `source` whose self type is `Totals` (`impl Totals`,
 /// `impl From<X> for Totals`, `impl Default for Totals`, in any crate): inside them `Self::<Variant>` is `Totals`.
 ///
-/// ponytail: the self type is the last word of the header before its first `{`, cut at ` where `, so a `where` clause
-/// on its own line or an `impl` emitted by a macro is not recognised, upgrade to `syn` if either ever shows up.
+/// ponytail: the self type is the last word of the header before its first `{`, read up to the first `where` token
+/// (rustfmt puts the clause on its own line), so an `impl` emitted by a macro or a self type spelled through an alias of
+/// `Totals` is not recognised, upgrade to `syn` if either ever shows up.
 fn m13_3_impl_totals_bodies(source: &str) -> Vec<(usize, usize)> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
@@ -5077,14 +5078,15 @@ fn m13_3_impl_totals_bodies(source: &str) -> Vec<(usize, usize)> {
         let Some(open) = source[after..].find('{').map(|rel| after + rel) else {
             continue;
         };
-        let header = source[after..open]
-            .split(" where ")
-            .next()
-            .unwrap_or("")
-            .trim_end();
-        let self_type = header
-            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .next();
+        let self_type = source[after..open]
+            .split_whitespace()
+            .take_while(|token| *token != "where")
+            .last()
+            .and_then(|token| {
+                token
+                    .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+            });
         if self_type == Some("Totals")
             && let Some(close) = matching_brace_end(source, open)
         {
@@ -5110,8 +5112,24 @@ fn m13_3_construction_sites(source: &str) -> Vec<usize> {
     sites
 }
 
+/// The attribute text of the item whose keyword sits at byte `idx`: the non-comment lines after the previous item's
+/// last line (the last line ending `;` or `}`), joined by a space. A blank line between an attribute and its item does
+/// not end it, as rustfmt keeps one there.
+fn m13_3_item_attrs(source: &str, idx: usize) -> String {
+    let lines: Vec<&str> = source[..idx]
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    let start = lines
+        .iter()
+        .rposition(|l| l.trim_end().ends_with([';', '}']))
+        .map_or(0, |i| i + 1);
+    lines[start..].join(" ")
+}
+
 /// Derive names on `enum Totals` in `source` outside [`M13_3_DERIVES`]: a derived `Default` or `Deserialize` builds a
-/// `Totals` with no `Totals::<Variant>` path in sight.
+/// `Totals` with no `Totals::<Variant>` path in sight. Every `derive(` of the item's attributes counts, in one list or
+/// several, on one line or many.
 fn m13_3_bad_derives(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let mut bad = Vec::new();
@@ -5122,13 +5140,7 @@ fn m13_3_bad_derives(source: &str) -> Vec<String> {
         {
             continue;
         }
-        // The item's attributes are the lines after the last blank line before it.
-        let head = source[..idx].rsplit("\n\n").next().unwrap_or("");
-        let attrs = head
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let attrs = m13_3_item_attrs(source, idx);
         for (d, _) in attrs.match_indices("derive(") {
             let list = attrs[d + "derive(".len()..].split(')').next().unwrap_or("");
             let names = list
@@ -20318,6 +20330,72 @@ async fn serving_version_in_txn() {}
         );
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("derives `Deserialize`"), "{lines:?}");
+    }
+
+    /// 注错 (rv-362 delta P1-1): rustfmt puts an impl's `where` clause on its own line, so a generic
+    /// `impl<T> From<T> for Totals` is still an impl of `Totals`.
+    #[test]
+    fn m13_3_fails_on_a_generic_impl_with_a_where_line_building_a_self_variant() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-where",
+            "bins/gateway/src/tool.rs",
+            "impl<T> From<T> for Totals\nwhere\n    T: Into<u64>,\n{\n    fn from(t: T) -> Self {\n        \
+             let n = t.into();\n        Self::Exact { total: n, returned: n, omitted: 0, truncated: false }\n    }\n}\n",
+        );
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(
+            lines[0].contains("bins/gateway/src/tool.rs::from"),
+            "{lines:?}"
+        );
+    }
+
+    /// 注错 (rv-362 delta P1-1): rustfmt keeps a blank line between `#[derive(..)]` and its item, which must not
+    /// detach the attribute.
+    #[test]
+    fn m13_3_fails_on_a_derive_separated_from_the_enum_by_a_blank_line() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-derive-blank",
+            "bins/gateway/src/tool.rs",
+            "#[derive(Debug, Default)]\n\npub enum Totals {\n    NotApplicable,\n}\n",
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("derives `Default`"), "{lines:?}");
+    }
+
+    /// 注错 (rv-362 delta P1-1): a derive list spread over several lines, and two `#[derive]` attributes with the bad
+    /// name in the second.
+    #[test]
+    fn m13_3_fails_on_a_multi_line_derive_and_on_a_second_derive_attribute() {
+        let multi = m13_3_fail_lines_with(
+            "m13-3-red-derive-multi",
+            "bins/gateway/src/tool.rs",
+            "#[derive(\n    Debug,\n    Clone,\n    Default,\n)]\npub enum Totals {\n    NotApplicable,\n}\n",
+        );
+        assert_eq!(multi.len(), 1, "{multi:?}");
+        assert!(multi[0].contains("derives `Default`"), "{multi:?}");
+        let two = m13_3_fail_lines_with(
+            "m13-3-red-derive-two",
+            "bins/gateway/src/tool.rs",
+            "#[derive(Debug, Clone)]\n#[derive(PartialEq, Deserialize)]\npub enum Totals {\n    NotApplicable,\n}\n",
+        );
+        assert_eq!(two.len(), 1, "{two:?}");
+        assert!(two[0].contains("derives `Deserialize`"), "{two:?}");
+    }
+
+    /// Several allowed `#[derive]` attributes pass, and a neighbouring item's derive is not the enum's: the previous
+    /// item ends at its `}`.
+    #[test]
+    fn m13_3_passes_allowed_multi_attribute_derives_and_ignores_a_neighbour_item() {
+        let tmp = fresh_tmp("m13-3-green-derive-multi");
+        m07_write(&tmp, M13_3_HOME, M13_3_TOTALS_FN);
+        m07_write(
+            &tmp,
+            "bins/gateway/src/tool.rs",
+            "#[derive(Default)]\npub struct Other {}\n\n#[derive(Debug, Clone)]\n/// docs\n#[derive(\n    Copy,\n    PartialEq,\n    Eq,\n)]\n\n\
+             #[derive(serde::Serialize)]\npub enum Totals {\n    NotApplicable,\n}\n",
+        );
+        assert_eq!(g_m13_3_totals_sole_constructor(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
     }
 
     /// The allowed derive set (M26 adds `Serialize`) and an `impl Display for Totals` that only matches on `Self::`
