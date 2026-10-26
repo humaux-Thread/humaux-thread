@@ -1,5 +1,5 @@
 //! `adapters::tests::project_rollup` — G-M14-5 on the real 0271 doors.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, sqlx, tokio, uuid]; services=[PostgreSQL(owner) r=[private.project_channels] w=[control.tenants, control.workspaces, control.private_reasoning_domains, private.continuity_projects, private.subjects, private.evidence_objects, private.events, private.project_subject_relations, private.subject_relations, private.continuity_facet_versions, private.continuity_facet_slots], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::project_rollup, domain::continuity, domain::error, domain::identity, domain::ids, domain::subject]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, sqlx, tokio, uuid]; services=[PostgreSQL(owner) r=[] w=[control.tenants, control.workspaces, control.private_reasoning_domains, private.continuity_projects, private.subjects, private.evidence_objects, private.events, private.project_subject_relations, private.subject_relations, private.continuity_facet_versions, private.continuity_facet_slots], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::project_rollup, domain::continuity, domain::error, domain::identity, domain::ids, domain::subject]
 //! Called-by: [cargo-test]
 //! Invariants: [§80.1 both faults hit exact count/set assertions; fixtures and grants roll back in one transaction; missing CI inputs fail]
 //! Spec: Baseline §6.1.4; §25.3.1; §79.2; §80.1; ADR-0095 D-C
@@ -115,6 +115,7 @@ async fn pin(tx: &mut Transaction<'_, Postgres>, ids: [Uuid; 3]) -> Uuid {
 async fn fixture() -> Fixture {
     let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("fail: missing HUMAUX_TEST_PG_DSN");
     let pool = PgPool::connect(&dsn).await.unwrap();
+    // dep: PostgreSQL(owner) — §79.2 fixture writes remain in one rolled-back transaction.
     let mut tx = pool.begin().await.unwrap();
     let tenant = sqlx::query_scalar(
         "INSERT INTO control.tenants (name,state) \
@@ -171,6 +172,7 @@ async fn fixture() -> Fixture {
         None,
         BoundedSet::new(workspaces[..2].iter().copied().map(WorkspaceId)).unwrap(),
     );
+    // dep: PostgreSQL(role_gateway) — §25.3.1 exercises the runtime doors without owner privileges.
     sqlx::query("SET LOCAL ROLE role_gateway")
         .execute(&mut *tx)
         .await
