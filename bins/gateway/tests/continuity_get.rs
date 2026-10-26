@@ -7,7 +7,7 @@
 //!   private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions,
 //!   private.continuity_projects] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_W2_FORCE_NATIVE_CLEANUP_FAILURE,
-//!   HUMAUX_CONTINUITY_W2_FORCE_NATIVE_PANIC]; modules=[adapters::postgres, adapters::quota_repo,
+//!   HUMAUX_CONTINUITY_W2_FORCE_NATIVE_PANIC]; modules=[adapters::postgres, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, contracts::retrieval_config, domain::context,
 //!   domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::mcp_application,
 //!   gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
@@ -15,6 +15,7 @@
 //! Invariants: [each test connects, seeds and tears down its own PostgreSQL fixture; no test shares state across HUMAUX_CONTINUITY_W2_* fault-injection runs]
 //! Spec: Baseline §73.5.1; ADR-0035
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{Ipv6Addr, SocketAddr},
@@ -24,7 +25,7 @@ use std::{
     time::Duration,
 };
 
-use humaux_adapters::{postgres::RuntimeDbPool, quota_repo::RatePolicy};
+use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_gateway::{
     context::ContextBootstrap,
@@ -80,6 +81,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: [50_000; 5],
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),

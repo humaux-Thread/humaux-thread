@@ -40,6 +40,7 @@
 //! could be configured to accept. Anything that would report *what* this process is (version,
 //! fingerprint, tenant counts) belongs behind the boundary or in `humaux-admin q`, not here.
 
+use std::future::IntoFuture;
 use std::{error::Error, net::SocketAddr, process::ExitCode, sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, routing::get};
@@ -218,11 +219,10 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
         runtime.metrics_addr(),
         runtime.config_fingerprint()
     );
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await?;
+    tokio::select! {
+        result = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(shutdown).into_future() => { result?; },
+        result = runtime.watch_session_lock() => { result.map_err(|code| std::io::Error::other(code.as_str()))?; },
+    }
     Ok(())
 }

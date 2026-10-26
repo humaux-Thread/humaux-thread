@@ -2337,6 +2337,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX`
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX`
 - env `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`
+- env `HUMAUX_GATEWAY_DEPLOYMENT`
 - env `HUMAUX_GATEWAY_EMBEDDING_DIMENSION`
 - env `HUMAUX_GATEWAY_EMBEDDING_MODEL_ID`
 - env `HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION`
@@ -2366,16 +2367,21 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_QDRANT_PORT`
 - env `HUMAUX_GATEWAY_QDRANT_TLS`
 - env `HUMAUX_GATEWAY_RATE_CREDENTIAL_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS`
 - env `HUMAUX_GATEWAY_RATE_PREAUTH_IP_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_TENANT_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_RATE_USER_CAPACITY`
+- env `HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS`
 - env `HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND`
 - env `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`
 - env `HUMAUX_GATEWAY_REMEMBER_DATA_CLASS`
@@ -2402,6 +2408,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID`
 - env `HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH`
+- env `HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS`
+- env `HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS`
 - env `HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_TOKEN_HMAC_KEY`
 - env `HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS`
@@ -2420,6 +2428,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `gateway::continuity`
 
 #### `gateway::guard`
+
+#### `gateway::limiter`
 
 #### `gateway::main`
 - env `CARGO_PKG_VERSION`
@@ -11642,8 +11652,11 @@ executed by:
 - `consolidation-worker::tests::ops_listener`
 - `gateway::admission`
 - `gateway::main`
+- `gateway::tests::admission`
 - `gateway::tests::exit_codes`
 - `gateway::tests::ops_listener`
+- `gateway::tests::singleton`
+- `gateway::tests::support::guard_limiter`
 - `humaux-telemetry`
 - `infra-egress::http`
 - `infra-egress::resolver`
@@ -11869,6 +11882,7 @@ executed by:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
+- `gateway::tests::singleton`
 - `maintenance::drill`
 - `maintenance::retention`
 - `maintenance::roles`
@@ -12011,6 +12025,7 @@ executed by:
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
+- `gateway::tests::singleton`
 - `maintenance::drill`
 - `maintenance::migrate`
 - `maintenance::rls_check`
@@ -12329,6 +12344,7 @@ executed by:
 - `gateway::tests::exit_codes`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::ops_listener`
+- `gateway::tests::singleton`
 - `xtask::e2e_onboard`
 
 ### `subprocess(humaux-maintenance)`
@@ -15055,6 +15071,7 @@ modules naming it:
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
+- `gateway::tests::singleton`
 - `tests`
 
 ### humaux-gateway → `humaux-application` (normal)
@@ -15103,20 +15120,24 @@ modules naming it:
 - `gateway::context`
 - `gateway::continuity`
 - `gateway::guard`
+- `gateway::limiter`
 - `gateway::mcp_application`
 - `gateway::memory`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
+- `gateway::tests::admission`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
+- `gateway::tests::singleton`
 - `tests`
 
 ### humaux-gateway → `humaux-protocol` (normal)
@@ -15128,6 +15149,7 @@ modules naming it:
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::recall`
+- `gateway::tests::admission`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -15231,6 +15253,7 @@ modules naming it:
 - `gateway::admission`
 - `gateway::main`
 - `gateway::mcp_application`
+- `gateway::tests::admission`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -15274,6 +15297,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
+- `gateway::tests::support::guard_limiter`
 - `tests`
 
 ### humaux-gateway → `sha2` (normal)
@@ -15281,6 +15305,7 @@ why: sha256 digests for hashes, fingerprints and scope_hash
 
 modules naming it:
 - `gateway::admission`
+- `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::guard`
 - `gateway::memory`
@@ -15288,6 +15313,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
+- `gateway::tests::singleton`
 - `tests`
 
 ### humaux-gateway → `hex` (normal)
@@ -15322,20 +15348,25 @@ modules naming it:
 - `gateway::admission`
 - `gateway::bootstrap`
 - `gateway::guard`
+- `gateway::limiter`
 - `gateway::main`
 - `gateway::mcp_application`
 - `gateway::recall`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
+- `gateway::tests::admission`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
+- `gateway::tests::singleton`
+- `gateway::tests::support::guard_limiter`
 - `tests`
 
 ### humaux-gateway → `uuid` (normal)
@@ -15345,22 +15376,55 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::guard`
+- `gateway::limiter`
 - `gateway::mcp_application`
 - `gateway::memory`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
+- `gateway::tests::admission`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
+- `gateway::tests::singleton`
+- `gateway::tests::support::singleton_env`
+- `tests`
+
+### humaux-gateway → `tokio` (dev)
+why: freeze the production limiter clock for exact hierarchy/restart assertions
+
+modules naming it:
+- `gateway::admission`
+- `gateway::bootstrap`
+- `gateway::guard`
+- `gateway::limiter`
+- `gateway::main`
+- `gateway::mcp_application`
+- `gateway::recall`
+- `gateway::retrieval_embedding_client`
+- `gateway::status`
+- `gateway::tests::admission`
+- `gateway::tests::continuity_get`
+- `gateway::tests::coordinate_task`
+- `gateway::tests::cross_tenant_canary`
+- `gateway::tests::limiter`
+- `gateway::tests::mcp_gateway`
+- `gateway::tests::query_embedding_rpc`
+- `gateway::tests::read_decoupling`
+- `gateway::tests::recall_embedding_cache`
+- `gateway::tests::semantic_recall_wiring`
+- `gateway::tests::service_credentials`
+- `gateway::tests::singleton`
+- `gateway::tests::support::guard_limiter`
 - `tests`
 
 ### humaux-gateway → `humaux-testkit` (dev)
@@ -15399,6 +15463,7 @@ modules naming it:
 - `gateway::tests::ops_listener`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
+- `gateway::tests::singleton`
 - `tests`
 
 ### humaux-gateway → `humaux-retrieval-worker` (dev)
@@ -16454,6 +16519,13 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `bins/gateway/tests/admission.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `bins/gateway/tests/console_csrf.rs`
 db-bound (default run): no
 
@@ -16498,6 +16570,13 @@ services (computed):
 
 default run:
 - subprocess
+
+### `bins/gateway/tests/limiter.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
 
 ### `bins/gateway/tests/mcp_gateway.rs`
 db-bound (default run): yes
@@ -16588,6 +16667,17 @@ services (computed):
 
 default run:
 - PostgreSQL
+
+### `bins/gateway/tests/singleton.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+- subprocess
+
+default run:
+- PostgreSQL
+- subprocess
 
 ### `bins/maintenance/tests/backup.rs`
 db-bound (default run): yes

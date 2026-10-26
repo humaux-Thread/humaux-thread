@@ -110,6 +110,7 @@ never `not_applicable` (ADR-0050).
 
 - **U1** private-side contribution code cut: if X-M20-1 shows the cut is not cheap, the code stays in core and inert and
   the ownership row says so (M20-3).
+  X-M20-1 result (M20-3): inert core, see module_ownership.toml.
 - **U2** placement of the public-schema migrations at the repository split: inert DDL stays in the one sequence until
   M01's split card decides.
 - **U7** B33 claims beyond the ten verified ones are background only; no decision rests on them.

@@ -16,7 +16,7 @@
 //!   private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log,
 //!   projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace,
 //!   control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker),
-//!   UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION,
+//!   UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[HUMAUX_GATEWAY_DEPLOYMENT, CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME,
 //!   HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
@@ -45,12 +45,12 @@
 //!   modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::coord_repo,
 //!   adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt,
 //!   adapters::postgres, adapters::read_materialize,
-//!   adapters::qdrant, adapters::quota_repo, adapters::remember, adapters::subject_repo,
+//!   adapters::qdrant, gateway::limiter, adapters::remember, adapters::subject_repo,
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
 //!   contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm,
 //!   domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids,
 //!   domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::mcp_application,
-//!   gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan,
+//!   gateway::recall, gateway::remember, gateway::tests::support::guard_limiter, gateway::retrieval_embedding_client, humaux-local-secret-scan,
 //!   humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
 //!   projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters,
 //!   retrieval-provider::contract, retrieval-worker::rpc, retrieval::completeness, retrieval::request]
@@ -61,6 +61,7 @@
 //! The database fixture owns only isolated seed and cleanup rows. Every request below travels
 //! through the loopback native MCP adapter and a real `role_gateway` runtime pool.
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream},
@@ -85,7 +86,6 @@ use humaux_adapters::{
         Distance, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
         create_collection_body, ha_profile_for, subject_index_body, tenant_index_body, upsert,
     },
-    quota_repo::RatePolicy,
 };
 use humaux_domain::{
     affect::{AffectAnnotation, AffectKind, BasisPoints, EmotionLabel},
@@ -193,38 +193,40 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
-    Arc::new(
-        GatewayGuard::new(
-            runtime,
-            GuardSettings {
-                credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
-                credential_pepper_previous: None,
-                trusted_proxies: TrustedProxyConfig {
-                    trusted_proxy_cidrs: vec![],
-                    max_forwarded_hops: 1,
-                },
-                global_denylist: vec![],
-                global_emergency_allowlist: vec![],
-                tenant_network: BTreeMap::new(),
-                rates: GuardRatePolicies {
-                    preauth_ip: rate(),
-                    credential: rate(),
-                    user: rate(),
-                    tenant: rate(),
-                    operation: rate(),
-                    lock_timeout: Duration::from_secs(2),
-                    preauth_ipv6_prefix_bits: 64,
-                },
-                reservation_ttl: Duration::from_secs(30),
-                handler_timeout: Duration::from_secs(5),
-                finalize_timeout: Duration::from_secs(2),
-                replay_ttl: Duration::from_secs(60),
-            },
-        )
-        .expect("explicit guard settings"),
-    )
+fn guard_settings() -> GuardSettings {
+    GuardSettings {
+        credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
+        credential_pepper_previous: None,
+        trusted_proxies: TrustedProxyConfig {
+            trusted_proxy_cidrs: vec![],
+            max_forwarded_hops: 1,
+        },
+        global_denylist: vec![],
+        global_emergency_allowlist: vec![],
+        tenant_network: BTreeMap::new(),
+        rate_max_subjects: [50_000; 5],
+        rates: GuardRatePolicies {
+            preauth_ip: rate(),
+            credential: rate(),
+            user: rate(),
+            tenant: rate(),
+            operation: rate(),
+            lock_timeout: Duration::from_secs(2),
+            preauth_ipv6_prefix_bits: 64,
+        },
+        reservation_ttl: Duration::from_secs(30),
+        handler_timeout: Duration::from_secs(5),
+        finalize_timeout: Duration::from_secs(2),
+        replay_ttl: Duration::from_secs(60),
+    }
 }
+
+fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+    Arc::new(GatewayGuard::new(runtime, guard_settings()).expect("explicit guard settings"))
+}
+
+#[path = "support/guard_limiter.rs"]
+mod guard_limiter;
 
 fn application(handle: &Handle, runtime: RuntimeDbPool) -> GatewayMcpApplication {
     application_with_budget(
@@ -277,6 +279,14 @@ fn application_with_budget(
     runtime: RuntimeDbPool,
     budget: ContextBudget,
 ) -> GatewayMcpApplication {
+    application_with_guard(handle, guard(runtime), budget)
+}
+
+fn application_with_guard(
+    handle: &Handle,
+    request_guard: Arc<GatewayGuard>,
+    budget: ContextBudget,
+) -> GatewayMcpApplication {
     // The fixture handle's pair is provisioned like a deployed one (governance writes admit
     // provisioned pairs only, ADR-0054 D-A).
     provision_stream_pair(handle, handle.workspace_id);
@@ -301,7 +311,7 @@ fn application_with_budget(
     .expect("actual executable identity");
     GatewayMcpApplication::new(
         CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
+        request_guard,
         policy,
         RememberEventKind::UserMessage,
         context_bootstrap,
@@ -5593,6 +5603,10 @@ impl GatewayProcessConfig {
     fn for_fixture(handle: &Handle, address: SocketAddr) -> Self {
         let mut values = BTreeMap::from([
             ("HUMAUX_GATEWAY_BIND_ADDR".into(), address.to_string()),
+            (
+                "HUMAUX_GATEWAY_DEPLOYMENT".into(),
+                Uuid::now_v7().to_string(),
+            ),
             ("HUMAUX_GATEWAY_ALLOWED_HOSTS".into(), HOST.into()),
             ("HUMAUX_GATEWAY_ALLOWED_ORIGINS".into(), ORIGIN.into()),
             (
@@ -5683,6 +5697,12 @@ impl GatewayProcessConfig {
                 "1".into(),
             ),
         ]);
+        Self::insert_fixture_policies(&mut values);
+        // Retrieval settings deliberately use their registered defaults unless a case overrides them.
+        Self { values, address }
+    }
+
+    fn insert_fixture_policies(values: &mut BTreeMap<String, String>) {
         values.extend(ENUMERATION_KEYS.map(|(key, value)| (key.into(), value.into())));
         values.extend(POOL_KEYS.map(|(key, value)| (key.into(), value.into())));
         for name in ["PREAUTH_IP", "CREDENTIAL", "USER", "TENANT", "OPERATION"] {
@@ -5692,8 +5712,6 @@ impl GatewayProcessConfig {
                 "100".into(),
             );
         }
-        // Retrieval settings deliberately use their registered defaults unless a case overrides them.
-        Self { values, address }
     }
 
     fn command(&self) -> Command {
