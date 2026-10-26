@@ -1,6 +1,6 @@
 //! `adapters::confirm_token_repo` — `control.confirm_tokens` (migration 0148, ADR-0018).
 //! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) w=[control.confirm_tokens] x=[control.sweep_confirm_tokens, control.assert_write_scope]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids]
-//! Called-by: [adapters::applicability_repo, adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::subject_repo, gateway::guard, gateway::mcp_application, maintenance::serve, tests]
+//! Called-by: [adapters::applicability_repo, adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::subject_repo, gateway::guard, gateway::mcp_application, maintenance::serve, tests]
 //! Invariants: [tokens store only sha256(nonce) and are consumed by one UPDATE inside the caller's transaction;
 //!   replayed, expired or mis-bound tokens — including one minted for another workspace — are one indistinguishable
 //!   Conflict, never a silent success; every write transaction rechecks its principal and its one workspace

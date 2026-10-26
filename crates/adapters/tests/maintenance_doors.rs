@@ -381,15 +381,15 @@ fn confirm_sweep_deletes_at_most_limit_and_writes_one_receipt() {
         |mut h| {
             let (tenant, other) = (h.tenant, h.other);
             for (label, expired_secs_ago) in [
-                ("t.a", 3000),
-                ("t.b", 2400),
-                ("t.c", 1800),
-                ("t.d", 1200),
-                ("t.e", 600),
+                ("memory.pin", 3000),
+                ("memory.unpin", 2400),
+                ("memory.archive", 1800),
+                ("memory.confirm", 1200),
+                ("memory.restore", 600),
             ] {
                 h.seed_token(tenant, label, -expired_secs_ago);
             }
-            h.seed_token(other, "t.other", -3000);
+            h.seed_token(other, "memory.pin", -3000);
             let deleted =
                 h.rt.block_on(confirm_token_repo::sweep_expired(
                     &h.maintenance,
@@ -401,13 +401,13 @@ fn confirm_sweep_deletes_at_most_limit_and_writes_one_receipt() {
             assert_eq!(deleted, 2, "at most LIMIT rows per call");
             assert_eq!(
                 h.tokens(tenant),
-                ["t.c", "t.d", "t.e"],
+                ["memory.archive", "memory.confirm", "memory.restore"],
                 "oldest expiry first"
             );
             assert_eq!(h.receipts(tenant, "confirm_tokens"), [(2, 2)]);
             assert_eq!(
                 h.tokens(other),
-                ["t.other"],
+                ["memory.pin"],
                 "per tenant under the caller's GUC"
             );
             assert!(h.receipts(other, "confirm_tokens").is_empty());
@@ -421,7 +421,7 @@ fn confirm_sweep_deletes_at_most_limit_and_writes_one_receipt() {
 fn a_call_that_deletes_nothing_writes_no_receipt() {
     run_db_fixture::<DoorsFixture, _>("a_call_that_deletes_nothing_writes_no_receipt", |mut h| {
         let tenant = h.tenant;
-        h.seed_token(tenant, "t.live", 600);
+        h.seed_token(tenant, "memory.pin", 600);
         h.seed_snapshot(tenant, 600, 2);
         h.seed_bucket(tenant, "user", "recent", (10, 10, 1), 0);
         h.seed_job("c35.fixture", "PENDING", 7200);

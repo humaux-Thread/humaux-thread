@@ -191,21 +191,15 @@ fn the_sweep_deletes_only_expired_tokens_no_longer_wanted_as_audit() {
             let tenant_id = handle.tenant_id;
             let other = handle.other_tenant_id;
             // deletable: expired, never consumed — nothing happened, no audit event to keep.
-            seed_token(&mut handle, tenant_id, "gone.unconsumed", -60, None);
+            seed_token(&mut handle, tenant_id, "memory.pin", -60, None);
             // deletable: expired AND consumed longer ago than the retention window.
-            seed_token(&mut handle, tenant_id, "gone.old_consumed", -60, Some(7200));
+            seed_token(&mut handle, tenant_id, "memory.unpin", -60, Some(7200));
             // kept: expired but consumed inside the retention window (still audit).
-            seed_token(
-                &mut handle,
-                tenant_id,
-                "still.fresh_consumed",
-                -60,
-                Some(60),
-            );
+            seed_token(&mut handle, tenant_id, "memory.archive", -60, Some(60));
             // kept: not expired yet — it can still gate a call.
-            seed_token(&mut handle, tenant_id, "still.unexpired", 600, None);
+            seed_token(&mut handle, tenant_id, "memory.restore", 600, None);
             // kept: another tenant's expired, unconsumed row.
-            seed_token(&mut handle, other, "still.other_tenant", -60, None);
+            seed_token(&mut handle, other, "memory.pin", -60, None);
 
             let deleted = handle
                 .rt
@@ -222,15 +216,12 @@ fn the_sweep_deletes_only_expired_tokens_no_longer_wanted_as_audit() {
             );
             assert_eq!(
                 surviving(&mut handle, tenant_id),
-                vec![
-                    "still.fresh_consumed".to_owned(),
-                    "still.unexpired".to_owned()
-                ],
+                vec!["memory.archive".to_owned(), "memory.restore".to_owned()],
                 "a recently-consumed token and an unexpired one must both survive"
             );
             assert_eq!(
                 surviving(&mut handle, other),
-                vec!["still.other_tenant".to_owned()],
+                vec!["memory.pin".to_owned()],
                 "RLS scopes the definer's DELETE: another tenant's rows are untouchable"
             );
 
@@ -260,7 +251,7 @@ fn the_sweep_deletes_only_expired_tokens_no_longer_wanted_as_audit() {
             assert_eq!(zero, 1, "the consumed-recently row is retention-gated");
             assert_eq!(
                 surviving(&mut handle, tenant_id),
-                vec!["still.unexpired".to_owned()],
+                vec!["memory.restore".to_owned()],
                 "an unexpired token is never deletable, at any retention"
             );
         },
@@ -277,7 +268,7 @@ fn the_maintenance_role_cannot_delete_a_confirm_token_directly() {
         "the_maintenance_role_cannot_delete_a_confirm_token_directly",
         |mut handle| {
             let tenant_id = handle.tenant_id;
-            seed_token(&mut handle, tenant_id, "gone.by_hand", -60, None);
+            seed_token(&mut handle, tenant_id, "memory.pin", -60, None);
 
             // dep: PostgreSQL(any) — opens the role-scoped connection for `the_maintenance_role_cannot_delete_a_confirm_token_directly`
             let mut maintenance =
@@ -298,7 +289,7 @@ fn the_maintenance_role_cannot_delete_a_confirm_token_directly() {
             );
             assert_eq!(
                 surviving(&mut handle, tenant_id),
-                vec!["gone.by_hand".to_owned()],
+                vec!["memory.pin".to_owned()],
                 "the row must still be there after the refused DELETE"
             );
         },

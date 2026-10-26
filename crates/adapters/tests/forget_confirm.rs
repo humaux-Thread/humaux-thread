@@ -1,5 +1,5 @@
 //! `adapters::tests::forget_confirm` — ADR-0092 D-B/D-C round-2 atomicity and scope isolation, on disposable PG.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner), PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::grep_repo, adapters::read_gate, adapters::read_materialize, adapters::exact_census, adapters::tests::support::operation_receipt_fixture, application::forget, domain::confirm, domain::authority, domain::context, domain::error, domain::ids, projection::serving, projection::stream, retrieval::predicate_registry, testkit::disposable]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, ops.outbox, private.memory_evidence, private.memory_records, projection.embedding_fingerprints, projection.rebuild_runs, projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::grep_repo, adapters::read_gate, adapters::read_materialize, adapters::exact_census, adapters::tests::support::operation_receipt_fixture, application::forget, domain::confirm, domain::authority, domain::context, domain::error, domain::ids, humaux-testkit, projection::serving, projection::stream, retrieval::predicate_registry, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [refusals leave token/request/lifecycle/stream state unchanged; every read uses role_gateway; exact ids and counts; fixture writes require disposable PG]
 //! Spec: Baseline §37.2; §33.10 rule 9; §41.2; §78.2; ADR-0092 D-B/D-C; G-M19-2; G-M19-3; G-M19-17; G-DOC-13
@@ -56,6 +56,7 @@ impl DbIntegrationFixture for Fixture {
     fn isolate() -> Result<TestHandle, DbFixtureSkipReason> {
         let dsn =
             std::env::var("HUMAUX_TEST_PG_DSN").map_err(|_| DbFixtureSkipReason::NoDatabaseUrl)?;
+        // dep: PostgreSQL(owner) — §37 disposable database guard before fixture writes
         let mut client = postgres::Client::connect(&dsn, postgres::NoTls)
             .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
         require_disposable(&mut client).unwrap_or_else(|e| panic!("{e}"));
@@ -402,6 +403,7 @@ fn check(world: &World, handle: &Handle, expected: BTreeSet<Uuid>) {
 
 fn freeze(h: &Handle, root: Uuid, evidence: bool) -> FrozenDeletion {
     h.rt.block_on(async {
+        // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
         let mut txn = h.runtime.pool().begin().await.expect("begin");
         let frozen = if evidence {
             forget_repo::freeze_evidence_closure_in_txn(&mut txn, &h.auth, &[root]).await
@@ -443,6 +445,7 @@ fn accept(
     claim: Option<&ConfirmationClaim>,
 ) -> Result<(), ForgetRepoError> {
     h.rt.block_on(async {
+        // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
         let mut txn = h.runtime.pool().begin().await.expect("begin");
         let result = forget_repo::accept_in_txn(&mut txn, &h.auth, request.request_id, claim).await;
         if result.is_ok() {
@@ -627,6 +630,7 @@ fn g_doc_13_supporting_evidence_accept_tombstones_generation_and_keeps_primary_s
             );
             accept(&h, &request, Some(&claim))
                 .expect("EVIDENCE_CLOSURE accept must pass the 0278 owner arm, not SQLSTATE 23514");
+            check(&world, &h, BTreeSet::from([world.ctrl]));
             assert_eq!(footprint(&mut h), (1, 1, 1, 1, 3));
             let states: Vec<(i64,String)> = h.admin.query("SELECT stream_seq,state FROM projection.stream_log WHERE tenant_id=$1 ORDER BY stream_seq", &[&h.tenant_id]).expect("states").iter().map(|r|(r.get(0),r.get(1))).collect();
             assert_eq!(
@@ -638,7 +642,6 @@ fn g_doc_13_supporting_evidence_accept_tombstones_generation_and_keeps_primary_s
                     (4, "TOMBSTONED".into())
                 ]
             );
-            check(&world, &h, BTreeSet::from([world.ctrl]));
         },
     );
 }
@@ -652,6 +655,7 @@ fn owner_arm_keeps_gateway_update_refused_and_maintenance_tombstone_working() {
             let root = primary(&mut h, world.ctrl);
             seed_ticket(&mut h, root, 1, "EVIDENCE_ACCEPTED");
             h.rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
                 let mut txn = h.runtime.pool().begin().await.expect("begin");
                 sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
                     .bind(h.tenant_id.to_string())

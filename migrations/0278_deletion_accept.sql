@@ -8,6 +8,24 @@
 -- Token, request and lifecycle writes roll back with any refusal. Scope/manifest binding uses the canonical
 -- application::forget::confirmation_digest encoding (Baseline §33.10 rule 9). No physical deletion occurs.
 
+-- §46.1: FORCE RLS must never turn the cross-tenant precheck into a false zero (0272 pattern).
+SELECT set_config('row_security', 'off', true);
+DO $$
+DECLARE
+  invalid_operations bigint;
+BEGIN
+  SELECT count(*) INTO invalid_operations FROM control.confirm_tokens
+   WHERE operation NOT IN ('memory.supersede','memory.pin','memory.unpin','memory.restore','memory.archive',
+     'memory.unarchive','memory.correct','memory.confirm','memory.reject','memory.bind','memory.unbind',
+     'memory.note_put','memory.forget','account.delete');
+  IF invalid_operations <> 0 THEN
+    RAISE EXCEPTION '0278: control.confirm_tokens has % rows outside the operation closed set; refusing migration',
+      invalid_operations USING ERRCODE = 'check_violation';
+  END IF;
+END;
+$$;
+SELECT set_config('row_security', 'on', true);
+
 ALTER TABLE control.confirm_tokens ADD CONSTRAINT confirm_tokens_operation_closed_set
   CHECK (operation IN ('memory.supersede','memory.pin','memory.unpin','memory.restore','memory.archive',
     'memory.unarchive','memory.correct','memory.confirm','memory.reject','memory.bind','memory.unbind',

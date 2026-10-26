@@ -1,10 +1,22 @@
 # §46.1 / ADR-0092 D-B, D-C: additive closed token vocabulary and the gateway-only owner accept door.
 migration_id = "0278_deletion_accept"
 class = "EXPAND_CONTRACT"
+# §46.1: plan the cross-tenant count only after row_security=off, as in 0272; non-bypass migrators fail closed.
 precheck = """
-select to_regclass('control.deletion_targets') is not null
- and to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)') is null
- as precheck_ok
+with invalid_operations as materialized (
+ select case when (select set_config('row_security', 'off', true)) = 'off' then
+  (xpath('/row/n/text()', query_to_xml(
+   'select count(*) as n from control.confirm_tokens where operation not in (
+     ''memory.supersede'',''memory.pin'',''memory.unpin'',''memory.restore'',''memory.archive'',
+     ''memory.unarchive'',''memory.correct'',''memory.confirm'',''memory.reject'',''memory.bind'',''memory.unbind'',
+     ''memory.note_put'',''memory.forget'',''account.delete'')', false, true, '')))[1]::text::bigint
+  else null end as n
+)
+select case when n <> 0 then
+ ('0278: control.confirm_tokens has ' || n || ' rows outside the operation closed set; refusing migration')::boolean
+ else n = 0 and to_regclass('control.deletion_targets') is not null
+  and to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)') is null
+ end as precheck_ok from invalid_operations
 """
 postcheck = """
 select (select count(*) = 1 from pg_proc p

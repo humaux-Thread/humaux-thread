@@ -645,7 +645,7 @@ fn seed_purgeable(db: &mut Db, tenant: &str) {
                     RETURNING workspace_id) \
          INSERT INTO control.confirm_tokens (tenant_id, user_id, operation, target_id, nonce_sha256, issued_at, \
            expires_at, workspace_id) \
-         SELECT '{tenant}', u.user_id, 'c35.once', gen_random_uuid(), \
+         SELECT '{tenant}', u.user_id, 'memory.pin', gen_random_uuid(), \
                 sha256(convert_to(gen_random_uuid()::text, 'UTF8')), now() - interval '1 day', \
                 now() - interval '1 minute', w.workspace_id FROM u, w; \
          INSERT INTO ops.selection_snapshots (tenant_id, query_fingerprint, expires_at) \
