@@ -1709,6 +1709,10 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
     // updates or deletes it (the owner reads it for replay). A named table, so the `ops.*` domain default (SELECT,
     // INSERT, UPDATE for the gateway) does not apply.
     cell!("ops.retrieval_query_log", "role_gateway", ["INSERT"]),
+    // 0272 (M19-2, ADR-0092 D-A): the frozen deletion closure. The gateway previews it and the maintenance executor reads it;
+    // the only writer is the owner door control.deletion_request_freeze, so no runtime role holds a write privilege (D3).
+    cell!("control.deletion_targets", "role_gateway", ["SELECT"]),
+    cell!("control.deletion_targets", "role_maintenance", ["SELECT"]),
 ];
 
 /// Named §6.2.2 tables whose non-owner cells are all deliberately empty. Their only public

@@ -4,11 +4,14 @@
 //!   `tombstoned_unpurged_over_sla` gauge ([`tombstoned_unpurged_over_sla`]), and — §23.4 G23-2 — the two PG-side
 //!   overlay reads a literal/EXACT-channel lane needs ([`count_excluding_tombstoned`], [`state_of`]), sharing this
 //!   module's own `state <> 'TOMBSTONED'` knowledge instead of a caller re-deriving it.
-//! Depends-on: crates=[humaux-application, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, ops.deletion_plan_steps] w=[projection.stream_log] x=[ops.record_deletion_plan_step]]; env=[]; modules=[adapters::postgres, application::forget, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_edges, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::error, domain::identity, projection::stream]
 //! Called-by: [tests]
 //! Invariants: [every call opens its own transaction and sets humaux.tenant_id first; the * -> TOMBSTONED edge and
-//!   plan-step bookkeeping run only on role_maintenance; a PG error aborts the step so the plan stays resumable]
-//! Spec: Baseline §3; §78.3
+//!   plan-step bookkeeping run only on role_maintenance; a PG error aborts the step so the plan stays resumable; a
+//!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A); the
+//!   preview reads Memory visibility only through read_gate::readable_memory_ids and Evidence only under the caller's
+//!   RLS, and counts after both filters (G-M19-1)]
+//! Spec: Baseline §3; §78.3; §37; ADR-0092 D-A, D-B
 //!
 //! `humaux_application::forget` decides *what* to delete and *in what order* (pure, no IO,
 //! §3/§78.3); this module is the only place that decision turns into SQL — same split as
@@ -27,10 +30,19 @@
 use sqlx::Row;
 use sqlx::types::Uuid;
 
-use humaux_application::forget::DeletionStep;
+use std::collections::BTreeSet;
+
+use humaux_application::forget::{
+    DeletionScopeKind, DeletionStep, DeletionTarget, DeletionTargetKind, ImpactPreview,
+    VisibleMemory, evidence_closure_targets, manifest_hash, memory_scope_targets,
+};
+use humaux_domain::error::ErrorCode;
+use humaux_domain::identity::AuthorizationScope;
 use humaux_projection::stream::StreamKey;
 
+use crate::context_repo::set_authorization_local;
 use crate::postgres::MaintenanceDbPool;
+use crate::read_gate::readable_memory_ids;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -39,6 +51,8 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 #[derive(Debug)]
 pub enum ForgetRepoError {
     Db(sqlx::Error),
+    /// An `EVIDENCE_CLOSURE` request named no root: there is nothing to freeze.
+    NoRoots,
 }
 
 impl From<sqlx::Error> for ForgetRepoError {
@@ -51,6 +65,7 @@ impl std::fmt::Display for ForgetRepoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Db(e) => write!(f, "forget_repo DB error: {e}"),
+            Self::NoRoots => write!(f, "forget_repo: EVIDENCE_CLOSURE needs at least one root"),
         }
     }
 }
@@ -286,9 +301,11 @@ where
 
 /// §41.2 `tombstoned_unpurged_over_sla` (gauge, §65 job收尾 takes the reading) — current-
 /// computed, never a materialized column (§37.2's own "现算不落列" reasoning extends to this
-/// metric, not only to `deleted`). Counts `TOMBSTONED` `stream_log` rows, settled longer than
-/// `sla` ago, whose matching `deletion_requests` row has no recorded `QDRANT_POINTS` step yet
+/// metric, not only to `deleted`). Counts `TOMBSTONED` `stream_log` rows of the tenant, settled longer than
+/// `sla` ago, while the tenant has a logically deleted `deletion_requests` row with no recorded `QDRANT_POINTS` step yet
 /// (step 5, the physical purge — §37: "字节还在...它必须有自己的出口").
+// ponytail: since 0272 a request no longer names a stream key, so the gauge is tenant-wide while any request is unpurged
+// (it can over-count rows tombstoned by an older purged request); M19-3a's seq-to-request binding restores the per-row join.
 pub async fn tombstoned_unpurged_over_sla(
     pool: &MaintenanceDbPool,
     tenant_id: Uuid,
@@ -301,18 +318,17 @@ pub async fn tombstoned_unpurged_over_sla(
     let row = sqlx::query(
         "SELECT count(*) AS n \
            FROM projection.stream_log s \
-           JOIN control.deletion_requests d \
-             ON d.tenant_id = s.tenant_id AND d.scope_kind = s.scope_kind \
-            AND d.scope_id = s.scope_id AND d.domain = s.domain \
-            AND d.projection_kind = s.projection_kind \
-            AND d.projection_version = s.projection_version AND d.stream_seq = s.stream_seq \
           WHERE s.tenant_id = $1 \
             AND s.state = 'TOMBSTONED' \
             AND s.settled_at < now() - (interval '1 second' * $2::bigint) \
-            AND NOT EXISTS ( \
-                SELECT 1 FROM ops.deletion_plan_steps p \
-                 WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
-                   AND p.step = 'QDRANT_POINTS' \
+            AND EXISTS ( \
+                SELECT 1 FROM control.deletion_requests d \
+                 WHERE d.tenant_id = $1 AND d.logical_deleted_at IS NOT NULL \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM ops.deletion_plan_steps p \
+                        WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
+                          AND p.step = 'QDRANT_POINTS' \
+                   ) \
             )",
     )
     .bind(tenant_id)
@@ -322,4 +338,270 @@ pub async fn tombstoned_unpurged_over_sla(
     txn.commit().await?;
 
     Ok(row.try_get::<i64, _>("n")?)
+}
+
+/// A request recorded by [`freeze_memory_in_txn`] / [`freeze_evidence_closure_in_txn`]: its id, the hash of the frozen
+/// closure and the closure itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenDeletion {
+    pub request_id: Uuid,
+    pub manifest_hash: [u8; 32],
+    pub targets: Vec<DeletionTarget>,
+}
+
+/// Records one request and its frozen targets through `control.deletion_request_freeze` (the only write path, 0272).
+async fn freeze_in_txn(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    requested_by: Uuid,
+    scope_kind: DeletionScopeKind,
+    scope_id: Uuid,
+    targets: Vec<DeletionTarget>,
+) -> Result<FrozenDeletion, ForgetRepoError> {
+    set_tenant_local(txn, tenant_id).await?;
+    let hash = manifest_hash(&targets);
+    let kinds: Vec<String> = targets
+        .iter()
+        .map(|t| t.kind.as_db_str().to_owned())
+        .collect();
+    let ids: Vec<Uuid> = targets.iter().map(|t| t.id).collect();
+    let row = sqlx::query(
+        "SELECT control.deletion_request_freeze($1, $2, $3, $4, $5, $6::text[], $7::uuid[]) AS request_id",
+    )
+    .bind(tenant_id)
+    .bind(scope_kind.as_db_str())
+    .bind(scope_id)
+    .bind(requested_by)
+    .bind(hash.as_slice())
+    .bind(kinds)
+    .bind(ids)
+    .fetch_one(&mut **txn)
+    .await?;
+    Ok(FrozenDeletion {
+        request_id: row.try_get("request_id")?,
+        manifest_hash: hash,
+        targets,
+    })
+}
+
+/// Freezes a `MEMORY`-scope request (ADR-0092 D-A): the Memory alone, its source Evidence retained.
+pub async fn freeze_memory_in_txn(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    requested_by: Uuid,
+    memory_id: Uuid,
+) -> Result<FrozenDeletion, ForgetRepoError> {
+    let targets = memory_scope_targets(memory_id);
+    freeze_in_txn(
+        txn,
+        tenant_id,
+        requested_by,
+        DeletionScopeKind::Memory,
+        memory_id,
+        targets,
+    )
+    .await
+}
+
+type UuidPairs = Vec<(Uuid, Uuid)>;
+
+/// `(parent, child)` DERIVED_FROM edges and `(memory, evidence)` links of one tenant, for the closure walk.
+async fn closure_inputs(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+) -> Result<(UuidPairs, UuidPairs), sqlx::Error> {
+    let edges = sqlx::query(
+        "SELECT e.parent_evidence_id, e.child_evidence_id FROM private.evidence_edges e \
+           JOIN private.evidence_objects o ON o.evidence_id = e.child_evidence_id \
+          WHERE o.tenant_id = $1 AND e.relation = 'DERIVED_FROM'",
+    )
+    .bind(tenant_id)
+    .fetch_all(&mut **txn)
+    .await?;
+    let links = sqlx::query(
+        "SELECT me.memory_id, me.evidence_id FROM private.memory_evidence me \
+           JOIN private.memory_records m ON m.memory_id = me.memory_id \
+          WHERE m.tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_all(&mut **txn)
+    .await?;
+    let pairs = |rows: Vec<sqlx::postgres::PgRow>| -> Result<UuidPairs, sqlx::Error> {
+        rows.iter()
+            .map(|r| -> Result<(Uuid, Uuid), sqlx::Error> {
+                Ok((r.try_get::<Uuid, _>(0)?, r.try_get::<Uuid, _>(1)?))
+            })
+            .collect()
+    };
+    Ok((pairs(edges)?, pairs(links)?))
+}
+
+/// Freezes an `EVIDENCE_CLOSURE`-scope request from explicit `roots` (ADR-0092 D-A, ADR-0079 D-J). The scope id is the
+/// smallest root (an anchor; every root is itself a target).
+///
+/// The walk sees what the connection's RLS context sees: the caller must run it in a context that reads the whole closure
+/// (the closure is frozen from that view, preview filtering happens later in [`preview_in_txn`]).
+// ponytail: loads the tenant's DERIVED_FROM edges and memory links whole, upgrade to a recursive CTE with the purge door (M19-5).
+pub async fn freeze_evidence_closure_in_txn(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    requested_by: Uuid,
+    roots: &[Uuid],
+) -> Result<FrozenDeletion, ForgetRepoError> {
+    let anchor = *roots.iter().min().ok_or(ForgetRepoError::NoRoots)?;
+    set_tenant_local(txn, tenant_id).await?;
+    let (edges, links) = closure_inputs(txn, tenant_id).await?;
+    let targets = evidence_closure_targets(roots, &edges, &links);
+    freeze_in_txn(
+        txn,
+        tenant_id,
+        requested_by,
+        DeletionScopeKind::EvidenceClosure,
+        anchor,
+        targets,
+    )
+    .await
+}
+
+/// The frozen request row as the preview needs it.
+struct StoredRequest {
+    scope_kind: DeletionScopeKind,
+    manifest_hash: [u8; 32],
+    memory_ids: Vec<Uuid>,
+    evidence_ids: Vec<Uuid>,
+}
+
+fn dependency(_: sqlx::Error) -> ErrorCode {
+    ErrorCode::DependencyUnavailable
+}
+
+async fn load_request(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    request_id: Uuid,
+) -> Result<StoredRequest, ErrorCode> {
+    let head = sqlx::query(
+        "SELECT scope_kind, manifest_hash FROM control.deletion_requests \
+          WHERE tenant_id = $1 AND deletion_request_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(request_id)
+    .fetch_optional(&mut **txn)
+    .await
+    .map_err(dependency)?
+    .ok_or(ErrorCode::NotFound)?;
+    let scope_kind =
+        DeletionScopeKind::from_db_str(head.try_get::<&str, _>("scope_kind").map_err(dependency)?)
+            .ok_or(ErrorCode::Internal)?;
+    let hash: Vec<u8> = head.try_get("manifest_hash").map_err(dependency)?;
+    let manifest_hash: [u8; 32] = hash.try_into().map_err(|_| ErrorCode::Internal)?;
+    let rows = sqlx::query(
+        "SELECT kind, id FROM control.deletion_targets WHERE tenant_id = $1 AND request_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(request_id)
+    .fetch_all(&mut **txn)
+    .await
+    .map_err(dependency)?;
+    let mut stored = StoredRequest {
+        scope_kind,
+        manifest_hash,
+        memory_ids: Vec::new(),
+        evidence_ids: Vec::new(),
+    };
+    for row in rows {
+        let kind =
+            DeletionTargetKind::from_db_str(row.try_get::<&str, _>("kind").map_err(dependency)?)
+                .ok_or(ErrorCode::Internal)?;
+        let id: Uuid = row.try_get("id").map_err(dependency)?;
+        match kind {
+            DeletionTargetKind::Memory => stored.memory_ids.push(id),
+            DeletionTargetKind::Evidence => stored.evidence_ids.push(id),
+        }
+    }
+    Ok(stored)
+}
+
+async fn visible_titles(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    readable: &[Uuid],
+) -> Result<Vec<VisibleMemory>, ErrorCode> {
+    let rows = sqlx::query(
+        "SELECT m.memory_id, mt.title FROM private.memory_records m \
+           LEFT JOIN private.memory_text_v mt ON mt.tenant_id = m.tenant_id AND mt.memory_id = m.memory_id \
+          WHERE m.tenant_id = $1 AND m.memory_id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(readable)
+    .fetch_all(&mut **txn)
+    .await
+    .map_err(dependency)?;
+    rows.iter()
+        .map(|row| -> Result<VisibleMemory, ErrorCode> {
+            Ok(VisibleMemory {
+                memory_id: row.try_get("memory_id").map_err(dependency)?,
+                title: row.try_get("title").map_err(dependency)?,
+            })
+        })
+        .collect()
+}
+
+/// Closure Evidence the caller's RLS context can read, and which of it links two or more subjects.
+async fn visible_evidence(
+    txn: &mut Txn<'_>,
+    tenant_id: Uuid,
+    candidates: &[Uuid],
+) -> Result<(BTreeSet<Uuid>, BTreeSet<Uuid>), ErrorCode> {
+    let readable = sqlx::query("SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = $1 AND evidence_id = ANY($2)")
+        .bind(tenant_id)
+        .bind(candidates)
+        .fetch_all(&mut **txn)
+        .await
+        .map_err(dependency)?;
+    let readable: BTreeSet<Uuid> = readable
+        .iter()
+        .map(|r| r.try_get::<Uuid, _>("evidence_id").map_err(dependency))
+        .collect::<Result<_, _>>()?;
+    let ids: Vec<Uuid> = readable.iter().copied().collect();
+    let multi = sqlx::query(
+        "SELECT evidence_id FROM private.evidence_subjects WHERE tenant_id = $1 AND evidence_id = ANY($2) \
+          GROUP BY evidence_id HAVING count(DISTINCT subject_id) >= 2",
+    )
+    .bind(tenant_id)
+    .bind(&ids)
+    .fetch_all(&mut **txn)
+    .await
+    .map_err(dependency)?;
+    let multi: BTreeSet<Uuid> = multi
+        .iter()
+        .map(|r| r.try_get::<Uuid, _>("evidence_id").map_err(dependency))
+        .collect::<Result<_, _>>()?;
+    Ok((readable, multi))
+}
+
+/// D2 round-1 impact preview of a frozen request, for `authorization`. Memories are judged by
+/// [`readable_memory_ids`] (the M08 gate), Evidence by the caller's RLS; the counts, titles and multi-person list are built
+/// from those readable sets alone (G-M19-1), and the stored `manifest_hash` is returned as frozen.
+pub async fn preview_in_txn(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    request_id: Uuid,
+) -> Result<ImpactPreview, ErrorCode> {
+    let tenant_id = authorization.tenant_id().0;
+    set_authorization_local(txn, authorization).await?;
+    let stored = load_request(txn, tenant_id, request_id).await?;
+    let readable: Vec<Uuid> = readable_memory_ids(txn, authorization, &stored.memory_ids)
+        .await?
+        .into_iter()
+        .collect();
+    let memories = visible_titles(txn, tenant_id, &readable).await?;
+    let (evidence, multi_person) = visible_evidence(txn, tenant_id, &stored.evidence_ids).await?;
+    Ok(ImpactPreview::from_visible(
+        stored.scope_kind,
+        &memories,
+        &evidence,
+        &multi_person,
+        stored.manifest_hash,
+    ))
 }

@@ -187,22 +187,22 @@ fn seed_done_rows(admin: &mut Client, key: &StreamKey, count: i64) {
     }
 }
 
-fn seed_deletion_request(admin: &mut Client, key: &StreamKey, seq: i64) -> Uuid {
+/// A v2 request (0272) that is already logically deleted — the state `tombstoned_unpurged_over_sla` watches.
+fn seed_deletion_request(admin: &mut Client, tenant_id: Uuid) -> Uuid {
+    let user_id: Uuid = admin
+        .query_one(
+            "INSERT INTO control.users (state) VALUES ('ACTIVE') RETURNING user_id",
+            &[],
+        )
+        .expect("seed requester")
+        .get(0);
     admin
         .query_one(
             "INSERT INTO control.deletion_requests \
-               (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
-                stream_seq) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING deletion_request_id",
-            &[
-                &key.tenant_id.0,
-                &key.scope_kind,
-                &key.scope_id,
-                &key.domain,
-                &key.projection_kind,
-                &key.projection_version,
-                &seq,
-            ],
+               (tenant_id, scope_kind, scope_id, requested_by, manifest_hash, logical_deleted_at) \
+             VALUES ($1, 'MEMORY', $2, $3, sha256('forget_repo'::bytea), now()) \
+             RETURNING deletion_request_id",
+            &[&tenant_id, &Uuid::new_v4(), &user_id],
         )
         .expect("seed control.deletion_requests row")
         .get(0)
@@ -332,7 +332,7 @@ fn purge_replay_resumes_without_repeating_completed_steps() {
             let k = key(&handle);
             seed_checkpoint(&mut handle.admin, &k, 1);
             seed_done_rows(&mut handle.admin, &k, 1);
-            let request_id = seed_deletion_request(&mut handle.admin, &k, 1);
+            let request_id = seed_deletion_request(&mut handle.admin, handle.tenant_id);
             let tenant_id = handle.tenant_id;
 
             // Simulate a crash right after step 1 (tombstone) by recording it directly,
@@ -428,7 +428,7 @@ fn tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step() {
             let k = key(&handle);
             seed_checkpoint(&mut handle.admin, &k, 1);
             seed_done_rows(&mut handle.admin, &k, 1);
-            let request_id = seed_deletion_request(&mut handle.admin, &k, 1);
+            let request_id = seed_deletion_request(&mut handle.admin, handle.tenant_id);
             let tenant_id = handle.tenant_id;
 
             handle

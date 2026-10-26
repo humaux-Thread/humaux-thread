@@ -28,7 +28,7 @@ rand = "0.9"
 # second independent version in the dependency graph.
 # why: verification-code HMAC and the signed-token MAC; used-by: [application::auth, application::signed_token]
 hmac = "0.13"
-# why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::oauth, application::referral, application::signed_token]
+# why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::forget, application::oauth, application::referral, application::signed_token]
 sha2 = "0.11"
 # why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::referral, application::signed_token]
 hex = "0.4"
@@ -47,7 +47,7 @@ thiserror = "2"
 async-trait = "0.1"
 # `consolidate::PrivateReasoningDomainId`'s inner id — same pin as `humaux-domain`'s existing
 # `uuid = "1.25.0"`, no new independent version in the dependency graph.
-# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::oauth, application::pin, application::public_evolve, application::retrieval_embedding_port]
+# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::forget, application::oauth, application::pin, application::public_evolve, application::retrieval_embedding_port]
 uuid = "1.25.0"
 # §73.5 S256 verification: RFC 7636 unpadded base64url of the verifier digest; same pin as `humaux-adapters`.
 # why: unpadded base64url encoding of the PKCE S256 digest; used-by: [application::oauth]

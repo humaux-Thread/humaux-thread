@@ -1,9 +1,11 @@
 //! `application::forget` — T4.8: §37 `DeletionPlan` step order, deletion state machine, and `DeletionGraph`
 //!   provenance closure.
-//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[]
 //! Called-by: [adapters::forget_repo, tests]
-//! Invariants: []
-//! Spec: §37; §3; §78.3; §37.2
+//! Invariants: [a manifest hash is a function of the SET of (kind, id) targets only: order- and duplicate-insensitive, and
+//!   one target more or less changes it; an ImpactPreview is built only from already-visibility-filtered inputs, so a
+//!   count or a title of an unreadable object cannot be expressed]
+//! Spec: §37; §3; §78.3; §37.2; ADR-0092 D-A, D-B; ADR-0079 D-J
 //!
 //! Pure, no I/O — same rule as every other module in this crate (see `scheduler.rs`'s doc:
 //! `humaux-application`'s `Cargo.toml` carries no SQL/HTTP driver dependency, §3/§78.3).
@@ -15,6 +17,9 @@
 //! transitions, and which derived objects a deletion must cascade to.
 
 use std::collections::BTreeSet;
+
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 /// §37 `DeletionPlan`'s eight steps, in the frozen order — tombstone first, not last
 /// (§37: "旧顺序（第 4 步删 point、第 8 步才写 tombstone）...作废"). The ordinal doubling as
@@ -340,6 +345,205 @@ impl DeletionGraph {
     }
 }
 
+/// The five deletion scopes of ADR-0092 D-A. The DB text form mirrors `control.deletion_requests.scope_kind`'s CHECK (0272);
+/// the pairing is reconciled by a contract test (§78.2). Only `Memory` and `EvidenceClosure` have a closure fn so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeletionScopeKind {
+    Memory,
+    EvidenceClosure,
+    Subject,
+    Document,
+    Tenant,
+}
+
+impl DeletionScopeKind {
+    /// Every scope, in the CHECK's order.
+    pub const ALL: [DeletionScopeKind; 5] = [
+        DeletionScopeKind::Memory,
+        DeletionScopeKind::EvidenceClosure,
+        DeletionScopeKind::Subject,
+        DeletionScopeKind::Document,
+        DeletionScopeKind::Tenant,
+    ];
+
+    /// Stable DB text form (`control.deletion_requests.scope_kind`).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Memory => "MEMORY",
+            Self::EvidenceClosure => "EVIDENCE_CLOSURE",
+            Self::Subject => "SUBJECT",
+            Self::Document => "DOCUMENT",
+            Self::Tenant => "TENANT",
+        }
+    }
+
+    /// Inverse of [`Self::as_db_str`]; `None` outside the closed set.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_db_str() == s)
+    }
+}
+
+/// What a frozen target row names (`control.deletion_targets.kind`, 0272's CHECK).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeletionTargetKind {
+    Memory,
+    Evidence,
+}
+
+impl DeletionTargetKind {
+    /// Every target kind, in the CHECK's order.
+    pub const ALL: [DeletionTargetKind; 2] =
+        [DeletionTargetKind::Memory, DeletionTargetKind::Evidence];
+
+    /// Stable DB text form (`control.deletion_targets.kind`).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Memory => "MEMORY",
+            Self::Evidence => "EVIDENCE",
+        }
+    }
+
+    /// Inverse of [`Self::as_db_str`]; `None` outside the closed set.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_db_str() == s)
+    }
+}
+
+/// One member of a frozen closure: ids only, never content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeletionTarget {
+    pub kind: DeletionTargetKind,
+    pub id: Uuid,
+}
+
+/// `MEMORY` scope closure (ADR-0092 D-A): the Memory alone; its source Evidence is retained (`source_retained = true`).
+pub fn memory_scope_targets(memory_id: Uuid) -> Vec<DeletionTarget> {
+    vec![DeletionTarget {
+        kind: DeletionTargetKind::Memory,
+        id: memory_id,
+    }]
+}
+
+/// `EVIDENCE_CLOSURE` scope closure (ADR-0092 D-A, ADR-0079 D-J): `roots` plus every Evidence transitively `DERIVED_FROM`
+/// them (`derived_from` = `(parent, child)` rows of `private.evidence_edges`), plus every Memory with ANY input in that
+/// Evidence set, as a whole (the ADR-0079 common-dependency rule; `memory_inputs` = `(memory, evidence)` rows of
+/// `private.memory_evidence`). Sorted, duplicate-free.
+// ponytail: walks the edge list in memory (one scan per frontier node), upgrade to a recursive CTE when a tenant's edge
+// count makes the load measurable.
+pub fn evidence_closure_targets(
+    roots: &[Uuid],
+    derived_from: &[(Uuid, Uuid)],
+    memory_inputs: &[(Uuid, Uuid)],
+) -> Vec<DeletionTarget> {
+    let graph = DeletionGraph::new(
+        derived_from
+            .iter()
+            .map(|(parent, child)| (parent.to_string(), child.to_string()))
+            .collect(),
+    );
+    let root_keys: Vec<String> = roots.iter().map(Uuid::to_string).collect();
+    let evidence: BTreeSet<Uuid> = graph
+        .cascade_closure(&root_keys)
+        .iter()
+        .filter_map(|key| Uuid::parse_str(key).ok())
+        .collect();
+    let mut targets: BTreeSet<DeletionTarget> = evidence
+        .iter()
+        .map(|id| DeletionTarget {
+            kind: DeletionTargetKind::Evidence,
+            id: *id,
+        })
+        .collect();
+    targets.extend(
+        memory_inputs
+            .iter()
+            .filter(|(_, evidence_id)| evidence.contains(evidence_id))
+            .map(|(memory_id, _)| DeletionTarget {
+                kind: DeletionTargetKind::Memory,
+                id: *memory_id,
+            }),
+    );
+    targets.into_iter().collect()
+}
+
+/// Domain separator of [`manifest_hash`]; a change is a new manifest version.
+const MANIFEST_HASH_DOMAIN: &[u8] = b"humaux.deletion.manifest.v1\n";
+
+/// `manifest_hash` of a frozen closure: SHA-256 over the canonical, sorted, duplicate-free `(kind, id)` list. The sole
+/// producer of the value stored in `control.deletion_requests.manifest_hash` and later bound into the confirm token.
+pub fn manifest_hash(targets: &[DeletionTarget]) -> [u8; 32] {
+    let canonical: BTreeSet<(&'static str, Uuid)> = targets
+        .iter()
+        .map(|target| (target.kind.as_db_str(), target.id))
+        .collect();
+    let mut hasher = Sha256::new();
+    hasher.update(MANIFEST_HASH_DOMAIN);
+    for (kind, id) in canonical {
+        hasher.update(kind.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(id.as_bytes());
+    }
+    hasher.finalize().into()
+}
+
+/// A Memory the caller may read, as the preview sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleMemory {
+    pub memory_id: Uuid,
+    pub title: Option<String>,
+}
+
+/// D2 round-1 impact preview. Every count, title and id in it comes from objects the caller may read: the only constructor
+/// takes the already-filtered sets, so an unreadable target cannot change a displayed number (G-M19-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImpactPreview {
+    pub scope_kind: DeletionScopeKind,
+    /// Readable Memories in the closure.
+    pub memory_count: usize,
+    /// Readable Evidence rows in the closure.
+    pub evidence_count: usize,
+    /// Titles of the readable Memories that have one, sorted.
+    pub memory_titles: Vec<String>,
+    /// Readable closure Evidence linked to two or more subjects, sorted.
+    pub multi_person_evidence: Vec<Uuid>,
+    /// `true` for `MEMORY` scope (D-A: the source Evidence stays).
+    pub source_retained: bool,
+    /// Always `false`: a confirmed deletion is not restorable (D2).
+    pub restore_supported: bool,
+    /// Hash of the whole frozen closure, readable or not; carries no count or title.
+    pub manifest_hash: [u8; 32],
+}
+
+impl ImpactPreview {
+    /// The only way to build a preview. `multi_person` is intersected with `visible_evidence` here.
+    pub fn from_visible(
+        scope_kind: DeletionScopeKind,
+        visible_memories: &[VisibleMemory],
+        visible_evidence: &BTreeSet<Uuid>,
+        multi_person: &BTreeSet<Uuid>,
+        manifest_hash: [u8; 32],
+    ) -> Self {
+        let mut memory_titles: Vec<String> = visible_memories
+            .iter()
+            .filter_map(|memory| memory.title.clone())
+            .collect();
+        memory_titles.sort();
+        Self {
+            scope_kind,
+            memory_count: visible_memories.len(),
+            evidence_count: visible_evidence.len(),
+            memory_titles,
+            multi_person_evidence: multi_person
+                .intersection(visible_evidence)
+                .copied()
+                .collect(),
+            source_retained: scope_kind == DeletionScopeKind::Memory,
+            restore_supported: false,
+            manifest_hash,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +690,147 @@ mod tests {
     fn subsystem_checklist_has_eight_distinct_entries() {
         let set: BTreeSet<_> = DeletionSubsystem::CHECKLIST.into_iter().collect();
         assert_eq!(set.len(), 8);
+    }
+
+    fn id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn target(kind: DeletionTargetKind, n: u128) -> DeletionTarget {
+        DeletionTarget { kind, id: id(n) }
+    }
+
+    /// Reconciles with 0272's two CHECK lists (§78.2): the literals are the migration's, byte for byte.
+    #[test]
+    fn scope_and_target_kinds_match_the_0272_check_sets() {
+        assert_eq!(
+            DeletionScopeKind::ALL.map(DeletionScopeKind::as_db_str),
+            [
+                "MEMORY",
+                "EVIDENCE_CLOSURE",
+                "SUBJECT",
+                "DOCUMENT",
+                "TENANT"
+            ]
+        );
+        for kind in DeletionScopeKind::ALL {
+            assert_eq!(DeletionScopeKind::from_db_str(kind.as_db_str()), Some(kind));
+        }
+        assert_eq!(DeletionScopeKind::from_db_str("memory"), None);
+        assert_eq!(
+            DeletionTargetKind::ALL.map(DeletionTargetKind::as_db_str),
+            ["MEMORY", "EVIDENCE"]
+        );
+        for kind in DeletionTargetKind::ALL {
+            assert_eq!(
+                DeletionTargetKind::from_db_str(kind.as_db_str()),
+                Some(kind)
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_closure_follows_derived_from_and_takes_every_memory_with_an_input_whole() {
+        // e1 -> e2 -> e3 derived chain; e9 unrelated. m1 reads e1, m2 reads e3 AND e9 (any input in the closure is enough),
+        // m3 reads only e9.
+        let derived = [(id(1), id(2)), (id(2), id(3))];
+        let inputs = [
+            (id(101), id(1)),
+            (id(102), id(3)),
+            (id(102), id(9)),
+            (id(103), id(9)),
+        ];
+        let got = evidence_closure_targets(&[id(1)], &derived, &inputs);
+        let want = vec![
+            target(DeletionTargetKind::Memory, 101),
+            target(DeletionTargetKind::Memory, 102),
+            target(DeletionTargetKind::Evidence, 1),
+            target(DeletionTargetKind::Evidence, 2),
+            target(DeletionTargetKind::Evidence, 3),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn memory_scope_is_the_memory_alone() {
+        assert_eq!(
+            memory_scope_targets(id(5)),
+            vec![target(DeletionTargetKind::Memory, 5)]
+        );
+    }
+
+    #[test]
+    fn manifest_hash_is_deterministic_order_insensitive_and_sensitive_to_one_more_target() {
+        let a = target(DeletionTargetKind::Memory, 1);
+        let b = target(DeletionTargetKind::Evidence, 1);
+        let c = target(DeletionTargetKind::Evidence, 2);
+        let base = manifest_hash(&[a, b]);
+        assert_eq!(base, manifest_hash(&[a, b]));
+        assert_eq!(
+            base,
+            manifest_hash(&[b, a, b]),
+            "order and duplicates do not matter"
+        );
+        assert_ne!(
+            base,
+            manifest_hash(&[a, b, c]),
+            "one target more changes the hash"
+        );
+        assert_ne!(
+            base,
+            manifest_hash(&[a]),
+            "one target less changes the hash"
+        );
+        assert_ne!(
+            manifest_hash(&[a]),
+            manifest_hash(&[b]),
+            "the kind is part of the identity"
+        );
+    }
+
+    #[test]
+    fn preview_counts_only_the_visible_inputs_and_never_restores() {
+        let visible = [
+            VisibleMemory {
+                memory_id: id(1),
+                title: Some("b".into()),
+            },
+            VisibleMemory {
+                memory_id: id(2),
+                title: Some("a".into()),
+            },
+            VisibleMemory {
+                memory_id: id(3),
+                title: None,
+            },
+        ];
+        let evidence = BTreeSet::from([id(10), id(11)]);
+        // id(12) is multi-person but not visible: it must not be listed.
+        let multi = BTreeSet::from([id(11), id(12)]);
+        let preview = ImpactPreview::from_visible(
+            DeletionScopeKind::EvidenceClosure,
+            &visible,
+            &evidence,
+            &multi,
+            [7u8; 32],
+        );
+        assert_eq!(preview.memory_count, 3);
+        assert_eq!(preview.evidence_count, 2);
+        assert_eq!(
+            preview.memory_titles,
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(preview.multi_person_evidence, vec![id(11)]);
+        assert!(!preview.source_retained);
+        assert!(!preview.restore_supported);
+        assert_eq!(preview.manifest_hash, [7u8; 32]);
+        let memory_scope = ImpactPreview::from_visible(
+            DeletionScopeKind::Memory,
+            &[],
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            [0; 32],
+        );
+        assert!(memory_scope.source_retained);
     }
 }
