@@ -1,4 +1,4 @@
-//! Public vocabulary's only idempotent write door (§12.3, ADR-0089 D-E).
+//! `public-pool::vocab` — Public vocabulary's only idempotent write door (§12.3, ADR-0089 D-E).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, sqlx]; services=[PostgreSQL(role_public_worker)
 //!   r=[public.concepts, public.concept_labels, public.concept_relations]
 //!   w=[public.concepts, public.concept_labels, public.concept_relations]]; env=[];
@@ -21,6 +21,7 @@ type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 /// Existing labels/relations must remain represented: the loader never silently keeps stale rows.
 pub async fn apply(pool: &PublicWorkerDbPool, source: &str, lock: &str) -> Result<(), ErrorCode> {
     let vocab = Vocabulary::parse(source, lock).map_err(|_| ErrorCode::InvalidInput)?;
+    // dep: PostgreSQL(role_public_worker) — §12.3 serialised public vocabulary snapshot.
     let mut tx = pool.raw_pool().begin().await.map_err(db_error)?;
     // §12.3: one vocabulary snapshot; concurrent loaders cannot race the removal checks.
     sqlx::query("LOCK TABLE public.concepts, public.concept_labels, public.concept_relations IN SHARE ROW EXCLUSIVE MODE")

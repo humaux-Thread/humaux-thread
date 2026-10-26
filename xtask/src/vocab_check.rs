@@ -1,6 +1,6 @@
-//! G-M20-16 controlled vocabulary anti-rot gate (§12.3, ADR-0089 D-E).
-//! Depends-on: crates=[]; services=[subprocess(git)]; env=[]; modules=[xtask::architecture_check, xtask::vocab_model]
-//! Called-by: [xtask::main, tests]
+//! `xtask::vocab_check` — G-M20-16 controlled vocabulary anti-rot gate (§12.3, ADR-0089 D-E).
+//! Depends-on: crates=[]; services=[subprocess(git)]; env=[]; modules=[public-pool::vocab::model, xtask::architecture_check]
+//! Called-by: [xtask::main]
 //! Invariants: [missing source/lock is FAIL; zero-use alone awaits public.unit_classifications]
 //! Spec: Baseline §12.3; §57.1; §80.1; ADR-0089 D-E
 
@@ -22,6 +22,7 @@ fn check(root: &Path) -> Verdict {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, Vec<String>> {
+    // dep: subprocess(git) — §12.3 append-only ids require repository history.
     let output = Command::new("git")
         .current_dir(root)
         .args(args)

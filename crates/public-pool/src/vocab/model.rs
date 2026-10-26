@@ -1,6 +1,6 @@
-//! Controlled vocabulary validation shared with the offline gate (§12.3, ADR-0089 D-E).
+//! `public-pool::vocab::model` — Controlled vocabulary validation shared with the offline gate (§12.3, ADR-0089 D-E).
 //! Depends-on: crates=[toml]; services=[]; env=[]; modules=[]
-//! Called-by: [public-pool::vocab, xtask::vocab_check]
+//! Called-by: [public-pool::vocab, tests, xtask::main, xtask::vocab_check]
 //! Invariants: [stable ids; BROADER is an intra-facet DAG; replacements are active]
 //! Spec: Baseline §12.3; §78.2; ADR-0089 D-E
 

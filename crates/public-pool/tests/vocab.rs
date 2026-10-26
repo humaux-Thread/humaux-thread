@@ -1,7 +1,7 @@
-//! Real-PostgreSQL vocabulary loader and closed-set contracts (G-M20-16, §78.2).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-public-pool, humaux-testkit, postgres, tokio];
+//! `public-pool::tests::vocab` — Real-PostgreSQL vocabulary loader and closed-set contracts (G-M20-16, §78.2).
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, tokio];
 //!   services=[PostgreSQL(any) r=[public.concepts, public.concept_labels, public.concept_relations], PostgreSQL(role_public_worker)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::error, public-pool::vocab, public-pool::vocab::model]
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::error, humaux-testkit, public-pool::vocab, public-pool::vocab::model]
 //! Called-by: [cargo-test]
 //! Invariants: [the production write door runs twice; exact full seed and CHECK sets; absent DB fails in CI]
 //! Spec: Baseline §12.3; §78.2; §79.2; ADR-0089 D-E; ADR-0090 D-B
@@ -120,12 +120,14 @@ async fn loader_idempotent_exact_seed_and_closed_checks() {
         );
         return;
     };
+    // dep: PostgreSQL(any) — §78.2 real catalog and exact seed rows.
     let mut admin = Client::connect(&dsn, NoTls).expect("CI PostgreSQL");
     contracts(&mut admin);
     let worker_dsn = format!(
         "{dsn}{}options=-c%20role%3Drole_public_worker",
         if dsn.contains('?') { '&' } else { '?' }
     );
+    // dep: PostgreSQL(role_public_worker) — §12.3 production writer identity.
     let worker = PublicWorkerDbPool::connect(&worker_dsn)
         .await
         .expect("typed worker pool");
