@@ -30,7 +30,7 @@
 
 - Instance and run legs ride in the M02 signed `context_ref` (`Bind`); a claim returns a run-bound reference, and
   `run_spawn` returns a child reference with a new instance and a restricted scope (note D7 :65-66; §9 M02 row :166).
-- Tool inputs never carry `agent_id`, `run_id`, `principal` or `fencing_token` (note D7 :66) (conflicts with ADR-0078 Q10; see Open research).
+- Tool inputs never carry `agent_id`, `run_id`, `principal` or `fencing_token` (note D7 :66; conflicts with ADR-0078 Q10, see Open research).
 
 ### D-C The lease owner is the instance; the principal authorises (note D7)
 

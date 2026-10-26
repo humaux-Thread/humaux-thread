@@ -44,8 +44,7 @@
   {STRUCTURE, USABILITY, AUTOMATED_TEST, INDEPENDENT_REVIEW, ACCEPTANCE} as a criterion class (note :259-260).
 - ADR-0080 D-C keeps the server-derived verifier, the `TrustedConnector` receipt whose `head_sha` is the run output,
   receipt-derived result/criterion for non-`AGENT_CHECK` verifiers; INDEPENDENT_REVIEW adds the M18 instance-lineage
-  check (D-E; note :264); M26 exposes one operation, `record_acceptance`, under the task tool, and there is no separate `gate_record` (note
-  :261-265).
+  check (D-E; note :264); M26 exposes one operation, `record_acceptance`, under the task tool, and there is no separate `gate_record` (note :265).
 
 ### D-E Independence is contributor lineage (note D11)
 
