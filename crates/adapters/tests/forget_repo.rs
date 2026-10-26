@@ -559,13 +559,13 @@ fn tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step() {
 /// §41.2 / #315: only a DONE receipt establishes physical erasure.
 #[test]
 fn failed_or_pending_purge_still_counts_as_unpurged() {
-    run_db_fixture::<ForgetFixture, _>(
-        "failed_or_pending_purge_still_counts_as_unpurged",
-        |mut handle| {
-            let row = seed_done_row(&mut handle, 600);
-            let request = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
-            tombstone_row(&handle, &row);
-            for outcome in ["FAILED", "EXTERNAL_PENDING", "CANNOT_ERASE"] {
+    for outcome in ["FAILED", "EXTERNAL_PENDING", "CANNOT_ERASE"] {
+        run_db_fixture::<ForgetFixture, _>(
+            "failed_or_pending_purge_still_counts_as_unpurged",
+            |mut handle| {
+                let row = seed_done_row(&mut handle, 600);
+                let request = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
+                tombstone_row(&handle, &row);
                 handle
                     .rt
                     .block_on(forget_repo::record_step(
@@ -578,11 +578,9 @@ fn failed_or_pending_purge_still_counts_as_unpurged() {
                     ))
                     .expect("record non-DONE purge");
                 assert_eq!(over_sla(&handle, 30), 1, "{outcome} is not erasure");
-            }
-            purge(&handle, request);
-            assert_eq!(over_sla(&handle, 30), 0);
-        },
-    );
+            },
+        );
+    }
 }
 
 /// Seeds 3 rows settled 3600 s ago under an old (1800 s) request that is purged, then tombstones them.
