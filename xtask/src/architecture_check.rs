@@ -14417,7 +14417,10 @@ runs:
             "a comment mention is not an occurrence"
         );
         assert_eq!(
-            allow_attribute_count("fn disallow(x: u8) -> u8 { x }", "too_many_lines"),
+            allow_attribute_count(
+                "fn f() { disallow(clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
             0,
             "disallow( is not the attribute"
         );
@@ -14449,12 +14452,18 @@ runs:
             "cfg_attr"
         );
         assert_eq!(
-            allow_attribute_count("fn disallow (x: u8) {}", "too_many_lines"),
+            allow_attribute_count(
+                "fn f() { disallow (clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
             0,
             "disallow ( is not the attribute"
         );
         assert_eq!(
-            allow_attribute_count("fn reallow (x: u8) {}", "too_many_lines"),
+            allow_attribute_count(
+                "fn f() { reallow (clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
             0,
             "reallow ( is not the attribute"
         );
