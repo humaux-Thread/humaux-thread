@@ -5788,6 +5788,7 @@ modules:
 - `adapters::tests::processing_runs_fingerprint_rerun`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
+- `adapters::tests::project_rollup`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
