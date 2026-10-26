@@ -473,7 +473,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.credential_pepper_state`
-- reads `control.deletion_targets`
 - reads `control.email_challenges`
 - reads `control.email_change_requests`
 - reads `control.entitlement_grants`
@@ -573,6 +572,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.identity_note_materializations`
 - reads `private.lower`
 - reads `private.memory_affects`
+- reads `private.memory_applicability`
 - reads `private.memory_consolidation_inputs`
 - reads `private.memory_consolidation_runs`
 - reads `private.memory_evidence`
@@ -842,9 +842,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_projects`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
+- reads `private.nodes`
 - reads `private.publish_continuity_facet`
 - reads `private.read_continuity_project_storage_v1`
 - reads `private.register_continuity_project`
+- reads `private.subjects`
+- reads `public.entities`
 - writes `private.context_bindings`
 - writes `private.evidence_objects`
 - writes `private.evidence_projects`
@@ -3176,7 +3179,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.credential_pepper_state`
-- reads `control.deletion_targets`
 - reads `control.email_challenges`
 - reads `control.email_change_requests`
 - reads `control.entitlement_grants`
@@ -3276,6 +3278,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.identity_note_materializations`
 - reads `private.lower`
 - reads `private.memory_affects`
+- reads `private.memory_applicability`
 - reads `private.memory_consolidation_inputs`
 - reads `private.memory_consolidation_runs`
 - reads `private.memory_evidence`
@@ -4934,6 +4937,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
@@ -5260,33 +5264,11 @@ executed by:
 - process(humaux-private-worker): `adapters::distill_repo`
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
-### `control.deletion_request_freeze`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::forget_repo`
-- (no process): `adapters::tests::forget_preview`
-
 ### `control.deletion_requests`
 read by:
 - (no process): `adapters::forget_repo`
 
 written by:
-- (no process): `adapters::tests::forget_preview`
-- (no process): `adapters::tests::forget_repo`
-
-executed by:
-
-### `control.deletion_targets`
-read by:
-- (no process): `adapters::forget_repo`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
 
 executed by:
@@ -5483,10 +5465,10 @@ read by:
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
@@ -5891,7 +5873,6 @@ written by:
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -6620,7 +6601,6 @@ written by:
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -6775,8 +6755,6 @@ written by:
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
-- (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -6843,7 +6821,6 @@ written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::projection_worker`
@@ -6875,7 +6852,6 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_attribution`
@@ -8693,6 +8669,14 @@ written by:
 
 executed by:
 
+### `private.decide_memory_applicability`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::applicability_repo`
+
 ### `private.declared_project_visible`
 read by:
 
@@ -8891,18 +8875,9 @@ written by:
 
 executed by:
 
-### `private.evidence_edges`
-read by:
-
-written by:
-- (no process): `adapters::tests::forget_preview`
-
-executed by:
-
 ### `private.evidence_objects`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
@@ -8982,6 +8957,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -8994,7 +8970,6 @@ written by:
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -9105,7 +9080,6 @@ executed by:
 
 ### `private.evidence_subjects`
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -9117,7 +9091,6 @@ read by:
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::subject_repo`
@@ -9309,6 +9282,18 @@ written by:
 executed by:
 - (no process): `adapters::tests::memory_affects`
 
+### `private.memory_applicability`
+read by:
+- (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::applicability`
+
+executed by:
+
 ### `private.memory_consolidation_inputs`
 read by:
 - process(cargo-xtask): `adapters::postgres`
@@ -9357,7 +9342,6 @@ executed by:
 
 ### `private.memory_evidence`
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
@@ -9440,7 +9424,6 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -9544,7 +9527,6 @@ executed by:
 ### `private.memory_records`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
@@ -9659,7 +9641,6 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -9856,7 +9837,6 @@ executed by:
 
 ### `private.memory_text_v`
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -9882,6 +9862,14 @@ read by:
 written by:
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `xtask::e2e_seed`
+
+executed by:
+
+### `private.nodes`
+read by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+written by:
 
 executed by:
 
@@ -9973,6 +9961,15 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 
 executed by:
+
+### `private.propose_memory_applicability`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::applicability_repo`
+- (no process): `adapters::tests::applicability`
 
 ### `private.publish_continuity_facet`
 read by:
@@ -10256,10 +10253,11 @@ executed by:
 ### `private.subjects`
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_subjects_link`
@@ -10700,7 +10698,6 @@ executed by:
 
 ### `projection.stream_log`
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -11148,6 +11145,14 @@ written by:
 
 executed by:
 
+### `public.entities`
+read by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+written by:
+
+executed by:
+
 ### `public.evaluate_anonymous_claim`
 read by:
 
@@ -11577,6 +11582,7 @@ executed by:
 
 ### `PostgreSQL(any)`
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
 - `adapters::confirm_token_repo`
@@ -11646,7 +11652,6 @@ executed by:
 - `adapters::tests::evidence_sources`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::hot_path_indexes`
@@ -11695,9 +11700,7 @@ executed by:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `retrieval-provider::adapters`
-- `testkit::disposable`
 - `testkit::fixture_purge`
-- `testkit::tests::disposable_guard`
 - `xtask::architecture_check`
 - `xtask::e2e_seed`
 - `xtask::gate_registry`
@@ -11710,12 +11713,12 @@ executed by:
 - `adapters::postgres`
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_task_runs`
-- `adapters::tests::forget_preview`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
@@ -11840,6 +11843,7 @@ executed by:
 - `adapters::serving_repo`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
@@ -11851,7 +11855,6 @@ executed by:
 - `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
-- `adapters::tests::forget_preview`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
@@ -12302,6 +12305,7 @@ why: typed per-role PG pools and runtime queries
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
 - `adapters::confirm_token_repo`
@@ -12382,7 +12386,6 @@ modules naming it:
 - `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -12437,6 +12440,7 @@ why: pure domain types this adapter reads/writes against
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
 - `adapters::byok`
@@ -12460,7 +12464,6 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::evidence_repo`
 - `adapters::exact_census`
-- `adapters::forget_repo`
 - `adapters::grep_repo`
 - `adapters::health`
 - `adapters::login_repo`
@@ -12498,6 +12501,7 @@ modules naming it:
 - `adapters::stream_repo`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
@@ -12518,7 +12522,6 @@ modules naming it:
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -12673,7 +12676,6 @@ modules naming it:
 - `adapters::tests::contribution_policy_lifecycle_0132`
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::entitlement_projector`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::login_challenge`
@@ -12809,6 +12811,7 @@ why: jsonb column binding
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12847,6 +12850,7 @@ modules naming it:
 - `adapters::scheduler`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
@@ -13003,6 +13007,7 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `adapters::applicability_repo`
 - `adapters::byok`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
@@ -13020,6 +13025,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::continuity_publish`
@@ -13095,6 +13101,7 @@ why: self-reference for test-support feature
 
 modules naming it:
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
@@ -13120,7 +13127,6 @@ modules naming it:
 - `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -13235,7 +13241,6 @@ modules naming it:
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -13317,6 +13322,7 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `adapters::applicability_repo`
 - `adapters::byok`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
@@ -13334,6 +13340,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::continuity_publish`
@@ -13391,6 +13398,7 @@ modules naming it:
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
@@ -13413,7 +13421,6 @@ modules naming it:
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -13513,7 +13520,6 @@ modules naming it:
 - `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::exact_completeness_eval`
-- `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
@@ -13626,7 +13632,6 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::contribution_execution`
-- `application::forget`
 - `application::oauth`
 - `application::referral`
 - `application::session`
@@ -13689,7 +13694,6 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::correct`
-- `application::forget`
 - `application::oauth`
 - `application::pin`
 - `application::retrieval_embedding_port`
@@ -14551,14 +14555,6 @@ why: structured logs/spans
 
 modules naming it:
 - `telemetry::degrade`
-
-### humaux-testkit → `postgres` (normal)
-why: blocking client type of require_disposable
-
-modules naming it:
-- `testkit::disposable`
-- `testkit::tests::disposable_guard`
-- `tests`
 
 ### humaux-testkit → `proptest` (dev)
 why: proptest dependency
@@ -16803,6 +16799,15 @@ default run:
 - PostgreSQL
 - Qdrant
 
+### `crates/adapters/tests/applicability.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/auth_contract.rs`
 db-bound (default run): yes
 
@@ -17068,15 +17073,6 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/facet_contract.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
-### `crates/adapters/tests/forget_preview.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -17951,15 +17947,6 @@ services (computed):
 
 default run:
 
-### `crates/testkit/tests/disposable_guard.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
 ### `crates/testkit/tests/fault_main.rs`
 db-bound (default run): no
 
@@ -18043,7 +18030,7 @@ default run:
 - `crates/retrieval/tests/planner_predicate_eval.rs:222` [table-write] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:223` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:355` [table-undeclared] (line) — parses migration SQL text; no DB connection
-- `crates/testkit/Cargo.toml:25` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
+- `crates/testkit/Cargo.toml:19` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
 - `xtask/src/dep_map.rs:11` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
 - `xtask/src/dep_map.rs:12` [table-write] (file) — unit-test fixtures spell write statements in strings
 - `xtask/src/dep_map.rs:13` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read

@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4
@@ -7,7 +7,7 @@
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
-//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9, the real-path
+//! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
 //! fault gate G-M01-4 (M01 D4, ADR-0077) and the §78.4 allow-count ratchet G-M01-8 (M01 D6).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
@@ -1230,6 +1230,159 @@ fn m01_9_raw_pool_enablers(root: &Path) -> Verdict {
         Ok(json) => raw_pool_enablers_from(&json),
         Err(e) => Verdict::Fail(vec![e]),
     }
+}
+
+/// G-M01-10 (§6.2.3): the complete allowed call-site path set; definitions are not calls.
+const RAW_POOL_CALL_ROOTS: &[&str] = &["crates/public-pool/"];
+
+fn raw_pool_call_sites(root: &Path) -> Verdict {
+    let files = walk_files(root, &["rs"]);
+    if files.is_empty() {
+        return Verdict::Fail(vec!["missing object: workspace Rust sources".into()]);
+    }
+    let mut out = Vec::new();
+    for path in files {
+        let source = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => return Verdict::Fail(vec![format!("{}: {e}", display(root, &path))]),
+        };
+        let rel = display(root, &path);
+        if RAW_POOL_CALL_ROOTS.iter().any(|p| rel.starts_with(p)) {
+            continue;
+        }
+        let code: String = mask_comments_and_literals(&source)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if code.contains(".raw_pool(") || code.contains(".raw_pool::") {
+            out.push(format!(
+                "{rel}: .raw_pool() outside {RAW_POOL_CALL_ROOTS:?} (G-M01-10, §6.2.3)"
+            ));
+        }
+    }
+    verdict_from_violations(out)
+}
+
+fn verdict_from_violations(out: Vec<String>) -> Verdict {
+    if out.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(out)
+    }
+}
+
+/// G-M20-23b (§12–13): one existing negative ACL fixture may attempt, but never read, private data.
+const PUBLIC_POOL_SQL_EXCEPTIONS: &[(&str, &str)] = &[(
+    "crates/public-pool/tests/mechanism_observation.rs",
+    "\"SELECT * FROM private.memory_records\",",
+)];
+
+/// G-M20-23b (§12–13, M20 D13'): production and test sources share the same SQL boundary.
+fn no_bridge_sources(root: &Path, graph: bool) -> Verdict {
+    let paths = if graph {
+        walk_files(&root.join("crates/adapters/src"), &["rs"])
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("graph"))
+            })
+            .chain(walk_files(&root.join("crates/graph"), &["rs", "sql"]))
+            .collect::<Vec<_>>()
+    } else {
+        walk_files(&root.join("crates/public-pool"), &["rs", "sql"])
+    };
+    if paths.is_empty() {
+        return Verdict::NotApplicable(if graph {
+            "crates/adapters/src/*graph* or crates/graph".into()
+        } else {
+            "crates/public-pool Rust/SQL sources".into()
+        });
+    }
+    let needle = if graph { "public." } else { "private." };
+    let mut out = Vec::new();
+    for path in paths {
+        let source = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => return Verdict::Fail(vec![format!("{}: {e}", display(root, &path))]),
+        };
+        let rel = display(root, &path);
+        let mut exception_used = false;
+        for (n, line) in code_without_comments(&source).lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            let reference = lower
+                .match_indices(needle)
+                .any(|(at, _)| at == 0 || !is_ident_byte(lower.as_bytes()[at - 1]));
+            if !reference {
+                continue;
+            }
+            if !graph
+                && !exception_used
+                && PUBLIC_POOL_SQL_EXCEPTIONS.contains(&(rel.as_str(), line.trim()))
+            {
+                exception_used = true;
+                continue;
+            }
+            out.push(format!(
+                "{}:{}: forbidden {needle} (G-M20-23b, §12–13)",
+                display(root, &path),
+                n + 1
+            ));
+        }
+    }
+    verdict_from_violations(out)
+}
+
+/// G-M20-23c (§12–13, M20 D13'): private identity columns cannot bridge public entities.
+fn entities_id_join_from(sql: &str) -> Verdict {
+    let sql = sql.to_ascii_lowercase().replace('"', "");
+    let private_ids = ["subject_id", "node_id", "memory_id"];
+    let out = private_ids
+        .into_iter()
+        .filter(|id| {
+            sql.split(';').any(|stmt| {
+                stmt.contains("public.entities")
+                    && (stmt.contains(id)
+                        || (stmt.contains("join")
+                            && stmt.contains(".id")
+                            && match *id {
+                                "subject_id" => stmt.contains("private.subjects"),
+                                "node_id" => stmt.contains("private.nodes"),
+                                _ => stmt.contains("private.memory_records"),
+                            }))
+            })
+        })
+        .map(|id| format!("public.entities references private identity {id} (G-M20-23c, §12–13)"))
+        .collect();
+    verdict_from_violations(out)
+}
+
+fn no_bridge_entities(root: &Path) -> Verdict {
+    let migrations = read_files(&walk_files(&root.join("migrations"), &["sql"]));
+    if migrations.is_empty() {
+        return Verdict::Fail(vec!["missing object: migrations/*.sql".into()]);
+    }
+    let exists = migrations.iter().any(|(_, sql)| {
+        let sql = sql.to_ascii_lowercase().replace('"', "");
+        sql.contains("create table public.entities")
+            || sql.contains("create table if not exists public.entities")
+    });
+    if !exists {
+        return Verdict::NotApplicable("public.entities table".into());
+    }
+    let mut out = Vec::new();
+    for (path, sql) in migrations.into_iter().chain(read_files(&walk_files(
+        &root.join("crates"),
+        &["rs", "sql"],
+    ))) {
+        if let Verdict::Fail(lines) = entities_id_join_from(&code_without_comments(&sql)) {
+            out.extend(
+                lines
+                    .into_iter()
+                    .map(|line| format!("{}: {line}", display(root, &path))),
+            );
+        }
+    }
+    verdict_from_violations(out)
 }
 
 // ============================================================================
@@ -10531,6 +10684,19 @@ pub fn run(_args: &[String]) -> i32 {
             m01_9_raw_pool_enablers(&root),
         ),
         (
+            "M01 / G-M01-10 (raw_pool call-site path set)",
+            raw_pool_call_sites(&root),
+        ),
+        ("M20 / G-M20-23b graph SQL", no_bridge_sources(&root, true)),
+        (
+            "M20 / G-M20-23b public-pool SQL",
+            no_bridge_sources(&root, false),
+        ),
+        (
+            "M20 / G-M20-23c entities id joins",
+            no_bridge_entities(&root),
+        ),
+        (
             "M01 D4 / G-M01-4 (a DegradeCode variant with a production emit site is tested through it, not through abstain; the others are rows of tests/fault/dormant.toml)",
             m01_4_real_path_or_dormant(&root),
         ),
@@ -13451,6 +13617,168 @@ runs:
             out.contains("`humaux-adapters` feature `default` switches on"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn g_m01_9_non_default_self_enable_is_red() {
+        let owner = rp_pkg(
+            "humaux-adapters",
+            vec![],
+            serde_json::json!({
+                "cloud-raw-pool": [], "extra": ["cloud-raw-pool"]
+            }),
+        );
+        assert_eq!(raw_pool_enablers_from(&ed_doc(&[rp_owner(), owner])), Verdict::Fail(vec![
+            "`humaux-adapters` feature `extra` switches on `cloud-raw-pool` itself (G-M01-9, §6.2.3: only a consumer may enable it)".into()
+        ]));
+    }
+
+    #[test]
+    fn m20_26_source_gates_real_workspace() {
+        assert_eq!(RAW_POOL_CALL_ROOTS, &["crates/public-pool/"]);
+        assert_eq!(raw_pool_call_sites(&real_root()), Verdict::Pass);
+        assert_eq!(no_bridge_sources(&real_root(), false), Verdict::Pass);
+        assert_eq!(
+            no_bridge_sources(&real_root(), true),
+            Verdict::NotApplicable("crates/adapters/src/*graph* or crates/graph".into())
+        );
+        assert_eq!(
+            no_bridge_entities(&real_root()),
+            Verdict::NotApplicable("public.entities table".into())
+        );
+    }
+
+    #[test]
+    fn m20_26_gates_registered_exactly_once() {
+        for (prefix, suffix) in [
+            ("raw_pool_call_", "sites(&root)"),
+            ("no_bridge_", "sources(&root, true)"),
+            ("no_bridge_", "sources(&root, false)"),
+            ("no_bridge_", "entities(&root)"),
+        ] {
+            assert_eq!(own_source_count(prefix, suffix), 1);
+        }
+    }
+
+    #[test]
+    fn m20_26_graph_and_public_source_fixtures() {
+        let tmp = fresh_tmp("no-bridge");
+        let graph = tmp.join("crates/adapters/src/private_graph.rs");
+        fs::create_dir_all(graph.parent().unwrap()).unwrap();
+        fs::write(
+            &graph,
+            "const SQL: &str = \"SELECT * FROM public.entities\";",
+        )
+        .unwrap();
+        assert_eq!(
+            no_bridge_sources(&tmp, true),
+            Verdict::Fail(vec![
+                "crates/adapters/src/private_graph.rs:1: forbidden public. (G-M20-23b, §12–13)"
+                    .into()
+            ])
+        );
+        let public = tmp.join("crates/public-pool/src/lib.rs");
+        fs::create_dir_all(public.parent().unwrap()).unwrap();
+        fs::write(
+            &public,
+            "const SQL: &str = \"SELECT * FROM private.subjects\";",
+        )
+        .unwrap();
+        assert_eq!(
+            no_bridge_sources(&tmp, false),
+            Verdict::Fail(vec![
+                "crates/public-pool/src/lib.rs:1: forbidden private. (G-M20-23b, §12–13)".into()
+            ])
+        );
+        fs::write(graph, "// public.entities\nconst SQL: &str = \"SELECT 1\";").unwrap();
+        fs::write(
+            public,
+            "// private.subjects\nconst SQL: &str = \"SELECT 1\";",
+        )
+        .unwrap();
+        assert_eq!(no_bridge_sources(&tmp, true), Verdict::Pass);
+        assert_eq!(no_bridge_sources(&tmp, false), Verdict::Pass);
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn m20_26_public_sql_exception_is_exact_and_single_use() {
+        assert_eq!(
+            PUBLIC_POOL_SQL_EXCEPTIONS,
+            &[(
+                "crates/public-pool/tests/mechanism_observation.rs",
+                "\"SELECT * FROM private.memory_records\",",
+            )]
+        );
+        let (path, statement) = PUBLIC_POOL_SQL_EXCEPTIONS[0];
+        let current = fs::read_to_string(real_root().join(path)).unwrap();
+        assert_eq!(
+            current
+                .lines()
+                .filter(|line| line.trim() == statement)
+                .count(),
+            1
+        );
+        let tmp = fresh_tmp("m20-26-negative-acl");
+        let fixture = tmp.join(path);
+        fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+        fs::write(&fixture, format!("{statement}\nraw_private.transaction();")).unwrap();
+        assert_eq!(no_bridge_sources(&tmp, false), Verdict::Pass);
+        fs::write(
+            &fixture,
+            format!("{statement}\n{statement}\n\"SELECT * FROM private.subjects\";"),
+        )
+        .unwrap();
+        assert_eq!(
+            no_bridge_sources(&tmp, false),
+            Verdict::Fail(vec![
+                format!("{path}:2: forbidden private. (G-M20-23b, §12–13)"),
+                format!("{path}:3: forbidden private. (G-M20-23b, §12–13)"),
+            ])
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn m20_26_entities_id_fixture() {
+        // Each id joins its own private table: joining private.subjects on `.id` is itself the subject_id bridge.
+        for (id, table) in [
+            ("subject_id", "private.subjects"),
+            ("node_id", "private.nodes"),
+            ("memory_id", "private.memory_records"),
+        ] {
+            let sql = format!("SELECT * FROM public.entities e JOIN {table} p ON e.{id} = p.id");
+            assert_eq!(
+                entities_id_join_from(&sql),
+                Verdict::Fail(vec![format!(
+                    "public.entities references private identity {id} (G-M20-23c, §12–13)"
+                )])
+            );
+        }
+        assert_eq!(
+            entities_id_join_from(
+                "SELECT * FROM public.entities e JOIN concepts c ON e.external_key = c.external_key"
+            ),
+            Verdict::Pass
+        );
+    }
+
+    #[test]
+    fn m20_26_call_site_fixture() {
+        let tmp = fresh_tmp("m20-26");
+        let core = tmp.join("crates/domain/src/lib.rs");
+        fs::create_dir_all(core.parent().unwrap()).unwrap();
+        fs::write(&core, "fn f() { pool . raw_pool (); }").unwrap();
+        assert_eq!(raw_pool_call_sites(&tmp), Verdict::Fail(vec![
+            "crates/domain/src/lib.rs: .raw_pool() outside [\"crates/public-pool/\"] (G-M01-10, §6.2.3)".into()
+        ]));
+        fs::write(
+            &core,
+            "// pool.raw_pool()\nfn raw_pool() {}\nconst S: &str = \".raw_pool()\";",
+        )
+        .unwrap();
+        assert_eq!(raw_pool_call_sites(&tmp), Verdict::Pass);
+        fs::remove_dir_all(tmp).unwrap();
     }
 
     #[test]
