@@ -182,9 +182,8 @@ fn relation(value: &Value) -> Result<Relation, String> {
 impl Vocabulary {
     /// Parse and validate the entire document and append-only id lock (G-M20-16).
     pub fn parse(source: &str, lock: &str) -> Result<Self, Vec<String>> {
-        let value: Value = source
-            .parse()
-            .map_err(|e| vec![format!("vocab_v1.toml: {e}")])?;
+        let value: Value =
+            toml::from_str(source).map_err(|e| vec![format!("vocab_v1.toml: {e}")])?;
         let concepts = value
             .get("concepts")
             .and_then(Value::as_array)
@@ -244,20 +243,27 @@ impl Vocabulary {
             if !unique.insert((&r.from, &r.to, r.kind.as_str())) {
                 errors.push(format!("{} -> {}: duplicate relation", r.from, r.to));
             }
-            match (ids.get(r.from.as_str()), ids.get(r.to.as_str())) {
-                (Some(a), Some(b)) if a.id != b.id => {
-                    if r.kind == RelationKind::Broader {
-                        if a.facet != b.facet {
-                            errors.push(format!("{} -> {}: BROADER crosses facets", r.from, r.to));
-                        }
-                        edges.entry(&r.from).or_default().push(&r.to);
-                    }
-                }
-                _ => errors.push(format!(
+            let (Some(a), Some(b)) = (ids.get(r.from.as_str()), ids.get(r.to.as_str())) else {
+                errors.push(format!(
                     "{} -> {}: missing endpoint or self relation",
                     r.from, r.to
-                )),
+                ));
+                continue;
+            };
+            if a.id == b.id {
+                errors.push(format!(
+                    "{} -> {}: missing endpoint or self relation",
+                    r.from, r.to
+                ));
+                continue;
             }
+            if r.kind != RelationKind::Broader {
+                continue;
+            }
+            if a.facet != b.facet {
+                errors.push(format!("{} -> {}: BROADER crosses facets", r.from, r.to));
+            }
+            edges.entry(&r.from).or_default().push(&r.to);
         }
         for id in ids.keys() {
             if cycle(id, &edges, &mut BTreeSet::new(), &mut BTreeSet::new()) {
