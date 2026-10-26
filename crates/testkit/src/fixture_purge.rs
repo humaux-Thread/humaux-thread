@@ -8,8 +8,8 @@
 //!   predicate, or whose closure reaches another tenant's rows, raises and nothing is purged]
 //! Spec: §79.2; ADR-0063 ("Dev integrity finding", D-B)
 //!
-//! Text builders only (this crate has no normal dependency): the caller runs the text on its own `postgres`
-//! connection — `client.batch_execute(&purge_tenant_fixture_sql(&tenant_id.to_string())?)`.
+//! Text builders only (nothing here opens a connection, although the crate depends on `postgres` for `disposable`): the
+//! caller runs the text on its own `postgres` connection — `client.batch_execute(&purge_tenant_fixture_sql(&tenant_id.to_string())?)`.
 
 /// The integrity-edge generator (`sql/integrity_edges.sql`): one row per FK (per-leaf clones flagged `inherited`)
 /// and per ADR-0063 D-B identity table, with the statement that counts (`scan_sql`) and deletes (`delete_sql`) the

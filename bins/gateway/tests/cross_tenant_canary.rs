@@ -6,7 +6,7 @@
 //!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
 //!   x=[private.publish_continuity_facet, private.register_continuity_project]];
 //!   env=[HUMAUX_TEST_DISPOSABLE_CLUSTER, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, adapters::quota_repo,
+//!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, gateway::limiter,
 //!   adapters::read_gate, adapters::tests::support::operation_receipt_fixture, application::continuity,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
 //!   domain::continuity, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall,
@@ -27,6 +27,7 @@
 //! migration 0012), so the gateway test only sees a dropped predicate when RLS fails too; the lane test takes RLS out of
 //! the path and drives the product repo functions directly, where one dropped predicate is visible on its own.
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
@@ -39,7 +40,7 @@ use std::{
 
 use humaux_adapters::{
     context_repo::fetch_frozen, continuity_read::PostgresContinuityReadPort,
-    postgres::RuntimeDbPool, quota_repo::RatePolicy, read_gate::materialize_memory_get,
+    postgres::RuntimeDbPool, read_gate::materialize_memory_get,
 };
 use humaux_application::{
     continuity::ContinuityReadPort,
@@ -120,6 +121,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: [50_000; 5],
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),
