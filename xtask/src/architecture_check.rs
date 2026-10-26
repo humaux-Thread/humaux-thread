@@ -4460,13 +4460,10 @@ fn m29_5a_attribution_site(root: &Path) -> Verdict {
 }
 
 /// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal, the Rust variant that spells it, the doors that can write an AUTO
-/// policy, and the two spellings of reaching the variant by its position in `ContributionPolicy::ALL`. Each is banned from
-/// core-edition `src` except the rows of [`M20_1_EXCEPTIONS`] (none for the last three); the cloud onboarding default and the
-/// toggles live in `humaux-public-pool` only.
-///
-/// ponytail: the position bypass is closed for `ALL[..]` indexing and the full type path only; an iterator chain over a
-/// differently named alias (`.iter().nth(2)`) evades it, so add the spelling here when one appears.
-const M20_1_NEEDLES: [&str; 8] = [
+/// policy, and `ContributionPolicy::ALL` (reaching the variant by its position). Each is banned from core-edition `src`
+/// except the rows of [`M20_1_EXCEPTIONS`] (none for the last three); the cloud onboarding default and the toggles live in
+/// `humaux-public-pool` only.
+const M20_1_NEEDLES: [&str; 7] = [
     "AUTO_AFTER_USER_DISTILLATION",
     "AutoAfterUserDistillation",
     "append_contribution_policy_successor",
@@ -4474,8 +4471,13 @@ const M20_1_NEEDLES: [&str; 8] = [
     "toggle_contribution",
     "toggle_member_contribution",
     "ContributionPolicy::ALL",
-    "::ALL[",
 ];
+
+/// The aliased form of the position bypass (`P::ALL[2]`): `ALL[` is banned (0 allowed) in the exception home file and in
+/// any core file that names `ContributionPolicy`; other enums' `X::ALL[i]` elsewhere are not this gate's business.
+///
+/// ponytail: an iterator chain over an alias (`.iter().nth(2)`) evades it; add the spelling here when one appears.
+const M20_1_ALIAS_INDEX: &str = "ALL[";
 
 /// The current exceptions, exact: `(needle, file path without its `.rs` suffix, occurrences in non-comment, non-test code)`.
 /// `ContributionPolicy::as_db_str` spells the mode's wire label (§78.2) and the enum declares the variant, lists it in `ALL`
@@ -4531,6 +4533,12 @@ fn m20_1_core_never_auto(root: &Path) -> Verdict {
             let hits = m20_1_code_hits(source, needle);
             if hits > 0 {
                 observed.insert((needle, file), hits);
+            }
+        }
+        if file == home || source.contains("ContributionPolicy") {
+            let hits = m20_1_code_hits(source, M20_1_ALIAS_INDEX);
+            if hits > 0 {
+                observed.insert((M20_1_ALIAS_INDEX, file), hits);
             }
         }
     }
@@ -17618,7 +17626,6 @@ async fn serving_version_in_txn() {}
                 "ContributionPolicy::ALL",
                 "fn f() -> usize { ContributionPolicy::ALL.len() }\n",
             ),
-            ("::ALL[", "fn f() -> P { P::ALL[2] }\n"),
             (
                 "AUTO_AFTER_USER_DISTILLATION",
                 "async fn f() { sqlx::query(\"UPDATE p SET m = 'AUTO_AFTER_USER_DISTILLATION'\"); }\n",
@@ -17653,6 +17660,48 @@ async fn serving_version_in_txn() {}
             m20_1_core_never_auto(&tmp),
             "`AUTO_AFTER_USER_DISTILLATION` x1",
         );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M20-1 leg 1, position bypass): `P::ALL[2]` in the home file or in a file naming `ContributionPolicy` is red;
+    /// another enum's `Task::ALL[1]` in an unrelated core file is not.
+    #[test]
+    fn m20_1_fails_on_an_aliased_position_index() {
+        let tmp = fresh_tmp("m20-1-alias");
+        let home = format!("{}.rs", M20_1_EXCEPTIONS[0].1);
+        fs::remove_dir_all(&tmp).ok();
+        m07_write(&tmp, &home, M20_1_HOME_BODY);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/tasks.rs",
+            "fn f() -> Task { Task::ALL[1] }\n",
+        );
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            &home,
+            &format!("{M20_1_HOME_BODY}fn l2() -> P {{ P::ALL[2] }}\n"),
+        );
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("`ALL[` occurs 1 time(s)"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        m07_write(&tmp, &home, M20_1_HOME_BODY);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/uses_policy.rs",
+            "fn f() -> P { ContributionPolicy::Manual; P::ALL[1] }\n",
+        );
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("adapters/src/uses_policy"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 
