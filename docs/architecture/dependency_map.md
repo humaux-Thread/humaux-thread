@@ -5504,6 +5504,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
+- (no process): `public-pool::tests::notice`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -5560,6 +5561,7 @@ written by:
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::notice`
 - (no process): `public-pool::tests::public_trust`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `adapters::membership_repo`
