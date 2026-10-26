@@ -43,7 +43,7 @@ impl Process {
             command
                 .envs(env)
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::inherit())
                 // dep: subprocess(humaux-gateway) — real singleton boot gate (ADR-0100)
                 .spawn()
                 .expect("spawn gateway"),
@@ -139,7 +139,6 @@ async fn lease_drop_unlocks_and_dead_original_session_returns_exact_error() {
     let mut lease = pool.try_session_lock(key).await.unwrap().unwrap();
     assert_eq!(lease.check().await, Ok(()));
     tokio::task::spawn_blocking(move || {
-        // dep: PostgreSQL(owner) — terminate only the fixture-owned backend (§79)
         // dep: PostgreSQL(owner) — terminate only the fixture-owned backend (§79)
         let mut admin = Client::connect(&input("HUMAUX_TEST_PG_DSN"), NoTls).unwrap();
         terminate_lock(&mut admin, key);

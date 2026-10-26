@@ -1380,7 +1380,11 @@ pub fn registry() -> Vec<ConfigEntry> {
         false,
         "60",
     ));
-    entries.extend(gateway_limiter_registry());
+    entries.extend(gateway_limiter_registry([
+        RATE_MAX_SUBJECTS_KEY,
+        DEPLOYMENT_KEY,
+        SESSION_LOCK_CHECK_KEY,
+    ]));
     entries.extend(retrieval_profile_registry().into_iter().map(|mut entry| {
         entry.name = retrieval_env_key(&entry.name);
         entry
@@ -1762,6 +1766,39 @@ mod tests {
     use humaux_retrieval_worker::rerank::{
         KEY_MODEL_SHA256, KEY_RECIPE, KEY_REPO, KEY_REVISION, KEY_TOKENIZER_SHA256,
     };
+
+    #[test]
+    fn limiter_registry_has_exactly_the_thirteen_expected_defaults() {
+        let entries = gateway_limiter_registry([
+            RATE_MAX_SUBJECTS_KEY,
+            DEPLOYMENT_KEY,
+            SESSION_LOCK_CHECK_KEY,
+        ]);
+        assert_eq!(entries.len(), 13);
+        let actual: BTreeMap<_, _> = entries
+            .into_iter()
+            .map(|entry| (entry.name, entry.default.unwrap()))
+            .collect();
+        let expected: BTreeMap<_, _> = [
+            ("HUMAUX_GATEWAY_RATE_PREAUTH_IP_CAPACITY", "256"),
+            ("HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND", "128"),
+            ("HUMAUX_GATEWAY_RATE_CREDENTIAL_CAPACITY", "64"),
+            ("HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_USER_CAPACITY", "128"),
+            ("HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_TENANT_CAPACITY", "128"),
+            ("HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY", "64"),
+            ("HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_MAX_SUBJECTS", "50000"),
+            ("HUMAUX_GATEWAY_DEPLOYMENT", "default"),
+            ("HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS", "5"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        assert_eq!(actual, expected);
+    }
 
     fn raw() -> BTreeMap<String, String> {
         let tenant = Uuid::now_v7();

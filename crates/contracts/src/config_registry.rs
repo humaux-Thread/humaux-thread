@@ -1,5 +1,5 @@
 //! `contracts::config_registry` — Typed Config Registry + effective config fingerprint (§50).
-//! Depends-on: crates=[sha2]; services=[]; env=[HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_MAX_SUBJECTS, HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS]; modules=[]
+//! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[]
 //! Called-by: [adapters::qdrant, contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
 //! Invariants: [the Qdrant collection knobs (datatype, HNSW, generation label) are read here and nowhere else; the
 //!   unset configuration resolves to Qdrant's own defaults, so a default collection body carries none of them]
@@ -326,7 +326,11 @@ pub fn resolve_collection_config(
 }
 
 /// M03 registered start values (§78.1; ADR-0100); X-RATE remains owner-gated.
-pub fn gateway_limiter_registry() -> Vec<ConfigEntry> {
+/// Process bootstrap supplies its private key names so shared defaults do not declare other processes
+/// as readers of gateway-only inputs (§50; ADR-0066 D-T).
+pub fn gateway_limiter_registry(
+    [max_subjects, deployment, heartbeat]: [&str; 3],
+) -> Vec<ConfigEntry> {
     // ponytail: conservative start values, X-RATE certifies; account 128/20 is the B23 starting point.
     let mut entries = Vec::new();
     for (tier, capacity, refill) in [
@@ -345,9 +349,9 @@ pub fn gateway_limiter_registry() -> Vec<ConfigEntry> {
         }
     }
     entries.extend([
-        gateway_limiter_entry("HUMAUX_GATEWAY_RATE_MAX_SUBJECTS", "usize", "50000"),
-        gateway_limiter_entry("HUMAUX_GATEWAY_DEPLOYMENT", "string", "default"),
-        gateway_limiter_entry("HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS", "u64", "5"),
+        gateway_limiter_entry(max_subjects, "usize", "50000"),
+        gateway_limiter_entry(deployment, "string", "default"),
+        gateway_limiter_entry(heartbeat, "u64", "5"),
     ]);
     entries
 }
