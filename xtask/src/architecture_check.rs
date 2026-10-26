@@ -1101,31 +1101,48 @@ const RAW_POOL_FEATURE: &str = "cloud-raw-pool";
 /// The only workspace package allowed to enable [`RAW_POOL_FEATURE`] (M20-2).
 const RAW_POOL_ENABLERS: &[&str] = &["humaux-public-pool"];
 
-/// Whether one `[features]` value forwards to `humaux-adapters/cloud-raw-pool` (also the `?` weak form).
-fn forwards_raw_pool(value: &serde_json::Value) -> bool {
-    value.as_str().is_some_and(|v| {
-        v == format!("{RAW_POOL_OWNER}/{RAW_POOL_FEATURE}")
-            || v == format!("{RAW_POOL_OWNER}?/{RAW_POOL_FEATURE}")
-    })
+/// Whether one `[features]` value forwards `<local>/cloud-raw-pool` (or the `?` weak form) for a `local`
+/// dependency name that resolves to the owner. Cargo writes the dependency's LOCAL name here, not its package name.
+fn forwards_raw_pool(value: &serde_json::Value, owner_locals: &BTreeSet<&str>) -> bool {
+    let Some(v) = value.as_str() else {
+        return false;
+    };
+    let Some(local) = v
+        .strip_suffix(&format!("/{RAW_POOL_FEATURE}"))
+        .map(|l| l.strip_suffix('?').unwrap_or(l))
+    else {
+        return false;
+    };
+    owner_locals.contains(local)
 }
 
 /// Whether package `pkg` enables the feature: a dependency edge on the owner (any kind, renamed or
-/// target-specific) listing it in `features`, or a `[features]` entry forwarding to it. `Err` is a shape problem.
+/// target-specific) listing it in `features`, or a `[features]` entry forwarding to it through the dependency's
+/// local name. `Err` is a shape problem.
 fn enables_raw_pool(name: &str, pkg: &serde_json::Value) -> Result<bool, String> {
     let deps = pkg
         .get("dependencies")
         .and_then(|d| d.as_array())
         .ok_or_else(|| format!("package `{name}` has no `dependencies` array in cargo metadata"))?;
+    let mut owner_locals = BTreeSet::new();
     for dep in deps {
         let dep_name = dep
             .get("name")
             .and_then(|n| n.as_str())
             .ok_or_else(|| format!("package `{name}` lists a dependency without a `name`"))?;
+        if dep_name != RAW_POOL_OWNER {
+            continue;
+        }
+        let local = dep
+            .get("rename")
+            .and_then(|r| r.as_str())
+            .unwrap_or(dep_name);
+        owner_locals.insert(local);
         let on_feature = dep
             .get("features")
             .and_then(|f| f.as_array())
             .is_some_and(|f| f.iter().any(|x| x.as_str() == Some(RAW_POOL_FEATURE)));
-        if dep_name == RAW_POOL_OWNER && on_feature {
+        if on_feature {
             return Ok(true);
         }
     }
@@ -1135,10 +1152,27 @@ fn enables_raw_pool(name: &str, pkg: &serde_json::Value) -> Result<bool, String>
         .is_some_and(|f| {
             f.values().any(|v| {
                 v.as_array()
-                    .is_some_and(|a| a.iter().any(forwards_raw_pool))
+                    .is_some_and(|a| a.iter().any(|x| forwards_raw_pool(x, &owner_locals)))
             })
         });
     Ok(forwarded)
+}
+
+/// Feature keys of the owner (other than the definition itself) that switch [`RAW_POOL_FEATURE`] on, `default`
+/// included: the owner must not enable its own feature.
+fn owner_self_enablers(pkg: &serde_json::Value) -> Vec<String> {
+    let Some(features) = pkg.get("features").and_then(|f| f.as_object()) else {
+        return Vec::new();
+    };
+    features
+        .iter()
+        .filter(|(key, _)| key.as_str() != RAW_POOL_FEATURE)
+        .filter(|(_, v)| {
+            v.as_array()
+                .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(RAW_POOL_FEATURE)))
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
 }
 
 /// G-M01-9 pure comparator (§58, §6.2.3): the set of workspace packages enabling
@@ -1150,12 +1184,20 @@ pub fn raw_pool_enablers_from(metadata_json: &str) -> Verdict {
         Err(e) => return Verdict::Fail(vec![e]),
     };
     let mut enablers = BTreeSet::new();
+    let mut self_enabled = Vec::new();
     for pkg in &packages {
         let Some(name) = package_name(pkg) else {
             return Verdict::Fail(vec![
                 "cargo metadata lists a package without a `name`".to_string(),
             ]);
         };
+        if name == RAW_POOL_OWNER {
+            self_enabled.extend(owner_self_enablers(pkg).into_iter().map(|key| {
+                format!(
+                    "`{RAW_POOL_OWNER}` feature `{key}` switches on `{RAW_POOL_FEATURE}` itself (G-M01-9, §6.2.3: only a consumer may enable it)"
+                )
+            }));
+        }
         match enables_raw_pool(name, pkg) {
             Ok(true) => {
                 enablers.insert(name);
@@ -1165,10 +1207,10 @@ pub fn raw_pool_enablers_from(metadata_json: &str) -> Verdict {
         }
     }
     let expected: BTreeSet<&str> = RAW_POOL_ENABLERS.iter().copied().collect();
-    if enablers == expected {
+    if enablers == expected && self_enabled.is_empty() {
         return Verdict::Pass;
     }
-    let mut out = Vec::new();
+    let mut out = self_enabled;
     for name in enablers.difference(&expected) {
         out.push(format!(
             "package `{name}` enables `{RAW_POOL_OWNER}/{RAW_POOL_FEATURE}`; only {RAW_POOL_ENABLERS:?} may (G-M01-9, §6.2.3: raw_pool() leaves the crate only for the public pool)"
@@ -13276,7 +13318,20 @@ runs:
     }
 
     fn rp_dep(features: &[&str], kind: Option<&str>) -> serde_json::Value {
-        serde_json::json!({"name": "humaux-adapters", "kind": kind, "features": features})
+        rp_dep_as(features, kind, None, None)
+    }
+
+    /// A dependency on the owner with an optional local `rename` and `target` platform.
+    fn rp_dep_as(
+        features: &[&str],
+        kind: Option<&str>,
+        rename: Option<&str>,
+        target: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": "humaux-adapters", "kind": kind, "features": features,
+            "rename": rename, "target": target,
+        })
     }
 
     fn rp_pkg(
@@ -13328,6 +13383,76 @@ runs:
             assert_eq!(out.lines().count(), 1, "{out}");
             assert!(out.contains("package `humaux-cache` enables"), "{out}");
         }
+    }
+
+    /// Verdict lines for `humaux-cache` built from `deps` and `features`, next to the legitimate owner.
+    fn rp_cache_fail(deps: Vec<serde_json::Value>, features: serde_json::Value) -> String {
+        let other = rp_pkg("humaux-cache", deps, features);
+        fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), other])))
+    }
+
+    fn assert_only_cache_enables(out: &str) {
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.contains("package `humaux-cache` enables"), "{out}");
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_renamed_dependency_enabling_the_feature() {
+        let dep = rp_dep_as(&["cloud-raw-pool"], None, Some("alias"), None);
+        assert_only_cache_enables(&rp_cache_fail(vec![dep], serde_json::json!({})));
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_renamed_forwarding_feature() {
+        for fwd in ["alias/cloud-raw-pool", "alias?/cloud-raw-pool"] {
+            let dep = rp_dep_as(&[], None, Some("alias"), None);
+            let out = rp_cache_fail(vec![dep], serde_json::json!({"x": [fwd]}));
+            assert_only_cache_enables(&out);
+        }
+    }
+
+    #[test]
+    fn g_m01_9_ignores_a_forward_through_an_unrelated_local_name() {
+        let dep = rp_dep_as(&[], None, Some("alias"), None);
+        let other = rp_pkg(
+            "humaux-cache",
+            vec![dep],
+            serde_json::json!({"x": ["other/cloud-raw-pool"]}),
+        );
+        let doc = ed_doc(&[rp_owner(), other]);
+        assert_eq!(raw_pool_enablers_from(&doc), Verdict::Pass);
+    }
+
+    #[test]
+    fn g_m01_9_fails_on_a_target_specific_enabler() {
+        let dep = rp_dep_as(&["cloud-raw-pool"], None, None, Some("cfg(unix)"));
+        assert_only_cache_enables(&rp_cache_fail(vec![dep], serde_json::json!({})));
+    }
+
+    #[test]
+    fn g_m01_9_fails_when_the_owner_defaults_the_feature_on() {
+        let owner = rp_pkg(
+            "humaux-adapters",
+            vec![],
+            serde_json::json!({"cloud-raw-pool": [], "default": ["cloud-raw-pool"]}),
+        );
+        let out = fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), owner])));
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(
+            out.contains("`humaux-adapters` feature `default` switches on"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn g_m01_9_passes_when_the_owner_only_defines_the_feature() {
+        let owner = rp_pkg(
+            "humaux-adapters",
+            vec![],
+            serde_json::json!({"cloud-raw-pool": [], "default": []}),
+        );
+        let doc = ed_doc(&[rp_owner(), owner]);
+        assert_eq!(raw_pool_enablers_from(&doc), Verdict::Pass);
     }
 
     #[test]
