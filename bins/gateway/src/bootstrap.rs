@@ -1886,7 +1886,7 @@ mod tests {
             );
         }
         let mut values = raw();
-        values.insert("HUMAUX_GATEWAY_UNKNOWN_CONTINUITY_KEY".into(), "5".into());
+        values.insert("HUMAUX_GATEWAY_UNKNOWN".into(), "5".into());
         let error = GatewayBootstrap::from_env_vars(
             values
                 .into_iter()
@@ -1896,10 +1896,7 @@ mod tests {
         .expect("unknown gateway key must fail");
         assert_eq!(
             error,
-            BootstrapError::new(
-                "HUMAUX_GATEWAY_UNKNOWN_CONTINUITY_KEY",
-                "missing or undeclared"
-            )
+            BootstrapError::new("HUMAUX_GATEWAY_UNKNOWN", "missing or undeclared")
         );
     }
 

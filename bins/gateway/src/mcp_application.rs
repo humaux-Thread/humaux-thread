@@ -3,7 +3,7 @@
 //!   services=[PostgreSQL(role_gateway) r=[control.rate_buckets, private.memory_records]
 //!   w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
-//!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[contracts::config_registry, adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
+//!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
 //!   adapters::continuity_repo, adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::subject_repo,
 //!   domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity,
