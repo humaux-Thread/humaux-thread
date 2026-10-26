@@ -41,7 +41,7 @@ use std::process::Command;
 /// Absolute path to the workspace root, derived from `xtask`'s own manifest dir rather than
 /// the process CWD — tests need this to be stable regardless of where `cargo test` is
 /// invoked from; `run()` uses it too so both paths exercise identical logic.
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 

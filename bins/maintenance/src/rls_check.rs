@@ -952,6 +952,21 @@ const MATRIX: &[Cell] = &[
     ),
     cell!("public.poisoning_signals", "role_maintenance", ["SELECT"]),
     cell!(
+        "public.concepts",
+        "role_public_worker",
+        ["SELECT", "INSERT", "UPDATE"]
+    ),
+    cell!(
+        "public.concept_labels",
+        "role_public_worker",
+        ["SELECT", "INSERT", "UPDATE"]
+    ),
+    cell!(
+        "public.concept_relations",
+        "role_public_worker",
+        ["SELECT", "INSERT", "UPDATE"]
+    ),
+    cell!(
         "staging.contribution_candidates",
         "role_private_worker",
         ["SELECT", "INSERT"]

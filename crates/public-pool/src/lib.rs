@@ -14,3 +14,6 @@ pub mod public_evolve;
 pub mod public_projection;
 pub mod public_provenance;
 pub mod public_repo;
+
+/// Controlled public vocabulary and its only write door (ADR-0089 D-E).
+pub mod vocab;

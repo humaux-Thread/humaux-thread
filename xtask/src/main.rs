@@ -11,6 +11,7 @@
 //! · config-check(G80-41) · rls-check(§48.2) · gate-truth(§79.2, ADR-0050 D-C) · dep-map(ADR-0051) · deploy-env(ADR-0066 D-R (a), §78.1)。判据正文以家章为唯一真源。
 
 mod architecture_check;
+/// §78.2: the pure public-plane model, without a core-to-cloud crate dependency.
 mod benchset_declaration;
 mod card_version;
 mod config_check;
@@ -37,6 +38,9 @@ mod rls_check;
 mod serial_lane;
 mod soak;
 mod threshold_shape;
+mod vocab_check;
+#[path = "../../crates/public-pool/src/vocab/model.rs"]
+pub mod vocab_model;
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -52,6 +56,7 @@ fn main() -> std::process::ExitCode {
         );
     }
     let code = match args.get(1).map(String::as_str) {
+        Some("vocab-check") => vocab_check::run(&args[2..]),
         Some("architecture-check") => architecture_check::run(&args[2..]),
         Some("mechanism-registry") => mechanism_registry::run(&args[2..]),
         Some("migration-rehearsal") => migration_rehearsal::run(&args[2..]),
@@ -82,7 +87,7 @@ fn main() -> std::process::ExitCode {
         Some("deploy-env") => dep_map::run_deploy_env(&args[2..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <architecture-check|mechanism-registry|migration-rehearsal|metrics-registry|contract-impact|config-check|rls-check|threshold-shape|benchset-declaration|gate-registry|dod-check|phase-check|r4-fault-manifest|direction-table|card-version|migrate|e2e-seed|e2e-onboard|member|projection-serve|serial-lane|soak|load|load-open|gate-truth|known-red|dep-map|deploy-env>"
+                "usage: cargo xtask <vocab-check|architecture-check|mechanism-registry|migration-rehearsal|metrics-registry|contract-impact|config-check|rls-check|threshold-shape|benchset-declaration|gate-registry|dod-check|phase-check|r4-fault-manifest|direction-table|card-version|migrate|e2e-seed|e2e-onboard|member|projection-serve|serial-lane|soak|load|load-open|gate-truth|known-red|dep-map|deploy-env>"
             );
             2
         }
