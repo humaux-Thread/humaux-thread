@@ -201,7 +201,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -494,7 +493,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
-- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -674,7 +672,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -1134,8 +1131,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 
 #### `xtask::load`
-- reads `control.rate_buckets`
-- reads `control.workspaces`
 - service `PostgreSQL(any)`
 - service `HTTP(gateway)`
 - service `subprocess(docker)`
@@ -1604,7 +1599,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2109,7 +2103,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2436,7 +2429,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(loopback)`
 
 #### `gateway::mcp_application`
-- reads `control.rate_buckets`
 - reads `private.memory_records`
 - writes `control.w2_test_request_intervals`
 - executes `private.publish_continuity_facet`
@@ -2679,7 +2671,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop`
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.retention_policy_approve`
 - executes `ops.auto_redrive_schema_failed`
 - executes `ops.purge_expired_selection_snapshots`
@@ -2817,7 +2808,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -3215,7 +3205,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
-- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -3395,7 +3384,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -3533,9 +3521,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT`
@@ -3873,7 +3858,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -4522,7 +4506,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -6093,17 +6076,6 @@ executed by:
 - process(cargo-xtask): `adapters::plan_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
 
-### `control.purge_idle_rate_buckets`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::maintenance_doors`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-- process(humaux-maintenance): `maintenance::rls_check`
-
 ### `control.quota_windows`
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
@@ -6122,27 +6094,6 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
-- process(cargo-xtask): `adapters::quota_repo`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
-- process(humaux-gateway): `adapters::quota_repo`
-- process(humaux-maintenance): `adapters::quota_repo`
-- process(humaux-private-worker): `adapters::quota_repo`
-- process(humaux-retrieval-worker): `adapters::quota_repo`
-
-executed by:
-
-### `control.rate_buckets`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::load`
-- process(humaux-gateway): `gateway::mcp_application`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::maintenance_doors`
-- (no process): `adapters::tests::quota_and_rate`
-- (no process): `adapters::tests::support::operation_receipt_fixture`
-- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
@@ -6888,7 +6839,6 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(cargo-xtask): `xtask::load`
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -16257,7 +16207,6 @@ modules naming it:
 - `tests`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
-- `xtask::load`
 - `xtask::mechanism_registry`
 
 ### xtask → `tokio` (normal)
@@ -17681,13 +17630,12 @@ default run:
 - Qdrant
 
 ### `crates/adapters/tests/quota_and_rate.rs`
-db-bound (default run): yes
+db-bound (default run): no
 
 services (computed):
 - PostgreSQL
 
 default run:
-- PostgreSQL
 
 ### `crates/adapters/tests/read_gate_closure.rs`
 db-bound (default run): yes
