@@ -7250,6 +7250,8 @@ coord.handoffs
 coord.agent_presence
 ```
 
+Amended by ADR-0101, ADR-0104, ADR-0105, ADR-0106 and ADR-0107 (M18): the new §30.4 project tree, §30.5 acceptance gate vector and §30.6 board summary are recorded in those ADRs; `coord.leases` is retired, `coord.canvas` becomes the read-only legacy `canvases`, and `coord.agent_presence` becomes `coord.agent_instances`.
+
 ## 30.1 Task State
 
 ```text
@@ -7262,6 +7264,8 @@ FAILED
 CANCELLED
 ```
 
+Amended by ADR-0103 (M18): the task states become `OPEN, IN_PROGRESS, IN_REVIEW, DONE, CANCELLED` phases, task kinds and `parent_task_id` are added, waits live in `coord.task_waits`, and `OPEN→DONE` is allowed through the acceptance transaction.
+
 ## 30.2 Lease
 
 ```text
@@ -7273,6 +7277,8 @@ fencing_token
 每次重新取得 lease/lock，fencing token 单调增加。
 
 旧 Agent 使用旧 token 写入时拒绝，防止网络延迟后的 stale writer。
+
+Amended by ADR-0104 and ADR-0105 (M18): `lease_owner` is the agent instance (the principal authorises), a fencing epoch is permanent, heartbeat/TTL start values come from config, a late heartbeat never revives a run, resource locks carry per-resource epochs, and storage re-rejects stale writes.
 
 ## 30.3 Canvas
 
@@ -7292,6 +7298,8 @@ next
 ```text
 Canvas/Handoff -> Evidence -> Private Distillation -> Memory
 ```
+
+Amended by ADR-0107 (M18): the canvas becomes a derived subtree board with per-key CAS notes (`goal, context, decision_pending, next_focus`), the free-form `canvas_elements` whole-element replace is retired, and the flow becomes acceptance → candidate Evidence → M15 candidates.
 
 ---
 
@@ -9029,6 +9037,8 @@ canvas_get
 canvas_update
 ```
 
+Amended by ADR-0105 and ADR-0106 (M18): Tool 8: the M18 task tools that M26 registers (grouping per ADR-0105 U7); no lock tool (ADR-0105); acceptance via `record_acceptance` (ADR-0106).
+
 内部仍然分别对应：
 
 ```text
@@ -10606,6 +10616,8 @@ projection.index_runs
 ```text
 coord.tasks · task_runs · leases · locks · canvases · canvas_elements · handoffs
 ```
+
+Amended by ADR-0101–ADR-0109 (M18): the coord inventory gains the M18 tables recorded in those ADRs (`agent_instances`, `task_plan_revisions`, `task_dependencies`, `task_waits`, `execution_roots`, `dispatch_reservations`, `candidates`, `candidate_members`, `outputs`, `run_inputs`, `task_events`, `canvas_notes`, `critical_path_projection`); `leases` is retired, `canvas_elements` becomes the read-only legacy archive, and acceptance records extend `private.run_acceptances` (ADR-0106, lead ruling).
 
 ## ops
 
