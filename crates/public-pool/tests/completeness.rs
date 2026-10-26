@@ -1,6 +1,6 @@
-//! G-M20-6 exact type completeness and Rust/DB contracts (ADR-0090 D-B).
+//! `public-pool::tests::completeness` — G-M20-6 exact type completeness and Rust/DB contracts (ADR-0090 D-B).
 //! Depends-on: crates=[humaux-public-pool, postgres, serde_json, uuid]; services=[PostgreSQL(any)
-//!   r=[public.units, public.unit_fields, public.unit_conditions] w=[public.units, public.unit_fields, public.syntheses]];
+//!   r=[public.syntheses, public.unit_fields, public.units] w=[public.units, public.unit_fields, public.syntheses]];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[public-pool::completeness]
 //! Called-by: [cargo-test]
 //! Invariants: [DB probes roll back; missing CI inputs fail; independent oracle retains every required field]
@@ -274,6 +274,7 @@ fn front_and_rules_are_versioned_and_unchecked_is_not_run() {
     assert_eq!(receipt.state, GateState::Fail(vec!["repro".into()]));
 }
 fn database() -> Client {
+    // dep: PostgreSQL(any) — §79.2 requires a real CI database.
     Client::connect(
         &std::env::var("HUMAUX_TEST_PG_DSN").expect("G-M20-6 requires PostgreSQL"),
         NoTls,
@@ -314,6 +315,7 @@ fn insert_field(
 #[test]
 fn result_model_is_refused_by_rust_and_db() {
     let mut client = database();
+    // dep: PostgreSQL(any) — §79.2 rollback-only probes never persist fixtures.
     let mut tx = client.transaction().unwrap();
     let id = revision(&mut tx);
     let mut unit = draft(&CASES[0]);
@@ -347,6 +349,7 @@ fn exact_set(actual: BTreeSet<String>, expected: &[&str]) {
 #[test]
 fn every_check_has_an_exact_rust_db_contract() {
     let mut client = database();
+    // dep: PostgreSQL(any) — §79.2 rollback-only probes never persist fixtures.
     let mut tx = client.transaction().unwrap();
     let domains = [
         (
@@ -393,6 +396,7 @@ fn every_check_has_an_exact_rust_db_contract() {
 #[test]
 fn field_value_and_closed_domains_are_enforced() {
     let mut client = database();
+    // dep: PostgreSQL(any) — §79.2 rollback-only probes never persist fixtures.
     let mut tx = client.transaction().unwrap();
     let id = revision(&mut tx);
     for state in FieldState::ALL {
@@ -485,6 +489,7 @@ fn field_value_and_closed_domains_are_enforced() {
 #[test]
 fn six_unit_types_roundtrip_and_phase_two_is_rejected() {
     let mut client = database();
+    // dep: PostgreSQL(any) — §79.2 rollback-only probes never persist fixtures.
     let mut tx = client.transaction().unwrap();
     for kind in UnitType::ALL {
         let wire = kind.as_str();
