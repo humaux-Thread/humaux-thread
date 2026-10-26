@@ -14469,6 +14469,14 @@ runs:
         );
         assert_eq!(
             allow_attribute_count(
+                "fn f() { my_allow (clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
+            0,
+            "my_allow ( is not the attribute"
+        );
+        assert_eq!(
+            allow_attribute_count(
                 &format!(
                     "const S: &str = \"{}\";",
                     spaced_allow_attr(" ", "clippy::too_many_lines")
