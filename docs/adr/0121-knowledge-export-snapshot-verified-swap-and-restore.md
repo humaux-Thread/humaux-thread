@@ -17,9 +17,8 @@
   backup = KNOWLEDGE only` (note :8). Still in force: keep only the latest backup (`06d03e76`); OSS users deploy
   locally to a standard (`29f37ded` → charter `829c952f`); Linux arm64 containers + compose, launchd/systemd rejected
   (`2614a613`) (note :8-10).
-- Today backup is ADR-0064: a pgBackRest posix repository (full/diff/incremental, WAL archive, PITR), a host crontab,
-  and a Qdrant recovery leg that reads stored vectors from PostgreSQL (note :30-36). Every copy is on the database
-  host, so host or disk loss is total loss (L37; note :36, :141-142).
+- Today backup is ADR-0064: pgBackRest (backup types full/diff/incr, WAL archiving, `restore drill|pitr`) and a host
+  crontab (note :30-35, :137-138). Host loss = total loss (L37; note :36, :141-142).
 - The only all-tenant reader today is the superuser one-shot; `rls_check.rs:2405` asserts every login role is NOT
   SUPERUSER / NOBYPASSRLS (note :39-40).
 - M23 v2 supersedes its own v1 where it says so: the single pgBackRest full, the WAL boundary (the disk guard is kept),
@@ -57,8 +56,8 @@ producing a silently tenant-filtered dump (note :90-91). `--enable-row-security`
 Partitioned parents are selected with `--table-and-children` because `-t` does not add partitions (note :92-93).
 
 A controller transaction in REPEATABLE READ calls `pg_export_snapshot()`, counts rows per table, and runs `pg_dump
---snapshot=<id>`, so the manifest counts and the dump see one snapshot (note :93-94). `-j` starts at 1, because the
-directory format is the only parallel format, on 4 vCPU (note :94-95). The weighing recorded: exact rows, ids, enums
+--snapshot=<id>`, so the manifest counts and the dump see one snapshot (note :93-94). `-j` starts at 1 (the directory
+format is the only parallel format) on 4 vCPU (note :94-95). The weighing recorded: exact rows, ids, enums
 and timestamps over JSONL needing an unbuilt importer; superuser bypass with the docs' error-not-filter default over
 an app JSONL loop where a missed tenant is silent; zstd binary COPY over per-row JSON; and no per-tenant reuse,
 because `pg_dump` cannot filter by tenant, so M19 D8 keeps its own JSONL for user export while the shared fact is the
@@ -127,18 +126,23 @@ fit (note :133).
 ### D-I Credentials: the default is excluded; the owner answer carries API-key hashes
 
 D9 records credentials as excluded under the owner's "knowledge only" — no secret hashes in files beside the data,
-pepper rotation unaffected — with every agent re-keying after a restore, and Q3 able to flip it (note :134-135). The
-owner answered Q3 on 2026-10-23: the export carries API-key **hashes** (never plaintext), so agents keep working after
-a restore (note :254). Both statements are recorded; the answer is the later word.
+pepper rotation unaffected — with every agent re-keying after a restore, and D9 itself says the owner Q3 can flip it
+(note :134-135). The owner answered Q3 on 2026-10-23: the export carries API-key **hashes** (never plaintext), so
+agents keep working after a restore (note :254).
+
+**Lead question (unresolved):** D-A excludes credentials/sessions/challenges (note :85-86) and D-G records that
+agents get new API keys after a restore (note :131), while the Q3 answer has the export carrying API-key hashes
+(note :254). The exclusion and the answer are both recorded here; this ADR does not resolve the tension.
 
 ### D-J Schedule: `dr serve` inside the compose bundle
 
 The nightly export + verify + drill + swap and the daily `deploy-check --running` drift check run from `dr serve` in
 compose, driven by the M21 `resident.rs` loop; the export key defaults to 00:30 UTC (note :136-137). This retires the
 host crontab and pgBackRest/WAL archiving: `archive_mode=off`, RPO = the last verified export (≤ ~24 h), and PITR is
-gone (accepted with the owner scope) (note :137-139). It connects to PG as superuser over the shared unix socket, with
-the secret via render-secrets (note :139). Rejected: host cron (outside the bundle); systemd timers (rejected); the
-`--serve` daemon (`role_maintenance` cannot read all tenants) (note :139-140).
+gone (accepted with the owner scope) (note :137-139). Retiring pgBackRest and WAL archiving is card M23-7, after the
+first verified production export, owner-gated (note :198, :239). It connects to PG as superuser over the shared unix
+socket, with the secret via render-secrets (note :139). Rejected: host cron (outside the bundle); systemd timers
+(rejected); the `--serve` daemon (`role_maintenance` cannot read all tenants) (note :139-140).
 
 ### D-K Stated risk: one disk, no offsite copy
 
@@ -168,14 +172,13 @@ PGDATA; encrypt if a copy ever leaves the host) (note :143-144).
   the journal; there is a single verified export on disk.
 - Cost: RPO grows to the last verified export and PITR is gone (note :137-139); peak disk is old + candidate +
   drill scratch (note :111); a restore is owner-run and needs a re-embed before the semantic lane serves
-  (note :104-105, :127-130). D9's default re-key is replaced by the owner's Q3 answer (the export carries API-key
-  hashes) (note :254).
-- Neutral for this card: no code, DDL, config key or gate is added; the gates below belong to later cards and are
-  recorded so each starts from a known expected red.
+  (note :104-105, :127-130). The owner's Q3 answer has the export carrying API-key hashes (note :254); the conflict
+  with D-A's credential exclusion and D-G's re-key step is listed above as a lead question.
+- Neutral for this card: no code, DDL, config key or gate is added; the gates below belong to later cards.
 
 ## Gates
 
-Planned, implementer-owned and tri-state (§57.1); none exists here. DB/compose tests treat a missing
+Planned and tri-state (§57.1); none exists here. DB/compose tests treat a missing
 `HUMAUX_TEST_PG_DSN`/Docker in CI as fail (ADR-0050) (note :165).
 
 | gate | test file | inject | expected red |
@@ -203,7 +206,7 @@ with M23-7 (note :187).
   (default, D9)?" (note :236). Owner answer 2026-10-23: "the export carries API-key **hashes** (never plaintext), so
   agents keep working after a restore." (note :254).
 - Red lines (owner only, not decided here): "Running anything against production: first export / verify / drill on
-  oracle-tokyo, enabling `dr serve` in prod, any `restore knowledge` or upgrade, retiring pgBackRest/WAL archiving and
+  [the production node], enabling `dr serve` in prod, any `restore knowledge` or upgrade, retiring pgBackRest/WAL archiving and
   its repo in prod (M23-7)." — "Deleting the old export in production for the first time (first automatic
   swap-and-delete)." — "Also: live keys in any env." (note :237-241).
 
@@ -239,6 +242,6 @@ with M23-7 (note :187).
 
 ## References
 
-Module design note M23 v2, §3, §7 D1–D11, §8, §9, §11, §12, §13 and the owner answers of 2026-10-23; module design
+Module design note M23 v2, §3, §7 D1–D11, §9, §11, §12, §13 and the owner answers of 2026-10-23; module design
 notes M10 (C7) and M19 (D6/D8); Baseline §16.3, §37, §44, §66, §78.2, §81; ADR-0062; ADR-0063; ADR-0064; ADR-0084;
 ADR-0092.

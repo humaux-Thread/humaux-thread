@@ -3,8 +3,7 @@
 - Status: Accepted (2026-10-23). Card M23-1 (docs only, wave F, module M23). Content authority: module design note M23
   v2, §3 (C-M23-1/C-M23-2/C-M23-3), §7 D12–D18, §9, §13 and the owner answers of 2026-10-23. This ADR records those
   decisions and re-decides none of them. No code, migration, gate or deployment lands with it.
-- Amends: Baseline §7.2 (the standard deployment now includes a local embedding model beside the local rerank lane)
-  and §67.2 (its component and memory-budget prose) (note :153).
+- Amends: Baseline §7.2 and §67.2 (note :153); the content is D-D (e5-small via `ort`).
 - Relates to: Baseline §7.2, §67, §67.2, §44, §16.3, §17, §78.2; ADR-0084 (local rerank lane); ADR-0086 (collection
   spec per embedding generation); ADR-0121 (knowledge export, the export leg of conformance); module design note M10
   (C7); M24 (CI jobs).
@@ -12,7 +11,7 @@
 ## Context
 
 - Open source today has no LICENSE/NOTICE, no offline profile, no conformance command and no R11 harness (note :43).
-- The rerank lane is ADR-0084; the pending `ort` 2.0.0-rc.15 load-dynamic change carries ORT 1.30.0 and an int8
+- The rerank lane is ADR-0084; an `ort` 2.0.0-rc.15 load-dynamic change carries ORT 1.30.0 and an int8
   rerank model added by `ADD --checksum`, and may not merge as is (U1) (note :41-42, :223). Local embedding does not
   exist: `adapters.rs::embedding_provider_for` is DashScope only (note :42).
 - Still in force: OSS users deploy locally to a standard (`29f37ded` → charter `829c952f`); Linux arm64 containers +
@@ -42,10 +41,10 @@ Conformance includes the knowledge export → restore → local re-embed leg, wi
 
 ### D-D Local embedding: e5-small via `ort`
 
-The local embedder is e5-small loaded through `ort` (note :151). It is MIT, so the distribution ships the licence and
+The local embedder is e5-small loaded through `ort` (note :151). It is MIT; the distribution ships the licence and
 attribution (note :151). Inputs use `query:`/`passage:` prefixes, mean pooling with L2 normalisation, 384 dimensions,
 at most 512 tokens, with its own fingerprint and generation (note :151-152). The artifact is built in GitHub Actions
-and added by `ADD --checksum` (note :152). The rerank and ORT pins are recorded in `release.lock` (note :153). This is
+and added by `ADD --checksum` (note :152-153). The rerank and ORT pins are recorded in `release.lock` (note :153). This is
 the amendment of §7.2/§67.2 named by the note (note :153).
 
 ### D-E arm64 and amd64 OSS images
@@ -83,7 +82,7 @@ The OSS export tree is built and gated without publishing the repository (note :
 
 ## Gates
 
-Planned, implementer-owned and tri-state (§57.1); none exists here. DB/compose tests treat missing Docker in CI as
+Planned and tri-state (§57.1); none exists here. DB/compose tests treat missing Docker in CI as
 fail (ADR-0050) (note :165).
 
 | gate | test file | inject | expected red |

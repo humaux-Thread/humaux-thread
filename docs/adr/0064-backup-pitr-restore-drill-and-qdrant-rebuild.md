@@ -39,7 +39,7 @@
     rulings, scope, findings, tests, limits, E16 table, rejected lists and follow-ups, `card37_extra_gates.env` and
     `c37_rehearse.sh`. No code path changes.
 
-**Superseded in scope by ADR-0121 (M23):** backup becomes a knowledge-only logical export with verify and drill; pgBackRest, WAL archiving and PITR retire after the first verified export.
+**Superseded in scope by ADR-0121 (M23):** backup becomes a knowledge-only logical export with verify and drill; pgBackRest, WAL archiving and PITR retire in card M23-7 after the first verified export, owner-gated.
 
 ## S1 — schema as built
 
