@@ -15194,6 +15194,7 @@ why: the onboarding library (provisioning), typed maintenance pool, quota window
 
 modules naming it:
 - `maintenance::backup`
+- `maintenance::deploy_check`
 - `maintenance::drill`
 - `maintenance::health_serve`
 - `maintenance::main`
