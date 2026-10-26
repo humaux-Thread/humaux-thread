@@ -31,6 +31,7 @@
 //!
 //! Read-only: this suite creates nothing and deletes nothing. Three-state per §79.2.
 
+use humaux_domain::applicability::{ApplicabilityScope, ApplicabilityStatus, AssignmentMethod};
 use humaux_domain::context::{REGISTRY, SelectorId};
 use humaux_domain::memory::{MandatoryContextFacet, MemoryType};
 use humaux_domain::plan::{
@@ -395,6 +396,52 @@ fn assert_same_closed_set(what: &str, literals: &[String], wires: &[&str]) {
         wires.len(),
         "{what}: a literal is listed twice"
     );
+}
+
+/// G-M14-11 / §78.2: all three applicability vocabularies equal their live CHECK lists in both directions.
+#[test]
+fn g_m14_11_applicability_closed_sets_equal_db_checks() {
+    let Some(mut client) = client() else { return };
+    let scopes = ApplicabilityScope::ALL.map(ApplicabilityScope::wire);
+    let statuses = ApplicabilityStatus::ALL.map(ApplicabilityStatus::wire);
+    let methods = AssignmentMethod::ALL.map(AssignmentMethod::wire);
+    for (constraint, wires, count) in [
+        ("memory_applicability_scope_check", scopes.as_slice(), 3),
+        ("memory_applicability_status_check", statuses.as_slice(), 3),
+        ("memory_applicability_method_check", methods.as_slice(), 2),
+    ] {
+        let rows = client
+            .query(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conrelid='private.memory_applicability'::regclass AND conname=$1",
+                &[&constraint],
+            )
+            .expect("G-M14-11: required applicability CHECK missing");
+        assert_eq!(rows.len(), 1, "G-M14-11: one named CHECK");
+        let def: String = rows[0].get(0);
+        assert_eq!(wires.len(), count, "G-M14-11: closed vocabulary count");
+        let literals = quoted_literals(&def);
+        assert_same_closed_set(constraint, &literals, wires);
+        for label in literals {
+            let round_trip = match constraint {
+                "memory_applicability_scope_check" => {
+                    ApplicabilityScope::parse_wire(&label).map(ApplicabilityScope::wire)
+                }
+                "memory_applicability_status_check" => {
+                    ApplicabilityStatus::parse_wire(&label).map(ApplicabilityStatus::wire)
+                }
+                _ => AssignmentMethod::parse_wire(&label).map(AssignmentMethod::wire),
+            };
+            assert_eq!(
+                round_trip,
+                Some(label.as_str()),
+                "G-M14-11: DB-to-Rust round trip"
+            );
+        }
+    }
+    assert_eq!(ApplicabilityScope::parse_wire("PROJECT_LOCAL"), None);
+    assert_eq!(ApplicabilityStatus::parse_wire("AUTO_APPROVED"), None);
+    assert_eq!(AssignmentMethod::parse_wire("AGENT"), None);
 }
 
 /// G-M04-14 / §78.2: every closed set of `control.plan_versions` (currency, billing interval, entitlement-template keys,

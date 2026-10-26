@@ -48,6 +48,21 @@
   the owner's instruction, and ADR-0078 D-G's rule stands that an agent relaying the owner's words is weaker proof than
   the owner's own confirmation.
 
+### D-B.1 Approval predicate (lead ruling 2026-10-26)
+
+- The SQL SECURITY DEFINER decision door takes memory id, decision Evidence id, method and APPROVED or REJECTED.
+- The existing 0188 `control.assert_write_scope` authenticates the API-key caller inside the transaction.
+- Its key's user must hold ACTIVE `control.memberships.role = 'OWNER'` in the applicability row's tenant.
+- `AGENT_ON_OWNER_CHAT` (由聊天授权) requires same-tenant Evidence with `origin_class = 'AuthenticatedAgent'`
+  and `origin_principal_id = api_key_id`, the principal recorded by the existing remember/ingest writers.
+- This proves the agent's authorship of the relayed instruction, not the owner's words; ADR-0078 D-G stays intact.
+- Missing Evidence, foreign tenant, different author, wrong origin or non-owner is refused with FORBIDDEN and a sub-reason.
+- APPROVED and REJECTED record both method and Evidence; refusal leaves the whole row unchanged; proposals only store PROPOSED.
+- OWNER_CONSOLE is refused until the console session binding exists (M14-5b).
+- A future console approval requires a trusted owner session plus same-tenant DirectUserInput/UserConfirmed Evidence by that caller.
+- A later console approval may supersede a chat approval, never the reverse; applicability changes no visibility or permission.
+- Widening applicability is outside ADR-0078 D-G's high-risk list, so it requires no confirm token.
+
 ### D-C Language independence
 
 - Empty `implementation_languages` means language-independent, so research written for an older language is reusable

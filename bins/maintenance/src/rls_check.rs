@@ -1151,6 +1151,13 @@ const MATRIX: &[Cell] = &[
 // Keep its narrow grants executable and bidirectionally checked while the later contract
 // phase decides whether to merge these columns into the Canonical matrix.
 const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
+    // §6.2.2 / ADR-0096: all applicability writes use the 0273 doors.
+    cell!("private.memory_applicability", "role_gateway", ["SELECT"]),
+    cell!(
+        "private.memory_applicability",
+        "role_maintenance",
+        ["SELECT"]
+    ),
     // 0134: moderator identity/rationale remain owner-only. The private worker may invoke
     // one narrow definer but receives no direct protected-table privilege.
     cell!(
