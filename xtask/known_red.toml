@@ -19,16 +19,6 @@
 # --- dod -------------------------------------------------------------------
 
 [[dod]]
-id = "DOD-006"
-owner = "M13"
-reason = "no verifier registered in crates/testkit/src/dod.rs; stream_seq ledger capability exists (migrations/0007, G80-4/25/28)"
-
-[[dod]]
-id = "DOD-007"
-owner = "M13"
-reason = "no verifier registered in crates/testkit/src/dod.rs; ledger::close and classify sole sites exist (domain/src/ledger.rs, retrieval/src/completeness.rs)"
-
-[[dod]]
 id = "DOD-008"
 owner = "M13"
 reason = "no verifier registered in crates/testkit/src/dod.rs; completeness block exists in retrieval/src/envelope.rs"
