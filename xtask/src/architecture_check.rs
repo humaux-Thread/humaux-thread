@@ -4642,7 +4642,12 @@ const M08_CAN_READ_SITES: [(&str, usize, &str); 1] = [(
 /// ponytail: every row hands the door a row its own SQL already fetched, which `readable_memory_ids` cannot take
 /// because it reads its own rows; `contribution_entry_repo.rs` also hand-rolls the §8.6 closure (the Memory row, then
 /// each backing Evidence row), upgrade by routing its Memory case through `readable_memory_ids` and dropping the row.
-const M08_VISIBILITY_READABLE_SITES: [(&str, usize, &str); 4] = [
+const M08_VISIBILITY_READABLE_SITES: [(&str, usize, &str); 5] = [
+    (
+        "crates/adapters/src/forget_repo.rs",
+        2,
+        "`visible_evidence`: judges each closure Evidence row of a deletion preview against the caller's workspace, so Evidence of another workspace never counts (M19 G-M19-1)",
+    ),
     (
         "crates/adapters/src/read_materialize.rs",
         2,
@@ -17769,7 +17774,7 @@ async fn serving_version_in_txn() {}
     /// file is not one of them. A fifth is an edit to this test as well as to the const.
     #[test]
     fn m08_2_declares_the_four_row_level_callers_of_the_door() {
-        assert_eq!(M08_VISIBILITY_READABLE_SITES.len(), 4);
+        assert_eq!(M08_VISIBILITY_READABLE_SITES.len(), 5);
         for (file, count, why) in M08_VISIBILITY_READABLE_SITES {
             assert_ne!(file, M08_GATE);
             assert!(count > 0, "{file}");
