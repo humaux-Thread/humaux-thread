@@ -245,6 +245,7 @@ fn matrix_expected(
 
 fn propose_all_scopes(handle: &mut Handle, auth: &AuthorizationScope, memory: Uuid) -> Proposal {
     let mut input = proposal(memory);
+    assert_eq!(ApplicabilityScope::ALL.len(), 3);
     for scope in ApplicabilityScope::ALL {
         input.scope = scope;
         input.channel_key =
@@ -259,6 +260,18 @@ fn propose_all_scopes(handle: &mut Handle, auth: &AuthorizationScope, memory: Uu
             Ok(ApplicabilityStatus::Proposed)
         );
         let current: serde_json::Value = serde_json::from_str(&row(handle, memory)).expect("row");
+        assert_eq!(current["scope"], input.scope.wire());
+        assert_eq!(
+            current["product_subject_id"],
+            serde_json::json!(input.product_subject_id)
+        );
+        assert_eq!(current["channel_key"], serde_json::json!(input.channel_key));
+        assert_eq!(
+            current["qualifiers"],
+            serde_json::json!({
+                "implementation_languages": [], "exclusions": []
+            })
+        );
         assert_eq!(current["status"], "PROPOSED");
         assert_eq!(current["assignment_method"], serde_json::Value::Null);
         assert_eq!(current["decision_evidence_id"], serde_json::Value::Null);
