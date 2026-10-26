@@ -42,7 +42,7 @@ with M10 (1024-d f32 + 1.5 KB + backup is already ≈ 11.2 KB) (note :166-167).
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :222, :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|

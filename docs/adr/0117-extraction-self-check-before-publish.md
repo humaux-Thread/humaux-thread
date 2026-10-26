@@ -13,7 +13,7 @@
   `confidence_label` at PUBLISH (note :72-73).
 - The quality question is asymmetric: the model's "done" is not evidence of coverage, and the independent local manifest
   is (note :131).
-- Confidence has no calibration in v1; the note fixes the label set and starts at `unknown` (note :136).
+- Confidence has no calibration in v1; the note fixes the label set and starts at `unknown` (note :135-136).
 
 ## Decisions
 
@@ -28,10 +28,10 @@ The checks, per extraction (note :131-136):
 - time coverage — segment gaps and overlaps;
 - response integrity — schema, unit ids, finish reason.
 
-Blank units (no text, no image) are never sent (note :135). Words-per-page is a signal only (note :136).
+Blank units (no text, no image) are never sent (note :135). Words-per-page is a signal only (note :135).
 
 Confidence label ∈ {unknown, model_self_reported, provider_score, empirically_calibrated}; v1 is `unknown` until
-X-M17-1 calibrates it (note :136).
+X-M17-1 calibrates it (note :135-136).
 
 ## Consequences
 
@@ -43,7 +43,7 @@ X-M17-1 calibrates it (note :136).
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :222, :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
@@ -74,7 +74,7 @@ store. Open owner questions: none (lead rulings applied; v1 Q1 closed by "no ori
 ## Alternatives rejected
 
 The model's "done" as a self-check input (note :131); sending blank units (note :135); words-per-page as a quality
-verdict rather than a signal (note :136); a calibrated confidence label in v1 (note :136).
+verdict rather than a signal (note :135); a calibrated confidence label in v1 (note :136).
 
 ## References
 

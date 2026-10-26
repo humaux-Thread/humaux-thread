@@ -70,7 +70,7 @@ new attempt with a new reservation. Cost events go through M04 C6 (note :160-162
 ## Consequences
 
 - Positive: a probe is a synthetic fixture whose answer exists only in that modality; an HTTP 200, `/models` or the
-  model's claim are never proof of a modality (note :117-118); consent is per tenant and off by default; each call leaves
+  model's claim are never proof of a modality (note :116-118); consent is per tenant and off by default; each call leaves
   one disclosure row; the spend cap is reserved before the call, not after.
 - Cost: probe spend is part of the owner red line on real model spend in production (note :311-312); the consent columns are
   M15/§7.2-owned, so M17 adds guest columns rather than its own table (note :210).
@@ -84,7 +84,7 @@ new attempt with a new reservation. Cost events go through M04 C6 (note :160-162
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :222, :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|

@@ -5,12 +5,11 @@
   Gitleaks is an allowed pinned external (note :10) and the owner's 2026-10-23 ruling, owner (49166827). This ADR records
   them and re-decides none. No code, migration or gate lands with it.
 - Relates to: Baseline §7.4, §28, §45.1, §52, §78.1, §80.1; ADR-0115 (publish transaction), ADR-0117 (self-check),
-  ADR-0119 (sandbox runner, where the scanner runs); the public-contribution path's pinned Gitleaks `stdin` scan
-  (Baseline §12.1.1).
+  ADR-0119 (sandbox runner, where the scanner runs).
 
 ## Context
 
-- No scan runs on user-uploaded text today; M17 needs a pinned Gitleaks binary for private text before it is published or
+- M17 needs a pinned Gitleaks binary for private text before it is published or
   sent to a model (note :137-138).
 - The precision in the research findings matters to the design (note :11-13): Gitleaks `--max-archive-depth` defaults to 0
   and `--max-target-megabytes` skips silently, so archives are not scanned by handing the file over.
@@ -49,7 +48,7 @@ A hit is redacted to `[REDACTED:<rule>]` before publish or send; counts are kept
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :222, :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
@@ -84,5 +83,5 @@ of per unit stream (gate A-9, note :266).
 
 - Module design note M17 v2 §4 (D9), §5 (sandbox runner contract), §8 (cards), §9 (gates), §11 (UNKNOWNs with
   fallbacks), §12 (owner red lines and the allowed-pinned-external ruling).
-- Baseline §7.4, §12.1.1 (pinned Gitleaks `stdin` scan and receipt), §28, §45.1, §52, §78.1, §80.1.
+- Baseline §7.4, §28, §45.1, §52, §78.1, §80.1.
 - ADR-0115 (publish), ADR-0117 (self-check), ADR-0119 (sandbox runner).

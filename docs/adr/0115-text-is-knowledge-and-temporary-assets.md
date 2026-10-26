@@ -69,7 +69,7 @@ unknown), xlsx sheet+A1 range, email part path, archive member path, audio track
 code-point range (W3C TextPosition). ADR-0079 selectors resolve over the concatenation of blocks in ordinal order (note
 :80-83).
 
-Rejected: the research findings' separate `text_block` table (a second home for Extraction text) (note :11-13, :83); a
+Rejected: the research findings' separate `text_block` table (a second home for Extraction text) (note :11-13, :83-84); a
 text object in the store (an original by another name) (note :84).
 
 ### D-D (D4) Dedupe: a live session's hash, and nothing after purge
@@ -155,9 +155,8 @@ GET only and owns the census, and deleting there is owner-only (note :192-198).
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249). ADR-0079's G-DOC-1…17 stay as
-mapped, and M17-11 owns G-DOC-13 and G-M17-6 (note :241, :249). A missing database is a fail in CI, never
-`not_applicable` (ADR-0050).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :222, :249). ADR-0079's G-DOC-1…17 stay as
+mapped, and M17-11 owns G-DOC-13 and G-M17-6 (note :241, :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
@@ -201,7 +200,7 @@ store. Open owner questions: none (lead rulings applied; v1 Q1 closed by "no ori
 ## Alternatives rejected
 
 Keeping originals (owner); a user-extendable retention window (lead ruling); UNLOGGED session rows (note :66-67); a
-second `text_block` table (note :83); a text object in the store (note :84); presigned POST with version sealing (note
+second `text_block` table (note :83-84); a text object in the store (note :84); presigned POST with version sealing (note
 :19-20, :156-157); renditions and physical dedupe, rejected with no originals retained (note :180); the v1 ranged-GET hydrate
 (note :22).
 

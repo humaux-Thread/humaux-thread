@@ -57,7 +57,7 @@ vendor table in code (note :151-154).
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :222, :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
