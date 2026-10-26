@@ -3,8 +3,7 @@
 - Status: Accepted (2026-10-23). Card M23-1 (docs only, wave F, module M23). Content authority: module design note M23
   v2, §3 (C7 v2, C-M23-0, C-M23-4), §7 D1–D11, §9 and §13. This ADR records those decisions and re-decides none of
   them. No code, migration, gate or deployment lands with it.
-- Supersedes in scope: ADR-0064, whose backup/PITR and Qdrant-recovery scope this decision replaces (note :192). One
-  pointer line is added to ADR-0064; its text is not rewritten.
+- Supersedes in scope: ADR-0064 (note :192). One pointer line is added to ADR-0064; its text is not rewritten.
 - Amends: Baseline §44 (backup/DR) and §66 (automatic operation); the C7 recovery contract shared with M10 (note :46,
   :192). The M10 note's ADR-M10-b has no real ADR id in this tree; the C7 amendment is recorded here only.
 - Relates to: Baseline §16.3, §37, §44, §66, §81, §78.2; ADR-0064 (backup/PITR, drill, Qdrant rebuild); ADR-0062
