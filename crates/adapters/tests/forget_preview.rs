@@ -1,6 +1,6 @@
 //! `adapters::tests::forget_preview` — G-M19-1 (preview honesty) and the M19-2 request-v2 contract: frozen closure,
 //!   manifest hash, visibility-filtered impact preview, 0272 shape and grants, on a disposable database.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(any) w=[control.deletion_requests, control.deletion_targets, control.tenants, control.users, private.evidence_edges, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.subjects], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, application::forget, testkit::disposable, testkit::fixture_purge]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(any) w=[control.deletion_requests, control.deletion_targets, control.private_reasoning_domains, control.tenants, control.users, private.evidence_edges, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.subjects], PostgreSQL(owner), PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, application::forget, domain::identity, domain::ids, humaux-testkit, testkit::disposable, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [every fixture calls require_disposable before it writes a row; the closure is frozen from the owner view and
 //!   previewed through role_gateway under each user's own RLS; every count, title set and hash is asserted exactly]
@@ -251,6 +251,7 @@ fn expected_targets(s: &Seeded) -> Vec<DeletionTarget> {
 
 fn freeze(h: &Handle, roots: &[Uuid]) -> FrozenDeletion {
     h.rt.block_on(async {
+        // dep: PostgreSQL(owner) — the closure walk sees every row of the tenant
         let mut txn = h.admin_pool.begin().await.expect("begin");
         let frozen =
             forget_repo::freeze_evidence_closure_in_txn(&mut txn, h.tenant_id, h.requester, roots)
@@ -269,6 +270,7 @@ fn preview(h: &Handle, user: Uuid, request_id: Uuid) -> ImpactPreview {
         BoundedSet::new([WorkspaceId::new()]).expect("one workspace"),
     );
     h.rt.block_on(async {
+        // dep: PostgreSQL(role_gateway) — the preview runs under the request-path role's RLS
         let mut txn = h.gateway_pool.begin().await.expect("begin");
         let preview = forget_repo::preview_in_txn(&mut txn, &authorization, request_id)
             .await
@@ -391,6 +393,7 @@ fn memory_scope_freezes_the_memory_alone_with_source_retained() {
             let evidence = seed_evidence(&mut h, "source", None);
             let memory = seed_memory(&mut h, "solo", None, &[evidence]);
             let frozen = h.rt.block_on(async {
+                // dep: PostgreSQL(owner) — a MEMORY freeze needs no RLS view beyond the tenant
                 let mut txn = h.admin_pool.begin().await.expect("begin");
                 let frozen =
                     forget_repo::freeze_memory_in_txn(&mut txn, h.tenant_id, h.requester, memory)
@@ -514,6 +517,7 @@ fn runtime_roles_cannot_write_the_request_tables_directly() {
                 "UPDATE control.deletion_requests SET state = 'FAILED'",
             ];
             for statement in statements {
+                // dep: PostgreSQL(role_gateway) — a direct write the request-path role must be refused
                 let refusal =
                     h.rt.block_on(sqlx::query(statement).execute(&h.gateway_pool))
                         .expect_err("role_gateway holds no write privilege on the request tables");

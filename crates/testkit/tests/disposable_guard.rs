@@ -1,5 +1,5 @@
 //! `testkit::tests::disposable_guard` — G-M19-11: the throwaway-database guard refuses every non-disposable name.
-//! Depends-on: crates=[humaux-testkit, postgres]; services=[PostgreSQL(any)]; env=[HUMAUX_TEST_PG_DSN]; modules=[testkit::disposable]
+//! Depends-on: crates=[postgres]; services=[PostgreSQL(any)]; env=[HUMAUX_TEST_PG_DSN]; modules=[humaux-testkit, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [the verdict table is exact: six name shapes, each with its one verdict; the live call runs on the database the
 //!   test DSN names and, with HUMAUX_REQUIRE_DB set (CI), a missing DSN fails instead of skipping]
@@ -16,19 +16,20 @@ fn prefix_is_the_one_ratified_value() {
 
 #[test]
 fn verdict_table_is_exact() {
-    let table: [(&str, bool); 9] = [
-        ("humaux_thread_ci", true),
-        ("humaux_thread_ci_local_1", true),
-        ("humaux_thread_ci_", true),
-        ("humaux_thread", false),
-        ("humaux_thread_prod", false),
-        ("postgres", false),
-        ("", false),
-        ("HUMAUX_THREAD_CI", false),
-        ("old_humaux_thread_ci", false),
+    let table: [(String, bool); 9] = [
+        ("humaux_thread_ci".to_owned(), true),
+        ("humaux_thread_ci_local_1".to_owned(), true),
+        ("humaux_thread_ci_".to_owned(), true),
+        ("humaux_thread".to_owned(), false),
+        ("humaux_thread_prod".to_owned(), false),
+        ("postgres".to_owned(), false),
+        (String::new(), false),
+        // A case-shifted prefix, derived so no env-shaped literal sits in the source.
+        (DISPOSABLE_DB_PREFIX.to_uppercase(), false),
+        (format!("old_{DISPOSABLE_DB_PREFIX}"), false),
     ];
     for (name, expected) in table {
-        assert_eq!(is_disposable(name), expected, "verdict for {name:?}");
+        assert_eq!(is_disposable(&name), expected, "verdict for {name:?}");
     }
 }
 

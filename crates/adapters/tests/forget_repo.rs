@@ -2,7 +2,7 @@
 //!   Postgres.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit,
 //!   postgres, sqlx, tokio]; services=[PostgreSQL(any) w=[control.deletion_requests, control.tenants,
-//!   ops.deletion_plan_steps, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance)];
+//!   control.users, ops.deletion_plan_steps, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::postgres, application::forget, domain::ids,
 //!   humaux-testkit, projection::stream]
 //! Called-by: [cargo-test]

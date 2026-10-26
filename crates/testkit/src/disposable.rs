@@ -24,6 +24,7 @@ pub fn is_disposable(database_name: &str) -> bool {
 /// database so the refusal is visible in the test output. A failed read is also `Err`: an unknown database is not a
 /// disposable one.
 pub fn require_disposable(conn: &mut Client) -> Result<String, String> {
+    // dep: PostgreSQL(any) — reads the name of the database the caller is connected to
     let row = conn
         .query_one("SELECT current_database()::text", &[])
         .map_err(|e| format!("cannot read current_database(): {e}"))?;
