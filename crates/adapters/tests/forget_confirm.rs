@@ -1,8 +1,8 @@
 //! `adapters::tests::forget_confirm` — ADR-0092 D-B/D-C round-2 atomicity and scope isolation, on disposable PG.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, ops.outbox, private.memory_evidence, private.memory_records, projection.embedding_fingerprints, projection.rebuild_runs, projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::grep_repo, adapters::read_gate, adapters::read_materialize, adapters::exact_census, adapters::tests::support::operation_receipt_fixture, application::forget, domain::confirm, domain::authority, domain::context, domain::error, domain::identity, domain::ids, humaux-testkit, projection::serving, projection::stream, retrieval::predicate_registry, testkit::disposable]
 //! Called-by: [cargo-test]
-//! Invariants: [refusals leave token/request/lifecycle/stream state unchanged; every read uses role_gateway; exact ids and counts; fixture writes require disposable PG]
-//! Spec: Baseline §37.2; §33.10 rule 9; §41.2; §78.2; ADR-0092 D-B/D-C; G-M19-2; G-M19-3; G-M19-17; G-DOC-13
+//! Invariants: [refusals leave token/request/lifecycle/stream state unchanged; accept re-judges the frozen roots, never the closure, under its own scope (#346); every read uses role_gateway; exact ids and counts; fixture writes require disposable PG]
+//! Spec: Baseline §37.2; §33.10 rule 9; §41.2; §78.2; ADR-0092 D-B/D-C; G-M19-2; G-M19-3; G-M19-17; G-DOC-13; #346
 
 use humaux_adapters::{
     confirm_token_repo::ConfirmationClaim,
@@ -446,13 +446,25 @@ fn token(
     scope: DeletionScopeKind,
     manifest: [u8; 32],
 ) -> ConfirmationClaim {
+    let (user, workspace) = (h.user_id, h.workspace_id);
+    token_for(h, (user, workspace), request, scope, manifest)
+}
+
+/// A round-one token minted for `(user, workspace)`, the pair the accept-time scope will carry.
+fn token_for(
+    h: &mut Handle,
+    (user, workspace): (Uuid, Uuid),
+    request: &FrozenDeletion,
+    scope: DeletionScopeKind,
+    manifest: [u8; 32],
+) -> ConfirmationClaim {
     let mut nonce = [0u8; 32];
     nonce[..16].copy_from_slice(Uuid::new_v4().as_bytes());
     let digest = ConfirmToken::from_bytes(nonce).sha256();
     let intent = confirmation_digest(scope, &manifest);
     h.admin.execute(
         "INSERT INTO control.confirm_tokens (tenant_id,user_id,operation,target_id,nonce_sha256,expires_at,workspace_id,request_sha256) VALUES ($1,$2,'memory.forget',$3,$4,clock_timestamp()+interval '1 hour',$5,$6)",
-        &[&h.tenant_id,&h.user_id,&request.request_id,&&digest[..],&h.workspace_id,&&intent[..]],
+        &[&h.tenant_id,&user,&request.request_id,&&digest[..],&workspace,&&intent[..]],
     ).expect("seed a round-one token");
     ConfirmationClaim {
         op: DestructiveOp::MemoryForget,
@@ -468,6 +480,16 @@ fn accept(
     request: &FrozenDeletion,
     claim: Option<&ConfirmationClaim>,
 ) -> Result<(), ForgetRepoError> {
+    accept_as(h, &h.auth, request, claim)
+}
+
+/// Round 2 under `auth`, a caller-owned `role_gateway` transaction rolled back on any refusal.
+fn accept_as(
+    h: &Handle,
+    auth: &AuthorizationScope,
+    request: &FrozenDeletion,
+    claim: Option<&ConfirmationClaim>,
+) -> Result<(), ForgetRepoError> {
     h.rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
         let mut connection =
@@ -476,7 +498,7 @@ fn accept(
                 .expect("gateway connection");
         // dep: PostgreSQL(role_gateway) — the same caller-owned transaction
         let mut txn = connection.begin().await.expect("begin");
-        let result = forget_repo::accept_in_txn(&mut txn, &h.auth, request.request_id, claim).await;
+        let result = forget_repo::accept_in_txn(&mut txn, auth, request.request_id, claim).await;
         if result.is_ok() {
             txn.commit().await.expect("commit accept");
         } else {
@@ -484,6 +506,26 @@ fn accept(
         }
         result
     })
+}
+
+/// A fresh credential of `user` bound to `workspace`, and the request scope narrowed to that one workspace (ADR-0054 D-B).
+fn scope_in(h: &mut Handle, user: Uuid, workspace: Uuid) -> AuthorizationScope {
+    let home = (h.user_id, h.workspace_id);
+    (h.user_id, h.workspace_id) = (user, workspace);
+    let key_hash = [*Uuid::new_v4().as_bytes(), *Uuid::new_v4().as_bytes()].concat();
+    let credential = h.seed_synthetic_service_credential(
+        SyntheticCredentialScopes::RememberWrite,
+        &Uuid::new_v4().to_string(),
+        "m19-confirm-fixture-only",
+        &key_hash,
+    );
+    (h.user_id, h.workspace_id) = home;
+    AuthorizationScope::new(
+        TenantId(h.tenant_id),
+        PrincipalId(credential.api_key_id),
+        Some(UserId(user)),
+        BoundedSet::new([WorkspaceId(workspace)]).expect("one workspace"),
+    )
 }
 
 fn footprint(h: &mut Handle) -> (i64, i64, i64, i64, i64) {
@@ -581,6 +623,110 @@ fn g_m19_3_memory_forget_keeps_shared_evidence_survivor() {
         },
     );
 }
+/// #346: the user is a member of two workspaces; a request frozen from W1 must not be accepted by a W2-narrowed scope.
+fn accept_from_another_workspace_is_refused(name: &'static str, evidence: bool) {
+    run_db_fixture::<Fixture, _>(name, move |mut h| {
+        let world = seed(&mut h);
+        let (root, scope) = if evidence {
+            (
+                primary(&mut h, world.gated),
+                DeletionScopeKind::EvidenceClosure,
+            )
+        } else {
+            (world.gated, DeletionScopeKind::Memory)
+        };
+        let request = freeze(&h, root, evidence);
+        let user = h.user_id;
+        let away = h.seed_workspace();
+        let away_scope = scope_in(&mut h, user, away);
+        let claim = token_for(&mut h, (user, away), &request, scope, request.manifest_hash);
+        assert!(matches!(
+            accept_as(&h, &away_scope, &request, Some(&claim)),
+            Err(ForgetRepoError::Refused {
+                code: ErrorCode::NotFound,
+                reason: "root_unreadable"
+            })
+        ));
+        assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
+        check(&world, &h, BTreeSet::from([world.ctrl, world.gated]));
+        let home = token(&mut h, &request, scope, request.manifest_hash);
+        accept(&h, &request, Some(&home)).expect("the request's own workspace still accepts");
+        assert_eq!(footprint(&mut h), (1, 1, 1, 1, 0));
+        check(&world, &h, BTreeSet::from([world.ctrl]));
+    });
+}
+
+#[test]
+fn g_346_memory_request_from_another_workspace_is_refused() {
+    accept_from_another_workspace_is_refused(
+        "g_346_memory_request_from_another_workspace_is_refused",
+        false,
+    );
+}
+
+#[test]
+fn g_346_evidence_request_from_another_workspace_is_refused() {
+    accept_from_another_workspace_is_refused(
+        "g_346_evidence_request_from_another_workspace_is_refused",
+        true,
+    );
+}
+
+#[test]
+fn g_346_another_user_in_the_same_workspace_is_refused() {
+    run_db_fixture::<Fixture, _>(
+        "g_346_another_user_in_the_same_workspace_is_refused",
+        |mut h| {
+            let world = seed(&mut h);
+            let request = freeze(&h, world.gated, false);
+            let peer = h.seed_peer_user();
+            let workspace = h.workspace_id;
+            let peer_scope = scope_in(&mut h, peer, workspace);
+            let claim = token_for(
+                &mut h,
+                (peer, workspace),
+                &request,
+                DeletionScopeKind::Memory,
+                request.manifest_hash,
+            );
+            assert!(matches!(
+                accept_as(&h, &peer_scope, &request, Some(&claim)),
+                Err(ForgetRepoError::Refused {
+                    code: ErrorCode::NotFound,
+                    ..
+                })
+            ));
+            assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
+            check(&world, &h, BTreeSet::from([world.ctrl, world.gated]));
+        },
+    );
+}
+
+#[test]
+fn g_346_closure_with_an_unreadable_derived_memory_is_accepted() {
+    run_db_fixture::<Fixture, _>(
+        "g_346_closure_with_an_unreadable_derived_memory_is_accepted",
+        |mut h| {
+            let world = seed(&mut h);
+            let peer = h.seed_peer_user();
+            let root = primary(&mut h, world.gated);
+            h.admin.execute("UPDATE private.memory_records SET visibility_class='USER_PRIVATE',visibility_user_id=$2,visibility_workspace_id=NULL WHERE memory_id=$1", &[&world.ctrl,&peer]).expect("derived Memory private to the peer");
+            h.admin.execute("INSERT INTO private.memory_evidence (memory_id,evidence_id,role,grounding_mode) VALUES ($1,$2,'SUPPORTING','SNAPSHOT')", &[&world.ctrl,&root]).expect("derived input");
+            let request = freeze(&h, root, true);
+            assert_eq!(request.targets.len(), 3);
+            let claim = token(
+                &mut h,
+                &request,
+                DeletionScopeKind::EvidenceClosure,
+                request.manifest_hash,
+            );
+            accept(&h, &request, Some(&claim))
+                .expect("only the roots are judged, never the closure");
+            assert_eq!(footprint(&mut h), (1, 1, 2, 2, 0));
+        },
+    );
+}
+
 fn seed_ticket(h: &mut Handle, evidence: Uuid, seq: i64, event: &str) -> i64 {
     let commit: i64 = h
         .admin

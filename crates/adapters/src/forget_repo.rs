@@ -7,7 +7,7 @@
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::confirm_token_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::confirm, domain::error, domain::identity, projection::stream]
 //! Called-by: [tests]
 //! Invariants: [maintenance calls open their own transaction and set humaux.tenant_id first; request calls use the caller-owned transaction and set its AuthorizationScope; maintenance tombstones and
-//!   plan-step bookkeeping run on role_maintenance; accept uses the gateway-only owner door; a PG error aborts the step so the plan stays resumable; a
+//!   plan-step bookkeeping run on role_maintenance; accept re-judges the frozen roots (never the whole closure) under its own AuthorizationScope before the gateway-only owner door (#346); a PG error aborts the step so the plan stays resumable; a
 //!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes
 //!   (scope, roots) and derives the targets, hash and requester itself, after every root passed the caller's own
 //!   AuthorizationScope (visibility_readable / readable_memory_ids, never a membership of the user's elsewhere); the preview reads Memory visibility through
@@ -636,9 +636,11 @@ pub async fn preview_in_txn(
     ))
 }
 
-/// ADR-0092 D-B/D-C: round 2 under the caller's transaction; the 0278 door verifies and consumes the full token
-/// binding, rechecks the closure under root locks, and commits logical deletion atomically (Baseline §37.2).
-/// A refusal aborts the transaction, so callers must roll it back, never commit it as an accepted request.
+/// ADR-0092 D-B/D-C: round 2 under the caller's transaction. The adapter first re-judges the frozen ROOTS under the
+/// accept-time `authorization` (#346; an unreadable root is `NotFound`/`root_unreadable`, nothing written); then the 0278
+/// door verifies and consumes the full token binding, rechecks the closure under root locks, and commits logical
+/// deletion atomically (Baseline §37.2). A refusal aborts the transaction, so callers must roll it back, never commit it
+/// as an accepted request.
 pub async fn accept_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
@@ -656,6 +658,23 @@ pub async fn accept_in_txn(
     crate::confirm_token_repo::set_authorization_local(txn, authorization)
         .await
         .map_err(|code| refused(code, "session_setup"))?;
+    // #346 / §6.1.1: the door checks write scope and the token's workspace but never readability, so the roots are
+    // re-judged here under the accept-time scope, exactly like freeze. Roots only: a legal closure may hold Memories
+    // the caller cannot read (ADR-0092 D-A).
+    let stored = load_request(txn, authorization.tenant_id().0, request_id)
+        .await
+        .map_err(|code| refused(code, "frozen_request_unreadable"))?;
+    let roots = if matches!(stored.scope_kind, DeletionScopeKind::Memory) {
+        &stored.memory_ids
+    } else {
+        &stored.evidence_ids
+    };
+    if !roots_readable(txn, authorization, stored.scope_kind, roots)
+        .await
+        .map_err(|code| refused(code, "root_check_failed"))?
+    {
+        return Err(refused(ErrorCode::NotFound, "root_unreadable"));
+    }
     let workspace = crate::confirm_token_repo::sole_workspace(authorization)
         .map_err(|code| refused(code, "workspace_scope"))?;
     // dep: PostgreSQL(any) — the gateway-only owner door, with tenant/user taken from the transaction's session GUCs
