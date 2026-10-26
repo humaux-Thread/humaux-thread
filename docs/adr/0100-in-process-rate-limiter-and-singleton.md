@@ -22,3 +22,7 @@ Single gateway; restart loses bucket state and starts conservatively. Upgrade to
 - G-M03-1: `bins/gateway/tests/limiter.rs:42` — exact shared-account cap over 80 credentials. Red [40292383940](https://github.com/humaux/humaux-thread/actions/runs/40292383940): ignoring Account subjects admits 160 instead of 128; the gate assertion fails.
 - G-M03-3: `bins/gateway/tests/singleton.rs:78` — actual second process refuses boot, distinct deployments boot, dead-session check and process failure. Red [40293224222](https://github.com/humaux/humaux-thread/actions/runs/40293224222): bypassing advisory acquisition boots two gateways; the second listener triggers the gate assertion.
 - G-M03-9: `bins/gateway/tests/admission.rs:78` — policy 429/RATE_LIMITED versus capacity 503/Retry-After, with no handler call on refusal. Red [40293930856](https://github.com/humaux/humaux-thread/actions/runs/40293930856): policy status changed to 503; the gate requires 429 and fails.
+
+## Review wiring receipts
+
+- rv-317 item1a: [40310961957](https://github.com/humaux/humaux-thread/actions/runs/40310961957), source `c0d11eef6f03826f442d9cb88f25f827cdb3c699`. Removing only the guard's Account subject compiles, then `guard_limiter::g_m03_1_guard_wiring_all_five_tiers` fails its own account assertion at `bins/gateway/tests/support/guard_limiter.rs:118`: `[200,200,200]` rather than `[200,200,429]` (1 failed, 0 ignored). IP, credential and user cases ran before this assertion.
