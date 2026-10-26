@@ -126,7 +126,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists here:
 | G-M13-1 get is O(1) (B23 red 15); setup: throwaway DB with `stream_log` SELECT revoked (note `:121`) | M13-2b | call `close_ledger_in_txn` / `visible_index_count` from get | permission denied on `stream_log`; Qdrant-count counter ≠ 0 |
 | G-M13-2 no fabricated frontier | M13-2a (type), M13-2b (wire) | map `None` to a zero frontier; read `evidence_hw` in gateway | `projection` not null on a row-less stream; sentinel count ≠ 0 |
 | G-M13-3 totals honesty | M13-3 | `total = returned` for semantic | Exact without `predicate_id` fails; `Totals {` constructed ≠ 1 |
-| G-M13-7 FACET_COMPLETE | M13-5 | count `STALE` as covered | covered/required wrong; class ≠ `cannot_establish` |
+| G-M13-7 FACET_COMPLETE | M13-5 | count `STALE` as covered | covered/required wrong; class ≠ `cannot_establish`; red run 40402537381 (`facet_completeness_stale_is_not_covered`, `continuity.rs:912`); tests in crates/application/src/continuity.rs (the continuity status and class types live there, so the lead ruled 2'' for M13-5) |
 | G-M13-8 project-axis census | M13-7 | read `memory_projects` instead of `_live` | a revoked link counted in `total` |
 | G-M13-9 status wording | M13-6 | emit 0 for a row-less stream; label `behind` as failed | `not_applicable` missing / wire word wrong |
 | G-M13-10 DoD verifiers | M13-8 | point DOD-009 at a nonexistent test | registry check red |
