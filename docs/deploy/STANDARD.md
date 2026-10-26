@@ -38,8 +38,7 @@ M23-16 dropped, nothing else changes (note :155).
 ## 5. Local embedding model
 
 The local embedder is e5-small loaded through `ort` (note :151). The distribution ships its MIT licence and
-attribution (note :151). Inputs use `query:`/`passage:` prefixes, mean pooling with L2 normalisation, 384 dimensions
-and at most 512 tokens, with its own fingerprint and generation. <!-- note :151-152 --> The artifact is built in
+attribution (note :151). Inputs use `query:`/`passage:` prefixes, mean pooling with L2 normalisation, 384 dimensions and at most 512 tokens, with its own fingerprint and generation. <!-- note :151-152 --> The artifact is built in
 GitHub Actions and added by `ADD --checksum` (note :152). The rerank and ORT pins are recorded in `release.lock`, not
 here (note :153).
 
