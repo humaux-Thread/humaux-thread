@@ -1271,7 +1271,13 @@ fn verdict_from_violations(out: Vec<String>) -> Verdict {
     }
 }
 
-/// G-M20-23b (§12–13, M20 D13'): no cross-plane SQL references; exceptions = empty set.
+/// G-M20-23b (§12–13): one existing negative ACL fixture may attempt, but never read, private data.
+const PUBLIC_POOL_SQL_EXCEPTIONS: &[(&str, &str)] = &[(
+    "crates/public-pool/tests/mechanism_observation.rs",
+    "\"SELECT * FROM private.memory_records\",",
+)];
+
+/// G-M20-23b (§12–13, M20 D13'): production and test sources share the same SQL boundary.
 fn no_bridge_sources(root: &Path, graph: bool) -> Verdict {
     let paths = if graph {
         walk_files(&root.join("crates/adapters/src"), &["rs"])
@@ -1283,13 +1289,13 @@ fn no_bridge_sources(root: &Path, graph: bool) -> Verdict {
             .chain(walk_files(&root.join("crates/graph"), &["rs", "sql"]))
             .collect::<Vec<_>>()
     } else {
-        walk_files(&root.join("crates/public-pool/src"), &["rs", "sql"])
+        walk_files(&root.join("crates/public-pool"), &["rs", "sql"])
     };
     if paths.is_empty() {
         return Verdict::NotApplicable(if graph {
             "crates/adapters/src/*graph* or crates/graph".into()
         } else {
-            "crates/public-pool/src".into()
+            "crates/public-pool Rust/SQL sources".into()
         });
     }
     let needle = if graph { "public." } else { "private." };
@@ -1299,14 +1305,28 @@ fn no_bridge_sources(root: &Path, graph: bool) -> Verdict {
             Ok(s) => s,
             Err(e) => return Verdict::Fail(vec![format!("{}: {e}", display(root, &path))]),
         };
+        let rel = display(root, &path);
+        let mut exception_used = false;
         for (n, line) in code_without_comments(&source).lines().enumerate() {
-            if line.to_ascii_lowercase().contains(needle) {
-                out.push(format!(
-                    "{}:{}: forbidden {needle} (G-M20-23b, §12–13)",
-                    display(root, &path),
-                    n + 1
-                ));
+            let lower = line.to_ascii_lowercase();
+            let reference = lower
+                .match_indices(needle)
+                .any(|(at, _)| at == 0 || !is_ident_byte(lower.as_bytes()[at - 1]));
+            if !reference {
+                continue;
             }
+            if !graph
+                && !exception_used
+                && PUBLIC_POOL_SQL_EXCEPTIONS.contains(&(rel.as_str(), line.trim()))
+            {
+                exception_used = true;
+                continue;
+            }
+            out.push(format!(
+                "{}:{}: forbidden {needle} (G-M20-23b, §12–13)",
+                display(root, &path),
+                n + 1
+            ));
         }
     }
     verdict_from_violations(out)
@@ -13673,6 +13693,44 @@ runs:
         .unwrap();
         assert_eq!(no_bridge_sources(&tmp, true), Verdict::Pass);
         assert_eq!(no_bridge_sources(&tmp, false), Verdict::Pass);
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn m20_26_public_sql_exception_is_exact_and_single_use() {
+        assert_eq!(
+            PUBLIC_POOL_SQL_EXCEPTIONS,
+            &[(
+                "crates/public-pool/tests/mechanism_observation.rs",
+                "\"SELECT * FROM private.memory_records\",",
+            )]
+        );
+        let (path, statement) = PUBLIC_POOL_SQL_EXCEPTIONS[0];
+        let current = fs::read_to_string(real_root().join(path)).unwrap();
+        assert_eq!(
+            current
+                .lines()
+                .filter(|line| line.trim() == statement)
+                .count(),
+            1
+        );
+        let tmp = fresh_tmp("m20-26-negative-acl");
+        let fixture = tmp.join(path);
+        fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+        fs::write(&fixture, format!("{statement}\nraw_private.transaction();")).unwrap();
+        assert_eq!(no_bridge_sources(&tmp, false), Verdict::Pass);
+        fs::write(
+            &fixture,
+            format!("{statement}\n{statement}\n\"SELECT * FROM private.subjects\";"),
+        )
+        .unwrap();
+        assert_eq!(
+            no_bridge_sources(&tmp, false),
+            Verdict::Fail(vec![
+                format!("{path}:2: forbidden private. (G-M20-23b, §12–13)"),
+                format!("{path}:3: forbidden private. (G-M20-23b, §12–13)"),
+            ])
+        );
         fs::remove_dir_all(tmp).unwrap();
     }
 
