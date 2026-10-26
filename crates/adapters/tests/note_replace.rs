@@ -317,6 +317,38 @@ fn replace(
         ))
 }
 
+/// The receipt advisory-lock text `operation_receipt::lock_and_find_receipt` derives for `intent`: every member of
+/// `(tenant, principal, scope_kind, scope_id, operation, idempotency_key)` comes from the request `replace` builds,
+/// and only the `operation-receipt:` format is repeated here (the derivation is not a public API).
+fn receipt_lock_key(handle: &Handle, editor: &Editor, intent: &Intent) -> String {
+    let (request, _note, _replace) = replace_parts(handle, editor, intent, None);
+    format!(
+        "operation-receipt:{}:{}:{}:{}:{}:{}",
+        editor.auth.tenant_id().0,
+        editor.auth.principal().0,
+        request.command.scope_kind,
+        request.command.scope_id,
+        NOTE_OPERATION,
+        request.idempotency_key,
+    )
+}
+
+/// Waits until the receipt lock `intent` names is free on the server, then releases it. A refusal drops its
+/// transaction, but sqlx rolls that back asynchronously; a blocking `pg_advisory_lock` queues behind the still-open
+/// backend, so on return the prior `pg_try_advisory_xact_lock` is gone and the next call cannot meet it as CONFLICT on
+/// whichever pooled connection it gets.
+fn await_receipt_lock_release(handle: &mut Handle, editor: &Editor, intent: &Intent) {
+    let key = receipt_lock_key(handle, editor, intent);
+    handle
+        .admin
+        .query_one("SELECT pg_advisory_lock(hashtextextended($1,0))", &[&key])
+        .expect("queue for the prior receipt transaction");
+    handle
+        .admin
+        .query_one("SELECT pg_advisory_unlock(hashtextextended($1,0))", &[&key])
+        .expect("release the receipt lock");
+}
+
 fn stored(outcome: Result<NoteReplaceOutcome, ErrorCode>) -> AtomicRememberResult {
     match outcome {
         Ok(NoteReplaceOutcome::Stored(result)) => result,
@@ -1170,6 +1202,9 @@ fn g27_a_tombstoned_head_cannot_be_replaced() {
             replace(&handle, &editor, &intent, None),
             Err(ErrorCode::NotFound)
         ));
+        // #273 F1: the refused transaction's rollback is asynchronous, so the confirmed leg could reach another pooled
+        // connection while its receipt key is still held and answer CONFLICT instead of the tombstoned head's NOT_FOUND.
+        await_receipt_lock_release(&mut handle, &editor, &intent);
         assert!(matches!(
             replace(&handle, &editor, &intent, Some(presented(&token, &intent))),
             Err(ErrorCode::NotFound)
