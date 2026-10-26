@@ -5333,6 +5333,7 @@ written by:
 
 executed by:
 - (no process): `adapters::forget_repo`
+- (no process): `adapters::tests::forget_preview`
 
 ### `control.deletion_requests`
 read by:
