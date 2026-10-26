@@ -1,3 +1,4 @@
+# ADR-0082 D-D amendment (M18-1): postcheck made head-robust after 0281 drops private.project_channels; assertions unchanged.
 # §46.1 / M14-4: additive attribute table and two gateway-only doors. No DML or parent writes.
 migration_id = "0271_project_channels"
 class = "EXPAND_CONTRACT"
@@ -11,7 +12,7 @@ postcheck = """
 SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='private' AND c.relname='project_channels'
  AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner='role_migration_owner'::regrole)
- AND (SELECT count(*)=2 FROM pg_constraint WHERE conrelid='private.project_channels'::regclass
+ AND (SELECT count(*)=2 FROM pg_constraint WHERE conrelid=to_regclass('private.project_channels')
    AND contype IN ('p','f'))
  AND NOT EXISTS (SELECT 1 FROM information_schema.role_table_grants
    WHERE table_schema='private' AND table_name='project_channels'
