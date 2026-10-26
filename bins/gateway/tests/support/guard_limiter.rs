@@ -51,12 +51,20 @@ async fn hold_clock() {
 }
 
 async fn wire(addr: SocketAddr, bearer: Option<&str>) -> (u16, Vec<String>, String) {
+    wire_from(addr, bearer, "").await
+}
+
+async fn wire_from(
+    addr: SocketAddr,
+    bearer: Option<&str>,
+    forwarded: &str,
+) -> (u16, Vec<String>, String) {
     let body = rpc(1, "tools/list", json!({"_meta": metadata()}));
     // dep: HTTP(loopback) — production MCP boundary and GatewayGuard (§83)
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let auth = bearer.map_or(String::new(), |b| format!("Authorization: {b}\r\n"));
     let raw = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {HOST}\r\nOrigin: {ORIGIN}\r\nConnection: close\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\n{auth}Content-Length: {}\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: {HOST}\r\nOrigin: {ORIGIN}\r\nConnection: close\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\n{auth}{forwarded}Content-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(raw.as_bytes()).await.unwrap();
@@ -214,6 +222,49 @@ fn g_m03_1_real_guard_ip_capacity_keeps_authenticated_room() {
                 "IP capacity must leave all four authenticated tiers available"
             );
             assert_rate_metrics(&guard, "");
+            server.abort();
+            clock.abort();
+        });
+    });
+}
+
+#[test]
+fn g_m03_9_preflight_ip_capacity_has_retry_after_and_metric() {
+    run_db_fixture::<Fixture, _>("g_m03_9_preflight_capacity", |mut handle| {
+        let credential = seed(&mut handle);
+        let mut settings = guard_settings();
+        settings.rate_max_subjects[0] = 1;
+        settings.trusted_proxies.trusted_proxy_cidrs = vec!["127.0.0.0/8".parse().unwrap()];
+        let (app, guard) = configured(&handle, settings);
+        frozen().block_on(async {
+            let clock = tokio::spawn(hold_clock());
+            let (addr, server) = start(app).await;
+            assert_eq!(
+                wire_from(
+                    addr,
+                    Some(&credential.bearer),
+                    "Forwarded: for=203.0.113.1\r\n"
+                )
+                .await
+                .0,
+                200
+            );
+            let (status, headers, body) = wire_from(
+                addr,
+                Some(&credential.bearer),
+                "Forwarded: for=203.0.113.2\r\n",
+            )
+            .await;
+            assert_eq!(status, 503, "G-M03-9 new IP at preflight capacity");
+            assert_eq!(body, "DEPENDENCY_UNAVAILABLE");
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|h| h.starts_with("retry-after:"))
+                    .collect::<Vec<_>>(),
+                vec!["retry-after: 1"]
+            );
+            assert_rate_metrics(&guard, "capacity");
             server.abort();
             clock.abort();
         });
