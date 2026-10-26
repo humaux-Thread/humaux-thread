@@ -419,7 +419,7 @@ impl GatewayBootstrap {
             .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_PG_DSN", "connection rejected"))?;
         let session_lock = acquire_gateway_lock(&pool, &self.deployment)
             .await
-            .map_err(|_| BootstrapError::new(DEPLOYMENT_KEY, "gateway singleton lock rejected"))?;
+            .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
         let guard = Arc::new(
             GatewayGuard::new(pool, self.guard)
                 .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?

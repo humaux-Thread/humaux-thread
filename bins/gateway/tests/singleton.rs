@@ -14,6 +14,7 @@ use humaux_gateway::bootstrap::acquire_gateway_lock;
 use postgres::{Client, NoTls};
 use std::{
     collections::BTreeMap,
+    io::Read,
     net::{SocketAddr, TcpListener, TcpStream},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -44,7 +45,7 @@ impl Process {
             command
                 .envs(env)
                 .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
+                .stderr(Stdio::piped())
                 // dep: subprocess(humaux-gateway) — real singleton boot gate (ADR-0100)
                 .spawn()
                 .expect("spawn gateway"),
@@ -66,15 +67,22 @@ impl Process {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    fn exit_code(&mut self) -> Option<i32> {
+    fn exit_code(&mut self, unexpected_listener: Option<SocketAddr>) -> Option<i32> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(status) = self.0.try_wait().unwrap() {
                 return status.code();
             }
+            if let Some(addr) = unexpected_listener {
+                // dep: HTTP(loopback) — a second listening gateway is an immediate singleton violation (ADR-0100)
+                assert!(
+                    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_err(),
+                    "G-M03-3 second gateway booted"
+                );
+            }
             assert!(
                 Instant::now() < deadline,
-                "G-M03-3 second gateway booted or lease loss did not exit"
+                "gateway did not produce the required exit verdict"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -84,6 +92,11 @@ impl Drop for Process {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if let Some(mut stderr) = self.0.stderr.take() {
+            let mut log = String::new();
+            let _ = stderr.read_to_string(&mut log);
+            eprint!("{log}");
+        }
     }
 }
 
@@ -101,9 +114,26 @@ fn g_m03_3_second_gateway_refuses_same_deployment_but_other_deployment_boots() {
     second_env.insert("HUMAUX_GATEWAY_DEPLOYMENT".into(), deployment);
     let mut second = Process::spawn(&second_env);
     assert_eq!(
-        second.exit_code(),
+        second.exit_code(Some(second_addr)),
         Some(1),
         "G-M03-3 second gateway must refuse"
+    );
+    let mut stderr = String::new();
+    second
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let errors: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.starts_with("humaux-gateway: gateway bootstrap configuration"))
+        .collect();
+    assert_eq!(
+        errors,
+        ["humaux-gateway: gateway bootstrap configuration HUMAUX_GATEWAY_DEPLOYMENT: CONFLICT"],
+        "{stderr}"
     );
     let third_addr = free_addr();
     let mut third = Process::spawn(&support::base_env(&dsn, third_addr, free_addr()));
@@ -181,5 +211,5 @@ fn gateway_exits_nonzero_when_the_lock_session_is_terminated() {
     // dep: PostgreSQL(owner) — terminate only the fixture-owned backend (§79)
     let mut admin = Client::connect(&input("HUMAUX_TEST_PG_DSN"), NoTls).unwrap();
     terminate_lock(&mut admin, key);
-    assert_eq!(gateway.exit_code(), Some(1));
+    assert_eq!(gateway.exit_code(None), Some(1));
 }
