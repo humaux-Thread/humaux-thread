@@ -842,9 +842,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_projects`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
+- reads `private.nodes`
 - reads `private.publish_continuity_facet`
 - reads `private.read_continuity_project_storage_v1`
 - reads `private.register_continuity_project`
+- reads `private.subjects`
+- reads `public.entities`
 - writes `private.context_bindings`
 - writes `private.evidence_objects`
 - writes `private.evidence_projects`
@@ -9862,6 +9865,14 @@ written by:
 
 executed by:
 
+### `private.nodes`
+read by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+written by:
+
+executed by:
+
 ### `private.note_heads`
 read by:
 - (no process): `adapters::tests::note_history`
@@ -10242,6 +10253,7 @@ executed by:
 ### `private.subjects`
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
@@ -11128,6 +11140,14 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `public-pool::public_repo`
+
+written by:
+
+executed by:
+
+### `public.entities`
+read by:
+- process(cargo-xtask): `xtask::architecture_check`
 
 written by:
 
