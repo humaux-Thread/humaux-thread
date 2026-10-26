@@ -808,6 +808,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::edge`
 - env `CARGO_MANIFEST_DIR`
 
+#### `protocol::error_map`
+
+#### `protocol::mcp`
+
+#### `protocol::mcp_catalog`
+
 #### `retrieval::candidate`
 
 #### `retrieval::compiler`
@@ -1185,6 +1191,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `xtask::rls_check`
 - env `CARGO_MANIFEST_DIR`
 - env `HUMAUX_TEST_PG_DSN`
+
+#### `xtask::schedule_register`
+- env `CARGO_MANIFEST_DIR`
+- env `GITHUB_ACTIONS`
 
 #### `xtask::serial_lane`
 - reads `ops.schema_migrations`
@@ -16398,6 +16408,7 @@ modules naming it:
 - `xtask::dep_map`
 - `xtask::known_red`
 - `xtask::r4_fault_manifest`
+- `xtask::schedule_register`
 
 ### xtask → `humaux-contracts` (normal)
 why: reuse the typed features.toml parser instead of a second one
@@ -16473,6 +16484,7 @@ why: reuse compute_api_key_hash instead of re-deriving the keyed hash
 
 modules naming it:
 - `tests`
+- `xtask::architecture_check`
 - `xtask::e2e_seed`
 - `xtask::load`
 
