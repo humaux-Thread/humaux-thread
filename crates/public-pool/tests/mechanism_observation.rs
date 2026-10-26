@@ -1,15 +1,16 @@
-//! `adapters::tests::mechanism_observation` — §1.14 actual database reads, least-privilege admin and real
+//! `public-pool::tests::mechanism_observation` — §1.14 actual database reads, least-privilege admin and real
 //!   reviewed-public execution.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell,
-//!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(role_admin), PostgreSQL(role_maintenance),
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
+//!   humaux-infra-cell, postgres, serde_json, tokio, uuid];
+//!   services=[PostgreSQL(role_admin), PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_public_worker) r=[private.memory_records, public.claims, staging.contribution_releases]
 //!   w=[control.public_moderator_grants, ops.mechanism_e2e_runs, ops.mechanism_observations, public.provenance_edges,
 //!   public.source_closure, public.sources] x=[ops.audit_batch_insert], subprocess(humaux-admin)];
 //!   env=[HUMAUX_ADMIN_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MECHANISM_ADMIN_BIN, HUMAUX_MECHANISM_FIXTURE,
 //!   HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_entry_repo, adapters::mechanism_observation,
-//!   adapters::postgres, adapters::public_repo, adapters::tests::support::contribution_fixture,
-//!   application::contribute, contracts::mechanism_registry, domain::public, infra-cell::permit,
-//!   infra-cell::resource]
+//!   adapters::postgres, adapters::tests::support::contribution_fixture, application::contribute,
+//!   contracts::mechanism_registry, domain::error, domain::identity, domain::public, infra-cell::permit,
+//!   infra-cell::resource, public-pool::public_repo]
 //! Called-by: [cargo-test]
 //! Invariants: [seeded observations exercise the verifier and the review test the writer (humaux-admin subprocess);
 //!   needs role_admin/role_maintenance DSNs, so the tests are #[ignore] lane tests]
@@ -17,27 +18,58 @@
 //!
 //! Seeded observations test the verifier; the separate review test exercises the writer.
 
-#[path = "support/contribution_fixture.rs"]
+#[path = "../../adapters/tests/support/contribution_fixture.rs"]
 mod contribution_fixture;
 
 use contribution_fixture::{ContributionFixture, OfflineReasoner};
 use humaux_adapters::{
     contribution_entry_repo::ContributionEntryRepo,
-    mechanism_observation::{PublicObservationRecorder, read_target},
+    mechanism_observation::{
+        EvaluateClaim, EvaluationResult, PublicClaimEvaluator, PublicObservationRecorder,
+        read_target,
+    },
     postgres::{AdminDbPool, MaintenanceDbPool, PublicWorkerDbPool},
-    public_repo::{self, EvaluateClaim},
 };
 use humaux_application::contribute;
 use humaux_contracts::mechanism_registry::{
     MechanismSpec, MechanismStatus, ObservationTarget, parse_registry,
 };
-use humaux_domain::public::ModerationState;
+use humaux_domain::{error::ErrorCode, identity::AuthorizationScope, public::ModerationState};
 use humaux_infra_cell::{CallerId, CellId, IntraCellResourceRegistry};
+use humaux_public_pool::public_repo::{self, PublicRepoEvaluator};
 use postgres::{Client, NoTls};
-use std::{path::Path, process::Command, sync::Mutex};
+use std::{
+    path::Path,
+    process::Command,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use uuid::Uuid;
 
 static SERIAL: Mutex<()> = Mutex::new(());
+
+/// Delegates to the cloud implementation and counts the calls, so a test can prove the wired evaluator is the one
+/// the recorder reaches.
+struct CountingEvaluator {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl PublicClaimEvaluator for CountingEvaluator {
+    async fn evaluate_claim(
+        &self,
+        pool: &PublicWorkerDbPool,
+        authorization: &AuthorizationScope,
+        input: &EvaluateClaim<'_>,
+    ) -> Result<EvaluationResult, ErrorCode> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        PublicRepoEvaluator
+            .evaluate_claim(pool, authorization, input)
+            .await
+    }
+}
 const SPEC: &str = include_str!("../../../docs/architecture/Baseline_2.9.md");
 
 fn db() -> Client {
@@ -390,11 +422,15 @@ fn exercise_real_public_review_records_before_after_and_quarantine(verify_cli: b
     let target = target();
     let mut admitted = Vec::new();
     let resources = registry(Uuid::parse_str(&target.cell_id).unwrap());
+    let evaluator = CountingEvaluator {
+        calls: AtomicUsize::new(0),
+    };
     let recorder = fixture
         .rt
         .block_on(PublicObservationRecorder::new(
             &writer,
             &public,
+            &evaluator,
             &resources,
             &resources,
             Uuid::parse_str(&target.deployment_id).unwrap(),
@@ -507,6 +543,8 @@ fn exercise_real_public_review_records_before_after_and_quarantine(verify_cli: b
         .rt
         .block_on(recorder.review(&fixture.auth, &quarantine))
         .unwrap();
+    // One evaluator call per review: the wired implementation, not a second path, ran both.
+    assert_eq!(evaluator.calls.load(Ordering::SeqCst), 2);
     let stopped = fixture.rt.block_on(read_target(&reader, &target)).unwrap();
     for ch in [12, 21] {
         assert_ne!(
@@ -558,6 +596,7 @@ fn recorder_rejects_other_cell_or_database_before_any_observation() {
         rt.block_on(PublicObservationRecorder::new(
             &writer,
             &public,
+            &PublicRepoEvaluator,
             &local,
             &other,
             deployment,
@@ -578,6 +617,7 @@ fn recorder_rejects_other_cell_or_database_before_any_observation() {
         rt.block_on(PublicObservationRecorder::new(
             &writer,
             &wrong_database,
+            &PublicRepoEvaluator,
             &local,
             &local,
             deployment,
@@ -589,6 +629,7 @@ fn recorder_rejects_other_cell_or_database_before_any_observation() {
         rt.block_on(PublicObservationRecorder::new(
             &writer,
             &public,
+            &PublicRepoEvaluator,
             &local,
             &local,
             Uuid::nil(),

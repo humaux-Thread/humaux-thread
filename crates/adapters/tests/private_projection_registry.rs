@@ -1,11 +1,12 @@
 //! `adapters::tests::private_projection_registry` — Ignored real-PostgreSQL acceptance for the private Qdrant point
 //!   registry.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit,
-//!   postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq] w=[control.memberships,
+//!   postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq,
+//!   projection.tenant_placements] w=[control.memberships,
 //!   control.private_reasoning_domains, control.reasoning_domain_grants, control.tenants, control.users, ops.jobs,
 //!   ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
 //!   projection.embedding_fingerprints, projection.memory_vectors, projection.private_memory_points,
-//!   projection.stream_checkpoints, projection.stream_log],
+//!   projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::retrieve, adapters::tests::support::token_keys, domain::authority, domain::dataclass, domain::identity,
@@ -14,9 +15,9 @@
 //! Called-by: [cargo-test]
 //! Invariants: [point ids bind to exactly one memory; cross-workspace, collision and unsupported point ids are typed
 //!   errors; the Qdrant round trip needs the isolated migrated PG + Qdrant fixture, so it is an #[ignore] lane test;
-//!   the PG-only chunk-identity test runs in the default tier and skips visibly without a DSN; every fixture row,
-//!   vector and fingerprint is removed by the handle's Drop]
-//! Spec: Baseline §17.4; §79.2; ADR-0068 D-C
+//!   the PG-only tests (chunk identity, placement counters) run in the default tier and skip visibly without a DSN;
+//!   every fixture row, vector, fingerprint and placement row is removed by the handle's Drop]
+//! Spec: Baseline §17.3; §17.4; §79.2; ADR-0068 D-C
 //!
 //! Run explicitly against the isolated migrated fixture:
 //! `cargo test -p humaux-adapters --test private_projection_registry -- --ignored`.
@@ -147,6 +148,7 @@ impl Drop for Handle {
                 .batch_execute(&format!(
                     "DELETE FROM ops.jobs WHERE tenant_id = '{tenant_id}'; \
                      DELETE FROM projection.private_memory_points WHERE tenant_id = '{tenant_id}'; \
+                     DELETE FROM projection.tenant_placements WHERE tenant_id = '{tenant_id}'; \
                      DELETE FROM projection.stream_log WHERE tenant_id = '{tenant_id}'; \
                      DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{tenant_id}'; \
                      DELETE FROM ops.outbox WHERE tenant_id = '{tenant_id}'; \
@@ -173,7 +175,9 @@ impl Drop for Handle {
                 "DELETE FROM ops.jobs WHERE tenant_id = '{0}'; \
                  DELETE FROM projection.private_memory_points WHERE tenant_id = '{0}'; \
                  DELETE FROM projection.memory_vectors WHERE tenant_id = '{0}'; \
-                 DELETE FROM projection.embedding_fingerprints WHERE embedding_version = 'chunk-{0}'; \
+                 DELETE FROM projection.tenant_placements WHERE tenant_id = '{0}'; \
+                 DELETE FROM projection.embedding_fingerprints \
+                  WHERE embedding_version IN ('chunk-{0}', 'retire-a-{0}', 'retire-b-{0}'); \
                  DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
                  DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}'; \
                  DELETE FROM ops.outbox WHERE tenant_id = '{0}'; \
@@ -369,6 +373,83 @@ fn registration(handle: &Handle, point_id: ProjectionPointId) -> PrivateMemoryPo
         card_profile_hash: LEGACY_CARD_PROFILE_HASH.to_owned(),
         chunk_ordinal: 0,
     }
+}
+
+/// A per-run embedding label. 0232 makes `embedding_version` UNIQUE cluster-wide, so a fixed label would collide
+/// between runs; [`Drop for Handle`] removes these two exact names.
+fn retire_label(handle: &Handle, tag: &str) -> String {
+    format!("retire-{tag}-{}", handle.tenant_id)
+}
+
+/// The tenant's §17.3 placement row, as `projection.ensure_tenant_placement` (0186) creates it before any point.
+fn seed_placement(admin: &mut Client, tenant_id: Uuid) {
+    admin
+        .execute(
+            "INSERT INTO projection.tenant_placements \
+               (tenant_id, projection_family, collection_name, placement_class) \
+             VALUES ($1, 'private_memory_v1', $2, 'SHARED_FALLBACK')",
+            &[&tenant_id, &format!("retire-counter-{tenant_id}")],
+        )
+        .expect("seed the tenant's placement row");
+}
+
+/// Binds `dimension` to `embedding_version` as the worker's boot binding does (0232: one width per label). One point
+/// adds `dimension * 4` bytes — the f32 dense vector `placement_repo::point_vector_bytes` measures.
+fn seed_label(admin: &mut Client, embedding_version: &str, dimension: i32) {
+    let fingerprint_sha256: [u8; 32] = [*Uuid::new_v4().as_bytes(), *Uuid::new_v4().as_bytes()]
+        .concat()
+        .try_into()
+        .expect("two UUIDs are 32 bytes");
+    let embedding_version = embedding_version.to_owned();
+    admin
+        .execute(
+            "INSERT INTO projection.embedding_fingerprints (fingerprint_sha256, embedding_version, provider, \
+               model_id, model_revision, dimension, task_type, preprocessing_version, \
+               projection_contract_version, dtype, normalization, distance) \
+             VALUES ($1, $2, 'retire-test', 'retire-model', 'r1', $3, 'document', 'v1-test', 'private-v1', $4, $5, $6)",
+            &[
+                &fingerprint_sha256.to_vec(),
+                &embedding_version,
+                &dimension,
+                &DTYPE,
+                &NORMALIZATION,
+                &DISTANCE,
+            ],
+        )
+        .expect("seed the label's fingerprint");
+}
+
+/// The exact §17.3 counters of the fixture's private-memory placement.
+fn placement_counters(admin: &mut Client, tenant_id: Uuid) -> (i64, i64) {
+    let row = admin
+        .query_one(
+            "SELECT point_count, bytes_estimate FROM projection.tenant_placements \
+             WHERE tenant_id = $1 AND projection_family = 'private_memory_v1'",
+            &[&tenant_id],
+        )
+        .expect("the fixture's placement row");
+    (row.get(0), row.get(1))
+}
+
+/// The fixture Memory's legacy `(LegacyCardV1, 0)` binding under `embedding_version` (the byte-identical v1 point id).
+fn labelled_registration(
+    handle: &Handle,
+    embedding_version: &str,
+) -> PrivateMemoryPointRegistration {
+    let mut registration = registration(handle, ProjectionPointId::new(Uuid::nil()));
+    registration.embedding_version = embedding_version.to_owned();
+    registration.for_chunk(LEGACY_CARD_PROFILE_HASH, 0)
+}
+
+/// The fixture Memory's `NoteChunksV1` slot `ordinal` under `embedding_version`: one point per slot over one label.
+fn labelled_chunk(
+    handle: &Handle,
+    embedding_version: &str,
+    ordinal: u32,
+) -> PrivateMemoryPointRegistration {
+    let mut registration = registration(handle, ProjectionPointId::new(Uuid::nil()));
+    registration.embedding_version = embedding_version.to_owned();
+    registration.for_chunk(NOTE_CHUNKS_V1_PROFILE_HASH, ordinal)
 }
 
 fn seed_ryw_overlay(handle: &mut Handle, stream_seq: i64) -> (Uuid, String) {
@@ -1334,5 +1415,170 @@ fn repeated_chunks_share_vector_not_point() {
             .get(0);
         assert_eq!(vectors, 1, "duplicate chunk text shares one vector row");
         assert_chunk_points_report_their_slots(&handle, &slots);
+    });
+}
+
+/// Registers one vectorless point through the worker API; every placement-counter test here expects a fresh
+/// `Inserted` (a replay would move no counter).
+fn register_point(
+    handle: &Handle,
+    registration: &PrivateMemoryPointRegistration,
+) -> RegistrationOutcome {
+    handle
+        .rt
+        .block_on(register_private_memory_point(
+            &handle.worker,
+            &handle.authorization,
+            registration,
+        ))
+        .expect("register the point")
+}
+
+/// Retires one point through the single-point path (`private_projection_registry.rs:678`); the error is rendered so a
+/// test asserts the whole `Result<bool, String>`.
+fn retire_point(
+    handle: &Handle,
+    embedding_version: &str,
+    point: ProjectionPointId,
+) -> Result<bool, String> {
+    handle
+        .rt
+        .block_on(retire_private_memory_point(
+            &handle.worker,
+            &handle.authorization,
+            &handle.family,
+            "private-v1",
+            embedding_version,
+            point,
+        ))
+        .map_err(|error| error.to_string())
+}
+
+/// §17.3, card p3-264 1(a): the single-point retire path (`move_placement_counters(..., -1, None)`,
+/// `private_projection_registry.rs:678`) moves exactly one point and that label's dense bytes. The placement keeps a
+/// second live point: the writer clamps both counters at 0, so a one-point placement could not tell `-1` from `-2`.
+#[test]
+fn single_point_retire_moves_exact_placement_counters() {
+    run_db_fixture::<RegistryFixture, _>("single_point_retire_counters", |mut handle| {
+        let embedding_version = retire_label(&handle, "a");
+        seed_placement(&mut handle.admin, handle.tenant_id);
+        seed_label(&mut handle.admin, &embedding_version, 8);
+        let control = labelled_chunk(&handle, &embedding_version, 0);
+        let retired = labelled_chunk(&handle, &embedding_version, 1);
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (0, 0)
+        );
+        assert_eq!(
+            register_point(&handle, &control),
+            RegistrationOutcome::Inserted
+        );
+        assert_eq!(
+            register_point(&handle, &retired),
+            RegistrationOutcome::Inserted
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (2, 64),
+            "two vectorless registrations add the 8-d label's 32 bytes each"
+        );
+
+        assert_eq!(
+            retire_point(&handle, &embedding_version, retired.point_id),
+            Ok(true)
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (1, 32),
+            "exactly one point and one 8 * 4 byte vector leave the placement"
+        );
+    });
+}
+
+/// §17.3, card p3-264 1(b): two workers on ONE tenant under their own labels and widths. Every register and every
+/// retire states the exact counters, so a delta counted at the wrong width or for the wrong label goes red.
+#[test]
+fn two_labels_on_one_tenant_move_exact_counters_per_step() {
+    run_db_fixture::<RegistryFixture, _>("two_labels_one_tenant_counters", |mut handle| {
+        let (label_a, label_b) = (retire_label(&handle, "a"), retire_label(&handle, "b"));
+        seed_placement(&mut handle.admin, handle.tenant_id);
+        seed_label(&mut handle.admin, &label_a, 8);
+        seed_label(&mut handle.admin, &label_b, 4);
+        let point_a = labelled_registration(&handle, &label_a);
+        let point_b = labelled_registration(&handle, &label_b);
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (0, 0)
+        );
+
+        assert_eq!(
+            register_point(&handle, &point_a),
+            RegistrationOutcome::Inserted
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (1, 32),
+            "worker a adds its 8 * 4 bytes"
+        );
+        assert_eq!(
+            register_point(&handle, &point_b),
+            RegistrationOutcome::Inserted
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (2, 48),
+            "worker b adds its own 4 * 4 bytes to the same placement"
+        );
+
+        assert_eq!(retire_point(&handle, &label_a, point_a.point_id), Ok(true));
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (1, 16),
+            "worker a's point leaves at worker a's width"
+        );
+        assert_eq!(retire_point(&handle, &label_b, point_b.point_id), Ok(true));
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (0, 0),
+            "one tenant, two labels, both deltas counted once"
+        );
+    });
+}
+
+/// §17.3, card p3-264 1(c): a replay retires nothing, returns `false`, and leaves both counters exactly at 0 — never
+/// negative and never a second subtraction.
+#[test]
+fn single_point_retire_replay_clamps_at_zero() {
+    run_db_fixture::<RegistryFixture, _>("single_point_retire_replay", |mut handle| {
+        let embedding_version = retire_label(&handle, "a");
+        seed_placement(&mut handle.admin, handle.tenant_id);
+        seed_label(&mut handle.admin, &embedding_version, 8);
+        let point = labelled_registration(&handle, &embedding_version);
+        assert_eq!(
+            register_point(&handle, &point),
+            RegistrationOutcome::Inserted
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (1, 32)
+        );
+        assert_eq!(
+            retire_point(&handle, &embedding_version, point.point_id),
+            Ok(true)
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (0, 0)
+        );
+        assert_eq!(
+            retire_point(&handle, &embedding_version, point.point_id),
+            Ok(false),
+            "the point is already retired"
+        );
+        assert_eq!(
+            placement_counters(&mut handle.admin, handle.tenant_id),
+            (0, 0),
+            "the replay subtracts nothing and neither counter can go negative"
+        );
     });
 }

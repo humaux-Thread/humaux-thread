@@ -1,10 +1,11 @@
-//! `adapters::tests::public_provenance_revocation_eval` — Fixed four case local synthetic benchmark for §69
+//! `public-pool::tests::public_provenance_revocation_eval` — Fixed four case local synthetic benchmark for §69
 //!   `public_provenance_revocation`.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, sha2, uuid]; services=[PostgreSQL(any)
-//!   r=[public.claim_trust_evaluations, public.claims] w=[control.public_moderator_grants, public.provenance_edges],
-//!   PostgreSQL(role_public_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo,
-//!   adapters::postgres, adapters::public_provenance, adapters::public_repo,
-//!   adapters::tests::support::contribution_fixture, domain::public]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, sha2, uuid];
+//!   services=[PostgreSQL(any) r=[public.claim_trust_evaluations, public.claims]
+//!   w=[control.public_moderator_grants, public.provenance_edges], PostgreSQL(role_public_worker)];
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo, adapters::postgres,
+//!   adapters::tests::support::contribution_fixture, domain::public, public-pool::public_provenance,
+//!   public-pool::public_repo]
 //! Called-by: [cargo-test]
 //! Invariants: [a measurement harness, not a production applicability test: cancelling flips must stay visible and
 //!   unstable flips never count as resolution; the three-run counterfactual test is lane(c) retired]
@@ -12,17 +13,16 @@
 //!
 //! This is deliberately a measurement harness, not a production applicability or DOD-054 test.
 
-#[path = "support/contribution_fixture.rs"]
+#[path = "../../adapters/tests/support/contribution_fixture.rs"]
 mod contribution_fixture;
 
 use contribution_fixture::ContributionFixture;
-use humaux_adapters::{
-    contribution_repo,
-    postgres::PublicWorkerDbPool,
+use humaux_adapters::{contribution_repo, postgres::PublicWorkerDbPool};
+use humaux_domain::public::ModerationState;
+use humaux_public_pool::{
     public_provenance, public_repo,
     public_repo::{EvaluateClaim, ProjectionIdentity},
 };
-use humaux_domain::public::ModerationState;
 use postgres::{Client, NoTls};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -31,9 +31,10 @@ const DATASET: &str = include_str!("../../../evals/public_provenance_revocation/
 const PROFILE_SOURCE: &[u8] = include_bytes!("public_provenance_revocation_eval.rs");
 const PROVENANCE_SOURCE: &[u8] = include_bytes!("../src/public_provenance.rs");
 const PUBLIC_REPO_SOURCE: &[u8] = include_bytes!("../src/public_repo.rs");
-const REVOKE_SOURCE: &[u8] = include_bytes!("../src/contribution_repo.rs");
-const FIXTURE_SOURCE: &[u8] = include_bytes!("support/contribution_fixture.rs");
-const TRUST_SOURCE: &[u8] = include_bytes!("../../application/src/public_evolve.rs");
+const REVOKE_SOURCE: &[u8] = include_bytes!("../../adapters/src/contribution_repo.rs");
+const FIXTURE_SOURCE: &[u8] =
+    include_bytes!("../../adapters/tests/support/contribution_fixture.rs");
+const TRUST_SOURCE: &[u8] = include_bytes!("../src/public_evolve.rs");
 const MIGRATION_0104: &[u8] = include_bytes!("../../../migrations/0104_contribution_io.sql");
 const MIGRATION_0105: &[u8] =
     include_bytes!("../../../migrations/0105_release_source_tenant_policy.sql");

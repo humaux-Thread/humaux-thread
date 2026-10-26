@@ -1,0 +1,52 @@
+[package]
+name = "humaux-public-pool"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+# ADR-0073 D-B / G-M01-2: cloud package; no core crate may depend on it.
+[package.metadata.humaux]
+edition = "cloud"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pool wrappers (`PublicWorkerDbPool` et al.), `QdrantTransportError` and the `PublicClaimEvaluator` trait this crate
+# implements. `cloud-raw-pool` is the only way to reach a wrapper's `PgPool` from outside the adapters crate.
+# why: typed per-role pools, Qdrant transport error, claim-evaluator seam; used-by: [public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, tests]
+humaux-adapters = { path = "../adapters", features = ["cloud-raw-pool"] }
+# why: domain types the public plane reads/returns; used-by: [public-pool::public_evolve, public-pool::public_provenance, public-pool::public_repo]
+humaux-domain = { path = "../domain" }
+# why: same-Cell resource/permit types for the Qdrant projection adapter; used-by: [public-pool::public_projection, tests]
+humaux-infra-cell = { path = "../infra-cell" }
+# §78 boundary row G-M01-3 names this crate beside humaux-adapters: the public tables are queried here.
+# why: public-schema queries and transactions; used-by: [public-pool::public_provenance, public-pool::public_repo, tests]
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "time", "json"] }
+# why: dyn-compatible async ports (PublicProjectionPort, PublicClaimEvaluator); used-by: [public-pool::public_projection, public-pool::public_repo, tests]
+async-trait = "0.1"
+# why: projection payload and receipt JSON; used-by: [public-pool::public_projection, public-pool::public_repo, tests]
+serde_json = "1"
+# why: body and payload digests; used-by: [public-pool::public_projection, public-pool::public_repo, tests]
+sha2 = "0.11"
+# why: printable digest encoding; used-by: [public-pool::public_projection, public-pool::public_repo]
+hex = "0.4"
+# `now_v7` mints evaluation ids; `from_u128` is test-only in public_evolve.
+# why: id minting/binding; used-by: [public-pool::public_evolve, public-pool::public_projection, public-pool::public_provenance, tests]
+uuid = { version = "1.25.0", features = ["v7", "serde"] }
+
+[dev-dependencies]
+# why: contribute::prepare/finalize drive the fixtures that feed admission; used-by: [tests]
+humaux-application = { path = "../application" }
+# why: mechanism registry parsing in the observation test; used-by: [tests]
+humaux-contracts = { path = "../contracts" }
+# §79.2 three-state DB fixture skip contract.
+# why: three-state DB fixture skip contract; used-by: [public-pool::tests::public_projection, tests]
+humaux-testkit = { path = "../testkit" }
+# why: blocking client for real-Postgres integration tests; used-by: [tests]
+postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
+# why: async runtime driving the pool fixtures; used-by: [tests]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# why: throwaway ids in fixtures; used-by: [tests]
+uuid = { version = "1.25.0", features = ["v4"] }

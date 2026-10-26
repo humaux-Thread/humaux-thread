@@ -1,17 +1,17 @@
-//! `adapters::tests::public_runtime_qdrant` — Real PostgreSQL + same-cell Qdrant acceptance for the Phase 9 bounded
+//! `public-pool::tests::public_runtime_qdrant` — Real PostgreSQL + same-cell Qdrant acceptance for the Phase 9 bounded
 //!   public worker.
 //! Depends-on: crates=[humaux-adapters, humaux-infra-cell, serde_json, uuid];
 //!   services=[PostgreSQL(role_public_worker) r=[control.anonymous_source_lineage, public.claims], Qdrant(*)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo, adapters::postgres, adapters::public_projection,
-//!   adapters::public_repo, adapters::tests::support::contribution_fixture,
-//!   adapters::tests::support::public_anonymous_seam, adapters::tests::support::public_qdrant_fixture,
-//!   infra-cell::transport]
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo, adapters::postgres,
+//!   adapters::tests::support::contribution_fixture, infra-cell::transport, public-pool::public_projection,
+//!   public-pool::public_repo, public-pool::tests::support::public_anonymous_seam,
+//!   public-pool::tests::support::public_qdrant_fixture]
 //! Called-by: [cargo-test]
 //! Invariants: [public runtime projection is checked end to end on role_public_worker plus a real Qdrant; the tests
 //!   are #[ignore] lane tests]
 //! Spec: Baseline §12.6; §17; §79.2
 
-#[path = "support/contribution_fixture.rs"]
+#[path = "../../adapters/tests/support/contribution_fixture.rs"]
 mod contribution_fixture;
 #[path = "support/public_anonymous_seam.rs"]
 mod public_anonymous_seam;
@@ -21,13 +21,12 @@ mod public_qdrant_fixture;
 use std::{num::NonZeroU32, sync::Mutex};
 
 use contribution_fixture::ContributionFixture;
-use humaux_adapters::{
-    contribution_repo,
-    postgres::PublicWorkerDbPool,
+use humaux_adapters::{contribution_repo, postgres::PublicWorkerDbPool};
+use humaux_infra_cell::{IntraCellHttpTransport, IntraCellMethod, IntraCellRequest};
+use humaux_public_pool::{
     public_projection::PublicProjectionAdapter,
     public_repo::{self, ProjectionIdentity},
 };
-use humaux_infra_cell::{IntraCellHttpTransport, IntraCellMethod, IntraCellRequest};
 use public_anonymous_seam::{
     admit_assessed_release, drain_anonymous_queue, dsn_as_role, evaluate_anonymous_supported,
     job_status, seed_project_job,
