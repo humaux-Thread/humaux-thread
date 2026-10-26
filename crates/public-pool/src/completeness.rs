@@ -1,5 +1,5 @@
 //! `public-pool::completeness` — Type completeness and F3/A1/A2 receipts; no admission authority (ADR-0090 D-B/D-C).
-//! Depends-on: crates=[serde_json, uuid]; services=[PostgreSQL(any) r=[public.entities]]; env=[]; modules=[]
+//! Depends-on: crates=[serde_json, uuid]; services=[]; env=[]; modules=[]
 //! Called-by: [tests]
 //! Invariants: [unchecked is NOT_RUN; result is never model-inferred; causal conditions cannot all be stripped]
 //! Spec: Baseline §12.6; §52; §57.1; §78.2; ADR-0090 D-B/D-C
@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+// ponytail: mirrored closed_set! (domain's macro is crate-private), export it from humaux-domain when a second crate needs it
 // §78.2: mirror domain::attribution until its private macro becomes a shared export.
 macro_rules! closed_set {
     ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident => $wire:literal,)+ }) => {
@@ -96,11 +97,22 @@ const COMMON: &[&str] = &[
     "rights",
 ];
 
-/// Required fields and the subset allowed to remain UNKNOWN (ADR-0090 D-B).
-pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'static str]) {
+/// One type's deterministic completeness rule (ADR-0090 D-B).
+#[derive(Debug, Clone, Copy)]
+pub struct TypeRule {
+    /// Fields required in addition to `COMMON`.
+    pub required: &'static [&'static str],
+    /// Required fields allowed to remain UNKNOWN.
+    pub unknown_ok: &'static [&'static str],
+    /// Minimum array length per field; an absent or shorter array is missing.
+    pub min_items: &'static [(&'static str, usize)],
+}
+
+/// The single per-type rule table; every type rule lives in this one `match` (ADR-0090 D-B).
+pub fn type_rule(kind: UnitType) -> TypeRule {
     match kind {
-        UnitType::Fix => (
-            &[
+        UnitType::Fix => TypeRule {
+            required: &[
                 "repro",
                 "expected_vs_actual",
                 "root_cause",
@@ -110,10 +122,11 @@ pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'stat
                 "rollback",
                 "failure_conditions",
             ],
-            &["certainty", "rollback"],
-        ),
-        UnitType::Decision => (
-            &[
+            unknown_ok: &["certainty", "rollback"],
+            min_items: &[],
+        },
+        UnitType::Decision => TypeRule {
+            required: &[
                 "goal",
                 "candidates",
                 "constraints",
@@ -121,10 +134,11 @@ pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'stat
                 "why_not",
                 "redecide_triggers",
             ],
-            &[],
-        ),
-        UnitType::Research => (
-            &[
+            unknown_ok: &[],
+            min_items: &[("candidates", 2)],
+        },
+        UnitType::Research => TypeRule {
+            required: &[
                 "source",
                 "version",
                 "locator",
@@ -132,10 +146,11 @@ pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'stat
                 "applicability",
                 "limits",
             ],
-            &[],
-        ),
-        UnitType::Usage => (
-            &[
+            unknown_ok: &[],
+            min_items: &[],
+        },
+        UnitType::Usage => TypeRule {
+            required: &[
                 "environment",
                 "input",
                 "steps",
@@ -144,10 +159,11 @@ pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'stat
                 "errors",
                 "not_applicable_cases",
             ],
-            &["errors"],
-        ),
-        UnitType::Checklist => (
-            &[
+            unknown_ok: &["errors"],
+            min_items: &[],
+        },
+        UnitType::Checklist => TypeRule {
+            required: &[
                 "preconditions",
                 "steps",
                 "checkpoints",
@@ -155,10 +171,11 @@ pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'stat
                 "exception_branches",
                 "rollback",
             ],
-            &["rollback"],
-        ),
-        UnitType::FailureCase => (
-            &[
+            unknown_ok: &["rollback"],
+            min_items: &[],
+        },
+        UnitType::FailureCase => TypeRule {
+            required: &[
                 "hypothesis",
                 "attempt",
                 "environment",
@@ -166,8 +183,9 @@ pub fn type_fields(kind: UnitType) -> (&'static [&'static str], &'static [&'stat
                 "excluded",
                 "unknowns",
             ],
-            &[],
-        ),
+            unknown_ok: &[],
+            min_items: &[],
+        },
     }
 }
 
@@ -261,28 +279,29 @@ fn valid_field(key: &str, field: &UnitField, unknown_ok: bool) -> bool {
 
 /// Evaluate a draft without inferring missing values (ADR-0090 D-B).
 pub fn completeness(draft: &UnitDraft) -> CompletenessReceipt {
-    let (required, unknown_ok) = type_fields(draft.kind);
+    let rule = type_rule(draft.kind);
     let mut missing: Vec<MissingRequirement> = COMMON
         .iter()
-        .chain(required)
+        .chain(rule.required)
         .copied()
         .filter(|key| {
             !draft
                 .fields
                 .get(*key)
-                .is_some_and(|field| valid_field(key, field, unknown_ok.contains(key)))
+                .is_some_and(|field| valid_field(key, field, rule.unknown_ok.contains(key)))
         })
         .map(|key| MissingRequirement::Field(key.to_owned()))
         .collect();
-    if draft.kind == UnitType::Decision
-        && !draft
+    for (key, min) in rule.min_items {
+        let len = draft
             .fields
-            .get("candidates")
-            .and_then(|f| f.value.as_ref())
+            .get(*key)
+            .and_then(|field| field.value.as_ref())
             .and_then(Value::as_array)
-            .is_some_and(|v| v.len() >= 2)
-    {
-        missing.push(MissingRequirement::Field("candidates".into()));
+            .map_or(0, Vec::len);
+        if len < *min {
+            missing.push(MissingRequirement::Field((*key).to_owned()));
+        }
     }
     if draft.conditions == CausalConditions::Stripped {
         missing.push(MissingRequirement::ConditionsStripped);

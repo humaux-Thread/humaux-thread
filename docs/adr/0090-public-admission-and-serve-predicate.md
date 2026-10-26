@@ -133,7 +133,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists in this PR:
 | gate | owner card | injected fault | expected red |
 |---|---|---|---|
 | G-M20-5 eligibility | M20-5 | read direct evidence only; read M14 UNIVERSAL as a licence | a SENSITIVE, affect or customer-linked item, or an applicability-only item, is selected |
-| G-M20-6 completeness | M20-7 | drop one required field per type; infer result from tone | a FIX without repro is admitted; `SUCCESS` with `assist = MODEL` |
+| G-M20-6 completeness | M20-7 | drop one required field per type; infer result from tone | a FIX without repro is admitted; `SUCCESS` with `assist = MODEL` (red runs 40303466537 r1, 40303894848 r2) |
 | G-M20-7 rules (A1 to A7, F1 to F4, one each) | M20-8a, -8b, -11 | remove one rule | a fragment, PII in a title/path/URL query/code comment, an AWS key, an unknown licence, "ignore previous instructions" in an alias, or a missing receipt is admitted |
 | G-M20-8 dedupe/conflict | M20-9 | merge variants; vote on a conflict | a variant is lost; one side of a conflict is `SUPPORTED` |
 | G-M20-9 families | M20-9 | family = agent; count per unit not per claim | 80 agents become 80; 80 users citing one paper become 80 |

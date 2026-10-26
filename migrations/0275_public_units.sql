@@ -25,7 +25,8 @@ CREATE TABLE public.unit_conditions (
   version_range text,
   platform text,
   constraint_key text NOT NULL,
-  value jsonb NOT NULL
+  value jsonb NOT NULL,
+  PRIMARY KEY (revision_id, entity_id, constraint_key)
 );
 -- §6.2.2: unreleased drafts have no serving-role read grant; M20-12 owns serving.
 REVOKE ALL ON public.units, public.unit_fields, public.unit_conditions FROM PUBLIC,

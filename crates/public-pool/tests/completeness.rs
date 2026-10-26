@@ -1,6 +1,7 @@
 //! `public-pool::tests::completeness` — G-M20-6 exact type completeness and Rust/DB contracts (ADR-0090 D-B).
 //! Depends-on: crates=[postgres, serde_json, uuid]; services=[PostgreSQL(any)
-//!   r=[public.entities, public.syntheses, public.unit_fields, public.units] w=[public.units, public.unit_fields, public.syntheses]];
+//!   r=[public.entities, public.syntheses, public.unit_conditions, public.unit_fields, public.units]
+//!   w=[public.units, public.unit_fields, public.syntheses]];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[public-pool::completeness]
 //! Called-by: [cargo-test]
 //! Invariants: [DB probes roll back; missing CI inputs fail; independent oracle retains every required field]
@@ -27,7 +28,7 @@ const COMMON: &[&str] = &[
     "alternatives",
     "rights",
 ];
-// §79: expected coverage is independent of the implementation's type_fields dispatch.
+// §79: expected coverage is independent of the implementation's type_rule dispatch.
 const CASES: &[(UnitType, &[&str], &[&str])] = &[
     (
         UnitType::Fix,
@@ -135,7 +136,7 @@ fn draft(case: &(UnitType, &[&str], &[&str])) -> UnitDraft {
 }
 fn incomplete(unit: &UnitDraft, expected: &[&str]) {
     let receipt = completeness(unit);
-    assert_eq!(receipt.rule_version, RULE_VERSION);
+    assert_eq!(receipt.rule_version, "M20-completeness-1");
     let Verdict::Incomplete { missing } = receipt.verdict else {
         panic!("expected Incomplete with {expected:?}");
     };
@@ -161,6 +162,13 @@ fn complete_and_drop_each_required_field_all_six_types() {
             "CHECKLIST",
             "FAILURE_CASE"
         ])
+    );
+    assert_eq!(
+        CASES.iter().map(|c| c.0.as_str()).collect::<BTreeSet<_>>(),
+        UnitType::ALL
+            .iter()
+            .map(|v| v.as_str())
+            .collect::<BTreeSet<_>>()
     );
     for case in CASES {
         assert_eq!(completeness(&draft(case)).verdict, Verdict::Complete);
@@ -519,5 +527,90 @@ fn six_unit_types_roundtrip_and_phase_two_is_rejected() {
         tx.batch_execute("ROLLBACK TO SAVEPOINT type_probe")
             .unwrap();
     }
+    tx.rollback().unwrap();
+}
+fn fk_pairs(tx: &mut Transaction<'_>, child: &str, parent: &str) -> Vec<(String, String)> {
+    let rows = tx
+        .query(
+            "SELECT a.attname, af.attname FROM pg_constraint c
+               JOIN unnest(c.conkey) WITH ORDINALITY k(attnum, ord) ON true
+               JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum
+               JOIN unnest(c.confkey) WITH ORDINALITY f(attnum, ord) ON f.ord=k.ord
+               JOIN pg_attribute af ON af.confrelid=c.confrelid AND af.attnum=f.attnum
+              WHERE c.contype='f' AND c.conrelid=$1::regclass AND c.confrelid=$2::regclass
+              ORDER BY k.ord",
+            &[&child, &parent],
+        )
+        .unwrap();
+    rows.iter().map(|row| (row.get(0), row.get(1))).collect()
+}
+#[test]
+fn f3_entity_tripwire_fails_the_day_public_entities_lands() {
+    let mut client = database();
+    // dep: PostgreSQL(any) — §57.1: the absent object is named, never silently skipped.
+    let mut tx = client.transaction().unwrap();
+    let absent: bool = tx
+        .query_one("SELECT to_regclass('public.entities') IS NULL", &[])
+        .unwrap()
+        .get(0);
+    assert!(
+        absent,
+        "public.entities exists (M20-18 landed): replace F3.entities NotApplicable in completeness.rs::f3 with the real entity check"
+    );
+    tx.rollback().unwrap();
+}
+#[test]
+fn unit_schema_binds_revision_unit_id_and_conditions_exactly() {
+    let mut client = database();
+    // dep: PostgreSQL(any) — §79.2 rollback-only probes never persist fixtures.
+    let mut tx = client.transaction().unwrap();
+    let unit_id = tx
+        .query_one(
+            "SELECT data_type, is_nullable FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='syntheses' AND column_name='unit_id'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        (unit_id.get::<_, String>(0), unit_id.get::<_, String>(1)),
+        ("uuid".to_owned(), "YES".to_owned())
+    );
+    assert_eq!(
+        fk_pairs(&mut tx, "public.syntheses", "public.units"),
+        vec![("unit_id".to_owned(), "unit_id".to_owned())]
+    );
+    assert_eq!(
+        fk_pairs(&mut tx, "public.unit_conditions", "public.syntheses"),
+        vec![("revision_id".to_owned(), "synthesis_id".to_owned())]
+    );
+    let primary_keys: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM pg_constraint
+              WHERE contype='p' AND conrelid='public.unit_conditions'::regclass",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(primary_keys, 1, "exactly one unit_conditions primary key");
+    let rows = tx
+        .query(
+            "SELECT a.attname FROM pg_constraint c
+               JOIN unnest(c.conkey) WITH ORDINALITY k(attnum, ord) ON true
+               JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum
+              WHERE c.contype='p' AND c.conrelid='public.unit_conditions'::regclass
+              ORDER BY k.ord",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>(),
+        vec![
+            "revision_id".to_owned(),
+            "entity_id".to_owned(),
+            "constraint_key".to_owned()
+        ]
+    );
     tx.rollback().unwrap();
 }
