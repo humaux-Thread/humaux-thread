@@ -9029,7 +9029,7 @@ canvas_get
 canvas_update
 ```
 
-Amended by ADR-0105 and ADR-0106 (M18): Tool 8's `coordinate.*` actions become the M18 task, run, plan, board, note and content tools that M26 registers; there is no lock tool, and acceptance is recorded by `record_acceptance` under the task tool, not by a separate `gate_record`.
+Amended by ADR-0105 and ADR-0106 (M18): Tool 8's `coordinate.*` actions are replaced by M18 tools that M26 registers (ADR-0105 U7); no lock tool (ADR-0105); acceptance via `record_acceptance` (ADR-0106).
 
 内部仍然分别对应：
 

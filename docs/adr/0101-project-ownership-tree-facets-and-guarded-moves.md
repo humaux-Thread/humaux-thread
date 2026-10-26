@@ -95,7 +95,7 @@ involved.
   be re-checked in `project_move` (note §13 :230).
 - The closure-table accelerator is a ceiling, not a decision: it starts when `project_subtree` p95 exceeds its budget
   at depth 8 (note §15 :249). The depth default of 8 is a config start value.
-- Reparenting a real project would follow ADR-0078 D-G's high-risk flow; the note does not address it.
+- Whether reparenting is a D-G high-risk operation (ADR-0078) is not addressed by the note.
 
 ## Alternatives rejected
 

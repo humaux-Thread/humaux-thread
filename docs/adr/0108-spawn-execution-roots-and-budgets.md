@@ -8,8 +8,7 @@
 
 ## Context
 
-- A retry, a hand-off or a rework creates a new run, but the work still belongs to one budget account; counting each
-  retry as a fresh budget lets a task spend without bound.
+- A retry, a hand-off or a rework creates a new run, but the work still belongs to one budget account.
 - The 80-agent load is real: the budget must be enforced by the server, while LLM turns, tokens, cost and tool calls
   are self-reported by the client and cannot meter money here (M04 owns billing).
 

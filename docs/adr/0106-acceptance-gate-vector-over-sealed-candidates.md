@@ -43,8 +43,8 @@
   `private.run_acceptances`, extended with `candidate_id`, bound to the sealed candidate, and `gate_kind` in
   {STRUCTURE, USABILITY, AUTOMATED_TEST, INDEPENDENT_REVIEW, ACCEPTANCE} as a criterion class (note :259-260).
 - ADR-0080 D-C keeps the server-derived verifier, the `TrustedConnector` receipt whose `head_sha` is the run output,
-  receipt-derived result/criterion for non-`AGENT_CHECK` verifiers, and INDEPENDENT_REVIEW's lineage check (D-E); M26
-  exposes one operation, `record_acceptance`, under the task tool, and there is no separate `gate_record` (note
+  receipt-derived result/criterion for non-`AGENT_CHECK` verifiers; INDEPENDENT_REVIEW adds the M18 instance-lineage
+  check (D-E; note :264); M26 exposes one operation, `record_acceptance`, under the task tool, and there is no separate `gate_record` (note
   :261-265).
 
 ### D-E Independence is contributor lineage (note D11)
@@ -78,7 +78,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists here.
 | G-M18-15 late CI failure | M18-10 | `crates/adapters/tests/coord_gates.rs` | accept before the CI wait is released | an acceptance stands after a later FAIL on the same candidate |
 | G-M18-17 transitive invalidation | M18-11 | `crates/adapters/tests/coord_accept.rs` | evaluate direct revocation only | C claims with B's invalidated acceptance as input |
 
-G-M18-24's gate-kind set is owned by M18-3 and M18-9; each gate needs its inject → red → fix → green record (§80.1).
+G-M18-24 is owned by M18-3 and M18-9 (note :205, :212); each gate needs its inject → red → fix → green record (§80.1).
 
 ## Owner-gated
 
