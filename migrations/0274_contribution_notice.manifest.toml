@@ -14,7 +14,7 @@ select to_regclass('control.contribution_policies') is not null
    and to_regclass('control.contribution_notices') is null
    and to_regclass('control.contribution_notice_events') is null
    and to_regprocedure('control.current_contribution_notice()') is null
-   and to_regprocedure('control.contribution_authorized(uuid)') is null
+   and to_regprocedure('control.contribution_authorized(uuid,uuid)') is null
  as precheck_ok
 """
 
@@ -23,7 +23,7 @@ select to_regclass('control.contribution_policies') is not null
 postcheck = """
 with doors(sig) as (values
   ('control.current_contribution_notice()'),
-  ('control.contribution_authorized(uuid)'),
+  ('control.contribution_authorized(uuid,uuid)'),
   ('control.append_notice_event(text,integer,text)'),
   ('control.record_notice_shown(integer,text)'),
   ('control.ack_notice(integer,text)'),

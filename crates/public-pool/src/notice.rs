@@ -194,17 +194,20 @@ pub async fn acknowledge(
         .map_err(|e| refusal_of(&e))
 }
 
-/// ADR-0088 D-A: whether the sweep (M20-6) and finalize (M20-4b) may select for `tenant`: the current policy is AUTO and a
-/// SHOWN exists on the current notice version. The one predicate; the caller's session tenant must equal `tenant`.
+/// ADR-0088 D-A, per member: whether the sweep (M20-6) and finalize (M20-4b) may select `user`'s memories (they pass the
+/// memory's author): the tenant's current policy is AUTO and `user` has a SHOWN on the current notice version. The one
+/// predicate; the caller's session tenant must equal `tenant`.
 ///
 /// # Errors
 /// `Forbidden` when `tenant` is not the session tenant; `DependencyUnavailable` when PostgreSQL refuses the call.
 pub async fn contribution_authorized(
     conn: &mut PgConnection,
     tenant: TenantId,
+    user: UserId,
 ) -> Result<bool, Refusal> {
-    sqlx::query_scalar::<_, bool>("SELECT control.contribution_authorized($1)")
+    sqlx::query_scalar::<_, bool>("SELECT control.contribution_authorized($1, $2)")
         .bind(tenant.0)
+        .bind(user.0)
         .fetch_one(conn)
         .await
         .map_err(|e| refusal_of(&e))

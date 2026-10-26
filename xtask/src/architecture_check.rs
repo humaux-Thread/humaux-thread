@@ -4459,22 +4459,29 @@ fn m29_5a_attribution_site(root: &Path) -> Verdict {
     }
 }
 
-/// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal and the two doors that can write an AUTO policy. Each is banned from
-/// core-edition `src` except the rows of [`M20_1_EXCEPTIONS`]; the cloud onboarding default lives in `humaux-public-pool` only.
-const M20_1_NEEDLES: [&str; 3] = [
+/// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal, the Rust variant that spells it, and the three doors that can write
+/// an AUTO policy. Each is banned from core-edition `src` except the rows of [`M20_1_EXCEPTIONS`]; the cloud onboarding
+/// default and the toggle live in `humaux-public-pool` only.
+const M20_1_NEEDLES: [&str; 5] = [
     "AUTO_AFTER_USER_DISTILLATION",
+    "AutoAfterUserDistillation",
     "append_contribution_policy_successor",
     "apply_cloud_contribution_default",
+    "toggle_contribution",
 ];
 
 /// The current exceptions, exact: `(needle, file path without its `.rs` suffix, occurrences in non-comment, non-test code)`.
-/// `ContributionPolicy::as_db_str` spells the mode's wire label (§78.2); it appends nothing. The suffix is dropped so the
-/// dependency scanner does not read `<schema>.rs` as a table name.
-const M20_1_EXCEPTIONS: [(&str, &str, usize); 1] = [(
-    "AUTO_AFTER_USER_DISTILLATION",
-    "crates/domain/src/public",
-    1,
-)];
+/// `ContributionPolicy::as_db_str` spells the mode's wire label (§78.2) and the enum declares the variant, lists it in `ALL`
+/// and matches it in `as_db_str`; none of that appends a policy. The suffix is dropped so the dependency scanner does not
+/// read `<schema>.rs` as a table name.
+const M20_1_EXCEPTIONS: [(&str, &str, usize); 2] = [
+    (
+        "AUTO_AFTER_USER_DISTILLATION",
+        "crates/domain/src/public",
+        1,
+    ),
+    ("AutoAfterUserDistillation", "crates/domain/src/public", 3),
+];
 
 /// Whether `disp` is `src` of a crate or bin whose manifest does not declare `edition = "cloud"` (ADR-0073 D-B).
 fn m20_1_is_core_src(root: &Path, disp: &str) -> bool {
@@ -10932,7 +10939,7 @@ pub fn run(_args: &[String]) -> i32 {
             m29_5a_attribution_site(&root),
         ),
         (
-            "ADR-0088 / G-M20-1 (core-edition non-test code never names AUTO_AFTER_USER_DISTILLATION or the AUTO policy doors, except the exact exception list)",
+            "ADR-0088 / G-M20-1 (core-edition non-test code never names AUTO_AFTER_USER_DISTILLATION, the AutoAfterUserDistillation variant, the AUTO policy doors or toggle_contribution, except the exact exception list)",
             m20_1_core_never_auto(&root),
         ),
         (
@@ -17513,8 +17520,10 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    const M20_1_HOME_BODY: &str =
-        "fn label() -> &'static str { \"AUTO_AFTER_USER_DISTILLATION\" }\n";
+    /// Declaration, `ALL` slot and `as_db_str` arm of the variant (3 hits), and the wire literal (1 hit).
+    const M20_1_HOME_BODY: &str = "enum P { AutoAfterUserDistillation }\n\
+        const ALL: [P; 1] = [P::AutoAfterUserDistillation];\n\
+        fn label(p: P) -> &'static str { match p { P::AutoAfterUserDistillation => \"AUTO_AFTER_USER_DISTILLATION\" } }\n";
 
     /// The tree as M20-4a leaves it.
     #[test]
@@ -17586,8 +17595,16 @@ async fn serving_version_in_txn() {}
                 "async fn f() { sqlx::query(\"SELECT append_contribution_policy_successor($1)\"); }\n",
             ),
             (
+                "toggle_contribution",
+                "async fn f() { sqlx::query(\"SELECT control.toggle_contribution($1, $2)\"); }\n",
+            ),
+            (
                 "AUTO_AFTER_USER_DISTILLATION",
                 "async fn f() { sqlx::query(\"UPDATE p SET m = 'AUTO_AFTER_USER_DISTILLATION'\"); }\n",
+            ),
+            (
+                "AutoAfterUserDistillation",
+                "fn f() -> ContributionPolicy { ContributionPolicy::AutoAfterUserDistillation }\n",
             ),
         ] {
             m07_write(&tmp, "crates/adapters/src/provisioning.rs", body);
@@ -17595,10 +17612,26 @@ async fn serving_version_in_txn() {}
         }
         fs::remove_file(tmp.join("crates/adapters/src/provisioning.rs")).unwrap();
         assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
-        seed(&format!("{M20_1_HOME_BODY}{M20_1_HOME_BODY}"));
+        seed(&format!(
+            "{M20_1_HOME_BODY}fn l2() -> &'static str {{ \"AUTO_AFTER_USER_DISTILLATION\" }}\n"
+        ));
         red(m20_1_core_never_auto(&tmp), "allows 1");
-        seed("fn label() {}\n");
-        red(m20_1_core_never_auto(&tmp), "is gone");
+        seed(&format!(
+            "{M20_1_HOME_BODY}fn l2() -> P {{ P::AutoAfterUserDistillation }}\n"
+        ));
+        red(m20_1_core_never_auto(&tmp), "allows 3");
+        seed("fn label() -> &'static str { \"AUTO_AFTER_USER_DISTILLATION\" }\n");
+        red(
+            m20_1_core_never_auto(&tmp),
+            "`AutoAfterUserDistillation` x3",
+        );
+        seed(
+            "enum P { AutoAfterUserDistillation }\nconst A: P = P::AutoAfterUserDistillation;\nfn l(p: P) { match p { P::AutoAfterUserDistillation => {} } }\n",
+        );
+        red(
+            m20_1_core_never_auto(&tmp),
+            "`AUTO_AFTER_USER_DISTILLATION` x1",
+        );
         fs::remove_dir_all(&tmp).ok();
     }
 

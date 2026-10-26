@@ -1,19 +1,24 @@
 -- ADR-0088 D-A..D-C / §12.1.1 (M20-4a): the versioned contribution notice, its append-only choice events, the AUTO successor
--- gated on a SHOWN notice, and the toggle. EXPAND_CONTRACT: two new tables and six owner doors; no existing row, column or
+-- gated on a SHOWN notice, and the toggle. EXPAND_CONTRACT: two new tables and seven owner doors; no existing row, column or
 -- grant changes, and nothing here appends an AUTO policy for any existing tenant (the DB defaults stay DISABLED/MANUAL).
 --
 --   control.contribution_notices        platform rows (no tenant_id), written only by the migration owner; runtime roles read.
 --   control.contribution_notice_events  append-only, FORCE RLS by tenant; rows are written only by the doors below.
 --
 -- "Current notice" is defined once, in control.current_contribution_notice(). The authorization predicate the sweep and the
--- finalize path call is defined once, in control.contribution_authorized(). Every door reads tenant and user from the
--- session (humaux.tenant_id / humaux.user_id) and takes neither as a parameter; contribution_authorized takes the tenant only
--- to assert it equals the session tenant (0176 lesson: an owner door must not become a cross-tenant door).
+-- finalize path call is defined once, in control.contribution_authorized(tenant, user): consent is per member, so a member's
+-- memories are selectable only after that member's SHOWN on the current version. The doors read tenant and user from the
+-- session (humaux.tenant_id / humaux.user_id) and take neither as a parameter; contribution_authorized takes the user (the
+-- memory's author) and the tenant, the latter only to assert it equals the session tenant (0176 lesson: an owner door must
+-- not become a cross-tenant door).
+--
+-- The toggle is OWNER-only in both directions (the policy row is tenant-wide, there is no per-member opt-out); opting out is
+-- never blocked for lack of a notice.
 --
 -- Refusals are SQLSTATE 55000 with the machine-readable reason as the message (0186 convention):
 --   notice_version_not_current  the version is not control.current_contribution_notice()  -> CONFLICT / TARGET_NOT_CURRENT
 --   notice_not_shown            toggle ON without a SHOWN for tenant+user on the current   -> CONFLICT / TRANSITION_NOT_ALLOWED
--- A missing session context is 42501.
+-- A missing session context, and a toggle by a session user who is not an ACTIVE OWNER of the tenant, are 42501 (-> FORBIDDEN).
 
 CREATE TABLE control.contribution_notices (
   notice_version   integer     PRIMARY KEY CHECK (notice_version > 0),
@@ -33,11 +38,14 @@ CREATE TABLE control.contribution_notice_events (
   event_id       uuid        PRIMARY KEY DEFAULT uuidv7(),
   tenant_id      uuid        NOT NULL REFERENCES control.tenants(tenant_id),
   user_id        uuid        NOT NULL REFERENCES control.users(user_id),
-  notice_version integer     NOT NULL REFERENCES control.contribution_notices(notice_version),
+  notice_version integer     REFERENCES control.contribution_notices(notice_version),
   kind           text        NOT NULL
                  CHECK (kind IN ('SHOWN', 'ACKED', 'TOGGLED_ON', 'TOGGLED_OFF', 'WITHDRAW_ALL')),
   at             timestamptz NOT NULL DEFAULT clock_timestamp(),
-  channel        text        NOT NULL CHECK (channel IN ('POPUP', 'CONSOLE', 'MCP'))
+  channel        text        NOT NULL CHECK (channel IN ('POPUP', 'CONSOLE', 'MCP')),
+  -- Opting out must work before any notice is published; every other kind names the version it was recorded against.
+  CONSTRAINT contribution_notice_events_version_check
+    CHECK (notice_version IS NOT NULL OR kind = 'TOGGLED_OFF')
 );
 
 CREATE INDEX contribution_notice_events_tenant_shown_idx
@@ -89,15 +97,19 @@ AS $$
    LIMIT 1
 $$;
 
--- The single authorization predicate (ADR-0088 D-A): current policy mode is AUTO and a SHOWN exists for the tenant on the
--- current notice version. A version bump flips it to false until a new SHOWN.
-CREATE FUNCTION control.contribution_authorized(p_tenant_id uuid) RETURNS boolean
+-- The single authorization predicate (ADR-0088 D-A), per member: the tenant's current policy mode is AUTO and p_user_id has a
+-- SHOWN on the current notice version. A version bump flips it to false until each member shows again. The sweep and
+-- finalize call it with the memory's author, so one member's SHOWN never authorizes another member's memories.
+CREATE FUNCTION control.contribution_authorized(p_tenant_id uuid, p_user_id uuid) RETURNS boolean
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
   IF p_tenant_id IS NULL
      OR p_tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN
     RAISE EXCEPTION 'tenant_context_mismatch' USING ERRCODE = '42501';
+  END IF;
+  IF p_user_id IS NULL THEN
+    RETURN false;
   END IF;
   RETURN EXISTS (
     SELECT 1 FROM control.contribution_policies p
@@ -107,6 +119,7 @@ BEGIN
   ) AND EXISTS (
     SELECT 1 FROM control.contribution_notice_events e
      WHERE e.tenant_id = p_tenant_id
+       AND e.user_id = p_user_id
        AND e.kind = 'SHOWN'
        AND e.notice_version = control.current_contribution_notice()
   );
@@ -147,6 +160,11 @@ AS $$ SELECT control.append_notice_event('ACKED', p_notice_version, p_channel) $
 -- current version; OFF appends TOGGLED_OFF and a DISABLED successor. Event and successor are one transaction. A tenant with no
 -- policy row gets its first row (version 1) instead of a successor. A toggle to the mode the head already has appends the
 -- event only. Returns the open head's policy_version after the call.
+-- OWNER-only in both directions: the session user must be an ACTIVE OWNER of the tenant (the 0273 membership pattern); the
+-- policy row is tenant-wide, so there is no per-member opt-out to allow a non-owner. OFF never needs a notice: with none
+-- published the event carries a NULL version (contribution_notice_events_version_check).
+-- No lock is taken: a notice published between the SHOWN check and the successor insert is harmless, because
+-- control.contribution_authorized re-reads the current version every time it is used and the new version re-gates.
 CREATE FUNCTION control.toggle_contribution(p_on boolean, p_channel text) RETURNS bigint
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
@@ -163,7 +181,14 @@ BEGIN
   IF p_on IS NULL THEN
     RAISE EXCEPTION 'toggle_required' USING ERRCODE = '22023';
   END IF;
-  IF v_notice IS NULL THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM control.memberships m
+     WHERE m.tenant_id = v_tenant AND m.user_id = v_user
+       AND m.state = 'ACTIVE' AND m.role = 'OWNER'
+  ) THEN
+    RAISE EXCEPTION 'toggle_owner_required' USING ERRCODE = '42501';
+  END IF;
+  IF p_on AND v_notice IS NULL THEN
     RAISE EXCEPTION 'notice_version_not_current' USING ERRCODE = '55000';
   END IF;
   IF p_on AND NOT EXISTS (
@@ -215,7 +240,7 @@ END;
 $$;
 
 ALTER FUNCTION control.current_contribution_notice() OWNER TO role_migration_owner;
-ALTER FUNCTION control.contribution_authorized(uuid) OWNER TO role_migration_owner;
+ALTER FUNCTION control.contribution_authorized(uuid, uuid) OWNER TO role_migration_owner;
 ALTER FUNCTION control.append_notice_event(text, integer, text) OWNER TO role_migration_owner;
 ALTER FUNCTION control.record_notice_shown(integer, text) OWNER TO role_migration_owner;
 ALTER FUNCTION control.ack_notice(integer, text) OWNER TO role_migration_owner;
@@ -223,15 +248,16 @@ ALTER FUNCTION control.toggle_contribution(boolean, text) OWNER TO role_migratio
 ALTER FUNCTION control.apply_cloud_contribution_default() OWNER TO role_migration_owner;
 
 REVOKE ALL ON FUNCTION control.current_contribution_notice() FROM PUBLIC;
-REVOKE ALL ON FUNCTION control.contribution_authorized(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION control.contribution_authorized(uuid, uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.append_notice_event(text, integer, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.record_notice_shown(integer, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.ack_notice(integer, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.toggle_contribution(boolean, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.apply_cloud_contribution_default() FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION control.current_contribution_notice() TO role_gateway, role_private_worker, role_public_worker;
-GRANT EXECUTE ON FUNCTION control.contribution_authorized(uuid) TO role_gateway, role_private_worker, role_public_worker;
+-- The workers get EXECUTE on the two reads when the sweep (M20-6) and finalize (M20-4b) land and have a caller.
+GRANT EXECUTE ON FUNCTION control.current_contribution_notice() TO role_gateway;
+GRANT EXECUTE ON FUNCTION control.contribution_authorized(uuid, uuid) TO role_gateway;
 GRANT EXECUTE ON FUNCTION control.record_notice_shown(integer, text) TO role_gateway;
 GRANT EXECUTE ON FUNCTION control.ack_notice(integer, text) TO role_gateway;
 GRANT EXECUTE ON FUNCTION control.toggle_contribution(boolean, text) TO role_gateway;

@@ -26,12 +26,13 @@ pub async fn apply_cloud_default(conn: &mut PgConnection) -> Result<bool, Refusa
         .map_err(|e| refusal_of(&e))
 }
 
-/// ADR-0088 D-C: switches contribution on or off for the session tenant. ON requires a SHOWN for the session tenant and user
-/// on the current notice version; the event and the policy successor are one transaction. Returns the open head's version.
+/// ADR-0088 D-C: switches contribution on or off for the session tenant. The session user must be an ACTIVE OWNER of the
+/// tenant in both directions. ON requires a SHOWN for the session tenant and user on the current notice version; OFF needs no
+/// notice. The event and the policy successor are one transaction. Returns the open head's version.
 ///
 /// # Errors
-/// `Conflict` / `TRANSITION_NOT_ALLOWED` for ON without SHOWN; `Conflict` / `TARGET_NOT_CURRENT` while no notice is
-/// published; `Forbidden` without a session context.
+/// `Forbidden` for a non-owner or without a session context; `Conflict` / `TRANSITION_NOT_ALLOWED` for ON without SHOWN;
+/// `Conflict` / `TARGET_NOT_CURRENT` for ON while no notice is published.
 pub async fn toggle(
     conn: &mut PgConnection,
     on: bool,

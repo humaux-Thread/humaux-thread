@@ -9,7 +9,7 @@
 //!   modules=[domain::error, domain::ids, humaux-testkit, public-pool::notice, public-pool::policy]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns one throwaway tenant, user and the notice versions it publishes, removed on drop; the notice
-//!   table is global, so the binary runs in nextest's global-db group; a missing database is a visible §79.2 skip, a FAIL
+//!   table is global, so the binary runs in nextest's serial-public-notice group; a missing database is a visible §79.2 skip, a FAIL
 //!   under HUMAUX_REQUIRE_DB]
 //! Spec: Baseline §12.1.1; §78.2; §79.2; ADR-0088 D-A; D-B; D-C
 
@@ -63,6 +63,10 @@ impl Drop for Handle {
         let _ = self.admin.execute(
             "DELETE FROM control.contribution_notices WHERE notice_version = ANY($1)",
             &[&notices],
+        );
+        let _ = self.admin.execute(
+            "DELETE FROM control.memberships WHERE tenant_id = ANY($1)",
+            &[&tenants],
         );
         let _ = self
             .admin
@@ -120,7 +124,7 @@ impl DbIntegrationFixture for NoticeFixture {
 }
 
 impl Handle {
-    /// A throwaway tenant and user; both are removed on drop.
+    /// A throwaway tenant and its ACTIVE OWNER; all are removed on drop.
     fn new_tenant(&mut self) -> (Uuid, Uuid) {
         let tenant: Uuid = self
             .admin
@@ -130,13 +134,25 @@ impl Handle {
             )
             .expect("insert tenant")
             .get(0);
+        self.tenants.push(tenant);
+        let user = self.new_member(tenant, "OWNER");
+        (tenant, user)
+    }
+
+    /// A throwaway user holding an ACTIVE membership of `tenant` with `role`.
+    fn new_member(&mut self, tenant: Uuid, role: &str) -> Uuid {
         let user = Uuid::new_v4();
         self.admin
             .execute("INSERT INTO control.users (user_id) VALUES ($1)", &[&user])
             .expect("insert user");
-        self.tenants.push(tenant);
         self.users.push(user);
-        (tenant, user)
+        self.admin
+            .execute(
+                "INSERT INTO control.memberships (tenant_id, user_id, role, state) VALUES ($1, $2, $3, 'ACTIVE')",
+                &[&tenant, &user, &role],
+            )
+            .expect("insert membership");
+        user
     }
 
     /// Publishes the next notice version, effective immediately: the greatest `published_at` so far.
@@ -239,13 +255,29 @@ impl Handle {
         })
     }
 
-    fn authorized(&self, tenant: Uuid, user: Uuid) -> bool {
+    fn acked(&self, tenant: Uuid, user: Uuid, version: i32) -> Result<Uuid, Refusal> {
         self.rt.block_on(async {
             let mut conn = connect(&self.gateway_dsn).await;
             let mut tx = begin(&mut conn, tenant, user).await;
-            let authorized = notice::contribution_authorized(&mut tx, TenantId(tenant))
-                .await
-                .expect("the predicate");
+            let result = notice::acknowledge(&mut tx, version, NoticeChannel::Console).await;
+            settle(tx, result.is_ok()).await;
+            result
+        })
+    }
+
+    fn authorized(&self, tenant: Uuid, user: Uuid) -> bool {
+        self.authorized_for(tenant, user, user)
+    }
+
+    /// The predicate for `subject`, asked from `session_user`'s session of `tenant`.
+    fn authorized_for(&self, tenant: Uuid, session_user: Uuid, subject: Uuid) -> bool {
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, session_user).await;
+            let authorized =
+                notice::contribution_authorized(&mut tx, TenantId(tenant), UserId(subject))
+                    .await
+                    .expect("the predicate");
             settle(tx, false).await;
             authorized
         })
@@ -446,6 +478,106 @@ fn g_m20_3_d_toggle_on_without_shown_is_refused_and_writes_nothing() {
             );
         },
     );
+}
+
+/// G-M20-3 (g): consent is per member: A's SHOWN authorizes A's memories and not B's; a version bump re-gates both until
+/// each shows again.
+#[test]
+fn g_m20_3_g_authorization_is_per_member() {
+    run_db_fixture::<NoticeFixture, _>("g_m20_3_g_authorization_is_per_member", |mut h| {
+        let (tenant, user_a, first) = h.auto_tenant_shown_on_first_notice();
+        let user_b = h.new_member(tenant, "MEMBER");
+        assert!(h.authorized_for(tenant, user_a, user_a));
+        assert!(
+            !h.authorized_for(tenant, user_a, user_b),
+            "A's SHOWN does not authorize B"
+        );
+        h.shown(tenant, user_b, first).expect("B SHOWN");
+        assert!(h.authorized_for(tenant, user_a, user_b));
+        let second = h.publish_notice();
+        assert!(!h.authorized_for(tenant, user_a, user_a));
+        assert!(!h.authorized_for(tenant, user_a, user_b));
+        h.shown(tenant, user_a, second).expect("A SHOWN on v2");
+        assert!(h.authorized_for(tenant, user_a, user_a));
+        assert!(
+            !h.authorized_for(tenant, user_a, user_b),
+            "B has not shown v2"
+        );
+        h.shown(tenant, user_b, second).expect("B SHOWN on v2");
+        assert!(h.authorized_for(tenant, user_a, user_b));
+    });
+}
+
+/// G-M20-3 (h): only an ACTIVE OWNER toggles, in either direction; a refused member writes no event and no policy row.
+#[test]
+fn g_m20_3_h_toggle_requires_an_owner() {
+    run_db_fixture::<NoticeFixture, _>("g_m20_3_h_toggle_requires_an_owner", |mut h| {
+        let (tenant, owner, version) = h.auto_tenant_shown_on_first_notice();
+        let member = h.new_member(tenant, "MEMBER");
+        h.shown(tenant, member, version).expect("member SHOWN");
+        let forbidden = Err(Refusal {
+            code: ErrorCode::Forbidden,
+            reason: None,
+        });
+        assert_eq!(h.toggle(tenant, member, false), forbidden);
+        assert_eq!(h.toggle(tenant, member, true), forbidden);
+        assert_eq!(
+            h.head(tenant),
+            Some((1, "AUTO_AFTER_USER_DISTILLATION".to_owned()))
+        );
+        assert_eq!(
+            h.kinds(tenant),
+            vec!["SHOWN".to_owned(), "SHOWN".to_owned()]
+        );
+        assert_eq!(h.toggle(tenant, owner, false), Ok(2));
+        assert_eq!(h.head(tenant), Some((2, "DISABLED".to_owned())));
+    });
+}
+
+/// G-M20-3 (i): opting out needs no published notice: OFF writes a `TOGGLED_OFF` event without a version and the DISABLED
+/// successor.
+#[test]
+fn g_m20_3_i_toggle_off_without_a_notice_succeeds() {
+    run_db_fixture::<NoticeFixture, _>(
+        "g_m20_3_i_toggle_off_without_a_notice_succeeds",
+        |mut h| {
+            let (tenant, owner) = h.new_tenant();
+            assert!(h.apply_default(tenant, owner));
+            assert_eq!(h.current(tenant, owner), None, "no notice is published");
+            assert_eq!(h.toggle(tenant, owner, false), Ok(2));
+            assert_eq!(h.head(tenant), Some((2, "DISABLED".to_owned())));
+            assert_eq!(h.kinds(tenant), vec!["TOGGLED_OFF".to_owned()]);
+        },
+    );
+}
+
+/// G-M20-3 (j): `ack_notice` records `ACKED` on the current version, never authorizes by itself, and refuses a version that
+/// is no longer current.
+#[test]
+fn g_m20_3_j_ack_is_recorded_and_version_checked() {
+    run_db_fixture::<NoticeFixture, _>("g_m20_3_j_ack_is_recorded_and_version_checked", |mut h| {
+        let (tenant, user) = h.new_tenant();
+        let first = h.publish_notice();
+        assert!(h.apply_default(tenant, user));
+        h.acked(tenant, user, first)
+            .expect("ACKED on the current version");
+        assert_eq!(h.kinds(tenant), vec!["ACKED".to_owned()]);
+        assert!(!h.authorized(tenant, user), "ACKED is not SHOWN");
+        let second = h.publish_notice();
+        assert_eq!(
+            h.acked(tenant, user, first),
+            Err(refused(
+                ErrorCode::Conflict,
+                ConflictReason::TARGET_NOT_CURRENT
+            ))
+        );
+        assert_eq!(h.kinds(tenant), vec!["ACKED".to_owned()]);
+        h.acked(tenant, user, second).expect("ACKED on version 2");
+        assert_eq!(
+            h.kinds(tenant),
+            vec!["ACKED".to_owned(), "ACKED".to_owned()]
+        );
+    });
 }
 
 fn sqlstate(error: &sqlx::Error) -> Option<String> {
