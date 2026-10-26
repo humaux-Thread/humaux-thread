@@ -401,51 +401,101 @@ impl StartBarrier {
     }
 }
 
+/// One winner and one loser on the same slot, overlapping: the winner publishes and holds its slot lock until the
+/// caller releases it; the loser's first attempt must be reported blocked by `pg_blocking_pids` before that release.
+/// The helper returns both outcomes (winner first) with both transactions committed or rolled back.
+fn race_two_writers(
+    fixture: &Handle,
+    kind: ContinuityFacetKind,
+    first: Value,
+    second: Value,
+) -> (PublishFacetOutcome, PublishFacetOutcome) {
+    let scope = fixture.scope();
+    let memories = fixture.memory_source();
+    let project = fixture.project;
+    let workspace = fixture.workspace;
+    let (winner_outcome_tx, winner_outcome_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (commit_tx, commit_rx) = mpsc::channel::<Result<(), String>>();
+    let dsn = fixture.gateway_dsn.clone();
+    let scope_a = scope.clone();
+    let winner = thread::spawn(move || {
+        let rt = runtime();
+        let pool = gateway_raw(&rt, &dsn);
+        let command = command(workspace, project, kind, &first, &memories, &[]);
+        // dep: PostgreSQL(role_gateway) — this transaction keeps the slot lock until `release`
+        let (tx, outcome) = rt.block_on(async {
+            let mut tx = pool.begin().await.expect("winner begin");
+            let outcome = continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
+            (tx, outcome)
+        });
+        winner_outcome_tx.send(outcome).expect("winner outcome");
+        release_rx.recv_timeout(THREAD_TIMEOUT).expect("release");
+        commit_tx
+            .send(rt.block_on(tx.commit()).map_err(|error| error.to_string()))
+            .expect("winner commit");
+    });
+    let winner_outcome = winner_outcome_rx
+        .recv_timeout(THREAD_TIMEOUT)
+        .expect("winner outcome")
+        .expect("winner answered");
+    let (pid_tx, pid_rx) = mpsc::channel::<i32>();
+    let (loser_tx, loser_rx) = mpsc::channel();
+    let dsn = fixture.gateway_dsn.clone();
+    let scope_b = scope.clone();
+    let loser = thread::spawn(move || {
+        let rt = runtime();
+        let pool = gateway_raw(&rt, &dsn);
+        let command = command(workspace, project, kind, &second, &memories, &[]);
+        rt.block_on(async {
+            // dep: PostgreSQL(role_gateway) — the loser must block on the winner's slot lock
+            let mut tx = pool.begin().await.expect("loser begin");
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *tx)
+                .await
+                .expect("loser pid");
+            pid_tx.send(pid).expect("pid");
+            let outcome = continuity_repo::publish_facets_in_txn(&mut tx, &scope_b, &command).await;
+            if matches!(outcome, Ok(PublishFacetOutcome::Published(_))) {
+                tx.commit().await.expect("loser commit");
+            } else {
+                tx.rollback().await.expect("loser rollback");
+            }
+            loser_tx.send(outcome).expect("loser outcome");
+        });
+    });
+    let mut admin = fixture.admin();
+    let pid = pid_rx.recv_timeout(THREAD_TIMEOUT).expect("loser pid");
+    assert!(
+        blocked_by_winner(&mut admin, pid),
+        "the loser must block on the winner's slot lock, not race it"
+    );
+    release_tx.send(()).expect("release winner");
+    commit_rx
+        .recv_timeout(THREAD_TIMEOUT)
+        .expect("winner commit")
+        .expect("winner committed");
+    let loser_outcome = loser_rx
+        .recv_timeout(THREAD_TIMEOUT)
+        .expect("loser outcome")
+        .expect("loser answered");
+    winner.join().expect("winner thread");
+    loser.join().expect("loser thread");
+    (winner_outcome, loser_outcome)
+}
+
 /// G-M14-1 (ADR-0094 D-B): two overlapping scalar publishes on one slot leave exactly one version, one winner and
-/// one typed CONFLICT carrying that version. The overlap is proved by PostgreSQL reporting the loser blocked on the
-/// winner's slot lock, not by a sleep.
+/// one typed CONFLICT carrying that version.
 #[test]
 fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
     run_db_fixture::<Fixture, _>("g_m14_1_scalar_cas", |fixture| {
-        let scope = fixture.scope();
-        let memories = fixture.memory_source();
         let project = fixture.project;
-        let workspace = fixture.workspace;
-
-        let (winner_outcome_tx, winner_outcome_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let (commit_tx, commit_rx) = mpsc::channel::<Result<(), String>>();
-        let dsn = fixture.gateway_dsn.clone();
-        let scope_a = scope.clone();
-        let winner = thread::spawn(move || {
-            let rt = runtime();
-            let pool = gateway_raw(&rt, &dsn);
-            let body = json!({"goal": "writer a"});
-            let command = command(
-                workspace,
-                project,
-                ContinuityFacetKind::Goal,
-                &body,
-                &memories,
-                &[],
-            );
-            let (mut tx, outcome) = rt.block_on(async {
-                // dep: PostgreSQL(role_gateway) — the winner's slot lock is held until it commits
-                let mut tx = pool.begin().await.expect("winner begin");
-                let outcome =
-                    continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
-                (tx, outcome)
-            });
-            winner_outcome_tx.send(outcome).expect("winner outcome");
-            release_rx.recv_timeout(THREAD_TIMEOUT).expect("release");
-            commit_tx
-                .send(rt.block_on(tx.commit()).map_err(|error| error.to_string()))
-                .expect("winner commit");
-        });
-        let winner_outcome = winner_outcome_rx
-            .recv_timeout(THREAD_TIMEOUT)
-            .expect("winner outcome")
-            .expect("winner published");
+        let (winner_outcome, loser_outcome) = race_two_writers(
+            &fixture,
+            ContinuityFacetKind::Goal,
+            json!({"goal": "writer a"}),
+            json!({"goal": "writer b"}),
+        );
         let PublishFacetOutcome::Published(winner_result) = winner_outcome else {
             panic!("the first writer must publish, got {winner_outcome:?}");
         };
@@ -453,57 +503,6 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
             (winner_result.facet_version, winner_result.slot_version),
             (1, 1)
         );
-
-        let (pid_tx, pid_rx) = mpsc::channel::<i32>();
-        let (loser_tx, loser_rx) = mpsc::channel();
-        let dsn = fixture.gateway_dsn.clone();
-        let scope_b = scope.clone();
-        let loser = thread::spawn(move || {
-            let rt = runtime();
-            let pool = gateway_raw(&rt, &dsn);
-            let body = json!({"goal": "writer b"});
-            let command = command(
-                workspace,
-                project,
-                ContinuityFacetKind::Goal,
-                &body,
-                &memories,
-                &[],
-            );
-            rt.block_on(async {
-                // dep: PostgreSQL(role_gateway) — the loser blocks on the winner's slot lock
-                let mut tx = pool.begin().await.expect("loser begin");
-                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-                    .fetch_one(&mut *tx)
-                    .await
-                    .expect("loser pid");
-                pid_tx.send(pid).expect("pid");
-                let outcome =
-                    continuity_repo::publish_facets_in_txn(&mut tx, &scope_b, &command).await;
-                if matches!(outcome, Ok(PublishFacetOutcome::Published(_))) {
-                    tx.commit().await.expect("loser commit");
-                } else {
-                    tx.rollback().await.expect("loser rollback");
-                }
-                loser_tx.send(outcome).expect("loser outcome");
-            });
-        });
-
-        let pid = pid_rx.recv_timeout(THREAD_TIMEOUT).expect("loser pid");
-        let mut admin = fixture.admin();
-        assert!(
-            blocked_by_winner(&mut admin, pid),
-            "the loser must block on the winner's slot lock, not race it"
-        );
-        release_tx.send(()).expect("release winner");
-        commit_rx
-            .recv_timeout(THREAD_TIMEOUT)
-            .expect("winner commit")
-            .expect("winner committed");
-        let loser_outcome = loser_rx
-            .recv_timeout(THREAD_TIMEOUT)
-            .expect("loser outcome")
-            .expect("loser answered");
         assert_eq!(
             loser_outcome,
             PublishFacetOutcome::Conflict {
@@ -511,15 +510,31 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
                 current_slot_version: 1,
             }
         );
-        winner.join().expect("winner thread");
-        loser.join().expect("loser thread");
-
+        let mut admin = fixture.admin();
         assert_eq!(version_census(&mut admin, project, "GOAL"), (1, 1, 1));
         let (slot_version, current, state) = slot_of(&mut admin, project, "GOAL");
         assert_eq!(slot_version, 1);
         assert_eq!(current, Some(winner_result.facet_version_id.0));
         assert_eq!(state.as_deref(), Some("CURRENT"));
     });
+}
+
+/// One writer's bounded retry: publish, accept a lost CAS and retry, or fail after `WRITER_ATTEMPTS`.
+fn publish_until_settled(
+    rt: &Runtime,
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    scope: &AuthorizationScope,
+    command: &PublishContinuityFacet<'_>,
+    index: usize,
+) -> Result<(), String> {
+    for _ in 0..WRITER_ATTEMPTS {
+        match one_publish(rt, pool, scope, command) {
+            Ok(PublishFacetOutcome::Published(_)) => return Ok(()),
+            Ok(PublishFacetOutcome::Conflict { .. }) => {}
+            Err(error) => return Err(format!("writer {index}: {error:?}")),
+        }
+    }
+    Err(format!("writer {index}: {WRITER_ATTEMPTS} attempts"))
 }
 
 /// G-M14-2: 80 concurrent list writers, each one item, leave exactly the union of all 80 items in exactly 80
@@ -559,14 +574,7 @@ fn g_m14_2_eighty_writers_union_exactly() {
                 if !barrier.arrive() {
                     return Err(format!("writer {index}: start barrier timed out"));
                 }
-                for _ in 0..WRITER_ATTEMPTS {
-                    match one_publish(&rt, &pool, &scope, &command) {
-                        Ok(PublishFacetOutcome::Published(_)) => return Ok(()),
-                        Ok(PublishFacetOutcome::Conflict { .. }) => {}
-                        Err(error) => return Err(format!("writer {index}: {error:?}")),
-                    }
-                }
-                Err(format!("writer {index}: {WRITER_ATTEMPTS} attempts"))
+                publish_until_settled(&rt, &pool, &scope, &command, index)
             }));
         }
         assert!(
@@ -606,50 +614,18 @@ fn g_m14_2_eighty_writers_union_exactly() {
     });
 }
 
-/// G-M14-2's retry half (ADR-0094 D-D): a list writer that loses the slot re-reads, merges and publishes the winner's
-/// item together with its own in one version. Proved through `pg_blocking_pids` like G-M14-1.
+/// G-M14-2's retry half (ADR-0094 D-D): a list writer that loses the slot re-reads, merges and publishes the
+/// winner's item together with its own in one new version.
 #[test]
 fn g_m14_2_conflicted_list_writer_retries_and_unions() {
     run_db_fixture::<Fixture, _>("g_m14_2_list_retry", |fixture| {
-        let scope = fixture.scope();
-        let memories = fixture.memory_source();
         let project = fixture.project;
-        let workspace = fixture.workspace;
-
-        let (winner_outcome_tx, winner_outcome_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let (commit_tx, commit_rx) = mpsc::channel::<Result<(), String>>();
-        let dsn = fixture.gateway_dsn.clone();
-        let scope_a = scope.clone();
-        let winner = thread::spawn(move || {
-            let rt = runtime();
-            let pool = gateway_raw(&rt, &dsn);
-            let body = json!({"items":[{"source_id":"a","text":"winner"}]});
-            let command = command(
-                workspace,
-                project,
-                ContinuityFacetKind::Decisions,
-                &body,
-                &memories,
-                &[],
-            );
-            let (mut tx, outcome) = rt.block_on(async {
-                // dep: PostgreSQL(role_gateway) — the winner's slot lock is held until it commits
-                let mut tx = pool.begin().await.expect("winner begin");
-                let outcome =
-                    continuity_repo::publish_facets_in_txn(&mut tx, &scope_a, &command).await;
-                (tx, outcome)
-            });
-            winner_outcome_tx.send(outcome).expect("winner outcome");
-            release_rx.recv_timeout(THREAD_TIMEOUT).expect("release");
-            commit_tx
-                .send(rt.block_on(tx.commit()).map_err(|error| error.to_string()))
-                .expect("winner commit");
-        });
-        let winner_outcome = winner_outcome_rx
-            .recv_timeout(THREAD_TIMEOUT)
-            .expect("winner outcome")
-            .expect("winner published");
+        let (winner_outcome, loser_outcome) = race_two_writers(
+            &fixture,
+            ContinuityFacetKind::Decisions,
+            json!({"items":[{"source_id":"a","text":"winner"}]}),
+            json!({"items":[{"source_id":"b","text":"loser"}]}),
+        );
         let PublishFacetOutcome::Published(winner_result) = winner_outcome else {
             panic!("the winner must publish, got {winner_outcome:?}");
         };
@@ -657,57 +633,6 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
             (winner_result.facet_version, winner_result.slot_version),
             (1, 1)
         );
-
-        let (pid_tx, pid_rx) = mpsc::channel::<i32>();
-        let (loser_tx, loser_rx) = mpsc::channel();
-        let dsn = fixture.gateway_dsn.clone();
-        let scope_b = scope.clone();
-        let loser = thread::spawn(move || {
-            let rt = runtime();
-            let pool = gateway_raw(&rt, &dsn);
-            let body = json!({"items":[{"source_id":"b","text":"loser"}]});
-            let command = command(
-                workspace,
-                project,
-                ContinuityFacetKind::Decisions,
-                &body,
-                &memories,
-                &[],
-            );
-            rt.block_on(async {
-                // dep: PostgreSQL(role_gateway) — the loser blocks on the winner's slot lock
-                let mut tx = pool.begin().await.expect("loser begin");
-                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-                    .fetch_one(&mut *tx)
-                    .await
-                    .expect("loser pid");
-                pid_tx.send(pid).expect("pid");
-                let outcome =
-                    continuity_repo::publish_facets_in_txn(&mut tx, &scope_b, &command).await;
-                if matches!(outcome, Ok(PublishFacetOutcome::Published(_))) {
-                    tx.commit().await.expect("loser commit");
-                } else {
-                    tx.rollback().await.expect("loser rollback");
-                }
-                loser_tx.send(outcome).expect("loser outcome");
-            });
-        });
-
-        let pid = pid_rx.recv_timeout(THREAD_TIMEOUT).expect("loser pid");
-        let mut admin = fixture.admin();
-        assert!(
-            blocked_by_winner(&mut admin, pid),
-            "the loser must block on the winner's slot lock, not race it"
-        );
-        release_tx.send(()).expect("release winner");
-        commit_rx
-            .recv_timeout(THREAD_TIMEOUT)
-            .expect("winner commit")
-            .expect("winner committed");
-        let loser_outcome = loser_rx
-            .recv_timeout(THREAD_TIMEOUT)
-            .expect("loser outcome")
-            .expect("loser retried, not failed");
         let PublishFacetOutcome::Published(loser_result) = loser_outcome else {
             panic!("a list writer must retry its conflict, got {loser_outcome:?}");
         };
@@ -715,9 +640,7 @@ fn g_m14_2_conflicted_list_writer_retries_and_unions() {
             (loser_result.facet_version, loser_result.slot_version),
             (2, 2)
         );
-        winner.join().expect("winner thread");
-        loser.join().expect("loser thread");
-
+        let mut admin = fixture.admin();
         assert_eq!(version_census(&mut admin, project, "DECISIONS"), (2, 1, 2));
         let (slot_version, _, state) = slot_of(&mut admin, project, "DECISIONS");
         assert_eq!(slot_version, 2);
@@ -738,7 +661,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
         let rt = runtime();
         let pool = gateway_raw(&rt, &fixture.gateway_dsn);
         let empty = json!({"items":[]});
-        let removals = vec!["a".to_string()];
+        let removals = ["a".to_string()];
         for (kind, removals) in [
             (ContinuityFacetKind::ActiveTasks, &[][..]),
             (ContinuityFacetKind::Goal, &removals[..]),
