@@ -1688,6 +1688,6 @@ mod tests {
             out.contains("rate_limit_rejected_total{scope=\"unseeded\"} 1\n"),
             "{out}"
         );
-        assert_eq!(series(&out, "rate_limit_rejected_total").len(), 6);
+        assert_eq!(series(&out, "rate_limit_rejected_total").len(), 7);
     }
 }
