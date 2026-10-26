@@ -62,9 +62,9 @@ Planned, implementer-owned, tri-state (§57.1); none exists here:
 
 | gate | owner card | injected fault | expected red |
 |---|---|---|---|
-| G-M20-1 core never AUTO | M20-4 | core onboarding appends AUTO | the core tenant has AUTO |
+| G-M20-1 core never AUTO | M20-4 | core onboarding appends AUTO | the core tenant has AUTO (red runs 40301237329 leg 1, 40300523163 leg 2) |
 | G-M20-2 floor + migrated | M20-4, M20-28 | ignore the floor or the 14-day rule | a memory below the floor or before the effective date is selected |
-| G-M20-3 notice shown | M20-4 | skip the SHOWN check; count an old version's SHOWN | a release with no SHOWN for the current version |
+| G-M20-3 notice shown | M20-4 | skip the SHOWN check; count an old version's SHOWN | a release with no SHOWN for the current version (red run 40299157074) |
 | G-M20-4 opt-out race + withdraw-all | M20-4 | skip the policy re-check at finalize; withdraw-all only toggles | a release after `TOGGLED_OFF`; a prior revision still servable |
 
 Each needs its inject → red → fix → green record (§80.1) in the implementing card; a missing database is a fail in CI,
