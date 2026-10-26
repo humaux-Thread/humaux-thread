@@ -537,7 +537,7 @@ fn fk_pairs(tx: &mut Transaction<'_>, child: &str, parent: &str) -> Vec<(String,
                JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum
                JOIN unnest(c.confkey) WITH ORDINALITY f(attnum, ord) ON f.ord=k.ord
                JOIN pg_attribute af ON af.attrelid=c.confrelid AND af.attnum=f.attnum
-              WHERE c.contype='f' AND c.conrelid=$1::regclass AND c.confrelid=$2::regclass
+              WHERE c.contype='f' AND c.conrelid=$1::text::regclass AND c.confrelid=$2::text::regclass
               ORDER BY k.ord",
             &[&child, &parent],
         )
