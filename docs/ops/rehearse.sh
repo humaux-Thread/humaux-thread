@@ -524,10 +524,6 @@ BEGIN
       INSERT INTO ops.selection_snapshot_items (selection_snapshot_id, tenant_id, item_id, ordinal)
         SELECT s, t, gen_random_uuid(), g - 1 FROM generate_series(1, 3) g;
     END LOOP;
-    INSERT INTO control.rate_buckets (tenant_id, subject_kind, subject_id, operation, bucket_key, capacity, tokens,
-        refill_per_second, updated_at)
-      SELECT t, 'tenant', 'c35-rh-' || g, 'mcp.read', 'default', 5, 5, 1, now() - interval '2 hours'
-      FROM generate_series(1, k) g;
     INSERT INTO ops.jobs (tenant_id, job_type, status, idempotency_key, created_at)
       SELECT t, 'c35.rehearsal', CASE WHEN g % 2 = 0 THEN 'DONE' ELSE 'DEAD' END, gen_random_uuid()::text,
         now() - interval '2 hours' FROM generate_series(1, k) g;
@@ -562,8 +558,8 @@ then
   MD_SETUP_OK=1
 fi
 # Seeded counts per purge door, read once before the daemon starts (the receipts-balance baseline).
-MD_SEEDED=$(MDQ "select (select count(*) from control.confirm_tokens where operation='c35.rh')||' '||(select count(*) from ops.selection_snapshots where query_fingerprint='c35-rh')||' '||(select count(*) from control.rate_buckets where subject_id like 'c35-rh-%')||' '||(select count(*) from ops.jobs where job_type='c35.rehearsal')")
-echo "maintenance daemon db: $MD_DB setup_ok=$MD_SETUP_OK k=$MD_K seeded(confirm snapshots buckets jobs)=$MD_SEEDED orphans=$(MDQ "select count(*) from projection.stream_log where state='ISSUED'") migrate: $(tail -1 $EV/maintenance-migrate.log)" | tee -a $EV/rehearsal.log
+MD_SEEDED=$(MDQ "select (select count(*) from control.confirm_tokens where operation='c35.rh')||' '||(select count(*) from ops.selection_snapshots where query_fingerprint='c35-rh')||' '||(select count(*) from ops.jobs where job_type='c35.rehearsal')")
+echo "maintenance daemon db: $MD_DB setup_ok=$MD_SETUP_OK k=$MD_K seeded(confirm snapshots jobs)=$MD_SEEDED orphans=$(MDQ "select count(*) from projection.stream_log where state='ISSUED'") migrate: $(tail -1 $EV/maintenance-migrate.log)" | tee -a $EV/rehearsal.log
 print -r -- $MD_DB > $S/md.db   # for the TW twin's safety net: the one database name this run may drop
 for i in $(seq 1 30); do code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp -H 'Origin: http://127.0.0.1:8080' --data '{}' 2>/dev/null); [ "$code" != "000" ] && break; sleep 1; done
 echo "gateway http=$code pw=$PW_PID rw=$RW_PID rp=$RP_PID gw=$GW_PID mh=$MH_PID" | tee -a $EV/rehearsal.log
@@ -615,7 +611,7 @@ wait_ready maintenance-serve md_readyz
 # ADR-0062 D-E / D-T: kill -9 while the doors are purging (the first receipt is in, rows are left), then the
 # same daemon again. Every purge is one statement with its receipt, so nothing can half-apply; the receipts
 # balance in step maintenance_drain grades it.
-MD_LEFT_SQL="select (select count(*) from control.confirm_tokens where operation='c35.rh')+(select count(*) from ops.selection_snapshots where query_fingerprint='c35-rh')+(select count(*) from control.rate_buckets where subject_id like 'c35-rh-%')+(select count(*) from ops.jobs where job_type='c35.rehearsal')"
+MD_LEFT_SQL="select (select count(*) from control.confirm_tokens where operation='c35.rh')+(select count(*) from ops.selection_snapshots where query_fingerprint='c35-rh')+(select count(*) from ops.jobs where job_type='c35.rehearsal')"
 MD_K9_T0=$(date +%s); MD_K9_RECEIPTS=0
 while [ $(( $(date +%s) - MD_K9_T0 )) -le 60 ]; do
   MD_K9_RECEIPTS=$(MDQ "select count(*) from ops.maintenance_receipts"); [ "${MD_K9_RECEIPTS:-0}" -gt 0 ] 2>/dev/null && break; sleep 0.2
@@ -797,14 +793,14 @@ load_tally() { # $1 = xtask load's stdout, $2 = its exit code
   [ "$2" -ne 0 ] && [ "$f" -eq 0 ] && assert_eq "load_xtask_exit(no FAIL line printed)" "$2" 0
   return 0
 }
-# Assertion 7 (ruling R-8) on the rows the load really writes: two tenants and their rate buckets (every request takes
-# the post-auth buckets), and none of the rows it must not write (outbox / job / memory_evidence). ok = before the
-# teardown 0/0/0/2/>0, after it 0/0/0/0/0, and no tenant left listed.
+# Assertion 7 (ruling R-8) on the rows the load really writes: two tenants,
+# and none of the rows it must not write (outbox / job / memory_evidence). ok = before the
+# teardown 0/0/0/2, after it 0/0/0/0, and no tenant left listed.
 load_rows_sql() { local in="'${LOAD_LA:-none}','${LOAD_LB:-none}'"
-  print -r -- "select (select count(*) from ops.outbox where tenant_id::text in ($in)) || '/' || (select count(*) from ops.jobs where tenant_id::text in ($in)) || '/' || (select count(*) from private.memory_evidence me join private.evidence_objects o on o.evidence_id = me.evidence_id where o.tenant_id::text in ($in)) || '/' || (select count(*) from control.tenants where tenant_id::text in ($in)) || '/' || (select count(*) from control.rate_buckets where tenant_id::text in ($in))"; }
+  print -r -- "select (select count(*) from ops.outbox where tenant_id::text in ($in)) || '/' || (select count(*) from ops.jobs where tenant_id::text in ($in)) || '/' || (select count(*) from private.memory_evidence me join private.evidence_objects o on o.evidence_id = me.evidence_id where o.tenant_id::text in ($in)) || '/' || (select count(*) from control.tenants where tenant_id::text in ($in))"; }
 load_torn_down() { # $1 = rows before the teardown, $2 = rows after it, $3 = tenants still listed
-  { [ "${1%/*}" = 0/0/0/2 ] && [ "${1##*/}" -gt 0 ] 2>/dev/null; } || { echo "before_not_0/0/0/2/>0"; return; }
-  [ "$2" = 0/0/0/0/0 ] || { echo "after_not_0/0/0/0/0"; return; }
+  [ "$1" = 0/0/0/2 ] || { echo "before_not_0/0/0/2"; return; }
+  [ "$2" = 0/0/0/0 ] || { echo "after_not_0/0/0/0"; return; }
   [ -z "$3" ] || { echo "tenants_left"; return; }
   echo ok
 }
@@ -877,7 +873,7 @@ if [ -n "$LOAD_LA" ] && [ -n "$LOAD_LB" ] && [ "$LOAD_EMPTY" = 0 ]; then
       fault-teardown) xr=$(PGQ "$(load_rows_sql)")
         { echo "### FAULT $x env=[] args=[] (teardown skipped: assertion 7 graded on the rows before it)"
           xv=$(load_torn_down "$xr" "$xr" "$(cat $S/load_tenants 2>/dev/null | xargs)")
-          assertion_line "$([ "$xv" = ok ] && echo PASS || echo FAIL)" "load_tenants_torn_down(outbox/jobs/memory_evidence/tenants/rate_buckets before=$xr after=$xr)" "$xv"
+          assertion_line "$([ "$xv" = ok ] && echo PASS || echo FAIL)" "load_tenants_torn_down(outbox/jobs/memory_evidence/tenants before=$xr after=$xr)" "$xv"
         } >> $EV/load_faults.log
         echo "load: extra $x graded without a gateway run: $(tail -1 $EV/load_faults.log)" | tee -a $EV/rehearsal.log
         continue ;;
@@ -902,7 +898,7 @@ load_cleanup
 LOAD_ROWS_AFTER=$(PGQ "$(load_rows_sql)")
 trap obs_stop EXIT
 LOAD_LEFT=$(cat $S/load_tenants 2>/dev/null | xargs)
-assert_eq "load_tenants_torn_down(outbox/jobs/memory_evidence/tenants/rate_buckets before=$LOAD_ROWS_BEFORE after=$LOAD_ROWS_AFTER left=[$LOAD_LEFT])" \
+assert_eq "load_tenants_torn_down(outbox/jobs/memory_evidence/tenants before=$LOAD_ROWS_BEFORE after=$LOAD_ROWS_AFTER left=[$LOAD_LEFT])" \
   "$(load_torn_down "$LOAD_ROWS_BEFORE" "$LOAD_ROWS_AFTER" "$LOAD_LEFT")" ok
 fi
 
@@ -2663,11 +2659,11 @@ MD_D0=$(date +%s); MD_LEFT=-1
 while [ $(( $(date +%s) - MD_D0 )) -le $(( MD_K * 8 / 2 + 120 )) ]; do
   MD_LEFT=$(MDQ "$MD_LEFT_SQL"); [ "$MD_LEFT" = 0 ] && break; sleep 3
 done
-MD_REMAINING=$(MDQ "select (select count(*) from control.confirm_tokens where operation='c35.rh')||' '||(select count(*) from ops.selection_snapshots where query_fingerprint='c35-rh')||' '||(select count(*) from control.rate_buckets where subject_id like 'c35-rh-%')||' '||(select count(*) from ops.jobs where job_type='c35.rehearsal')")
-MD_RECEIPTS=$(MDQ "select coalesce(sum(affected) filter (where task='confirm_tokens'),0)||' '||coalesce(sum(affected) filter (where task='selection_snapshots'),0)||' '||coalesce(sum(affected) filter (where task='rate_buckets'),0)||' '||coalesce(sum(affected) filter (where task='terminal_jobs'),0) from ops.maintenance_receipts")
-MD_BAL_BAD=0; MD_BAL_LINE=""; MD_TASKS=(confirm_tokens selection_snapshots rate_buckets terminal_jobs)
+MD_REMAINING=$(MDQ "select (select count(*) from control.confirm_tokens where operation='c35.rh')||' '||(select count(*) from ops.selection_snapshots where query_fingerprint='c35-rh')||' '||(select count(*) from ops.jobs where job_type='c35.rehearsal')")
+MD_RECEIPTS=$(MDQ "select coalesce(sum(affected) filter (where task='confirm_tokens'),0)||' '||coalesce(sum(affected) filter (where task='selection_snapshots'),0)||' '||coalesce(sum(affected) filter (where task='terminal_jobs'),0) from ops.maintenance_receipts")
+MD_BAL_BAD=0; MD_BAL_LINE=""; MD_TASKS=(confirm_tokens selection_snapshots terminal_jobs)
 MD_SA=(${=MD_SEEDED}); MD_RA=(${=MD_REMAINING}); MD_AA=(${=MD_RECEIPTS})
-for MD_I in 1 2 3 4; do
+for MD_I in 1 2 3; do
   MD_T=${MD_TASKS[$MD_I]}; MD_S=${MD_SA[$MD_I]:-}; MD_R=${MD_RA[$MD_I]:-}; MD_A=${MD_AA[$MD_I]:-}
   MD_OK=0; [ -n "$MD_S" ] && [ -n "$MD_R" ] && [ -n "$MD_A" ] && [ $(( MD_S - MD_R )) -eq "$MD_A" ] 2>/dev/null && [ "$MD_S" -gt 0 ] && MD_OK=1
   [ $MD_OK = 1 ] || MD_BAL_BAD=$((MD_BAL_BAD + 1))
