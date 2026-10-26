@@ -7,7 +7,7 @@
 
 use humaux_domain::memory::MemoryType;
 use humaux_retrieval::{
-    completeness::FreshnessClass,
+    completeness::{CensusResult, ExactEnumeration, FreshnessClass, ledger},
     envelope::*,
     request::{RetrievalIntent, build_request, resolve_registered_retrieval_profile},
     signals::{compute_freshness, default_freshness_policy, summarize_freshness},
@@ -160,10 +160,11 @@ fn pipeline() -> PipelineBlock {
     }
 }
 
-fn provenance() -> ProvenanceBlock {
+fn provenance() -> (humaux_retrieval::request::RetrievalRequest, ProvenanceBlock) {
     let profile = resolve_registered_retrieval_profile(&BTreeMap::new()).expect("profile");
-    let request = build_request(RetrievalIntent::trusted_context(), &profile).expect("request");
-    ProvenanceBlock {
+    let request =
+        build_request(RetrievalIntent::trusted_memory_enumerate(), &profile).expect("request");
+    let provenance = ProvenanceBlock {
         binary_build: "fixture-build".to_owned(),
         projection_version: ProvenanceValue::NotApplicable {},
         embedding_model_id: ProvenanceValue::NotApplicable {},
@@ -176,7 +177,8 @@ fn provenance() -> ProvenanceBlock {
             cand_k_formula: request.cand_k_formula(),
             lanes: vec![],
         },
-    }
+    };
+    (request, provenance)
 }
 
 #[test]
@@ -190,38 +192,75 @@ fn g_m13_6_exact_envelope_with_a_stale_item_stays_exact() {
     );
     assert_eq!(item.class, FreshnessClass::Stale);
     let summary = summarize_freshness([item.class]);
-    let envelope = Envelope {
-        items: vec![item],
-        pipeline: pipeline(),
-        provenance: provenance(),
-        completeness: CompletenessBlock {
-            class: CompletenessClassWire::Exact,
-            reason: None,
-            exact: Some(ExactReport {
-                predicate_id: "fixture_exact".to_owned(),
-                total: 1,
-                returned: 1,
-                coverage: 1.0,
-                truncated: false,
-                excluded_secret: 0,
-            }),
-            known_lower_bound: None,
-            lanes: BTreeMap::new(),
-            candidate_count: 1,
-            reranked_count: 1,
-            returned: 1,
-            truncated: false,
-            degradations: vec![],
+    let pipeline = pipeline();
+    let (request, provenance) = provenance();
+    let census = CensusResult::enumerated(
+        ExactEnumeration::new(
+            humaux_domain::selection::AUTHORIZED_MEMORY_ENUMERATION_V1,
+            1,
+            1,
+            0,
+        )
+        .unwrap(),
+    );
+    let ledger = ledger::close(
+        ledger::LedgerReads {
+            expected: 1,
+            done: 1,
+            deleted: 0,
+            skipped: 0,
+            open_gaps: 0,
+            pending: 0,
         },
-        freshness: FreshnessBlock {
-            class: summary,
-            latest_evidence_at: None,
-            state_age_seconds: Some(31 * 86400),
+        ledger::ProjectionReads {
+            points_expected: 1,
+            points_settled: 1,
+            ..Default::default()
         },
-        grounding: GroundingBlock::tally([]),
-        mandatory: MandatoryReport::NotRun,
-        pinned: PinnedReport::NotRun,
-    };
+    );
+    let envelope = envelope_outcome_block(
+        &request,
+        CompletenessInputs {
+            lane_status: &LaneStatus::Ok,
+            census: &census,
+            ledger: &ledger,
+            pipeline: &pipeline,
+            provenance: &provenance,
+            visible: Some(1),
+            context: None,
+            mandatory_missing: 0,
+            lag_threshold: Duration::from_secs(60),
+        },
+        |outcome| {
+            Ok(Envelope {
+                items: vec![item],
+                pipeline: pipeline.clone(),
+                provenance: provenance.clone(),
+                completeness: CompletenessBlock {
+                    class: outcome.class,
+                    reason: outcome.reason,
+                    exact: outcome.exact,
+                    known_lower_bound: outcome.known_lower_bound,
+                    lanes: BTreeMap::new(),
+                    candidate_count: 1,
+                    reranked_count: 1,
+                    returned: 1,
+                    truncated: false,
+                    degradations: vec![],
+                },
+                freshness: FreshnessBlock {
+                    class: summary,
+                    latest_evidence_at: None,
+                    state_age_seconds: Some(31 * 86400),
+                },
+                grounding: GroundingBlock::tally([]),
+                mandatory: MandatoryReport::NotRun,
+                pinned: PinnedReport::NotRun,
+            })
+        },
+    )
+    .expect("final envelope outcome")
+    .finish();
     let json = serde_json::to_value(&envelope).expect("Envelope serialization");
     assert_eq!(json["items"].as_array().unwrap().len(), 1);
     assert_eq!(json["items"][0]["class"], "stale");
