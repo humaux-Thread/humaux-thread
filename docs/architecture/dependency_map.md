@@ -574,6 +574,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.identity_note_materializations`
 - reads `private.lower`
 - reads `private.memory_affects`
+- reads `private.memory_applicability`
 - reads `private.memory_consolidation_inputs`
 - reads `private.memory_consolidation_runs`
 - reads `private.memory_evidence`
@@ -843,9 +844,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_projects`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
+- reads `private.nodes`
 - reads `private.publish_continuity_facet`
 - reads `private.read_continuity_project_storage_v1`
 - reads `private.register_continuity_project`
+- reads `private.subjects`
+- reads `public.entities`
 - writes `private.context_bindings`
 - writes `private.evidence_objects`
 - writes `private.evidence_projects`
@@ -3278,6 +3282,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.identity_note_materializations`
 - reads `private.lower`
 - reads `private.memory_affects`
+- reads `private.memory_applicability`
 - reads `private.memory_consolidation_inputs`
 - reads `private.memory_consolidation_runs`
 - reads `private.memory_evidence`
@@ -4944,6 +4949,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
@@ -5520,6 +5526,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -8743,6 +8750,14 @@ written by:
 
 executed by:
 
+### `private.decide_memory_applicability`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::applicability_repo`
+
 ### `private.declared_project_visible`
 read by:
 
@@ -9023,6 +9038,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -9346,6 +9362,18 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::memory_affects`
+
+### `private.memory_applicability`
+read by:
+- (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::applicability`
+
+executed by:
 
 ### `private.memory_consolidation_inputs`
 read by:
@@ -9918,6 +9946,14 @@ written by:
 
 executed by:
 
+### `private.nodes`
+read by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+written by:
+
+executed by:
+
 ### `private.note_heads`
 read by:
 - (no process): `adapters::tests::note_history`
@@ -10006,6 +10042,15 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 
 executed by:
+
+### `private.propose_memory_applicability`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::applicability_repo`
+- (no process): `adapters::tests::applicability`
 
 ### `private.publish_continuity_facet`
 read by:
@@ -10289,9 +10334,11 @@ executed by:
 ### `private.subjects`
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_subjects_link`
@@ -11179,6 +11226,14 @@ written by:
 
 executed by:
 
+### `public.entities`
+read by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+written by:
+
+executed by:
+
 ### `public.evaluate_anonymous_claim`
 read by:
 
@@ -11608,6 +11663,7 @@ executed by:
 
 ### `PostgreSQL(any)`
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
 - `adapters::confirm_token_repo`
@@ -11742,6 +11798,7 @@ executed by:
 - `adapters::postgres`
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
@@ -11871,6 +11928,7 @@ executed by:
 - `adapters::serving_repo`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
@@ -12335,6 +12393,7 @@ why: typed per-role PG pools and runtime queries
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
 - `adapters::confirm_token_repo`
@@ -12469,6 +12528,7 @@ why: pure domain types this adapter reads/writes against
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
 - `adapters::byok`
@@ -12529,6 +12589,7 @@ modules naming it:
 - `adapters::stream_repo`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
@@ -12838,6 +12899,7 @@ why: jsonb column binding
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12876,6 +12938,7 @@ modules naming it:
 - `adapters::scheduler`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
@@ -13034,6 +13097,7 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `adapters::applicability_repo`
 - `adapters::byok`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
@@ -13051,6 +13115,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::continuity_publish`
@@ -13127,6 +13192,7 @@ why: self-reference for test-support feature
 
 modules naming it:
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
@@ -13349,6 +13415,7 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `adapters::applicability_repo`
 - `adapters::byok`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
@@ -13366,6 +13433,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::continuity_publish`
@@ -13424,6 +13492,7 @@ modules naming it:
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
@@ -16837,6 +16906,15 @@ services (computed):
 default run:
 - PostgreSQL
 - Qdrant
+
+### `crates/adapters/tests/applicability.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/auth_contract.rs`
 db-bound (default run): yes
