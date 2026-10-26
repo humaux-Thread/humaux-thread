@@ -210,6 +210,8 @@ fn g_m18_4_concurrent_cycle() {
 #[test]
 fn tree_closed_sets_match_both_checks() {
     use humaux_domain::project_tree::{ProjectFacetKind, ProjectKind};
+    assert_eq!(ProjectKind::ALL.len(), 3);
+    assert_eq!(ProjectFacetKind::ALL.len(), 2);
     let mut fx = Fixture::new(&dsn());
     for (name, expected) in [
         (

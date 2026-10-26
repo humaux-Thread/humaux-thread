@@ -80,6 +80,7 @@ fn g_m18_1_per_row_visibility() {
             &[&archived],
         )
         .unwrap();
+    seed_excluded_member(&mut fx, root);
     fx.gateway();
     let rows = fx
         .client
@@ -125,4 +126,18 @@ fn g_m18_1_per_row_visibility() {
         .unwrap(),
         2
     );
+}
+
+fn seed_excluded_member(fx: &mut Fixture, root: Uuid) {
+    let hidden_workspace = Uuid::now_v7();
+    let hidden = Uuid::now_v7();
+    // §6.1.1: a rolled-back corrupted topology tests the read barrier independently of the FK barrier.
+    fx.client.batch_execute("ALTER TABLE private.continuity_projects DROP CONSTRAINT continuity_projects_tree_parent_fkey").unwrap();
+    fx.client
+        .execute(
+            "INSERT INTO control.workspaces(tenant_id,workspace_id,name) VALUES ($1,$2,'excluded')",
+            &[&fx.tenant, &hidden_workspace],
+        )
+        .unwrap();
+    fx.client.execute("INSERT INTO private.continuity_projects(tenant_id,workspace_id,project_id,parent_id,title) VALUES ($1,$2,$3,$4,'excluded member')", &[&fx.tenant,&hidden_workspace,&hidden,&root]).unwrap();
 }
