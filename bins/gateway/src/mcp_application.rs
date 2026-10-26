@@ -150,6 +150,7 @@ pub struct GatewayMcpApplication {
     catalog: Arc<CanonicalCatalog>,
     guard: Arc<GatewayGuard>,
     runtime_pool: Arc<RuntimeDbPool>,
+    continuity_list_merge_attempts: Option<usize>,
     remember_policy: RememberPolicy,
     remember_event_kind: RememberEventKind,
     context_bootstrap: ContextBootstrap,
@@ -189,6 +190,7 @@ impl GatewayMcpApplication {
             catalog: Arc::new(catalog),
             guard,
             runtime_pool,
+            continuity_list_merge_attempts: None,
             remember_policy,
             remember_event_kind,
             context_bootstrap,
@@ -201,6 +203,12 @@ impl GatewayMcpApplication {
             #[cfg(test)]
             trusted_continuity_scope: None,
         }
+    }
+
+    /// §50 / ADR-0094 D-D: installs the boot-validated list publication budget.
+    pub fn with_continuity_list_merge_attempts(mut self, attempts: usize) -> Self {
+        self.continuity_list_merge_attempts = Some(attempts);
+        self
     }
 
     /// Enables the `coordinate.task_*` routes with the bootstrap-owned lease TTL
@@ -888,6 +896,9 @@ impl GatewayMcpApplication {
         let body = value.get("body").ok_or(ErrorCode::InvalidInput)?.clone();
         let (memories, evidence) = publish_sources(value)?;
         let removals = publish_removals(value)?;
+        let list_merge_attempts = self
+            .continuity_list_merge_attempts
+            .ok_or(ErrorCode::Internal)?;
         let requested_workspace = workspace(value)?;
         let pool = self.runtime_pool.clone();
         let catalog = self.catalog.clone();
@@ -903,6 +914,7 @@ impl GatewayMcpApplication {
                         pool,
                         request.authorization().clone(),
                         continuity::PublishFacetCommand {
+                            list_merge_attempts,
                             project_id,
                             workspace_id,
                             facet_kind,
@@ -3145,6 +3157,10 @@ mod tests {
             policy,
             RememberEventKind::UserMessage,
             bootstrap,
+        )
+        .with_continuity_list_merge_attempts(
+            humaux_contracts::config_registry::continuity_list_merge_attempts(None)
+                .expect("registered continuity default"),
         )
         .with_trusted_continuity_scope(scope)
     }

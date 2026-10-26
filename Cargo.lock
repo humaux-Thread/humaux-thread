@@ -1477,6 +1477,7 @@ dependencies = [
  "humaux-domain",
  "humaux-retrieval",
  "humaux-telemetry",
+ "postgres",
  "proptest",
 ]
 

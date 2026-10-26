@@ -1,10 +1,10 @@
 //! `adapters::tests::continuity_publish` — M14-2 gates G-M14-1 and G-M14-2 against a real PostgreSQL.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio,
+//! Depends-on: crates=[humaux-adapters, humaux-contracts, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio,
 //!   uuid]; services=[PostgreSQL(owner) r=[private.memory_records] w=[control.private_reasoning_domains,
 //!   control.tenants, control.workspaces, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records], PostgreSQL(role_gateway)
 //!   r=[private.continuity_facet_slots, private.continuity_facet_versions]];
-//!   env=[HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[adapters::continuity_repo, adapters::postgres,
+//!   env=[HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[contracts::config_registry, adapters::continuity_repo, adapters::postgres,
 //!   domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [G-M14-1: two overlapping publishes of one scalar slot leave exactly one version, one winner and one
@@ -307,6 +307,10 @@ fn command<'a>(
     removals: &'a [String],
 ) -> PublishContinuityFacet<'a> {
     PublishContinuityFacet {
+        list_merge_attempts: humaux_contracts::config_registry::continuity_list_merge_attempts(
+            None,
+        )
+        .expect("registered continuity default"),
         workspace_id: WorkspaceId(workspace),
         project_id: ProjectId(project),
         facet_kind: kind,
@@ -800,4 +804,106 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
             (1, 1, 1)
         );
     });
+}
+
+/// §25.3.1 / #292: read, merge and SQL failures cannot poison the caller's transaction or GUC.
+#[test]
+fn publish_failure_restores_outer_transaction_and_workspace() {
+    run_db_fixture::<Fixture, _>("publish_failure_outer_txn", |fixture| {
+        let rt = runtime();
+        let pool = gateway_raw(&rt, &fixture.gateway_dsn);
+        let scope = fixture.scope();
+        let memories = fixture.memory_source();
+        let goal = json!({"goal":"failed publication"});
+        let malformed = json!({"items":[{"text":"missing identity"}]});
+        let cases = [
+            (
+                Uuid::now_v7(),
+                ContinuityFacetKind::Goal,
+                &goal,
+                &memories[..],
+                ErrorCode::NotFound,
+            ),
+            (
+                fixture.project,
+                ContinuityFacetKind::Goal,
+                &goal,
+                &[][..],
+                ErrorCode::InvalidInput,
+            ),
+            (
+                fixture.project,
+                ContinuityFacetKind::Decisions,
+                &malformed,
+                &memories[..],
+                ErrorCode::InvalidInput,
+            ),
+        ];
+        let caller_workspace = Uuid::now_v7();
+        assert_ne!(caller_workspace, fixture.workspace);
+        for (project, kind, body, sources, expected) in cases {
+            let input = command(fixture.workspace, project, kind, body, sources, &[]);
+            rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — caller transaction survives each failed publish
+                let mut tx = pool.begin().await.expect("outer transaction");
+                sqlx::query("SELECT set_config('humaux.workspace_id',$1,true)")
+                    .bind(caller_workspace.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .expect("caller workspace");
+                assert_eq!(
+                    continuity_repo::publish_facets_in_txn(&mut tx, &scope, &input).await,
+                    Err(expected)
+                );
+                let value: (i32, String) =
+                    sqlx::query_as("SELECT 42::int, current_setting('humaux.workspace_id')")
+                        .fetch_one(&mut *tx)
+                        .await
+                        .expect("follow-up statement must succeed");
+                assert_eq!(
+                    value,
+                    (42, caller_workspace.to_string()),
+                    "caller setting restored"
+                );
+                assert_attempt_savepoint_released(&mut tx).await;
+                tx.commit().await.expect("outer commit");
+            });
+        }
+        assert_eq!(
+            version_census(&mut fixture.admin(), fixture.project, "GOAL"),
+            (0, 0, 0)
+        );
+    });
+}
+
+// §25.3.1: probing a released savepoint aborts only this disposable outer transaction.
+async fn assert_attempt_savepoint_released(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) {
+    sqlx::query("SAVEPOINT caller_probe")
+        .execute(&mut **tx)
+        .await
+        .expect("caller probe");
+    let error = sqlx::query("ROLLBACK TO SAVEPOINT continuity_publish_attempt")
+        .execute(&mut **tx)
+        .await
+        .expect_err("attempt savepoint must be released");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("3B001"),
+        "no such savepoint"
+    );
+    assert_eq!(
+        error.as_database_error().expect("database error").message(),
+        "savepoint \"continuity_publish_attempt\" does not exist"
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT caller_probe")
+        .execute(&mut **tx)
+        .await
+        .expect("recover probe");
+    sqlx::query("RELEASE SAVEPOINT caller_probe")
+        .execute(&mut **tx)
+        .await
+        .expect("release probe");
 }

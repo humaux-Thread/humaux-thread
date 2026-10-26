@@ -7,7 +7,7 @@
 //!   domain::grounding, domain::identity, domain::ids, domain::note, domain::selection, projection::serving,
 //!   projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::contribution_entry_repo,
-//!   adapters::exact_census, adapters::memory_governance_repo, adapters::operation_receipt,
+//!   adapters::exact_census, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt,
 //!   adapters::read_materialize, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [a Memory is readable only when all six conjuncts hold: (1) tenant, the Memory row and each Evidence
 //!   row are read under the caller's tenant_id and RLS (§6.1.1); (2) visibility, `identity::can_read` over the
