@@ -55,12 +55,12 @@ referencing table leaves KNOWLEDGE; the catalog row records which. `private.proc
 observations without their run lose provenance. Every other crossing is resolved by this rule in M23-2's catalog
 review, not here. The crossings known on 2026-10-26 (static read of `migrations/*.sql`):
 `private.evidence_task_runs` → EXCLUDED `coord.task_runs` (0251:32, :39); and, to tables in neither list,
-`private.evidence_objects` → `control.private_reasoning_domains` (0004:31, 0159:24-28),
+`private.evidence_objects` → `control.private_reasoning_domains` (0004:31, 0159:26-29),
 `private.memory_consolidation_inputs` → `private.memory_consolidation_runs` (0005:64), and
 `control.contribution_confirmations` → `staging.contribution_candidates` (0107:125-126). A nullable foreign key from
 KNOWLEDGE to a non-KNOWLEDGE table (known: three to `staging.contribution_releases`, 0104:48-50, 0106:73, 0106:115)
-is a catalog error unless its catalog row names the restore action `set_null`. M23-2 or M23-5 decides where that
-action runs, before the restore FK audit.
+is a catalog error unless its catalog row names the restore action `set_null`. M23-2 decides where that action
+runs (the M23-4 drill and the M23-5 restore), before the restore FK audit.
 
 ### D-B Format: PG logical, `pg_dump -Fd --compress=zstd:3`, data-only, as the superuser
 
@@ -115,14 +115,15 @@ to M19: until the next verified export (≈ 24 h normally, longer while exports 
 The `dr` target is rebuilt FROM the pg image (the same PG 18.6 `pg_dump`/`pg_restore`/`initdb` as the server) plus
 `humaux-maintenance` (note :120-121). Drill: `initdb` on a temporary directory → `migrate` to `schema_version` →
 create `partition_months` → `pg_restore --data-only --disable-triggers` → per-table counts equal the manifest →
-journal re-apply → `rls-check` → witness rows (note :121-123).
-Lead ruling (2026-10-26, #332; draft authority): before the counts are accepted, the drill audits every foreign key among the restored tables
-and fails naming any constraint with an orphan row, because `--disable-triggers` skips FK checks and equal counts
-do not prove referential integrity. The nightly drill is PG-only; the Qdrant rebuild leg
+journal re-apply → `rls-check` → witness rows (note :121-123). The nightly drill is PG-only; the Qdrant rebuild leg
 runs in CI/conformance with a stub or local embedder, with no weekly paid re-embed (note :123-124). The testkit
 disposable guard refuses a live DSN (the G-M19-11 pattern; note :124-125). Rejected: a drill DB in the live cluster
 (production DDL nightly); a compose project via `docker.sock` (no Docker socket, ADR-0064 L21) (note :125-126). The
 gate is X-M23-1 (note :125).
+
+**Lead ruling (2026-10-26, issue #332; draft authority, the owner may revise):** before the counts are accepted, the
+drill audits every foreign key among the restored tables and fails naming any constraint with an orphan row, because
+`--disable-triggers` skips FK checks and equal counts do not prove referential integrity.
 
 ### D-G Restore path
 
