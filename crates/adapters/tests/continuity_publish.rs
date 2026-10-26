@@ -1,11 +1,11 @@
-//! `adapters::tests::continuity_publish` — M14-2 gates G-M14-1 and G-M14-2 against a real PostgreSQL.
-//! Depends-on: crates=[humaux-adapters, humaux-contracts, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio,
-//!   uuid]; services=[PostgreSQL(owner) r=[private.memory_records] w=[control.private_reasoning_domains,
-//!   control.tenants, control.workspaces, private.evidence_objects, private.memory_evidence,
+//! `adapters::tests::continuity_publish` — CAS, merge and G-289 source-closure gates against real PostgreSQL.
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio,
+//!   uuid]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, private.continuity_facet_memory_links, private.continuity_facet_evidence_links, private.memory_records] w=[control.memberships, control.users, control.workspace_memberships, control.private_reasoning_domains,
+//!   control.tenants, control.workspaces, ops.outbox, projection.stream_log, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records], PostgreSQL(role_gateway)
-//!   r=[private.continuity_facet_slots, private.continuity_facet_versions]];
+//!   r=[private.continuity_facet_slots, private.continuity_facet_versions] x=[private.publish_continuity_facet]];
 //!   env=[HUMAUX_REQUIRE_DB, HUMAUX_TEST_PG_DSN]; modules=[contracts::config_registry, adapters::continuity_repo, adapters::postgres,
-//!   domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit, testkit::fixture_purge]
+//!   adapters::continuity_read, application::continuity, domain::context, domain::continuity, domain::error, domain::identity, domain::ids, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [G-M14-1: two overlapping publishes of one scalar slot leave exactly one version, one winner and one
 //!   typed CONFLICT carrying that version; G-M14-2: 80 concurrent list writers leave exactly 80 items (the full union)
@@ -14,7 +14,7 @@
 //!   failure when HUMAUX_REQUIRE_DB=1, never a silent pass; g_m14_2_eighty_writers_union_exactly is lane(a:shared_db)
 //!   (it holds exactly one gateway session per writer — 80 live sessions at the start barrier and 80 distinct
 //!   gateway backends across the run, never more — and max_connections is 100), so it runs alone in
-//!   `cargo xtask serial-lane`]
+//!   `cargo xtask serial-lane`; G-289-a/b/c retain exact inherited source hashes, reader visibility and lifecycle; G-289-d rejects invisible caller sources with 23514]
 //! Spec: Baseline §25.3.1; §52 D-B; §79.2; §80.1; ADR-0094
 
 use std::{
@@ -39,7 +39,7 @@ use humaux_domain::{
     continuity::{ContinuityFacetKind, ContinuityPublishState, ProjectId},
     error::{ConflictReason, ErrorCode},
     identity::{AuthorizationScope, BoundedSet, PrincipalId},
-    ids::{TenantId, WorkspaceId},
+    ids::{TenantId, UserId, WorkspaceId},
 };
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, fixture_purge, run_db_fixture};
 use postgres::{Client, NoTls};
@@ -137,6 +137,7 @@ struct Handle {
     memory: Uuid,
     memory_hash: [u8; 32],
     project: Uuid,
+    users: Vec<Uuid>,
 }
 
 impl Handle {
@@ -178,7 +179,14 @@ impl Drop for Handle {
                 "continuity_publish cleanup failed for tenant {}: {error}",
                 self.tenant
             );
+            return;
         }
+        admin
+            .execute(
+                "DELETE FROM control.users WHERE user_id=ANY($1)",
+                &[&self.users],
+            )
+            .expect("purge only this fixture's users");
     }
 }
 
@@ -231,6 +239,7 @@ impl DbIntegrationFixture for Fixture {
             memory,
             memory_hash,
             project,
+            users: Vec::new(),
         };
         let title = format!("continuity publish {tenant}");
         let rt = runtime();
@@ -906,4 +915,379 @@ async fn assert_attempt_savepoint_released(tx: &mut sqlx::Transaction<'_, sqlx::
         .execute(&mut **tx)
         .await
         .expect("release probe");
+}
+
+struct MergePrivacyFixture {
+    handle: Handle,
+    user_a: Uuid,
+    user_b: Uuid,
+    memory_b: ContinuityMemorySource,
+    evidence_a: humaux_adapters::continuity_repo::ContinuityEvidenceSource,
+}
+
+fn merge_privacy_fixture(mut handle: Handle) -> MergePrivacyFixture {
+    let user_a = Uuid::now_v7();
+    let user_b = Uuid::now_v7();
+    handle.users.extend([user_a, user_b]);
+    let mut admin = handle.admin();
+    for user in [user_a, user_b] {
+        admin
+            .execute(
+                "INSERT INTO control.users(user_id,state) VALUES($1,'ACTIVE')",
+                &[&user],
+            )
+            .unwrap();
+        admin
+            .execute(
+                "INSERT INTO control.memberships(tenant_id,user_id,role,state) \
+             VALUES($1,$2,'MEMBER','ACTIVE')",
+                &[&handle.tenant, &user],
+            )
+            .unwrap();
+        admin.execute(
+            "INSERT INTO control.workspace_memberships(tenant_id,workspace_id,user_id,role,state) \
+             VALUES($1,$2,$3,'MEMBER','ACTIVE')",
+            &[&handle.tenant, &handle.workspace, &user]).unwrap();
+    }
+    admin.execute(
+        "UPDATE private.memory_records SET visibility_class='USER_PRIVATE',visibility_user_id=$2 \
+         WHERE memory_id=$1", &[&handle.memory, &user_a]).unwrap();
+    let memory_b = seed_merge_memory(&mut admin, &handle);
+    let evidence_a = seed_merge_evidence(&mut admin, &handle, user_a);
+    MergePrivacyFixture {
+        handle,
+        user_a,
+        user_b,
+        memory_b,
+        evidence_a,
+    }
+}
+
+fn seed_merge_memory(admin: &mut Client, handle: &Handle) -> ContinuityMemorySource {
+    let id = Uuid::now_v7();
+    admin.batch_execute("BEGIN").unwrap();
+    admin.execute(
+        "INSERT INTO private.memory_records(memory_id,tenant_id,memory_type,content,visibility_class, \
+         authority_class,confidence,status,asserted_at) \
+         VALUES($1,$2,'DECISION','{\"public\":\"B\"}','TENANT_SHARED','ProjectDecision',1,'active',now())",
+        &[&id, &handle.tenant]).unwrap();
+    admin
+        .execute(
+            "INSERT INTO private.memory_evidence(memory_id,evidence_id,role) \
+         SELECT $1,evidence_id,'SUPPORTING' FROM private.memory_evidence WHERE memory_id=$2",
+            &[&id, &handle.memory],
+        )
+        .unwrap();
+    let hash: Vec<u8> = admin.query_one(
+        "SELECT sha256(convert_to(content::text,'UTF8')) FROM private.memory_records WHERE memory_id=$1",
+        &[&id]).unwrap().get(0);
+    admin.batch_execute("COMMIT").unwrap();
+    ContinuityMemorySource {
+        memory_id: id,
+        content_sha256: hash.try_into().unwrap(),
+    }
+}
+
+fn seed_merge_evidence(
+    admin: &mut Client,
+    handle: &Handle,
+    user: Uuid,
+) -> humaux_adapters::continuity_repo::ContinuityEvidenceSource {
+    let id = Uuid::now_v7();
+    let hash = [0x6b_u8; 32];
+    admin.execute(
+        "INSERT INTO private.evidence_objects(evidence_id,tenant_id,evidence_kind,payload_sha256, \
+         data_class,origin_class,visibility_class,visibility_user_id,reasoning_domain_id) \
+         SELECT $1,$2,'EVENT',$3,'PRIVATE','AuthenticatedAgent','USER_PRIVATE',$4,reasoning_domain_id \
+         FROM control.private_reasoning_domains WHERE tenant_id=$2",
+        &[&id, &handle.tenant, &hash.to_vec(), &user]).unwrap();
+    let seq: i64 = admin
+        .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+        .unwrap()
+        .get(0);
+    admin.execute(
+        "INSERT INTO projection.stream_log(tenant_id,scope_kind,scope_id,domain,projection_kind, \
+         projection_version,stream_seq,commit_seq,state,settled_at) \
+         VALUES($1,'tenant',$1,'knowledge','continuity-289','v1',$2,$2,'DONE',now())",
+        &[&handle.tenant, &seq]).unwrap();
+    admin
+        .execute(
+            "INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) \
+         VALUES($1,$2,$2,'EVIDENCE_ACCEPTED',$3)",
+            &[&handle.tenant, &seq, &id],
+        )
+        .unwrap();
+    humaux_adapters::continuity_repo::ContinuityEvidenceSource {
+        evidence_id: id,
+        payload_sha256: hash,
+    }
+}
+
+fn merge_scope(handle: &Handle, user: Uuid) -> AuthorizationScope {
+    AuthorizationScope::new(
+        TenantId(handle.tenant),
+        PrincipalId(user),
+        Some(UserId(user)),
+        BoundedSet::new([WorkspaceId(handle.workspace)]).unwrap(),
+    )
+}
+
+fn merge_read(handle: &Handle, user: Uuid) -> Value {
+    let rt = runtime();
+    let pool = Arc::new(gateway_pool(&rt, &handle.gateway_dsn));
+    let port = humaux_adapters::continuity_read::PostgresContinuityReadPort::new(pool);
+    let value = rt
+        .block_on(humaux_application::continuity::read_project_continuity(
+            &port,
+            &merge_scope(handle, user),
+            ProjectId(handle.project),
+            None,
+            humaux_domain::context::ContextBudget::new(10_000, 10_000).unwrap(),
+        ))
+        .unwrap();
+    let value = serde_json::to_value(value).unwrap();
+    assert_eq!(value["facets"].as_array().unwrap().len(), 17);
+    let mut facets = value["facets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|facet| facet["kind"] == "DECISIONS");
+    let facet = facets.next().unwrap().clone();
+    assert_eq!(facets.count(), 0);
+    facet
+}
+
+fn merge_publish(
+    fixture: &MergePrivacyFixture,
+    user: Uuid,
+    body: &Value,
+    memories: &[ContinuityMemorySource],
+    evidence: &[humaux_adapters::continuity_repo::ContinuityEvidenceSource],
+) -> Result<PublishFacetOutcome, ErrorCode> {
+    let rt = runtime();
+    let pool = gateway_raw(&rt, &fixture.handle.gateway_dsn);
+    let mut cmd = command(
+        fixture.handle.workspace,
+        fixture.handle.project,
+        ContinuityFacetKind::Decisions,
+        body,
+        memories,
+        &[],
+    );
+    cmd.evidence = evidence;
+    one_publish(&rt, &pool, &merge_scope(&fixture.handle, user), &cmd).map(|(result, _)| result)
+}
+
+fn assert_merge_links(fixture: &MergePrivacyFixture, version: Uuid, with_memory: bool) {
+    let mut admin = fixture.handle.admin();
+    let rows = admin
+        .query(
+            "SELECT memory_id,memory_sha256 FROM private.continuity_facet_memory_links \
+         WHERE facet_version_id=$1 ORDER BY memory_id",
+            &[&version],
+        )
+        .unwrap();
+    let actual: BTreeSet<(Uuid, Vec<u8>)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+    let mut expected = BTreeSet::from([(
+        fixture.memory_b.memory_id,
+        fixture.memory_b.content_sha256.to_vec(),
+    )]);
+    if with_memory {
+        expected.insert((fixture.handle.memory, fixture.handle.memory_hash.to_vec()));
+    }
+    assert_eq!(rows.len(), expected.len());
+    assert_eq!(actual, expected);
+    let rows = admin
+        .query(
+            "SELECT evidence_id,evidence_sha256 FROM private.continuity_facet_evidence_links \
+         WHERE facet_version_id=$1",
+            &[&version],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].get::<_, Uuid>(0), rows[0].get::<_, Vec<u8>>(1)),
+        (
+            fixture.evidence_a.evidence_id,
+            fixture.evidence_a.payload_sha256.to_vec()
+        )
+    );
+}
+
+fn assert_merge_stale(handle: &Handle, user: Uuid) {
+    let facet = merge_read(handle, user);
+    assert_eq!(
+        facet["status"], "STALE",
+        "G-289-a: inherited sources must constrain B's merged read"
+    );
+    assert_eq!(
+        facet
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["diagnostic_code", "kind", "mode", "status"])
+    );
+}
+
+fn private_merge_scenario(handle: Handle, with_memory: bool) {
+    let fixture = merge_privacy_fixture(handle);
+    let body_a = json!({"items":[{"source_id":"a","text":"A private item"}]});
+    let body_b = json!({"items":[{"source_id":"b","text":"B shared item"}]});
+    let memory_a = if with_memory {
+        fixture.handle.memory_source().to_vec()
+    } else {
+        vec![]
+    };
+    if with_memory {
+        fixture.handle.admin().execute(
+            "UPDATE private.evidence_objects SET visibility_class='TENANT_SHARED',visibility_user_id=NULL \
+             WHERE evidence_id=$1", &[&fixture.evidence_a.evidence_id]).unwrap();
+    }
+    assert!(matches!(
+        merge_publish(
+            &fixture,
+            fixture.user_a,
+            &body_a,
+            &memory_a,
+            std::slice::from_ref(&fixture.evidence_a)
+        )
+        .unwrap(),
+        PublishFacetOutcome::Published(_)
+    ));
+    assert_merge_stale(&fixture.handle, fixture.user_b);
+    let result = merge_publish(
+        &fixture,
+        fixture.user_b,
+        &body_b,
+        std::slice::from_ref(&fixture.memory_b),
+        &[],
+    )
+    .unwrap();
+    let PublishFacetOutcome::Published(result) = result else {
+        panic!("B merge must publish")
+    };
+    assert_merge_stale(&fixture.handle, fixture.user_b);
+    assert_merge_links(&fixture, result.facet_version_id.0, with_memory);
+    let facet = merge_read(&fixture.handle, fixture.user_a);
+    assert_eq!(
+        facet["status"], "CURRENT",
+        "G-289-b: A retains authorized merged access"
+    );
+    assert_eq!(
+        facet["current"]["body"],
+        json!({"items":[
+        {"source_id":"a","text":"A private item"},{"source_id":"b","text":"B shared item"}]})
+    );
+    if with_memory {
+        fixture
+            .handle
+            .admin()
+            .execute(
+                "UPDATE private.memory_records SET status='revoked' WHERE memory_id=$1",
+                &[&fixture.handle.memory],
+            )
+            .unwrap();
+        for user in [fixture.user_a, fixture.user_b] {
+            assert_merge_stale(&fixture.handle, user);
+        }
+    }
+}
+
+#[test]
+fn g_289_a_b_c_memory_inheritance_preserves_reader_visibility_and_lifecycle() {
+    run_db_fixture::<Fixture, _>("g_289_memory", |handle| {
+        private_merge_scenario(handle, true)
+    });
+}
+
+#[test]
+fn g_289_a_b_evidence_inheritance_preserves_reader_visibility() {
+    run_db_fixture::<Fixture, _>("g_289_evidence", |handle| {
+        private_merge_scenario(handle, false)
+    });
+}
+
+fn invisible_caller_sqlstate(fixture: &MergePrivacyFixture, evidence: bool) -> Option<String> {
+    let h = &fixture.handle;
+    let mut gateway = Client::connect(&h.gateway_dsn, NoTls).unwrap();
+    gateway.batch_execute("BEGIN").unwrap();
+    gateway.query_one(
+        "SELECT set_config('humaux.tenant_id',$1,true),set_config('humaux.workspace_id',$2,true), \
+         set_config('humaux.principal_id',$3,true),set_config('humaux.user_id',$3,true)",
+        &[&h.tenant.to_string(), &h.workspace.to_string(), &fixture.user_b.to_string()]).unwrap();
+    let (memories, hashes, sources, source_hashes) = if evidence {
+        (
+            vec![],
+            vec![],
+            vec![fixture.evidence_a.evidence_id],
+            vec![fixture.evidence_a.payload_sha256.to_vec()],
+        )
+    } else {
+        (vec![h.memory], vec![h.memory_hash.to_vec()], vec![], vec![])
+    };
+    let result = gateway.query(
+        "SELECT * FROM private.publish_continuity_facet($1,$2,$3,$4,$4,'DECISIONS',0, \
+         'CURRENT',$5,$6,$7,$8,$9,true)",
+        &[
+            &h.tenant,
+            &h.workspace,
+            &h.project,
+            &fixture.user_b,
+            &json!({"items":[]}),
+            &memories,
+            &hashes,
+            &sources,
+            &source_hashes,
+        ],
+    );
+    let code = result
+        .err()
+        .and_then(|error| error.code().map(|code| code.code().to_owned()));
+    gateway.batch_execute("ROLLBACK").unwrap();
+    code
+}
+
+#[test]
+fn g_289_d_invisible_caller_links_still_raise_23514() {
+    run_db_fixture::<Fixture, _>("g_289_caller", |handle| {
+        let fixture = merge_privacy_fixture(handle);
+        for evidence in [false, true] {
+            assert_eq!(
+                invisible_caller_sqlstate(&fixture, evidence),
+                Some("23514".to_owned()),
+                "G-289-d: caller's invisible source must still be refused"
+            );
+            let memories = if evidence {
+                vec![]
+            } else {
+                fixture.handle.memory_source().to_vec()
+            };
+            let sources = if evidence {
+                vec![fixture.evidence_a.clone()]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                merge_publish(
+                    &fixture,
+                    fixture.user_b,
+                    &json!({"items":[]}),
+                    &memories,
+                    &sources
+                ),
+                Err(ErrorCode::InvalidInput)
+            );
+        }
+        let mut admin = fixture.handle.admin();
+        assert_eq!(
+            version_census(&mut admin, fixture.handle.project, "DECISIONS"),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            slot_of(&mut admin, fixture.handle.project, "DECISIONS"),
+            (0, None, None)
+        );
+    });
 }

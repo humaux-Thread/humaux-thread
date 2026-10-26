@@ -1,0 +1,33 @@
+migration_id = "0280_continuity_merge_sources"
+class = "FORWARD_ONLY"
+
+precheck = """
+select to_regprocedure('private.publish_continuity_facet(uuid,uuid,uuid,uuid,uuid,text,bigint,text,jsonb,uuid[],bytea[],uuid[],bytea[])') is not null
+  and to_regprocedure('private.publish_continuity_facet(uuid,uuid,uuid,uuid,uuid,text,bigint,text,jsonb,uuid[],bytea[],uuid[],bytea[],boolean)') is null
+  as precheck_ok
+"""
+
+postcheck = """
+with functions(signature) as (values
+  ('private.publish_continuity_facet(uuid,uuid,uuid,uuid,uuid,text,bigint,text,jsonb,uuid[],bytea[],uuid[],bytea[])'),
+  ('private.publish_continuity_facet(uuid,uuid,uuid,uuid,uuid,text,bigint,text,jsonb,uuid[],bytea[],uuid[],bytea[],boolean)')),
+runtime_roles(name) as (values
+  ('role_admin'),('role_gateway'),('role_private_worker'),('role_consolidation_worker'),
+  ('role_public_worker'),('role_retrieval_worker'),('role_batch_issuer'),('role_maintenance'))
+select (select count(*)=2 from functions f join pg_proc p on p.oid=to_regprocedure(f.signature)
+    where p.prosecdef and p.provolatile='v'
+      and p.proconfig @> array['search_path=pg_catalog','humaux.continuity_publish=1']::text[]
+      and pg_get_userbyid(p.proowner)='role_migration_owner')
+  and not exists(select 1 from functions f cross join runtime_roles r
+    where has_function_privilege(r.name,f.signature,'EXECUTE') is distinct from (r.name='role_gateway'))
+  and not exists(select 1 from functions f
+    where has_function_privilege('public',f.signature,'EXECUTE'))
+  and not exists(select 1 from functions f join pg_proc p on p.oid=to_regprocedure(f.signature)
+    cross join lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+    where acl.privilege_type<>'EXECUTE' or acl.is_grantable
+      or acl.grantee not in (p.proowner,(select oid from pg_roles where rolname='role_gateway')))
+  as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix only. Retain 0136's legacy non-merge signature; 0280 inherits stored source hashes only for explicit list merges under the slot CAS lock."
+backup_restore_requirement = "No production apply in this card. Any future production apply requires an approved restore point and PostgreSQL apply/replay, ACL, source visibility and lifecycle evidence."
