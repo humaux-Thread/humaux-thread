@@ -50,7 +50,7 @@ fn owner_key(handle: &mut Handle) -> Uuid {
     handle
         .seed_synthetic_service_credential(
             SyntheticCredentialScopes::RememberWrite,
-            "m14fixture",
+            &Uuid::new_v4().to_string(),
             "m14-fixture-only",
             &[1_u8; 32],
         )
