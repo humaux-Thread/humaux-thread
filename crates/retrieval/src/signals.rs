@@ -402,8 +402,10 @@ mod tests {
     fn compute_freshness_classifies_within_policy_windows() {
         for (seconds, expected) in [
             (3600, FreshnessClass::Fresh),
+            (86_401, FreshnessClass::Fresh),
             (7 * 86400, FreshnessClass::Fresh),
             (7 * 86400 + 1, FreshnessClass::Aging),
+            (10 * 86400, FreshnessClass::Aging),
             (30 * 86400, FreshnessClass::Aging),
             (30 * 86400 + 1, FreshnessClass::Stale),
         ] {
@@ -532,5 +534,13 @@ mod tests {
             None,
         );
         assert_eq!(signal.class, FreshnessClass::Aging);
+        let fact = compute_freshness(
+            MemoryType::Fact,
+            Some(SystemTime::UNIX_EPOCH),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(6 * 86400),
+            None,
+            None,
+        );
+        assert_eq!(fact.class, FreshnessClass::Fresh);
     }
 }
