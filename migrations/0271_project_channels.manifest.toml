@@ -1,0 +1,30 @@
+# §46.1 / M14-4: additive attribute table and two gateway-only doors. No DML or parent writes.
+migration_id = "0271_project_channels"
+class = "EXPAND_CONTRACT"
+precheck = """
+SELECT to_regclass('private.continuity_projects') IS NOT NULL
+ AND to_regclass('private.project_subject_relations') IS NOT NULL
+ AND to_regclass('private.subject_relations') IS NOT NULL
+ AND to_regclass('private.project_channels') IS NULL AS precheck_ok
+"""
+postcheck = """
+SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='private' AND c.relname='project_channels'
+ AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner='role_migration_owner'::regrole)
+ AND (SELECT count(*)=2 FROM pg_constraint WHERE conrelid='private.project_channels'::regclass
+   AND contype IN ('p','f'))
+ AND NOT EXISTS (SELECT 1 FROM information_schema.role_table_grants
+   WHERE table_schema='private' AND table_name='project_channels'
+     AND grantee <> 'role_migration_owner')
+ AND (SELECT count(*)=2 FROM pg_proc WHERE oid IN (
+   'private.read_project_rollup(uuid,uuid,text,uuid[])'::regprocedure,
+   'private.set_project_channel(uuid,uuid,uuid[],text)'::regprocedure)
+   AND prosecdef AND proowner='role_migration_owner'::regrole
+   AND proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+   AND (SELECT array_agg(grantee::regrole::text ORDER BY grantee::regrole::text)
+        FROM aclexplode(proacl) WHERE privilege_type='EXECUTE')
+       = ARRAY['role_gateway','role_migration_owner']) AS postcheck_ok
+"""
+
+rollback_or_forward_fix = "Before any channel assignments: drop the two 0271 functions and private.project_channels. After assignments exist: preserve rows and ship a forward-fix migration; never discard channel data."
+backup_restore_requirement = "Standard pre-deploy database snapshot; no data rewrite or dedicated restore drill. No production action is performed by this card."
