@@ -93,6 +93,19 @@ fn snapshot(handle: &Handle, auth: &AuthorizationScope, id: Uuid) -> Vec<String>
     ]
 }
 
+fn assert_candidate_counts(txn: &mut Transaction<'_>, expected: [i64; 2]) {
+    for (table, want) in [
+        ("curation_candidates", expected[0]),
+        ("curation_candidate_targets", expected[1]),
+    ] {
+        let count: i64 = txn
+            .query_one(&format!("SELECT count(*) FROM private.{table}"), &[])
+            .expect("scoped candidate table count")
+            .get(0);
+        assert_eq!(count, want, "RLS table {table}");
+    }
+}
+
 fn archive_target(handle: &Handle, auth: &AuthorizationScope, target: Uuid) {
     let mut client = handle
         .gateway_client()
@@ -252,6 +265,11 @@ fn g_m15_1_gateway_tenant_workspace_isolation() {
                 .len(),
             0
         );
+        {
+            let mut client = h.gateway_client().expect("gateway peer RLS");
+            let mut txn = session(&mut client, &peer, h.workspace_id);
+            assert_candidate_counts(&mut txn, [0, 0]);
+        }
         h.user_id = original_user;
         let original = h.workspace_id;
         h.workspace_id = h.seed_workspace();
@@ -295,32 +313,16 @@ fn g_m15_1_gateway_tenant_workspace_isolation() {
                     .expect("workspace")
                     .0,
             );
-            for table in ["curation_candidates", "curation_candidate_targets"] {
-                let count: i64 = other
-                    .query_one(&format!("SELECT count(*) FROM private.{table}"), &[])
-                    .expect("other workspace RLS")
-                    .get(0);
-                assert_eq!(count, 0);
-            }
+            assert_candidate_counts(&mut other, [0, 0]);
         }
         let mut txn = session(&mut client, &first, original);
-        let count: i64 = txn
-            .query_one("SELECT count(*) FROM private.curation_candidates", &[])
-            .expect("same tenant")
-            .get(0);
-        assert_eq!(count, 1);
+        assert_candidate_counts(&mut txn, [1, 1]);
         txn.query_one(
             "SELECT set_config('humaux.tenant_id',$1,true)",
             &[&Uuid::new_v4().to_string()],
         )
         .expect("other tenant");
-        for table in ["curation_candidates", "curation_candidate_targets"] {
-            let count: i64 = txn
-                .query_one(&format!("SELECT count(*) FROM private.{table}"), &[])
-                .expect("RLS")
-                .get(0);
-            assert_eq!(count, 0);
-        }
+        assert_candidate_counts(&mut txn, [0, 0]);
     });
 }
 
