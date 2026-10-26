@@ -6798,6 +6798,14 @@ executed by:
 - (no process): `public-pool::policy`
 - (no process): `public-pool::tests::notice`
 
+### `control.toggle_member_contribution`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::policy`
+
 ### `control.usage_reservations`
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
@@ -14418,6 +14426,7 @@ why: id minting/binding
 
 modules naming it:
 - `public-pool::notice`
+- `public-pool::policy`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
@@ -14486,6 +14495,7 @@ why: throwaway ids in fixtures
 
 modules naming it:
 - `public-pool::notice`
+- `public-pool::policy`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`

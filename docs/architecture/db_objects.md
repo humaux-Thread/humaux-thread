@@ -4553,6 +4553,24 @@ executed by:
 - (no process): `public-pool::policy`
 - (no process): `public-pool::tests::notice`
 
+### `control.toggle_member_contribution`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0274_contribution_notice
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::policy`
+
 ### `control.usage_reservation_transition`
 - kind: function
 - owner: role_migration_owner
