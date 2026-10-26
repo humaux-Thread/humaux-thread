@@ -1,6 +1,6 @@
-//! G-M13-5 — §21.5 / §50 values-file loading and §78.1 literal guard.
-//! Depends-on: crates=[humaux-contracts]; services=[]; env=[]; modules=[contracts::freshness]
-//! Called-by: [tests]
+//! `contracts::tests::freshness` — G-M13-5, §21.5 / §50 values-file loading and §78.1 literal guard.
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::freshness]
+//! Called-by: [cargo-test]
 //! Invariants: [missing config inputs fail; exact row set and count; no business durations in signals production]
 //! Spec: Baseline §8.5; §21.5; §50; §78.1; §80.1; ADR-0111
 

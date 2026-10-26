@@ -2,7 +2,7 @@
 //!   Freshness / Grounding State.
 //! Depends-on: crates=[humaux-contracts, humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[contracts::freshness, domain::grounding,
 //!   domain::memory, retrieval::completeness, retrieval::envelope]
-//! Called-by: []
+//! Called-by: [tests]
 //! Invariants: []
 //! Spec: §21; §21.5; §8.8; §20; §80.1
 //!
