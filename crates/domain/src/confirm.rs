@@ -2,7 +2,7 @@
 //!   fallback is `first call -> confirmation_required + confirm_token`, `second call(confirm_token) -> execute`
 //!   (ADR-0018).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, tests, xtask::architecture_check]
+//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, protocol::mcp_catalog, tests, xtask::architecture_check]
 //! Invariants: []
 //! Spec: Baseline §78.2; §52.1
 //!

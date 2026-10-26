@@ -221,6 +221,7 @@ modules:
 - `xtask::phase`
 - `xtask::r4_fault_manifest`
 - `xtask::rls_check`
+- `xtask::schedule_register`
 - `xtask::serial_lane`
 - `xtask::soak`
 - `xtask::threshold_shape`
@@ -345,6 +346,7 @@ processes:
 modules:
 - `xtask::architecture_check`
 - `xtask::contract_impact`
+- `xtask::schedule_register`
 
 ### `GITLEAKS_CONFIG`
 - witness: literal
@@ -5878,6 +5880,7 @@ modules:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -5887,7 +5890,6 @@ modules:
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
-- `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
@@ -5973,6 +5975,7 @@ modules:
 - `private-worker::tests::start_manual_contribution_command_0131`
 - `private-worker::tests::support::double_spend`
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
