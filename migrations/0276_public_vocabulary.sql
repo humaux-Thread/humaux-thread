@@ -1,12 +1,12 @@
 -- §12.3 / ADR-0089 D-E: public controlled vocabulary; no private identities or serving grants.
 CREATE TABLE public.concepts (
-  concept_id text PRIMARY KEY CHECK (concept_id ~ '^[a-z][a-z0-9]*([-_][a-z0-9]+)*$'),
+  concept_id text PRIMARY KEY CONSTRAINT concepts_slug_check CHECK (concept_id ~ '^[a-z][a-z0-9]*([-_][a-z0-9]+)*$'),
   facet text NOT NULL CONSTRAINT concepts_facet_check CHECK (facet IN ('domain','task','project_type','industry','knowledge_type','content_language')),
   status text NOT NULL CONSTRAINT concepts_status_check CHECK (status IN ('ACTIVE','DEPRECATED')),
   replaced_by text REFERENCES public.concepts(concept_id) DEFERRABLE INITIALLY DEFERRED,
   definition text NOT NULL CHECK (length(btrim(definition)) > 0),
   UNIQUE (concept_id,facet),
-  CHECK ((status='DEPRECATED' AND replaced_by IS NOT NULL AND replaced_by<>concept_id)
+  CONSTRAINT concepts_replacement_check CHECK ((status='DEPRECATED' AND replaced_by IS NOT NULL AND replaced_by<>concept_id)
       OR (status='ACTIVE' AND replaced_by IS NULL))
 );
 CREATE TABLE public.concept_labels (
@@ -26,7 +26,7 @@ CREATE TABLE public.concept_relations (
   to_id text NOT NULL REFERENCES public.concepts(concept_id),
   kind text NOT NULL CONSTRAINT concept_relations_kind_check CHECK (kind IN ('BROADER','RELATED','CLOSE_MATCH','EXACT_MATCH')),
   PRIMARY KEY (from_id,to_id,kind),
-  CHECK (from_id<>to_id)
+  CONSTRAINT concept_relations_no_self_check CHECK (from_id<>to_id)
 );
 ALTER TABLE public.concepts OWNER TO role_migration_owner;
 ALTER TABLE public.concept_labels OWNER TO role_migration_owner;

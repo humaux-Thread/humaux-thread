@@ -1,4 +1,4 @@
-# changed by PR only; ids never change; DEPRECATED needs replaced_by
+# changed by PR only; concept ids never change; labels/definitions are editable, removals need a migration; DEPRECATED needs replaced_by
 # ADR-0090 D-B: phase-1 only; domain/task/project_type/industry intentionally empty.
 relations = []
 

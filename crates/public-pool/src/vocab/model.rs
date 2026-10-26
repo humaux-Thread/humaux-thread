@@ -244,17 +244,11 @@ impl Vocabulary {
                 errors.push(format!("{} -> {}: duplicate relation", r.from, r.to));
             }
             let (Some(a), Some(b)) = (ids.get(r.from.as_str()), ids.get(r.to.as_str())) else {
-                errors.push(format!(
-                    "{} -> {}: missing endpoint or self relation",
-                    r.from, r.to
-                ));
+                errors.push(format!("{} -> {}: missing endpoint", r.from, r.to));
                 continue;
             };
             if a.id == b.id {
-                errors.push(format!(
-                    "{} -> {}: missing endpoint or self relation",
-                    r.from, r.to
-                ));
+                errors.push(format!("{} -> {}: self relation", r.from, r.to));
                 continue;
             }
             if r.kind != RelationKind::Broader {
@@ -266,7 +260,7 @@ impl Vocabulary {
             edges.entry(&r.from).or_default().push(&r.to);
         }
         for id in ids.keys() {
-            if cycle(id, &edges, &mut BTreeSet::new(), &mut BTreeSet::new()) {
+            if on_cycle(id, &edges) {
                 errors.push(format!("{id}: BROADER cycle"));
             }
         }
@@ -311,26 +305,17 @@ fn validate_labels(
         errors.push(format!("{}: exactly one PREF required per language", c.id));
     }
 }
-fn cycle<'a>(
-    id: &'a str,
-    edges: &BTreeMap<&'a str, Vec<&'a str>>,
-    visiting: &mut BTreeSet<&'a str>,
-    done: &mut BTreeSet<&'a str>,
-) -> bool {
-    if visiting.contains(id) {
-        return true;
+/// §12.3: true only when `id` itself lies on a BROADER cycle; a node that merely reaches one is not blamed.
+fn on_cycle(id: &str, edges: &BTreeMap<&str, Vec<&str>>) -> bool {
+    let mut stack: Vec<&str> = edges.get(id).cloned().unwrap_or_default();
+    let mut seen = BTreeSet::new();
+    while let Some(next) = stack.pop() {
+        if next == id {
+            return true;
+        }
+        if seen.insert(next) {
+            stack.extend(edges.get(next).into_iter().flatten().copied());
+        }
     }
-    if done.contains(id) {
-        return false;
-    }
-    visiting.insert(id);
-    if edges
-        .get(id)
-        .is_some_and(|next| next.iter().any(|n| cycle(n, edges, visiting, done)))
-    {
-        return true;
-    }
-    visiting.remove(id);
-    done.insert(id);
     false
 }

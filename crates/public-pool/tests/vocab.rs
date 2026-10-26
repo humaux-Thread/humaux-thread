@@ -3,16 +3,16 @@
 //!   services=[PostgreSQL(any) r=[public.concepts, public.concept_labels, public.concept_relations], PostgreSQL(role_public_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::error, humaux-testkit, public-pool::vocab, public-pool::vocab::model]
 //! Called-by: [cargo-test]
-//! Invariants: [the production write door runs twice; exact full seed and CHECK sets; absent DB fails in CI]
+//! Invariants: [the production write door runs twice; exact full seed with pinned definitions and CHECK sets; PREF/definition edits update in place; ALT removal is rejected naming the concept; each integrity constraint is exercised with SQLSTATE and constraint name; absent DB fails in CI]
 //! Spec: Baseline §12.3; §78.2; §79.2; ADR-0089 D-E; ADR-0090 D-B
 
 use humaux_adapters::postgres::PublicWorkerDbPool;
 use humaux_domain::error::ErrorCode;
 use humaux_public_pool::vocab::{
-    self,
+    self, ApplyError,
     model::{Facet, LabelKind, RelationKind, Status, Vocabulary},
 };
-use postgres::{Client, NoTls};
+use postgres::{Client, NoTls, error::SqlState};
 use std::collections::BTreeSet;
 
 const SOURCE: &str = include_str!("../../../contracts/public/vocab_v1.toml");
@@ -56,28 +56,33 @@ fn contracts(admin: &mut Client) {
         4,
     );
 }
+const FIX_DEFINITION: &str = "Reproduction, expected versus actual, root cause, change, regression check, rollback and failure conditions.";
+
+// §78.2: literals, not derived from the toml, so a drifting seed definition turns this red.
+fn seed_concepts() -> BTreeSet<(String, String, String, Option<String>, String)> {
+    [
+        ("knowledge-fix", "knowledge_type", FIX_DEFINITION),
+        ("knowledge-decision", "knowledge_type", "Goal, at least two candidates, constraints, trade-offs, rejected alternatives and redecision triggers."),
+        ("knowledge-research", "knowledge_type", "Per-claim source, version and locator, fact or inference, applicability and limits."),
+        ("knowledge-usage", "knowledge_type", "Environment, input, steps, expected output, verification state, errors and inapplicable cases."),
+        ("knowledge-checklist", "knowledge_type", "Preconditions, steps, checkpoints, completion criteria, exception branches and rollback."),
+        ("knowledge-failure-case", "knowledge_type", "Hypothesis, attempt, environment, observation, excluded causes and unknowns."),
+        ("en", "content_language", "English-language content."),
+        ("zh", "content_language", "Chinese-language content."),
+    ]
+    .into_iter()
+    .map(|(id, facet, definition)| (id.into(), facet.into(), "ACTIVE".into(), None, definition.into()))
+    .collect()
+}
 fn exact_seed(admin: &mut Client) {
-    let vocab = Vocabulary::parse(SOURCE, LOCK).expect("seed contract");
+    Vocabulary::parse(SOURCE, LOCK).expect("seed contract");
     let rows = admin.query("SELECT concept_id,facet,status,replaced_by,definition FROM public.concepts ORDER BY concept_id", &[]).expect("concepts");
     assert_eq!(rows.len(), 8);
     let actual: BTreeSet<(String, String, String, Option<String>, String)> = rows
         .iter()
         .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
         .collect();
-    let expected: BTreeSet<(String, String, String, Option<String>, String)> = vocab
-        .concepts
-        .iter()
-        .map(|c| {
-            (
-                c.id.clone(),
-                c.facet.as_str().into(),
-                c.status.as_str().into(),
-                c.replaced_by.clone(),
-                c.definition.clone(),
-            )
-        })
-        .collect();
-    assert_eq!(actual, expected);
+    assert_eq!(actual, seed_concepts());
     let rows = admin
         .query(
             "SELECT concept_id,lang,kind,label FROM public.concept_labels",
@@ -142,7 +147,144 @@ fn loader_idempotent_exact_seed_and_closed_checks() {
     let renamed_lock = LOCK.replace("knowledge-fix", "knowledge-renamed");
     assert_eq!(
         rt.block_on(vocab::apply(&worker, &renamed, &renamed_lock)),
-        Err(ErrorCode::InvalidInput)
+        Err(rejected(
+            "knowledge-fix: persisted concept id removed or renamed; ids are append-only"
+        ))
     );
     exact_seed(&mut admin);
+    edits_update_in_place(&rt, &worker, &mut admin);
+    alt_label_removal_needs_migration(&rt, &worker, &mut admin);
+    constraints_reject_direct_writes(&dsn);
+}
+
+fn rejected(reason: &str) -> ApplyError {
+    ApplyError {
+        code: ErrorCode::InvalidInput,
+        reason: reason.into(),
+    }
+}
+const PREF_FIX: &str = "label = \"FIX\"";
+
+// §12.3: only concept ids are append-only; a PREF edit is an UPDATE on (concept_id, lang, 'PREF').
+fn edits_update_in_place(
+    rt: &tokio::runtime::Runtime,
+    worker: &PublicWorkerDbPool,
+    admin: &mut Client,
+) {
+    assert_eq!(SOURCE.matches(PREF_FIX).count(), 1);
+    assert_eq!(SOURCE.matches(FIX_DEFINITION).count(), 1);
+    let edited = SOURCE
+        .replace(PREF_FIX, "label = \"FIX-EDITED\"")
+        .replace(FIX_DEFINITION, "Edited fix definition.");
+    rt.block_on(vocab::apply(worker, &edited, LOCK))
+        .expect("edited PREF label and definition apply");
+    let row = admin
+        .query_one("SELECT label FROM public.concept_labels WHERE concept_id='knowledge-fix' AND lang='en' AND kind='PREF'", &[])
+        .expect("one PREF row");
+    assert_eq!(row.get::<_, String>(0), "FIX-EDITED");
+    let row = admin
+        .query_one(
+            "SELECT definition FROM public.concepts WHERE concept_id='knowledge-fix'",
+            &[],
+        )
+        .expect("definition row");
+    assert_eq!(row.get::<_, String>(0), "Edited fix definition.");
+    let count: i64 = admin
+        .query_one("SELECT count(*) FROM public.concept_labels", &[])
+        .expect("label count")
+        .get(0);
+    assert_eq!(count, 8);
+    rt.block_on(vocab::apply(worker, SOURCE, LOCK))
+        .expect("restore seed");
+    exact_seed(admin);
+}
+
+fn alt_label_removal_needs_migration(
+    rt: &tokio::runtime::Runtime,
+    worker: &PublicWorkerDbPool,
+    admin: &mut Client,
+) {
+    let with_alt = SOURCE.replace(
+        PREF_FIX,
+        &format!(
+            "{PREF_FIX}\n[[concepts.labels]]\nlang = \"en\"\nkind = \"ALT\"\nlabel = \"repair\""
+        ),
+    );
+    rt.block_on(vocab::apply(worker, &with_alt, LOCK))
+        .expect("ALT label added");
+    assert_eq!(
+        rt.block_on(vocab::apply(worker, SOURCE, LOCK)),
+        Err(rejected(
+            "knowledge-fix: ALT label 'repair' (en) removal needs a migration"
+        ))
+    );
+    let count: i64 = admin
+        .query_one("SELECT count(*) FROM public.concept_labels", &[])
+        .expect("label count")
+        .get(0);
+    assert_eq!(count, 9, "rejected apply leaves the ALT row in place");
+    // The worker has no DELETE; the admin connection restores the seed for the other assertions.
+    admin
+        .execute(
+            "DELETE FROM public.concept_labels WHERE label='repair'",
+            &[],
+        )
+        .expect("cleanup");
+    exact_seed(admin);
+}
+
+fn violates(worker: &mut Client, sql: &str, state: &SqlState, constraint: &str) {
+    let error = worker.execute(sql, &[]).expect_err(sql);
+    let db = error.as_db_error().expect("database error");
+    assert_eq!(db.code(), state, "{sql}");
+    assert_eq!(db.constraint(), Some(constraint), "{sql}");
+}
+
+// §12.3: the worker role has direct INSERT, so these constraints are the real gate.
+fn constraints_reject_direct_writes(dsn: &str) {
+    let mut worker = Client::connect(dsn, NoTls).expect("CI PostgreSQL");
+    worker
+        .batch_execute("SET ROLE role_public_worker")
+        .expect("worker role");
+    let concept =
+        "INSERT INTO public.concepts (concept_id,facet,status,replaced_by,definition) VALUES";
+    let label = "INSERT INTO public.concept_labels (concept_id,facet,lang,kind,label) VALUES";
+    let check = &SqlState::CHECK_VIOLATION;
+    let unique = &SqlState::UNIQUE_VIOLATION;
+    violates(
+        &mut worker,
+        &format!("{concept} ('Bad Slug','task','ACTIVE',NULL,'d')"),
+        check,
+        "concepts_slug_check",
+    );
+    for values in [
+        "('zz-dep','task','DEPRECATED',NULL,'d')",
+        "('zz-self','task','DEPRECATED','zz-self','d')",
+        "('zz-act','task','ACTIVE','knowledge-fix','d')",
+    ] {
+        violates(
+            &mut worker,
+            &format!("{concept} {values}"),
+            check,
+            "concepts_replacement_check",
+        );
+    }
+    violates(
+        &mut worker,
+        &format!("{label} ('knowledge-fix','knowledge_type','en','PREF','FIX TWO')"),
+        unique,
+        "concept_labels_one_pref",
+    );
+    violates(
+        &mut worker,
+        &format!("{label} ('knowledge-decision','knowledge_type','en','ALT','fix')"),
+        unique,
+        "concept_labels_facet_unique",
+    );
+    violates(
+        &mut worker,
+        "INSERT INTO public.concept_relations (from_id,to_id,kind) VALUES ('knowledge-fix','knowledge-fix','RELATED')",
+        check,
+        "concept_relations_no_self_check",
+    );
 }

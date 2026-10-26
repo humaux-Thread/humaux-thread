@@ -11,7 +11,6 @@
 //! · config-check(G80-41) · rls-check(§48.2) · gate-truth(§79.2, ADR-0050 D-C) · dep-map(ADR-0051) · deploy-env(ADR-0066 D-R (a), §78.1)。判据正文以家章为唯一真源。
 
 mod architecture_check;
-/// §78.2: the pure public-plane model, without a core-to-cloud crate dependency.
 mod benchset_declaration;
 mod card_version;
 mod config_check;
@@ -39,6 +38,7 @@ mod serial_lane;
 mod soak;
 mod threshold_shape;
 mod vocab_check;
+/// §78.2: the pure public-plane model, without a core-to-cloud crate dependency.
 #[path = "../../crates/public-pool/src/vocab/model.rs"]
 pub mod vocab_model;
 
