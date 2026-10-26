@@ -9052,6 +9052,7 @@ memory.get
 memory.enumerate
 memory.grep
 continuity.get
+continuity.publish
 memory.supersede
 memory.pin
 memory.unpin
