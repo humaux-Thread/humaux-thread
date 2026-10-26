@@ -13,7 +13,7 @@ use humaux_retrieval::{
     signals::{compute_freshness, default_freshness_policy, summarize_freshness},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, SystemTime},
 };
 
@@ -54,6 +54,16 @@ fn adr_0111_all_type_thresholds_and_boundaries() {
         (MemoryType::Note, None, None),
     ];
     assert_eq!(cases.len(), MemoryType::ALL.len());
+    assert_eq!(
+        cases
+            .iter()
+            .map(|(memory_type, _, _)| memory_type.wire())
+            .collect::<BTreeSet<_>>(),
+        MemoryType::ALL
+            .map(MemoryType::wire)
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+    );
     for (memory_type, aging, stale) in cases {
         let policy = default_freshness_policy(memory_type);
         assert_eq!(
@@ -63,6 +73,17 @@ fn adr_0111_all_type_thresholds_and_boundaries() {
         assert_eq!(
             policy.stale_after,
             stale.map(|n| Duration::from_secs(n * 86400))
+        );
+        let long_age = Duration::from_secs(1000 * 86400);
+        assert_eq!(
+            policy.classify_age(long_age),
+            if stale.is_some() {
+                FreshnessClass::Stale
+            } else if aging.is_some() {
+                FreshnessClass::Aging
+            } else {
+                FreshnessClass::Fresh
+            }
         );
         if let Some(boundary) = policy.aging_after {
             assert_eq!(policy.classify_age(boundary), FreshnessClass::Fresh);
