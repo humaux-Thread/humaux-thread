@@ -12727,6 +12727,7 @@ grants (runtime roles):
 - role_retrieval_worker: UPDATE
 
 read by:
+- (no process): `adapters::tests::private_projection_registry`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `adapters::provisioning`
@@ -12749,6 +12750,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
+- (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
