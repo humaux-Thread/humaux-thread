@@ -11592,6 +11592,7 @@ grants (runtime roles):
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
