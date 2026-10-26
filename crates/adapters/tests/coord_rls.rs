@@ -66,6 +66,7 @@ fn g_m18_1_foreign_parent_fk() {
 }
 
 #[test]
+#[ignore = "lane(a:disposable) drops the tree parent FK to seed a corrupted topology (ALTER TABLE takes ACCESS EXCLUSIVE on the shared registry)"]
 fn g_m18_1_per_row_visibility() {
     let mut fx = Fixture::new(&dsn());
     let [root, child, archived] = fx.projects;

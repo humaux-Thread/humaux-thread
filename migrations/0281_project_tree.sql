@@ -234,6 +234,7 @@ BEGIN
       JOIN parents ON c.project_id=parents.parent_id WHERE c.tenant_id=p_tenant
   ) SELECT count(*)::integer INTO parent_depth FROM parents;
   -- ADR-0101 D-A: the caller installs the deployment's coord.project_max_depth as this transaction-local GUC.
+  -- ADR-0101 D-A "Amended (M18-1, lead ruling on rv-357 P1-1)": role_gateway is the trusted holder of this bound.
   depth_limit := NULLIF(current_setting('humaux.project_max_depth',true),'')::integer;
   IF depth_limit IS NULL OR depth_limit < 1 THEN
     RAISE EXCEPTION 'missing or invalid project depth limit' USING ERRCODE='22023';

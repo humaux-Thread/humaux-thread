@@ -39,6 +39,8 @@
 
 **Amended (M18-1):** `project_ancestors` / `project_subtree` are SECURITY DEFINER doors in 0271/0254's shape (tenant assertion, caller workspace list, `declared_project_visible` per row), not `security_invoker`: 0136:505-509 keeps runtime roles off the registry.
 
+**Amended (M18-1, lead ruling on rv-357 P1-1):** `private.project_move` reads `coord.project_max_depth` from the transaction-local GUC `humaux.project_max_depth`, which only the gateway's tree adapter sets from config; role_gateway is the trusted holder of this bound (same tier as `p_workspaces` and the tenant GUC). A sole-setter sentinel and the env→GUC wiring test are tracked in the M18 P2 issue.
+
 ### D-B Moves run under a tenant topology guard (note D2)
 
 - `project_move(id, new_parent, expected_version)` takes
