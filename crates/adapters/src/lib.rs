@@ -9,6 +9,8 @@
 //! Domain 永不 import HTTP / SQLx / Qdrant / Provider SDK / ENV（§3 / §78.3）。
 
 pub mod affect_repo;
+/// ADR-0096: applicability writes through evidenced SQL doors (§6.1.1).
+pub mod applicability_repo;
 pub mod attribution_repo;
 pub mod audit_sink;
 pub mod batch;
