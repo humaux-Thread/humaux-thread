@@ -23,6 +23,7 @@ pub mod forget;
 pub mod ingest;
 pub mod login;
 pub mod notify;
+pub mod oauth;
 pub mod pin;
 pub mod referral;
 pub mod remember;

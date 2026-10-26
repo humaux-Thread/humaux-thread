@@ -646,6 +646,8 @@ fn assert_not_found(response: &HttpResponse) {
 
 #[test]
 #[allow(clippy::too_many_lines)]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output() {
     run_db_fixture::<Fixture, _>(
         "native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output",

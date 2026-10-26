@@ -13,7 +13,9 @@
 //! `benchset` (G80-16 verdicts per benchmark set, reused from `benchset_declaration`) and `due_items`
 //! (the §57.1 rule 3 list, judged against the `PHASE` file); `crate_boundary` (G-M01-3 violations from
 //! `architecture_check`, M01 D5) is the fourth. M01 cards add their sections to [`SECTIONS`] together with an
-//! evaluator.
+//! evaluator. `lint_allows` is the fifth and is not a "due but red" item: it pins the exact `#[allow(...)]`
+//! count per §78.4 lint (M01 D6 / G-M01-8), and `cargo xtask architecture-check` is what compares the pin with
+//! the tree — this module reads the rows so a malformed baseline is red here too, and names each one in the log.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -26,9 +28,19 @@ const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml")
 const LEDGER_FILE: &str = "xtask/known_red.toml";
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
-const SECTIONS: [&str; 4] = ["dod", "benchset", "due_items", "crate_boundary"];
+const SECTIONS: [&str; 5] = [
+    "dod",
+    "benchset",
+    "due_items",
+    "crate_boundary",
+    "lint_allows",
+];
+/// The one baseline section: `[[lint_allows]]` rows are not item verdicts, so they have their own keys.
+const LINT_ALLOWS: &str = "lint_allows";
 /// Keys a ledger row may carry; anything else is a typo that would silently weaken a rule.
 const ROW_KEYS: [&str; 4] = ["id", "owner", "reason", "deferred_past_go_live"];
+/// Keys a `[[lint_allows]]` row may carry: the lint and its pinned exact count, never an item id or deferral.
+const LINT_ROW_KEYS: [&str; 4] = ["lint", "count", "owner", "reason"];
 
 /// §57.1 tri-state outcome of one ledger-tracked item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +65,8 @@ struct Row {
     owner: String,
     reason: String,
     deferred: Option<String>,
+    /// `[[lint_allows]]` only: the pinned exact allow count. `None` for every item row.
+    count: Option<usize>,
 }
 
 /// Rows per section name.
@@ -69,6 +83,8 @@ struct Report {
     na_lines: Vec<String>,
     ledgered_lines: Vec<String>,
     deferred: Vec<String>,
+    /// `[[lint_allows]]` only: the baseline rows as printed log lines.
+    baseline_lines: Vec<String>,
     reds: Vec<String>,
 }
 
@@ -85,21 +101,49 @@ fn parse_row(section: &str, n: usize, v: &toml::Value, errors: &mut Vec<String>)
         errors.push(format!("[{section}] row #{n}: not a table"));
         return None;
     };
-    for k in t.keys().filter(|k| !ROW_KEYS.contains(&k.as_str())) {
+    let baseline = section == LINT_ALLOWS;
+    let keys: &[&str] = if baseline { &LINT_ROW_KEYS } else { &ROW_KEYS };
+    for k in t.keys().filter(|k| !keys.contains(&k.as_str())) {
         errors.push(format!(
             "[{section}] row #{n}: unknown key `{k}` (known: {})",
-            ROW_KEYS.join(", ")
+            keys.join(", ")
         ));
     }
-    let Some(id) = text(t, "id").filter(|s| !s.is_empty()) else {
-        errors.push(format!("[{section}] row #{n}: missing `id`"));
+    // `[[lint_allows]]` identifies its row by the lint it pins; the item sections by an item id.
+    let (id_key, id) = if baseline {
+        ("lint", text(t, "lint").filter(|s| !s.is_empty()))
+    } else {
+        ("id", text(t, "id").filter(|s| !s.is_empty()))
+    };
+    let Some(id) = id else {
+        errors.push(format!("[{section}] row #{n}: missing `{id_key}`"));
         return None;
+    };
+    let count = if baseline {
+        match t.get("count").and_then(toml::Value::as_integer) {
+            Some(c) if c >= 0 => Some(c as usize),
+            Some(c) => {
+                errors.push(format!(
+                    "[{section}] row #{n} (`{id}`): `count` {c} is negative"
+                ));
+                None
+            }
+            None => {
+                errors.push(format!(
+                    "[{section}] row #{n} (`{id}`): missing integer `count` (the exact allow count)"
+                ));
+                None
+            }
+        }
+    } else {
+        None
     };
     Some(Row {
         id: id.to_string(),
         owner: text(t, "owner").unwrap_or_default().to_string(),
         reason: text(t, "reason").unwrap_or_default().to_string(),
         deferred: text(t, "deferred_past_go_live").map(str::to_string),
+        count,
     })
 }
 
@@ -267,6 +311,54 @@ fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
 // ---------------------------------------------------------------------------
 // Verdict sources
 // ---------------------------------------------------------------------------
+
+/// §78.4 / M01 D6: the `[[lint_allows]]` baseline rows. They are not "due but red" items, so [`judge`]'s
+/// item/waiver rules do not apply; what this proves is that each row is readable, names a ratcheted lint once,
+/// and carries an owner, a reason and an exact count. G-M01-8 in `cargo xtask architecture-check` is the one
+/// place that compares a count with the tree (a row can never waive an allow: growth is red there), so the
+/// comparison is not re-implemented here.
+fn judge_lint_baselines(rows: &[Row]) -> Report {
+    let mut rep = Report::default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for row in rows {
+        let tag = format!("[{LINT_ALLOWS}] {}", row.id);
+        if !seen.insert(row.id.as_str()) {
+            rep.reds.push(format!("{tag}: listed twice"));
+            continue;
+        }
+        if !crate::architecture_check::RATCHETED_LINTS.contains(&row.id.as_str()) {
+            rep.reds.push(format!(
+                "{tag}: not a §78.4 ratcheted lint ({:?})",
+                crate::architecture_check::RATCHETED_LINTS
+            ));
+        }
+        if row.owner.is_empty() {
+            rep.reds.push(format!(
+                "{tag}: row has no owner (every row names the module card that owns it)"
+            ));
+        } else if !owner_ok(&row.owner) {
+            rep.reds.push(format!(
+                "{tag}: owner `{}` is not a module card (expected M<nn> or M<nn>-<card>, e.g. M11-3)",
+                row.owner
+            ));
+        }
+        if row.reason.is_empty() {
+            rep.reds.push(format!("{tag}: row has no reason"));
+        }
+        match row.count {
+            // A missing count already came back as a parse error; do not report it twice.
+            None => rep.fail += 1,
+            Some(count) => {
+                rep.pass += 1;
+                rep.baseline_lines.push(format!(
+                    "{} = {count} (owner {}): {}",
+                    row.id, row.owner, row.reason
+                ));
+            }
+        }
+    }
+    rep
+}
 
 fn dod_items(phase: u32) -> Result<Vec<Item>, String> {
     Ok(crate::dod_check::verdicts(phase)?
@@ -482,6 +574,11 @@ fn report_lines(section: &str, r: &Report, release: bool) -> Vec<String> {
             .iter()
             .map(|l| format!("known-red: ledgered [{section}] {l}")),
     );
+    out.extend(
+        r.baseline_lines
+            .iter()
+            .map(|l| format!("known-red: baseline [{section}] {l}")),
+    );
     if release {
         out.extend(
             r.deferred.iter().map(|l| {
@@ -508,6 +605,13 @@ fn check(raw: &str, phase: u32, release: bool, items_for: &ItemSource<'_>) -> Ou
     let (ledger, mut reds) = parse_ledger(raw);
     let mut reports = Vec::new();
     for section in SECTIONS {
+        if section == LINT_ALLOWS {
+            let rows = ledger.get(section).map_or(&[][..], Vec::as_slice);
+            let mut rep = judge_lint_baselines(rows);
+            reds.append(&mut rep.reds);
+            reports.push((section, rep));
+            continue;
+        }
         match items_for(section, phase) {
             Ok(items) => {
                 let rows = ledger.get(section).map_or(&[][..], Vec::as_slice);
@@ -587,6 +691,7 @@ mod tests {
             owner: owner.to_string(),
             reason: "why it is red".to_string(),
             deferred: None,
+            count: None,
         }
     }
 
@@ -849,6 +954,119 @@ mod tests {
         );
         // every section but the broken one still reports
         assert_eq!(out.reports.len(), SECTIONS.len() - 1);
+    }
+
+    /// §78.4 / M01 D6: `[[lint_allows]]` rows are baselines with their own key set — the lint and its exact
+    /// count, never an item id or a deferral. A malformed baseline is red here; the count-versus-tree comparison
+    /// is G-M01-8's in `architecture_check`, not a second implementation.
+    #[test]
+    fn lint_allows_rows_are_read_as_baselines_and_shape_checked() {
+        let raw = "[[lint_allows]]\nlint = \"too_many_lines\"\ncount = 210\nowner = \"M01-6\"\nreason = \"measured\"\n\
+                   [[lint_allows]]\nlint = \"excessive_nesting\"\ncount = 3\nowner = \"M01-6\"\nreason = \"measured\"\n";
+        let (ledger, errors) = parse_ledger(raw);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(ledger[LINT_ALLOWS].len(), 2);
+        assert_eq!(ledger[LINT_ALLOWS][0].id, "too_many_lines");
+        assert_eq!(ledger[LINT_ALLOWS][0].count, Some(210));
+        assert_eq!(ledger[LINT_ALLOWS][0].deferred, None);
+
+        let rep = judge_lint_baselines(&ledger[LINT_ALLOWS]);
+        assert!(rep.reds.is_empty(), "{:?}", rep.reds);
+        assert_eq!((rep.pass, rep.fail), (2, 0));
+        assert_eq!(rep.baseline_lines.len(), 2);
+        assert!(
+            rep.baseline_lines[0].contains("too_many_lines = 210")
+                && rep.baseline_lines[0].contains("(owner M01-6)"),
+            "{:?}",
+            rep.baseline_lines
+        );
+
+        // A key from the item grammar is a typo here, not an accepted extra.
+        let (_, bad_key) = parse_ledger(
+            "[[lint_allows]]\nlint = \"too_many_lines\"\ncount = 1\nowner = \"M01-6\"\nreason = \"r\"\ndeferred_past_go_live = \"x\"\n",
+        );
+        assert_eq!(bad_key.len(), 1, "{bad_key:?}");
+        assert!(bad_key[0].contains("unknown key `deferred_past_go_live`"));
+
+        // A missing or negative count is a parse error, and the row does not count as a baseline.
+        for toml in [
+            "[[lint_allows]]\nlint = \"too_many_lines\"\nowner = \"M01-6\"\nreason = \"r\"\n",
+            "[[lint_allows]]\nlint = \"too_many_lines\"\ncount = -1\nowner = \"M01-6\"\nreason = \"r\"\n",
+        ] {
+            let (ledger, errors) = parse_ledger(toml);
+            assert_eq!(errors.len(), 1, "{toml}: {errors:?}");
+            assert!(errors[0].contains("`count`"), "{toml}: {errors:?}");
+            let rep = judge_lint_baselines(&ledger[LINT_ALLOWS]);
+            assert_eq!((rep.pass, rep.fail), (0, 1), "{toml}");
+        }
+
+        // An unknown lint, a duplicate row, a missing owner and a missing reason are each red on the baseline's
+        // own rules (the row cannot silently name a lint nobody ratchets).
+        let rows = vec![
+            Row {
+                id: "file_loc".to_string(),
+                owner: "M01-6".to_string(),
+                reason: "r".to_string(),
+                deferred: None,
+                count: Some(1),
+            },
+            Row {
+                id: "too_many_lines".to_string(),
+                owner: String::new(),
+                reason: String::new(),
+                deferred: None,
+                count: Some(2),
+            },
+            Row {
+                id: "too_many_lines".to_string(),
+                owner: "M01-6".to_string(),
+                reason: "r".to_string(),
+                deferred: None,
+                count: Some(2),
+            },
+        ];
+        let rep = judge_lint_baselines(&rows);
+        assert_eq!(rep.reds.len(), 4, "{:?}", rep.reds);
+        assert!(
+            rep.reds
+                .iter()
+                .any(|r| r.contains("not a §78.4 ratcheted lint"))
+        );
+        assert!(rep.reds.iter().any(|r| r.contains("row has no owner")));
+        assert!(rep.reds.iter().any(|r| r.contains("row has no reason")));
+        assert!(rep.reds.iter().any(|r| r.contains("listed twice")));
+    }
+
+    /// The baseline section never reaches the item evaluators: a ledger with only `[[lint_allows]]` rows is green
+    /// through `check` even when the fake evaluator fails every item section it is asked about.
+    #[test]
+    fn a_lint_allows_section_does_not_go_through_the_item_evaluators() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let none = |section: &str, _: u32| -> Result<Vec<Item>, String> {
+            asked.borrow_mut().push(section.to_string());
+            Ok(Vec::new())
+        };
+        let out = check(
+            "[[lint_allows]]\nlint = \"too_many_lines\"\ncount = 210\nowner = \"M01-6\"\nreason = \"r\"\n\
+             [[lint_allows]]\nlint = \"excessive_nesting\"\ncount = 0\nowner = \"M01-6\"\nreason = \"r\"\n",
+            9,
+            false,
+            &none,
+        );
+        assert!(out.reds.is_empty(), "{:?}", out.reds);
+        assert!(
+            !asked.borrow().iter().any(|s| s == LINT_ALLOWS),
+            "{:?}",
+            asked.borrow()
+        );
+        let lint_report = out
+            .reports
+            .iter()
+            .find(|(s, _)| *s == LINT_ALLOWS)
+            .map(|(_, r)| r);
+        assert_eq!(lint_report.map(|r| (r.pass, r.fail)), Some((2, 0)));
+        // the two baseline rows are ledger rows: they show in the `rows:` total
+        assert_eq!(out.rows, 2);
     }
 
     /// Unchanged ledger through `check`: green, and the totals the log prints count rows and deferrals.

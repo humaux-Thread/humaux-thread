@@ -17,3 +17,8 @@ repository = "https://github.com/luogangan7-lgtm/humaux-thread"
 
 [workspace.lints.clippy]
 too_many_lines = "warn"
+# §78.4 names `excessive_nesting` as the nesting signal and asks for deny; `cognitive_complexity` is rejected
+# there. The lint only fires past `clippy.toml`'s `excessive-nesting-threshold`, and every site already past it
+# carries a reasoned `#[allow(clippy::excessive_nesting)]` (G-M01-8): a new deep block without one is red here,
+# a new allow is red in `cargo xtask architecture-check` (the count is pinned in xtask/known_red.toml).
+excessive_nesting = "deny"

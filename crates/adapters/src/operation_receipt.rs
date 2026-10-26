@@ -12,7 +12,9 @@
 //!   any write and is one INVALID_INPUT when it is not visible, and only a fresh write resolves (ADR-0078 D-D A1); a
 //!   sourced put takes the identity's advisory lock (blocking, the receipt-key derivation) before its lookup, so an
 //!   identity holds one Evidence, a dedupe hit writes a receipt and no Evidence, ticket or outbox row, and different bytes
-//!   under one identity write nothing (ADR-0098 D1, M06-1b)]
+//!   under one identity write nothing (ADR-0098 D1, M06-1b); a note create takes its own blocking advisory lock on the D3
+//!   exact-duplicate key before its lookup, so two agents' identical notes end as one Memory and two receipts, and a hit
+//!   writes no Evidence, contract, head, Memory, ticket or outbox row (ADR-0067 D3, M06-3)]
 //! Spec: ADR-0067; ADR-0078; ADR-0098; §6.1.4; §30.2; §34.0.1
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
@@ -628,6 +630,44 @@ async fn atomically_with_source(
     {
         return Ok(Settled::Outcome(NoteReplaceOutcome::StaleVersion));
     }
+    // ADR-0067 D-C: the exact-grant decision runs before any lookup, so an above-ceiling request is the same refusal on a
+    // would-be hit as on a write (a hit must not become an authority bypass).
+    if let Some((note, _)) = &note {
+        note_repo::authorize(note).map_err(remember_error)?;
+    }
+    // ADR-0067 D3 / M06-3: a note create serializes on its exact-duplicate key BEFORE the lookup, in this transaction
+    // (§34.0.1 pattern). The key is the D3 tuple and carries no principal, so two agents writing one body meet here: the
+    // second waits, then reads the first's committed note. The 0269 UNIQUE index is only the backstop. A replacement is a
+    // deliberate new version, never an exact-duplicate candidate.
+    let mut note_hit: Option<note_repo::ExactNoteHit> = None;
+    if let (Some((note, _)), None) = (&note, &replace) {
+        let key = note_repo::exact_dedupe_lock_key(
+            auth.tenant_id().0,
+            &request.command.visibility_class,
+            request.command.visibility_user_id,
+            request.command.visibility_workspace_id,
+            note.kind,
+            note.body.sha256(),
+        );
+        advisory_xact_lock(&mut txn, &key, LockWait::Block).await?;
+        note_hit =
+            note_repo::find_exact_note_in_txn(&mut txn, auth.tenant_id().0, &request.command, note)
+                .await
+                .map_err(db_error)?;
+        // §34.0.1 / 0114: a receipt repeats the stored ticket's stream coordinates and its CHECK binds `scope_id` to the
+        // receipt's workspace, so a hit on another route is refused whole rather than receipted under two streams.
+        if let Some(found) = &note_hit {
+            let command = &request.command;
+            if found.scope_kind != command.scope_kind
+                || found.scope_id != command.scope_id
+                || found.domain != command.domain
+                || found.projection_kind != command.projection_kind
+                || found.projection_version != command.projection_version
+            {
+                return Err(ErrorCode::Conflict);
+            }
+        }
+    }
     // ADR-0098 D1: classify, then serialize on the identity BEFORE the lookup, in this transaction (§34.0.1 pattern, the
     // same lock derivation as the receipt key). The identity UNIQUE is only the backstop. Two agents relaying one message
     // meet here: the second waits, then reads the first's committed row. A refused classification stays one
@@ -663,7 +703,7 @@ async fn atomically_with_source(
         }
     }
     // A hit is answered from the receipt this call writes, so its request is kept before the write consumes the command.
-    let hit_request = hit.as_ref().map(|_| request.clone());
+    let hit_request = (hit.is_some() || note_hit.is_some()).then(|| request.clone());
     // ADR-0032 D-B: TENANT_SHARED is reachable only for an OWNER/ADMIN member; judged in this
     // same transaction (one indexed membership read, only on that path) before any reservation
     // so a refused put leaves no Evidence, no BMO and no receipt.
@@ -740,14 +780,14 @@ async fn atomically_with_source(
             supersedes: replace.supersedes,
         });
     // A dedupe hit writes no Evidence, ticket or outbox row: its receipt repeats the stored ticket's coordinates.
-    let pending = match (&hit, sourced) {
-        (Some(_), _) => None,
-        (None, Some((source, owner))) => Some(
+    let pending = match (&hit, &note_hit, sourced) {
+        (Some(_), _, _) | (_, Some(_), _) => None,
+        (None, None, Some((source, owner))) => Some(
             remember::write_sourced_in_txn(&mut txn, request.command, source, owner)
                 .await
                 .map_err(remember_error)?,
         ),
-        (None, None) => Some(
+        (None, None, None) => Some(
             remember::remember_in_txn_with(
                 &mut txn,
                 request.command,
@@ -758,8 +798,8 @@ async fn atomically_with_source(
             .map_err(remember_error)?,
         ),
     };
-    let refs = match (&pending, hit) {
-        (Some(pending), _) => {
+    let refs = match (&pending, &hit, &note_hit) {
+        (Some(pending), _, _) => {
             let stream = pending.stream_key();
             ReceiptRefs {
                 evidence_id: pending.accepted().evidence_id,
@@ -772,17 +812,27 @@ async fn atomically_with_source(
                 commit_seq: pending.commit_seq(),
             }
         }
-        (None, Some(hit)) => ReceiptRefs {
+        (None, Some(hit), _) => ReceiptRefs {
             evidence_id: hit.evidence_id,
-            scope_kind: hit.scope_kind,
+            scope_kind: hit.scope_kind.clone(),
             scope_id: hit.scope_id,
-            domain: hit.domain,
-            projection_kind: hit.projection_kind,
-            projection_version: hit.projection_version,
+            domain: hit.domain.clone(),
+            projection_kind: hit.projection_kind.clone(),
+            projection_version: hit.projection_version.clone(),
             stream_seq: hit.stream_seq,
             commit_seq: hit.commit_seq,
         },
-        (None, None) => return Err(ErrorCode::Internal),
+        (None, None, Some(hit)) => ReceiptRefs {
+            evidence_id: hit.evidence_id,
+            scope_kind: hit.scope_kind.clone(),
+            scope_id: hit.scope_id,
+            domain: hit.domain.clone(),
+            projection_kind: hit.projection_kind.clone(),
+            projection_version: hit.projection_version.clone(),
+            stream_seq: hit.stream_seq,
+            commit_seq: hit.commit_seq,
+        },
+        (None, None, None) => return Err(ErrorCode::Internal),
     };
     if let Some(verified) = verified {
         remember::insert_evidence_task_run_in_txn(
@@ -884,12 +934,26 @@ async fn atomically_with_source(
     txn.commit()
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let (accepted, memory_id, dedupe) = match (pending, hit_accepted) {
+    let (accepted, memory_id, dedupe, secret_material) = match (pending, hit_accepted) {
         (Some(pending), _) => {
             let memory_id = pending.memory_id();
-            (pending.into_accepted(), memory_id, Dedupe::New)
+            (
+                pending.into_accepted(),
+                memory_id,
+                Dedupe::New,
+                secret_material,
+            )
         }
-        (None, Some(accepted)) => (accepted, None, Dedupe::Existing),
+        // A note hit answers with the existing head's Memory and its stored data class, never the request's default.
+        (None, Some(accepted)) => match &note_hit {
+            Some(hit) => (
+                accepted,
+                Some(hit.memory_id),
+                Dedupe::Existing,
+                hit.data_class == DataClass::SecretMaterial.as_str(),
+            ),
+            None => (accepted, None, Dedupe::Existing, secret_material),
+        },
         (None, None) => return Err(ErrorCode::Internal),
     };
     Ok(Settled::Outcome(NoteReplaceOutcome::Stored(

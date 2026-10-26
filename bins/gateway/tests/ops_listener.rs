@@ -299,6 +299,8 @@ struct FakeWorker {
 }
 
 impl FakeWorker {
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn bind(path: &str, answer: &'static str) -> Self {
         let _ = std::fs::remove_file(path);
         // dep: UDS(serve) — the test's own retrieval-worker stand-in

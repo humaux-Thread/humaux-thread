@@ -549,6 +549,8 @@ mod tests {
     /// nearly any DSN and the assertion would still pass even if `connect_checked`'s
     /// comparison were broken into an always-true check.
     #[test]
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn role_mismatch_is_rejected() {
         run_db_fixture::<AdminConn, _>("role_mismatch_is_rejected", |(dsn, mut client)| {
             let Some(()) = require(
@@ -609,6 +611,8 @@ mod tests {
     /// precondition than "DB reachable" — printed as its own `SKIP` line (§79 三态: 未就绪就
     /// skip 并打印原因, 不静默通过) rather than folded into the fixture-level skip.
     #[test]
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn role_match_succeeds_once_role_exists() {
         run_db_fixture::<AdminConn, _>(
             "role_match_succeeds_once_role_exists",

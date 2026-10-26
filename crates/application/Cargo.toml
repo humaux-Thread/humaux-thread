@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 # Phase 2 identity/entitlement modules (§74/§75/§76). Versions: latest stable.
-# why: domain types every use case reads/returns; used-by: [application::affect, application::archive, application::auth, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::entitlement, application::notify, application::pin, application::referral, application::retrieval_embedding_port, application::supersede]
+# why: domain types every use case reads/returns; used-by: [application::affect, application::archive, application::auth, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::entitlement, application::notify, application::oauth, application::pin, application::referral, application::retrieval_embedding_port, application::supersede]
 humaux-domain = { path = "../domain" }
 # §25.3 continuity：assemble_handoff 产出 retrieval::handoff::Handoff（G80-31 字节域）。
 # retrieval 只依赖 domain+telemetry，无环。
@@ -28,7 +28,7 @@ rand = "0.9"
 # second independent version in the dependency graph.
 # why: verification-code HMAC and the signed-token MAC; used-by: [application::auth, application::signed_token]
 hmac = "0.13"
-# why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::referral, application::signed_token]
+# why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::oauth, application::referral, application::signed_token]
 sha2 = "0.11"
 # why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::referral, application::signed_token]
 hex = "0.4"
@@ -47,8 +47,14 @@ thiserror = "2"
 async-trait = "0.1"
 # `consolidate::PrivateReasoningDomainId`'s inner id — same pin as `humaux-domain`'s existing
 # `uuid = "1.25.0"`, no new independent version in the dependency graph.
-# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::pin, application::retrieval_embedding_port]
+# why: entity ids threaded through every use case; used-by: [application::affect, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::oauth, application::pin, application::retrieval_embedding_port]
 uuid = "1.25.0"
+# §73.5 S256 verification: RFC 7636 unpadded base64url of the verifier digest; same pin as `humaux-adapters`.
+# why: unpadded base64url encoding of the PKCE S256 digest; used-by: [application::oauth]
+base64 = "0.22"
+# OAuth expiries are instants the caller passes in (pure state machine, no clock reads); same pin as `humaux-domain`.
+# why: OffsetDateTime expiry/ceiling arithmetic of grants; used-by: [application::oauth]
+time = "0.3"
 
 [dev-dependencies]
 # T4.6/T4.7 `consolidate.rs` tests: `PrivateReasoningPort::infer` is `async fn`, so its fake

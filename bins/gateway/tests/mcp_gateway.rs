@@ -10531,7 +10531,10 @@ fn listed_subject_ids(listed: &Value) -> BTreeSet<String> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One HTTP fixture pair carries the whole card-8 gateway gate.
+#[allow(clippy::too_many_lines)]
+// One HTTP fixture pair carries the whole card-8 gateway gate.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn native_mcp_subject_registry_declaration_and_linkage_acceptance() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
         .lock()
@@ -11722,7 +11725,10 @@ fn percentile_p50(samples: &mut [Duration]) -> Duration {
 /// replays never collide (ADR-0031 D-C, ADR-0032 D-C).
 #[test]
 #[ignore = "lane(a:request_guard) requires the isolated request-guard PostgreSQL fixture, pinned scanner and disposable Qdrant"]
-#[allow(clippy::too_many_lines)] // ADR-0031: one live oracle keeps three pairs, four routes, 18 interleaved tasks and the cross-pair/unprovisioned refusals causally ordered against ONE gateway process (same precedent as the real-Qdrant live test).
+#[allow(clippy::too_many_lines)]
+// ADR-0031: one live oracle keeps three pairs, four routes, 18 interleaved tasks and the cross-pair/unprovisioned refusals causally ordered against ONE gateway process (same precedent as the real-Qdrant live test).
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn native_mcp_one_process_serves_three_stream_pairs_per_request() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
         .lock()
@@ -14463,7 +14469,10 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
                     .expect("memory count")
                     .get(0)
             });
-            assert_eq!(memories, 3, "only the three accepted notes exist");
+            // M06-3 (ADR-0067 D3): the two "\u0061" / "a" spellings decode to one body under one note_kind and visibility,
+            // so the second call is an exact-duplicate hit and the tenant holds two notes, not three (the digest assertion
+            // above still proves the wire escape decodes before hashing).
+            assert_eq!(memories, 2, "only the two accepted notes exist");
 
             // The closed enums refuse unknown spellings; the new fields are not accepted on remember.put (G25).
             let (status, bad_kind) = raw_request(

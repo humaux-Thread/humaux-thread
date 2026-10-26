@@ -569,7 +569,10 @@ fn provisioning_tenant(client: &mut Client, name: &str) -> Result<(Uuid, Uuid, U
     result
 }
 
-#[allow(clippy::too_many_lines)] // the harness is one ordered script; each step prints its own verdict
+#[allow(clippy::too_many_lines)]
+// the harness is one ordered script; each step prints its own verdict
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 pub fn run(_args: &[String]) -> i32 {
     let pid = std::process::id();
     let db = format!("humaux_thread_c28_onboard_{pid}");

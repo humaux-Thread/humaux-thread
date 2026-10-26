@@ -249,6 +249,10 @@ pub fn parse_manifest(file: &str, contents: &str) -> Result<Manifest, CheckError
 /// `'…'` literals (`''` escape), `"…"` identifiers and `$tag$…$tag$` bodies — i.e. a real
 /// statement separator. Checks are single statements by contract; a second statement would
 /// otherwise ride along with `EXPLAIN` over the simple-query protocol.
+// ponytail: the nested `/* */` depth scan and the quoted-body scan put two blocks past clippy.toml's ceiling of
+// 5 (§78.4 / G-M01-8); M01-6 refactors nothing, so the scanner keeps its allow. Upgrade: one helper per SQL
+// lexical region when this tokenizer is next touched.
+#[allow(clippy::excessive_nesting)]
 pub fn statement_separator(sql: &str) -> Option<usize> {
     let b = sql.as_bytes();
     let mut i = 0;

@@ -1014,6 +1014,9 @@ mod tests {
     /// first call and with the cloud-metadata address on its second must let the first
     /// `execute()` succeed and must fail the second — proving every single connection attempt
     /// is independently re-validated by the one resolver in the loop, never cached as trusted.
+    // ponytail: the spawned accept loop nests past clippy.toml's ceiling of 5 (§78.4 / G-M01-8) and M01-6
+    // refactors nothing; extract the serve loop into its own fn when this fixture is next touched.
+    #[allow(clippy::excessive_nesting)]
     #[tokio::test]
     async fn rebinding_between_successive_calls_is_rejected_by_the_same_resolver() {
         let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1081,6 +1084,9 @@ mod tests {
     /// Positive control for the test above: a resolver that answers the same safe address on
     /// every call must let every call succeed — the fix does not turn re-resolution itself
     /// into a failure mode, only a *changed* answer that lands outside the Cell.
+    // ponytail: same spawned accept-loop shape as the test above, past clippy.toml's ceiling of 5 (§78.4 /
+    // G-M01-8); M01-6 refactors nothing, so the block keeps its allow.
+    #[allow(clippy::excessive_nesting)]
     #[tokio::test]
     async fn stable_resolution_to_a_cell_address_succeeds_on_every_call() {
         let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
