@@ -3,7 +3,8 @@
 //! Depends-on: crates=[]; services=[subprocess(bash)]; env=[SUBCOMMAND]; modules=[]
 //! Called-by: [cargo-test]
 //! Invariants: [the guard body is extracted from the committed workflow, never restated; the case arms equal the
-//!   workflow's `options:` list exactly; an unknown, empty, padded or unset value exits 2]
+//!   workflow's `options:` list exactly; every choice has its exact `Some("<name>") =>` arm in xtask/src/main.rs;
+//!   an unknown, empty, padded or unset value exits 2]
 //! Spec: Baseline §46; §80.1; M24-16
 
 use std::process::{Command, Output, Stdio};
@@ -16,6 +17,9 @@ const GUARD_END: &str = "# END experiment-subcommand-guard";
 
 /// The experiment harnesses that exist in xtask today, in the workflow's order.
 const EXPECTED: [&str; 3] = ["load", "load-open", "soak"];
+
+/// The committed dispatcher: `include_str!` holds the workflow's choices to the arms that actually ship.
+const DISPATCHER: &str = include_str!("../src/main.rs");
 
 /// Values that are not one of the three: unknown, empty, case-shifted, padded, shell metacharacters, two words, and
 /// the input not set at all (§57.1: a missing value is a failure, never a green no-op).
@@ -137,6 +141,24 @@ fn the_choice_list_and_the_guard_arms_are_the_same_three() {
         .expect("the guard must carry the accepting arm");
     let alternatives: Vec<&str> = arm.trim_end_matches(')').split('|').collect();
     assert_eq!(alternatives, EXPECTED.to_vec());
+}
+
+/// Every workflow choice still names a real dispatcher arm: renaming `Some("<name>") =>` in xtask/src/main.rs
+/// alone is red here, instead of leaving EXPECTED pointing at a subcommand xtask no longer has.
+#[test]
+fn every_choice_is_a_dispatcher_arm() {
+    for name in EXPECTED {
+        let arm = format!("Some(\"{name}\") =>");
+        // Line-anchored: a mention in a comment or the usage string cannot stand in for the arm.
+        let arms = DISPATCHER
+            .lines()
+            .filter(|line| line.trim_start().starts_with(&arm))
+            .count();
+        assert_eq!(
+            arms, 1,
+            "xtask/src/main.rs must carry exactly one dispatcher arm {arm:?} (workflow choice {name:?})"
+        );
+    }
 }
 
 /// Each declared choice is accepted by the guard and echoed back.

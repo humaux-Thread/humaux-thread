@@ -1,6 +1,6 @@
 //! `domain::error` — `ErrorCode`: the sole closed set of terminal error codes for the whole system (§52.1).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_reasoner, adapters::contribution_repo, adapters::contribution_scan, adapters::coord_repo, adapters::credential_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::login_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::postgres, adapters::projection_worker, adapters::provider_budget, adapters::public_projection, adapters::public_provenance, adapters::public_repo, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::rebuild, adapters::relation_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::subject_repo, application::archive, application::auth, application::continuity, application::contribute, application::contribution_execution, application::oauth, application::pin, application::public_evolve, application::referral, application::retrieval_embedding_port, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::egress, domain::identity, domain::ids, domain::lifecycle, domain::note, domain::relation, domain::source, domain::subject, gateway::admission, gateway::auth, gateway::cached_embedding, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-private-worker, infra-egress::http, private-worker::distill, protocol::error_map, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::admission, retrieval-provider::contract, retrieval-provider::failover, retrieval-worker::main, retrieval-worker::rpc, retrieval::envelope, telemetry::degrade, tests]
+//! Called-by: [adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_reasoner, adapters::contribution_repo, adapters::contribution_scan, adapters::coord_repo, adapters::credential_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::entitlement_repo, adapters::exact_census, adapters::grep_repo, adapters::login_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::postgres, adapters::project_rollup, adapters::projection_worker, adapters::provider_budget, adapters::public_projection, adapters::public_provenance, adapters::public_repo, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::rebuild, adapters::relation_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::subject_repo, application::archive, application::auth, application::continuity, application::contribute, application::contribution_execution, application::oauth, application::pin, application::public_evolve, application::referral, application::retrieval_embedding_port, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::egress, domain::identity, domain::ids, domain::lifecycle, domain::note, domain::relation, domain::source, domain::subject, gateway::admission, gateway::auth, gateway::cached_embedding, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, humaux-local-secret-scan, humaux-private-worker, infra-egress::http, private-worker::distill, protocol::error_map, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::admission, retrieval-provider::contract, retrieval-provider::failover, retrieval-worker::main, retrieval-worker::rpc, retrieval::envelope, telemetry::degrade, tests]
 //! Invariants: []
 //! Spec: Baseline §53.2; §52.1
 //!
@@ -148,7 +148,8 @@ pub const CONCEPT_PAIRS: [ConceptPair; 2] = [
 /// `reason` field the gateway surfaces in `structuredContent {code:"CONFLICT", reason:<u16>,
 /// reason_label:<SCREAMING_SNAKE>}`. It is NOT a 19th `ErrorCode` variant — the ALL/as_str
 /// gate (§52.4 G52-2) is untouched. The u16 space is partitioned by leading digit: 10xx
-/// lifecycle restore, 11xx distill candidate, 12xx generic state, 13xx ingest.
+/// lifecycle restore, 11xx distill candidate, 12xx generic state, 13xx ingest, 14xx project
+/// continuity (§25.3.1 publish).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConflictReason(pub u16);
 
@@ -182,9 +183,16 @@ impl ConflictReason {
     /// ADR-0098 D1: a source identity already holds an Evidence with different bytes; nothing was written and the
     /// stored bytes are untouched (M06-1b).
     pub const SOURCE_VERSION_CONFLICT: ConflictReason = ConflictReason(1301);
+    /// ADR-0094 D-B: a scalar continuity facet publish lost the slot compare-and-set. Nothing was
+    /// written; the caller learns the version the slot holds now and must re-read before publishing.
+    pub const FACET_SLOT_VERSION_CONFLICT: ConflictReason = ConflictReason(1401);
+    /// ADR-0094 D-D: a list continuity facet publish exhausted the door's merge-retry budget
+    /// without winning the slot. Nothing was written; neither the incoming items nor the explicit
+    /// removals were applied.
+    pub const FACET_MERGE_RETRY_EXHAUSTED: ConflictReason = ConflictReason(1402);
 
     /// Every defined reason, for table-driven lookups and the label mapping.
-    pub const ALL: [ConflictReason; 11] = [
+    pub const ALL: [ConflictReason; 13] = [
         Self::UNDO_WINDOW_EXPIRED,
         Self::TARGET_NOT_CURRENT,
         Self::ERASE_TERMINAL,
@@ -196,6 +204,8 @@ impl ConflictReason {
         Self::TRANSITION_NOT_ALLOWED,
         Self::LAST_OWNER,
         Self::SOURCE_VERSION_CONFLICT,
+        Self::FACET_SLOT_VERSION_CONFLICT,
+        Self::FACET_MERGE_RETRY_EXHAUSTED,
     ];
 
     /// The raw numeric reason surfaced in `structuredContent.reason`.
@@ -218,6 +228,8 @@ impl ConflictReason {
             1203 => "TRANSITION_NOT_ALLOWED",
             1204 => "LAST_OWNER",
             1301 => "SOURCE_VERSION_CONFLICT",
+            1401 => "FACET_SLOT_VERSION_CONFLICT",
+            1402 => "FACET_MERGE_RETRY_EXHAUSTED",
             _ => return None,
         })
     }
@@ -280,11 +292,21 @@ mod tests {
         assert_eq!(ConflictReason::ALREADY_IN_STATE.code(), 1201);
         assert_eq!(ConflictReason::NOT_REVERSIBLE.code(), 1202);
         assert_eq!(ConflictReason::SOURCE_VERSION_CONFLICT.code(), 1301);
+        assert_eq!(ConflictReason::FACET_SLOT_VERSION_CONFLICT.code(), 1401);
+        assert_eq!(ConflictReason::FACET_MERGE_RETRY_EXHAUSTED.code(), 1402);
         assert_eq!(
             ConflictReason::SOURCE_VERSION_CONFLICT.label(),
             Some("SOURCE_VERSION_CONFLICT")
         );
-        assert_eq!(ConflictReason::ALL.len(), 11);
+        assert_eq!(
+            ConflictReason::FACET_SLOT_VERSION_CONFLICT.label(),
+            Some("FACET_SLOT_VERSION_CONFLICT")
+        );
+        assert_eq!(
+            ConflictReason::FACET_MERGE_RETRY_EXHAUSTED.label(),
+            Some("FACET_MERGE_RETRY_EXHAUSTED")
+        );
+        assert_eq!(ConflictReason::ALL.len(), 13);
         let mut labels = std::collections::HashSet::new();
         let mut codes = std::collections::HashSet::new();
         for reason in ConflictReason::ALL {

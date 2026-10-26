@@ -55,6 +55,7 @@ pub mod plan_repo;
 pub mod postgres;
 pub mod private_inference_rpc;
 pub mod private_projection_registry;
+pub mod project_rollup;
 pub mod projection_worker;
 pub mod provider_budget;
 pub mod provisioning;
