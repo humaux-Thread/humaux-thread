@@ -594,13 +594,7 @@ mod tests {
         ] {
             let mut fixture = manifest.clone();
             fixture["operations"][0][field] = value;
-            assert!(
-                matches!(
-                    CanonicalCatalog::from_manifest(&fixture.to_string()),
-                    Err(ErrorCode::InvalidInput)
-                ),
-                "{field}"
-            );
+            assert_invalid_registry(&fixture);
         }
         for field in [
             "edition",
@@ -614,25 +608,20 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .remove(field);
-            assert!(
-                matches!(
-                    CanonicalCatalog::from_manifest(&fixture.to_string()),
-                    Err(ErrorCode::InvalidInput)
-                ),
-                "{field}"
-            );
+            assert_invalid_registry(&fixture);
         }
         let mut fixture = manifest.clone();
         fixture["operations"].as_array_mut().unwrap().remove(0);
-        assert!(matches!(
-            CanonicalCatalog::from_manifest(&fixture.to_string()),
-            Err(ErrorCode::InvalidInput)
-        ));
+        assert_invalid_registry(&fixture);
         let mut fixture = manifest.clone();
         fixture["operations"]
             .as_array_mut()
             .unwrap()
             .push(manifest["operations"][0].clone());
+        assert_invalid_registry(&fixture);
+    }
+
+    fn assert_invalid_registry(fixture: &Value) {
         assert!(matches!(
             CanonicalCatalog::from_manifest(&fixture.to_string()),
             Err(ErrorCode::InvalidInput)
