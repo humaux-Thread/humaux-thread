@@ -1,13 +1,13 @@
-//! `adapters::forget_repo` — T4.8 §37/§37.2 physical IO: the sole `UPDATE projection.stream_log SET state =
-//!   'TOMBSTONED'` in this workspace ([`tombstone`]), the §37 `DeletionPlan` step-completion writer
+//! `adapters::forget_repo` — T4.8 §37/§37.2 physical IO: the maintenance tombstone exit ([`tombstone`]) alongside
+//!   the 0278 owner accept door (ADR-0092 D-C), the §37 `DeletionPlan` step-completion writer
 //!   ([`record_step`]), §65's idempotent purge-replay loop ([`replay_pending_steps`]), the current-computed
 //!   `tombstoned_unpurged_over_sla` gauge ([`tombstoned_unpurged_over_sla`]), and — §23.4 G23-2 — the two PG-side
 //!   overlay reads a literal/EXACT-channel lane needs ([`count_excluding_tombstoned`], [`state_of`]), sharing this
 //!   module's own `state <> 'TOMBSTONED'` knowledge instead of a caller re-deriving it.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::error, domain::identity, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::confirm_token_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::confirm, domain::error, domain::identity, projection::stream]
 //! Called-by: [tests]
-//! Invariants: [maintenance calls open their own transaction and set humaux.tenant_id first; request calls use the caller-owned transaction and set its AuthorizationScope; the * -> TOMBSTONED edge and
-//!   plan-step bookkeeping run only on role_maintenance; a PG error aborts the step so the plan stays resumable; a
+//! Invariants: [maintenance calls open their own transaction and set humaux.tenant_id first; request calls use the caller-owned transaction and set its AuthorizationScope; maintenance tombstones and
+//!   plan-step bookkeeping run on role_maintenance; accept uses the gateway-only owner door; a PG error aborts the step so the plan stays resumable; a
 //!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes
 //!   (scope, roots) and derives the targets, hash and requester itself, after every root passed the caller's own
 //!   AuthorizationScope (visibility_readable / readable_memory_ids, never a membership of the user's elsewhere); the preview reads Memory visibility through
@@ -20,7 +20,7 @@
 //! `stream_repo.rs`'s `advance_prefix`/`sweep_lost` wrapping `humaux_projection::stream`.
 //!
 //! Maintenance entry points require [`MaintenanceDbPool`] (`role_maintenance`): 0011 permits only that role to make
-//! the `* -> TOMBSTONED` edge, and 0054 grants only it the bookkeeping doors. Their transactions install the tenant
+//! the maintenance `* -> TOMBSTONED` edge; ADR-0092 D-C also admits the 0278 accept door. 0054 grants only maintenance the bookkeeping doors. Their transactions install the tenant
 //! before touching FORCE-RLS tables (§6.2). Freeze and preview instead require the caller-owned `role_gateway`
 //! transaction with the caller's AuthorizationScope (ADR-0092 D-A); tenant RLS alone never proves root readability.
 
@@ -33,6 +33,7 @@ use humaux_application::forget::{
     DeletionScopeKind, DeletionStep, DeletionTarget, DeletionTargetKind, ImpactPreview,
     VisibleMemory, manifest_hash,
 };
+use humaux_domain::confirm::DestructiveOp;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_projection::stream::StreamKey;
@@ -87,14 +88,8 @@ async fn set_tenant_local(txn: &mut Txn<'_>, tenant_id: Uuid) -> Result<(), sqlx
     Ok(())
 }
 
-/// §37.2's sole entry point: `state -> TOMBSTONED` for exactly one `projection.stream_log`
-/// row, identified by `key` (the six §15.1 key columns) and `seq` (`stream_seq`).
-///
-/// **This literal `UPDATE ... SET state = 'TOMBSTONED'` must never be duplicated anywhere
-/// else in this workspace** (§37.2: "没有第二个函数能改这张表的 `state`"; enforced today by
-/// the DB-side `stream_log_guard_state_transition` trigger + `role_maintenance`-only GRANT,
-/// pending a workspace-wide grep-based architecture-check — see this crate's caller-side
-/// T4.8 report for that gate's wiring status).
+/// §37.2 maintenance exit: one `projection.stream_log` row identified by the six-column key and `stream_seq`.
+/// ADR-0092 D-C names the 0278 owner accept door as the one other exit, restricted to frozen EVIDENCE targets.
 ///
 /// Idempotent: the `AND state <> 'TOMBSTONED'` guard makes a replayed call after a crash a
 /// true no-op (`rows_affected() == 0`, `Ok(false)`), never a second UPDATE attempt against an
@@ -307,16 +302,8 @@ where
     Ok(executed)
 }
 
-/// §41.2 `tombstoned_unpurged_over_sla` (gauge, §65 job收尾 takes the reading) — current-
-/// computed, never a materialized column (§37.2's own "现算不落列" reasoning extends to this
-/// metric, not only to `deleted`). Tenant-grain and fail-loud: counts the tenant's `TOMBSTONED` `stream_log` rows with
-/// `settled_at` older than `sla` (a row settled `DONE` before a later tombstone keeps its old `settled_at`, 0011) iff
-/// the tenant has a deletion request `d` with `d.logical_deleted_at` set and older than `sla` and no recorded
-/// `QDRANT_POINTS` step with outcome `DONE` (step 5, the physical purge — §37: "字节还在...它必须有自己的出口"). No such request ⇒ 0;
-/// otherwise `> 0`, which is §42's "tombstone 超 SLA 未 purge". The count is not a per-row attribution and may
-/// include rows of other, already purged requests of the same tenant (0272 dropped the per-row stream key).
-/// A never-DONE row gets `settled_at` at tombstone time (0011): it counts after that timestamp ages past the SLA,
-/// giving a bounded false zero until then (§41.2 / #315).
+/// §41.2 / ADR-0092 D-C: exact frozen target count for accepted requests older than `sla` without a DONE
+/// QDRANT_POINTS receipt. MEMORY targets count even though no Evidence stream seq was tombstoned (M19-3a).
 pub async fn tombstoned_unpurged_over_sla(
     pool: &MaintenanceDbPool,
     tenant_id: Uuid,
@@ -326,24 +313,14 @@ pub async fn tombstoned_unpurged_over_sla(
     let mut txn = pool.pool().begin().await?;
     set_tenant_local(&mut txn, tenant_id).await?;
 
-    // ponytail: counts every tombstoned row of a tenant that has a request unpurged past SLA (over-count by design, fail loud); M19-3a records the request id at tombstone time for exact per-row attribution
     let row = sqlx::query(
-        "SELECT count(*) AS n \
-           FROM projection.stream_log s \
-          WHERE s.tenant_id = $1 \
-            AND s.state = 'TOMBSTONED' \
-            AND s.settled_at < now() - (interval '1 second' * $2::bigint) \
-            AND EXISTS ( \
-                SELECT 1 FROM control.deletion_requests d \
-                 WHERE d.tenant_id = $1 \
-                   AND d.logical_deleted_at IS NOT NULL \
-                   AND d.logical_deleted_at < now() - (interval '1 second' * $2::bigint) \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM ops.deletion_plan_steps p \
-                        WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
-                          AND p.step = 'QDRANT_POINTS' AND p.outcome = 'DONE' \
-                   ) \
-            )",
+        "SELECT count(*) AS n FROM control.deletion_targets t \
+           JOIN control.deletion_requests d ON d.deletion_request_id = t.request_id AND d.tenant_id = t.tenant_id \
+          WHERE t.tenant_id = $1 \
+            AND d.logical_deleted_at < now() - (interval '1 second' * $2::bigint) \
+            AND NOT EXISTS (SELECT 1 FROM ops.deletion_plan_steps p \
+                 WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
+                   AND p.step = 'QDRANT_POINTS' AND p.outcome = 'DONE')",
     )
     .bind(tenant_id)
     .bind(sla.as_secs() as i64)
@@ -657,4 +634,59 @@ pub async fn preview_in_txn(
         &multi_person,
         stored.manifest_hash,
     ))
+}
+
+/// ADR-0092 D-B/D-C: round 2 under the caller's transaction; the 0278 door verifies and consumes the full token
+/// binding, rechecks the closure under root locks, and commits logical deletion atomically (Baseline §37.2).
+/// A refusal aborts the transaction, so callers must roll it back, never commit it as an accepted request.
+pub async fn accept_in_txn(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    request_id: Uuid,
+    claim: Option<&crate::confirm_token_repo::ConfirmationClaim>,
+) -> Result<(), ForgetRepoError> {
+    let refused = |code, reason| ForgetRepoError::Refused { code, reason };
+    let claim = claim.ok_or_else(|| refused(ErrorCode::Conflict, "confirmation_required"))?;
+    if claim.op != DestructiveOp::MemoryForget
+        || claim.target_id != request_id
+        || claim.successor_id.is_some()
+    {
+        return Err(refused(ErrorCode::Conflict, "confirmation_binding"));
+    }
+    crate::confirm_token_repo::set_authorization_local(txn, authorization)
+        .await
+        .map_err(|code| refused(code, "session_setup"))?;
+    let workspace = crate::confirm_token_repo::sole_workspace(authorization)
+        .map_err(|code| refused(code, "workspace_scope"))?;
+    // dep: PostgreSQL(any) — the gateway-only owner door, with tenant/user taken from the transaction's session GUCs
+    sqlx::query("SELECT control.deletion_request_accept($1, $2, $3, $4, $5, $6)")
+        .bind(request_id)
+        .bind(claim.nonce_sha256.as_slice())
+        .bind(claim.op.operation_key())
+        .bind(claim.request_sha256.as_ref().map(<[u8; 32]>::as_slice))
+        .bind(workspace.0)
+        .bind(authorization.principal().0)
+        .execute(&mut **txn)
+        .await
+        .map_err(accept_refusal)?;
+    Ok(())
+}
+
+fn accept_refusal(error: sqlx::Error) -> ForgetRepoError {
+    let Some(db) = error.as_database_error() else {
+        return ForgetRepoError::Db(error);
+    };
+    let reason = match db.message() {
+        "deletion_request_accept: manifest_changed" => "manifest_changed",
+        "deletion_request_accept: confirmation_binding" => "confirmation_binding",
+        "deletion_request_accept: request_not_open" => "request_not_open",
+        _ => "accept_refused",
+    };
+    match db.code().as_deref() {
+        Some("40001") => ForgetRepoError::Refused {
+            code: ErrorCode::Conflict,
+            reason,
+        },
+        _ => door_refusal(error),
+    }
 }

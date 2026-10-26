@@ -860,6 +860,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.processing_runs`
 - writes `private.task_binding_grants`
 - writes `projection.stream_log`
+- executes `control.deletion_request_freeze`
 - executes `control.resolve_user_reasoning_admission`
 - executes `ops.reasoning_health_observation_reject_mutation`
 - executes `ops.reasoning_model_call_validate`
@@ -5292,6 +5293,7 @@ written by:
 executed by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::forget_preview`
+- process(cargo-xtask): `xtask::architecture_check`
 
 ### `control.deletion_requests`
 read by:

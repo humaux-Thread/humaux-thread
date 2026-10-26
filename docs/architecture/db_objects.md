@@ -919,6 +919,7 @@ written by:
 executed by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::forget_preview`
+- process(cargo-xtask): `xtask::architecture_check`
 
 ### `control.deletion_requests`
 - kind: table

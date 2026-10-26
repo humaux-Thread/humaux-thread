@@ -1214,6 +1214,7 @@ role_admin        无 INSERT / UPDATE / DELETE / TRUNCATE / DDL，不继承其�
 role_maintenance  无 DELETE / TRUNCATE；修复只能靠 UPDATE，且只在 §6.2.2 逐条列出的表上有 UPDATE
 物理删行出口        migration owner + partition drop（§48.1）；§6.2.2 逐条列出的 owner SECURITY DEFINER 清扫门（ADR-0062 闭集，单条语句、LIMIT、回执；role_maintenance 只有 EXECUTE）；以及 ADR-0092 的删除请求门（owner SECURITY DEFINER，EXECUTE 只给 role_maintenance，只删该请求冻结的目标集；其 §6.2.2 行与 rls-check 闭集随 M19-5 的迁移落地，在那之前这里只记设计、不新增授权行）；partition drop 只经 control.partition_drop（invoker、仅超级用户可执行、库内重推策略/截止月/最新叶/持有/行数，ADR-0063）由超级用户 migrator 主体在操作员 shell 短命执行；常驻进程环境含 HUMAUX_MIGRATOR_PG_DSN 即拒绝启动
 逻辑删除唯一出口  retention::tombstone —— 改 state，不删行（§37.2）
+**Amended by ADR-0092 (M19-3a):** the deletion accept door also makes `* -> TOMBSTONED` for the frozen EVIDENCE targets of the request it accepts.
 ```
 
 `role_maintenance` 在域表里只有 `R`，是刻意的：修复动作必须逐条落到 §6.2.2 才成立。「scoped repair/admin privileges」这种粒度写在文档里查不出任何东西，等于 superuser 的委婉说法。
@@ -9928,6 +9929,9 @@ Trace / logs with protected access
 | `boundary_violations_total{kind}` ⊕ | §12 `contribution_release` 准入校验拒绝分支 · 1 | counter·次 | §42 private/public boundary violation |
 | `tombstoned_unpurged_over_sla` ⊕ | §65 `retention` job 收尾 `.set()` · 1；扫 `state = 'TOMBSTONED'` 且 Qdrant point / object bytes 仍在、`settled_at` 已过 purge SLA 的行数（**现算，不落列** —— 落列即违反 §37.2 那道 12 列闸） | gauge·条 | §42 tombstone 超 SLA 未 purge；§37 tombstone-first 的补偿控制 |
 | `authority_i4_violations` ⊕ | §65 `authority superseded_by consistency scan` 收尾 `.set()` · 1 | gauge·条 | §42 authority I4 违规；§59.1 G59-4 |
+
+**Amended by ADR-0092 (M19-3a):** the gauge counts deletion targets past SLA without a DONE QDRANT_POINTS step.
+
 
 **⊕ 七行是本版新增的名字。** 理由不是加功能：§1.9 P0-3 要求 `cert_expiry_seconds` 进 Prometheus，而 §42 的 backup failure / restore drill failure / cross-tenant canary failure / private-public boundary violation 四条告警**在旧版没有任何对应指标名**。Prometheus 对不存在的 family 求值返回空向量，空向量比大小恒不为真 ⇒ 这四条告警自写下之日起就不可能触发。补名是让已经写下的告警第一次具备触发能力。后加的 `tombstoned_unpurged_over_sla` / `authority_i4_violations` 两行同型：§37「已 tombstone 超 SLA 未 purge 必须走 §42 告警」与 §65「I4 违规计数 > 0 ⇒ 告警（§42）」两处把承重点落在告警上，而 §42 冻结 ① 要求表达式里的指标名先在本表存在 —— 没有这两个名字，那两条告警一个字都写不出来，两个承诺静默落空。两者都不带 label：本表声明的 label 集为空即全集（R6），§42 表达式里也不许出现任何 `by()` / matcher key（本章冻结 ④）。
 

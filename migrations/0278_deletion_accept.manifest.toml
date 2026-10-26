@@ -1,0 +1,29 @@
+# §46.1 / ADR-0092 D-B, D-C: additive closed token vocabulary and the gateway-only owner accept door.
+migration_id = "0278_deletion_accept"
+class = "EXPAND_CONTRACT"
+precheck = """
+select to_regclass('control.deletion_targets') is not null
+ and to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)') is null
+ as precheck_ok
+"""
+postcheck = """
+select (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)')
+           and p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+           and p.proconfig = array['search_path=pg_catalog, pg_temp'])
+ and has_function_privilege('role_gateway', 'control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)', 'EXECUTE')
+ and not exists (select 1 from pg_proc p
+                  cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                 where p.oid = to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)')
+                   and a.grantee <> p.proowner and (a.grantee = 0 or pg_get_userbyid(a.grantee) <> 'role_gateway'))
+ and (select count(*) = 1 from pg_constraint
+       where conrelid = to_regclass('control.confirm_tokens') and conname = 'confirm_tokens_operation_closed_set'
+         and pg_get_constraintdef(oid) like '%memory.forget%' and pg_get_constraintdef(oid) like '%account.delete%')
+ and (select count(*) = 1 from pg_proc p
+       where p.oid = to_regprocedure('projection.stream_log_guard_state_transition()')
+         and not p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and strpos(p.prosrc, 'current_user = ''role_migration_owner'' AND NEW.state = ''TOMBSTONED'' AND OLD.state <> ''TOMBSTONED''') > 0)
+ as postcheck_ok
+"""
+rollback_or_forward_fix = "forward-fix only: restore 0167's state guard, revoke and drop the accept door only after disabling its callers; never undo an accepted logical deletion."
+backup_restore_requirement = "standard migration backup; no existing knowledge is updated by this migration, accepted deletions are not reversible (ADR-0092)."

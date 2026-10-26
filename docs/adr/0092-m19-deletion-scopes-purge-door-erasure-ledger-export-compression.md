@@ -62,6 +62,11 @@ The accept transaction tombstones every outbox seq of the closure (step 1, all e
 (distill, consolidation, rollup, projection publish) re-check their inputs against the overlay in their own commit
 transaction and return `STALE_INPUT` (ADR-0079 shape; no separate fence table).
 
+Amended (M19-3a, lead resume2/3 ruling):
+- "FORGOTTEN" is the existing op `TOMBSTONE`, reason `USER_DELETE`, one event per MEMORY target.
+- MEMORY targets are hidden by `status='revoked'`; only EVIDENCE targets' seqs are tombstoned. The §41.2 gauge counts deletion targets past SLA without a DONE QDRANT_POINTS step.
+- The deletion accept door (owner, EXECUTE role_gateway only) is the second `* -> TOMBSTONED` exit, limited to the frozen EVIDENCE targets of the request it accepts; 0278 adds the owner arm to the stream_log state guard.
+
 Physical erasure of live rows runs through one owner `SECURITY DEFINER` function,
 `control.purge_deletion_request(request_id)`: owner `role_migration_owner`, EXECUTE to `role_maintenance` only, deleting
 exactly the frozen targets (for `TENANT`, every row of the tenant) in FK order. Runtime roles still hold no DELETE
