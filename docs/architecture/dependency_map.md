@@ -865,6 +865,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.resolve_user_reasoning_admission`
 - executes `ops.reasoning_health_observation_reject_mutation`
 - executes `ops.reasoning_model_call_validate`
+- executes `private.memory_in_project`
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
@@ -5986,6 +5987,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -6731,6 +6733,7 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -6998,6 +7001,7 @@ written by:
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -8735,6 +8739,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
 - (no process): `adapters::tests::relation_kernel`
@@ -9132,6 +9137,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -9635,6 +9641,15 @@ written by:
 
 executed by:
 
+### `private.memory_in_project`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::memory_in_project`
+- process(cargo-xtask): `xtask::architecture_check`
+
 ### `private.memory_project_revocations`
 read by:
 - (no process): `adapters::tests::memory_attribution`
@@ -9644,6 +9659,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 
 executed by:
 
@@ -9658,6 +9674,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
@@ -9808,6 +9825,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::note_history`
@@ -11905,6 +11923,7 @@ executed by:
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::note_put`
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
@@ -12045,6 +12064,7 @@ executed by:
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::note_history`
 - `adapters::tests::note_put`
@@ -12125,6 +12145,7 @@ executed by:
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::maintenance_doors`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
@@ -12190,6 +12211,7 @@ executed by:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
@@ -13242,6 +13264,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13453,6 +13476,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13562,6 +13586,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13637,6 +13662,7 @@ modules naming it:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -17519,6 +17545,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/memory_evidence_grounding.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/memory_in_project.rs`
 db-bound (default run): yes
 
 services (computed):
