@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn continuity_publish_contract_is_slot_version_free_and_typed() {
+    fn continuity_publish_input_is_slot_version_free_and_typed() {
         let catalog = CanonicalCatalog::load().expect("catalog");
         let project_id = "018d32a7-0000-7000-8000-000000000001";
         let memory_id = "018d32a7-0000-7000-8000-000000000002";
@@ -812,6 +812,13 @@ mod tests {
                 "{invalid} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn continuity_publish_output_is_typed_and_closed() {
+        let catalog = CanonicalCatalog::load().expect("catalog");
+        let project_id = "018d32a7-0000-7000-8000-000000000001";
+        let memory_id = "018d32a7-0000-7000-8000-000000000002";
 
         let published = json!({
             "contract_version": "1",

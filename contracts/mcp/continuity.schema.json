@@ -44,11 +44,27 @@
           "properties": {
             "memories": {
               "type": "array",
-              "items": {"$ref": "#/$defs/MemorySource"}
+              "items": {
+                "type": "object",
+                "required": ["memory_id","content_sha256"],
+                "properties": {
+                  "memory_id": {"type":"string","format":"uuid"},
+                  "content_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+                },
+                "additionalProperties": false
+              }
             },
             "evidence": {
               "type": "array",
-              "items": {"$ref": "#/$defs/EvidenceSource"}
+              "items": {
+                "type": "object",
+                "required": ["evidence_id","payload_sha256"],
+                "properties": {
+                  "evidence_id": {"type":"string","format":"uuid"},
+                  "payload_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+                },
+                "additionalProperties": false
+              }
             }
           },
           "additionalProperties": false,
@@ -71,25 +87,5 @@
       ],
       "additionalProperties": false
     }
-  ],
-  "$defs": {
-    "MemorySource": {
-      "type": "object",
-      "required": ["memory_id","content_sha256"],
-      "properties": {
-        "memory_id": {"type":"string","format":"uuid"},
-        "content_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
-      },
-      "additionalProperties": false
-    },
-    "EvidenceSource": {
-      "type": "object",
-      "required": ["evidence_id","payload_sha256"],
-      "properties": {
-        "evidence_id": {"type":"string","format":"uuid"},
-        "payload_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
-      },
-      "additionalProperties": false
-    }
-  }
+  ]
 }
