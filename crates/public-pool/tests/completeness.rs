@@ -136,11 +136,15 @@ fn draft(case: &(UnitType, &[&str], &[&str])) -> UnitDraft {
 fn incomplete(unit: &UnitDraft, expected: &[&str]) {
     let receipt = completeness(unit);
     assert_eq!(receipt.rule_version, RULE_VERSION);
+    let Verdict::Incomplete { missing } = receipt.verdict else {
+        panic!("expected Incomplete with {expected:?}");
+    };
     assert_eq!(
-        receipt.verdict,
-        Verdict::Incomplete {
-            missing: expected.iter().map(|s| (*s).to_owned()).collect()
-        }
+        missing
+            .iter()
+            .map(|reason| reason.as_str())
+            .collect::<Vec<_>>(),
+        expected
     );
 }
 

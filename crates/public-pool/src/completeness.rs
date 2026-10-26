@@ -203,6 +203,25 @@ pub struct UnitDraft {
     pub conditions: CausalConditions,
 }
 
+/// A completeness requirement, never a terminal/degradation error (§52, ADR-0090 D-B).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MissingRequirement {
+    /// A schema field failed its required-state or value rule.
+    Field(String),
+    /// Publication removed every causal condition; the unit stays private.
+    ConditionsStripped,
+}
+impl MissingRequirement {
+    /// Exact field name or CONDITIONS_STRIPPED receipt code (ADR-0090 D-B).
+    pub fn as_str(&self) -> &str {
+        if let Self::Field(key) = self {
+            key
+        } else {
+            "CONDITIONS_STRIPPED"
+        }
+    }
+}
+
 /// Closed completeness verdict; reason codes are not a third error enum (§52).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -211,7 +230,7 @@ pub enum Verdict {
     /// Sorted, deduplicated exact field names or the CONDITIONS_STRIPPED code.
     Incomplete {
         /// The complete set of unsatisfied requirements.
-        missing: Vec<String>,
+        missing: Vec<MissingRequirement>,
     },
 }
 
@@ -243,7 +262,7 @@ fn valid_field(key: &str, field: &UnitField, unknown_ok: bool) -> bool {
 /// Evaluate a draft without inferring missing values (ADR-0090 D-B).
 pub fn completeness(draft: &UnitDraft) -> CompletenessReceipt {
     let (required, unknown_ok) = type_fields(draft.kind);
-    let mut missing: Vec<String> = COMMON
+    let mut missing: Vec<MissingRequirement> = COMMON
         .iter()
         .chain(required)
         .copied()
@@ -253,7 +272,7 @@ pub fn completeness(draft: &UnitDraft) -> CompletenessReceipt {
                 .get(*key)
                 .is_some_and(|field| valid_field(key, field, unknown_ok.contains(key)))
         })
-        .map(str::to_owned)
+        .map(|key| MissingRequirement::Field(key.to_owned()))
         .collect();
     if draft.kind == UnitType::Decision
         && !draft
@@ -263,12 +282,12 @@ pub fn completeness(draft: &UnitDraft) -> CompletenessReceipt {
             .and_then(Value::as_array)
             .is_some_and(|v| v.len() >= 2)
     {
-        missing.push("candidates".into());
+        missing.push(MissingRequirement::Field("candidates".into()));
     }
     if draft.conditions == CausalConditions::Stripped {
-        missing.push("CONDITIONS_STRIPPED".into());
+        missing.push(MissingRequirement::ConditionsStripped);
     }
-    missing.sort();
+    missing.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     missing.dedup();
     CompletenessReceipt {
         rule_version: RULE_VERSION,
@@ -312,7 +331,12 @@ fn receipt(rule: &'static str, state: GateState) -> RuleReceipt {
 }
 fn field_state(draft: &UnitDraft) -> GateState {
     if let Verdict::Incomplete { missing } = completeness(draft).verdict {
-        GateState::Fail(missing)
+        GateState::Fail(
+            missing
+                .iter()
+                .map(|reason| reason.as_str().to_owned())
+                .collect(),
+        )
     } else {
         GateState::Pass
     }
