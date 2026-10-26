@@ -11172,6 +11172,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `public-pool::tests::vocab`
 - (no process): `public-pool::vocab`
 
 executed by:
@@ -11184,6 +11185,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `public-pool::tests::vocab`
 - (no process): `public-pool::vocab`
 
 executed by:
@@ -11196,6 +11198,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `public-pool::tests::vocab`
 - (no process): `public-pool::vocab`
 
 executed by:
