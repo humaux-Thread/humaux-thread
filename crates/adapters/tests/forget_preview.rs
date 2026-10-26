@@ -492,6 +492,7 @@ fn a_forged_root_or_hash_cannot_be_frozen() {
         assert_eq!(request_count(&mut h), before, "a refusal stores nothing");
 
         // The old seven-argument door, with caller-chosen kinds, ids and hash, no longer exists.
+        // dep: PostgreSQL(role_gateway) — the retired seven-argument door must not exist for its one granted role
         let forged = h.rt.block_on(
             sqlx::query(
                 "SELECT control.deletion_request_freeze($1, 'EVIDENCE_CLOSURE', $2, $3, sha256('forged'::bytea), \
@@ -763,6 +764,7 @@ fn memory_scope_freezes_the_memory_alone_with_source_retained() {
             assert!(!shown.restore_supported);
 
             let refused = h.rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — an unreadable Memory root is refused by the door
                 let mut txn = h.gateway_pool.begin().await.expect("begin");
                 forget_repo::freeze_memory_in_txn(&mut txn, &authorization, private).await
             });
