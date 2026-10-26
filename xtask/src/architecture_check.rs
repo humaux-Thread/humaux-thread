@@ -3716,6 +3716,21 @@ fn sole_door_statements(
     }
 }
 
+/// ADR-0092 D-A / #315: the sole caller must perform the caller-scope root check before the freeze door.
+fn m19_freeze_sole_call(root: &Path) -> Verdict {
+    const HOME: &str = "crates/adapters/src/forget_repo.rs";
+    if !root.join(HOME).is_file() {
+        return Verdict::Fail(vec![format!("M19 freeze: missing required input {HOME}")]);
+    }
+    sole_door_statements(
+        root,
+        "M19 freeze",
+        "freeze caller",
+        &[("control.deletion_request_freeze(", HOME)],
+        &[],
+    )
+}
+
 /// M07 D9 / G-M07-1: the Evidence and Memory INSERT doors ([`M07_INSERT_DOORS`]).
 fn m07_1_insert_doors(root: &Path) -> Verdict {
     sole_door_statements(
@@ -10815,6 +10830,10 @@ pub fn run(_args: &[String]) -> i32 {
             adr0061_no_box_leak_labels(&root),
         ),
         (
+            "M19 / #315 (freeze door has exactly one Rust call site)",
+            m19_freeze_sole_call(&root),
+        ),
+        (
             "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
             m07_1_insert_doors(&root),
         ),
@@ -16112,6 +16131,41 @@ async fn serving_version_in_txn() {}
         .unwrap();
         assert!(matches!(g80_11_source_hash_unique(&tmp), Verdict::Fail(_)));
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #315: the production tree must contain exactly one call in the checked adapter.
+    #[test]
+    fn m19_freeze_sole_call_real_repo() {
+        assert_eq!(m19_freeze_sole_call(&real_root()), Verdict::Pass);
+    }
+
+    /// #315: the same sentinel rejects zero, two, misplaced and missing callers.
+    #[test]
+    fn m19_freeze_sole_call_fixture() {
+        let tmp = fresh_tmp("m19-freeze");
+        let home = "crates/adapters/src/forget_repo.rs";
+        let call = "fn door() { let _ = \"SELECT control.deletion_request_freeze($1,$2,$3)\"; }";
+        m07_write(&tmp, home, call);
+        assert_eq!(m19_freeze_sole_call(&tmp), Verdict::Pass);
+        for source in [String::new(), format!("{call}\n{call}")] {
+            m07_write(&tmp, home, &source);
+            let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+                panic!("expected fail")
+            };
+            assert_eq!(lines.len(), 1);
+        }
+        m07_write(&tmp, home, "fn door() {}");
+        m07_write(&tmp, "crates/adapters/src/other.rs", call);
+        let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+            panic!("expected fail")
+        };
+        assert_eq!(lines.len(), 1);
+        fs::remove_file(tmp.join(home)).unwrap();
+        let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+            panic!("expected fail")
+        };
+        assert_eq!(lines.len(), 1);
+        fs::remove_dir_all(tmp).unwrap();
     }
 
     // -- M07 D9 / G-M07-1: one INSERT statement per door ------------------------------------
