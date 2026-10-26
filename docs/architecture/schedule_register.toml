@@ -1,0 +1,45 @@
+# Schedule register (C-M21-3) — one entry per row of the frozen Baseline §65 table.
+#
+# Baseline §65 "自动化 Repair Jobs" is the authority for what exists (module design note M21 D2, :120-121):
+# a repair job exists only if the §65 table lists it. This file maps each §65 job to an existing `Task`
+# variant of bins/maintenance/src/serve.rs, or records why no resident task exists and which card owns it.
+# `cargo xtask schedule-register` checks it (G-M21-1): every §65 row has an entry; every `task` names a
+# `Task` variant; no entry names a job §65 does not list; each entry has exactly one of the two targets.
+
+["PG <-> Qdrant diff"]
+not_applicable = { owner = "M21-5", reason = "missing" }
+
+["orphan relation scan"]
+not_applicable = { owner = "M21-6", reason = "missing" }
+
+["authority superseded_by consistency scan"]
+not_applicable = { owner = "M21-2", reason = "missing" }
+
+["projection watermark audit"]
+not_applicable = { owner = "M21-5", reason = "missing" }
+
+["public source closure audit"]
+not_applicable = { owner = "M20", reason = "deferred (Phase 10 / M17)" }
+
+["artifact object existence"]
+not_applicable = { owner = "M17", reason = "deferred (Phase 10 / M17)" }
+
+["stale lease/lock reap"]
+not_applicable = { owner = "M18-2", reason = "by design" }
+
+["waiting_key visibility"]
+not_applicable = { owner = "M21-6", reason = "missing" }
+
+# §65 "retention" daily; the daemon's PARTITIONS task is the retention proposal (ADR-0063 D-K), the
+# drop execution stays the owner one-shot (note :139-141).
+["retention"]
+task = "Partitions"
+
+["backup verification"]
+not_applicable = { owner = "M23-5", reason = "host cron today" }
+
+["restore drill scheduling"]
+not_applicable = { owner = "M23-5", reason = "host cron today" }
+
+["config drift"]
+not_applicable = { owner = "M23-5", reason = "missing" }

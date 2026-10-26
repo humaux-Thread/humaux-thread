@@ -181,6 +181,8 @@ jobs:
       - name: cargo xtask architecture-check
         run: cargo xtask architecture-check
 
+      - run: cargo xtask schedule-register
+
       - name: cargo xtask mechanism-registry
         run: cargo xtask mechanism-registry
 
