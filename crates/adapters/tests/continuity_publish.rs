@@ -1291,3 +1291,81 @@ fn g_289_d_invisible_caller_links_still_raise_23514() {
         );
     });
 }
+
+#[test]
+fn g_289_removal_retains_basis_and_conflicting_hash_cannot_replace_it() {
+    run_db_fixture::<Fixture, _>("g_289_removal_hash", |handle| {
+        let fixture = merge_privacy_fixture(handle);
+        let first = json!({"items":[{"source_id":"a","text":"A private item"}]});
+        assert!(matches!(
+            merge_publish(
+                &fixture,
+                fixture.user_a,
+                &first,
+                &fixture.handle.memory_source(),
+                std::slice::from_ref(&fixture.evidence_a)
+            )
+            .unwrap(),
+            PublishFacetOutcome::Published(_)
+        ));
+        let incoming = json!({"items":[{"source_id":"b","text":"B shared item"}]});
+        let rt = runtime();
+        let pool = gateway_raw(&rt, &fixture.handle.gateway_dsn);
+        let sources = std::slice::from_ref(&fixture.memory_b);
+        let removals = ["a".to_owned()];
+        let cmd = command(
+            fixture.handle.workspace,
+            fixture.handle.project,
+            ContinuityFacetKind::Decisions,
+            &incoming,
+            sources,
+            &removals,
+        );
+        let (outcome, _) = one_publish(
+            &rt,
+            &pool,
+            &merge_scope(&fixture.handle, fixture.user_b),
+            &cmd,
+        )
+        .unwrap();
+        let PublishFacetOutcome::Published(result) = outcome else {
+            panic!("removal merge must publish")
+        };
+        assert_merge_links(&fixture, result.facet_version_id.0, true);
+        assert_merge_stale(&fixture.handle, fixture.user_b);
+        let facet = merge_read(&fixture.handle, fixture.user_a);
+        assert_eq!(facet["status"], "CURRENT");
+        assert_eq!(facet["current"]["body"], incoming);
+        let mut admin = fixture.handle.admin();
+        let hash: Vec<u8> = admin
+            .query_one(
+                "UPDATE private.memory_records SET content='{\"changed\":true}' WHERE memory_id=$1 \
+             RETURNING sha256(convert_to(content::text,'UTF8'))",
+                &[&fixture.handle.memory],
+            )
+            .unwrap()
+            .get(0);
+        let changed = ContinuityMemorySource {
+            memory_id: fixture.handle.memory,
+            content_sha256: hash.try_into().unwrap(),
+        };
+        assert_ne!(changed.content_sha256, fixture.handle.memory_hash);
+        assert_eq!(
+            merge_publish(&fixture, fixture.user_a, &incoming, &[changed], &[]),
+            Err(ErrorCode::InvalidInput)
+        );
+        assert_eq!(
+            version_census(&mut admin, fixture.handle.project, "DECISIONS"),
+            (2, 1, 2)
+        );
+        assert_eq!(
+            slot_of(&mut admin, fixture.handle.project, "DECISIONS"),
+            (
+                2,
+                Some(result.facet_version_id.0),
+                Some("CURRENT".to_owned())
+            )
+        );
+        assert_merge_links(&fixture, result.facet_version_id.0, true);
+    });
+}
