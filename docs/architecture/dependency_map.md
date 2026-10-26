@@ -806,6 +806,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::edge`
 - env `CARGO_MANIFEST_DIR`
 
+#### `protocol::error_map`
+
+#### `protocol::mcp`
+
+#### `protocol::mcp_catalog`
+
 #### `retrieval::candidate`
 
 #### `retrieval::compiler`
@@ -16317,6 +16323,7 @@ why: reuse compute_api_key_hash instead of re-deriving the keyed hash
 
 modules naming it:
 - `tests`
+- `xtask::architecture_check`
 - `xtask::e2e_seed`
 - `xtask::load`
 
