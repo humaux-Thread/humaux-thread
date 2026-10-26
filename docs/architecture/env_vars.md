@@ -998,18 +998,6 @@ processes:
 modules:
 - `xtask::dep_map`
 
-### `HUMAUX_COORD_PROJECT_MAX_DEPTH`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-
-modules:
-- `adapters::coord_tree_repo`
-
 ### `HUMAUX_DRILL_CPUS`
 - witness: literal
 - registry: raw
@@ -5889,8 +5877,8 @@ modules:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
-- `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -5931,7 +5919,6 @@ modules:
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
-- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
@@ -5958,7 +5945,6 @@ modules:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
-- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::task_grant_contract`
 - `adapters::tests::tenant_placements_migration`
@@ -5987,6 +5973,7 @@ modules:
 - `private-worker::tests::start_manual_contribution_command_0131`
 - `private-worker::tests::support::double_spend`
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
