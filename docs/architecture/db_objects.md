@@ -977,6 +977,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::forget_repo`
 
 executed by:
 
