@@ -8815,7 +8815,11 @@ fn mcp_tool_surface_truth(root: &Path) -> Verdict {
         // `not_applicable` made this arm switchable off by a contract edit (renaming `oneOf`
         // to `anyOf` stopped the whole wired ∪ declared-only == catalog leg from judging
         // anything while the run still exited 0). Present-but-unreadable is a red gate.
-        Err(CatalogDefect::Missing(object)) => return Verdict::NotApplicable(object),
+        Err(CatalogDefect::Missing(object)) => {
+            return Verdict::Fail(vec![format!(
+                "required MCP catalog input missing: {object}"
+            )]);
+        }
         Err(CatalogDefect::Malformed(object)) => {
             return Verdict::Fail(vec![format!(
                 "canonical MCP catalog is present but unreadable, so the catalog leg of this \
@@ -8874,7 +8878,64 @@ fn catalog_operation_keys(root: &Path) -> Result<BTreeSet<String>, CatalogDefect
             keys.insert(key.to_string());
         }
     }
+    let failures = operation_registry_failures(&manifest, &keys);
+    if !failures.is_empty() {
+        return Err(CatalogDefect::Malformed(failures.join("; ")));
+    }
     Ok(keys)
+}
+
+/// G-M26-1 extends ADR-0044's schema/dispatch/document equality; no second gate arm (§33.1).
+fn operation_registry_failures(
+    manifest: &serde_json::Value,
+    schema_keys: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if manifest["contract_version"] != "2" {
+        failures.push("MCP registry contract_version must be 2".to_string());
+    }
+    let Some(operations) = manifest["operations"].as_array() else {
+        failures
+            .push("contracts/mcp/manifest.json#/operations is missing or malformed".to_string());
+        return failures;
+    };
+    let mut registry = BTreeSet::new();
+    for entry in operations {
+        let Some(op) = entry["op"].as_str().filter(|op| !op.is_empty()) else {
+            failures.push("registry entry lacks op".to_string());
+            continue;
+        };
+        if !registry.insert(op.to_string()) {
+            failures.push(format!("registry `{op}` is duplicated"));
+        }
+        for (field, allowed) in [
+            ("edition", &["core", "cloud"][..]),
+            ("effect", &["read", "write", "destructive"][..]),
+        ] {
+            if !entry[field]
+                .as_str()
+                .is_some_and(|value| allowed.contains(&value))
+            {
+                failures.push(format!("registry `{op}` lacks valid {field}"));
+            }
+        }
+        if !entry["owner_module"].as_str().is_some_and(is_module_id) {
+            failures.push(format!("registry `{op}` lacks known owner_module"));
+        }
+    }
+    name_diff(
+        "registry omits schema operation",
+        schema_keys,
+        &registry,
+        &mut failures,
+    );
+    name_diff(
+        "registry operation is not admitted by wire schemas",
+        &registry,
+        schema_keys,
+        &mut failures,
+    );
+    failures
 }
 
 /// Card 22 review fix: `x-humaux-v1-supported` was an inert annotation. §33 and ADR-0044 both
@@ -11890,10 +11951,62 @@ runs:
 
     #[test]
     fn mcp_tool_surface_truth_real_sources_are_green() {
+        assert_eq!(mcp_tool_surface_truth(&real_root()), Verdict::Pass);
         let (dispatch, baseline, catalog) = tool_surface_sources();
         assert_eq!(
             mcp_tool_surface_truth_from(&dispatch, &baseline, &catalog),
             Verdict::Pass
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_fixture_faults() {
+        let root = real_root();
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("contracts/mcp/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let keys = catalog_operation_keys(&root).unwrap();
+        assert_eq!(keys.len(), 53);
+        assert_eq!(
+            operation_registry_failures(&manifest, &keys),
+            Vec::<String>::new()
+        );
+        let op = manifest["operations"][0]["op"].as_str().unwrap();
+        for (field, invalid, message) in [
+            ("owner_module", None, "lacks known owner_module"),
+            ("owner_module", Some("M99"), "lacks known owner_module"),
+            ("owner_module", Some(""), "lacks known owner_module"),
+            ("edition", None, "lacks valid edition"),
+            ("edition", Some("enterprise"), "lacks valid edition"),
+            ("effect", Some("execute"), "lacks valid effect"),
+        ] {
+            let mut fixture = manifest.clone();
+            let entry = fixture["operations"][0].as_object_mut().unwrap();
+            entry.remove(field);
+            if let Some(value) = invalid {
+                entry.insert(field.to_string(), value.into());
+            }
+            assert_eq!(
+                operation_registry_failures(&fixture, &keys),
+                vec![format!("registry `{op}` {message}")]
+            );
+        }
+        let mut fixture = manifest.clone();
+        fixture["operations"].as_array_mut().unwrap().remove(0);
+        assert_eq!(
+            operation_registry_failures(&fixture, &keys),
+            vec![format!("registry omits schema operation: `{op}`")]
+        );
+        let mut extra = manifest["operations"][0].clone();
+        extra["op"] = "memory.unwired".into();
+        let mut fixture = manifest;
+        fixture["operations"].as_array_mut().unwrap().push(extra);
+        assert_eq!(
+            operation_registry_failures(&fixture, &keys),
+            vec![
+                "registry operation is not admitted by wire schemas: `memory.unwired`".to_string()
+            ]
         );
     }
 
@@ -12041,11 +12154,14 @@ runs:
         fs::write(&victim, "{ not json").unwrap();
         assert!(matches!(mcp_tool_surface_truth(&tmp), Verdict::Fail(_)));
 
-        // …while an ABSENT contract is still §57.1's not_applicable.
+        // §57.1: the delivered registry cannot become not_applicable by deleting an input.
         fs::remove_file(&victim).unwrap();
         assert_eq!(
             mcp_tool_surface_truth(&tmp),
-            Verdict::NotApplicable("contracts/mcp/coordinate.schema.json".to_string())
+            Verdict::Fail(vec![
+                "required MCP catalog input missing: contracts/mcp/coordinate.schema.json"
+                    .to_string()
+            ])
         );
         fs::remove_dir_all(&tmp).ok();
     }
