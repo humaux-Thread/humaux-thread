@@ -214,6 +214,7 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
 - Candidates (deferred): a separate table with `proposed_by=model@ver`, score and state; readable only through a
   candidate API and labelled when used; never counted. A candidate becomes formal only when an A1–A4 condition appears,
   or when the user confirms a concrete manifest (D-G), and only if it passes the independence test (N09 R5).
+- Supplemented by ADR-0113 (card M15-0): curation-candidate table placement; no rule above changes.
 
 ### D-E Rule N09 — identity and attribution are never guessed
 

@@ -11,6 +11,12 @@ edition = "core"
 [lints]
 workspace = true
 
+[dependencies]
+# M19 D11 / G-M19-11: the throwaway-database guard reads `current_database()` on the caller's own blocking connection;
+# same pin as `humaux-adapters`'s test client, so the guard takes the very `Client` those tests hold.
+# why: blocking client type of require_disposable; used-by: [testkit::disposable]
+postgres = "0.19"
+
 [dev-dependencies]
 # Advanced Rust Testing / Architecture Tests > Property-based (spec，紧接
 # §79.8 Coverage 之后的未编号章节，非 §79.7 Mutation Testing): quota

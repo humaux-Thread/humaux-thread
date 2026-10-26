@@ -4,9 +4,11 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde_json, tokio, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde_json, sha2, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
+//!   env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
+//!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
+//!   HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS, HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS, HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
 //!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_AUTH_HMAC_KEY,
 //!   HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED, HUMAUX_GATEWAY_BIND_ADDR,
@@ -43,7 +45,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, adapters::quota_repo,
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
 //!   adapters::retrieve, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
 //!   gateway::cached_embedding, gateway::context,
@@ -61,6 +63,7 @@
 //! process. A tenant-specific network-policy loader needs a separate approved
 //! authorization and acceptance gate before this bootstrap can serve it.
 
+use crate::limiter::RatePolicy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{IpAddr, SocketAddr},
@@ -70,14 +73,13 @@ use std::{
 
 use humaux_adapters::{
     attribution_repo::AttributionLadder,
-    postgres::{PoolSettings, RuntimeDbPool},
-    quota_repo::RatePolicy,
+    postgres::{PoolSettings, RuntimeDbPool, SessionLock},
     retrieve::{TokenKeys, install_token_keys},
 };
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_cache::CacheConfig;
 use humaux_contracts::config_registry::{
-    ConfigEntry, effective_config_fingerprint, resolve_effective_config,
+    ConfigEntry, effective_config_fingerprint, gateway_limiter_registry, resolve_effective_config,
 };
 use humaux_contracts::retrieval_config::{
     RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
@@ -139,8 +141,17 @@ const MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS: u64 = 3600;
 /// 2162). A larger value cannot be a lease anyone reclaims from a crashed owner. Zero is refused too: a lease that has
 /// already expired when it is granted.
 const MAX_TASK_LEASE_TTL_SECONDS: u64 = 4_294_967_295;
-/// ADR-0065 D-B: the `application_name` of every gateway session — the process identity in `pg_stat_activity`
-/// (the name `/status` reports), not a tunable.
+const DEPLOYMENT_KEY: &str = "HUMAUX_GATEWAY_DEPLOYMENT";
+const SESSION_LOCK_CHECK_KEY: &str = "HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS";
+const RATE_MAX_SUBJECTS_KEYS: [&str; 5] = [
+    "HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS",
+    "HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS",
+];
+const SESSION_LOCK_TIMEOUT_KEY: &str = "HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS";
+/// ADR-0065 D-B: process identity in `pg_stat_activity`, never a tunable.
 const APPLICATION_NAME: &str = "humaux-gateway";
 
 /// ADR-0078 D-A / D-D: the gateway's one M29 attribution implementation. Every Memory door caller in this process
@@ -228,11 +239,15 @@ pub struct GatewayBootstrap {
     bind_addr: SocketAddr,
     http: McpHttpConfig,
     pg_dsn: String,
+    deployment: String,
+    session_lock_check: Duration,
+    session_lock_timeout: Duration,
     /// ADR-0065 D-A / D-B: the `role_gateway` pool's size and session timeouts, from the `PG_*` keys.
     pool_settings: PoolSettings,
     /// ADR-0065 D-C: the §67.2 admission bounds, from the five `ADMISSION_*` keys.
     admission: AdmissionSettings,
     guard: GuardSettings,
+    continuity_list_merge_attempts: usize,
     remember_policy: RememberPolicy,
     remember_event_kind: RememberEventKind,
     context_bootstrap: ContextBootstrap,
@@ -297,6 +312,9 @@ struct SemanticRecallConfig {
 /// Ready-to-serve components for `main`: bind [`Self::bind_addr`], then serve
 /// [`Self::adapter`] through axum's `into_make_service_with_connect_info`.
 pub struct GatewayRuntime {
+    session_lock: SessionLock,
+    session_lock_check: Duration,
+    session_lock_timeout: Duration,
     bind_addr: SocketAddr,
     adapter: McpAdapter,
     config_fingerprint: String,
@@ -310,6 +328,16 @@ pub struct GatewayRuntime {
 }
 
 impl GatewayRuntime {
+    /// Fail closed when the dedicated singleton session dies; never reconnect (ADR-0100).
+    pub async fn watch_session_lock(&mut self) -> Result<(), humaux_domain::error::ErrorCode> {
+        loop {
+            tokio::time::sleep(self.session_lock_check).await;
+            tokio::time::timeout(self.session_lock_timeout, self.session_lock.check())
+                .await
+                .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)??;
+        }
+    }
+
     /// M02 D3: hands the auth-surface key set to the auth wiring once (`None` when the surface is off, or after the
     /// first call).
     pub fn take_auth_keys(&mut self) -> Option<TokenKeys> {
@@ -373,8 +401,18 @@ impl GatewayBootstrap {
     /// registry. Unknown, missing, empty, and malformed configuration fails
     /// before any database connection or listener bind.
     pub fn load_from_env() -> Result<Self, BootstrapError> {
-        let raw = std::env::vars_os()
-            .filter(|(key, _)| key.to_string_lossy().starts_with(PREFIX))
+        Self::from_env_vars(std::env::vars_os())
+    }
+
+    fn from_env_vars(
+        vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Result<Self, BootstrapError> {
+        let shared = humaux_contracts::config_registry::continuity_config_registry();
+        let raw = vars
+            .filter(|(key, _)| {
+                let key = key.to_string_lossy();
+                key.starts_with(PREFIX) || shared.iter().any(|entry| entry.name == key)
+            })
             .map(|(key, value)| {
                 let key = key
                     .into_string()
@@ -403,6 +441,9 @@ impl GatewayBootstrap {
         let pool = RuntimeDbPool::connect_with(&self.pg_dsn, &self.pool_settings)
             .await
             .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_PG_DSN", "connection rejected"))?;
+        let session_lock = acquire_gateway_lock(&pool, &self.deployment)
+            .await
+            .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
         let guard = Arc::new(
             GatewayGuard::new(pool, self.guard)
                 .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
@@ -421,6 +462,7 @@ impl GatewayBootstrap {
             self.remember_event_kind,
             self.context_bootstrap,
         )
+        .with_continuity_list_merge_attempts(self.continuity_list_merge_attempts)
         .with_confirm_token_ttl(self.confirm_token_ttl)
         .map_err(|_| {
             BootstrapError::new(
@@ -467,6 +509,9 @@ impl GatewayBootstrap {
         }
         let application = Arc::new(application);
         Ok(GatewayRuntime {
+            session_lock,
+            session_lock_check: self.session_lock_check,
+            session_lock_timeout: self.session_lock_timeout,
             bind_addr: self.bind_addr,
             adapter: McpAdapter::new(application, advertised, self.http),
             config_fingerprint: self.config_fingerprint,
@@ -487,6 +532,7 @@ impl GatewayBootstrap {
         let registry = registry();
         let effective = resolve_effective_config(&registry, &raw)
             .map_err(|error| BootstrapError::new(error.entry_name, "missing or undeclared"))?;
+        let continuity_list_merge_attempts = validate_continuity_config(&effective)?;
         let remember_policy = parse_remember_policy(&effective)?;
         let context_bootstrap = parse_context_bootstrap(&effective, &remember_policy)?;
         let guard = parse_guard(&effective)?;
@@ -542,9 +588,19 @@ impl GatewayBootstrap {
             bind_addr: parse_bind_addr(required(&effective, "HUMAUX_GATEWAY_BIND_ADDR")?)?,
             http: parse_http(&effective)?,
             pg_dsn: required(&effective, "HUMAUX_GATEWAY_PG_DSN")?.to_owned(),
+            deployment: required(&effective, DEPLOYMENT_KEY)?.to_owned(),
+            session_lock_check: seconds(
+                required(&effective, SESSION_LOCK_CHECK_KEY)?,
+                SESSION_LOCK_CHECK_KEY,
+            )?,
+            session_lock_timeout: seconds(
+                required(&effective, SESSION_LOCK_TIMEOUT_KEY)?,
+                SESSION_LOCK_TIMEOUT_KEY,
+            )?,
             pool_settings,
             admission,
             guard,
+            continuity_list_merge_attempts,
             remember_policy,
             remember_event_kind: parse_remember_event_kind(&effective)?,
             context_bootstrap,
@@ -565,6 +621,45 @@ impl GatewayBootstrap {
             effective_config: effective_config_rows(&registry, &raw, &effective),
         })
     }
+}
+
+/// The gateway boot lock, scoped to its deployment; no SQLx escapes the adapter (§67.2; ADR-0100).
+/// A second gateway gets the exact existing `Conflict` error; a dead session is `DependencyUnavailable`.
+pub async fn acquire_gateway_lock(
+    pool: &RuntimeDbPool,
+    deployment: &str,
+) -> Result<SessionLock, humaux_domain::error::ErrorCode> {
+    use humaux_domain::error::ErrorCode;
+    use sha2::{Digest, Sha256};
+    if deployment.trim().is_empty() {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let digest = Sha256::digest(
+        [
+            b"humaux-gateway-singleton\0".as_slice(),
+            deployment.as_bytes(),
+        ]
+        .concat(),
+    );
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    pool.try_session_lock(i64::from_be_bytes(bytes))
+        .await?
+        .ok_or(ErrorCode::Conflict)
+}
+
+fn validate_continuity_config(
+    effective: &BTreeMap<String, String>,
+) -> Result<usize, BootstrapError> {
+    use humaux_contracts::config_registry::{
+        CONTINUITY_LIST_MERGE_ATTEMPTS, continuity_list_merge_attempts,
+    };
+    continuity_list_merge_attempts(
+        effective
+            .get(CONTINUITY_LIST_MERGE_ATTEMPTS)
+            .map(String::as_str),
+    )
+    .map_err(|error| BootstrapError::new(error.entry_name, "must be a positive integer"))
 }
 
 /// ADR-0061 D-B: the ops listener binds loopback only, on a fixed port Prometheus can target.
@@ -739,6 +834,12 @@ fn parse_guard(effective: &BTreeMap<String, String>) -> Result<GuardSettings, Bo
             "HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST",
         )?,
         tenant_network: BTreeMap::new(),
+        rate_max_subjects: RATE_MAX_SUBJECTS_KEYS
+            .map(|key| parse_usize(required(effective, key)?, key))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| BootstrapError::new("rate subject caps", "expected five tier caps"))?,
         rates: GuardRatePolicies {
             preauth_ip: rate(effective, RATE_BUCKET_KEYS[0])?,
             credential: rate(effective, RATE_BUCKET_KEYS[1])?,
@@ -1327,10 +1428,15 @@ pub fn registry() -> Vec<ConfigEntry> {
         false,
         "60",
     ));
-    for (_, capacity_key, refill_key) in RATE_BUCKET_KEYS {
-        entries.push(entry(capacity_key, "i64", false));
-        entries.push(entry(refill_key, "i64", false));
-    }
+    entries.extend(gateway_limiter_registry(
+        RATE_MAX_SUBJECTS_KEYS,
+        [
+            DEPLOYMENT_KEY,
+            SESSION_LOCK_CHECK_KEY,
+            SESSION_LOCK_TIMEOUT_KEY,
+        ],
+    ));
+    entries.extend(humaux_contracts::config_registry::continuity_config_registry());
     entries.extend(retrieval_profile_registry().into_iter().map(|mut entry| {
         entry.name = retrieval_env_key(&entry.name);
         entry
@@ -1713,6 +1819,47 @@ mod tests {
         KEY_MODEL_SHA256, KEY_RECIPE, KEY_REPO, KEY_REVISION, KEY_TOKENIZER_SHA256,
     };
 
+    #[test]
+    fn limiter_registry_has_exactly_the_eighteen_expected_defaults() {
+        let entries = gateway_limiter_registry(
+            RATE_MAX_SUBJECTS_KEYS,
+            [
+                DEPLOYMENT_KEY,
+                SESSION_LOCK_CHECK_KEY,
+                SESSION_LOCK_TIMEOUT_KEY,
+            ],
+        );
+        assert_eq!(entries.len(), 18);
+        let actual: BTreeMap<_, _> = entries
+            .into_iter()
+            .map(|entry| (entry.name, entry.default.unwrap()))
+            .collect();
+        let expected: BTreeMap<_, _> = [
+            ("HUMAUX_GATEWAY_RATE_PREAUTH_IP_CAPACITY", "256"),
+            ("HUMAUX_GATEWAY_RATE_PREAUTH_IP_REFILL_PER_SECOND", "128"),
+            ("HUMAUX_GATEWAY_RATE_CREDENTIAL_CAPACITY", "64"),
+            ("HUMAUX_GATEWAY_RATE_CREDENTIAL_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_USER_CAPACITY", "128"),
+            ("HUMAUX_GATEWAY_RATE_USER_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_TENANT_CAPACITY", "128"),
+            ("HUMAUX_GATEWAY_RATE_TENANT_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_OPERATION_CAPACITY", "64"),
+            ("HUMAUX_GATEWAY_RATE_OPERATION_REFILL_PER_SECOND", "20"),
+            ("HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS", "10000"),
+            ("HUMAUX_GATEWAY_DEPLOYMENT", "default"),
+            ("HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS", "5"),
+            ("HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS", "2"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        assert_eq!(actual, expected);
+    }
+
     fn raw() -> BTreeMap<String, String> {
         let tenant = Uuid::now_v7();
         let workspace = Uuid::now_v7();
@@ -1793,6 +1940,82 @@ mod tests {
             raw.insert(entry.name, value);
         }
         raw
+    }
+
+    fn boot_continuity(value: Option<&str>) -> Result<GatewayBootstrap, BootstrapError> {
+        use humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS;
+        let mut values = raw();
+        values.remove(CONTINUITY_LIST_MERGE_ATTEMPTS);
+        if let Some(value) = value {
+            values.insert(CONTINUITY_LIST_MERGE_ATTEMPTS.into(), value.into());
+        }
+        GatewayBootstrap::from_env_vars(
+            values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        )
+    }
+
+    #[test]
+    fn continuity_boot_retains_shared_key_and_adapter_budget() {
+        use humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS;
+        let default = boot_continuity(None).expect("registered default");
+        assert_eq!(default.continuity_list_merge_attempts, 3);
+        let changed = boot_continuity(Some("5")).expect("shared override");
+        assert_eq!(changed.continuity_list_merge_attempts, 5);
+        assert_ne!(default.config_fingerprint, changed.config_fingerprint);
+        let rows: Vec<_> = changed
+            .effective_config
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter(|row| row["name"] == CONTINUITY_LIST_MERGE_ATTEMPTS)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![&serde_json::json!({
+                "name": CONTINUITY_LIST_MERGE_ATTEMPTS, "source": "env", "value": "5"
+            })]
+        );
+        let command = crate::continuity::PublishFacetCommand {
+            list_merge_attempts: changed.continuity_list_merge_attempts,
+            project_id: humaux_domain::continuity::ProjectId(Uuid::now_v7()),
+            workspace_id: humaux_domain::ids::WorkspaceId(Uuid::now_v7()),
+            facet_kind: humaux_domain::continuity::ContinuityFacetKind::Decisions,
+            body: serde_json::json!({"items":[]}),
+            memories: vec![],
+            evidence: vec![],
+            removals: vec![],
+        };
+        assert_eq!(
+            crate::continuity::repository_command(&command).list_merge_attempts,
+            5
+        );
+    }
+
+    #[test]
+    fn continuity_boot_refuses_invalid_shared_values() {
+        use humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS;
+        for value in ["0", "bad", "18446744073709551616"] {
+            let error = boot_continuity(Some(value)).err().expect("boot must fail");
+            assert_eq!(
+                error,
+                BootstrapError::new(CONTINUITY_LIST_MERGE_ATTEMPTS, "must be a positive integer")
+            );
+        }
+        let mut values = raw();
+        values.insert("HUMAUX_GATEWAY_UNKNOWN".into(), "5".into());
+        let error = GatewayBootstrap::from_env_vars(
+            values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        )
+        .err()
+        .expect("unknown gateway key must fail");
+        assert_eq!(
+            error,
+            BootstrapError::new("HUMAUX_GATEWAY_UNKNOWN", "missing or undeclared")
+        );
     }
 
     /// A per-call generated 32-byte key, hex-encoded (never a literal key).

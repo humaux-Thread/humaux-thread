@@ -1,5 +1,5 @@
 //! `contracts::config_registry` — Typed Config Registry + effective config fingerprint (§50).
-//! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[sha2]; services=[]; env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS]; modules=[]
 //! Called-by: [adapters::qdrant, contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
 //! Invariants: [the Qdrant collection knobs (datatype, HNSW, generation label) are read here and nowhere else; the
 //!   unset configuration resolves to Qdrant's own defaults, so a default collection body carries none of them]
@@ -24,6 +24,35 @@ use std::fmt;
 /// caller in this workspace has needed that distinction yet.
 pub fn read_env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// §50 / ADR-0094 D-D: total list-publish attempts, including the initial attempt.
+pub const CONTINUITY_LIST_MERGE_ATTEMPTS: &str = "HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS";
+
+/// §78.1: one registry default shared by bootstrap and the transaction adapter.
+pub fn continuity_config_registry() -> Vec<ConfigEntry> {
+    vec![ConfigEntry {
+        name: CONTINUITY_LIST_MERGE_ATTEMPTS.to_owned(),
+        type_name: "usize".to_owned(),
+        default: Some("3".to_owned()),
+        scope: "process".to_owned(),
+        secret: false,
+        reloadability: "static".to_owned(),
+        owner_module: "adapters.continuity_repo".to_owned(),
+    }]
+}
+
+/// §50: unset uses the registered default; malformed or zero attempt budgets fail loud.
+pub fn continuity_list_merge_attempts(value: Option<&str>) -> Result<usize, ConfigResolveError> {
+    let registry = continuity_config_registry();
+    value
+        .or(registry[0].default.as_deref())
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|attempts| *attempts > 0)
+        .ok_or_else(|| ConfigResolveError {
+            entry_name: CONTINUITY_LIST_MERGE_ATTEMPTS.to_owned(),
+            reason: "must be a positive integer".to_owned(),
+        })
 }
 
 /// 单条 typed config registry entry（§50 字段表逐字对应）。
@@ -325,9 +354,73 @@ pub fn resolve_collection_config(
     })
 }
 
+/// M03 registered start values (§78.1; ADR-0100); X-RATE remains owner-gated.
+/// Process bootstrap supplies its private key names so shared defaults do not declare other processes
+/// as readers of gateway-only inputs (§50; ADR-0066 D-T).
+pub fn gateway_limiter_registry(
+    max_subjects: [&str; 5],
+    [deployment, heartbeat, timeout]: [&str; 3],
+) -> Vec<ConfigEntry> {
+    // ponytail: conservative start values, X-RATE certifies; account 128/20 is the B23 starting point.
+    let mut entries = Vec::new();
+    for (tier, capacity, refill) in [
+        ("PREAUTH_IP", "256", "128"),
+        ("CREDENTIAL", "64", "20"),
+        ("USER", "128", "20"),
+        ("TENANT", "128", "20"),
+        ("OPERATION", "64", "20"),
+    ] {
+        for (suffix, default) in [("CAPACITY", capacity), ("REFILL_PER_SECOND", refill)] {
+            entries.push(gateway_limiter_entry(
+                &format!("HUMAUX_GATEWAY_RATE_{tier}_{suffix}"),
+                "i64",
+                default,
+            ));
+        }
+    }
+    entries.extend([
+        gateway_limiter_entry(deployment, "string", "default"),
+        gateway_limiter_entry(heartbeat, "u64", "5"),
+        gateway_limiter_entry(timeout, "u64", "2"),
+    ]);
+    entries.extend(max_subjects.map(|key| gateway_limiter_entry(key, "usize", "10000")));
+    entries
+}
+
+fn gateway_limiter_entry(name: &str, type_name: &str, default: &str) -> ConfigEntry {
+    ConfigEntry {
+        name: name.to_owned(),
+        type_name: type_name.to_owned(),
+        default: Some(default.to_owned()),
+        scope: "process".to_owned(),
+        secret: false,
+        reloadability: "static".to_owned(),
+        owner_module: "gateway.bootstrap".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuity_attempt_budget_is_registered_positive_and_defaults_to_three() {
+        let entries = continuity_config_registry();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, CONTINUITY_LIST_MERGE_ATTEMPTS);
+        assert_eq!(entries[0].default.as_deref(), Some("3"));
+        assert_eq!(continuity_list_merge_attempts(None), Ok(3));
+        assert_eq!(continuity_list_merge_attempts(Some("5")), Ok(5));
+        for value in ["0", "", "-1", "bad"] {
+            assert_eq!(
+                continuity_list_merge_attempts(Some(value)),
+                Err(ConfigResolveError {
+                    entry_name: CONTINUITY_LIST_MERGE_ATTEMPTS.to_owned(),
+                    reason: "must be a positive integer".to_owned(),
+                })
+            );
+        }
+    }
 
     fn entry(name: &str, default: Option<&str>) -> ConfigEntry {
         ConfigEntry {
