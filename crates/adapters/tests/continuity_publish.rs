@@ -717,3 +717,70 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
         );
     });
 }
+
+/// §25.3.1 / #292: read, merge and SQL failures cannot poison the caller's transaction or GUC.
+#[test]
+fn publish_failure_restores_outer_transaction_and_workspace() {
+    run_db_fixture::<Fixture, _>("publish_failure_outer_txn", |fixture| {
+        let rt = runtime();
+        let pool = gateway_raw(&rt, &fixture.gateway_dsn);
+        let scope = fixture.scope();
+        let memories = fixture.memory_source();
+        let goal = json!({"goal":"failed publication"});
+        let malformed = json!({"items":[{"text":"missing identity"}]});
+        let cases = [
+            (
+                Uuid::now_v7(),
+                ContinuityFacetKind::Goal,
+                &goal,
+                &memories[..],
+                ErrorCode::NotFound,
+            ),
+            (
+                fixture.project,
+                ContinuityFacetKind::Goal,
+                &goal,
+                &[][..],
+                ErrorCode::InvalidInput,
+            ),
+            (
+                fixture.project,
+                ContinuityFacetKind::Decisions,
+                &malformed,
+                &memories[..],
+                ErrorCode::InvalidInput,
+            ),
+        ];
+        for (project, kind, body, sources, expected) in cases {
+            let input = command(fixture.workspace, project, kind, body, sources, &[]);
+            rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — caller transaction survives each failed publish
+                let mut tx = pool.begin().await.expect("outer transaction");
+                sqlx::query("SELECT set_config('humaux.workspace_id',$1,true)")
+                    .bind(fixture.workspace.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .expect("caller workspace");
+                assert_eq!(
+                    continuity_repo::publish_facets_in_txn(&mut tx, &scope, &input).await,
+                    Err(expected)
+                );
+                let value: (i32, String) =
+                    sqlx::query_as("SELECT 42::int, current_setting('humaux.workspace_id')")
+                        .fetch_one(&mut *tx)
+                        .await
+                        .expect("follow-up statement must succeed");
+                assert_eq!(
+                    value,
+                    (42, fixture.workspace.to_string()),
+                    "caller setting restored"
+                );
+                tx.commit().await.expect("outer commit");
+            });
+        }
+        assert_eq!(
+            version_census(&mut fixture.admin(), fixture.project, "GOAL"),
+            (0, 0, 0)
+        );
+    });
+}

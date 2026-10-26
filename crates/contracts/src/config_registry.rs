@@ -1,6 +1,6 @@
 //! `contracts::config_registry` — Typed Config Registry + effective config fingerprint (§50).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::qdrant, contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
+//! Called-by: [adapters::continuity_repo, adapters::qdrant, contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
 //! Invariants: [the Qdrant collection knobs (datatype, HNSW, generation label) are read here and nowhere else; the
 //!   unset configuration resolves to Qdrant's own defaults, so a default collection body carries none of them]
 //! Spec: Baseline §50; §50.1; §17.7; §78; §78.1
@@ -24,6 +24,35 @@ use std::fmt;
 /// caller in this workspace has needed that distinction yet.
 pub fn read_env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// §50 / ADR-0094 D-D: total list-publish attempts, including the initial attempt.
+pub const CONTINUITY_LIST_MERGE_ATTEMPTS: &str = "HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS";
+
+/// §78.1: one registry default shared by bootstrap and the transaction adapter.
+pub fn continuity_config_registry() -> Vec<ConfigEntry> {
+    vec![ConfigEntry {
+        name: CONTINUITY_LIST_MERGE_ATTEMPTS.to_owned(),
+        type_name: "usize".to_owned(),
+        default: Some("3".to_owned()),
+        scope: "process".to_owned(),
+        secret: false,
+        reloadability: "static".to_owned(),
+        owner_module: "adapters.continuity_repo".to_owned(),
+    }]
+}
+
+/// §50: unset uses the registered default; malformed or zero attempt budgets fail loud.
+pub fn continuity_list_merge_attempts(value: Option<&str>) -> Result<usize, ConfigResolveError> {
+    let registry = continuity_config_registry();
+    value
+        .or(registry[0].default.as_deref())
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|attempts| *attempts > 0)
+        .ok_or_else(|| ConfigResolveError {
+            entry_name: CONTINUITY_LIST_MERGE_ATTEMPTS.to_owned(),
+            reason: "must be a positive integer".to_owned(),
+        })
 }
 
 /// 单条 typed config registry entry（§50 字段表逐字对应）。
@@ -328,6 +357,25 @@ pub fn resolve_collection_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuity_attempt_budget_is_registered_positive_and_defaults_to_three() {
+        let entries = continuity_config_registry();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, CONTINUITY_LIST_MERGE_ATTEMPTS);
+        assert_eq!(entries[0].default.as_deref(), Some("3"));
+        assert_eq!(continuity_list_merge_attempts(None), Ok(3));
+        assert_eq!(continuity_list_merge_attempts(Some("5")), Ok(5));
+        for value in ["0", "", "-1", "bad"] {
+            assert_eq!(
+                continuity_list_merge_attempts(Some(value)),
+                Err(ConfigResolveError {
+                    entry_name: CONTINUITY_LIST_MERGE_ATTEMPTS.to_owned(),
+                    reason: "must be a positive integer".to_owned(),
+                })
+            );
+        }
+    }
 
     fn entry(name: &str, default: Option<&str>) -> ConfigEntry {
         ConfigEntry {

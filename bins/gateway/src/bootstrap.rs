@@ -6,7 +6,7 @@
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
+//!   env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
 //!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_AUTH_HMAC_KEY,
 //!   HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED, HUMAUX_GATEWAY_BIND_ADDR,
@@ -487,6 +487,12 @@ impl GatewayBootstrap {
         let registry = registry();
         let effective = resolve_effective_config(&registry, &raw)
             .map_err(|error| BootstrapError::new(error.entry_name, "missing or undeclared"))?;
+        humaux_contracts::config_registry::continuity_list_merge_attempts(
+            effective
+                .get(humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS)
+                .map(String::as_str),
+        )
+        .map_err(|error| BootstrapError::new(error.entry_name, "must be a positive integer"))?;
         let remember_policy = parse_remember_policy(&effective)?;
         let context_bootstrap = parse_context_bootstrap(&effective, &remember_policy)?;
         let guard = parse_guard(&effective)?;
@@ -1331,6 +1337,7 @@ pub fn registry() -> Vec<ConfigEntry> {
         entries.push(entry(capacity_key, "i64", false));
         entries.push(entry(refill_key, "i64", false));
     }
+    entries.extend(humaux_contracts::config_registry::continuity_config_registry());
     entries.extend(retrieval_profile_registry().into_iter().map(|mut entry| {
         entry.name = retrieval_env_key(&entry.name);
         entry

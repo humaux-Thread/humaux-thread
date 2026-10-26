@@ -1,9 +1,9 @@
 //! `adapters::continuity_repo` — Typed role_gateway bindings for Project Continuity registration and facet publication.
-//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[]; modules=[adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[humaux-contracts, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS]; modules=[contracts::config_registry, adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [registration and facet publication go only through the SECURITY DEFINER functions; the slot version a
 //!   publication is checked against is the door's own in-transaction read, never a caller value (§25.3.1, ADR-0094
-//!   D-C); scalar facets never retry, list facets merge-and-retry at most three times; their SQLSTATEs map to
+//!   D-C); scalar facets never retry, list facets use the registered total attempt budget; their SQLSTATEs map to
 //!   Conflict/Forbidden/InvalidInput, never a silent retry]
 //! Spec: Baseline §25.3.1; §52 D-B; ADR-0094
 //!
@@ -12,6 +12,9 @@
 //! transaction here — each attempt runs under a savepoint, because a raised SQL error would otherwise poison it.
 
 use crate::postgres::RuntimeDbPool;
+use humaux_contracts::config_registry::{
+    CONTINUITY_LIST_MERGE_ATTEMPTS, continuity_list_merge_attempts, read_env_var,
+};
 use humaux_domain::{
     continuity::{
         ContinuityFacetKind, ContinuityFacetVersionId, ContinuityPublishResult,
@@ -42,10 +45,6 @@ const LIST_FACETS: [ContinuityFacetKind; 7] = [
     ContinuityFacetKind::Procedures,
     ContinuityFacetKind::Outcomes,
 ];
-
-/// ADR-0094 D-D: a list publication re-reads, merges and retries at most three times; the next
-/// loss is the caller's `CONFLICT` with [`ConflictReason::FACET_MERGE_RETRY_EXHAUSTED`].
-const LIST_MERGE_ATTEMPTS: usize = 3;
 
 /// The canonical body of a list facet is exactly `{"items": [...]}`; this is its only key.
 const LIST_ITEMS: &str = "items";
@@ -386,16 +385,20 @@ async fn publish_attempt(
     scalar: bool,
 ) -> Result<AttemptOutcome, ErrorCode> {
     savepoint(tx).await?;
-    install_context(tx, authorization, command.workspace_id).await?;
-    install_workspace_guc(tx, None).await?;
-    let snapshot = read_slot_snapshot(tx, authorization, command).await?;
-    install_workspace_guc(tx, Some(command.workspace_id.0)).await?;
-    let body = if scalar {
-        command.body.clone()
-    } else {
-        merge_list_facet(snapshot.body.as_ref(), command.body, command.removals)?
-    };
-    match call_publish_function(tx, authorization, command, snapshot.slot_version, &body).await {
+    let result = async {
+        install_context(tx, authorization, command.workspace_id).await?;
+        install_workspace_guc(tx, None).await?;
+        let snapshot = read_slot_snapshot(tx, authorization, command).await?;
+        install_workspace_guc(tx, Some(command.workspace_id.0)).await?;
+        let body = if scalar {
+            command.body.clone()
+        } else {
+            merge_list_facet(snapshot.body.as_ref(), command.body, command.removals)?
+        };
+        call_publish_function(tx, authorization, command, snapshot.slot_version, &body).await
+    }
+    .await;
+    match result {
         Ok(result) => {
             release_savepoint(tx).await?;
             Ok(AttemptOutcome::Published(result))
@@ -404,7 +407,10 @@ async fn publish_attempt(
             rollback_to_savepoint(tx).await?;
             Ok(AttemptOutcome::Conflict)
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            rollback_to_savepoint(tx).await?;
+            Err(error)
+        }
     }
 }
 
@@ -423,15 +429,26 @@ pub async fn publish_facets_in_txn(
     if scalar && !command.removals.is_empty() {
         return Err(ErrorCode::InvalidInput);
     }
-    let attempts = if scalar { 1 } else { LIST_MERGE_ATTEMPTS };
+    let attempts = if scalar {
+        1
+    } else {
+        continuity_list_merge_attempts(read_env_var(CONTINUITY_LIST_MERGE_ATTEMPTS).as_deref())
+            .map_err(|_| ErrorCode::InvalidInput)?
+    };
     for attempt in 1..=attempts {
         match publish_attempt(tx, &narrowed, command, scalar).await? {
             AttemptOutcome::Published(result) => return Ok(PublishFacetOutcome::Published(result)),
             AttemptOutcome::Conflict if attempt < attempts => {}
             AttemptOutcome::Conflict => {
-                install_context(tx, &narrowed, command.workspace_id).await?;
-                install_workspace_guc(tx, None).await?;
-                let current = read_slot_snapshot(tx, &narrowed, command).await?;
+                savepoint(tx).await?;
+                let current = async {
+                    install_context(tx, &narrowed, command.workspace_id).await?;
+                    install_workspace_guc(tx, None).await?;
+                    read_slot_snapshot(tx, &narrowed, command).await
+                }
+                .await;
+                rollback_to_savepoint(tx).await?;
+                let current = current?;
                 let reason = if scalar {
                     ConflictReason::FACET_SLOT_VERSION_CONFLICT
                 } else {
