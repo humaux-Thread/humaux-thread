@@ -8,9 +8,10 @@
 //! Called-by: [tests]
 //! Invariants: [every call opens its own transaction and sets humaux.tenant_id first; the * -> TOMBSTONED edge and
 //!   plan-step bookkeeping run only on role_maintenance; a PG error aborts the step so the plan stays resumable; a
-//!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A); the
-//!   preview reads Memory visibility only through read_gate::readable_memory_ids and Evidence only under the caller's
-//!   RLS, and counts after both filters (G-M19-1)]
+//!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes
+//!   (scope, roots) and derives the targets, hash and requester itself; the preview reads Memory visibility through
+//!   read_gate::readable_memory_ids (secret-backed Memories dropped) and Evidence through read_gate::visibility_readable,
+//!   and counts after both filters (G-M19-1)]
 //! Spec: Baseline §3; §78.3; §37; ADR-0092 D-A, D-B
 //!
 //! `humaux_application::forget` decides *what* to delete and *in what order* (pure, no IO,
@@ -34,15 +35,15 @@ use std::collections::BTreeSet;
 
 use humaux_application::forget::{
     DeletionScopeKind, DeletionStep, DeletionTarget, DeletionTargetKind, ImpactPreview,
-    VisibleMemory, evidence_closure_targets, manifest_hash, memory_scope_targets,
+    VisibleMemory, manifest_hash,
 };
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_projection::stream::StreamKey;
 
-use crate::context_repo::set_authorization_local;
+use crate::context_repo::{set_authorization_local, visibility_from_row};
 use crate::postgres::MaintenanceDbPool;
-use crate::read_gate::readable_memory_ids;
+use crate::read_gate::{readable_memory_ids, visibility_readable};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -51,8 +52,13 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 #[derive(Debug)]
 pub enum ForgetRepoError {
     Db(sqlx::Error),
-    /// An `EVIDENCE_CLOSURE` request named no root: there is nothing to freeze.
-    NoRoots,
+    /// The freeze door refused the request: an existing [`ErrorCode`] plus a machine-readable sub-reason.
+    Refused {
+        /// The terminal error the request surfaces as.
+        code: ErrorCode,
+        /// Sub-reason, stable text (`root_unreadable`, `bad_roots`, `no_session_identity`, ...).
+        reason: &'static str,
+    },
 }
 
 impl From<sqlx::Error> for ForgetRepoError {
@@ -65,7 +71,13 @@ impl std::fmt::Display for ForgetRepoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Db(e) => write!(f, "forget_repo DB error: {e}"),
-            Self::NoRoots => write!(f, "forget_repo: EVIDENCE_CLOSURE needs at least one root"),
+            Self::Refused { code, reason } => {
+                write!(
+                    f,
+                    "forget_repo: freeze refused ({}): {reason}",
+                    code.as_str()
+                )
+            }
         }
     }
 }
@@ -304,8 +316,12 @@ where
 /// metric, not only to `deleted`). Counts `TOMBSTONED` `stream_log` rows of the tenant, settled longer than
 /// `sla` ago, while the tenant has a logically deleted `deletion_requests` row with no recorded `QDRANT_POINTS` step yet
 /// (step 5, the physical purge — §37: "字节还在...它必须有自己的出口").
-// ponytail: since 0272 a request no longer names a stream key, so the gauge is tenant-wide while any request is unpurged
-// (it can over-count rows tombstoned by an older purged request); M19-3a's seq-to-request binding restores the per-row join.
+///
+/// §41.2: a row counts only for an unpurged request logically deleted at or before the row settled, so rows tombstoned
+/// under an older, purged request never count again.
+// ponytail: since 0272 a request no longer names a stream key, so the per-seq join is the settle-time order against
+// `logical_deleted_at` (a row settled before a later request's logical deletion is never attributed to it); M19-3a's
+// seq-to-request binding makes the attribution exact.
 pub async fn tombstoned_unpurged_over_sla(
     pool: &MaintenanceDbPool,
     tenant_id: Uuid,
@@ -324,6 +340,7 @@ pub async fn tombstoned_unpurged_over_sla(
             AND EXISTS ( \
                 SELECT 1 FROM control.deletion_requests d \
                  WHERE d.tenant_id = $1 AND d.logical_deleted_at IS NOT NULL \
+                   AND s.settled_at >= d.logical_deleted_at \
                    AND NOT EXISTS ( \
                        SELECT 1 FROM ops.deletion_plan_steps p \
                         WHERE p.tenant_id = $1 AND p.deletion_request_id = d.deletion_request_id \
@@ -341,127 +358,118 @@ pub async fn tombstoned_unpurged_over_sla(
 }
 
 /// A request recorded by [`freeze_memory_in_txn`] / [`freeze_evidence_closure_in_txn`]: its id, the hash of the frozen
-/// closure and the closure itself.
+/// closure and the closure itself, all as the door stored them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenDeletion {
     /// `control.deletion_requests.deletion_request_id`.
     pub request_id: Uuid,
-    /// SHA-256 over the canonical target list ([`manifest_hash`]).
+    /// SHA-256 over the canonical target list, computed by the door ([`manifest_hash`] is its reference encoding).
     pub manifest_hash: [u8; 32],
-    /// The frozen closure.
+    /// The frozen closure, sorted.
     pub targets: Vec<DeletionTarget>,
 }
 
-/// Records one request and its frozen targets through `control.deletion_request_freeze` (the only write path, 0272).
+/// Maps the door's SQLSTATE to an existing [`ErrorCode`] plus a sub-reason (0272): `P0002` an unreadable or foreign root,
+/// `22023` a malformed argument, `42501` a session without tenant or user.
+fn door_refusal(error: sqlx::Error) -> ForgetRepoError {
+    let state = error
+        .as_database_error()
+        .and_then(|e| e.code().map(|c| c.into_owned()));
+    match state.as_deref() {
+        Some("P0002") => ForgetRepoError::Refused {
+            code: ErrorCode::NotFound,
+            reason: "root_unreadable",
+        },
+        Some("22023") => ForgetRepoError::Refused {
+            code: ErrorCode::InvalidInput,
+            reason: "bad_roots",
+        },
+        Some("42501") => ForgetRepoError::Refused {
+            code: ErrorCode::Forbidden,
+            reason: "no_session_identity",
+        },
+        _ => ForgetRepoError::Db(error),
+    }
+}
+
+/// Records one request through `control.deletion_request_freeze` (the only write path, 0272) and reads back what the door
+/// stored. The door derives the targets, the hash and `requested_by`; nothing but `(scope, roots)` crosses the call.
 async fn freeze_in_txn(
     txn: &mut Txn<'_>,
-    tenant_id: Uuid,
-    requested_by: Uuid,
+    authorization: &AuthorizationScope,
     scope_kind: DeletionScopeKind,
-    scope_id: Uuid,
-    targets: Vec<DeletionTarget>,
+    roots: &[Uuid],
 ) -> Result<FrozenDeletion, ForgetRepoError> {
-    set_tenant_local(txn, tenant_id).await?;
-    let hash = manifest_hash(&targets);
-    let kinds: Vec<String> = targets
+    let tenant_id = authorization.tenant_id().0;
+    set_authorization_local(txn, authorization)
+        .await
+        .map_err(|code| ForgetRepoError::Refused {
+            code,
+            reason: "session_setup",
+        })?;
+    let request_id: Uuid =
+        sqlx::query_scalar("SELECT control.deletion_request_freeze($1, $2, $3::uuid[])")
+            .bind(tenant_id)
+            .bind(scope_kind.as_db_str())
+            .bind(roots)
+            .fetch_one(&mut **txn)
+            .await
+            .map_err(door_refusal)?;
+    let stored = load_request(txn, tenant_id, request_id)
+        .await
+        .map_err(|code| ForgetRepoError::Refused {
+            code,
+            reason: "frozen_request_unreadable",
+        })?;
+    let mut targets: Vec<DeletionTarget> = stored
+        .memory_ids
         .iter()
-        .map(|t| t.kind.as_db_str().to_owned())
+        .map(|id| DeletionTarget {
+            kind: DeletionTargetKind::Memory,
+            id: *id,
+        })
+        .chain(stored.evidence_ids.iter().map(|id| DeletionTarget {
+            kind: DeletionTargetKind::Evidence,
+            id: *id,
+        }))
         .collect();
-    let ids: Vec<Uuid> = targets.iter().map(|t| t.id).collect();
-    let row = sqlx::query(
-        "SELECT control.deletion_request_freeze($1, $2, $3, $4, $5, $6::text[], $7::uuid[]) AS request_id",
-    )
-    .bind(tenant_id)
-    .bind(scope_kind.as_db_str())
-    .bind(scope_id)
-    .bind(requested_by)
-    .bind(hash.as_slice())
-    .bind(kinds)
-    .bind(ids)
-    .fetch_one(&mut **txn)
-    .await?;
+    targets.sort();
+    if manifest_hash(&targets) != stored.manifest_hash {
+        return Err(ForgetRepoError::Refused {
+            code: ErrorCode::Internal,
+            reason: "manifest_hash_drift",
+        });
+    }
     Ok(FrozenDeletion {
-        request_id: row.try_get("request_id")?,
-        manifest_hash: hash,
+        request_id,
+        manifest_hash: stored.manifest_hash,
         targets,
     })
 }
 
-/// Freezes a `MEMORY`-scope request (ADR-0092 D-A): the Memory alone, its source Evidence retained.
+/// Freezes a `MEMORY`-scope request (ADR-0092 D-A): the Memory alone, its source Evidence retained. The Memory must be
+/// readable by `authorization` (the door re-judges it, §8.6).
 pub async fn freeze_memory_in_txn(
     txn: &mut Txn<'_>,
-    tenant_id: Uuid,
-    requested_by: Uuid,
+    authorization: &AuthorizationScope,
     memory_id: Uuid,
 ) -> Result<FrozenDeletion, ForgetRepoError> {
-    let targets = memory_scope_targets(memory_id);
-    freeze_in_txn(
-        txn,
-        tenant_id,
-        requested_by,
-        DeletionScopeKind::Memory,
-        memory_id,
-        targets,
-    )
-    .await
+    freeze_in_txn(txn, authorization, DeletionScopeKind::Memory, &[memory_id]).await
 }
 
-type UuidPairs = Vec<(Uuid, Uuid)>;
-
-/// `(parent, child)` DERIVED_FROM edges and `(memory, evidence)` links of one tenant, for the closure walk.
-async fn closure_inputs(
-    txn: &mut Txn<'_>,
-    tenant_id: Uuid,
-) -> Result<(UuidPairs, UuidPairs), sqlx::Error> {
-    let edges = sqlx::query(
-        "SELECT e.parent_evidence_id, e.child_evidence_id FROM private.evidence_edges e \
-           JOIN private.evidence_objects o ON o.evidence_id = e.child_evidence_id \
-          WHERE o.tenant_id = $1 AND e.relation = 'DERIVED_FROM'",
-    )
-    .bind(tenant_id)
-    .fetch_all(&mut **txn)
-    .await?;
-    let links = sqlx::query(
-        "SELECT me.memory_id, me.evidence_id FROM private.memory_evidence me \
-           JOIN private.memory_records m ON m.memory_id = me.memory_id \
-          WHERE m.tenant_id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_all(&mut **txn)
-    .await?;
-    let pairs = |rows: Vec<sqlx::postgres::PgRow>| -> Result<UuidPairs, sqlx::Error> {
-        rows.iter()
-            .map(|r| -> Result<(Uuid, Uuid), sqlx::Error> {
-                Ok((r.try_get::<Uuid, _>(0)?, r.try_get::<Uuid, _>(1)?))
-            })
-            .collect()
-    };
-    Ok((pairs(edges)?, pairs(links)?))
-}
-
-/// Freezes an `EVIDENCE_CLOSURE`-scope request from explicit `roots` (ADR-0092 D-A, ADR-0079 D-J). The scope id is the
-/// smallest root (an anchor; every root is itself a target).
-///
-/// The walk sees what the connection's RLS context sees: the caller must run it in a context that reads the whole closure
-/// (the closure is frozen from that view, preview filtering happens later in [`preview_in_txn`]).
-// ponytail: loads the tenant's DERIVED_FROM edges and memory links whole, upgrade to a recursive CTE with the purge door (M19-5).
+/// Freezes an `EVIDENCE_CLOSURE`-scope request from explicit `roots` (ADR-0092 D-A, ADR-0079 D-J): the roots plus every
+/// Memory with any input among them, whole. The door walks the tenant under a tenant-only predicate, so Memories the caller
+/// cannot read are frozen too; the roots themselves must be readable by `authorization`. Run it as `role_gateway`.
 pub async fn freeze_evidence_closure_in_txn(
     txn: &mut Txn<'_>,
-    tenant_id: Uuid,
-    requested_by: Uuid,
+    authorization: &AuthorizationScope,
     roots: &[Uuid],
 ) -> Result<FrozenDeletion, ForgetRepoError> {
-    let anchor = *roots.iter().min().ok_or(ForgetRepoError::NoRoots)?;
-    set_tenant_local(txn, tenant_id).await?;
-    let (edges, links) = closure_inputs(txn, tenant_id).await?;
-    let targets = evidence_closure_targets(roots, &edges, &links);
     freeze_in_txn(
         txn,
-        tenant_id,
-        requested_by,
+        authorization,
         DeletionScopeKind::EvidenceClosure,
-        anchor,
-        targets,
+        roots,
     )
     .await
 }
@@ -533,7 +541,11 @@ async fn visible_titles(
     let rows = sqlx::query(
         "SELECT m.memory_id, mt.title FROM private.memory_records m \
            LEFT JOIN private.memory_text_v mt ON mt.tenant_id = m.tenant_id AND mt.memory_id = m.memory_id \
-          WHERE m.tenant_id = $1 AND m.memory_id = ANY($2)",
+          WHERE m.tenant_id = $1 AND m.memory_id = ANY($2) \
+            AND NOT EXISTS ( \
+                SELECT 1 FROM private.memory_evidence me \
+                  JOIN private.evidence_objects eo ON eo.evidence_id = me.evidence_id AND eo.tenant_id = m.tenant_id \
+                 WHERE me.memory_id = m.memory_id AND eo.data_class = 'SECRET_MATERIAL')",
     )
     .bind(tenant_id)
     .bind(readable)
@@ -550,22 +562,29 @@ async fn visible_titles(
         .collect()
 }
 
-/// Closure Evidence the caller's RLS context can read, and which of it links two or more subjects.
+/// Closure Evidence `authorization` may read (the §6.1.1 judgement per row, so another workspace's Evidence never counts),
+/// and which of it links two or more subjects.
 async fn visible_evidence(
     txn: &mut Txn<'_>,
-    tenant_id: Uuid,
+    authorization: &AuthorizationScope,
     candidates: &[Uuid],
 ) -> Result<(BTreeSet<Uuid>, BTreeSet<Uuid>), ErrorCode> {
-    let readable = sqlx::query("SELECT evidence_id FROM private.evidence_objects WHERE tenant_id = $1 AND evidence_id = ANY($2)")
-        .bind(tenant_id)
-        .bind(candidates)
-        .fetch_all(&mut **txn)
-        .await
-        .map_err(dependency)?;
-    let readable: BTreeSet<Uuid> = readable
-        .iter()
-        .map(|r| r.try_get::<Uuid, _>("evidence_id").map_err(dependency))
-        .collect::<Result<_, _>>()?;
+    let tenant_id = authorization.tenant_id().0;
+    let rows = sqlx::query(
+        "SELECT evidence_id, visibility_class, visibility_user_id, visibility_workspace_id \
+           FROM private.evidence_objects WHERE tenant_id = $1 AND evidence_id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(candidates)
+    .fetch_all(&mut **txn)
+    .await
+    .map_err(dependency)?;
+    let mut readable = BTreeSet::new();
+    for row in &rows {
+        if visibility_readable(authorization, &visibility_from_row(row)?) {
+            readable.insert(row.try_get::<Uuid, _>("evidence_id").map_err(dependency)?);
+        }
+    }
     let ids: Vec<Uuid> = readable.iter().copied().collect();
     let multi = sqlx::query(
         "SELECT evidence_id FROM private.evidence_subjects WHERE tenant_id = $1 AND evidence_id = ANY($2) \
@@ -584,8 +603,9 @@ async fn visible_evidence(
 }
 
 /// D2 round-1 impact preview of a frozen request, for `authorization`. Memories are judged by
-/// [`readable_memory_ids`] (the M08 gate), Evidence by the caller's RLS; the counts, titles and multi-person list are built
-/// from those readable sets alone (G-M19-1), and the stored `manifest_hash` is returned as frozen.
+/// [`readable_memory_ids`] (the M08 gate) minus `SECRET_MATERIAL`-backed ones, Evidence by `visibility_readable` against the
+/// caller's own scope; the counts, titles and multi-person list are built from those readable sets alone (G-M19-1), and
+/// the stored `manifest_hash` is returned as frozen.
 pub async fn preview_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
@@ -599,7 +619,8 @@ pub async fn preview_in_txn(
         .into_iter()
         .collect();
     let memories = visible_titles(txn, tenant_id, &readable).await?;
-    let (evidence, multi_person) = visible_evidence(txn, tenant_id, &stored.evidence_ids).await?;
+    let (evidence, multi_person) =
+        visible_evidence(txn, authorization, &stored.evidence_ids).await?;
     Ok(ImpactPreview::from_visible(
         stored.scope_kind,
         &memories,

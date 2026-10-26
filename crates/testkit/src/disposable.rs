@@ -1,8 +1,8 @@
 //! `testkit::disposable` — the throwaway-database guard every destructive test leg calls first (M19 D11, G-M19-11).
 //! Depends-on: crates=[postgres]; services=[PostgreSQL(any)]; env=[]; modules=[]
 //! Called-by: [tests]
-//! Invariants: [a database is disposable only when its name starts with DISPOSABLE_DB_PREFIX, compared byte for byte: an
-//!   empty name, a case-shifted prefix and a prefix in the middle of the name are refused; the verdict is read from the
+//! Invariants: [a database is disposable only when its name is DISPOSABLE_DB_PREFIX or PREFIX_ plus a non-empty suffix,
+//!   compared byte for byte: an empty name, a case-shifted prefix, a prefix in the middle and a word-boundary lookalike are refused; the verdict is read from the
 //!   connection itself (current_database()), never from a DSN string or an env var the caller could have mistyped]
 //! Spec: module design M19 D11; ADR-0092 (deletion tests on throwaway databases only); §79.2
 //!
@@ -15,9 +15,14 @@ use postgres::Client;
 /// CI's database is exactly `humaux_thread_ci`; a local developer names theirs `humaux_thread_ci_*`.
 pub const DISPOSABLE_DB_PREFIX: &str = "humaux_thread_ci";
 
-/// Pure verdict on a database name: `true` only for [`DISPOSABLE_DB_PREFIX`] itself or a name that starts with it.
+/// Pure verdict on a database name: `true` only for [`DISPOSABLE_DB_PREFIX`] itself or `PREFIX_<non-empty suffix>`; a name
+/// that merely starts with the prefix (`humaux_thread_cinema_prod`, `humaux_thread_ci2`) is another database.
 pub fn is_disposable(database_name: &str) -> bool {
-    database_name.starts_with(DISPOSABLE_DB_PREFIX)
+    let prefix = DISPOSABLE_DB_PREFIX;
+    database_name == prefix
+        || (database_name.len() > prefix.len() + 1
+            && database_name.starts_with(prefix)
+            && database_name[prefix.len()..].starts_with('_'))
 }
 
 /// Reads `current_database()` on `conn` and returns it when [`is_disposable`] accepts it; otherwise `Err` naming the

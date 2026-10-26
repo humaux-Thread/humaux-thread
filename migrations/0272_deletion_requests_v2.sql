@@ -14,10 +14,25 @@
 --
 -- Writes (§6.2.1): no runtime role holds INSERT, UPDATE or DELETE on either table. The one new write path is the owner
 -- SECURITY DEFINER door control.deletion_request_freeze (EXECUTE role_gateway only, search_path = pg_catalog, pg_temp as in 0268);
--- it checks the caller's tenant GUC against its argument and is idempotent for one (tenant, scope, requester, manifest). The
--- door is not a purge: physical deletion stays with M19-5's purge door (D3).
+-- it takes (scope_kind, scope roots) and nothing else the caller could forge: it computes the targets and manifest_hash itself
+-- (the closure is the explicit roots plus every Memory with ANY memory_evidence input among them, whole; never the generic
+-- DERIVED_FROM closure, ADR-0092 D-A / ADR-0079 D-J) under a tenant-only predicate, independent of the caller's visibility, and
+-- takes requested_by from the session (humaux.user_id). Every root must exist in the session tenant and be readable by the
+-- caller under the §6.1.1 visibility rule (the SQL home of read_gate::visibility_readable, private.visibility_allowed), else the
+-- door refuses with SQLSTATE P0002 and a machine-readable reason. A partial UNIQUE index over the open request makes a
+-- concurrent duplicate freeze return the existing request_id. The door is not a purge: physical deletion stays with M19-5's
+-- purge door (D3).
+--
+-- Owner role_migration_owner is NOBYPASSRLS: memory_records carries a cluster-wide owner arm (0163), so every Memory read below
+-- filters on the session tenant explicitly; evidence_objects has no owner arm, so the root check reads it under the caller's
+-- visibility (and re-applies private.visibility_allowed so other owner policies cannot widen it).
+-- ponytail: the Memory-root check omits the §6.1.3 subject term (private.memory_subject_visibility_ok is tenant-wide today),
+-- upgrade when per-subject ACLs land.
 -- deletion_targets is a §6.2.2 named table: SELECT for role_gateway (the preview reads the frozen closure) and role_maintenance
 -- (the executor), nothing for any other role; tenant_id is carried for FORCE RLS and tied to the request by a composite FK.
+
+-- Without BYPASSRLS this errors on the FORCE RLS table instead of counting the 0 rows RLS would show.
+SELECT set_config('row_security', 'off', true);
 
 DO $$
 BEGIN
@@ -27,6 +42,7 @@ BEGIN
   END IF;
 END
 $$;
+SELECT set_config('row_security', 'on', true);
 
 ALTER TABLE control.deletion_requests
   DROP COLUMN domain,
@@ -45,6 +61,11 @@ ALTER TABLE control.deletion_requests
 COMMENT ON TABLE control.deletion_requests IS
   '§37 / ADR-0092 D-A deletion request v2: one row per request (scope_kind, scope_id), closure frozen in control.deletion_targets, '
   'manifest_hash = sha-256 over the canonical sorted (kind, id) target list.';
+
+-- One open request per (scope, requester, closure): the door's ON CONFLICT arbiter, so two concurrent freezes of the same
+-- scope end with one row.
+CREATE UNIQUE INDEX deletion_requests_open_manifest_uq ON control.deletion_requests
+  (tenant_id, scope_kind, scope_id, requested_by, manifest_hash) WHERE state = 'REQUESTED';
 
 CREATE TABLE control.deletion_targets (
   request_id uuid NOT NULL,
@@ -81,56 +102,123 @@ FROM
 GRANT SELECT ON control.deletion_targets TO role_gateway, role_maintenance;
 
 CREATE FUNCTION control.deletion_request_freeze(
-  p_tenant_id     uuid,
-  p_scope_kind    text,
-  p_scope_id      uuid,
-  p_requested_by  uuid,
-  p_manifest_hash bytea,
-  p_kinds         text[],
-  p_ids           uuid[]
+  p_tenant_id  uuid,
+  p_scope_kind text,
+  p_roots      uuid[]
 ) RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
+  v_user       uuid := NULLIF(current_setting('humaux.user_id', true), '')::uuid;
+  v_roots      uuid[];
+  v_kinds      text[];
+  v_ids        uuid[];
+  v_hash       bytea;
   v_request_id uuid;
 BEGIN
   IF p_tenant_id IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid THEN
     RAISE EXCEPTION 'deletion_request_freeze: tenant argument differs from the session tenant (§6.2)'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
-  IF coalesce(cardinality(p_kinds), 0) = 0 OR cardinality(p_kinds) IS DISTINCT FROM cardinality(p_ids) THEN
-    RAISE EXCEPTION 'deletion_request_freeze: kinds and ids must be non-empty and of equal length'
+  IF v_user IS NULL OR v_user = '00000000-0000-0000-0000-000000000000'::uuid THEN
+    RAISE EXCEPTION 'deletion_request_freeze: the session carries no user (humaux.user_id; requested_by comes from the session)'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF p_scope_kind IS NULL OR p_scope_kind NOT IN ('MEMORY', 'EVIDENCE_CLOSURE') THEN
+    RAISE EXCEPTION 'deletion_request_freeze: scope % has no closure fn yet', p_scope_kind
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+  IF p_roots IS NULL OR array_position(p_roots, NULL) IS NOT NULL THEN
+    RAISE EXCEPTION 'deletion_request_freeze: roots must be a non-null list of ids'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+  v_roots := ARRAY(SELECT DISTINCT r FROM unnest(p_roots) AS r ORDER BY r);
+  IF coalesce(cardinality(v_roots), 0) = 0 OR (p_scope_kind = 'MEMORY' AND cardinality(v_roots) <> 1) THEN
+    RAISE EXCEPTION 'deletion_request_freeze: MEMORY takes exactly one root, EVIDENCE_CLOSURE at least one'
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
 
-  SELECT r.deletion_request_id INTO v_request_id
-    FROM control.deletion_requests r
-   WHERE r.tenant_id = p_tenant_id AND r.scope_kind = p_scope_kind AND r.scope_id = p_scope_id
-     AND r.requested_by = p_requested_by AND r.manifest_hash = p_manifest_hash AND r.state = 'REQUESTED'
-   LIMIT 1;
-  IF FOUND THEN
+  IF p_scope_kind = 'MEMORY' THEN
+    -- §8.6: the Memory is readable and every backing Evidence row is readable too; a Memory with no backing row fails closed.
+    IF NOT EXISTS (
+      SELECT 1 FROM private.memory_records m
+       WHERE m.tenant_id = p_tenant_id AND m.memory_id = v_roots[1]
+         AND private.visibility_allowed(m.visibility_class, true, m.visibility_user_id = v_user,
+               EXISTS (SELECT 1 FROM control.workspace_memberships wm
+                        WHERE wm.tenant_id = m.tenant_id AND wm.workspace_id = m.visibility_workspace_id
+                          AND wm.user_id = v_user AND wm.state = 'ACTIVE'))
+         AND EXISTS (SELECT 1 FROM private.memory_evidence me WHERE me.memory_id = m.memory_id)
+         AND NOT EXISTS (
+           SELECT 1 FROM private.memory_evidence me
+             LEFT JOIN private.evidence_objects eo
+               ON eo.evidence_id = me.evidence_id AND eo.tenant_id = p_tenant_id
+              AND private.visibility_allowed(eo.visibility_class, true, eo.visibility_user_id = v_user,
+                    EXISTS (SELECT 1 FROM control.workspace_memberships wm
+                             WHERE wm.tenant_id = eo.tenant_id AND wm.workspace_id = eo.visibility_workspace_id
+                               AND wm.user_id = v_user AND wm.state = 'ACTIVE'))
+            WHERE me.memory_id = m.memory_id AND eo.evidence_id IS NULL)
+    ) THEN
+      RAISE EXCEPTION 'deletion_request_freeze: NOT_FOUND root_unreadable' USING ERRCODE = 'no_data_found';
+    END IF;
+    v_kinds := ARRAY['MEMORY'];
+    v_ids := v_roots;
+  ELSE
+    IF (SELECT count(*) FROM private.evidence_objects eo
+         WHERE eo.tenant_id = p_tenant_id AND eo.evidence_id = ANY (v_roots)
+           AND private.visibility_allowed(eo.visibility_class, true, eo.visibility_user_id = v_user,
+                 EXISTS (SELECT 1 FROM control.workspace_memberships wm
+                          WHERE wm.tenant_id = eo.tenant_id AND wm.workspace_id = eo.visibility_workspace_id
+                            AND wm.user_id = v_user AND wm.state = 'ACTIVE'))) <> cardinality(v_roots) THEN
+      RAISE EXCEPTION 'deletion_request_freeze: NOT_FOUND root_unreadable' USING ERRCODE = 'no_data_found';
+    END IF;
+    SELECT array_agg(t.kind), array_agg(t.id) INTO v_kinds, v_ids
+      FROM (SELECT 'EVIDENCE'::text AS kind, r AS id FROM unnest(v_roots) AS r
+            UNION
+            SELECT 'MEMORY'::text, me.memory_id
+              FROM private.memory_evidence me
+              JOIN private.memory_records m ON m.memory_id = me.memory_id AND m.tenant_id = p_tenant_id
+             WHERE me.evidence_id = ANY (v_roots)) t;
+  END IF;
+
+  -- Canonical encoding of humaux_application::forget::manifest_hash: domain line, then sorted (kind, 0x00, 16 id bytes).
+  v_hash := sha256(
+    convert_to('humaux.deletion.manifest.v1' || chr(10), 'UTF8')
+    || coalesce((SELECT string_agg(convert_to(t.kind, 'UTF8') || '\x00'::bytea || uuid_send(t.id), ''::bytea
+                                   ORDER BY t.kind COLLATE "C", t.id)
+                   FROM unnest(v_kinds, v_ids) AS t(kind, id)), ''::bytea));
+
+  INSERT INTO control.deletion_requests (tenant_id, scope_kind, scope_id, requested_by, manifest_hash)
+  VALUES (p_tenant_id, p_scope_kind, v_roots[1], v_user, v_hash)
+  ON CONFLICT (tenant_id, scope_kind, scope_id, requested_by, manifest_hash) WHERE state = 'REQUESTED' DO NOTHING
+  RETURNING deletion_request_id INTO v_request_id;
+
+  IF v_request_id IS NULL THEN
+    SELECT r.deletion_request_id INTO v_request_id
+      FROM control.deletion_requests r
+     WHERE r.tenant_id = p_tenant_id AND r.scope_kind = p_scope_kind AND r.scope_id = v_roots[1]
+       AND r.requested_by = v_user AND r.manifest_hash = v_hash AND r.state = 'REQUESTED';
+    IF v_request_id IS NULL THEN
+      RAISE EXCEPTION 'deletion_request_freeze: the open request moved on while freezing, retry'
+        USING ERRCODE = 'serialization_failure';
+    END IF;
     RETURN v_request_id;
   END IF;
 
-  INSERT INTO control.deletion_requests (tenant_id, scope_kind, scope_id, requested_by, manifest_hash)
-  VALUES (p_tenant_id, p_scope_kind, p_scope_id, p_requested_by, p_manifest_hash)
-  RETURNING deletion_request_id INTO v_request_id;
-
   INSERT INTO control.deletion_targets (request_id, tenant_id, kind, id)
   SELECT v_request_id, p_tenant_id, t.kind, t.id
-    FROM unnest(p_kinds, p_ids) AS t(kind, id)
-  ON CONFLICT DO NOTHING;
+    FROM unnest(v_kinds, v_ids) AS t(kind, id);
 
   RETURN v_request_id;
 END;
 $$;
 
-COMMENT ON FUNCTION control.deletion_request_freeze(uuid, text, uuid, uuid, bytea, text[], uuid[]) IS
-  'ADR-0092 D-A: records one deletion request and its frozen target list in one statement sequence. Idempotent for an open '
+COMMENT ON FUNCTION control.deletion_request_freeze(uuid, text, uuid[]) IS
+  'ADR-0092 D-A: records one deletion request and its frozen target list. Takes (scope_kind, roots) only: computes the closure '
+  'and manifest_hash itself, requested_by from the session, refuses an unreadable root with P0002. Idempotent for an open '
   'request with the same (tenant, scope, requester, manifest). Not a purge.';
 
-ALTER FUNCTION control.deletion_request_freeze(uuid, text, uuid, uuid, bytea, text[], uuid[]) OWNER TO role_migration_owner;
-REVOKE ALL ON FUNCTION control.deletion_request_freeze(uuid, text, uuid, uuid, bytea, text[], uuid[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION control.deletion_request_freeze(uuid, text, uuid, uuid, bytea, text[], uuid[]) TO role_gateway;
+ALTER FUNCTION control.deletion_request_freeze(uuid, text, uuid[]) OWNER TO role_migration_owner;
+REVOKE ALL ON FUNCTION control.deletion_request_freeze(uuid, text, uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION control.deletion_request_freeze(uuid, text, uuid[]) TO role_gateway;

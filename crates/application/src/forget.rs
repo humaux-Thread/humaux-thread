@@ -190,6 +190,18 @@ pub enum DeletionState {
 }
 
 impl DeletionState {
+    /// Every state, in the order of `control.deletion_requests.state`'s CHECK (0054); a contract test reconciles the set
+    /// both ways (§78.2).
+    pub const ALL: [DeletionState; 7] = [
+        Self::Requested,
+        Self::Planned,
+        Self::InProgress,
+        Self::ExternalPending,
+        Self::Completed,
+        Self::PartialCannotErase,
+        Self::Failed,
+    ];
+
     pub fn as_db_str(self) -> &'static str {
         match self {
             Self::Requested => "REQUESTED",
@@ -203,17 +215,7 @@ impl DeletionState {
     }
 
     pub fn from_db_str(s: &str) -> Option<Self> {
-        [
-            Self::Requested,
-            Self::Planned,
-            Self::InProgress,
-            Self::ExternalPending,
-            Self::Completed,
-            Self::PartialCannotErase,
-            Self::Failed,
-        ]
-        .into_iter()
-        .find(|st| st.as_db_str() == s)
+        Self::ALL.into_iter().find(|st| st.as_db_str() == s)
     }
 
     /// Terminal states never advance further — `Completed` is not special among them (a
@@ -311,9 +313,10 @@ impl DeletionSubsystem {
 /// ids of different concrete types, and this module has no business minting a sum type for
 /// them (adapters own the real ids, this module only walks the graph).
 ///
-/// **Not yet wired into `DeletionPlan` by this ticket** — [`evidence_closure_targets`] (M19-2) is the
-/// only non-test constructor of a [`DeletionGraph`]; nothing reads [`DeletionSubsystem::CHECKLIST`]
-/// outside this module's own unit tests. A deletion executed today cascades only as far as a frozen
+/// **Not yet wired into `DeletionPlan` by this ticket** — [`evidence_closure_targets`] (M19-2) deliberately does
+/// not walk this graph (ADR-0092 D-A rejects `DERIVED_FROM` as the closure source); nothing builds a
+/// [`DeletionGraph`] outside this module's own unit tests and nothing reads [`DeletionSubsystem::CHECKLIST`]
+/// outside them either. A deletion executed today cascades only as far as a frozen
 /// closure and the eight-subsystem checklist is never actually answered by any code path.
 /// Recorded here so this remains undelivered-and-known rather than silently read as
 /// covered by T4.8.
@@ -433,29 +436,16 @@ pub fn memory_scope_targets(memory_id: Uuid) -> Vec<DeletionTarget> {
     }]
 }
 
-/// `EVIDENCE_CLOSURE` scope closure (ADR-0092 D-A, ADR-0079 D-J): `roots` plus every Evidence transitively `DERIVED_FROM`
-/// them (`derived_from` = `(parent, child)` rows of `private.evidence_edges`), plus every Memory with ANY input in that
-/// Evidence set, as a whole (the ADR-0079 common-dependency rule; `memory_inputs` = `(memory, evidence)` rows of
-/// `private.memory_evidence`). Sorted, duplicate-free.
-// ponytail: walks the edge list in memory (one scan per frontier node), upgrade to a recursive CTE when a tenant's edge
-// count makes the load measurable.
+/// `EVIDENCE_CLOSURE` scope closure (ADR-0092 D-A): exactly the explicit `roots`, plus every Memory with ANY input
+/// (`memory_inputs` = `(memory, evidence)` rows of `private.memory_evidence`, any role) among them, as a whole. Other
+/// derived Evidence is never added (ADR-0079 D-J; ADR-0092 D-A rejects the `evidence_edges` `DERIVED_FROM` closure).
+/// Sorted, duplicate-free. The DB door `control.deletion_request_freeze` computes the same set in SQL; this fn is the
+/// reference the pairing test compares it with.
 pub fn evidence_closure_targets(
     roots: &[Uuid],
-    derived_from: &[(Uuid, Uuid)],
     memory_inputs: &[(Uuid, Uuid)],
 ) -> Vec<DeletionTarget> {
-    let graph = DeletionGraph::new(
-        derived_from
-            .iter()
-            .map(|(parent, child)| (parent.to_string(), child.to_string()))
-            .collect(),
-    );
-    let root_keys: Vec<String> = roots.iter().map(Uuid::to_string).collect();
-    let evidence: BTreeSet<Uuid> = graph
-        .cascade_closure(&root_keys)
-        .iter()
-        .filter_map(|key| Uuid::parse_str(key).ok())
-        .collect();
+    let evidence: BTreeSet<Uuid> = roots.iter().copied().collect();
     let mut targets: BTreeSet<DeletionTarget> = evidence
         .iter()
         .map(|id| DeletionTarget {
@@ -741,22 +731,20 @@ mod tests {
     }
 
     #[test]
-    fn evidence_closure_follows_derived_from_and_takes_every_memory_with_an_input_whole() {
-        // e1 -> e2 -> e3 derived chain; e9 unrelated. m1 reads e1, m2 reads e3 AND e9 (any input in the closure is enough),
-        // m3 reads only e9.
-        let derived = [(id(1), id(2)), (id(2), id(3))];
+    fn evidence_closure_is_the_roots_plus_every_memory_with_any_input_among_them() {
+        // Roots e1 and e3. m1 reads e1, m2 reads e3 AND e9 (any input among the roots is enough, whole Memory),
+        // m3 reads only e9. e2 is derived from e1 elsewhere but is not a root, so it stays out (ADR-0079 D-J).
         let inputs = [
             (id(101), id(1)),
             (id(102), id(3)),
             (id(102), id(9)),
             (id(103), id(9)),
         ];
-        let got = evidence_closure_targets(&[id(1)], &derived, &inputs);
+        let got = evidence_closure_targets(&[id(3), id(1)], &inputs);
         let want = vec![
             target(DeletionTargetKind::Memory, 101),
             target(DeletionTargetKind::Memory, 102),
             target(DeletionTargetKind::Evidence, 1),
-            target(DeletionTargetKind::Evidence, 2),
             target(DeletionTargetKind::Evidence, 3),
         ];
         assert_eq!(got, want);
