@@ -48,6 +48,13 @@ or re-indexable), images/binaries/caches and Qdrant (note :83-87). Every catalog
 the table's owner module in M23-2 (note :87-88). Rejected: a physical full (owner: not the whole system) and a
 schema-wide dump (drags derived data) (note :88).
 
+**Lead ruling (2026-10-26, issue #332; draft authority, the owner may revise):** the catalog is closed under foreign
+keys. A NOT NULL foreign key from a KNOWLEDGE table makes the referenced table KNOWLEDGE. The note's EXCLUDED list
+breaks this rule for `private.processing_runs`: `private.observations.processing_run_id` references it NOT NULL
+(migrations/0005_private_pipeline.sql:33). So `processing_runs` moves to KNOWLEDGE. A nullable foreign key from
+KNOWLEDGE to an EXCLUDED table is a catalog error unless its catalog row names the restore action `set_null`. M23-2's
+catalog review applies this rule to every row.
+
 ### D-B Format: PG logical, `pg_dump -Fd --compress=zstd:3`, data-only, as the superuser
 
 The dump is `pg_dump -Fd --compress=zstd:3`, data-only, run as the PG superuser (note :89). PG 18 defaults
@@ -101,7 +108,10 @@ to M19: until the next verified export (≈ 24 h normally, longer while exports 
 The `dr` target is rebuilt FROM the pg image (the same PG 18.6 `pg_dump`/`pg_restore`/`initdb` as the server) plus
 `humaux-maintenance` (note :120-121). Drill: `initdb` on a temporary directory → `migrate` to `schema_version` →
 create `partition_months` → `pg_restore --data-only --disable-triggers` → per-table counts equal the manifest →
-journal re-apply → `rls-check` → witness rows (note :121-123). The nightly drill is PG-only; the Qdrant rebuild leg
+journal re-apply → `rls-check` → witness rows (note :121-123).
+Lead ruling (#332): before the counts are accepted, the drill audits every foreign key among the restored tables
+and fails naming any constraint with an orphan row, because `--disable-triggers` skips FK checks and equal counts
+do not prove referential integrity. The nightly drill is PG-only; the Qdrant rebuild leg
 runs in CI/conformance with a stub or local embedder, with no weekly paid re-embed (note :123-124). The testkit
 disposable guard refuses a live DSN (the G-M19-11 pattern; note :124-125). Rejected: a drill DB in the live cluster
 (production DDL nightly); a compose project via `docker.sock` (no Docker socket, ADR-0064 L21) (note :125-126). The
@@ -186,6 +196,7 @@ Planned and tri-state (§57.1); none exists here. DB/compose tests treat a missi
 | G-M23-1 latest-only swap | `bins/maintenance/tests/knowledge_export.rs` | delete previous before `VERIFIED`; skip delete after swap | failed candidate leaves no verified export; two verified exports in steady state (note :168) |
 | G-M23-2 not RLS-filtered | same, two-tenant fixture | add `--enable-row-security` and run as a NOBYPASSRLS role | restored rows for tenant B ≠ manifest count (or run must exit non-zero) (note :169) |
 | G-M23-3 catalog complete | `xtask` architecture check | add a table with no `backup_catalog.toml` row | check fails naming the table (note :170) |
+| G-M23-3b FK closure (lead ruling, #332) | same `xtask` check + `knowledge_export.rs` drill | catalog `processing_runs` as EXCLUDED; skip the restore FK audit | check fails naming (`private.observations`, `private.processing_runs`); a restored orphan passes the drill |
 | G-M23-4 scope honest | `knowledge_export.rs` | add `projection.memory_vectors` / a billing table; drop `memory_evidence` | excluded table in TOC; drill provenance check red (note :171) |
 | G-M23-5 integrity | same | flip one byte; delete one file; edit a manifest count | verify refuses, no `VERIFIED`, `current` unchanged (note :172) |
 | G-M23-6 one snapshot | same, concurrent-writer fixture | count rows in a separate txn | manifest counts ≠ restored counts (note :173) |
