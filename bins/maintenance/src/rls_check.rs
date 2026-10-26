@@ -167,6 +167,8 @@ macro_rules! cell {
 /// for the prose; this is the runnable form of the same table, not a second copy of its
 /// reasoning).
 const MATRIX: &[Cell] = &[
+    // §6.2.2 / ADR-0095 D-B: gateway doors only, zero direct runtime grants.
+    cell!("private.project_channels", "role_gateway", []),
     cell!("ops.mechanism_observations", "role_gateway", ["SELECT"]),
     cell!(
         "ops.mechanism_observations",
