@@ -62,7 +62,7 @@ fn extra_key(handle: &mut Handle, source: Uuid, user: Option<Uuid>) -> Uuid {
     handle.admin.execute(
         "INSERT INTO control.api_keys \
          (api_key_id,tenant_id,prefix,key_hash,status,scopes,authorization_version,user_id,workspace_id,tenant_security_epoch,user_security_epoch) \
-         SELECT $1,tenant_id,$1::text,key_hash,'ACTIVE',scopes,1,$2,workspace_id,0,CASE WHEN $2::uuid IS NULL THEN NULL ELSE 0 END \
+         SELECT $1::uuid,tenant_id,($1::uuid)::text,key_hash,'ACTIVE',scopes,1,$2::uuid,workspace_id,0,CASE WHEN $2::uuid IS NULL THEN NULL ELSE 0 END \
          FROM control.api_keys WHERE api_key_id=$3",
         &[&key, &user, &source],
     ).expect("seed distinct caller key");
