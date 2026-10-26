@@ -182,6 +182,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::governance_ops`
@@ -1435,6 +1436,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -8919,6 +8921,24 @@ written by:
 
 executed by:
 
+### `private.decide_memory_applicability`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0273_memory_applicability
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::applicability_repo`
+
 ### `private.declared_project_visible`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -9393,6 +9413,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -9932,6 +9953,36 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::memory_affects`
+
+### `private.memory_applicability`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0273_memory_applicability
+
+grants (runtime roles):
+- role_gateway: SELECT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::applicability`
+
+executed by:
 
 ### `private.memory_consolidation_inputs`
 - kind: table
@@ -11015,6 +11066,25 @@ written by:
 
 executed by:
 
+### `private.propose_memory_applicability`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0273_memory_applicability
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::applicability_repo`
+- (no process): `adapters::tests::applicability`
+
 ### `private.publish_continuity_facet`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -11624,6 +11694,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_subjects_link`
