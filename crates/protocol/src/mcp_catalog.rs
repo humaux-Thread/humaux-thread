@@ -577,6 +577,8 @@ mod tests {
         );
         assert_eq!(catalog.operations()["remember.put"].budget_bytes, 8192);
         assert_eq!(catalog.operations()["memory.get"].budget_bytes, 24576);
+        assert_eq!(catalog.operations()["memory.confirm"].budget_bytes, 24576);
+        assert_eq!(catalog.operations()["memory.reject"].budget_bytes, 24576);
     }
 
     #[test]

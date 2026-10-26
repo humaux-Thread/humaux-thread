@@ -8798,15 +8798,22 @@ fn mcp_tool_surface_truth_from(
     }
 }
 
-/// Reads the four real sources. Any absent object is `not_applicable` naming it (§57.1 第2条).
+/// §57.1: absent source trees name their missing object; delivered contract inputs must fail closed.
 fn mcp_tool_surface_truth(root: &Path) -> Verdict {
+    if !root.exists() {
+        return Verdict::NotApplicable("bins/gateway/src/mcp_application.rs".to_string());
+    }
     let dispatch_path = root.join("bins/gateway/src/mcp_application.rs");
     let baseline_path = root.join("docs/architecture/Baseline_2.9.md");
     let Ok(dispatch) = fs::read_to_string(&dispatch_path) else {
-        return Verdict::NotApplicable("bins/gateway/src/mcp_application.rs".to_string());
+        return Verdict::Fail(vec![
+            "required MCP source missing: bins/gateway/src/mcp_application.rs".to_string(),
+        ]);
     };
     let Ok(baseline) = fs::read_to_string(&baseline_path) else {
-        return Verdict::NotApplicable("docs/architecture/Baseline_2.9.md".to_string());
+        return Verdict::Fail(vec![
+            "required MCP source missing: docs/architecture/Baseline_2.9.md".to_string(),
+        ]);
     };
     let catalog = match catalog_operation_keys(root) {
         Ok(keys) => keys,
@@ -8830,9 +8837,7 @@ fn mcp_tool_surface_truth(root: &Path) -> Verdict {
     mcp_tool_surface_truth_from(&dispatch, &baseline, &catalog)
 }
 
-/// Why a contract could not be turned into a key set. `Missing` = the file is not there at all
-/// (§57.1 `not_applicable`); `Malformed` = it is there and does not have the shape the catalog
-/// is defined by (a failure — see `mcp_tool_surface_truth`).
+/// §57.1 distinguishes absent from malformed inputs; both fail for the delivered MCP catalog.
 #[derive(Debug)]
 enum CatalogDefect {
     Missing(String),
