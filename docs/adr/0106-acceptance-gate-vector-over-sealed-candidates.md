@@ -44,7 +44,8 @@
 
 ### D-D One acceptance store: ADR-0080 D-C, not a second table (lead ruling, note :257-265)
 
-- `gate_decisions` is **not** a new table. The single acceptance store is `private.run_acceptances`.
+- `gate_decisions` is **not** a new table (the note's §6 mapping row proposed a new `coord.gate_decisions`; the ruling
+  replaces it). The single acceptance store is `private.run_acceptances`.
 - M18 extends it with `candidate_id`, bound to the sealed candidate, and `gate_kind` in
   {STRUCTURE, USABILITY, AUTOMATED_TEST, INDEPENDENT_REVIEW, ACCEPTANCE}, mapped as a criterion class.
 - ADR-0080 D-C keeps: the verifier is derived server-side from the Evidence origin; CI is a `TrustedConnector` receipt
@@ -66,8 +67,9 @@
 
 ### D-F Transitive invalidation is computed, never stored (note D12)
 
-- Direct state is `revoked_at` on an authorised REOPEN. `coord.acceptance_validity_v` recurses over pinned INPUT/CHILD
-  acceptances and is checked synchronously at claim, complete and board time; asynchronous messages only notify.
+- Direct state is `revoked_at` on an authorised REOPEN in the single acceptance store of D-D.
+  `coord.acceptance_validity_v` recurses over pinned INPUT/CHILD acceptances and is checked synchronously at claim,
+  complete and board time; asynchronous messages only notify.
 - B keeps its DONE history but counts as `invalidated`; C cannot consume B. REOPEN `IN_REVIEW→OPEN` keeps the budget
   root.
 - Rejected: a stored transitive flag (fan-out writes, drift).
@@ -93,8 +95,9 @@ Planned, implementer-owned, tri-state (§57.1); none exists here.
 | G-M18-15 late CI failure | M18-10 | `crates/adapters/tests/coord_gates.rs` | accept before the CI wait is released | an acceptance stands after a later FAIL on the same candidate |
 | G-M18-17 transitive invalidation | M18-11 | `crates/adapters/tests/coord_accept.rs` | evaluate direct revocation only | C claims with B's invalidated acceptance as input |
 
-The gate-kind set is part of G-M18-24 (ADR-0103, owner M18-3). Each gate needs its inject → red → fix → green record
-(§80.1) in its card; a missing database in CI is a failure, never `not_applicable`.
+The gate-kind set is part of G-M18-24 (ADR-0103): its phase/kind half lands with M18-3 and its gate-kind half with
+M18-9. Each gate needs its inject → red → fix → green record (§80.1) in its card; a missing database in CI is a
+failure, never `not_applicable`.
 
 ## Owner-gated
 
