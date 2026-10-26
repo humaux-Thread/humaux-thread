@@ -1,7 +1,8 @@
 //! `adapters::tests::core_never_auto` — G-M20-1 leg 2 (ADR-0088 D-A): a tenant created through the core provisioning path has
 //!   no AUTO contribution policy.
 //! Depends-on: crates=[humaux-adapters, humaux-testkit, postgres, sha2, time, tokio, uuid];
-//!   services=[PostgreSQL(any) r=[control.contribution_policies] x=[control.publish_plan_version],
+//!   services=[PostgreSQL(any) r=[control.contribution_policies]
+//!   x=[control.ensure_admission_tier, control.publish_plan_version],
 //!   PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::membership_repo, adapters::postgres,
 //!   adapters::provisioning, humaux-testkit]
 //! Called-by: [cargo-test]
@@ -75,6 +76,7 @@ fn seed_plan_and_tiers(admin: &mut Client, plan_key: &str) {
             &[&plan_key],
         )
         .expect("publish the fixture plan");
+    // dep: PostgreSQL(role_maintenance) — the deployment tiers through the 0186 door, as the only role that may call it
     admin
         .batch_execute(&format!(
             "SET ROLE role_maintenance; \

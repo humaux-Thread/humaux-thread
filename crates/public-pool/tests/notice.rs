@@ -1,10 +1,11 @@
 //! `public-pool::tests::notice` — G-M20-3 (ADR-0088 D-A..D-C, migration 0274): the AUTO policy selects nothing without a SHOWN
 //!   on the current notice version; choice events are append-only and tenant-scoped; the Rust kind and channel sets equal the
 //!   DB CHECK literals.
-//! Depends-on: crates=[humaux-domain, humaux-public-pool, humaux-testkit, postgres, sqlx, tokio, uuid];
+//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
 //!   services=[PostgreSQL(any) r=[control.contribution_notice_events, control.contribution_policies]
 //!   w=[control.contribution_notice_events, control.contribution_notices, control.contribution_policies, control.tenants,
-//!   control.users] x=[], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN];
+//!   control.users] x=[control.toggle_contribution], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
+//!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[domain::error, domain::ids, humaux-testkit, public-pool::notice, public-pool::policy]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns one throwaway tenant, user and the notice versions it publishes, removed on drop; the notice
@@ -200,6 +201,7 @@ impl Handle {
 
     fn session(&self, pool: &PgPool, tenant: Uuid, user: Uuid) -> Transaction<'static, Postgres> {
         self.rt.block_on(async {
+            // dep: PostgreSQL(any) — one transaction per door call, on the pool of the role under test
             let mut tx = pool.begin().await.expect("begin");
             notice::install_session(&mut tx, TenantId(tenant), UserId(user))
                 .await

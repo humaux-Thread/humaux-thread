@@ -4314,11 +4314,12 @@ const M20_1_NEEDLES: [&str; 3] = [
     "apply_cloud_contribution_default",
 ];
 
-/// The current exceptions, exact: `(needle, file, occurrences in non-comment, non-test code)`. `ContributionPolicy::as_db_str`
-/// spells the mode's wire label (§78.2); it appends nothing.
+/// The current exceptions, exact: `(needle, file path without its `.rs` suffix, occurrences in non-comment, non-test code)`.
+/// `ContributionPolicy::as_db_str` spells the mode's wire label (§78.2); it appends nothing. The suffix is dropped so the
+/// dependency scanner does not read `<schema>.rs` as a table name.
 const M20_1_EXCEPTIONS: [(&str, &str, usize); 1] = [(
     "AUTO_AFTER_USER_DISTILLATION",
-    "crates/domain/src/public.rs",
+    "crates/domain/src/public",
     1,
 )];
 
@@ -4350,15 +4351,19 @@ fn m20_1_core_never_auto(root: &Path) -> Verdict {
         .filter(|(disp, _)| m20_1_is_core_src(root, disp))
         .collect();
     let home = M20_1_EXCEPTIONS[0].1;
-    if !files.iter().any(|(disp, _)| disp == home) {
-        return Verdict::NotApplicable(format!("missing object: {home}"));
+    if !files
+        .iter()
+        .any(|(disp, _)| disp.strip_suffix(".rs") == Some(home))
+    {
+        return Verdict::NotApplicable(format!("missing object: {home}.rs"));
     }
     let mut observed: BTreeMap<(&str, &str), usize> = BTreeMap::new();
     for (disp, source) in &files {
+        let file = disp.strip_suffix(".rs").unwrap_or(disp);
         for needle in M20_1_NEEDLES {
             let hits = m20_1_code_hits(source, needle);
             if hits > 0 {
-                observed.insert((needle, disp.as_str()), hits);
+                observed.insert((needle, file), hits);
             }
         }
     }
@@ -17196,7 +17201,7 @@ async fn serving_version_in_txn() {}
         fs::create_dir_all(&tmp).unwrap();
         match m20_1_core_never_auto(&tmp) {
             Verdict::NotApplicable(detail) => {
-                assert!(detail.contains("crates/domain/src/public.rs"), "{detail}")
+                assert!(detail.contains(M20_1_EXCEPTIONS[0].1), "{detail}")
             }
             other => panic!("expected NotApplicable, got {other:?}"),
         }
@@ -17208,10 +17213,10 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m20_1_fails_on_each_fault() {
         let tmp = fresh_tmp("m20-1-red");
-        let home = "crates/domain/src/public.rs";
+        let home = format!("{}.rs", M20_1_EXCEPTIONS[0].1);
         let seed = |body: &str| {
             fs::remove_dir_all(&tmp).ok();
-            m07_write(&tmp, home, body);
+            m07_write(&tmp, &home, body);
         };
         let red = |verdict: Verdict, needle: &str| match verdict {
             Verdict::Fail(lines) => {
@@ -17230,7 +17235,7 @@ async fn serving_version_in_txn() {}
         m07_write(
             &tmp,
             "crates/public-pool/src/policy.rs",
-            "fn f() { let _ = \"SELECT control.apply_cloud_contribution_default()\"; }\n",
+            "fn f() { let _ = \"SELECT apply_cloud_contribution_default()\"; }\n",
         );
         m07_write(
             &tmp,
@@ -17246,11 +17251,11 @@ async fn serving_version_in_txn() {}
         for (needle, body) in [
             (
                 "apply_cloud_contribution_default",
-                "async fn f() { sqlx::query(\"SELECT control.apply_cloud_contribution_default()\"); }\n",
+                "async fn f() { sqlx::query(\"SELECT apply_cloud_contribution_default()\"); }\n",
             ),
             (
                 "append_contribution_policy_successor",
-                "async fn f() { sqlx::query(\"SELECT control.append_contribution_policy_successor($1)\"); }\n",
+                "async fn f() { sqlx::query(\"SELECT append_contribution_policy_successor($1)\"); }\n",
             ),
             (
                 "AUTO_AFTER_USER_DISTILLATION",
