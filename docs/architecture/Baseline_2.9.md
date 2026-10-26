@@ -1573,6 +1573,8 @@ Association/Code according to their own readiness
 
 系统必须在 Completeness Envelope 中报告 lane 状态，禁止静默加载本地神经模型或换供应商；本地 rerank 的失败只走 §53 的显式降级（`RerankProviderTimeout` / `RerankModelMismatch`），不得改用云端 rerank 或另一个模型。
 
+**Amended by ADR-0122 (M23):** local embedding model e5-small via `ort` added beside the local rerank lane (ADR-0122 D-D).
+
 ## 7.3 EgressPermit：唯一出口（拓扑，不是纪律）
 
 ```rust
@@ -10112,6 +10114,8 @@ worker/parse-sandbox -> artifact queue / parse CPU
 
 # 44. Backup / DR
 
+**Amended by ADR-0121 (M23):** backup becomes a knowledge-only logical export with verify and drill; WAL/PITR and pgBackRest retire in card M23-7 after the first verified export, owner-gated.
+
 ## PostgreSQL
 
 推荐 pgBackRest：
@@ -12686,6 +12690,8 @@ manual approval required
 
 # 66. 全系统自动运行原则
 
+**Amended by ADR-0121 (M23):** backup, restore drill and the drift check run from `dr serve` inside the release bundle, not the host crontab.
+
 “全自动”定义为：
 
 - 后台工作自动触发；
@@ -12787,6 +12793,8 @@ gateway 入站的落地形态（ADR-0065 D-C，§78.6）：请求体先在 `HUMA
 ```
 
 §43 同步标注：Autoscaling 仅适用于 67.4；本档以固定并发上限 + 503 替代弹性。
+
+**Amended by ADR-0122 (M23):** local embedding model e5-small via `ort` (ADR-0122 D-D).
 
 ## 67.3 单机 OpenBao 的合法生产形态
 
