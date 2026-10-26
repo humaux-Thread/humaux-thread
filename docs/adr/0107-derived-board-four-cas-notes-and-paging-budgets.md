@@ -81,10 +81,8 @@ Planned, implementer-owned, tri-state (§57.1); none exists here.
 | G-M18-19 canvas drift | M18-7a (STALE case M18-8) | `crates/adapters/tests/coord_board.rs` | board reads a stored copy | the board differs from the task facts after a phase change |
 | G-M18-20 paging budgets | M18-7b | `crates/adapters/tests/coord_board.rs` | cut bytes after serialisation | with 2,392 tasks and multibyte text, a page exceeds 48 KiB or is invalid JSON |
 | G-M18-21 archive ratio | M18-7a | `crates/adapters/tests/coord_board.rs` | exclude archived from the denominator | the ratio changes when a subtree is archived |
-| G-M18-18 note CAS (note half) | M18-7a | `crates/adapters/tests/coord_events.rs` | last-writer-wins notes | same-key concurrent patches both succeed |
 
-Each gate needs its inject → red → fix → green record (§80.1) in its card; a missing database in CI is a failure,
-never `not_applicable`.
+Each gate needs its inject → red → fix → green record (§80.1) in its card.
 
 ## Owner-gated
 
@@ -100,8 +98,8 @@ None in this ADR. No production write, live key or email is involved; the legacy
 
 ## Alternatives rejected
 
-A CRDT; the `{**cur, **inc}` element merge of §30.3; a stored board copy; whole-element replace; waiting for a
-generic MCP cursor; truncating serialized JSON; more than the four note keys.
+A CRDT; the `{**cur, **inc}` element merge of §30.3; a stored board copy; whole-element replace; truncating
+serialized JSON; more than the four note keys.
 
 ## References
 

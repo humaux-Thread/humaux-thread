@@ -7,7 +7,8 @@
 - Amends: Baseline §30.2, by pointer only — the lease owner is the instance (ADR-0104), a fencing epoch is permanent,
   heartbeat/TTL start values change, a late heartbeat never revives, resource locks carry per-resource epochs, and
   storage re-rejects stale writes.
-- Relates to: Baseline §30.2, §48, §72; ADR-0078 Q10; ADR-0103 (readiness rows); ADR-0104 (instance identity);
+- Relates to: Baseline §30.2, §48, §72; ADR-0078 Q10 (its heartbeat/complete/fail token inputs conflict with note
+  D7 :66 — see ADR-0104 Open research); ADR-0103 (readiness rows); ADR-0104 (instance identity);
   ADR-0108 (execution roots and reservations); M03 D2 (the per-account DRR).
 
 ## Context
@@ -15,8 +16,6 @@
 - Today `claim` takes an explicit `task_id` and `heartbeat` takes `task_run_id + fencing_token` as arguments;
   `lease_owner` is the principal (note §2 :20-22). The TTL default is 300 s (`bootstrap.rs:1153`).
 - Incident 6: a bare claim took the oldest queued task, four times (lesson 2026-08-18; note §5 :118).
-- A claim that checks readiness inside the same statement that writes the lease can hand the same task to two runs;
-  a writer that checks only `now()` can accept an old epoch; a heartbeat that arrives late must not revive a dead run.
 - Cross-account fairness is already M03's: one account is one tenant, and its per-account DRR runs at admission. M18
   needs only the ordering inside a tenant, and must never need `BYPASSRLS`.
 
@@ -38,8 +37,9 @@
   cancelled + current plan/candidate.
 - Start values (config): heartbeat 20 s, TTL 90 s (was 300), no-progress 30 min, spawn nesting 4. A duplicate heartbeat
   sequence returns the original result; a late heartbeat never revives a run.
+- `coord.leases` (0009, no writer) is retired (note §6 :129).
 - `coord.locks` is re-keyed `(tenant_id, resource)` with a per-resource epoch. Lock needs come from the plan, so
-  omitting a lock in a request does not skip it; there is no lock tool among the 15 tools.
+  omitting a lock in a request does not skip it; there is no lock tool.
 - External side effects carry no exactly-once claim (U8).
 
 ### D-C Fairness composes with M03; the tenant order is explicit (note D9)
@@ -56,6 +56,8 @@
   write; the fairness order is explicit and testable; no `BYPASSRLS` is needed.
 - Cost: a claim is roughly ten statements in one transaction; the tenant order is a server-side policy that must be
   re-measured as load grows.
+- Contract: the task/run read port `coord.task_runs_live_v` is produced here and consumed by M02's `context_ref`
+  resolve and M14's brief tail (note §7 :149).
 - Neutral for this card: docs only; no table, migration, config key or wire format changes here.
 
 ## Gates
@@ -68,11 +70,10 @@ Planned, implementer-owned, tri-state (§57.1); none exists here.
 | G-M18-9 double claim + mode | M18-5 | `crates/adapters/tests/coord_claim.rs` | read readiness in the claim statement; default mode | two runs open; a bare claim succeeds |
 | G-M18-10 lease expiry while waiting for a lock | M18-5 | `crates/testkit/tests/fault/coord_lease_wait.rs` | omit `recheck_run_live_in_txn` | a write commits after expiry |
 | G-M18-11 stale token / epoch reuse | M18-5 | `crates/adapters/tests/coord_claim.rs` | reset `fencing_seq` on reopen; compare with `now()` | an old-epoch write is accepted |
-| G-M18-18 event atomicity + note CAS | M18-5 (event half; note half M18-7a) | `crates/adapters/tests/coord_events.rs` | event/outbox in a second transaction; last-writer-wins notes | a phase without an event; same-key concurrent patches both succeed |
+| G-M18-18 event atomicity + note CAS | M18-5, M18-6 | `crates/adapters/tests/coord_events.rs` | event/outbox in a second transaction; last-writer-wins notes | a phase without an event; same-key concurrent patches both succeed |
 | G-M18-23 fairness + capacity | M18-13 | `xtask load_open.rs` `coord_fairness` | FIFO `NEXT_READY`; drop aging | a role/project waits past the aging bound; 80 agents' heartbeats + 60 req/s bursts exceed the E-M18-2 budget |
 
-Each needs its inject → red → fix → green record (§80.1) in its card; a missing database in CI is a failure, never
-`not_applicable`.
+Each needs its inject → red → fix → green record (§80.1) in its card.
 
 ## Owner-gated
 
@@ -83,16 +84,15 @@ None in this ADR. No production write, live key, email or money is involved; ext
 
 - E-M18-2 measures claim/heartbeat at 80 agents (4 heartbeats/s) plus 60 req/s bursts on the 4-vCPU node, and the
   advisory-guard wait time; it sets the TTL/heartbeat values and M18-13 (note §12 :223).
-- U7: M26 may fold the 15 tools into fewer wire tools; the semantics here are fixed, the grouping is M26's (note §13
+- U7: M26 may fold the M18 tools into fewer wire tools; the semantics here are fixed, the grouping is M26's (note §13
   :234).
 - U8: no server dispatcher for external side effects is designed; outputs are recorded only, with no exactly-once
   claim (note §13 :235).
 
 ## Alternatives rejected
 
-An implicit "oldest" claim; reading readiness inside the claim statement; `SKIP LOCKED` over the whole selection;
-comparing the epoch with `now()`; reviving a run on a late heartbeat; a second DRR; a lock tool; an exactly-once
-claim for external side effects.
+An implicit "oldest" claim; reading readiness inside the claim statement; comparing the epoch with `now()`;
+reviving a run on a late heartbeat; a second DRR; a lock tool; an exactly-once claim for external side effects.
 
 ## References
 

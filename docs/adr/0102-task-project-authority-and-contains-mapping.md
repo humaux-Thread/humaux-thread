@@ -12,8 +12,8 @@
   `valid tstzmultirange` and revisions (note §2 :26-27).
 - A3 attribution (`attribution_repo.rs::A3_TASK_RUN`) joins the relation with `cur.valid @> e.occurred_at` at
   `remember.put` commit; relation corrections revoke by revision (0255) (note D4 :54-56).
-- `coord.tasks` has no `project_id` today; dependencies and the project live in payload (note §3 :36-37). A projection
-  rebuilt from a current column would have no history and would lag the commit that reads it synchronously.
+- Dependencies live in payload (note §3 :37); a projection rebuilt from a current column would have no history and
+  would lag the commit that reads it synchronously (note D4 :54-56).
 
 ## Decisions
 
@@ -40,7 +40,7 @@
 
 - Existing tasks are backfilled from their current `CONTAINS` relation; a task with none lands in a per-workspace
   `Unfiled` project. `coord.tasks.project_id` then becomes `NOT NULL`.
-- This is the migration's order; it does not create a second authority or a nullable steady state.
+- This is the migration's order (note D4 :56).
 
 ## Consequences
 
@@ -48,6 +48,9 @@
   revision-history semantics; a move cannot leave attribution on the old project.
 - Cost: every project change goes through one function and one transaction; the backfill must resolve every existing
   task before `NOT NULL`.
+- Boundaries: M18 may depend on M01, M02 (port), M03, M07, M08, M09, M29 and M14 (door only); M26, M14, M15, M02 and
+  M25 call it, and no other module writes `coord.*` or the hierarchy columns; `project_task_relations` is written only
+  through `relation_repo` (note §8 :157-159).
 - Neutral for this card: docs only; no table, migration, config key or wire format changes here.
 
 ## Gates
@@ -58,8 +61,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists here.
 |---|---|---|---|---|
 | G-M18-6 CONTAINS mapping | M18-3 | `crates/adapters/tests/coord_task_project.rs` + the xtask sole-caller check | write `CONTAINS` through `relation_repo` directly; skip closing the old revision | the mapping differs from `tasks.project_id`; A3 attributes to the old project after a move |
 
-The gate needs its inject → red → fix → green record (§80.1) in M18-3; a missing database in CI is a failure, never
-`not_applicable`.
+The gate needs its inject → red → fix → green record (§80.1) in M18-3.
 
 ## Owner-gated
 
@@ -74,8 +76,7 @@ is involved.
 
 ## Alternatives rejected
 
-A rebuildable projection from the current column; making the `CONTAINS` relation the writable authority; allowing any
-outside caller to append Project–Task `CONTAINS`; a nullable `project_id` as the steady state.
+A rebuildable projection from the current column; making the `CONTAINS` relation the writable authority.
 
 ## References
 

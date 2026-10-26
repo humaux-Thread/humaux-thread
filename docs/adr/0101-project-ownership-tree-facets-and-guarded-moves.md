@@ -16,8 +16,8 @@
   (note §2 :27-28).
 - The owner asked for a main project and sub-projects on 2026-10-22 (note §1 :10, §3 :34). M14 D3's hierarchy is
   provisional: a query-time rollup over relations, with no single-parent, cycle or depth guarantee (ADR-0095).
-- A channel project is an independent site or platform presence; it becomes a project only when it has its own goal,
-  lifecycle and archive (note D3 :50-52). A cross-project goal is a collection, not a second parent.
+- A channel becomes a project only when it has its own goal, lifecycle and archive (note D3 :50-52). A cross-project
+  goal is a collection, not a second parent.
 - Two hierarchy stores would make "which project owns this task" ambiguous. The M18 tree is the one store; the M29
   relation kernel keeps business relations and the same-transaction task mapping (ADR-0102).
 
@@ -29,13 +29,13 @@
   `kind BUSINESS_LINE|PROJECT|MODULE`, `version bigint`.
 - Self-FK `(tenant_id, workspace_id, parent_id) → (tenant_id, workspace_id, project_id)`: same tenant and workspace by
   construction. Depth ≤ `coord.project_max_depth` (config, default 8, root = 1). Archive is the existing
-  `lifecycle_state`; there is no second archive flag.
+  `lifecycle_state` (note D1 :43).
 - Reads are `private.project_ancestors(id)` and `private.project_subtree(id)`, recursive CTEs marked
   `security_invoker`. The registry row itself remains M29-owned (ADR-0078 D-A); M18 owns only the hierarchy guest
   columns.
 - Rejected: M14 D3's relation rollup plus M29-g2 `PROJECT PART_OF PROJECT` — a triple gives no single-parent, cycle or
   depth guarantee and creates two hierarchy stores (note D1 :43-45); `ltree`, materialised path or a closure table as
-  the authority — a closure table may come later only as an accelerator (note §15 :249).
+  the authority — a closure table may come later only as an accelerator (note D1 :44-45; §15 :249).
 
 ### D-B Moves run under a tenant topology guard (note D2)
 
@@ -70,13 +70,13 @@
 - Positive: one hierarchy store with a same-workspace self-FK; moves are checked under one guard with a fresh
   snapshot; channel projects no longer need a second parent mechanism.
 - Cost: the tenant advisory guard serialises topology edits (and task-graph edits) per tenant; the recursive CTE is a
-  ceiling measured by E-M18-1/E-M18-2.
+  documented ceiling (note §15 :249).
 - Neutral for this card: docs only; no table, migration, config key or wire format changes.
 
 ## Gates
 
 Planned, implementer-owned, tri-state (§57.1); none exists here. Each needs its inject → red → fix → green record
-(§80.1) in the card that builds it; a missing database in CI is a failure, never `not_applicable`.
+(§80.1) in the card that builds it.
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
@@ -87,20 +87,20 @@ Planned, implementer-owned, tri-state (§57.1); none exists here. Each needs its
 ## Owner-gated
 
 None in this ADR. The hierarchy is the owner's request of 2026-10-22; no production write, live key or email is
-involved. Reparenting a real project keeps ADR-0078 D-G's high-risk flow in whatever card exposes it.
+involved.
 
 ## Open research
 
 - U3: there is no per-project ACL today. Fallback: the same-workspace FK keeps moves non-widening; any future ACL must
   be re-checked in `project_move` (note §13 :230).
-- The closure-table accelerator is a ceiling, not a decision: it starts only when `project_subtree` p95 exceeds its
-  budget at depth 8 (note §15 :249). The depth default of 8 is a config start value.
+- The closure-table accelerator is a ceiling, not a decision: it starts when `project_subtree` p95 exceeds its budget
+  at depth 8 (note §15 :249). The depth default of 8 is a config start value.
+- Reparenting a real project would follow ADR-0078 D-G's high-risk flow; the note does not address it.
 
 ## Alternatives rejected
 
 M14 D3's relation rollup and M29-g2's `PROJECT PART_OF PROJECT` triple; `ltree`, a materialised path or a closure
-table as the hierarchy authority; two hierarchy stores; trigger-only move enforcement; a second archive flag beside
-`lifecycle_state`.
+table as the hierarchy authority; two hierarchy stores; trigger-only move enforcement.
 
 ## References
 

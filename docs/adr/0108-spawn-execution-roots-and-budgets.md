@@ -10,7 +10,6 @@
 
 - A retry, a hand-off or a rework creates a new run, but the work still belongs to one budget account; counting each
   retry as a fresh budget lets a task spend without bound.
-- Incident 5: sub-agent outputs were not attached, and the parent had no record of what it had spawned (note §5 :117).
 - The 80-agent load is real: the budget must be enforced by the server, while LLM turns, tokens, cost and tool calls
   are self-reported by the client and cannot meter money here (M04 owns billing).
 
@@ -19,12 +18,13 @@
 ### D-A Two roots with different lifetimes (note D15)
 
 - `root_run_id` is the lineage: one work item's family of runs.
-- `execution_root_id` is the stable budget account across retries, hand-offs and rework. A new run under the same
-  execution root draws from the same reservation.
+- `execution_root_id` is the stable budget account across retries, hand-offs and rework, stored in
+  `coord.execution_roots` (note D15 :100; §8 :154).
 
 ### D-B Spawn reserves before the child exists (note D15)
 
-- `run_spawn` reserves a PENDING dispatch with a pre-allocated `planned_run_id`; the child's claim activates it.
+- `run_spawn` reserves a PENDING dispatch in `coord.dispatch_reservations` with a pre-allocated `planned_run_id`; the
+  child's claim activates it (note D15 :100-101; §8 :154).
 - Siblings draw from the parent's reservation, so a parent cannot hand each child the full budget it holds.
 
 ### D-C The server enforces the hard bounds; the rest is reported (note D15)
@@ -38,8 +38,8 @@
 
 - Positive: one budget account survives retries and hand-offs; a spawn cannot exceed depth or dispatch caps; a parent's
   close policy is explicit rather than implied.
-- Cost: the PENDING dispatch is a placeholder until the child claims it, so stale reservations need the retention rules
-  of ADR-0109; reported counters are honest only to the extent the client reports.
+- Cost: the PENDING dispatch is a placeholder until the child claims it; reported counters are honest only to the
+  extent the client reports.
 - Neutral for this card: docs only; no table, migration, config key or wire format changes here.
 
 ## Gates
@@ -51,8 +51,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists here.
 | G-M18-12 parent cancel | M18-12 | `crates/adapters/tests/coord_spawn.rs` | ignore the close policy | children keep running after CANCEL |
 | G-M18-16 budget bypass | M18-12 | `crates/adapters/tests/coord_spawn.rs` | siblings copy the full budget; skip the reservation | spawn depth 5 or a dispatch over the cap commits |
 
-Each needs its inject → red → fix → green record (§80.1) in M18-12; a missing database in CI is a failure, never
-`not_applicable`.
+Each needs its inject → red → fix → green record (§80.1) in M18-12.
 
 ## Owner-gated
 
@@ -61,8 +60,7 @@ change is M04's, not this ADR's.
 
 ## Open research
 
-- The nesting default of 4 and the concurrency/attempt start values are config values measured by E-M18-2 (note §12
-  :223, §15 :247-248).
+- The spawn nesting default of 4 is a config start value (note D8 :72; §15 :247).
 - The reported counters are advisory; an accounting use would be a different decision under M04.
 
 ## Alternatives rejected
@@ -72,5 +70,5 @@ depth; an implicit close policy for children.
 
 ## References
 
-Module design note M18 §2, §4 D15, §5 (incident 5), §7, §8, §11 (M18-12), §12, §15; Baseline §30.2, §48, §72;
+Module design note M18 §2, §4 D15, §7, §8, §11 (M18-12), §12, §15; Baseline §30.2, §48, §72;
 ADR-0104; ADR-0105; ADR-0109; M03; M04.
