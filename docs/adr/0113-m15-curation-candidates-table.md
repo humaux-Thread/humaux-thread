@@ -15,7 +15,7 @@
 - ADR-0078 D-D deferred the table with a shape sketch — "a separate table with `proposed_by=model@ver`, score and
   state" — readable only through a candidate API, labelled when used, never counted, and formal only on an A1–A4
   condition or a user-confirmed concrete manifest (D-G) (`0078:214-216`); D-A placed it on M29's future list
-  (`:50-51`). None of it exists: no table, no `candidate_repo`, no `xtask/` arm (note :37); `crates/domain/src/
+  (`:50-51`). None of it exists: no table (note :37), `candidate_repo` is new (note :171), no `xtask/` arm; `crates/domain/src/
   knowledge.rs` is a five-line placeholder (:39). The isolation rule is G-N09-2 (ADR-0078 Gates).
 - The spec already assumes the table: §11.6's consolidation MUST NOT "silently mark a Memory superseded"
   (`Baseline_2.9.md:3262-3273`), and §8.9's experience list names "recorded conflict candidates (a record in an
@@ -33,8 +33,8 @@
 `private.curation_candidates` is the single carrier (note D3, `:71-73`): `proposed_by` (`model@ver` | `rule@ver`),
 `kind`, target ids and their revisions, `payload_hash`, score, and `state` (D-C). M15 owns it at L4 (note §7, `:161`,
 `:165`), in the core edition: the candidate path is the OSS safety path with no generative model (D1, `:56-57`).
-`proposed_by` is provenance only, never authority (`0078:88`); the note fixes the two prefixes and no more, so the
-exact string form is the card's (note :243-244). Rejected: one table per kind (note :79).
+`proposed_by` is provenance only, never authority (`0078:88`); the note fixes the two prefixes and no more; the exact
+string form is open (see Open research). Rejected: one table per kind (note :79).
 
 ### D-B Nine kinds in one closed set
 
@@ -53,8 +53,7 @@ and ADR-0080 D-G's "never silently promoted"; the note leaves the other four tra
 
 ### D-D Readable only through `candidate_repo`; never in a formal read path
 
-C-M15-1 is `candidate_repo::{propose_in_txn, list, decide}` (note :145-146) and is the only reader and writer of the
-table: "Readable only through `candidate_repo`; never in formal read paths, counts, rules or handoffs (G-N09-2)" (note
+C-M15-1 is `candidate_repo::{propose_in_txn, list, decide}` (note :145-146) and is how the table is read: "Readable only through `candidate_repo`; never in formal read paths, counts, rules or handoffs (G-N09-2)" (note
 :75-76). No formal reader, count, prevention rule or handoff manifest may reference it (ADR-0078 N09 R2); the static arm
 is G-M15-1 (Gates). M15 is L4 and its consumers call M15, never the table; M15 may not depend on M14+ or a cloud crate
 from core (note :165-166).
@@ -95,6 +94,8 @@ G-M15-1 is the xtask arm of the existing G-N09-2 rule (ADR-0078 Gates); the note
   accept authority is the user's own confirmation through ADR-0018 (note :76-77), not an owner gate.
 
 ## Open research
+
+- The exact `proposed_by` string form beyond the `model@ver` / `rule@ver` prefixes is not fixed by the note; M15-1 proposes it.
 
 - `REPEATED_QUESTION`'s threshold k is UNKNOWN (note :225, :229); the note's fallback is k = 3 (`:229`). It gates the
   producer card M15-13, not the table's shape.

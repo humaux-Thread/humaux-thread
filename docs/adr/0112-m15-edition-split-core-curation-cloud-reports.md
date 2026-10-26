@@ -81,7 +81,7 @@ Planned, implementer-owned, tri-state (§57.1); no gate is added by this card:
 ## Owner-gated (listed, not decided)
 
 - Enabling cloud curation in production (note :237).
-- Any live provider key use in the M15 experiments (note :236).
+- The E-KNOW-3 real-agent budget, and any live MiniMax key use in the experiments (note :236).
 - First live send of a digest/report email (note :236-237, "M22 rule").
 - Owner questions: none new (note :235). D4's "confirm or overrule" of audit decision D5 belongs to D4, not to D1.
 
