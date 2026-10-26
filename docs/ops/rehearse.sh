@@ -464,14 +464,13 @@ HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS=1209600 HUMAUX_MAINTENANCE_S
 HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT=2 \
 HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT=2 \
 HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_LIMIT=2 \
-HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT=2 \
 HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_JOBS_LIMIT=2 \
 HUMAUX_MAINTENANCE_SERVE_REISSUE_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_REISSUE_LIMIT=2 \
 HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT=2 \
 HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS=3 \
 HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS=3 HUMAUX_MAINTENANCE_DR_REPO_FS_PATH=$EV HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH=$EV \
 HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS=$((LAG_SECS + 1)) HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS=$LAG_SECS \
-HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS=0 HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS=0 \
+HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS=0 \
 HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS=0 HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS=0 \
 HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS=60 \
 HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS=2 HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS=2"
@@ -502,7 +501,7 @@ if docker exec humaux-thread-pg psql -U postgres -d postgres -qc "CREATE DATABAS
    && "$BIN_DIR"/xtask migrate --dsn "postgres://postgres:${HUMAUX_DEV_PG_SUPERUSER_PASSWORD:?}@$PG/$MD_DB" > $EV/maintenance-migrate.log 2>&1 \
    && docker exec -i humaux-thread-pg psql -U postgres -d $MD_DB -v ON_ERROR_STOP=1 -v k=$MD_K -1 -q >> $EV/maintenance-seed.log 2>&1 <<'MDSQL'
 SELECT set_config('c35.k', :'k', false);
--- Eight tenants, each: k expired confirm tokens, k expired snapshots (3 items each), k idle full rate buckets,
+-- Eight tenants, each: k expired confirm tokens, k expired snapshots (3 items each),
 -- k old DONE/DEAD jobs (no calls, no links, not distill), and one orphan ISSUED ticket whose Evidence carries an
 -- indexable memory (the reissue door's input; ADR-0062 D-L / D-N). Owner SQL, one transaction.
 DO $do$
@@ -742,7 +741,7 @@ assert_gt "same_uid_allow_warned" "$(grep -cE '^WARN humaux-retrieval-worker: (H
 # keys the tree under test registers (the gateway refuses an unknown HUMAUX_GATEWAY_* key). `xtask load` drives it with
 # two load tenants seeded and torn down here through e2e-seed only (ruling R-8): LA with 16 workspaces (16
 # workspace-bound keys), LB with one. The mix (memory.enumerate / tools/list) reaches no provider, outbox, job or
-# Qdrant; load_tenants_torn_down reads their outbox / job / memory_evidence / tenant / rate-bucket rows before AND after
+# Qdrant; load_tenants_torn_down reads their outbox / job / memory_evidence / tenant rows before AND after
 # the teardown. xtask load's ASSERTION lines join A_OK / A_BAD through load_tally.
 # Unset LOAD_LEVELS = this step does not exist (the card-37 chain shape).
 if [ -n "${LOAD_LEVELS:-}" ]; then
@@ -832,9 +831,7 @@ if [ -n "$LOAD_LA" ] && [ -n "$LOAD_LB" ] && [ "$LOAD_EMPTY" = 0 ]; then
     --iso-pairs 3 --iso-secs 20 --iso-base-clients 4 --iso-burst-clients 64 --burst-w-secs 15
     --max-wait-ms $LOAD_MAX_WAIT_MS --burst-w-max-wait-ms 1 --handler-timeout-secs $GW_HANDLER_TIMEOUT --pool-max $LOAD_POOL_MAX
     --max-backends 80 --iso-floor-ms ${LOAD_ISO_FLOOR_MS:?LOAD_ISO_FLOOR_MS is required with LOAD_LEVELS} --ready-timeout-secs 90
-    --lock-sample-ms 10 --pg-dsn-env HUMAUX_TEST_PG_DSN --pg-container humaux-thread-pg)
-  # --lock-sample-ms: the LOCKWAIT sampler's interval and so its resolution (ADR-0065 D-D); 10 ms resolves the
-  # 1-2 ms-per-bucket hold the design estimated to within a few holds, at ~100 cheap pg_locks reads/s.
+    --pg-dsn-env HUMAUX_TEST_PG_DSN --pg-container humaux-thread-pg)
   "$BIN_DIR"/xtask load "${LOAD_ARGS[@]}" --report $EV/load-report.json \
     ${LOAD_BURST_W_RESTART:+--restart} ${LOAD_BURST_W_RESTART:+BURST-W=$LOAD_BURST_W_RESTART} 2>>$EV/load.stderr | tee $EV/load_main.log | tee -a $EV/rehearsal.log
   LOAD_RC=${pipestatus[1]}
