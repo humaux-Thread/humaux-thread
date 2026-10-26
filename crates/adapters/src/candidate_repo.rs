@@ -1,5 +1,5 @@
 //! `adapters::candidate_repo` — sole writer of curation_candidates; no formal reader (G-N09-2).
-//! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) r=[private.curation_candidates] x=[private.propose_curation_candidate, private.decide_curation_candidate]]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, domain::error, domain::identity, domain::knowledge]
+//! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) r=[private.curation_candidate_targets, private.curation_candidates] x=[control.assert_write_scope, private.propose_curation_candidate, private.decide_curation_candidate]]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, domain::authority, domain::error, domain::identity, domain::knowledge]
 //! Called-by: [tests]
 //! Invariants: [acceptance confirms a manifest only; STALE rolls back without writes; no M07 calls]
 //! Spec: Baseline §6.1.4; §11.6; §52; ADR-0113
