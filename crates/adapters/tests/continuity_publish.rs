@@ -12,11 +12,13 @@
 //!   in 80 versions, and a conflicted list writer retries and unions the winner's item; the block is proved through
 //!   pg_blocking_pids, never a sleep; every fixture tenant is purged by the one fixture purge; a missing database is a
 //!   failure when HUMAUX_REQUIRE_DB=1, never a silent pass; g_m14_2_eighty_writers_union_exactly is lane(a:shared_db)
-//!   (it holds exactly one gateway session per writer — asserted as exactly 80 in pg_stat_activity, never more —
-//!   and max_connections is 100), so it runs alone in `cargo xtask serial-lane`]
+//!   (it holds exactly one gateway session per writer — 80 live sessions at the start barrier and 80 distinct
+//!   gateway backends across the run, never more — and max_connections is 100), so it runs alone in
+//!   `cargo xtask serial-lane`]
 //! Spec: Baseline §25.3.1; §52 D-B; §79.2; §80.1; ADR-0094
 
 use std::{
+    collections::BTreeSet,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -124,19 +126,6 @@ fn writer_sessions(admin: &mut Client) -> i64 {
         )
         .expect("writer sessions")
         .get(0)
-}
-
-/// Samples [`writer_sessions`] until `stop`, returning the highest count seen. A single read cannot
-/// prove the cap: with a pool ceiling above one a writer opens a second backend only mid-retry.
-fn peak_writer_sessions(admin_dsn: &str, stop: &AtomicBool) -> i64 {
-    // dep: PostgreSQL(owner) — observes pg_stat_activity, reads no table
-    let mut admin = Client::connect(admin_dsn, NoTls).expect("session observer");
-    let mut peak = 0;
-    while !stop.load(Ordering::SeqCst) {
-        peak = peak.max(writer_sessions(&mut admin));
-        thread::sleep(Duration::from_millis(5));
-    }
-    peak
 }
 
 struct Handle {
@@ -334,11 +323,16 @@ fn one_publish(
     pool: &sqlx::Pool<sqlx::Postgres>,
     scope: &AuthorizationScope,
     command: &PublishContinuityFacet<'_>,
-) -> Result<PublishFacetOutcome, ErrorCode> {
+) -> Result<(PublishFacetOutcome, i32), ErrorCode> {
     rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — one write transaction per publish attempt
         let mut tx = pool
             .begin()
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        // The session that served this attempt: exactly one per writer when the pool ceiling is one.
+        let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *tx)
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
         let outcome = continuity_repo::publish_facets_in_txn(&mut tx, scope, command).await?;
@@ -351,7 +345,7 @@ fn one_publish(
                 .await
                 .map_err(|_| ErrorCode::DependencyUnavailable)?;
         }
-        Ok(outcome)
+        Ok((outcome, backend))
     })
 }
 
@@ -590,17 +584,24 @@ fn g_m14_1_two_scalar_publishes_leave_one_winner_and_one_conflict() {
 }
 
 /// One writer's bounded retry: publish, accept a lost CAS and retry, or fail after `WRITER_ATTEMPTS`.
+/// Returns every gateway backend the writer used: with a one-connection pool that set has exactly one id.
 fn publish_until_settled(
     rt: &Runtime,
     pool: &sqlx::Pool<sqlx::Postgres>,
     scope: &AuthorizationScope,
     command: &PublishContinuityFacet<'_>,
     index: usize,
-) -> Result<(), String> {
+) -> Result<BTreeSet<i32>, String> {
+    let mut backends = BTreeSet::new();
     for _ in 0..WRITER_ATTEMPTS {
         match one_publish(rt, pool, scope, command) {
-            Ok(PublishFacetOutcome::Published(_)) => return Ok(()),
-            Ok(PublishFacetOutcome::Conflict { .. }) => {}
+            Ok((PublishFacetOutcome::Published(_), backend)) => {
+                backends.insert(backend);
+                return Ok(backends);
+            }
+            Ok((PublishFacetOutcome::Conflict { .. }, backend)) => {
+                backends.insert(backend);
+            }
             Err(error) => return Err(format!("writer {index}: {error:?}")),
         }
     }
@@ -619,12 +620,6 @@ fn g_m14_2_eighty_writers_union_exactly() {
         let dsn = Arc::new(fixture.gateway_dsn.clone());
         let scope = Arc::new(fixture.scope());
         let barrier = Arc::new(StartBarrier::new(WRITERS));
-        let stop = Arc::new(AtomicBool::new(false));
-        let observer = {
-            let admin_dsn = fixture.admin_dsn.clone();
-            let stop = Arc::clone(&stop);
-            thread::spawn(move || peak_writer_sessions(&admin_dsn, &stop))
-        };
         let memory = fixture.memory;
         let memory_hash = fixture.memory_hash;
         let project = fixture.project;
@@ -668,20 +663,19 @@ fn g_m14_2_eighty_writers_union_exactly() {
             "each of the {WRITERS} writers must hold exactly one gateway session"
         );
         barrier.release();
+        let mut backends = BTreeSet::new();
         for writer in writers {
-            writer
-                .join()
-                .expect("writer thread")
-                .expect("writer published");
+            backends.extend(
+                writer
+                    .join()
+                    .expect("writer thread")
+                    .expect("writer published"),
+            );
         }
-        stop.store(true, Ordering::SeqCst);
-        let peak = observer.join().expect("session observer");
-        // The observer can sample either side of the barrier's all-connected instant, so the barrier's
-        // own read is folded in: the highest count over the whole run is still exactly one per writer.
         assert_eq!(
-            peak.max(at_barrier),
-            WRITERS as i64,
-            "a writer must never open a second gateway session while its transaction returns"
+            backends.len(),
+            WRITERS,
+            "the {WRITERS} writers must use exactly one gateway session each"
         );
 
         assert_eq!(
@@ -770,7 +764,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
                 removals,
             );
             assert_eq!(
-                one_publish(&rt, &pool, &scope, &input),
+                one_publish(&rt, &pool, &scope, &input).map(|(outcome, _)| outcome),
                 Err(ErrorCode::InvalidInput)
             );
         }
@@ -784,7 +778,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
             &[],
         );
         assert_eq!(
-            one_publish(&rt, &pool, &scope, &input),
+            one_publish(&rt, &pool, &scope, &input).map(|(outcome, _)| outcome),
             Err(ErrorCode::InvalidInput)
         );
         let goal = json!({"goal":"published"});
@@ -798,7 +792,7 @@ fn publish_rejects_unpublishable_and_scalar_removal_inputs() {
         );
         assert!(matches!(
             one_publish(&rt, &pool, &scope, &input),
-            Ok(PublishFacetOutcome::Published(_))
+            Ok((PublishFacetOutcome::Published(_), _))
         ));
         let mut admin = fixture.admin();
         assert_eq!(
