@@ -13,7 +13,7 @@ with invalid_operations as materialized (
   else null end as n
 )
 select case when n <> 0 then
- ('0278: control.confirm_tokens has ' || n || ' rows outside the operation closed set; refusing migration')::boolean
+ ('0278: control.confirm_tokens has ' || n || ' rows outside the operation closed set, refusing migration')::boolean
  else n = 0 and to_regclass('control.deletion_targets') is not null
   and to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)') is null
  end as precheck_ok from invalid_operations

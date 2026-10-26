@@ -199,7 +199,7 @@ fn the_sweep_deletes_only_expired_tokens_no_longer_wanted_as_audit() {
             // kept: not expired yet — it can still gate a call.
             seed_token(&mut handle, tenant_id, "memory.restore", 600, None);
             // kept: another tenant's expired, unconsumed row.
-            seed_token(&mut handle, other, "memory.pin", -60, None);
+            seed_token(&mut handle, other, "memory.confirm", -60, None);
 
             let deleted = handle
                 .rt
@@ -221,7 +221,7 @@ fn the_sweep_deletes_only_expired_tokens_no_longer_wanted_as_audit() {
             );
             assert_eq!(
                 surviving(&mut handle, other),
-                vec!["memory.pin".to_owned()],
+                vec!["memory.confirm".to_owned()],
                 "RLS scopes the definer's DELETE: another tenant's rows are untouchable"
             );
 
