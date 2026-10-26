@@ -1,0 +1,55 @@
+# §46.1 migration manifest. Card M20-4a (ADR-0088 D-A..D-C): the versioned contribution notice table, the append-only choice
+# event table (FORCE RLS, mutation-refusing trigger) and eight owner SECURITY DEFINER doors. No existing table, column, row or
+# grant changes; no policy row is written for any tenant (number 0274).
+
+migration_id = "0274_contribution_notice"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless the policy lifecycle door (0132) exists and none of the 0274 objects does.
+precheck = """
+select to_regclass('control.contribution_policies') is not null
+   and to_regclass('control.tenants') is not null
+   and to_regclass('control.users') is not null
+   and to_regprocedure('control.append_contribution_policy_successor(uuid,uuid,bigint,boolean,text,text,text,text,text,text)') is not null
+   and to_regclass('control.contribution_notices') is null
+   and to_regclass('control.contribution_notice_events') is null
+   and to_regprocedure('control.current_contribution_notice()') is null
+   and to_regprocedure('control.contribution_authorized(uuid,uuid)') is null
+   and to_regprocedure('control.toggle_member_contribution(boolean,text)') is null
+ as precheck_ok
+"""
+
+# Fails on: the events table without FORCE RLS or without the mutation and truncate triggers; any runtime role holding a
+# write verb on either table; a door that is not owner-owned SECURITY DEFINER with search_path pinned; EXECUTE on any
+# door held by role_public_worker or role_private_worker.
+postcheck = """
+with doors(sig) as (values
+  ('control.current_contribution_notice()'),
+  ('control.contribution_authorized(uuid,uuid)'),
+  ('control.append_notice_event(text,integer,text)'),
+  ('control.record_notice_shown(integer,text)'),
+  ('control.ack_notice(integer,text)'),
+  ('control.toggle_contribution(boolean,text)'),
+  ('control.toggle_member_contribution(boolean,text)'),
+  ('control.apply_cloud_contribution_default()'))
+select (select c.relrowsecurity and c.relforcerowsecurity from pg_class c
+         where c.oid = to_regclass('control.contribution_notice_events'))
+   and (select count(*) = 2 from pg_trigger t
+         where t.tgrelid = to_regclass('control.contribution_notice_events') and not t.tgisinternal)
+   and not exists (select 1 from information_schema.role_table_grants g
+         where g.table_schema = 'control'
+           and g.table_name in ('contribution_notices', 'contribution_notice_events')
+           and g.grantee <> 'role_migration_owner'
+           and not (g.grantee = 'role_gateway' and g.privilege_type = 'SELECT'))
+   and (select count(*) = 8 from doors d join pg_proc p on p.oid = to_regprocedure(d.sig)
+         where p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+           and 'search_path=pg_catalog, pg_temp' = any (coalesce(p.proconfig, array[]::text[])))
+   and not exists (select 1 from doors d join pg_proc p on p.oid = to_regprocedure(d.sig)
+         cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+         where a.privilege_type = 'EXECUTE'
+           and pg_get_userbyid(a.grantee) in ('role_public_worker', 'role_private_worker'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Before any notice or event row exists: drop the eight doors, the reject function and both tables. After rows exist: preserve them and ship a forward-fix migration; the events are an audit record and are never discarded."
+backup_restore_requirement = "Standard pre-deploy database snapshot; no data rewrite or dedicated restore drill. No production action is performed by this card."

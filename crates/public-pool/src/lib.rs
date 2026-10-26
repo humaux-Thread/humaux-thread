@@ -11,6 +11,8 @@
 //! here by [`public_repo::PublicRepoEvaluator`].
 
 pub mod completeness;
+pub mod notice;
+pub mod policy;
 pub mod public_evolve;
 pub mod public_projection;
 pub mod public_provenance;
