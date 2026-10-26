@@ -12088,6 +12088,7 @@ executed by:
 - `xtask::soak`
 
 ### `PostgreSQL(role_migration_owner)`
+- `adapters::tests::forget_confirm`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::project_continuity_0136`
