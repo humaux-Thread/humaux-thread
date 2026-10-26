@@ -907,7 +907,6 @@ processes:
 - process(humaux-retrieval-worker)
 
 modules:
-- `adapters::continuity_repo`
 - `contracts::config_registry`
 - `gateway::bootstrap`
 

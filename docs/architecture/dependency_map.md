@@ -2040,7 +2040,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - executes `private.register_continuity_project`
-- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - service `PostgreSQL(any)`
 
 #### `adapters::coord_repo`
@@ -12683,9 +12682,9 @@ modules naming it:
 why: shared contract types for the mechanism-observation adapter
 
 modules naming it:
-- `adapters::continuity_repo`
 - `adapters::mechanism_observation`
 - `adapters::qdrant`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::mechanism_observation`
 - `adapters::tests::qdrant_contract`
 - `tests`
