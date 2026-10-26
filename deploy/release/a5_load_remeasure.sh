@@ -164,7 +164,7 @@ else
       --ops-url http://127.0.0.1:19101/metrics $LANES --levels 8,16,32,64 --burst 128 --warmup-secs 5 --level-secs 45 \
       --burst-secs 20 --iso-pairs 3 --iso-secs 20 --iso-base-clients 4 --iso-burst-clients 64 --burst-w-secs 15 \
       --max-wait-ms 5000 --burst-w-max-wait-ms 1 --handler-timeout-secs 20 --pool-max 18 --max-backends 80 \
-      --iso-floor-ms 7 --ready-timeout-secs 90 --lock-sample-ms 10 --pg-dsn-env HUMAUX_TEST_PG_DSN \
+      --iso-floor-ms 7 --ready-timeout-secs 90 --pg-dsn-env HUMAUX_TEST_PG_DSN \
       --host-class a5 --meminfo-path /proc/meminfo --restart "BURST-W=file:$HOOK" >> "$LOADLOG" 2>> "$OUT/load.stderr" \
       || echo "load: xtask load exited non-zero" >> "$LOADLOG"
     stop_listener
