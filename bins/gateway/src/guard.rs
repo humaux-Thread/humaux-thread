@@ -6,15 +6,16 @@
 //!   domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
 //!   gateway::bootstrap, gateway::limiter,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
-//! Called-by: [gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
+//! Called-by: [gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
 //! Invariants: [transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
-//! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D
+//! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
 //!
 //! Transport owns HTTP validation; this layer owns authentication through finalization.
 
 use std::{
     collections::BTreeMap,
     future::Future,
+    net::IpAddr,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
@@ -368,9 +369,13 @@ impl GatewayGuard {
     }
 
     fn network(&self, context: &McpHttpContext) -> ClientNetworkIdentity {
+        self.network_of(context.peer_ip(), context.forwarded())
+    }
+
+    fn network_of(&self, peer_ip: IpAddr, forwarded: Option<&str>) -> ClientNetworkIdentity {
         build_client_network_identity(
-            context.peer_ip(),
-            context.forwarded(),
+            peer_ip,
+            forwarded,
             &self.settings.trusted_proxies,
             None,
             None,
@@ -471,7 +476,25 @@ impl GatewayGuard {
 
     /// Exactly once per HTTP request, before JSON-RPC parsing (including malformed RPC).
     pub async fn preflight(&self, context: &McpHttpContext) -> Result<(), ErrorCode> {
-        let network = self.network(context);
+        self.preflight_peer(
+            context.request_id(),
+            context.peer_ip(),
+            context.forwarded(),
+            "protocol",
+        )
+        .await
+    }
+
+    /// ADR-0125: the one pre-auth IP tier (network policy, then the `Subject::Ip` bucket) for any HTTP surface.
+    /// `/mcp` reaches it through [`Self::preflight`], `/auth/*` directly; `surface` is the audit `resource_id`.
+    pub async fn preflight_peer(
+        &self,
+        request_id: Uuid,
+        peer_ip: IpAddr,
+        forwarded: Option<&str>,
+        surface: &str,
+    ) -> Result<(), ErrorCode> {
+        let network = self.network_of(peer_ip, forwarded);
         let result = if !self.network_allowed(&network, None) {
             Err(ErrorCode::Forbidden)
         } else {
@@ -481,15 +504,15 @@ impl GatewayGuard {
             )?])
         };
         if let Err(code) = result {
-            self.audit(
-                context,
+            let event = self.audit_event_for(
+                request_id,
                 &network,
                 None,
                 McpAuditAction::McpRequestDenied,
-                "protocol",
+                surface,
                 Some(code),
-            )
-            .await?;
+            );
+            request_guard_repo::audit_event_insert(&self.pool, AuditTenant::System, &event).await?;
         }
         result
     }
@@ -1447,6 +1470,25 @@ impl GatewayGuard {
         operation: &str,
         error: Option<ErrorCode>,
     ) -> AuditEvent {
+        self.audit_event_for(
+            context.request_id(),
+            network,
+            auth,
+            action,
+            operation,
+            error,
+        )
+    }
+
+    fn audit_event_for(
+        &self,
+        request_id: Uuid,
+        network: &ClientNetworkIdentity,
+        auth: Option<&AuthorizationScope>,
+        action: McpAuditAction,
+        operation: &str,
+        error: Option<ErrorCode>,
+    ) -> AuditEvent {
         AuditEvent {
             event_id: AuditEventId::new(),
             ts: SystemTime::now(),
@@ -1466,8 +1508,8 @@ impl GatewayGuard {
             resource_type: "MCP_OPERATION".to_owned(),
             resource_id: operation.to_owned(),
             result: error.map(|code| code.as_str()).unwrap_or("OK").to_owned(),
-            request_id: context.request_id().to_string(),
-            trace_id: context.request_id().to_string(),
+            request_id: request_id.to_string(),
+            trace_id: request_id.to_string(),
             client_ip: network.client_ip.to_string(),
             user_agent_hash: String::new(),
             risk_tags: network.risk_tags.clone(),
