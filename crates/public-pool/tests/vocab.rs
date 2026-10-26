@@ -64,7 +64,7 @@ fn exact_seed(admin: &mut Client) {
         .iter()
         .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
         .collect();
-    let expected = vocab
+    let expected: BTreeSet<(String, String, String, Option<String>, String)> = vocab
         .concepts
         .iter()
         .map(|c| {
@@ -89,7 +89,7 @@ fn exact_seed(admin: &mut Client) {
         .iter()
         .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
         .collect();
-    let expected = [
+    let expected: BTreeSet<(String, String, String, String)> = [
         ("knowledge-fix", "en", "PREF", "FIX"),
         ("knowledge-decision", "en", "PREF", "DECISION"),
         ("knowledge-research", "en", "PREF", "RESEARCH"),
@@ -110,8 +110,8 @@ fn exact_seed(admin: &mut Client) {
     assert_eq!(count, 0);
 }
 
-#[tokio::test]
-async fn loader_idempotent_exact_seed_and_closed_checks() {
+#[test]
+fn loader_idempotent_exact_seed_and_closed_checks() {
     let Ok(dsn) = std::env::var("HUMAUX_TEST_PG_DSN") else {
         humaux_testkit::skip_or_fail(
             "vocab loader",
@@ -127,22 +127,21 @@ async fn loader_idempotent_exact_seed_and_closed_checks() {
         "{dsn}{}options=-c%20role%3Drole_public_worker",
         if dsn.contains('?') { '&' } else { '?' }
     );
+    let rt = tokio::runtime::Runtime::new().expect("test runtime");
     // dep: PostgreSQL(role_public_worker) — §12.3 production writer identity.
-    let worker = PublicWorkerDbPool::connect(&worker_dsn)
-        .await
+    let worker = rt
+        .block_on(PublicWorkerDbPool::connect(&worker_dsn))
         .expect("typed worker pool");
-    vocab::apply(&worker, SOURCE, LOCK)
-        .await
+    rt.block_on(vocab::apply(&worker, SOURCE, LOCK))
         .expect("first apply");
-    vocab::apply(&worker, SOURCE, LOCK)
-        .await
+    rt.block_on(vocab::apply(&worker, SOURCE, LOCK))
         .expect("idempotent second apply");
     exact_seed(&mut admin);
     // §12.3: rewriting both current files cannot rename a persisted id.
     let renamed = SOURCE.replace("knowledge-fix", "knowledge-renamed");
     let renamed_lock = LOCK.replace("knowledge-fix", "knowledge-renamed");
     assert_eq!(
-        vocab::apply(&worker, &renamed, &renamed_lock).await,
+        rt.block_on(vocab::apply(&worker, &renamed, &renamed_lock)),
         Err(ErrorCode::InvalidInput)
     );
     exact_seed(&mut admin);

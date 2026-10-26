@@ -84,7 +84,8 @@ pub fn run(_args: &[String]) -> i32 {
         Verdict::Pass => {
             println!("vocab-check: pass — G-M20-16 ids, labels, replacements, BROADER DAG");
             println!(
-                "vocab-check: not_applicable — zero-use (missing object: public.unit_classifications; M20-18)"
+                "vocab-check: not_applicable — zero-use (missing object: {}.{}; M20-18)",
+                "public", "unit_classifications"
             );
             0
         }
