@@ -1,11 +1,12 @@
 //! `adapters::tests::private_projection_registry` — Ignored real-PostgreSQL acceptance for the private Qdrant point
 //!   registry.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit,
-//!   postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq] w=[control.memberships,
+//!   postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq,
+//!   projection.tenant_placements] w=[control.memberships,
 //!   control.private_reasoning_domains, control.reasoning_domain_grants, control.tenants, control.users, ops.jobs,
 //!   ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
 //!   projection.embedding_fingerprints, projection.memory_vectors, projection.private_memory_points,
-//!   projection.stream_checkpoints, projection.stream_log],
+//!   projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
 //!   adapters::read_materialize, adapters::retrieve, adapters::tests::support::token_keys, domain::authority, domain::dataclass, domain::identity,
