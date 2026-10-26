@@ -3745,8 +3745,9 @@ mod tests {
                             )],
                         )
                         .unwrap();
-                    assert_eq!(row.get::<_, i64>(0), 10_000);
-                    assert_eq!(row.get::<_, i64>(1), 10_000);
+                    // ADR-0100 / §72.3: the retired PG hot path must leave this fixture's seed policy unchanged.
+                    assert_eq!(row.get::<_, i64>(0), 100);
+                    assert_eq!(row.get::<_, i64>(1), 100);
                 }
                 let first = runtime_handle.block_on(async {
                     // dep: PostgreSQL(role_gateway) — test fixture pool for a dispatch-table integration test
