@@ -56,13 +56,18 @@
   The op's value comes from the door's own in-transaction read. This is the point behind the note's rejection of a
   client-managed `expected_slot_version` (tool surface §5), not a contradiction of the spec's publish paragraph.
 
-### D-D List facets: server-side merge-retry, at most three attempts
+The publish operation retains `required_scope: memory:write`, the existing write scope, per the lead ruling in
+[#292](https://github.com/humaux/humaux-thread/issues/292) (2026-10-26). Introducing `context:write` would require a
+new ADR; this decision introduces no new scope.
+
+### D-D List facets: server-side merge-retry, configured total attempts
 
 - `DECISIONS`, `REJECTIONS`, `CONSTRAINTS`, `KNOWN_ISSUES`, `NEXT_ACTIONS`, `PROCEDURES` and `OUTCOMES` take the list
   path. The door reads the current body, unions the incoming items by source id, applies the explicit removal entries,
   and publishes the merged body against the version it read.
-- On a CAS race the door re-reads, merges again and retries, at most 3 attempts in total; the fourth failure is
-  `Conflict`. The retry never replaces the list: a whole-list replace would drop a concurrent writer's item, which is
+- On a CAS race the door re-reads, merges again and retries within the registered
+  `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS` budget (default 3 attempts in total, including the initial attempt);
+  a conflict on the final permitted attempt returns `Conflict`. The retry never replaces the list: a whole-list replace would drop a concurrent writer's item, which is
   the failure the 80-writer case in G-M14-2 shows.
 - The merge function is one deterministic unit in `adapters::continuity_repo`; there is no second merge in the gateway
   or in a caller.
@@ -95,7 +100,7 @@ green records; a missing database in CI is a failure, never `not_applicable`.
 
 - D8 of the design note: once publish exists, M14-9 builds the G25-2 / G80-46 W3 live verifier (audit B91,
   D329) with the 14 spec mutations. It is a gate on this path, not a design in this ADR.
-- The merge bound (3 attempts) is a starting value from the design note; no experiment measures it. The publish latency
+- The registered merge bound (default 3 total attempts) is a starting value from the design note; no experiment measures it. The publish latency
   target is one transaction and one slot row lock.
 - Owner-gated: none in this ADR. Every write is to the owner's own project storage; no production write, no email, no
   live key is involved.

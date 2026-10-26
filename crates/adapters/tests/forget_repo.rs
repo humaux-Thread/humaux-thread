@@ -1,12 +1,12 @@
 //! `adapters::tests::forget_repo` — T4.8 integration test — `forget_repo` (§37/§37.1/§37.2/§65) against a real
 //!   Postgres.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit,
-//!   postgres, sqlx, tokio]; services=[PostgreSQL(any) w=[control.deletion_requests, control.tenants,
-//!   ops.deletion_plan_steps, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance)];
+//!   postgres, sqlx, tokio]; services=[PostgreSQL(any) w=[control.deletion_requests, control.deletion_targets, control.tenants,
+//!   control.users, ops.deletion_plan_steps, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::postgres, application::forget, domain::ids,
-//!   humaux-testkit, projection::stream]
+//!   humaux-testkit, projection::stream, testkit::disposable]
 //! Called-by: [cargo-test]
-//! Invariants: [rows are scoped to a throwaway tenant cleaned up on Drop; the TOMBSTONED edge and plan steps run on
+//! Invariants: [every fixture calls require_disposable before it writes a row; rows are scoped to a throwaway tenant cleaned up on Drop; the TOMBSTONED edge and plan steps run on
 //!   role_maintenance; no DSN, unreachable DB or missing table/function is a visible SKIP]
 //! Spec: Baseline §79.2
 //!
@@ -24,6 +24,7 @@ use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_application::forget::{DeletionPlan, DeletionStep};
 use humaux_domain::ids::TenantId;
 use humaux_projection::stream::StreamKey;
+use humaux_testkit::disposable::require_disposable;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use sqlx::types::Uuid;
@@ -55,6 +56,7 @@ impl Drop for Handle {
         // longer roll the data delete back.
         if let Err(error) = self.admin.batch_execute(&format!(
             "DELETE FROM ops.deletion_plan_steps WHERE tenant_id = '{0}'; \
+             DELETE FROM control.deletion_targets WHERE tenant_id = '{0}'; \
              DELETE FROM control.deletion_requests WHERE tenant_id = '{0}'; \
              DELETE FROM projection.stream_log WHERE tenant_id = '{0}'; \
              DELETE FROM projection.stream_checkpoints WHERE tenant_id = '{0}';",
@@ -83,10 +85,12 @@ impl DbIntegrationFixture for ForgetFixture {
         // dep: PostgreSQL(any) — opens the role-scoped connection for `isolate`
         let mut admin = Client::connect(&dsn, NoTls)
             .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
+        require_disposable(&mut admin).unwrap_or_else(|refusal| panic!("{refusal}"));
 
         for table in [
             "projection.stream_log",
             "control.deletion_requests",
+            "control.deletion_targets",
             "ops.deletion_plan_steps",
         ] {
             let exists: bool = admin
@@ -187,25 +191,127 @@ fn seed_done_rows(admin: &mut Client, key: &StreamKey, count: i64) {
     }
 }
 
-fn seed_deletion_request(admin: &mut Client, key: &StreamKey, seq: i64) -> Uuid {
+/// Seeds `count` `DONE` rows from `first_seq`, settled `ago_secs` seconds before the database's `now()` (database clock, so
+/// the order against a request's `logical_deleted_at` never depends on the test host's clock).
+fn seed_done_rows_ago(
+    admin: &mut Client,
+    key: &StreamKey,
+    first_seq: i64,
+    count: i64,
+    ago_secs: i64,
+) {
+    for seq in first_seq..first_seq + count {
+        admin
+            .execute(
+                "INSERT INTO projection.stream_log \
+                   (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
+                    stream_seq, commit_seq, state, issued_at, settled_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'DONE', \
+                         now() - ($8 * interval '1 second'), now() - ($8 * interval '1 second'))",
+                &[
+                    &key.tenant_id.0,
+                    &key.scope_kind,
+                    &key.scope_id,
+                    &key.domain,
+                    &key.projection_kind,
+                    &key.projection_version,
+                    &seq,
+                    &(ago_secs as f64),
+                ],
+            )
+            .expect("seed stream_log DONE row");
+    }
+}
+
+/// A v2 request (0272) that is already logically deleted — the state `tombstoned_unpurged_over_sla` watches.
+fn seed_deletion_request(admin: &mut Client, tenant_id: Uuid) -> Uuid {
+    seed_deletion_request_ago(admin, tenant_id, 0)
+}
+
+/// Same, with `logical_deleted_at` = `ago_secs` seconds before the database's `now()`.
+fn seed_deletion_request_ago(admin: &mut Client, tenant_id: Uuid, ago_secs: i64) -> Uuid {
+    let user_id: Uuid = admin
+        .query_one(
+            "INSERT INTO control.users (state) VALUES ('ACTIVE') RETURNING user_id",
+            &[],
+        )
+        .expect("seed requester")
+        .get(0);
     admin
         .query_one(
             "INSERT INTO control.deletion_requests \
-               (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, \
-                stream_seq) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING deletion_request_id",
+               (tenant_id, scope_kind, scope_id, requested_by, manifest_hash, logical_deleted_at) \
+             VALUES ($1, 'MEMORY', $2, $3, sha256($4::text::bytea), now() - ($5 * interval '1 second')) \
+             RETURNING deletion_request_id",
             &[
-                &key.tenant_id.0,
-                &key.scope_kind,
-                &key.scope_id,
-                &key.domain,
-                &key.projection_kind,
-                &key.projection_version,
-                &seq,
+                &tenant_id,
+                &Uuid::new_v4(),
+                &user_id,
+                &Uuid::new_v4().to_string(),
+                &(ago_secs as f64),
             ],
         )
         .expect("seed control.deletion_requests row")
         .get(0)
+}
+
+/// One `DONE` stream row of the tenant, settled `settled_ago` seconds ago; tombstone it with [`tombstone_row`].
+fn seed_done_row(handle: &mut Handle, settled_ago: i64) -> StreamKey {
+    let k = StreamKey::new(
+        TenantId(handle.tenant_id),
+        "workspace",
+        Uuid::new_v4(),
+        "code",
+        "retrieval_card",
+        "v1",
+    );
+    seed_checkpoint(&mut handle.admin, &k, 1);
+    seed_done_rows_ago(&mut handle.admin, &k, 1, 1, settled_ago);
+    k
+}
+
+/// Tombstones the row through the production path; `settled_at` keeps the settle time (0011).
+fn tombstone_row(handle: &Handle, k: &StreamKey) {
+    handle
+        .rt
+        .block_on(forget_repo::tombstone(&handle.maintenance, k, 1))
+        .expect("tombstone the row");
+}
+
+/// A second tenant, for the cross-tenant isolation case.
+fn seed_other_tenant(admin: &mut Client) -> Uuid {
+    admin
+        .query_one(
+            "INSERT INTO control.tenants (name) VALUES ($1) RETURNING tenant_id",
+            &[&"forget_repo.rs other tenant"],
+        )
+        .expect("seed other tenant")
+        .get(0)
+}
+
+fn over_sla(handle: &Handle, sla_secs: u64) -> i64 {
+    handle
+        .rt
+        .block_on(forget_repo::tombstoned_unpurged_over_sla(
+            &handle.maintenance,
+            handle.tenant_id,
+            Duration::from_secs(sla_secs),
+        ))
+        .expect("metric query")
+}
+
+fn purge(handle: &Handle, request_id: Uuid) {
+    handle
+        .rt
+        .block_on(forget_repo::record_step(
+            &handle.maintenance,
+            handle.tenant_id,
+            request_id,
+            DeletionStep::QdrantPoints,
+            "DONE",
+            None,
+        ))
+        .expect("record purge step");
 }
 
 fn envelope_counts(admin: &mut Client, key: &StreamKey) -> (i64, i64, i64) {
@@ -332,7 +438,7 @@ fn purge_replay_resumes_without_repeating_completed_steps() {
             let k = key(&handle);
             seed_checkpoint(&mut handle.admin, &k, 1);
             seed_done_rows(&mut handle.admin, &k, 1);
-            let request_id = seed_deletion_request(&mut handle.admin, &k, 1);
+            let request_id = seed_deletion_request(&mut handle.admin, handle.tenant_id);
             let tenant_id = handle.tenant_id;
 
             // Simulate a crash right after step 1 (tombstone) by recording it directly,
@@ -425,49 +531,93 @@ fn tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step() {
     run_db_fixture::<ForgetFixture, _>(
         "tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step",
         |mut handle| {
-            let k = key(&handle);
-            seed_checkpoint(&mut handle.admin, &k, 1);
-            seed_done_rows(&mut handle.admin, &k, 1);
-            let request_id = seed_deletion_request(&mut handle.admin, &k, 1);
-            let tenant_id = handle.tenant_id;
+            // (a) real order: the row settles DONE 600 s ago, the request is logically deleted 60 s ago, then the
+            // row is tombstoned; the request is older than the 30 s SLA.
+            let row = seed_done_row(&mut handle, 600);
+            let request_id = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
+            tombstone_row(&handle, &row);
+            assert_eq!(
+                over_sla(&handle, 30),
+                1,
+                "tombstoned + request over SLA + no QDRANT_POINTS step ⇒ red"
+            );
 
-            handle
-                .rt
-                .block_on(forget_repo::tombstone(&handle.maintenance, &k, 1))
-                .expect("tombstone seq 1");
+            // (b) the same row, the request younger than the SLA.
+            assert_eq!(
+                over_sla(&handle, 120),
+                0,
+                "the SLA clock is the deletion's age"
+            );
 
-            let sla = Duration::from_secs(0);
-            let before = handle
-                .rt
-                .block_on(forget_repo::tombstoned_unpurged_over_sla(
-                    &handle.maintenance,
-                    tenant_id,
-                    sla,
-                ))
-                .expect("metric query");
-            assert_eq!(before, 1, "tombstoned + no QDRANT_POINTS step yet ⇒ red");
+            // (c) the request has a QDRANT_POINTS step.
+            purge(&handle, request_id);
+            assert_eq!(over_sla(&handle, 30), 0, "purge step recorded ⇒ green");
+        },
+    );
+}
 
-            handle
-                .rt
-                .block_on(forget_repo::record_step(
-                    &handle.maintenance,
-                    tenant_id,
-                    request_id,
-                    DeletionStep::QdrantPoints,
-                    "DONE",
-                    None,
-                ))
-                .expect("record purge step");
+/// Seeds 3 rows settled 3600 s ago under an old (1800 s) request that is purged, then tombstones them.
+fn seed_purged_old_request_with_three_rows(handle: &mut Handle) {
+    let rows: Vec<StreamKey> = (0..3).map(|_| seed_done_row(handle, 3600)).collect();
+    let old_request = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 1800);
+    for row in &rows {
+        tombstone_row(handle, row);
+    }
+    purge(handle, old_request);
+}
 
-            let after = handle
-                .rt
-                .block_on(forget_repo::tombstoned_unpurged_over_sla(
-                    &handle.maintenance,
-                    tenant_id,
-                    sla,
-                ))
-                .expect("metric query");
-            assert_eq!(after, 0, "purge step recorded ⇒ green");
+/// §41.2 (d): 3 tombstoned rows under an old purged request and a fresh request younger than the SLA ⇒ 0.
+#[test]
+fn over_sla_gauge_is_zero_when_only_a_fresh_request_is_unpurged() {
+    run_db_fixture::<ForgetFixture, _>(
+        "over_sla_gauge_is_zero_when_only_a_fresh_request_is_unpurged",
+        |mut handle| {
+            seed_purged_old_request_with_three_rows(&mut handle);
+            seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 10);
+            assert_eq!(
+                over_sla(&handle, 30),
+                0,
+                "no request is unpurged past the SLA ⇒ the normal purge window raises no alert"
+            );
+        },
+    );
+}
+
+/// §41.2 (e): as (d), but the fresh request is past the SLA and unpurged ⇒ 4, the documented tenant-grain over-count.
+#[test]
+fn over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged() {
+    run_db_fixture::<ForgetFixture, _>(
+        "over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged",
+        |mut handle| {
+            seed_purged_old_request_with_three_rows(&mut handle);
+            let fresh_row = seed_done_row(&mut handle, 300);
+            seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
+            tombstone_row(&handle, &fresh_row);
+            assert_eq!(
+                over_sla(&handle, 30),
+                4,
+                "documented over-count (fail loud): every tombstoned row of a tenant with a request unpurged past SLA counts, \
+                 including the 3 rows of the purged request; exact attribution waits for M19-3a"
+            );
+        },
+    );
+}
+
+/// §41.2 (f): another tenant's unpurged request past the SLA does not raise this tenant's gauge.
+#[test]
+fn over_sla_gauge_ignores_another_tenants_unpurged_request() {
+    run_db_fixture::<ForgetFixture, _>(
+        "over_sla_gauge_ignores_another_tenants_unpurged_request",
+        |mut handle| {
+            let row = seed_done_row(&mut handle, 600);
+            let other_tenant = seed_other_tenant(&mut handle.admin);
+            seed_deletion_request_ago(&mut handle.admin, other_tenant, 60);
+            tombstone_row(&handle, &row);
+            assert_eq!(
+                over_sla(&handle, 30),
+                0,
+                "a request of another tenant never makes this tenant's rows count"
+            );
         },
     );
 }
