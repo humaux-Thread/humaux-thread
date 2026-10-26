@@ -7,6 +7,8 @@
 -- insertion's KEY SHARE, so closure recomputation after locking sees any completed link and fences new links.
 -- Token, request and lifecycle writes roll back with any refusal. Scope/manifest binding uses the canonical
 -- application::forget::confirmation_digest encoding (Baseline §33.10 rule 9). No physical deletion occurs.
+-- Amends the 0163 memory_records WITH CHECK by one revoke-only role_migration_owner arm (ADR-0092 ruling 2: closure
+-- Memories invisible to the accepter must still be revoked); see the ALTER POLICY below.
 
 -- §46.1: FORCE RLS must never turn the cross-tenant precheck into a false zero (0272 pattern).
 SELECT set_config('row_security', 'off', true);
@@ -88,6 +90,31 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+-- ADR-0092 ruling 2 (M19-3a): the accept door must revoke every closure Memory, including ones its session user
+-- cannot read. USING already has the cluster-scan owner arm (0163), so the door can lock and read them, but WITH CHECK had
+-- no owner arm, so the owner-definer UPDATE of an invisible row failed with 42501. This amends the 0163 WITH CHECK by ONE
+-- tenant-bounded, revoke-only owner arm: WITH CHECK sees only the NEW row, so an owner door can write an invisible row only
+-- when it leaves it revoked, never keep it live with other content and never un-revoke it. USING and every existing WITH
+-- CHECK branch are unchanged; there is no GUC arm.
+ALTER POLICY memory_records_tenant_and_visibility ON private.memory_records
+WITH CHECK (
+  tenant_id = current_setting('humaux.tenant_id', true)::uuid
+  AND (
+    (current_user = 'role_private_worker'
+     AND (visibility_class = 'TENANT_SHARED'
+          OR (visibility_class = 'WORKSPACE_SHARED' AND visibility_workspace_id IS NOT NULL)
+          OR (visibility_class = 'USER_PRIVATE' AND visibility_user_id IS NOT NULL)))
+    OR (current_user = 'role_migration_owner' AND status = 'revoked')
+    OR private.visibility_allowed(visibility_class, true,
+         visibility_user_id = NULLIF(current_setting('humaux.user_id', true), '')::uuid,
+         EXISTS (SELECT 1 FROM control.workspace_memberships wm
+                 WHERE wm.tenant_id = memory_records.tenant_id
+                   AND wm.workspace_id = memory_records.visibility_workspace_id
+                   AND wm.user_id = NULLIF(current_setting('humaux.user_id', true), '')::uuid
+                   AND wm.state = 'ACTIVE'))
+  )
+);
 
 CREATE FUNCTION control.deletion_request_accept(
   p_request_id uuid, p_nonce_sha256 bytea, p_operation text, p_request_sha256 bytea,

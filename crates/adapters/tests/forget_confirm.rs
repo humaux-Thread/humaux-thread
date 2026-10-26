@@ -623,6 +623,12 @@ fn g_m19_3_memory_forget_keeps_shared_evidence_survivor() {
         },
     );
 }
+/// Makes `memory` private to a freshly seeded peer, so the fixture user's session can neither see nor write it.
+fn hide_from_user(h: &mut Handle, memory: Uuid) {
+    let peer = h.seed_peer_user();
+    h.admin.execute("UPDATE private.memory_records SET visibility_class='USER_PRIVATE',visibility_user_id=$2,visibility_workspace_id=NULL WHERE memory_id=$1", &[&memory,&peer]).expect("Memory private to the peer");
+}
+
 /// #346: the user is a member of two workspaces; a request frozen from W1 must not be accepted by a W2-narrowed scope.
 fn accept_from_another_workspace_is_refused(name: &'static str, evidence: bool) {
     run_db_fixture::<Fixture, _>(name, move |mut h| {
@@ -708,9 +714,8 @@ fn g_346_closure_with_an_unreadable_derived_memory_is_accepted() {
         "g_346_closure_with_an_unreadable_derived_memory_is_accepted",
         |mut h| {
             let world = seed(&mut h);
-            let peer = h.seed_peer_user();
+            hide_from_user(&mut h, world.ctrl);
             let root = primary(&mut h, world.gated);
-            h.admin.execute("UPDATE private.memory_records SET visibility_class='USER_PRIVATE',visibility_user_id=$2,visibility_workspace_id=NULL WHERE memory_id=$1", &[&world.ctrl,&peer]).expect("derived Memory private to the peer");
             h.admin.execute("INSERT INTO private.memory_evidence (memory_id,evidence_id,role,grounding_mode) VALUES ($1,$2,'SUPPORTING','SNAPSHOT')", &[&world.ctrl,&root]).expect("derived input");
             let request = freeze(&h, root, true);
             assert_eq!(request.targets.len(), 3);
@@ -723,6 +728,85 @@ fn g_346_closure_with_an_unreadable_derived_memory_is_accepted() {
             accept(&h, &request, Some(&claim))
                 .expect("only the roots are judged, never the closure");
             assert_eq!(footprint(&mut h), (1, 1, 2, 2, 0));
+        },
+    );
+}
+
+/// Runs one `UPDATE ... SET status` as `role_migration_owner` whose session user is the fixture user, then rolls back.
+fn owner_sets_status(h: &mut Handle, memory: Uuid, status: &str) -> Result<u64, postgres::Error> {
+    let (tenant, user) = (h.tenant_id, h.user_id);
+    let mut txn = h.admin.transaction()?;
+    txn.batch_execute("SET LOCAL ROLE role_migration_owner")?;
+    txn.query_one(
+        "SELECT set_config('humaux.tenant_id',$1,true), set_config('humaux.user_id',$2,true)",
+        &[&tenant.to_string(), &user.to_string()],
+    )?;
+    txn.execute(
+        "UPDATE private.memory_records SET status=$3 WHERE tenant_id=$1 AND memory_id=$2",
+        &[&tenant, &memory, &status],
+    )
+}
+
+#[test]
+fn g_346_owner_arm_is_revoke_only() {
+    run_db_fixture::<Fixture, _>("g_346_owner_arm_is_revoke_only", |mut h| {
+        let world = seed(&mut h);
+        hide_from_user(&mut h, world.ctrl);
+        let refused = owner_sets_status(&mut h, world.ctrl, "active")
+            .expect_err("an invisible row may not stay live under the owner");
+        assert_eq!(
+            refused.as_db_error().map(|e| e.code().code()),
+            Some("42501")
+        );
+        assert_eq!(
+            owner_sets_status(&mut h, world.ctrl, "revoked").expect("revoking is admitted"),
+            1
+        );
+    });
+}
+
+#[test]
+fn g_346_gateway_cannot_revoke_an_invisible_memory() {
+    run_db_fixture::<Fixture, _>(
+        "g_346_gateway_cannot_revoke_an_invisible_memory",
+        |mut h| {
+            let world = seed(&mut h);
+            hide_from_user(&mut h, world.ctrl);
+            let updated = h.rt.block_on(async {
+                // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
+                let mut connection =
+                    sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
+                        .await
+                        .expect("gateway connection");
+                // dep: PostgreSQL(role_gateway) — the same caller-owned transaction
+                let mut txn = connection.begin().await.expect("begin");
+                sqlx::query("SELECT set_config('humaux.tenant_id',$1,true), set_config('humaux.user_id',$2,true)")
+                    .bind(h.tenant_id.to_string())
+                    .bind(h.user_id.to_string())
+                    .execute(&mut *txn)
+                    .await
+                    .expect("session");
+                let done = sqlx::query(
+                    "UPDATE private.memory_records SET status='revoked' WHERE tenant_id=$1 AND memory_id=$2",
+                )
+                .bind(h.tenant_id)
+                .bind(world.ctrl)
+                .execute(&mut *txn)
+                .await
+                .expect("gateway UPDATE runs");
+                txn.rollback().await.expect("rollback");
+                done.rows_affected()
+            });
+            assert_eq!(updated, 0, "USING hides the row from the gateway");
+            let status: String = h
+                .admin
+                .query_one(
+                    "SELECT status FROM private.memory_records WHERE memory_id=$1",
+                    &[&world.ctrl],
+                )
+                .expect("status")
+                .get(0);
+            assert_eq!(status, "active");
         },
     );
 }
