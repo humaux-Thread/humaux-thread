@@ -4,7 +4,7 @@
 //!   w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
 //!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
-//!   adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
+//!   adapters::continuity_repo, adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::subject_repo,
 //!   domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity,
 //!   domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject,
@@ -33,6 +33,7 @@ use humaux_adapters::{
     affect_repo,
     byok::json_has_nul,
     confirm_token_repo::ConfirmationClaim,
+    continuity_repo::{ContinuityEvidenceSource, ContinuityMemorySource},
     coord_repo,
     distill_repo::{ConfirmOutcome, RejectOutcome},
     memory_governance_repo::{self, ArchiveResult, RestoreResult},
@@ -49,7 +50,7 @@ use humaux_domain::{
     authority::MemoryId,
     confirm::{ConfirmToken, DestructiveOp},
     context::BindingPurpose,
-    continuity::ProjectId,
+    continuity::{ContinuityFacetKind, ProjectId},
     coordination::{FencingToken, TaskRunId, TaskState},
     dataclass::DataClass,
     error::ErrorCode,
@@ -112,7 +113,7 @@ use crate::{
 /// have had working dispatch arms since ADR-0025/ADR-0026, while this array still said 15 —
 /// nothing read it, so nothing noticed. The new gate also compares it against the `invoke`
 /// dispatch below, which is what makes that class of drift impossible to repeat.
-pub const SUPPORTED_OPERATION_KEYS: [&str; 27] = [
+pub const SUPPORTED_OPERATION_KEYS: [&str; 28] = [
     "remember.put",
     "memory.note_put",
     "recall.search",
@@ -121,6 +122,7 @@ pub const SUPPORTED_OPERATION_KEYS: [&str; 27] = [
     "memory.enumerate",
     "memory.grep",
     "continuity.get",
+    "continuity.publish",
     DestructiveOp::MemorySupersede.operation_key(),
     DestructiveOp::MemoryPin.operation_key(),
     DestructiveOp::MemoryUnpin.operation_key(),
@@ -858,6 +860,62 @@ impl GatewayMcpApplication {
                         },
                     )
                     .await
+                },
+            )
+            .await
+    }
+
+    /// ADR-0094 `continuity.publish`: the accepted-write path over [`GatewayGuard::run_local_write`]. The
+    /// catalog has already checked the facet kind is one of the nine publishable ones; the adapter owns the
+    /// transaction, the in-transaction slot read and the compare-and-set. A lost CAS is a successful
+    /// `{code:"CONFLICT", reason, reason_label, current_slot_version}` result (§52 D-B), never a write.
+    async fn continuity_publish(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        raw_arguments: &str,
+        value: &Value,
+    ) -> Result<ToolOutput, ErrorCode> {
+        let project_id = ProjectId::parse(
+            value["project_id"]
+                .as_str()
+                .ok_or(ErrorCode::InvalidInput)?,
+        )?;
+        let facet_kind = value["facet_kind"]
+            .as_str()
+            .ok_or(ErrorCode::InvalidInput)?
+            .parse::<ContinuityFacetKind>()?;
+        let body = value.get("body").ok_or(ErrorCode::InvalidInput)?.clone();
+        let (memories, evidence) = publish_sources(value)?;
+        let removals = publish_removals(value)?;
+        let requested_workspace = workspace(value)?;
+        let pool = self.runtime_pool.clone();
+        let catalog = self.catalog.clone();
+        self.guard
+            .run_local_write(
+                context,
+                operation,
+                requested_workspace,
+                raw_arguments,
+                move |request| async move {
+                    let workspace_id = request.workspace_id().ok_or(ErrorCode::InvalidInput)?;
+                    let outcome = continuity::publish(
+                        pool,
+                        request.authorization().clone(),
+                        continuity::PublishFacetCommand {
+                            project_id,
+                            workspace_id,
+                            facet_kind,
+                            body,
+                            memories,
+                            evidence,
+                            removals,
+                        },
+                    )
+                    .await?;
+                    let value = publish_output(&outcome);
+                    catalog.validate_output(ToolName::Continuity, &value)?;
+                    output(value)
                 },
             )
             .await
@@ -2256,6 +2314,10 @@ impl McpApplication for GatewayMcpApplication {
                 self.continuity_get(context, &operation, &raw_arguments, &value)
                     .await
             }
+            "continuity.publish" => {
+                self.continuity_publish(context, &operation, &raw_arguments, &value)
+                    .await
+            }
             "coordinate.task_submit" => {
                 self.coordinate_task(context, &operation, &raw_arguments, &value, TaskOp::Submit)
                     .await
@@ -2734,6 +2796,99 @@ fn workspace(value: &Value) -> Result<Option<WorkspaceId>, ErrorCode> {
     Ok(Some(WorkspaceId(
         Uuid::parse_str(value).map_err(|_| ErrorCode::InvalidInput)?,
     )))
+}
+
+fn decode_sha256(value: &str) -> Result<[u8; 32], ErrorCode> {
+    hex::decode(value)
+        .map_err(|_| ErrorCode::InvalidInput)?
+        .try_into()
+        .map_err(|_| ErrorCode::InvalidInput)
+}
+
+/// §25.3.1: a publication carries its exact source set, `(id, sha256)`, never ids alone — 0136
+/// rejects a source whose bytes or visibility no longer match instead of dropping it.
+fn publish_sources(
+    value: &Value,
+) -> Result<(Vec<ContinuityMemorySource>, Vec<ContinuityEvidenceSource>), ErrorCode> {
+    let sources = value.get("sources").ok_or(ErrorCode::InvalidInput)?;
+    let memory_items = sources
+        .get("memories")
+        .and_then(Value::as_array)
+        .ok_or(ErrorCode::InvalidInput)?;
+    let mut memories = Vec::with_capacity(memory_items.len());
+    for item in memory_items {
+        let memory_id = item
+            .get("memory_id")
+            .and_then(Value::as_str)
+            .ok_or(ErrorCode::InvalidInput)?;
+        let content_sha256 = item
+            .get("content_sha256")
+            .and_then(Value::as_str)
+            .ok_or(ErrorCode::InvalidInput)?;
+        memories.push(ContinuityMemorySource {
+            memory_id: Uuid::parse_str(memory_id).map_err(|_| ErrorCode::InvalidInput)?,
+            content_sha256: decode_sha256(content_sha256)?,
+        });
+    }
+    let evidence_items = sources
+        .get("evidence")
+        .and_then(Value::as_array)
+        .ok_or(ErrorCode::InvalidInput)?;
+    let mut evidence = Vec::with_capacity(evidence_items.len());
+    for item in evidence_items {
+        let evidence_id = item
+            .get("evidence_id")
+            .and_then(Value::as_str)
+            .ok_or(ErrorCode::InvalidInput)?;
+        let payload_sha256 = item
+            .get("payload_sha256")
+            .and_then(Value::as_str)
+            .ok_or(ErrorCode::InvalidInput)?;
+        evidence.push(ContinuityEvidenceSource {
+            evidence_id: Uuid::parse_str(evidence_id).map_err(|_| ErrorCode::InvalidInput)?,
+            payload_sha256: decode_sha256(payload_sha256)?,
+        });
+    }
+    Ok((memories, evidence))
+}
+
+fn publish_removals(value: &Value) -> Result<Vec<String>, ErrorCode> {
+    let Some(removals) = value.get("removals") else {
+        return Ok(Vec::new());
+    };
+    removals
+        .as_array()
+        .ok_or(ErrorCode::InvalidInput)?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or(ErrorCode::InvalidInput)
+        })
+        .collect()
+}
+
+fn publish_output(outcome: &continuity::PublishOutcome) -> Value {
+    match outcome {
+        continuity::PublishOutcome::Published(published) => json!({
+            "contract_version": "1",
+            "project_id": published.project_id.0.to_string(),
+            "facet_kind": published.facet_kind.as_str(),
+            "facet_version_id": published.result.facet_version_id.0.to_string(),
+            "facet_version": published.result.facet_version,
+            "slot_version": published.result.slot_version,
+            "body_sha256": hex::encode(published.result.body_sha256),
+        }),
+        continuity::PublishOutcome::Conflict {
+            reason,
+            current_slot_version,
+        } => json!({
+            "code": "CONFLICT",
+            "reason": reason.code(),
+            "reason_label": reason.label().unwrap_or("UNKNOWN"),
+            "current_slot_version": current_slot_version,
+        }),
+    }
 }
 
 /// ADR-0067 D-G / D-J2: `memory.enumerate`'s note and history axes, typed at the edge. An unknown kind, a bound that is
