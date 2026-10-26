@@ -20,8 +20,6 @@
 //!   HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS,
-//!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT, HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS,
-//!   HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT, HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REISSUE_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_REISSUE_LIMIT, HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_EVERY_SECONDS,
@@ -92,8 +90,6 @@ const DR_PGDATA_FS_PATH: &str = "HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH";
 /// ADR-0062 D-G: seconds a consumed, expired confirm token is kept as audit (>= 0).
 const CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS: &str =
     "HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS";
-/// ADR-0062 D-I: seconds a full rate bucket must be idle before it is purged (>= 0).
-const RATE_BUCKETS_IDLE_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS";
 /// ADR-0062 D-J: seconds a DONE job is kept after its last activity (>= 0).
 const JOBS_DONE_RETENTION_SECONDS: &str = "HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS";
 /// ADR-0062 D-J: seconds a DEAD or FAILED job is kept after its last activity (>= 0).
@@ -131,7 +127,6 @@ const fn every_key(task: Task) -> &'static str {
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS",
         Task::ConfirmTokens => "HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS",
         Task::Snapshots => "HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_EVERY_SECONDS",
-        Task::RateBuckets => "HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS",
         Task::Jobs => "HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS",
         Task::Reissue => "HUMAUX_MAINTENANCE_SERVE_REISSUE_EVERY_SECONDS",
         Task::Redrive => "HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS",
@@ -151,7 +146,6 @@ const fn limit_key(task: Task) -> Option<&'static str> {
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT",
         Task::ConfirmTokens => "HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT",
         Task::Snapshots => "HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_LIMIT",
-        Task::RateBuckets => "HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT",
         Task::Jobs => "HUMAUX_MAINTENANCE_SERVE_JOBS_LIMIT",
         Task::Reissue => "HUMAUX_MAINTENANCE_SERVE_REISSUE_LIMIT",
         Task::Redrive => "HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT",
@@ -172,8 +166,6 @@ struct Config {
     lost_after: Duration,
     /// ADR-0062 D-G: how long a consumed, expired confirm token stays as audit.
     confirm_retention: Duration,
-    /// ADR-0062 D-I: how long a full bucket must have been idle before it goes.
-    bucket_idle: Duration,
     jobs: JobRetention,
     /// ADR-0062 D-N: how long a ticket must have been quiet before its memory is reissued.
     reissue_cooldown: Duration,
@@ -243,7 +235,6 @@ impl Config {
             tenants_per_run,
             lost_after: Duration::from_secs(lost_after),
             confirm_retention: seconds(CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS)?,
-            bucket_idle: seconds(RATE_BUCKETS_IDLE_SECONDS)?,
             jobs: JobRetention {
                 done: seconds(JOBS_DONE_RETENTION_SECONDS)?,
                 dead: seconds(JOBS_DEAD_RETENTION_SECONDS)?,
@@ -298,7 +289,7 @@ async fn call(
     cfg: &Config,
     audit: &AdminAction<'_>,
 ) -> std::result::Result<u64, String> {
-    // The system tenant (nil id, home of the pre-auth rate buckets) can hold no reservation: both producers refuse
+    // §72.2.1 / 0245: the system tenant (nil id) can hold no reservation: both producers refuse
     // it (quota_repo::validate_auth, provider_budget::validate_request), and so do both reapers and the renewal door
     // (0245 refuses the nil tenant): nothing to call.
     if tenant.is_nil()
@@ -349,14 +340,6 @@ async fn call(
             .await
             .map(i64::unsigned_abs)
             .map_err(|e| e.to_string()),
-        // dep: PostgreSQL(role_maintenance) — control.purge_idle_rate_buckets (0218 owner purge door)
-        Task::RateBuckets => {
-            maintenance_repo::purge_idle_rate_buckets(pool, tenant, cfg.bucket_idle, limit)
-                .await
-                .map(i64::unsigned_abs)
-                .map_err(|e| e.to_string())
-        }
-        // dep: PostgreSQL(role_maintenance) — ops.purge_terminal_jobs (0218 owner purge door)
         Task::Jobs => maintenance_repo::purge_terminal_jobs(pool, tenant, cfg.jobs, limit)
             .await
             .map(i64::unsigned_abs)

@@ -38,6 +38,86 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// G-M03-2 (§67.2; ADR-0100): retired PG rate names occur exactly zero times in non-migration code.
+fn m03_2_no_pg_rate_path(root: &Path) -> Verdict {
+    let needles = [
+        "control.".to_owned() + "rate_buckets",
+        "rate_".to_owned() + "lock_key",
+    ];
+    let mut counts = [0_usize; 2];
+    let mut errors = Vec::new();
+    for directory in ["crates", "bins", "xtask"] {
+        if !root.join(directory).is_dir() {
+            errors.push(format!("G-M03-2 missing input {directory}"));
+        }
+    }
+    let files = match m03_2_code_files(root, root) {
+        Ok(files) => files,
+        Err(error) => return Verdict::Fail(vec![format!("G-M03-2 incomplete code scan: {error}")]),
+    };
+    for directory in ["crates", "bins", "xtask"] {
+        if !files.iter().any(|p| {
+            p.starts_with(root.join(directory)) && p.extension().is_some_and(|ext| ext == "rs")
+        }) {
+            errors.push(format!("G-M03-2 missing source input {directory}"));
+        }
+    }
+    for path in files {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                errors.push(format!(
+                    "G-M03-2 unreadable {}: {error}",
+                    display(root, &path)
+                ));
+                continue;
+            }
+        };
+        for (index, needle) in needles.iter().enumerate() {
+            let count = source.matches(needle).count();
+            counts[index] += count;
+            if count != 0 {
+                errors.push(format!(
+                    "{}: {needle} occurrences = {count}, expected == 0",
+                    display(root, &path)
+                ));
+            }
+        }
+    }
+    if counts == [0, 0] && errors.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(errors)
+    }
+}
+
+// §67.2 / G-M03-2: migrations are historical inputs; test and script code stay in the scan.
+fn m03_2_code_files(root: &Path, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path == root.join("migrations") {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            if matches!(
+                entry.file_name().to_str(),
+                Some("target" | ".git" | "node_modules")
+            ) {
+                continue;
+            }
+            out.extend(m03_2_code_files(root, &path)?);
+        } else if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("rs" | "sh" | "py" | "sql")
+        ) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
 /// Absolute path to the workspace root, derived from `xtask`'s own manifest dir rather than
 /// the process CWD — tests need this to be stable regardless of where `cargo test` is
 /// invoked from; `run()` uses it too so both paths exercise identical logic.
@@ -10643,6 +10723,10 @@ pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let mut checks: Vec<(&str, Verdict)> = vec![
         (
+            "M03 D1 / G-M03-2 (retired PostgreSQL rate names in non-migration code == 0)",
+            m03_2_no_pg_rate_path(&root),
+        ),
+        (
             "§53.3 规则1 (Outcome<_> fallback outside abstain)",
             rule1_forbidden_fallback(&root),
         ),
@@ -10880,6 +10964,14 @@ pub fn run(_args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn g_m03_2_no_pg_rate_path() {
+        assert_eq!(
+            super::m03_2_no_pg_rate_path(&super::workspace_root()),
+            super::Verdict::Pass
+        );
+    }
+
     use super::*;
     use std::collections::BTreeSet;
 

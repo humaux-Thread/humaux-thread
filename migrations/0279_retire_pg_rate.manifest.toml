@@ -1,0 +1,36 @@
+# §46.1 / §67.2 / ADR-0100 / M03-3: remove the retired PG-only rate state and its purge door.
+migration_id = "0279_retire_pg_rate"
+class = "EXPAND_CONTRACT"
+
+# Both catalog dependencies and SQL/PLpgSQL text are checked: string-body functions need not record relation deps.
+# Only the retiring purge door is exempt. Views and every other function remain blockers, regardless of owner.
+precheck = """
+with targets as (
+  select to_regclass('control.rate_buckets')::oid as bucket,
+         to_regprocedure('control.purge_idle_rate_buckets(interval,integer)')::oid as purge
+)
+select bucket is not null and purge is not null
+ and not exists (
+   select 1 from pg_depend d
+    where ((d.refclassid = 'pg_class'::regclass and d.refobjid = bucket)
+        or (d.refclassid = 'pg_proc'::regclass and d.refobjid = purge))
+      and ((d.classid = 'pg_proc'::regclass and d.objid <> purge)
+        or d.classid = 'pg_rewrite'::regclass))
+ and not exists (
+   select 1 from pg_proc p
+   join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname not in ('pg_catalog', 'information_schema')
+      and p.oid <> purge
+      and (p.prosrc ilike '%rate_buckets%' or p.prosrc ilike '%purge_idle_rate_buckets%'))
+ as precheck_ok
+from targets
+"""
+
+postcheck = """
+select to_regclass('control.rate_buckets') is null
+   and to_regprocedure('control.purge_idle_rate_buckets(interval,integer)') is null
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix only; do not restore the retired PG request path. Stop the gateway before any deliberate return to PG rate authority, with a separately reviewed migration and policy."
+backup_restore_requirement = "Pre-deploy database snapshot required. The drop removes transient rate tokens, policies and grants; authentication, entitlements, quota windows and usage reservations are retained. Production application requires owner approval."
