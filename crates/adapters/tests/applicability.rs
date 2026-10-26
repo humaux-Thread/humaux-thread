@@ -1,5 +1,5 @@
 //! `adapters::tests::applicability` — G-M14-8 SQL door outcomes through the Rust adapter.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(owner) r=[private.memory_applicability] w=[control.api_keys, control.memberships, private.evidence_objects, private.subjects], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::applicability_repo, adapters::tests::support::operation_receipt_fixture, domain::applicability, domain::error, domain::identity, domain::ids, humaux-testkit]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, uuid]; services=[PostgreSQL(owner) r=[private.memory_applicability] w=[control.api_keys, control.memberships, private.memory_applicability, private.evidence_objects, private.subjects], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::applicability_repo, adapters::tests::support::operation_receipt_fixture, domain::applicability, domain::error, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every refused decision preserves the entire row; every principal/method/evidence/status cell has an exact outcome]
 //! Spec: Baseline §6.1.1; §78.2; §79.2; ADR-0096 D-B.1
@@ -313,6 +313,71 @@ fn g_m14_8_proposals_and_closed_shape() {
                 reason: "applicability_decision_invalid",
             }),
         );
+        handle
+            .admin
+            .execute(
+                "DELETE FROM private.memory_applicability WHERE tenant_id=$1",
+                &[&handle.tenant_id],
+            )
+            .expect("fixture cleanup");
+    });
+}
+
+/// G-M14-8: a member can propose but cannot decide; malformed qualifier JSON and direct DML are refused.
+#[test]
+fn g_m14_8_sql_write_boundary_and_qualifiers() {
+    run_db_fixture::<Fixture, _>("g_m14_8_sql_boundary", |mut handle| {
+        let key = owner_key(&mut handle);
+        let peer = handle.seed_peer_user();
+        let member_key = extra_key(&mut handle, key, Some(peer));
+        let auth = scope(&handle, member_key, Some(peer));
+        let memory = handle.seed_workspace_visible_context_record().memory_id;
+        assert_eq!(
+            handle.rt.block_on(applicability_repo::propose(
+                &handle.runtime,
+                &auth,
+                &proposal(memory)
+            )),
+            Ok(ApplicabilityStatus::Proposed)
+        );
+        let before = row(&mut handle, memory);
+        let invalid = [
+            serde_json::json!([]),
+            serde_json::json!({"implementation_languages": [], "exclusions": [], "extra": true}),
+            serde_json::json!({"implementation_languages": [1], "exclusions": []}),
+            serde_json::json!({"implementation_languages": [], "exclusions": "none"}),
+            serde_json::json!({"implementation_languages": []}),
+        ];
+        assert_eq!(invalid.len(), 5);
+        let mut gateway = handle.gateway_client().expect("real gateway login");
+        for qualifiers in invalid {
+            let mut txn = gateway
+                .transaction()
+                .expect("malformed request transaction");
+            txn.query_one("SELECT set_config('humaux.tenant_id',$1,true),set_config('humaux.user_id',$2,true)", &[&handle.tenant_id.to_string(), &peer.to_string()]).expect("request GUCs");
+            let error = txn.query_one(
+                "SELECT private.propose_memory_applicability($1,$2,$3,'UNIVERSAL',NULL,NULL,$4)",
+                &[&member_key, &handle.workspace_id, &memory, &qualifiers],
+            ).expect_err("closed qualifier schema refuses malformed JSON");
+            assert_eq!(error.code().map(|code| code.code()), Some("23514"));
+            txn.rollback().expect("failed request rollback");
+            assert_eq!(row(&mut handle, memory), before);
+        }
+        let error = gateway
+            .execute(
+                "UPDATE private.memory_applicability SET status='APPROVED' WHERE memory_id=$1",
+                &[&memory],
+            )
+            .expect_err("no direct write grant");
+        assert_eq!(error.code().map(|code| code.code()), Some("42501"));
+        assert_eq!(row(&mut handle, memory), before);
+        let absent = gateway
+            .query(
+                "SELECT memory_id FROM private.memory_applicability WHERE memory_id=$1",
+                &[&memory],
+            )
+            .expect("no tenant GUC is fail-closed");
+        assert_eq!(absent.len(), 0);
         handle
             .admin
             .execute(

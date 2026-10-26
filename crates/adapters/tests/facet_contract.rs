@@ -2,8 +2,8 @@
 //!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045) and the plan catalogue's closed sets
 //!   (G-M04-14, migration 0262).
 //! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any)
-//!   r=[control.plan_versions, private.context_bindings, private.memory_records] x=[control.issue_quota_window]];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::context, domain::memory, domain::plan, humaux-testkit]
+//!   r=[control.plan_versions, private.context_bindings, private.memory_applicability, private.memory_records] x=[control.issue_quota_window]];
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::applicability, domain::context, domain::memory, domain::plan, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [judges the expression the database computes (pg_get_expr), round-trips both closed label sets by set
 //!   equality, and checks REGISTRY columns exist; every closed set of control.plan_versions (currency, interval,
@@ -419,9 +419,9 @@ fn g_m14_11_applicability_closed_sets_equal_db_checks() {
             .expect("G-M14-11: required applicability CHECK missing");
         assert_eq!(rows.len(), 1, "G-M14-11: one named CHECK");
         let def: String = rows[0].get(0);
-        assert_eq!(wires.len(), count, "G-M14-11: closed vocabulary count");
         let literals = quoted_literals(&def);
         assert_same_closed_set(constraint, &literals, wires);
+        assert_eq!(wires.len(), count, "G-M14-11: closed vocabulary count");
         for label in literals {
             let round_trip = match constraint {
                 "memory_applicability_scope_check" => {
