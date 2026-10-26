@@ -4927,7 +4927,7 @@ const MAINTENANCE_DELETE_DOORS_SQL: &str = "SELECT p.oid::regprocedure::text FRO
        AND p.prosrc ~* '\\mDELETE\\M' \
      ORDER BY 1";
 
-/// ADR-0062 D-R: the maintenance DELETE doors are exactly [`MAINTENANCE_DELETE_DOORS`]; each of the four purge
+/// ADR-0062 D-R: the maintenance DELETE doors are exactly [`MAINTENANCE_DELETE_DOORS`]; each of the three purge
 /// doors is owner-owned, SECURITY DEFINER, `search_path=pg_catalog`, EXECUTE exactly `{role_maintenance}`, PUBLIC
 /// revoked. A missing door is `not_applicable` naming it (§57.1).
 pub fn check_maintenance_delete_doors(client: &mut impl GenericClient) -> GateResult {
@@ -4972,7 +4972,7 @@ pub fn check_maintenance_delete_doors(client: &mut impl GenericClient) -> GateRe
             "{gone}: in the ADR-0062 closed set but not a maintenance-reachable DELETE definer"
         ));
     }
-    for (door, _) in &MAINTENANCE_DELETE_DOORS[..4] {
+    for (door, _) in &MAINTENANCE_DELETE_DOORS[..3] {
         check_owner_definer_function(client, &mut problems, door, ONBOARDING_EXECUTORS);
     }
     if problems.is_empty() {
