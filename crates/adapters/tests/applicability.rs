@@ -1,5 +1,5 @@
 //! `adapters::tests::applicability` — G-M14-8 SQL door outcomes through the Rust adapter.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, uuid]; services=[PostgreSQL(owner) r=[private.memory_applicability] w=[control.api_keys, control.memberships, private.memory_applicability, private.evidence_objects, private.subjects], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::applicability_repo, adapters::tests::support::operation_receipt_fixture, domain::applicability, domain::error, domain::identity, domain::ids, humaux-testkit]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, uuid]; services=[PostgreSQL(owner) r=[private.memory_applicability] w=[control.api_keys, control.memberships, private.memory_applicability, private.evidence_objects, private.subjects], PostgreSQL(role_gateway) x=[private.propose_memory_applicability]]; env=[]; modules=[adapters::applicability_repo, adapters::tests::support::operation_receipt_fixture, domain::applicability, domain::error, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every refused decision preserves the entire row; every principal/method/evidence/status cell has an exact outcome]
 //! Spec: Baseline §6.1.1; §78.2; §79.2; ADR-0096 D-B.1
