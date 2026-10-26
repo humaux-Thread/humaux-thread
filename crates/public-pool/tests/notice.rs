@@ -480,9 +480,12 @@ fn g_m20_3_e_events_are_append_only() {
                 Some("42501"),
                 "{statement}: {error}"
             );
+            let message = error.as_db_error().map(|db| db.message().to_owned());
             assert!(
-                error.to_string().contains("append-only"),
-                "{statement}: {error}"
+                message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("append-only")),
+                "{statement}: {message:?}"
             );
         }
         assert_eq!(h.kinds(tenant), vec!["SHOWN".to_owned()]);
