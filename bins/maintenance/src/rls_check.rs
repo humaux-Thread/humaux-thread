@@ -167,6 +167,22 @@ macro_rules! cell {
 /// for the prose; this is the runnable form of the same table, not a second copy of its
 /// reasoning).
 const MATRIX: &[Cell] = &[
+    // §6.2.2 / ADR-0089 D-B: draft unit data has no public serving grants.
+    cell!(
+        "public.units",
+        "role_public_worker",
+        ["SELECT", "INSERT", "UPDATE"]
+    ),
+    cell!(
+        "public.unit_fields",
+        "role_public_worker",
+        ["SELECT", "INSERT", "UPDATE"]
+    ),
+    cell!(
+        "public.unit_conditions",
+        "role_public_worker",
+        ["SELECT", "INSERT", "UPDATE"]
+    ),
     // §6.2.2 / ADR-0095 D-B: gateway doors only, zero direct runtime grants.
     cell!("private.project_channels", "role_gateway", []),
     cell!("ops.mechanism_observations", "role_gateway", ["SELECT"]),
