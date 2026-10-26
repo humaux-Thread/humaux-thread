@@ -3000,7 +3000,7 @@ mod tests {
         time::Duration,
     };
 
-    use humaux_adapters::{postgres::RuntimeDbPool, quota_repo::RatePolicy};
+    use humaux_adapters::postgres::RuntimeDbPool;
     use humaux_domain::{
         context::ContextBudget,
         dataclass::DataClass,
@@ -3088,6 +3088,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("invalid W2 barrier configuration: {error}"))
     }
 
+    use crate::limiter::RatePolicy;
+
     fn rate() -> RatePolicy {
         RatePolicy::new(10_000, 10_000).expect("nonbinding continuity fixture rate")
     }
@@ -3106,6 +3108,7 @@ mod tests {
                     global_denylist: vec![],
                     global_emergency_allowlist: vec![],
                     tenant_network: BTreeMap::new(),
+                    rate_max_subjects: [50_000; 5],
                     rates: GuardRatePolicies {
                         preauth_ip: rate(),
                         credential: rate(),
@@ -3758,8 +3761,9 @@ mod tests {
                             )],
                         )
                         .unwrap();
-                    assert_eq!(row.get::<_, i64>(0), 10_000);
-                    assert_eq!(row.get::<_, i64>(1), 10_000);
+                    // ADR-0100 / §72.3: the retired PG hot path must leave this fixture's seed policy unchanged.
+                    assert_eq!(row.get::<_, i64>(0), 100);
+                    assert_eq!(row.get::<_, i64>(1), 100);
                 }
                 let first = runtime_handle.block_on(async {
                     // dep: PostgreSQL(role_gateway) — test fixture pool for a dispatch-table integration test
