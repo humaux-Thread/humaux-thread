@@ -27,6 +27,7 @@ use humaux_projection::{serving::StreamFamily, stream::StreamKey};
 use humaux_testkit::disposable::require_disposable;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use serde_json::json;
+use sqlx::Connection;
 use sqlx::types::Uuid;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -404,7 +405,11 @@ fn check(world: &World, handle: &Handle, expected: BTreeSet<Uuid>) {
 fn freeze(h: &Handle, root: Uuid, evidence: bool) -> FrozenDeletion {
     h.rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
-        let mut txn = h.runtime.pool().begin().await.expect("begin");
+        let mut connection =
+            sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
+                .await
+                .expect("gateway connection");
+        let mut txn = connection.begin().await.expect("begin");
         let frozen = if evidence {
             forget_repo::freeze_evidence_closure_in_txn(&mut txn, &h.auth, &[root]).await
         } else {
@@ -446,7 +451,11 @@ fn accept(
 ) -> Result<(), ForgetRepoError> {
     h.rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
-        let mut txn = h.runtime.pool().begin().await.expect("begin");
+        let mut connection =
+            sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
+                .await
+                .expect("gateway connection");
+        let mut txn = connection.begin().await.expect("begin");
         let result = forget_repo::accept_in_txn(&mut txn, &h.auth, request.request_id, claim).await;
         if result.is_ok() {
             txn.commit().await.expect("commit accept");
@@ -541,7 +550,8 @@ fn g_m19_3_memory_forget_keeps_shared_evidence_survivor() {
             accept(&h, &request, Some(&claim)).expect("MEMORY accept");
             check(&world, &h, BTreeSet::from([world.ctrl]));
             assert_eq!(footprint(&mut h), (1, 1, 1, 1, 0));
-            let events: Vec<(Uuid,String,String)> = h.admin.query("SELECT memory_id,op,reason_code FROM ops.memory_lifecycle_events WHERE tenant_id=$1", &[&h.tenant_id]).expect("events").iter().map(|r|(r.get(0),r.get(1),r.get(2))).collect();
+            let tenant = h.tenant_id;
+            let events: Vec<(Uuid,String,String)> = h.admin.query("SELECT memory_id,op,reason_code FROM ops.memory_lifecycle_events WHERE tenant_id=$1", &[&tenant]).expect("events").iter().map(|r|(r.get(0),r.get(1),r.get(2))).collect();
             assert_eq!(
                 events,
                 vec![(world.gated, "TOMBSTONE".into(), "USER_DELETE".into())]
@@ -632,7 +642,8 @@ fn g_doc_13_supporting_evidence_accept_tombstones_generation_and_keeps_primary_s
                 .expect("EVIDENCE_CLOSURE accept must pass the 0278 owner arm, not SQLSTATE 23514");
             check(&world, &h, BTreeSet::from([world.ctrl]));
             assert_eq!(footprint(&mut h), (1, 1, 1, 1, 3));
-            let states: Vec<(i64,String)> = h.admin.query("SELECT stream_seq,state FROM projection.stream_log WHERE tenant_id=$1 ORDER BY stream_seq", &[&h.tenant_id]).expect("states").iter().map(|r|(r.get(0),r.get(1))).collect();
+            let tenant = h.tenant_id;
+            let states: Vec<(i64,String)> = h.admin.query("SELECT stream_seq,state FROM projection.stream_log WHERE tenant_id=$1 ORDER BY stream_seq", &[&tenant]).expect("states").iter().map(|r|(r.get(0),r.get(1))).collect();
             assert_eq!(
                 states,
                 vec![
@@ -656,7 +667,11 @@ fn owner_arm_keeps_gateway_update_refused_and_maintenance_tombstone_working() {
             seed_ticket(&mut h, root, 1, "EVIDENCE_ACCEPTED");
             h.rt.block_on(async {
                 // dep: PostgreSQL(role_gateway) — §33.10 caller transaction with session authorization
-                let mut txn = h.runtime.pool().begin().await.expect("begin");
+                let mut connection =
+                    sqlx::PgConnection::connect(&h.gateway_application_dsn("forget_confirm"))
+                        .await
+                        .expect("gateway connection");
+                let mut txn = connection.begin().await.expect("begin");
                 sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
                     .bind(h.tenant_id.to_string())
                     .execute(&mut *txn)
