@@ -18,9 +18,11 @@ not_applicable = { owner = "M21-2", reason = "missing" }
 ["projection watermark audit"]
 not_applicable = { owner = "M21-5", reason = "missing" }
 
+# note :98 owner cell "M20 / M17", split by the order of the job names
 ["public source closure audit"]
 not_applicable = { owner = "M20", reason = "deferred (Phase 10 / M17)" }
 
+# note :98 owner cell "M20 / M17", split by the order of the job names
 ["artifact object existence"]
 not_applicable = { owner = "M17", reason = "deferred (Phase 10 / M17)" }
 
@@ -30,16 +32,20 @@ not_applicable = { owner = "M18-2", reason = "by design" }
 ["waiting_key visibility"]
 not_applicable = { owner = "M21-6", reason = "missing" }
 
-# §65 "retention" daily; the daemon's PARTITIONS task is the retention proposal (ADR-0063 D-K), the
-# drop execution stays the owner one-shot (note :139-141).
+# §65 "retention" daily. The `Partitions` task covers the proposal half only: ADR-0063 D-K, note :29
+# ("Partitions (proposal only)"), :85 ("retention proposal ... done", M19/M21), and :139-141 (D7: the daemon
+# proposes, the owner executes). Drop execution stays the owner one-shot, not a task.
 ["retention"]
 task = "Partitions"
 
+# note :96 "host cron today"; note :210: the host crontab is retired
 ["backup verification"]
 not_applicable = { owner = "M23-5", reason = "host cron today" }
 
+# note :96 "host cron today"; note :210: the host crontab is retired
 ["restore drill scheduling"]
 not_applicable = { owner = "M23-5", reason = "host cron today" }
 
+# note :92 says M23-5; follow-up :209-210 moves the row to M23-6
 ["config drift"]
-not_applicable = { owner = "M23-5", reason = "missing" }
+not_applicable = { owner = "M23-6", reason = "missing" }

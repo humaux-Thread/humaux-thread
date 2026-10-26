@@ -17,10 +17,9 @@
   "Maintenance period" as once daily, with rows that need another frequency marked in the table
   (`docs/architecture/Baseline_2.9.md:12637`; note :62). The frozen table has twelve rows, from `PG <-> Qdrant diff`
   to `config drift`.
-- No schedule register exists on the baseline. C-M21-3 requires
-  `docs/architecture/schedule_register.toml`, checked by xtask (note :50), and D2 makes the §65 table the authority
-  for "what exists": every §65 row maps to a task label or `not_applicable(owner, reason)`, and xtask fails on an
-  unmapped row (note :120-121).
+- C-M21-3 creates the register `docs/architecture/schedule_register.toml`, checked by xtask (note :50), and D2
+  makes the §65 table the authority for "what exists": every §65 row maps to a task label or
+  `not_applicable(owner, reason)`, and xtask fails on an unmapped row (note :120-121).
 - The resident daemon's task set is a closed enum: `bins/maintenance/src/serve.rs:61` imports
   `maintenance_repo::MaintenanceTask` as `Task` and runs twelve variants in cycle order — `Lost`,
   `QuotaReservations`, `QuotaRenewal`, `ProviderBudgets`, `ConfirmTokens`, `Snapshots`, `RateBuckets`, `Jobs`,
@@ -31,6 +30,7 @@
   expiry has an UPDATE grant but no caller; partition creation is a monthly manual superuser step (note :36-42).
 - D7 records a conflict: §66 says retention runs automatically, while the owner red line forbids any deletion
   against production data (note :139-141).
+- M23 v2 moves the config-drift schedule row to M23-6 and retires the host crontab (note :209-210).
 
 ## Decisions
 
@@ -53,10 +53,10 @@ unmapped row (G-M21-1); frequencies default to daily per §65 (note :120-121).
 I4, orphan relations, watermark, config drift and cross-tenant anomalies write `ops.repair_findings` + gauge +
 alert, never UPDATE (§65 "只报数，不 UPDATE"). Safe automatic: a missing projection goes through the existing
 `Reissue` door (already the compensation path), and expired tickets/candidates/tokens are expired automatically
-(note :122-125).
+(note :122-124).
 
 Rejected: an operator `repair i4 --fix` command (§65 forbids erasing the root cause; correction goes through M07
-verbs with ADR-0018 confirm) (note :125-126).
+verbs with ADR-0018 confirm) (note :124-126).
 
 ### D4  ISSUED→EXPIRED is a state transition, not a purge
 
@@ -71,8 +71,8 @@ Rejected: DELETE of stale tickets (breaks census truth) (note :129).
 A new owner definer wraps `control.partition_create_month` with EXECUTE to `role_maintenance`, creating leaves up to
 `PARTITION_HORIZON_MONTHS` (3) ahead; drops stay the superuser one-shot with owner approval (note :130-132).
 Authority: §48.1 + runbook §5.3 failure mode ("every tenant at the same instant") + the owner OSS standard (a
-self-hoster will not run a monthly superuser step) (note :132-133). ADR-M21-b amends ADR-0063 D-H (create is
-additive DDL; the daemon still refuses the migrator DSN) (note :134-135).
+self-hoster will not run a monthly superuser step) (note :132-133). A later ADR (placeholder ADR-M21-b in the note)
+amends ADR-0063 D-H (create is additive DDL; the daemon still refuses the migrator DSN) (note :134-135).
 
 Rejected: keep manual (OSS footgun; alerts only page 1–2 months ahead); DEFAULT partition (runbook §5.3 forbids)
 (note :133-134).
@@ -88,14 +88,14 @@ Rejected: a separate forget process (4 vCPU, one more credential set) (note :138
 ### D7  Retention execution stays an operator one-shot
 
 §66 says retention runs automatically; the owner red line (any deletion against production data, M19 §12) outranks
-spec (CLAUDE.md iron rule 3). The daemon proposes, the owner executes. Recorded conflict, not an owner question
-(already ruled) (note :139-141).
+spec. The daemon proposes, the owner executes. Recorded conflict, not an owner question (already ruled)
+(note :139-141).
 
 ### D8  Keep one maintenance binary
 
 Split only by process mode, not crate (note :142).
 
-Rejected: per-module binaries (seven images, seven credential sets on a 4-vCPU node) (note :143).
+Rejected: per-module binaries (seven images, seven credential sets on a 4-vCPU node) (note :142-143).
 
 ## Consequences
 
@@ -109,14 +109,31 @@ Rejected: per-module binaries (seven images, seven credential sets on a 4-vCPU n
 ## Gates
 
 G-M21-1 (§65 coverage) is implemented by this card and exists only once CI records inject → red → fix → green
-(§80.1). The gate is tri-state (§57.1). The note's gate section states that DB tests need `HUMAUX_TEST_PG_DSN` and
-that a missing DSN in CI is a fail per ADR-0050 (note :151). G-M21-1 itself reads files only.
+(§80.1). The gate is tri-state (§57.1); the note's gate section states that DB tests need `HUMAUX_TEST_PG_DSN` and
+that a missing DSN in CI is a fail per ADR-0050 (note :151).
 
 | gate | test file | inject | expected red |
 |---|---|---|---|
 | G-M21-1 §65 coverage | `xtask/src/schedule_register.rs` (new) | delete one register row / map to unknown label | xtask exits 1 naming the §65 job |
+| G-M21-2 I4 scan (G59-4 inject b) | `bins/maintenance/tests/i4_scan.rs` | drop the CHECK, insert 1 violating row; then hard-code `SELECT 0` | gauge reads 1 then 0 on compliant fixture; hard-coded 0 → red |
+| G-M21-3 report-only | same + `architecture_check.rs` | task issues UPDATE on memory_records | xtask sentinel: no UPDATE/DELETE text in maintenance_repo task SQL |
+| G-M21-4 EXPIRED sweep | `crates/adapters/tests/ingest_ticket_expiry.rs` | ignore TTL / expire a REDEEMED row | REDEEMED or fresh ISSUED becomes EXPIRED |
+| G-M21-5 create-ahead | `bins/maintenance/tests/partitions.rs` (extend) | disable task; grant DROP via the definer | horizon < 3 after a cycle; definer drops a leaf |
+| G-M21-6 diff repair | `bins/maintenance/tests/projection_diff.rs` | delete one Qdrant point; add one foreign-tenant point | missing point not reissued; foreign point auto-deleted (must alert only) |
+| G-M21-7 priority | `bins/maintenance/tests/serve.rs` (extend) | move deletion lane after Jobs | deletion request completes after a purge in the same cycle |
+| G-M21-8 column_vitality | `bins/maintenance/tests/column_vitality.rs` | register-free column with live=0,total>0 | gate stays pass |
+| G-M21-9 candidate expiry | `crates/adapters/tests/candidate_expiry.rs` | expire before `expires_at` | unexpired candidate EXPIRED |
 
-(note :154)
+Kept green: card-35 suite (310 tests), `MaintenanceCountersAbsent` promtool cases, G59-4 CHECK half (M07)
+(note :163).
+
+Experiments gating cards:
+
+- X-M21-1 cycle cost at 300 tenants × 25 tasks on the 4-vCPU box (CPU, PG active backends, cycle wall time) →
+  `TENANTS_PER_RUN` / daily task cadences; gates M21-5 rollout (diff scroll is the heaviest) (note :180-181).
+- R11-G (M09) gates the outbox purge task. Nothing else is experiment-gated (note :182).
+
+(note :152-163, :179-182)
 
 ## Owner gates (not decided here)
 

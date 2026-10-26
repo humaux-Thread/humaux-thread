@@ -39,7 +39,7 @@ pub enum Verdict {
     NotApplicable(String),
 }
 
-/// One register entry: the §65 job name as the table spells it, and exactly one target.
+/// One register entry: the §65 job name as the table spells it, and exactly one target (§65).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// The §65 job name, verbatim.
@@ -48,7 +48,7 @@ pub struct Entry {
     pub target: Target,
 }
 
-/// A register entry's single target.
+/// A register entry's single target (§65).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     /// An existing `Task` variant name from `bins/maintenance/src/serve.rs`.
@@ -62,7 +62,7 @@ pub enum Target {
     },
 }
 
-/// Parses the job column of the first fenced table under the Baseline `# 65.` heading.
+/// Parses the job column of the first fenced table under the Baseline `# 65.` heading (§65).
 ///
 /// `None` means the heading is absent (not_applicable, §57.1); an empty vector means the heading exists but its
 /// table has no rows, which [`check`] reports as a failure rather than a pass.
@@ -101,31 +101,56 @@ fn first_cell(line: &str) -> Option<&str> {
         .find(|cell| !cell.is_empty())
 }
 
-/// Collects the `Task` variant names named by `bins/maintenance/src/serve.rs`.
+/// Collects the `Task` variant names named by the `every_key` match in `bins/maintenance/src/serve.rs` (§65).
 ///
-/// `every_key` matches `Task` exhaustively, so its `Task::<Variant> =>` arms are exactly the closed
-/// `MaintenanceTask` set (ADR-0062 D-C) even though the enum lives in `crates/adapters/src/maintenance_repo.rs` and
-/// serve.rs imports it as `Task`.
+/// `every_key` matches `Task` exhaustively, so its arms are exactly the closed `MaintenanceTask` set (ADR-0062
+/// D-C) even though the enum lives in `crates/adapters/src/maintenance_repo.rs` and serve.rs imports it as `Task`.
+/// Only the `fn every_key` body is scanned, so a `Task::… =>` arm elsewhere in the file cannot widen the set, and
+/// an alternation arm (`Task::A | Task::B =>`) contributes every name it lists.
 pub fn parse_task_variants(serve_src: &str) -> BTreeSet<String> {
     let mut variants = BTreeSet::new();
-    for line in serve_src.lines() {
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix("Task::") else {
-            continue;
-        };
-        let ident: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        let after = &rest[ident.len()..];
-        if !ident.is_empty() && after.trim_start().starts_with("=>") {
-            variants.insert(ident);
+    let mut lines = serve_src
+        .lines()
+        .skip_while(|line| !line.contains("fn every_key("));
+    let Some(signature) = lines.next() else {
+        return variants;
+    };
+    let mut depth = braces(signature);
+    for line in lines {
+        if depth <= 0 {
+            break;
         }
+        variants.extend(arm_variants(line));
+        depth += braces(line);
     }
     variants
 }
 
-/// Parses the register TOML into one [`Entry`] per top-level job table.
+/// The net `{` minus `}` count of one line, which bounds the `every_key` body.
+fn braces(line: &str) -> i32 {
+    line.matches('{').count() as i32 - line.matches('}').count() as i32
+}
+
+/// The `Task` variant names in one match arm, including both sides of a `|` alternation.
+fn arm_variants(line: &str) -> Vec<String> {
+    let Some((pattern, _)) = line.split_once("=>") else {
+        return Vec::new();
+    };
+    pattern
+        .match_indices("Task::")
+        .map(|(at, marker)| ident(&pattern[at + marker.len()..]))
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// The identifier starting at `src`; empty when `src` does not start with one.
+fn ident(src: &str) -> String {
+    src.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
+/// Parses the register TOML into one [`Entry`] per top-level job table (§65).
 ///
 /// An entry must carry exactly one of `task` / `not_applicable`; anything else is a parse error the gate reports as
 /// a failure naming the entry.
@@ -187,10 +212,15 @@ fn not_applicable_target(job: &str, value: &toml::Value) -> Result<Target, Strin
         .get("reason")
         .ok_or_else(|| format!("entry `{job}`: `not_applicable.reason` is missing"))
         .and_then(|field| string_field(job, "not_applicable.reason", field))?;
+    if owner.trim().is_empty() || reason.trim().is_empty() {
+        return Err(format!(
+            "entry `{job}`: `not_applicable` needs a non-empty owner and reason"
+        ));
+    }
     Ok(Target::NotApplicable { owner, reason })
 }
 
-/// Compares the §65 rows with the register and the `Task` variant set.
+/// Compares the §65 rows with the register and the `Task` variant set (§65, §57.1).
 pub fn check(section_65: &[String], entries: &[Entry], variants: &BTreeSet<String>) -> Verdict {
     if section_65.is_empty() {
         return Verdict::Fail(vec!["§65 table has no job rows".to_string()]);
@@ -230,7 +260,7 @@ fn uncovered(section_65: &[String], entries: &[Entry]) -> Vec<String> {
         .collect()
 }
 
-/// `cargo xtask schedule-register` entry point.
+/// `cargo xtask schedule-register` entry point (§65, §57.1).
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let baseline = match fs::read_to_string(root.join(BASELINE)) {
@@ -244,15 +274,15 @@ pub fn run(_args: &[String]) -> i32 {
     };
     let register = match fs::read_to_string(root.join(REGISTER)) {
         Ok(text) => text,
-        Err(_) => return fail(&[format!("cannot read {REGISTER}")]),
+        Err(_) => return report(Verdict::Fail(vec![format!("cannot read {REGISTER}")])),
     };
     let serve_src = match fs::read_to_string(root.join(SERVE)) {
         Ok(text) => text,
-        Err(_) => return fail(&[format!("cannot read {SERVE}")]),
+        Err(_) => return report(Verdict::Fail(vec![format!("cannot read {SERVE}")])),
     };
     let entries = match parse_register(&register) {
         Ok(entries) => entries,
-        Err(reason) => return fail(&[reason]),
+        Err(reason) => return report(Verdict::Fail(vec![reason])),
     };
     report(check(
         &section_65,
@@ -261,32 +291,36 @@ pub fn run(_args: &[String]) -> i32 {
     ))
 }
 
-/// Renders a verdict in the §57.1 three-state form.
-fn report(verdict: Verdict) -> i32 {
+/// Renders a verdict in the §57.1 three-state form: the exit code and the exact line to print (§57.1).
+fn render(verdict: &Verdict, in_ci: bool) -> (i32, String) {
     match verdict {
-        Verdict::Pass => {
-            println!("pass");
-            0
-        }
-        Verdict::Fail(reasons) => fail(&reasons),
-        Verdict::NotApplicable(missing) => {
-            if std::env::var("GITHUB_ACTIONS").is_ok_and(|value| value == "true") {
-                eprintln!("fail: {missing} is missing and CI cannot report not_applicable (§57.1)");
-                1
-            } else {
-                println!("not_applicable: {missing}");
-                0
-            }
-        }
+        Verdict::Pass => (0, "pass".to_string()),
+        Verdict::Fail(reasons) => (
+            1,
+            reasons
+                .iter()
+                .map(|reason| format!("fail: {reason}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Verdict::NotApplicable(missing) if in_ci => (
+            1,
+            format!("fail: {missing} is missing and CI cannot report not_applicable (§57.1)"),
+        ),
+        Verdict::NotApplicable(missing) => (0, format!("not_applicable: {missing}")),
     }
 }
 
-/// Prints one `fail: <reason>` line per reason and returns the gate's failure exit code.
-fn fail(reasons: &[String]) -> i32 {
-    for reason in reasons {
-        eprintln!("fail: {reason}");
+/// Prints the rendered verdict — stdout unless it is a failure, which goes to stderr — and returns its exit code.
+fn report(verdict: Verdict) -> i32 {
+    let in_ci = std::env::var("GITHUB_ACTIONS").is_ok_and(|value| value == "true");
+    let (code, line) = render(&verdict, in_ci);
+    if code == 0 {
+        println!("{line}");
+    } else {
+        eprintln!("{line}");
     }
-    1
+    code
 }
 
 /// The workspace root this gate reads, from the crate manifest directory.
@@ -301,6 +335,7 @@ mod tests {
     const FIXTURE_BASELINE: &str = "# 65. Automated repair jobs\n\n```text\njob                                   频率\nPG <-> Qdrant diff                    每日\norphan relation scan                  每日\n```\n\n# 66. Next\n";
     const FIXTURE_SERVE: &str = "const fn every_key(task: Task) -> &'static str {\n    match task {\n        Task::Lost => \"a\",\n        Task::Partitions => \"b\",\n    }\n}\n";
     const COMPLETE_REGISTER: &str = "[\"PG <-> Qdrant diff\"]\nnot_applicable = { owner = \"M21-5\", reason = \"missing\" }\n\n[\"orphan relation scan\"]\ntask = \"Lost\"\n";
+    const ALTERNATION_SERVE: &str = "fn other(task: Task) -> &'static str {\n    match task {\n        Task::Bogus => \"z\",\n    }\n}\n\nconst fn every_key(task: Task) -> &'static str {\n    match task {\n        Task::Lost | Task::Partitions => \"a\",\n    }\n}\n";
 
     /// The exact §65 jobs the frozen table lists; a spec row added, removed or renamed must turn this test red.
     const SECTION_65_JOBS: [&str; 12] = [
@@ -404,6 +439,74 @@ mod tests {
             Verdict::Fail(vec![
                 "register entry `not a listed job` is not a §65 job".to_string()
             ])
+        );
+    }
+
+    #[test]
+    fn parse_section_65_absent_heading_is_none() {
+        assert_eq!(parse_section_65("# 64. x\n"), None);
+    }
+
+    #[test]
+    fn render_not_applicable_locally_exits_zero() {
+        assert_eq!(
+            render(&Verdict::NotApplicable("X".to_string()), false),
+            (0, "not_applicable: X".to_string())
+        );
+    }
+
+    #[test]
+    fn render_not_applicable_in_ci_exits_one() {
+        assert_eq!(
+            render(&Verdict::NotApplicable("X".to_string()), true),
+            (
+                1,
+                "fail: X is missing and CI cannot report not_applicable (§57.1)".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn check_empty_section_65_table_fails() {
+        assert_eq!(
+            check(&[], &[], &variants()),
+            Verdict::Fail(vec!["§65 table has no job rows".to_string()])
+        );
+    }
+
+    #[test]
+    fn check_duplicate_section_65_job_fails() {
+        let entries = parse_register("[\"a\"]\ntask = \"Lost\"\n").expect("register");
+        assert_eq!(
+            check(&["a".to_string(), "a".to_string()], &entries, &variants()),
+            Verdict::Fail(vec!["§65 table repeats a job name".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_task_variants_reads_only_every_key_arms() {
+        let expected: BTreeSet<String> = ["Lost", "Partitions"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        assert_eq!(parse_task_variants(ALTERNATION_SERVE), expected);
+    }
+
+    #[test]
+    fn parse_register_rejects_empty_not_applicable_fields() {
+        let empty_owner =
+            parse_register("[\"a\"]\nnot_applicable = { owner = \" \", reason = \"missing\" }\n")
+                .expect_err("blank owner must be rejected");
+        assert_eq!(
+            empty_owner,
+            "entry `a`: `not_applicable` needs a non-empty owner and reason"
+        );
+        let empty_reason =
+            parse_register("[\"a\"]\nnot_applicable = { owner = \"M21-5\", reason = \"\" }\n")
+                .expect_err("blank reason must be rejected");
+        assert_eq!(
+            empty_reason,
+            "entry `a`: `not_applicable` needs a non-empty owner and reason"
         );
     }
 
