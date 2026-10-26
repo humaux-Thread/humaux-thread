@@ -2176,7 +2176,8 @@ const LINT_BASELINE_FILE: &str = "xtask/known_red.toml";
 
 /// One `allow(...)` / `expect(...)` attribute that silences clippy lints: its line, whether it is an inner
 /// (`#![...]`) attribute covering a whole module/crate, and the `clippy::` paths it names. `cfg_attr(..., allow(...))`
-/// reaches the same scan because the inner `allow(` / `expect(` token is parsed wherever it appears.
+/// reaches the same scan because the inner `allow` / `expect` identifier is parsed wherever it appears, with ASCII
+/// whitespace allowed before its `(`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LintSilencer {
     line: usize,
@@ -2219,11 +2220,12 @@ fn lint_silencers(source: &str) -> Vec<LintSilencer> {
     out
 }
 
-/// The first `allow(` / `expect(` in `code[from..]` that starts at an identifier boundary, with the byte index of
-/// its argument list. `disallow(` / `reallow(` are not the attribute.
+/// The first `allow` / `expect` identifier in `code[from..]` that starts at an identifier boundary and is followed
+/// by optional ASCII whitespace and `(`, with the byte index of its argument list. `disallow (` / `reallow (` are
+/// not the attribute.
 fn next_lint_silencer(code: &str, from: usize) -> Option<(usize, &'static str, usize)> {
-    let mut best: Option<(usize, &'static str)> = None;
-    for (needle, kind) in [("allow(", "allow"), ("expect(", "expect")] {
+    let mut best: Option<(usize, &'static str, usize)> = None;
+    for (needle, kind) in [("allow", "allow"), ("expect", "expect")] {
         let mut search = from;
         while let Some(offset) = code[search..].find(needle) {
             let at = search + offset;
@@ -2232,15 +2234,29 @@ fn next_lint_silencer(code: &str, from: usize) -> Option<(usize, &'static str, u
                 .next_back()
                 .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
             if starts_word {
-                if best.is_none_or(|(earlier, _)| at < earlier) {
-                    best = Some((at, kind));
+                if let Some(args_at) = attribute_args_at(code, at + needle.len()) {
+                    if best.is_none_or(|(earlier, _, _)| at < earlier) {
+                        best = Some((at, kind, args_at));
+                    }
+                    break;
                 }
-                break;
             }
             search = at + needle.len();
         }
     }
-    best.map(|(at, kind)| (at, kind, at + kind.len() + 1))
+    best
+}
+
+/// Byte index just past the `(` that follows `after` once ASCII whitespace is skipped, if `(` is the next
+/// non-whitespace byte. `allow (...)` and `allow\n(...)` are the attribute; `allow = 1` is not.
+fn attribute_args_at(code: &str, after: usize) -> Option<usize> {
+    let rest = &code[after..];
+    let skipped = rest.len()
+        - rest
+            .trim_start_matches(|c: char| c.is_ascii_whitespace())
+            .len();
+    let paren_at = after + skipped;
+    code[paren_at..].starts_with('(').then_some(paren_at + 1)
 }
 
 /// Byte index of the `)` matching the `(` whose body starts at `args_at`. Masked input has no parentheses inside
@@ -14312,6 +14328,14 @@ runs:
         format!("#![allow({lints})]")
     }
 
+    fn spaced_allow_attr(sep: &str, lints: &str) -> String {
+        format!("#[allow{sep}({lints})]")
+    }
+
+    fn spaced_inner_allow_attr(sep: &str, lints: &str) -> String {
+        format!("#![allow{sep}({lints})]")
+    }
+
     fn counts(too_many_lines: usize, excessive_nesting: usize) -> BTreeMap<String, usize> {
         BTreeMap::from([
             ("too_many_lines".to_string(), too_many_lines),
@@ -14396,6 +14420,54 @@ runs:
         );
     }
 
+    /// ASCII whitespace between the identifier and `(` is the same attribute: `allow (` and `allow\n(` count once,
+    /// a `cfg_attr` inner allow too, while a literal spelling and `disallow (` / `reallow (` stay at zero.
+    #[test]
+    fn allow_attribute_count_counts_ascii_whitespace_before_the_paren() {
+        for (label, sep) in [("space", " "), ("tab", "\t"), ("newline", "\n")] {
+            assert_eq!(
+                allow_attribute_count(
+                    &format!(
+                        "{} fn f() {{}}",
+                        spaced_allow_attr(sep, "clippy::too_many_lines")
+                    ),
+                    "too_many_lines"
+                ),
+                1,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            allow_attribute_count(
+                &format!("#[cfg_attr(test, allow{}(clippy::too_many_lines))]", " "),
+                "too_many_lines"
+            ),
+            1,
+            "cfg_attr"
+        );
+        assert_eq!(
+            allow_attribute_count("fn disallow (x: u8) {}", "too_many_lines"),
+            0,
+            "disallow ( is not the attribute"
+        );
+        assert_eq!(
+            allow_attribute_count("fn reallow (x: u8) {}", "too_many_lines"),
+            0,
+            "reallow ( is not the attribute"
+        );
+        assert_eq!(
+            allow_attribute_count(
+                &format!(
+                    "const S: &str = \"{}\";",
+                    spaced_allow_attr(" ", "clippy::too_many_lines")
+                ),
+                "too_many_lines"
+            ),
+            0,
+            "a literal is not an occurrence"
+        );
+    }
+
     /// The pure scanner reports `path:line` for every forbidden form, in every spelling, and nothing for a plain
     /// item-level exact allow/expect (that one is counted, not forbidden).
     #[test]
@@ -14426,6 +14498,21 @@ runs:
                 "a.rs:2: `#[expect(clippy::pedantic)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string(),
                 "a.rs:3: `#[allow(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)".to_string(),
                 "b.rs:1: `#![allow(clippy::excessive_nesting)]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)".to_string(),
+            ]
+        );
+    }
+
+    /// A whitespace-spelled inner group allow is still a forbidden silencer: the same scanner drives both gates.
+    #[test]
+    fn g_m01_8_forbidden_lint_silencers_in_sees_whitespace_spelled_group_allow() {
+        let files = vec![(
+            "c.rs".to_string(),
+            spaced_inner_allow_attr(" ", "clippy::all"),
+        )];
+        assert_eq!(
+            forbidden_lint_silencers_in(&files),
+            vec![
+                "c.rs:1: `#![allow(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)".to_string(),
             ]
         );
     }
