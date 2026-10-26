@@ -5001,6 +5001,9 @@ const M13_3_HOME: &str = "crates/retrieval/src/envelope.rs";
 const M13_3_FN: &str = "totals";
 /// Stands in for the fn of a construction that sits in no `fn` body (a `const`, a `static`, an import).
 const M13_3_OUTSIDE_FN: &str = "<outside any fn>";
+/// Derives `enum Totals` may carry. `Default`, `Deserialize` and the like build a value outside `fn totals`; M26 adds
+/// `Serialize` to render it.
+const M13_3_DERIVES: [&str; 6] = ["Debug", "Clone", "Copy", "PartialEq", "Eq", "Serialize"];
 
 /// The text of `source`'s line up to byte `idx`.
 fn m13_3_line_prefix(source: &str, idx: usize) -> &str {
@@ -5008,17 +5011,17 @@ fn m13_3_line_prefix(source: &str, idx: usize) -> &str {
     &source[line_start..idx]
 }
 
-/// Whether the `Totals::<Variant>` path at `idx` is a pattern (match arm, `let` / `if let`, `matches!`), which reads a
-/// `Totals` instead of building one: M26 renders by matching on it.
+/// Whether the `<path><Variant>` path at `idx` (`path_len` bytes of `Totals::` or `Self::`) is a pattern (match arm,
+/// `let` / `if let`, `matches!`), which reads a `Totals` instead of building one: M26 renders by matching on it.
 ///
 /// ponytail: judged by the token after the path and its `{ .. }` group (`=>`, `=`, `|`, an `if` guard) and by a
 /// `matches!(` earlier on the line, so a pattern split across lines in another shape reads as a construction, upgrade
 /// to `syn` if that ever shows up.
-fn m13_3_is_pattern(source: &str, idx: usize) -> bool {
+fn m13_3_is_pattern(source: &str, idx: usize, path_len: usize) -> bool {
     if m13_3_line_prefix(source, idx).contains("matches!(") {
         return true;
     }
-    let path = idx + "Totals::".len();
+    let path = idx + path_len;
     let name_len = source[path..]
         .bytes()
         .take_while(|b| is_ident_byte(*b))
@@ -5035,31 +5038,117 @@ fn m13_3_is_pattern(source: &str, idx: usize) -> bool {
         || (after.starts_with('|') && !after.starts_with("||"))
 }
 
-/// Byte offsets of every `Totals::<Variant>` path in `source` that builds (or imports) a `Totals`.
-///
-/// A PascalCase segment after `Totals::` is a variant (or an associated const), so a variant added later is covered
-/// with no list to edit, while `bins/maintenance`'s unrelated `Totals::default()` is not.
-fn m13_3_construction_sites(source: &str) -> Vec<usize> {
+/// Byte offsets, within `source[from..to]`, of every `path` (`Totals::` or `Self::`) followed by a PascalCase segment
+/// that builds a `Totals` instead of matching on one. A PascalCase segment is a variant (or an associated const), so a
+/// variant added later is covered with no list to edit, while `bins/maintenance`'s unrelated `Totals::default()` is
+/// not.
+fn m13_3_path_sites(source: &str, path: &str, from: usize, to: usize) -> Vec<usize> {
     let bytes = source.as_bytes();
-    source
-        .match_indices("Totals::")
-        .map(|(i, _)| i)
+    source[from..to]
+        .match_indices(path)
+        .map(|(i, _)| from + i)
         .filter(|&i| {
             (i == 0 || !is_ident_byte(bytes[i - 1]))
                 && bytes
-                    .get(i + "Totals::".len())
+                    .get(i + path.len())
                     .is_some_and(u8::is_ascii_uppercase)
                 && !m13_3_line_prefix(source, i).contains("//")
-                && !m13_3_is_pattern(source, i)
+                && !m13_3_is_pattern(source, i, path.len())
         })
         .collect()
 }
 
-/// Name of the innermost `fn` whose body holds byte `idx`, if any.
+/// Byte ranges of the bodies of every `impl` block in `source` whose self type is `Totals` (`impl Totals`,
+/// `impl From<X> for Totals`, `impl Default for Totals`, in any crate): inside them `Self::<Variant>` is `Totals`.
+///
+/// ponytail: the self type is the last word of the header before its first `{`, cut at ` where `, so a `where` clause
+/// on its own line or an `impl` emitted by a macro is not recognised, upgrade to `syn` if either ever shows up.
+fn m13_3_impl_totals_bodies(source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut out = Vec::new();
+    for (kw, _) in source.match_indices("impl") {
+        let after = kw + "impl".len();
+        if (kw > 0 && is_ident_byte(bytes[kw - 1]))
+            || bytes.get(after).is_none_or(|b| is_ident_byte(*b))
+            || m13_3_line_prefix(source, kw).contains("//")
+        {
+            continue;
+        }
+        let Some(open) = source[after..].find('{').map(|rel| after + rel) else {
+            continue;
+        };
+        let header = source[after..open]
+            .split(" where ")
+            .next()
+            .unwrap_or("")
+            .trim_end();
+        let self_type = header
+            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next();
+        if self_type == Some("Totals")
+            && let Some(close) = matching_brace_end(source, open)
+        {
+            out.push((open, close));
+        }
+    }
+    out
+}
+
+/// Byte offsets of every place in `source` that builds a `Totals`: a `Totals::<Variant>` path, and a `Self::<Variant>`
+/// path inside an `impl` block of `Totals` ([`m13_3_impl_totals_bodies`]).
+///
+/// ponytail: ceilings of this text matcher, each a way to build a `Totals` it does not see, upgrade to `syn` if one
+/// ever shows up: a glob, group or alias import (`use ..::Totals::*`, `Totals::{..}`, `Totals as T`, `type R = Totals`)
+/// followed by a bare or aliased variant path; a `matches!(` or `//` earlier on the same line (a `//` inside a string
+/// literal such as `"https://"` counts); a macro metavariable path (`$t::Exact`). Only `use ..::Totals::Variant;`
+/// (single-variant) imports are counted.
+fn m13_3_construction_sites(source: &str) -> Vec<usize> {
+    let mut sites = m13_3_path_sites(source, "Totals::", 0, source.len());
+    for (open, close) in m13_3_impl_totals_bodies(source) {
+        sites.extend(m13_3_path_sites(source, "Self::", open, close));
+    }
+    sites
+}
+
+/// Derive names on `enum Totals` in `source` outside [`M13_3_DERIVES`]: a derived `Default` or `Deserialize` builds a
+/// `Totals` with no `Totals::<Variant>` path in sight.
+fn m13_3_bad_derives(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut bad = Vec::new();
+    for (idx, _) in source.match_indices("enum Totals") {
+        let end = idx + "enum Totals".len();
+        if (idx > 0 && is_ident_byte(bytes[idx - 1]))
+            || bytes.get(end).is_some_and(|b| is_ident_byte(*b))
+        {
+            continue;
+        }
+        // The item's attributes are the lines after the last blank line before it.
+        let head = source[..idx].rsplit("\n\n").next().unwrap_or("");
+        let attrs = head
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for (d, _) in attrs.match_indices("derive(") {
+            let list = attrs[d + "derive(".len()..].split(')').next().unwrap_or("");
+            let names = list
+                .split(',')
+                .map(|n| n.trim().rsplit("::").next().unwrap_or("").trim());
+            bad.extend(
+                names
+                    .filter(|n| !n.is_empty() && !M13_3_DERIVES.contains(n))
+                    .map(str::to_string),
+            );
+        }
+    }
+    bad
+}
+
+/// Body-open offset and name of the innermost `fn` whose body holds byte `idx`, if any.
 ///
 /// ponytail: the body is the first `{` after the `fn` keyword, so a `{` inside a signature (a const-generic block)
 /// or a `fn` spelled inside a string literal misattributes the site, upgrade to `syn` if either ever shows up.
-fn m13_3_enclosing_fn(source: &str, idx: usize) -> Option<String> {
+fn m13_3_enclosing_fn(source: &str, idx: usize) -> Option<(usize, String)> {
     let bytes = source.as_bytes();
     let mut best: Option<(usize, String)> = None;
     for (kw, _) in source[..idx].match_indices("fn ") {
@@ -5081,43 +5170,65 @@ fn m13_3_enclosing_fn(source: &str, idx: usize) -> Option<String> {
             best = Some((open, name));
         }
     }
-    best.map(|(_, name)| name)
+    best
 }
 
 /// ADR-0110 D-C / G-M13-3 (module design M13 D3, §22.1): every `Totals` variant in non-test code is built inside the
-/// body of `fn totals` in `retrieval::envelope`, so the number of constructing fns is exactly 1, never `<= 1`.
+/// body of `fn totals` in `retrieval::envelope`, so the number of constructing fns is exactly 1, never `<= 1`, and
+/// that one is `fn totals` in [`M13_3_HOME`]. A constructing fn is keyed by its file and body offset, not its name, so a
+/// second `fn totals` in the same file counts as a second fn. `enum Totals` may derive only [`M13_3_DERIVES`].
 /// Tools render totals from that one fn (M26), never from a tool-local field that can drift from the census.
 ///
-/// `not_applicable` only when no `Totals` construction exists anywhere and the home file has no `pub fn totals(` yet,
-/// and it names that fn (§57.1 第2条); zero constructions while the fn exists is red (a blind matcher or an emptied
-/// door must not read as "no duplicates"). Test modules and test trees are excluded like the sibling door gates
-/// ([`door_production_sources`]).
+/// `not_applicable` only when no `Totals` construction exists anywhere, the home file has no `pub fn totals(` yet and
+/// no derive is wrong, and it names that fn (§57.1 第2条); zero constructions while the fn exists is red (a blind
+/// matcher or an emptied door must not read as "no duplicates"). Test modules and test trees are excluded like the
+/// sibling door gates ([`door_production_sources`]).
 fn g_m13_3_totals_sole_constructor(root: &Path) -> Verdict {
     let files = door_production_sources(root);
-    let mut fns: BTreeMap<(String, String), usize> = BTreeMap::new();
+    // (file, body-open offset of the constructing fn) -> (fn name, construction sites)
+    let mut fns: BTreeMap<(String, usize), (String, usize)> = BTreeMap::new();
+    let mut problems = Vec::new();
     for (disp, source) in &files {
         for idx in m13_3_construction_sites(source) {
-            let name =
-                m13_3_enclosing_fn(source, idx).unwrap_or_else(|| M13_3_OUTSIDE_FN.to_string());
-            *fns.entry((disp.clone(), name)).or_default() += 1;
+            let (open, name) = m13_3_enclosing_fn(source, idx)
+                .unwrap_or_else(|| (usize::MAX, M13_3_OUTSIDE_FN.to_string()));
+            fns.entry((disp.clone(), open)).or_insert((name, 0)).1 += 1;
+        }
+        for derive in m13_3_bad_derives(source) {
+            problems.push(format!(
+                "ADR-0110 D-C / G-M13-3: {disp}: `enum Totals` derives `{derive}`, outside {M13_3_DERIVES:?}; a derive builds a \
+                 `Totals` outside `fn {M13_3_FN}`"
+            ));
         }
     }
     let defined = files
         .iter()
         .any(|(disp, source)| disp == M13_3_HOME && source.contains("pub fn totals("));
-    if fns.is_empty() && !defined {
+    if fns.is_empty() && !defined && problems.is_empty() {
         return Verdict::NotApplicable(format!(
             "missing object: `pub fn {M13_3_FN}` in {M13_3_HOME} (M13-3, ADR-0110 D-C) is not delivered yet"
         ));
     }
-    if fns.len() == 1 && fns.contains_key(&(M13_3_HOME.to_string(), M13_3_FN.to_string())) {
-        return Verdict::Pass;
+    let sole = fns.len() == 1
+        && fns
+            .iter()
+            .all(|((disp, _), (name, _))| disp == M13_3_HOME && name == M13_3_FN);
+    if !sole {
+        let listed: Vec<String> = fns
+            .iter()
+            .map(|((disp, _), (name, n))| format!("{disp}::{name} ({n} site(s))"))
+            .collect();
+        problems.push(format!(
+            "ADR-0110 D-C / G-M13-3: expected exactly 1 constructing fn (`fn {M13_3_FN}` in {M13_3_HOME}) for `Totals` in \
+             non-test code; found {}: {listed:?}",
+            fns.len()
+        ));
     }
-    Verdict::Fail(vec![format!(
-        "ADR-0110 D-C / G-M13-3: expected exactly 1 constructing fn (`fn {M13_3_FN}` in {M13_3_HOME}) for `Totals` in \
-         non-test code; found {}: {fns:?}",
-        fns.len()
-    )])
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
 }
 
 // ============================================================================
@@ -20125,6 +20236,127 @@ async fn serving_version_in_txn() {}
         let tmp = fresh_tmp("m13-3-red-empty");
         m07_write(&tmp, M13_3_HOME, "pub fn totals() -> u8 { 0 }\n");
         assert!(m13_3_fail_lines(&tmp)[0].contains("found 0"));
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The tree with `fn totals` in the home file plus `body` at `rel`: the lines the gate fails with.
+    fn m13_3_fail_lines_with(label: &str, rel: &str, body: &str) -> Vec<String> {
+        let tmp = fresh_tmp(label);
+        m07_write(&tmp, M13_3_HOME, M13_3_TOTALS_FN);
+        m07_write(&tmp, rel, body);
+        let lines = m13_3_fail_lines(&tmp);
+        fs::remove_dir_all(&tmp).ok();
+        lines
+    }
+
+    /// 注错 (rv-362 P1-1): `impl From<X> for Totals` builds `Self::Exact { total: n, returned: n, .. }` in a tool.
+    #[test]
+    fn m13_3_fails_on_a_from_impl_building_a_self_variant() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-from",
+            "bins/gateway/src/tool.rs",
+            "impl From<u64> for Totals {\n    fn from(n: u64) -> Self {\n        \
+             Self::Exact { total: n, returned: n, omitted: 0, truncated: false }\n    }\n}\n",
+        );
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(
+            lines[0].contains("bins/gateway/src/tool.rs::from"),
+            "{lines:?}"
+        );
+    }
+
+    /// 注错 (rv-362 P1-1): `impl Default for Totals`.
+    #[test]
+    fn m13_3_fails_on_a_default_impl_building_a_self_variant() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-default",
+            "bins/gateway/src/tool.rs",
+            "impl Default for Totals {\n    fn default() -> Self {\n        Self::NotApplicable\n    }\n}\n",
+        );
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(
+            lines[0].contains("bins/gateway/src/tool.rs::default"),
+            "{lines:?}"
+        );
+    }
+
+    /// 注错 (rv-362 P1-1): an inherent `impl Totals { fn x() -> Self { Self::Exact { .. } } }`.
+    #[test]
+    fn m13_3_fails_on_an_inherent_impl_building_a_self_variant() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-inherent",
+            "bins/gateway/src/tool.rs",
+            "impl Totals {\n    fn x() -> Self {\n        \
+             Self::Exact { total: 1, returned: 1, omitted: 0, truncated: false }\n    }\n}\n",
+        );
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(
+            lines[0].contains("bins/gateway/src/tool.rs::x"),
+            "{lines:?}"
+        );
+    }
+
+    /// 注错 (rv-362 P1-1): `#[derive(Default)]` on `enum Totals` builds a value with no `Totals::<Variant>` in sight.
+    #[test]
+    fn m13_3_fails_on_a_derived_default() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-derive-default",
+            "bins/gateway/src/tool.rs",
+            "#[derive(Debug, Default)]\npub enum Totals {\n    #[default]\n    NotApplicable,\n}\n",
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("derives `Default`"), "{lines:?}");
+    }
+
+    /// 注错 (rv-362 P1-1): `#[derive(Deserialize)]`, spelled with its path, builds a `Totals` from input.
+    #[test]
+    fn m13_3_fails_on_a_derived_deserialize() {
+        let lines = m13_3_fail_lines_with(
+            "m13-3-red-derive-deserialize",
+            "bins/gateway/src/tool.rs",
+            "#[derive(Debug, Clone, serde::Deserialize)]\npub enum Totals {\n    NotApplicable,\n}\n",
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("derives `Deserialize`"), "{lines:?}");
+    }
+
+    /// The allowed derive set (M26 adds `Serialize`) and an `impl Display for Totals` that only matches on `Self::`
+    /// patterns are not constructions.
+    #[test]
+    fn m13_3_passes_a_display_impl_with_pattern_arms_and_the_allowed_derives() {
+        let tmp = fresh_tmp("m13-3-green-display");
+        m07_write(&tmp, M13_3_HOME, M13_3_TOTALS_FN);
+        m07_write(
+            &tmp,
+            "bins/gateway/src/render.rs",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]\npub enum Totals {\n    NotApplicable,\n}\n\n\
+             impl std::fmt::Display for Totals {\n    \
+                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n        \
+                     match self {\n            \
+                         Self::Exact { total, .. } => write!(f, \"{total}\"),\n            \
+                         Self::AtLeast { n } => write!(f, \"{n}+\"),\n            \
+                         Self::Unknown { .. } | Self::NotApplicable => write!(f, \"?\"),\n        \
+                     }\n    }\n}\n",
+        );
+        assert_eq!(g_m13_3_totals_sole_constructor(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (rv-362 P2-1): a second fn also named `totals` in the home file is a second constructing fn, not the same
+    /// key as the first.
+    #[test]
+    fn m13_3_fails_on_a_second_fn_named_totals_in_the_home_file() {
+        let tmp = fresh_tmp("m13-3-red-same-file-name");
+        m07_write(
+            &tmp,
+            M13_3_HOME,
+            &format!(
+                "{M13_3_TOTALS_FN}mod legacy {{\n    pub fn totals() -> Totals {{ Totals::NotApplicable }}\n}}\n"
+            ),
+        );
+        let lines = m13_3_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 
