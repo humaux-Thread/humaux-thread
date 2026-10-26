@@ -4459,6 +4459,118 @@ fn m29_5a_attribution_site(root: &Path) -> Verdict {
     }
 }
 
+/// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal, the Rust variant that spells it, the doors that can write an AUTO
+/// policy, and `ContributionPolicy::ALL` (reaching the variant by its position). Each is banned from core-edition `src`
+/// except the rows of [`M20_1_EXCEPTIONS`] (none for the last three); the cloud onboarding default and the toggles live in
+/// `humaux-public-pool` only.
+const M20_1_NEEDLES: [&str; 7] = [
+    "AUTO_AFTER_USER_DISTILLATION",
+    "AutoAfterUserDistillation",
+    "append_contribution_policy_successor",
+    "apply_cloud_contribution_default",
+    "toggle_contribution",
+    "toggle_member_contribution",
+    "ContributionPolicy::ALL",
+];
+
+/// The aliased form of the position bypass (`P::ALL[2]`): `ALL[` is banned (0 allowed) in the exception home file and in
+/// any core file that names `ContributionPolicy`; other enums' `X::ALL[i]` elsewhere are not this gate's business.
+///
+/// ponytail: an iterator chain over an alias (`.iter().nth(2)`) evades it; add the spelling here when one appears.
+const M20_1_ALIAS_INDEX: &str = "ALL[";
+
+/// The current exceptions, exact: `(needle, file path without its `.rs` suffix, occurrences in non-comment, non-test code)`.
+/// `ContributionPolicy::as_db_str` spells the mode's wire label (§78.2) and the enum declares the variant, lists it in `ALL`
+/// and matches it in `as_db_str`; none of that appends a policy. The suffix is dropped so the dependency scanner does not
+/// read `<schema>.rs` as a table name.
+const M20_1_EXCEPTIONS: [(&str, &str, usize); 2] = [
+    (
+        "AUTO_AFTER_USER_DISTILLATION",
+        "crates/domain/src/public",
+        1,
+    ),
+    ("AutoAfterUserDistillation", "crates/domain/src/public", 3),
+];
+
+/// Whether `disp` is `src` of a crate or bin whose manifest does not declare `edition = "cloud"` (ADR-0073 D-B).
+fn m20_1_is_core_src(root: &Path, disp: &str) -> bool {
+    let segments: Vec<&str> = disp.split('/').collect();
+    let [kind @ ("crates" | "bins"), pkg, "src", ..] = segments.as_slice() else {
+        return false;
+    };
+    !fs::read_to_string(root.join(kind).join(pkg).join("Cargo.toml"))
+        .is_ok_and(|manifest| manifest.contains("edition = \"cloud\""))
+}
+
+/// Occurrences of `needle` on lines that are not `//` comments.
+fn m20_1_code_hits(source: &str, needle: &str) -> usize {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .map(|line| line.matches(needle).count())
+        .sum()
+}
+
+/// ADR-0088 D-A / G-M20-1 leg 1: [`M20_1_NEEDLES`] occur in core-edition non-test code exactly as [`M20_1_EXCEPTIONS`] lists
+/// (no extra file, no changed count, no vanished row). `not_applicable` names the exception's home file when it is absent.
+fn m20_1_core_never_auto(root: &Path) -> Verdict {
+    const GATE: &str = "ADR-0088 / G-M20-1";
+    let files: Vec<(String, String)> = door_production_sources(root)
+        .into_iter()
+        .filter(|(disp, _)| m20_1_is_core_src(root, disp))
+        .collect();
+    let home = M20_1_EXCEPTIONS[0].1;
+    if !files
+        .iter()
+        .any(|(disp, _)| disp.strip_suffix(".rs") == Some(home))
+    {
+        return Verdict::NotApplicable(format!("missing object: {home}.rs"));
+    }
+    let mut observed: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (disp, source) in &files {
+        let file = disp.strip_suffix(".rs").unwrap_or(disp);
+        for needle in M20_1_NEEDLES {
+            let hits = m20_1_code_hits(source, needle);
+            if hits > 0 {
+                observed.insert((needle, file), hits);
+            }
+        }
+        if file == home || source.contains("ContributionPolicy") {
+            let hits = m20_1_code_hits(source, M20_1_ALIAS_INDEX);
+            if hits > 0 {
+                observed.insert((M20_1_ALIAS_INDEX, file), hits);
+            }
+        }
+    }
+    let expected: BTreeMap<(&str, &str), usize> = M20_1_EXCEPTIONS
+        .iter()
+        .map(|(needle, file, count)| ((*needle, *file), *count))
+        .collect();
+    let mut problems = Vec::new();
+    for (key, hits) in &observed {
+        let allowed = expected.get(key).copied().unwrap_or(0);
+        if allowed != *hits {
+            problems.push(format!(
+                "{GATE}: `{}` occurs {hits} time(s) in core-edition non-test code of {}, the exception list allows {allowed}",
+                key.0, key.1
+            ));
+        }
+    }
+    for (key, count) in &expected {
+        if !observed.contains_key(key) {
+            problems.push(format!(
+                "{GATE}: the exception `{}` x{count} in {} is gone; remove it from M20_1_EXCEPTIONS",
+                key.0, key.1
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
 /// G-N09-1 scan targets: the M29 write path of `memory_projects` and the closed sets it binds.
 const N09_1_FILES: [&str; 2] = [M29_LADDER_HOME, "crates/domain/src/attribution.rs"];
 
@@ -10908,6 +11020,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
             m29_5a_attribution_site(&root),
+        ),
+        (
+            "ADR-0088 / G-M20-1 (core-edition non-test code never names AUTO_AFTER_USER_DISTILLATION, the AutoAfterUserDistillation variant, the AUTO policy doors or toggle_contribution, except the exact exception list)",
+            m20_1_core_never_auto(&root),
         ),
         (
             "ADR-0078 / G-N09-1 (no provider / inference / embedding name in the memory_projects write path)",
@@ -17484,6 +17600,171 @@ async fn serving_version_in_txn() {}
             "impl MemoryAttribution for Noop {}\n",
         );
         red(m29_5a_attribution_site(&tmp), "found 2");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Declaration, `ALL` slot and `as_db_str` arm of the variant (3 hits), and the wire literal (1 hit).
+    const M20_1_HOME_BODY: &str = "enum P { AutoAfterUserDistillation }\n\
+        const ALL: [P; 1] = [P::AutoAfterUserDistillation];\n\
+        fn label(p: P) -> &'static str { match p { P::AutoAfterUserDistillation => \"AUTO_AFTER_USER_DISTILLATION\" } }\n";
+
+    /// The tree as M20-4a leaves it.
+    #[test]
+    fn m20_1_real_repo_passes() {
+        assert_eq!(m20_1_core_never_auto(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the exception's missing home file (§57.1 第2条).
+    #[test]
+    fn m20_1_is_not_applicable_naming_the_missing_home() {
+        let tmp = fresh_tmp("m20-1-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains(M20_1_EXCEPTIONS[0].1), "{detail}")
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M20-1): the AUTO literal or either AUTO door in another core `src` file, a second literal in the home file,
+    /// and a vanished exception are each red; a cloud crate, a test tree and a comment are not.
+    #[test]
+    fn m20_1_fails_on_each_fault() {
+        let tmp = fresh_tmp("m20-1-red");
+        let home = format!("{}.rs", M20_1_EXCEPTIONS[0].1);
+        let seed = |body: &str| {
+            fs::remove_dir_all(&tmp).ok();
+            m07_write(&tmp, &home, body);
+        };
+        let red = |verdict: Verdict, needle: &str| match verdict {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains(needle), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        };
+        seed(M20_1_HOME_BODY);
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            "crates/public-pool/Cargo.toml",
+            "[package.metadata.humaux]\nedition = \"cloud\"\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/public-pool/src/policy.rs",
+            "fn f() { let _ = \"SELECT apply_cloud_contribution_default()\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/adapters/tests/seed.rs",
+            "fn f() { let _ = \"AUTO_AFTER_USER_DISTILLATION\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/adapters/src/note.rs",
+            "// AUTO_AFTER_USER_DISTILLATION append_contribution_policy_successor\nfn f() {}\n",
+        );
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        for (needle, body) in [
+            (
+                "apply_cloud_contribution_default",
+                "async fn f() { sqlx::query(\"SELECT apply_cloud_contribution_default()\"); }\n",
+            ),
+            (
+                "append_contribution_policy_successor",
+                "async fn f() { sqlx::query(\"SELECT append_contribution_policy_successor($1)\"); }\n",
+            ),
+            (
+                "toggle_contribution",
+                "async fn f() { sqlx::query(\"SELECT toggle_contribution($1, $2)\"); }\n",
+            ),
+            (
+                "toggle_member_contribution",
+                "async fn f() { sqlx::query(\"SELECT toggle_member_contribution($1, $2)\"); }\n",
+            ),
+            (
+                "ContributionPolicy::ALL",
+                "fn f() -> usize { ContributionPolicy::ALL.len() }\n",
+            ),
+            (
+                "AUTO_AFTER_USER_DISTILLATION",
+                "async fn f() { sqlx::query(\"UPDATE p SET m = 'AUTO_AFTER_USER_DISTILLATION'\"); }\n",
+            ),
+            (
+                "AutoAfterUserDistillation",
+                "fn f() -> ContributionPolicy { ContributionPolicy::AutoAfterUserDistillation }\n",
+            ),
+        ] {
+            m07_write(&tmp, "crates/adapters/src/provisioning.rs", body);
+            red(m20_1_core_never_auto(&tmp), needle);
+        }
+        fs::remove_file(tmp.join("crates/adapters/src/provisioning.rs")).unwrap();
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        seed(&format!(
+            "{M20_1_HOME_BODY}fn l2() -> &'static str {{ \"AUTO_AFTER_USER_DISTILLATION\" }}\n"
+        ));
+        red(m20_1_core_never_auto(&tmp), "allows 1");
+        seed(&format!(
+            "{M20_1_HOME_BODY}fn l2() -> P {{ P::AutoAfterUserDistillation }}\n"
+        ));
+        red(m20_1_core_never_auto(&tmp), "allows 3");
+        seed("fn label() -> &'static str { \"AUTO_AFTER_USER_DISTILLATION\" }\n");
+        red(
+            m20_1_core_never_auto(&tmp),
+            "`AutoAfterUserDistillation` x3",
+        );
+        seed(
+            "enum P { AutoAfterUserDistillation }\nconst A: P = P::AutoAfterUserDistillation;\nfn l(p: P) { match p { P::AutoAfterUserDistillation => {} } }\n",
+        );
+        red(
+            m20_1_core_never_auto(&tmp),
+            "`AUTO_AFTER_USER_DISTILLATION` x1",
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M20-1 leg 1, position bypass): `P::ALL[2]` in the home file or in a file naming `ContributionPolicy` is red;
+    /// another enum's `Task::ALL[1]` in an unrelated core file is not.
+    #[test]
+    fn m20_1_fails_on_an_aliased_position_index() {
+        let tmp = fresh_tmp("m20-1-alias");
+        let home = format!("{}.rs", M20_1_EXCEPTIONS[0].1);
+        fs::remove_dir_all(&tmp).ok();
+        m07_write(&tmp, &home, M20_1_HOME_BODY);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/tasks.rs",
+            "fn f() -> Task { Task::ALL[1] }\n",
+        );
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            &home,
+            &format!("{M20_1_HOME_BODY}fn l2() -> P {{ P::ALL[2] }}\n"),
+        );
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("`ALL[` occurs 1 time(s)"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        m07_write(&tmp, &home, M20_1_HOME_BODY);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/uses_policy.rs",
+            "fn f() -> P { ContributionPolicy::Manual; P::ALL[1] }\n",
+        );
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("adapters/src/uses_policy"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 
