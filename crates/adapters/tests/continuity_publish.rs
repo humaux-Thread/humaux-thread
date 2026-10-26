@@ -11,7 +11,8 @@
 //!   typed CONFLICT carrying that version; G-M14-2: 80 concurrent list writers leave exactly 80 items (the full union)
 //!   in 80 versions, and a conflicted list writer retries and unions the winner's item; the block is proved through
 //!   pg_blocking_pids, never a sleep; every fixture tenant is purged by the one fixture purge; a missing database is a
-//!   failure when HUMAUX_REQUIRE_DB=1, never a silent pass]
+//!   failure when HUMAUX_REQUIRE_DB=1, never a silent pass; g_m14_2_eighty_writers_union_exactly is lane(a:shared_db)
+//!   (it holds 80 concurrent connections; max_connections 100), so it runs alone in `cargo xtask serial-lane`]
 //! Spec: Baseline §25.3.1; §52 D-B; §79.2; §80.1; ADR-0094
 
 use std::{
@@ -539,7 +540,11 @@ fn publish_until_settled(
 
 /// G-M14-2: 80 concurrent list writers, each one item, leave exactly the union of all 80 items in exactly 80
 /// versions. A whole-list replace loses the earlier writers' items, which is the red this gate exists for.
+///
+/// Serial lane (`lane(a:shared_db)`): real concurrency requires all `WRITERS` connections open at once, and the
+/// shared cluster's `max_connections` is 100, so beside the workspace tier's other binaries it exhausts the cluster.
 #[test]
+#[ignore = "lane(a:shared_db) holds WRITERS=80 real gateway connections at once (G-M14-2 needs all 80), which beside the workspace tier's other binaries exhausts the shared cluster (max_connections 100)"]
 fn g_m14_2_eighty_writers_union_exactly() {
     run_db_fixture::<Fixture, _>("g_m14_2_list_union", |fixture| {
         let dsn = Arc::new(fixture.gateway_dsn.clone());
