@@ -329,6 +329,7 @@ fn historical_postcheck() -> String {
 }
 
 #[test]
+#[ignore = "lane(a:disposable) rebuilds 0271's post-state by dropping 0281's tree columns, then re-applies 0281 (DROP COLUMN takes ACCESS EXCLUSIVE)"]
 fn channel_backfill_and_head_robust_manifest() {
     let mut fx = Fixture::new(&dsn());
     // §46.1: reconstruct 0271's relevant post-state in a rolled-back transaction, with exact historical SQL.
