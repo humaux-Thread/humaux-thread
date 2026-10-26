@@ -6,6 +6,9 @@
 
 use std::str::FromStr;
 
+// ADR-0095 D-C: bounded census; upgrade to pagination when this ceiling is reached.
+const ROLLUP_CHILD_CAP: usize = 64;
+
 use humaux_domain::{
     continuity::{ContinuityFacetKind, ProjectId},
     error::ErrorCode,
@@ -88,6 +91,7 @@ struct RawChild {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRollup {
     visible_count: usize,
     children: Vec<RawChild>,
@@ -143,7 +147,7 @@ pub async fn read_in_txn(
     let raw: RawRollup = serde_json::from_value(value.ok_or(ErrorCode::NotFound)?)
         .map_err(|_| ErrorCode::CannotEstablishCompleteness)?;
     // ponytail: ADR-0095 D-C bounds visible children at 64; upgrade to pagination when reached.
-    if raw.visible_count > 64 {
+    if raw.visible_count > ROLLUP_CHILD_CAP {
         return Err(ErrorCode::CannotEstablishCompleteness);
     }
     Ok(ProjectRollup {
@@ -187,5 +191,34 @@ pub async fn set_channel_in_txn(
         Ok(())
     } else {
         Err(ErrorCode::NotFound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollup_door_unknown_key_is_refused() {
+        let result = serde_json::from_value::<RawRollup>(serde_json::json!({
+            "visible_count": 0, "children": [], "unexpected": "hidden title"
+        }));
+        assert_eq!(
+            result.err().map(|error| error.to_string()),
+            Some("unknown field `unexpected`, expected `visible_count` or `children`".to_owned())
+        );
+    }
+
+    #[test]
+    fn rollup_sql_limit_pins_rust_cap() {
+        let sql = include_str!("../../../migrations/0271_project_channels.sql");
+        let limits: Vec<usize> = sql
+            .lines()
+            .filter_map(|line| {
+                line.split_once("LIMIT ")
+                    .map(|(_, value)| value.trim().parse().expect("numeric door limit"))
+            })
+            .collect();
+        assert_eq!(limits, vec![ROLLUP_CHILD_CAP + 1]);
     }
 }
