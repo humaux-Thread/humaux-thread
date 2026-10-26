@@ -14,11 +14,11 @@ use humaux_domain::{
     ids::{TenantId, WorkspaceId},
     subject::SubjectId,
 };
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Connection, PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
-struct Fixture {
-    tx: Transaction<'static, Postgres>,
+struct Fixture<'a> {
+    tx: Transaction<'a, Postgres>,
     scope: AuthorizationScope,
     visible: [Uuid; 2],
     hidden: Uuid,
@@ -112,11 +112,15 @@ async fn pin(tx: &mut Transaction<'_, Postgres>, ids: [Uuid; 3]) -> Uuid {
     version
 }
 
-async fn fixture() -> Fixture {
+async fn owner_connection() -> PgConnection {
     let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("fail: missing HUMAUX_TEST_PG_DSN");
-    let pool = PgPool::connect(&dsn).await.unwrap();
+    // dep: PostgreSQL(owner) — §79.2 fixture access never creates a raw shared pool.
+    PgConnection::connect(&dsn).await.unwrap()
+}
+
+async fn fixture(connection: &mut PgConnection) -> Fixture<'_> {
     // dep: PostgreSQL(owner) — §79.2 fixture writes remain in one rolled-back transaction.
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = connection.begin().await.unwrap();
     let tenant = sqlx::query_scalar(
         "INSERT INTO control.tenants (name,state) \
         VALUES ('e2e-fixture m14-4 rollup','ACTIVE') RETURNING tenant_id",
@@ -190,7 +194,8 @@ async fn fixture() -> Fixture {
 
 #[tokio::test]
 async fn g_m14_5_rollup_no_leak() {
-    let mut fx = fixture().await;
+    let mut connection = owner_connection().await;
+    let mut fx = fixture(&mut connection).await;
     for target in [
         RollupTarget::Brand(SubjectId(fx.brand)),
         RollupTarget::Business(SubjectId(fx.business)),
@@ -239,7 +244,8 @@ async fn g_m14_5_rollup_no_leak() {
 
 #[tokio::test]
 async fn project_scope_and_channel_door_are_exact() {
-    let mut fx = fixture().await;
+    let mut connection = owner_connection().await;
+    let mut fx = fixture(&mut connection).await;
     set_channel_in_txn(
         &mut fx.tx,
         &fx.scope,
@@ -281,7 +287,8 @@ async fn project_scope_and_channel_door_are_exact() {
 
 #[tokio::test]
 async fn zero_visible_children_disclose_zero() {
-    let mut fx = fixture().await;
+    let mut connection = owner_connection().await;
+    let mut fx = fixture(&mut connection).await;
     let empty = AuthorizationScope::new(
         fx.scope.tenant_id(),
         fx.scope.principal(),
