@@ -5561,6 +5561,7 @@ written by:
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
@@ -6920,6 +6921,7 @@ written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::projection_worker`
@@ -6951,6 +6953,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_attribution`
@@ -8992,7 +8995,6 @@ executed by:
 
 ### `private.evidence_edges`
 read by:
-- (no process): `adapters::forget_repo`
 
 written by:
 - (no process): `adapters::tests::forget_preview`
