@@ -1211,6 +1211,7 @@ fn g_289_a_b_evidence_inheritance_preserves_reader_visibility() {
 
 fn invisible_caller_sqlstate(fixture: &MergePrivacyFixture, evidence: bool) -> Option<String> {
     let h = &fixture.handle;
+    // dep: PostgreSQL(role_gateway) — §25.3.1 caller-link refusal must use the runtime role
     let mut gateway = Client::connect(&h.gateway_dsn, NoTls).unwrap();
     gateway.batch_execute("BEGIN").unwrap();
     gateway.query_one(
