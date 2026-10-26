@@ -63,13 +63,13 @@ fn session<'a>(
     txn
 }
 
-fn snapshot(handle: &Handle, auth: &AuthorizationScope, target: Uuid, id: Uuid) -> Vec<String> {
+fn snapshot(handle: &Handle, auth: &AuthorizationScope, id: Uuid) -> Vec<String> {
     let mut client = handle.gateway_client().expect("actual gateway login");
     let mut txn = session(&mut client, auth, handle.workspace_id);
     let memory: String = txn
         .query_one(
-            "SELECT row_to_json(m)::text FROM private.memory_records m WHERE memory_id=$1",
-            &[&target],
+            "SELECT json_agg(m ORDER BY m.memory_id)::text FROM private.memory_records m JOIN private.curation_candidate_targets t ON t.memory_id=m.memory_id WHERE t.candidate_id=$1",
+            &[&id],
         )
         .expect("memory row")
         .get(0);
@@ -111,11 +111,12 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
         h.assert_gateway_login();
         let a = auth(&mut h);
         let target = h.seed_workspace_visible_context_record().memory_id;
-        let p = proposal(vec![target]);
+        let other = h.seed_workspace_visible_context_record().memory_id;
+        let p = proposal(vec![target, other]);
         let id =
             h.rt.block_on(candidate_repo::propose(&h.runtime, &a, &p))
                 .expect("propose");
-        let before = snapshot(&h, &a, target, id);
+        let before = snapshot(&h, &a, id);
         assert_eq!(
             h.rt.block_on(candidate_repo::decide(
                 &h.runtime,
@@ -126,7 +127,7 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
             )),
             stale("candidate_stale_payload")
         );
-        assert_eq!(snapshot(&h, &a, target, id), before, "STALE writes nothing");
+        assert_eq!(snapshot(&h, &a, id), before, "STALE writes nothing");
         assert_eq!(
             h.rt.block_on(candidate_repo::decide(
                 &h.runtime,
@@ -137,7 +138,7 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
             )),
             Ok(CandidateState::Accepted)
         );
-        let after = snapshot(&h, &a, target, id);
+        let after = snapshot(&h, &a, id);
         assert_eq!(
             (&after[0], &after[2..]),
             (&before[0], &before[2..]),
@@ -147,6 +148,20 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
             h.rt.block_on(candidate_repo::list(&h.runtime, &a))
                 .expect("list");
         assert_eq!(rows.len(), 1);
+        let mut expected_targets = vec![
+            candidate_repo::TargetRevision {
+                memory_id: target,
+                status: humaux_domain::authority::AuthorityStatus::Active,
+                lifecycle_head: None,
+            },
+            candidate_repo::TargetRevision {
+                memory_id: other,
+                status: humaux_domain::authority::AuthorityStatus::Active,
+                lifecycle_head: None,
+            },
+        ];
+        expected_targets.sort_by_key(|revision| revision.memory_id);
+        assert_eq!(rows[0].targets, expected_targets);
         assert_eq!(
             (rows[0].candidate_id, rows[0].state),
             (id, CandidateState::Accepted)
@@ -164,7 +179,7 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
                 reason: "candidate_transition_invalid"
             })
         );
-        assert_eq!(snapshot(&h, &a, target, id), after);
+        assert_eq!(snapshot(&h, &a, id), after);
     });
 }
 
@@ -179,7 +194,7 @@ fn g_m15_2_decide_archived_revision_is_stale_without_updated_at_change() {
         let id =
             h.rt.block_on(candidate_repo::propose(&h.runtime, &a, &p))
                 .expect("propose");
-        let before = snapshot(&h, &a, record.memory_id, id);
+        let before = snapshot(&h, &a, id);
         let stream = StreamKey::new(
             TenantId(h.tenant_id),
             "WORKSPACE",
@@ -201,14 +216,14 @@ fn g_m15_2_decide_archived_revision_is_stale_without_updated_at_change() {
             result,
             humaux_adapters::memory_governance_repo::ArchiveResult::Done(_)
         ));
-        let archived = snapshot(&h, &a, record.memory_id, id);
+        let archived = snapshot(&h, &a, id);
         let old: serde_json::Value = serde_json::from_str(&before[0]).expect("before JSON");
         let new: serde_json::Value = serde_json::from_str(&archived[0]).expect("after JSON");
-        assert_eq!(new["updated_at"], old["updated_at"]);
-        assert_eq!(new["status"], old["status"]);
+        assert_eq!(new[0]["updated_at"], old[0]["updated_at"]);
+        assert_eq!(new[0]["status"], old[0]["status"]);
         assert_ne!(
-            new["lifecycle_head_event_id"],
-            old["lifecycle_head_event_id"]
+            new[0]["lifecycle_head_event_id"],
+            old[0]["lifecycle_head_event_id"]
         );
         assert_eq!(
             h.rt.block_on(candidate_repo::decide(
@@ -220,11 +235,8 @@ fn g_m15_2_decide_archived_revision_is_stale_without_updated_at_change() {
             )),
             stale("candidate_stale_target")
         );
-        assert_eq!(
-            snapshot(&h, &a, record.memory_id, id),
-            archived,
-            "STALE writes nothing"
-        );
+        assert_eq!(snapshot(&h, &a, id), archived, "STALE writes nothing");
+        governance_ops::Governor::cleanup(&mut h.admin, h.tenant_id);
     });
 }
 
@@ -237,6 +249,16 @@ fn g_m15_1_gateway_tenant_workspace_isolation() {
         let id =
             h.rt.block_on(candidate_repo::propose(&h.runtime, &first, &p))
                 .expect("propose");
+        let original_user = h.user_id;
+        h.user_id = h.seed_peer_user();
+        let peer = auth(&mut h);
+        assert_eq!(
+            h.rt.block_on(candidate_repo::list(&h.runtime, &peer))
+                .expect("other user")
+                .len(),
+            0
+        );
+        h.user_id = original_user;
         let original = h.workspace_id;
         h.workspace_id = h.seed_workspace();
         let second = auth(&mut h);
@@ -268,6 +290,25 @@ fn g_m15_1_gateway_tenant_workspace_isolation() {
         );
         h.workspace_id = original;
         let mut client = h.gateway_client().expect("gateway");
+        {
+            let mut other = session(
+                &mut client,
+                &second,
+                second
+                    .allowed_workspace_ids()
+                    .iter()
+                    .next()
+                    .expect("workspace")
+                    .0,
+            );
+            for table in ["curation_candidates", "curation_candidate_targets"] {
+                let count: i64 = other
+                    .query_one(&format!("SELECT count(*) FROM private.{table}"), &[])
+                    .expect("other workspace RLS")
+                    .get(0);
+                assert_eq!(count, 0);
+            }
+        }
         let mut txn = session(&mut client, &first, original);
         let count: i64 = txn
             .query_one("SELECT count(*) FROM private.curation_candidates", &[])
@@ -317,7 +358,14 @@ fn candidate_closed_sets_and_transition_cartesian_product_match_database() {
             .iter()
             .map(|(from, to)| (from.wire().to_owned(), to.wire().to_owned()))
             .collect();
-        assert_eq!(expected.len(), 3);
+        assert_eq!(
+            expected,
+            BTreeSet::from([
+                ("PROPOSED".to_owned(), "ACCEPTED".to_owned()),
+                ("PROPOSED".to_owned(), "REJECTED".to_owned()),
+                ("PROPOSED".to_owned(), "EXPIRED".to_owned()),
+            ])
+        );
         let mut actual = BTreeSet::new();
         let mut cells = 0;
         for from in CandidateState::ALL {

@@ -3,6 +3,7 @@ CREATE TABLE private.curation_candidates (
   candidate_id uuid PRIMARY KEY DEFAULT uuidv7(),
   tenant_id uuid NOT NULL REFERENCES control.tenants(tenant_id) ON DELETE CASCADE,
   workspace_id uuid NOT NULL,
+  user_id uuid,
   proposed_by text NOT NULL CHECK (proposed_by ~ '^(rule|model):[^@[:space:]]+@[^@[:space:]]+$'),
   kind text NOT NULL CONSTRAINT curation_candidate_kind CHECK (kind IN
     ('DUPLICATE_GROUP','CONTRADICTION','TEMPORAL_CHANGE','STALE','REPEATED_QUESTION',
@@ -34,14 +35,20 @@ ALTER TABLE private.curation_candidate_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.curation_candidate_targets FORCE ROW LEVEL SECURITY;
 CREATE POLICY curation_candidates_scope ON private.curation_candidates
   USING (tenant_id=NULLIF(current_setting('humaux.tenant_id',true),'')::uuid
-    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid)
+    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid
+    AND (user_id IS NULL OR user_id=NULLIF(current_setting('humaux.user_id',true),'')::uuid))
   WITH CHECK (tenant_id=NULLIF(current_setting('humaux.tenant_id',true),'')::uuid
-    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid);
+    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid
+    AND (user_id IS NULL OR user_id=NULLIF(current_setting('humaux.user_id',true),'')::uuid));
 CREATE POLICY curation_candidate_targets_scope ON private.curation_candidate_targets
   USING (tenant_id=NULLIF(current_setting('humaux.tenant_id',true),'')::uuid
-    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid)
+    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid
+    AND EXISTS (SELECT 1 FROM private.curation_candidates c
+                WHERE c.candidate_id=curation_candidate_targets.candidate_id))
   WITH CHECK (tenant_id=NULLIF(current_setting('humaux.tenant_id',true),'')::uuid
-    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid);
+    AND workspace_id=NULLIF(current_setting('humaux.candidate_workspace_id',true),'')::uuid
+    AND EXISTS (SELECT 1 FROM private.curation_candidates c
+                WHERE c.candidate_id=curation_candidate_targets.candidate_id));
 REVOKE ALL ON private.curation_candidates,private.curation_candidate_targets
   FROM PUBLIC,role_gateway,role_private_worker,role_consolidation_worker,role_public_worker,
        role_retrieval_worker,role_batch_issuer,role_maintenance,role_admin;
@@ -74,11 +81,12 @@ BEGIN
      OR cardinality(p_targets)<>(SELECT count(DISTINCT x) FROM unnest(p_targets) x) THEN
     RAISE EXCEPTION 'candidate_targets_invalid' USING ERRCODE='22023';
   END IF;
-  INSERT INTO private.curation_candidates(tenant_id,workspace_id,proposed_by,kind,payload_hash,score)
-    VALUES(v_tenant,p_workspace,p_proposed_by,p_kind,p_hash,p_score) RETURNING candidate_id INTO v_id;
+  INSERT INTO private.curation_candidates(tenant_id,workspace_id,user_id,proposed_by,kind,payload_hash,score)
+    VALUES(v_tenant,p_workspace,NULLIF(v_user,'00000000-0000-0000-0000-000000000000'::uuid),p_proposed_by,p_kind,p_hash,p_score) RETURNING candidate_id INTO v_id;
   FOR v_target IN SELECT x FROM unnest(p_targets) x ORDER BY x LOOP
     SELECT m.status,m.lifecycle_head_event_id INTO v_status,v_head FROM private.memory_records m
       WHERE m.tenant_id=v_tenant AND m.memory_id=v_target
+        AND private.memory_subject_visibility_ok(m.tenant_id,m.memory_id)
         AND private.visibility_allowed(m.visibility_class,true,m.visibility_user_id=v_user,
                                       m.visibility_workspace_id=p_workspace)
       FOR SHARE;
@@ -125,6 +133,7 @@ BEGIN
       WHERE candidate_id=p_id ORDER BY memory_id LOOP
       SELECT * INTO v_memory FROM private.memory_records
         WHERE tenant_id=v_tenant AND memory_id=v_target.memory_id
+          AND private.memory_subject_visibility_ok(tenant_id,memory_id)
           AND private.visibility_allowed(visibility_class,true,
             visibility_user_id=NULLIF(current_setting('humaux.user_id',true),'')::uuid,
             visibility_workspace_id=p_workspace) FOR SHARE;
