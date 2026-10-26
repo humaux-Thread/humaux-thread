@@ -1,8 +1,9 @@
-//! `adapters::public_provenance` — Bounded §42 reconciliation of the direct public graph against its derived current
+//! `public-pool::public_provenance` — Bounded §42 reconciliation of the direct public graph against its derived current
 //!   closure.
-//! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(role_public_worker) r=[public.claims,
-//!   public.provenance_edges, public.source_closure, public.sources, public.syntheses, public.synthesis_inputs]
-//!   x=[public.current_public_roots]]; env=[]; modules=[adapters::postgres, domain::error, domain::ids]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, sqlx, uuid]; services=[PostgreSQL(role_public_worker)
+//!   r=[public.claims, public.provenance_edges, public.source_closure, public.sources, public.syntheses,
+//!   public.synthesis_inputs] x=[public.current_public_roots]]; env=[]; modules=[adapters::postgres, domain::error,
+//!   domain::ids]
 //! Called-by: [tests]
 //! Invariants: [reads the public provenance graph on role_public_worker only; an unknown target is NotFound and a
 //!   malformed one InvalidInput; a PG error is DependencyUnavailable, never an empty closure]
@@ -14,7 +15,7 @@ use humaux_domain::{error::ErrorCode, ids::TenantId};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::postgres::PublicWorkerDbPool;
+use humaux_adapters::postgres::PublicWorkerDbPool;
 
 static PUBLIC_PROVENANCE_ORPHANS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -65,7 +66,7 @@ pub async fn probe_public_provenance(
 ) -> Result<PublicProvenanceProbe, ErrorCode> {
     // dep: PostgreSQL(role_public_worker) — transaction entry for `probe_public_provenance`
     let mut txn = pool
-        .pool()
+        .raw_pool()
         .begin()
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;

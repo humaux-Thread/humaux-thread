@@ -1,6 +1,6 @@
 //! `humaux-contracts` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-admin), crate(humaux-gateway), crate(humaux-infra-egress), crate(humaux-retrieval), crate(humaux-retrieval-provider), crate(humaux-retrieval-worker), crate(xtask)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-admin), crate(humaux-gateway), crate(humaux-infra-egress), crate(humaux-public-pool), crate(humaux-retrieval), crate(humaux-retrieval-provider), crate(humaux-retrieval-worker), crate(xtask)]
 //! Invariants: []
 //! Spec: Baseline §3; §58; §78.3
 //!

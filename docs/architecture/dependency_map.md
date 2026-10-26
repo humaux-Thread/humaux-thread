@@ -196,48 +196,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 - service `Qdrant(*)`
 
-#### `adapters::public_repo`
-- reads `control.memberships`
-- reads `control.public_moderator_grants`
-- reads `control.users`
-- reads `ops.public_release_revocations`
-- reads `public.eligible_objects`
-- reads `public.relations`
-- reads `public.synthesis_inputs`
-- reads `staging.contribution_releases`
-- writes `public.claim_trust_evaluation_sources`
-- writes `public.claim_trust_evaluations`
-- writes `public.claims`
-- writes `public.poisoning_signals`
-- writes `public.provenance_edges`
-- writes `public.source_closure`
-- writes `public.sources`
-- writes `public.syntheses`
-- executes `ops.claim_global_anonymous_public_dispatches`
-- executes `ops.claim_public_dispatch_jobs`
-- executes `ops.complete_global_anonymous_public_dispatch`
-- executes `ops.complete_public_dispatch_job`
-- executes `ops.dispatch_public_outbox`
-- executes `ops.emit_public_object_changed`
-- executes `ops.enqueue_public_projection_from_anonymous_dispatch`
-- executes `ops.fail_global_anonymous_public_dispatch`
-- executes `ops.fail_public_dispatch_job`
-- executes `ops.global_anonymous_public_dispatch_live_lease`
-- executes `ops.lock_contribution_inputs`
-- executes `ops.public_dispatch_live_lease`
-- executes `public.admit_anonymous_dispatch`
-- executes `public.carry_forward_anonymous_claim_lifecycle`
-- executes `public.current_public_roots`
-- executes `public.evaluate_anonymous_claim`
-- executes `public.public_projection_identities`
-- executes `public.revoke_anonymous_dispatch`
-- executes `staging.assert_active_contribution_release`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_private_worker)`
-- service `PostgreSQL(role_public_worker)`
-- service `PostgreSQL(role_retrieval_worker)`
-
 #### `adapters::qdrant`
 - service `Qdrant(*)`
 
@@ -366,8 +324,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::entitlement`
 
 #### `application::pin`
-
-#### `application::public_evolve`
 
 #### `application::signed_token`
 
@@ -1308,48 +1264,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
 
-#### `adapters::public_repo`
-- reads `control.memberships`
-- reads `control.public_moderator_grants`
-- reads `control.users`
-- reads `ops.public_release_revocations`
-- reads `public.eligible_objects`
-- reads `public.relations`
-- reads `public.synthesis_inputs`
-- reads `staging.contribution_releases`
-- writes `public.claim_trust_evaluation_sources`
-- writes `public.claim_trust_evaluations`
-- writes `public.claims`
-- writes `public.poisoning_signals`
-- writes `public.provenance_edges`
-- writes `public.source_closure`
-- writes `public.sources`
-- writes `public.syntheses`
-- executes `ops.claim_global_anonymous_public_dispatches`
-- executes `ops.claim_public_dispatch_jobs`
-- executes `ops.complete_global_anonymous_public_dispatch`
-- executes `ops.complete_public_dispatch_job`
-- executes `ops.dispatch_public_outbox`
-- executes `ops.emit_public_object_changed`
-- executes `ops.enqueue_public_projection_from_anonymous_dispatch`
-- executes `ops.fail_global_anonymous_public_dispatch`
-- executes `ops.fail_public_dispatch_job`
-- executes `ops.global_anonymous_public_dispatch_live_lease`
-- executes `ops.lock_contribution_inputs`
-- executes `ops.public_dispatch_live_lease`
-- executes `public.admit_anonymous_dispatch`
-- executes `public.carry_forward_anonymous_claim_lifecycle`
-- executes `public.current_public_roots`
-- executes `public.evaluate_anonymous_claim`
-- executes `public.public_projection_identities`
-- executes `public.revoke_anonymous_dispatch`
-- executes `staging.assert_active_contribution_release`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_private_worker)`
-- service `PostgreSQL(role_public_worker)`
-- service `PostgreSQL(role_retrieval_worker)`
-
 #### `admin::cell_resources`
 - env `HUMAUX_ADMIN_PRIVATE_INFERENCE_RPC_SOCKET_PATH`
 - env `HUMAUX_ADMIN_RETRIEVAL_RPC_SOCKET_PATH`
@@ -1392,8 +1306,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `admin::tls_expiry`
 - env `HUMAUX_ADMIN_TLS_CERT_PATHS`
 - service `fs(PEM certificate files)`
-
-#### `application::public_evolve`
 
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
@@ -4266,6 +4178,16 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-public-worker)
 
+#### `adapters::mechanism_observation`
+- reads `public.claim_trust_evaluations`
+- reads `public.claims`
+- reads `public.consensus_ready`
+- reads `public.corroborated`
+- reads `public.eligible_objects`
+- writes `ops.mechanism_e2e_runs`
+- writes `ops.mechanism_observations`
+- service `PostgreSQL(any)`
+
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -4285,57 +4207,14 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
 
-#### `adapters::public_projection`
-- service `Qdrant(*)`
-
-#### `adapters::public_repo`
-- reads `control.memberships`
-- reads `control.public_moderator_grants`
-- reads `control.users`
-- reads `ops.public_release_revocations`
-- reads `public.eligible_objects`
-- reads `public.relations`
-- reads `public.synthesis_inputs`
-- reads `staging.contribution_releases`
-- writes `public.claim_trust_evaluation_sources`
-- writes `public.claim_trust_evaluations`
-- writes `public.claims`
-- writes `public.poisoning_signals`
-- writes `public.provenance_edges`
-- writes `public.source_closure`
-- writes `public.sources`
-- writes `public.syntheses`
-- executes `ops.claim_global_anonymous_public_dispatches`
-- executes `ops.claim_public_dispatch_jobs`
-- executes `ops.complete_global_anonymous_public_dispatch`
-- executes `ops.complete_public_dispatch_job`
-- executes `ops.dispatch_public_outbox`
-- executes `ops.emit_public_object_changed`
-- executes `ops.enqueue_public_projection_from_anonymous_dispatch`
-- executes `ops.fail_global_anonymous_public_dispatch`
-- executes `ops.fail_public_dispatch_job`
-- executes `ops.global_anonymous_public_dispatch_live_lease`
-- executes `ops.lock_contribution_inputs`
-- executes `ops.public_dispatch_live_lease`
-- executes `public.admit_anonymous_dispatch`
-- executes `public.carry_forward_anonymous_claim_lifecycle`
-- executes `public.current_public_roots`
-- executes `public.evaluate_anonymous_claim`
-- executes `public.public_projection_identities`
-- executes `public.revoke_anonymous_dispatch`
-- executes `staging.assert_active_contribution_release`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_private_worker)`
-- service `PostgreSQL(role_public_worker)`
-- service `PostgreSQL(role_retrieval_worker)`
-
 #### `adapters::qdrant`
 - service `Qdrant(*)`
 
-#### `application::public_evolve`
-
 #### `contracts::config_registry`
+
+#### `contracts::mechanism_registry`
+- reads `public.consensus_ready`
+- service `PostgreSQL(any)`
 
 #### `domain::affect`
 
@@ -4376,6 +4255,53 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `projection::card`
 
 #### `projection::dense`
+
+#### `public-pool::public_evolve`
+
+#### `public-pool::public_projection`
+- service `Qdrant(*)`
+
+#### `public-pool::public_repo`
+- reads `control.memberships`
+- reads `control.public_moderator_grants`
+- reads `control.users`
+- reads `ops.public_release_revocations`
+- reads `public.eligible_objects`
+- reads `public.relations`
+- reads `public.synthesis_inputs`
+- reads `staging.contribution_releases`
+- writes `public.claim_trust_evaluation_sources`
+- writes `public.claim_trust_evaluations`
+- writes `public.claims`
+- writes `public.poisoning_signals`
+- writes `public.provenance_edges`
+- writes `public.source_closure`
+- writes `public.sources`
+- writes `public.syntheses`
+- executes `ops.claim_global_anonymous_public_dispatches`
+- executes `ops.claim_public_dispatch_jobs`
+- executes `ops.complete_global_anonymous_public_dispatch`
+- executes `ops.complete_public_dispatch_job`
+- executes `ops.dispatch_public_outbox`
+- executes `ops.emit_public_object_changed`
+- executes `ops.enqueue_public_projection_from_anonymous_dispatch`
+- executes `ops.fail_global_anonymous_public_dispatch`
+- executes `ops.fail_public_dispatch_job`
+- executes `ops.global_anonymous_public_dispatch_live_lease`
+- executes `ops.lock_contribution_inputs`
+- executes `ops.public_dispatch_live_lease`
+- executes `public.admit_anonymous_dispatch`
+- executes `public.carry_forward_anonymous_claim_lifecycle`
+- executes `public.current_public_roots`
+- executes `public.evaluate_anonymous_claim`
+- executes `public.public_projection_identities`
+- executes `public.revoke_anonymous_dispatch`
+- executes `staging.assert_active_contribution_release`
+- service `PostgreSQL(any)`
+- service `PostgreSQL(role_gateway)`
+- service `PostgreSQL(role_private_worker)`
+- service `PostgreSQL(role_public_worker)`
+- service `PostgreSQL(role_retrieval_worker)`
 
 #### `public-worker::main`
 - env `HUMAUX_PUBLIC_WORKER_CALLER`
@@ -4942,7 +4868,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### `control.anonymous_claim_trust_authorities`
 read by:
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -4954,10 +4880,10 @@ executed by:
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::public_runtime_qdrant`
-- (no process): `adapters::tests::public_trust`
-- (no process): `adapters::tests::support::public_anonymous_seam`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime_qdrant`
+- (no process): `public-pool::tests::public_trust`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -5536,11 +5462,9 @@ read by:
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::provisioning`
-- process(cargo-xtask): `adapters::public_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
 - process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-consolidation-worker): `adapters::contribution_reasoner`
@@ -5554,7 +5478,7 @@ read by:
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_reasoner`
 - process(humaux-private-worker): `adapters::distill_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
 written by:
@@ -5570,7 +5494,6 @@ written by:
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::projection_worker`
-- (no process): `adapters::tests::public_trust`
 - (no process): `adapters::tests::quota_and_rate`
 - (no process): `adapters::tests::reasoning_route_foundation`
 - (no process): `adapters::tests::reasoning_route_health_admission`
@@ -5593,6 +5516,7 @@ written by:
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::public_trust`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `adapters::membership_repo`
 - process(humaux-maintenance): `adapters::membership_repo`
@@ -6118,18 +6042,16 @@ executed by:
 
 ### `control.public_moderator_grants`
 read by:
-- process(cargo-xtask): `adapters::public_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
-- (no process): `adapters::tests::mechanism_observation`
-- (no process): `adapters::tests::public_provenance`
-- (no process): `adapters::tests::public_provenance_revocation_eval`
-- (no process): `adapters::tests::public_trust`
-- (no process): `adapters::tests::support::public_anonymous_seam`
+- (no process): `public-pool::tests::mechanism_observation`
+- (no process): `public-pool::tests::public_provenance`
+- (no process): `public-pool::tests::public_provenance_revocation_eval`
+- (no process): `public-pool::tests::public_trust`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 
 executed by:
 
@@ -6831,9 +6753,7 @@ read by:
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::membership_repo`
-- process(cargo-xtask): `adapters::public_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
 - process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-consolidation-worker): `adapters::contribution_reasoner`
@@ -6842,7 +6762,7 @@ read by:
 - process(humaux-private-worker): `adapters::consolidation_reasoner`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_reasoner`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
@@ -7121,7 +7041,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::mechanism_observation`
+- (no process): `public-pool::tests::mechanism_observation`
 
 ### `ops.auto_redrive_schema_failed`
 read by:
@@ -7279,10 +7199,8 @@ written by:
 executed by:
 - (no process): `adapters::tests::phase9_assessed_contract`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_runtime`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_runtime`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.claim_public_dispatch_jobs`
 read by:
@@ -7290,9 +7208,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.column_vitality`
 read by:
@@ -7344,9 +7260,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.complete_public_dispatch_job`
 read by:
@@ -7354,9 +7268,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.contribution_execution_job_links`
 read by:
@@ -7452,9 +7364,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.distill_calls`
 read by:
@@ -7569,9 +7479,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.enqueue_public_projection_from_anonymous_dispatch`
 read by:
@@ -7580,10 +7488,8 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::phase9_assessed_contract`
-- (no process): `adapters::tests::public_runtime`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_runtime`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.fail_global_anonymous_public_dispatch`
 read by:
@@ -7591,9 +7497,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.fail_public_dispatch_job`
 read by:
@@ -7601,9 +7505,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.finalize_retrieval_provider_budget`
 read by:
@@ -7637,9 +7539,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.guard_contribution_input_change`
 read by:
@@ -7715,7 +7615,6 @@ written by:
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_worker`
-- (no process): `adapters::tests::public_runtime`
 - (no process): `adapters::tests::recall_envelope_g23`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::retrieve_read_your_writes`
@@ -7725,7 +7624,6 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
-- (no process): `adapters::tests::support::public_anonymous_seam`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
@@ -7738,6 +7636,8 @@ written by:
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - (no process): `private-worker::tests::support::double_spend`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::consolidate_repo`
@@ -7758,13 +7658,11 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-consolidation-worker): `adapters::contribution_reasoner`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_reasoner`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.maintenance_receipts`
 read by:
@@ -7803,9 +7701,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::tests::mechanism_observation`
+- (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(humaux-admin): `adapters::mechanism_observation`
+- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -7816,9 +7715,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::tests::mechanism_observation`
+- (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(humaux-admin): `adapters::mechanism_observation`
+- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -7926,12 +7826,12 @@ read by:
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::phase9_assessed_contract`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::public_trust`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `adapters::tests::support::contribution_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::read_decoupling`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -8094,7 +7994,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 
 executed by:
 
@@ -8104,18 +8004,14 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `ops.public_release_revocations`
 read by:
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
@@ -9656,7 +9552,6 @@ read by:
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `adapters::tests::hot_path_indexes`
-- (no process): `adapters::tests::mechanism_observation`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
@@ -9664,6 +9559,7 @@ read by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- (no process): `public-pool::tests::mechanism_observation`
 - (no process): `testkit::tests::metrics::retrieval_completeness_total`
 - process(cargo-xtask): `adapters::affect_repo`
 - process(cargo-xtask): `adapters::context_repo`
@@ -10972,6 +10868,7 @@ executed by:
 
 ### `projection.tenant_placements`
 read by:
+- (no process): `adapters::tests::private_projection_registry`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `adapters::provisioning`
@@ -10994,6 +10891,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
+- (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::rebuild`
@@ -11062,9 +10960,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::phase9_assessed_contract`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `public.admit_anonymous_source`
 read by:
@@ -11080,7 +10976,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 
 executed by:
 
@@ -11096,7 +10992,7 @@ executed by:
 
 ### `public.anonymous_source_lifecycle_events`
 read by:
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -11127,13 +11023,11 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `public.claim_independence_attestations`
 read by:
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -11144,55 +11038,51 @@ executed by:
 
 ### `public.claim_trust_evaluation_sources`
 read by:
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
 ### `public.claim_trust_evaluations`
 read by:
-- (no process): `adapters::tests::public_provenance_revocation_eval`
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_provenance_revocation_eval`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
 ### `public.claims`
 read by:
-- (no process): `adapters::public_provenance`
-- (no process): `adapters::tests::mechanism_observation`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_provenance_revocation_eval`
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::public_runtime_qdrant`
-- (no process): `adapters::tests::support::public_anonymous_seam`
+- (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::mechanism_observation`
+- (no process): `public-pool::tests::public_provenance_revocation_eval`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime_qdrant`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(humaux-admin): `adapters::mechanism_observation`
+- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_repo`
-- (no process): `adapters::tests::public_provenance`
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_provenance`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
@@ -11202,6 +11092,8 @@ read by:
 - process(cargo-xtask): `contracts::mechanism_registry`
 - process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-admin): `contracts::mechanism_registry`
+- process(humaux-public-worker): `adapters::mechanism_observation`
+- process(humaux-public-worker): `contracts::mechanism_registry`
 
 written by:
 
@@ -11211,6 +11103,7 @@ executed by:
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(humaux-admin): `adapters::mechanism_observation`
+- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 
@@ -11218,7 +11111,7 @@ executed by:
 
 ### `public.current_anonymous_source_objects`
 read by:
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -11232,25 +11125,22 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::public_provenance`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_provenance`
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::public_provenance`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `public.eligible_objects`
 read by:
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::public_trust`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(cargo-xtask): `adapters::public_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `adapters::mechanism_observation`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 
@@ -11262,10 +11152,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::public_runtime`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_runtime`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `public.guard_evaluated_source_identity`
 read by:
@@ -11273,7 +11161,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::public_trust`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -11310,7 +11198,7 @@ executed by:
 - (no process): `adapters::tests::phase9_assessed_contract`
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::support::public_anonymous_seam`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-consolidation-worker): `adapters::contribution_reasoner`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -11318,15 +11206,13 @@ executed by:
 
 ### `public.poisoning_signals`
 read by:
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::public_trust`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
@@ -11346,21 +11232,19 @@ executed by:
 
 ### `public.provenance_edges`
 read by:
-- (no process): `adapters::public_provenance`
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::support::public_anonymous_seam`
+- (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 
 written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_repo`
-- (no process): `adapters::tests::mechanism_observation`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_provenance`
-- (no process): `adapters::tests::public_provenance_revocation_eval`
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::mechanism_observation`
+- (no process): `public-pool::tests::public_provenance`
+- (no process): `public-pool::tests::public_provenance_revocation_eval`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
@@ -11370,26 +11254,22 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `public.public_receipt_matches`
 read by:
-- (no process): `adapters::tests::public_trust`
+- (no process): `public-pool::tests::public_trust`
 
 written by:
 
 executed by:
-- (no process): `adapters::tests::public_trust`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `public.relations`
 read by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 
@@ -11401,7 +11281,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::public_trust`
+- (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -11411,10 +11291,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::public_runtime`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_runtime`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `public.revoke_anonymous_source`
 read by:
@@ -11426,66 +11304,58 @@ executed by:
 
 ### `public.source_closure`
 read by:
-- (no process): `adapters::public_provenance`
+- (no process): `public-pool::public_provenance`
 
 written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_repo`
-- (no process): `adapters::tests::mechanism_observation`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_provenance`
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::mechanism_observation`
+- (no process): `public-pool::tests::public_provenance`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
 ### `public.sources`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::public_provenance`
-- (no process): `adapters::tests::public_runtime`
-- (no process): `adapters::tests::support::public_anonymous_seam`
+- (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::public_runtime`
+- (no process): `public-pool::tests::support::public_anonymous_seam`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
-- (no process): `adapters::tests::mechanism_observation`
 - (no process): `adapters::tests::phase9_assessed_contract`
 - (no process): `adapters::tests::phase9_independence_attestation`
-- (no process): `adapters::tests::public_provenance`
-- (no process): `adapters::tests::public_trust`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::mechanism_observation`
+- (no process): `public-pool::tests::public_provenance`
+- (no process): `public-pool::tests::public_trust`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
 ### `public.syntheses`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::public_provenance`
+- (no process): `public-pool::public_provenance`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
-- (no process): `adapters::tests::public_provenance`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::tests::public_provenance`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 executed by:
 
 ### `public.synthesis_inputs`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::public_provenance`
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- (no process): `public-pool::public_provenance`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
-- (no process): `adapters::tests::public_provenance`
+- (no process): `public-pool::tests::public_provenance`
 
 executed by:
 
@@ -11495,9 +11365,7 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::public_repo`
-- process(humaux-admin): `adapters::public_repo`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 ### `staging.assert_active_release_rights`
 read by:
@@ -11518,7 +11386,7 @@ executed by:
 ### `staging.contribution_candidate_phase9_assessments`
 read by:
 - (no process): `adapters::tests::contribution_execution_repo_0131`
-- (no process): `adapters::tests::public_runtime`
+- (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -11580,16 +11448,14 @@ executed by:
 ### `staging.contribution_releases`
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
-- (no process): `adapters::tests::mechanism_observation`
 - (no process): `adapters::tests::phase9_independence_attestation`
 - (no process): `adapters::tests::public_contribution_contract`
-- (no process): `adapters::tests::public_provenance`
 - (no process): `adapters::tests::support::contribution_fixture`
-- process(cargo-xtask): `adapters::public_repo`
+- (no process): `public-pool::tests::mechanism_observation`
+- (no process): `public-pool::tests::public_provenance`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::public_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::public_repo`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -11746,7 +11612,6 @@ executed by:
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
-- `adapters::public_repo`
 - `adapters::quota_repo`
 - `adapters::read_gate`
 - `adapters::reasoning_route_admission`
@@ -11808,10 +11673,6 @@ executed by:
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
 - `adapters::tests::public_contribution_contract`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_trust`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::read_gate_closure`
 - `adapters::tests::support::continuity_0137_cleanup`
@@ -11826,6 +11687,11 @@ executed by:
 - `maintenance::tests::roles_hygiene`
 - `maintenance::tests::serve`
 - `maintenance::throwaway`
+- `public-pool::public_repo`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_trust`
 - `retrieval-provider::adapters`
 - `testkit::disposable`
 - `testkit::fixture_purge`
@@ -11883,7 +11749,6 @@ executed by:
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
-- `adapters::tests::support::public_anonymous_seam`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::task_grant_contract`
@@ -11920,6 +11785,7 @@ executed by:
 - `private-worker::tests::support::dispatch_fence`
 - `private-worker::tests::support::distill_lane`
 - `private-worker::tests::support::double_spend`
+- `public-pool::tests::support::public_anonymous_seam`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`
@@ -11932,10 +11798,10 @@ executed by:
 ### `PostgreSQL(role_admin)`
 - `adapters::health`
 - `adapters::tests::health_snapshot`
-- `adapters::tests::mechanism_observation`
 - `admin::mechanism`
 - `admin::probe`
 - `admin::tests::probes`
+- `public-pool::tests::mechanism_observation`
 - `xtask::mechanism_registry`
 
 ### `PostgreSQL(role_batch_issuer)`
@@ -11961,7 +11827,6 @@ executed by:
 - `adapters::postgres`
 - `adapters::private_projection_registry`
 - `adapters::project_rollup`
-- `adapters::public_repo`
 - `adapters::quota_repo`
 - `adapters::read_materialize`
 - `adapters::relation_repo`
@@ -12010,8 +11875,6 @@ executed by:
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_trust`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::reasoning_route_runtime`
 - `adapters::tests::recall_envelope_g23`
@@ -12045,6 +11908,9 @@ executed by:
 - `maintenance::tests::partitions`
 - `private-worker::tests::distill_hop_e2e`
 - `private-worker::tests::m29_attribution_e2e`
+- `public-pool::public_repo`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_trust`
 - `retrieval-provider::tests::router_rls_integration`
 
 ### `PostgreSQL(role_maintenance)`
@@ -12070,7 +11936,6 @@ executed by:
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::maintenance_doors`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
@@ -12107,6 +11972,7 @@ executed by:
 - `maintenance::tests::support::throwaway`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
+- `public-pool::tests::mechanism_observation`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
 - `xtask::soak`
@@ -12115,17 +11981,16 @@ executed by:
 - `adapters::tests::health_snapshot`
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::project_continuity_0136`
-- `adapters::tests::public_trust`
 - `adapters::tests::relation_kernel`
 - `adapters::tests::retrieval_query_sources`
 - `gateway::tests::service_credentials`
 - `maintenance::tests::partition_pg_facts`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
+- `public-pool::tests::public_trust`
 
 ### `PostgreSQL(role_private_worker)`
 - `adapters::postgres`
-- `adapters::public_repo`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_repo`
@@ -12141,7 +12006,6 @@ executed by:
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::projection_lag`
-- `adapters::tests::public_provenance`
 - `adapters::tests::reasoning_route_health_admission`
 - `adapters::tests::reasoning_route_runtime`
 - `adapters::tests::support::contribution_fixture`
@@ -12156,20 +12020,22 @@ executed by:
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
 - `private-worker::tests::m29_attribution_e2e`
+- `public-pool::public_repo`
+- `public-pool::tests::public_provenance`
 
 ### `PostgreSQL(role_public_worker)`
 - `adapters::postgres`
-- `adapters::public_provenance`
-- `adapters::public_repo`
 - `adapters::tests::contribution_repo`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::phase9_assessed_contract`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_runtime_qdrant`
-- `adapters::tests::public_trust`
 - `gateway::tests::service_credentials`
+- `public-pool::public_provenance`
+- `public-pool::public_repo`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::public_trust`
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
@@ -12178,7 +12044,6 @@ executed by:
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
-- `adapters::public_repo`
 - `adapters::rebuild`
 - `adapters::retrieval_query_source`
 - `adapters::selection_repo`
@@ -12192,7 +12057,6 @@ executed by:
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
-- `adapters::tests::public_trust`
 - `adapters::tests::rebuild`
 - `adapters::tests::retrieval_query_sources`
 - `adapters::tests::retrieve_read_your_writes`
@@ -12208,6 +12072,8 @@ executed by:
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
 - `private-worker::tests::distill_hop_e2e`
+- `public-pool::public_repo`
+- `public-pool::tests::public_trust`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-worker::main`
@@ -12216,19 +12082,15 @@ executed by:
 
 ### `Qdrant(*)`
 - `adapters::provisioning`
-- `adapters::public_projection`
 - `adapters::qdrant`
 - `adapters::rebuild`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::projection_worker`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_runtime_qdrant`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::rebuild`
 - `adapters::tests::recall_envelope_g23`
 - `adapters::tests::support::a2_fixture`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::visible_index_count`
 - `admin::cell_resources`
@@ -12244,6 +12106,10 @@ executed by:
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
+- `public-pool::public_projection`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::support::public_qdrant_fixture`
 - `public-worker::main`
 - `retrieval-worker::main`
 - `xtask::e2e_onboard`
@@ -12340,9 +12206,9 @@ executed by:
 - `xtask::serial_lane`
 
 ### `subprocess(humaux-admin)`
-- `adapters::tests::mechanism_observation`
 - `admin::tests::exit_codes`
 - `admin::tests::probes`
+- `public-pool::tests::mechanism_observation`
 
 ### `subprocess(humaux-consolidation-worker)`
 - `consolidation-worker::tests::derived_dispatch_e2e`
@@ -12479,8 +12345,6 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::provisioning`
-- `adapters::public_provenance`
-- `adapters::public_repo`
 - `adapters::qdrant`
 - `adapters::quota_repo`
 - `adapters::read_gate`
@@ -12542,7 +12406,6 @@ modules naming it:
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
-- `adapters::tests::public_runtime`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::quota_and_rate`
@@ -12616,9 +12479,6 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::provisioning`
-- `adapters::public_projection`
-- `adapters::public_provenance`
-- `adapters::public_repo`
 - `adapters::qdrant`
 - `adapters::quota_repo`
 - `adapters::read_gate`
@@ -12664,7 +12524,6 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
@@ -12695,10 +12554,6 @@ modules naming it:
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
 - `adapters::tests::public_contribution_contract`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_trust`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::quota_and_rate`
@@ -12719,7 +12574,6 @@ modules naming it:
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
-- `adapters::tests::support::public_anonymous_seam`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::task_grant_contract`
 - `adapters::tests::visible_index_count`
@@ -12731,7 +12585,6 @@ why: shared contract types for the mechanism-observation adapter
 modules naming it:
 - `adapters::mechanism_observation`
 - `adapters::qdrant`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::qdrant_contract`
 - `tests`
 
@@ -12804,7 +12657,6 @@ modules naming it:
 - `adapters::model_call_ledger`
 - `adapters::private_inference_rpc`
 - `adapters::provisioning`
-- `adapters::public_repo`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
@@ -12823,18 +12675,15 @@ modules naming it:
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::login_challenge`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::memory_affects`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::project_continuity_read_0137`
-- `adapters::tests::public_runtime`
 - `adapters::tests::reasoning_route_runtime`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::private_route`
-- `adapters::tests::support::public_anonymous_seam`
 - `tests`
 
 ### humaux-adapters → `humaux-projection` (normal)
@@ -12898,22 +12747,17 @@ modules naming it:
 - `adapters::mechanism_observation`
 - `adapters::projection_worker`
 - `adapters::provisioning`
-- `adapters::public_projection`
 - `adapters::qdrant`
 - `adapters::rebuild`
 - `adapters::retrieve`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_runtime_qdrant`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::rebuild`
 - `adapters::tests::recall_envelope_g23`
 - `adapters::tests::support::a2_fixture`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::visible_index_count`
 - `tests`
 
@@ -12933,10 +12777,9 @@ modules naming it:
 - `adapters::email::sink`
 - `adapters::email::smtp`
 - `adapters::email::test_double`
+- `adapters::mechanism_observation`
 - `adapters::memory_repo`
 - `adapters::projection_worker`
-- `adapters::public_projection`
-- `adapters::public_repo`
 - `adapters::rebuild`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -12947,12 +12790,10 @@ modules naming it:
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
-- `adapters::tests::public_runtime`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::rebuild`
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::contribution_fixture`
-- `adapters::tests::support::public_anonymous_seam`
 - `tests`
 
 ### humaux-adapters → `lettre` (normal)
@@ -12992,8 +12833,6 @@ modules naming it:
 - `adapters::project_rollup`
 - `adapters::projection_worker`
 - `adapters::provisioning`
-- `adapters::public_projection`
-- `adapters::public_repo`
 - `adapters::qdrant`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
@@ -13023,7 +12862,6 @@ modules naming it:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_security_lifecycle_eval`
@@ -13045,8 +12883,6 @@ modules naming it:
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_runtime_qdrant`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::quota_and_rate`
@@ -13061,7 +12897,6 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::visible_index_count`
 - `tests`
 
@@ -13112,8 +12947,6 @@ modules naming it:
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provisioning`
-- `adapters::public_projection`
-- `adapters::public_repo`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
@@ -13131,11 +12964,9 @@ modules naming it:
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
-- `adapters::tests::public_provenance_revocation_eval`
 - `adapters::tests::rebuild`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
-- `adapters::tests::support::public_anonymous_seam`
 - `tests`
 
 ### humaux-adapters → `hex` (normal)
@@ -13153,8 +12984,6 @@ modules naming it:
 - `adapters::note_repo`
 - `adapters::operation_receipt`
 - `adapters::provisioning`
-- `adapters::public_projection`
-- `adapters::public_repo`
 - `adapters::rebuild`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
@@ -13185,8 +13014,6 @@ modules naming it:
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
-- `adapters::public_projection`
-- `adapters::public_provenance`
 - `adapters::qdrant`
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
@@ -13209,7 +13036,6 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
@@ -13225,12 +13051,6 @@ modules naming it:
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_runtime_qdrant`
-- `adapters::tests::public_trust`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::reasoning_route_foundation`
@@ -13244,8 +13064,6 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::private_route`
-- `adapters::tests::support::public_anonymous_seam`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::visible_index_count`
 - `tests`
 
@@ -13309,7 +13127,6 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
@@ -13333,12 +13150,6 @@ modules naming it:
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_runtime_qdrant`
-- `adapters::tests::public_trust`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::quota_and_rate`
@@ -13360,7 +13171,6 @@ modules naming it:
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
-- `adapters::tests::support::public_anonymous_seam`
 - `adapters::tests::support::token_keys`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::tenant_placements_migration`
@@ -13434,7 +13244,6 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
@@ -13463,10 +13272,6 @@ modules naming it:
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
 - `adapters::tests::public_contribution_contract`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_trust`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::reasoning_route_foundation`
 - `adapters::tests::reasoning_route_health_admission`
@@ -13491,7 +13296,6 @@ modules naming it:
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
-- `adapters::tests::support::public_anonymous_seam`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::support::truncate_probe`
 - `adapters::tests::task_grant_contract`
@@ -13524,8 +13328,6 @@ modules naming it:
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
-- `adapters::public_projection`
-- `adapters::public_provenance`
 - `adapters::qdrant`
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
@@ -13548,7 +13350,6 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
@@ -13564,12 +13365,6 @@ modules naming it:
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_provenance`
-- `adapters::tests::public_provenance_revocation_eval`
-- `adapters::tests::public_runtime`
-- `adapters::tests::public_runtime_qdrant`
-- `adapters::tests::public_trust`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::reasoning_route_foundation`
@@ -13583,8 +13378,6 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::private_route`
-- `adapters::tests::support::public_anonymous_seam`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::visible_index_count`
 - `tests`
 
@@ -13657,7 +13450,6 @@ modules naming it:
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
 - `adapters::tests::public_contribution_contract`
-- `adapters::tests::public_projection`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::read_gate_closure`
@@ -13680,7 +13472,6 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
-- `adapters::tests::support::public_qdrant_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::task_grant_contract`
@@ -13729,7 +13520,6 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
-- `adapters::tests::mechanism_observation`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::note_put`
@@ -13746,8 +13536,6 @@ modules naming it:
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
-- `adapters::tests::public_projection`
-- `adapters::tests::public_runtime`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::quota_and_rate`
@@ -13789,7 +13577,6 @@ modules naming it:
 - `application::notify`
 - `application::oauth`
 - `application::pin`
-- `application::public_evolve`
 - `application::referral`
 - `application::retrieval_embedding_port`
 - `application::session`
@@ -13903,7 +13690,6 @@ modules naming it:
 - `application::forget`
 - `application::oauth`
 - `application::pin`
-- `application::public_evolve`
 - `application::retrieval_embedding_port`
 - `application::session`
 - `tests`
@@ -14350,6 +14136,179 @@ why: MCP request/session id generation
 modules naming it:
 - `protocol::mcp`
 - `protocol::tests::mcp_http`
+- `tests`
+
+### humaux-public-pool → `humaux-adapters` (normal)
+why: typed per-role pools, Qdrant transport error, claim-evaluator seam
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::public_provenance`
+- `public-pool::public_repo`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::public_trust`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
+### humaux-public-pool → `humaux-domain` (normal)
+why: domain types the public plane reads/returns
+
+modules naming it:
+- `public-pool::public_evolve`
+- `public-pool::public_projection`
+- `public-pool::public_provenance`
+- `public-pool::public_repo`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_trust`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
+### humaux-public-pool → `humaux-infra-cell` (normal)
+why: same-Cell resource/permit types for the Qdrant projection adapter
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::support::public_qdrant_fixture`
+- `tests`
+
+### humaux-public-pool → `sqlx` (normal)
+why: public-schema queries and transactions
+
+modules naming it:
+- `public-pool::public_provenance`
+- `public-pool::public_repo`
+- `public-pool::tests::public_runtime`
+- `tests`
+
+### humaux-public-pool → `async-trait` (normal)
+why: dyn-compatible async ports (PublicProjectionPort, PublicClaimEvaluator)
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::public_repo`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
+### humaux-public-pool → `serde_json` (normal)
+why: projection payload and receipt JSON
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::public_repo`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::support::public_qdrant_fixture`
+- `tests`
+
+### humaux-public-pool → `sha2` (normal)
+why: body and payload digests
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::public_repo`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
+### humaux-public-pool → `hex` (normal)
+why: printable digest encoding
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::public_repo`
+
+### humaux-public-pool → `uuid` (normal)
+why: id minting/binding
+
+modules naming it:
+- `public-pool::public_evolve`
+- `public-pool::public_projection`
+- `public-pool::public_provenance`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::public_trust`
+- `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::support::public_qdrant_fixture`
+- `tests`
+
+### humaux-public-pool → `humaux-application` (dev)
+why: contribute::prepare/finalize drive the fixtures that feed admission
+
+modules naming it:
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
+### humaux-public-pool → `humaux-contracts` (dev)
+why: mechanism registry parsing in the observation test
+
+modules naming it:
+- `public-pool::tests::mechanism_observation`
+- `tests`
+
+### humaux-public-pool → `humaux-testkit` (dev)
+why: three-state DB fixture skip contract
+
+modules naming it:
+- `public-pool::tests::public_projection`
+- `public-pool::tests::support::public_qdrant_fixture`
+- `tests`
+
+### humaux-public-pool → `postgres` (dev)
+why: blocking client for real-Postgres integration tests
+
+modules naming it:
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_trust`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
+### humaux-public-pool → `tokio` (dev)
+why: async runtime driving the pool fixtures
+
+modules naming it:
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::public_runtime`
+- `tests`
+
+### humaux-public-pool → `uuid` (dev)
+why: throwaway ids in fixtures
+
+modules naming it:
+- `public-pool::public_evolve`
+- `public-pool::public_projection`
+- `public-pool::public_provenance`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_projection`
+- `public-pool::tests::public_provenance`
+- `public-pool::tests::public_provenance_revocation_eval`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::public_runtime_qdrant`
+- `public-pool::tests::public_trust`
+- `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::support::public_qdrant_fixture`
 - `tests`
 
 ### humaux-retrieval → `serde` (normal)
@@ -15948,6 +15907,12 @@ why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls
 modules naming it:
 - `public-worker::main`
 
+### humaux-public-worker → `humaux-public-pool` (normal)
+why: public admission, revocation and projection runners this binary drives
+
+modules naming it:
+- `public-worker::main`
+
 ### humaux-public-worker → `tokio` (normal)
 why: async runtime
 
@@ -17208,15 +17173,6 @@ services (computed):
 default run:
 - PostgreSQL
 
-### `crates/adapters/tests/mechanism_observation.rs`
-db-bound (default run): no
-
-services (computed):
-- PostgreSQL
-- subprocess
-
-default run:
-
 ### `crates/adapters/tests/membership_lifecycle.rs`
 db-bound (default run): yes
 
@@ -17528,56 +17484,6 @@ services (computed):
 
 default run:
 - PostgreSQL
-
-### `crates/adapters/tests/public_projection.rs`
-db-bound (default run): yes
-
-services (computed):
-- Qdrant
-
-default run:
-- Qdrant
-
-### `crates/adapters/tests/public_provenance.rs`
-db-bound (default run): no
-
-services (computed):
-- PostgreSQL
-
-default run:
-
-### `crates/adapters/tests/public_provenance_revocation_eval.rs`
-db-bound (default run): no
-
-services (computed):
-- PostgreSQL
-
-default run:
-
-### `crates/adapters/tests/public_runtime.rs`
-db-bound (default run): no
-
-services (computed):
-- PostgreSQL
-
-default run:
-
-### `crates/adapters/tests/public_runtime_qdrant.rs`
-db-bound (default run): no
-
-services (computed):
-- PostgreSQL
-- Qdrant
-
-default run:
-
-### `crates/adapters/tests/public_trust.rs`
-db-bound (default run): no
-
-services (computed):
-- PostgreSQL
-
-default run:
 
 ### `crates/adapters/tests/qdrant_contract.rs`
 db-bound (default run): no
@@ -17933,6 +17839,65 @@ default run:
 db-bound (default run): no
 
 services (computed):
+
+default run:
+
+### `crates/public-pool/tests/mechanism_observation.rs`
+db-bound (default run): no
+
+services (computed):
+- PostgreSQL
+- subprocess
+
+default run:
+
+### `crates/public-pool/tests/public_projection.rs`
+db-bound (default run): yes
+
+services (computed):
+- Qdrant
+
+default run:
+- Qdrant
+
+### `crates/public-pool/tests/public_provenance.rs`
+db-bound (default run): no
+
+services (computed):
+- PostgreSQL
+
+default run:
+
+### `crates/public-pool/tests/public_provenance_revocation_eval.rs`
+db-bound (default run): no
+
+services (computed):
+- PostgreSQL
+
+default run:
+
+### `crates/public-pool/tests/public_runtime.rs`
+db-bound (default run): no
+
+services (computed):
+- PostgreSQL
+
+default run:
+
+### `crates/public-pool/tests/public_runtime_qdrant.rs`
+db-bound (default run): no
+
+services (computed):
+- PostgreSQL
+- Qdrant
+
+default run:
+
+### `crates/public-pool/tests/public_trust.rs`
+db-bound (default run): no
+
+services (computed):
+- PostgreSQL
 
 default run:
 

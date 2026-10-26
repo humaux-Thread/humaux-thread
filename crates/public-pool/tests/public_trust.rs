@@ -1,4 +1,4 @@
-//! `adapters::tests::public_trust` — Phase 9 real PostgreSQL acceptance for public trust decisions and typed serving
+//! `public-pool::tests::public_trust` — Phase 9 real PostgreSQL acceptance for public trust decisions and typed serving
 //!   hydration.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, uuid]; services=[PostgreSQL(any)
 //!   r=[control.anonymous_source_lineage, ops.outbox, ops.public_release_revocations, public.eligible_objects,
@@ -8,14 +8,14 @@
 //!   public.guard_evaluated_source_identity, public.public_receipt_matches, public.require_trust_root_seal],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_migration_owner), PostgreSQL(role_public_worker),
 //!   PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo,
-//!   adapters::postgres, adapters::public_repo, adapters::tests::support::contribution_fixture, domain::authority,
-//!   domain::error, domain::public]
+//!   adapters::postgres, adapters::tests::support::contribution_fixture, domain::authority, domain::error,
+//!   domain::public, public-pool::public_repo]
 //! Called-by: [cargo-test]
 //! Invariants: [only an active global moderator persists a complete immutable supported receipt; wrong identity
 //!   fields, quarantined claims and stale requests are rejected with no trace; the PG tests are #[ignore] lane tests]
 //! Spec: Baseline §12.6; §79.2
 
-#[path = "support/contribution_fixture.rs"]
+#[path = "../../adapters/tests/support/contribution_fixture.rs"]
 mod contribution_fixture;
 
 use std::sync::Mutex;
@@ -24,7 +24,6 @@ use contribution_fixture::ContributionFixture;
 use humaux_adapters::{
     contribution_repo,
     postgres::{PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool},
-    public_repo::{self, EvaluateClaim, ProjectionIdentity},
 };
 use humaux_domain::{
     authority::MemoryId,
@@ -34,6 +33,7 @@ use humaux_domain::{
         ScanOutcome,
     },
 };
+use humaux_public_pool::public_repo::{self, EvaluateClaim, ProjectionIdentity};
 use postgres::{Client, NoTls};
 use uuid::Uuid;
 

@@ -21,6 +21,7 @@
 //! |---|---|---|
 //! | `g_m07_3_the_view_resolves_identity_and_legacy_text_alike` | G-M07-3 (view half) | the view returns the title as the body of a non-identity Memory; the identity branch falls back to `key_claim` / drops the `jsonb_typeof` guard |
 //! | `g_m07_3_the_body_readers_resolve_text_through_the_view` | G-M07-3 (reader half) | a body reader takes `content ->> 'key_claim'` instead of the view's `body` |
+//! | `memory_text_v_non_string_title_and_key_claim_are_pinned` | ADR-0085 D-A (M08-2 follow-up) | a reader keeps the base key on a JSON null, or fails to stringify a JSON number |
 //!
 //! called-by: `cargo test -p humaux-adapters --test note_text_once`.
 
@@ -542,7 +543,8 @@ fn g_m07_3_the_body_readers_resolve_text_through_the_view() {
             assert_eq!(ids_of(&contents), expected_ids);
             assert_eq!(contents, expected);
 
-            // recall / context / continuity: the same three bodies through the shared final-body reader.
+            // recall / context: the same three bodies through the shared final-body reader. `continuity.get` is not a
+            // body reader of this view: it serves the body text stored in its own continuity project storage.
             let bodies = recall_bodies(&handle, &[normal, stripped, legacy]);
             assert_eq!(bodies.items.len(), 3);
             let contents = memory_contents(&bodies.items);
@@ -550,4 +552,67 @@ fn g_m07_3_the_body_readers_resolve_text_through_the_view() {
             assert_eq!(contents, expected);
         },
     );
+}
+
+/// A second note whose text keys the non-string pin rewrites to JSON null (M08 P3, #264).
+const NULLED_BODY: &str = "A note whose title and key_claim are rewritten to JSON null.";
+
+/// M08-2 (#264): `memory_text_v` resolves `content ->> '<key>'`, so a stored JSON number stringifies and a stored JSON
+/// null yields SQL NULL; the shared final-body reader then drops that key instead of resurfacing the base column.
+/// Today's writers store strings only — this pins the non-string shape, it does not change the write door.
+#[test]
+fn memory_text_v_non_string_title_and_key_claim_are_pinned() {
+    run_db_fixture::<Fixture, _>("memory_text_v_non_string_text", |mut handle| {
+        handle.seed_current_entitlement_and_window(4);
+        let numeric = put(&handle, NORMAL_BODY, NoteKind::Note);
+        let nulled = put(&handle, NULLED_BODY, NoteKind::Note);
+        let (tenant, numeric_s, nulled_s) =
+            (handle.tenant_id, numeric.to_string(), nulled.to_string());
+        // Neither note may keep an identity contract: the body must come from the `key_claim` branch, which is the one
+        // a non-string `->>` reaches (the identity branch reads the Evidence payload string instead).
+        handle
+            .admin
+            .batch_execute(&format!(
+                "SET session_replication_role = replica; \
+                 DELETE FROM private.identity_note_materializations \
+                  WHERE tenant_id = '{tenant}' AND output_memory_id IN ('{numeric_s}', '{nulled_s}'); \
+                 UPDATE private.memory_records \
+                    SET content = jsonb_set(jsonb_set(content, '{{title}}', '173'::jsonb), '{{key_claim}}', '257'::jsonb) \
+                  WHERE tenant_id = '{tenant}' AND memory_id = '{numeric_s}'; \
+                 UPDATE private.memory_records \
+                    SET content = jsonb_set(jsonb_set(content, '{{title}}', 'null'::jsonb), '{{key_claim}}', 'null'::jsonb) \
+                  WHERE tenant_id = '{tenant}' AND memory_id = '{nulled_s}'; \
+                 SET session_replication_role = DEFAULT;"
+            ))
+            .expect("rewrite the two notes' text keys to a JSON number and a JSON null");
+
+        // The view: `->>` spells the number 173 as the string "173" and gives SQL NULL for a JSON null.
+        let rows = texts(&handle, &[numeric, nulled]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(row(&rows, numeric).title.as_deref(), Some("173"));
+        assert_eq!(row(&rows, numeric).body.as_deref(), Some("257"));
+        assert_eq!(row(&rows, nulled).title, None);
+        assert_eq!(row(&rows, nulled).body, None);
+
+        // The shared final-body reader: the strings replace the base keys, and NULL removes the key entirely.
+        let bodies = recall_bodies(&handle, &[numeric, nulled]);
+        assert_eq!(bodies.items.len(), 2);
+        let contents = memory_contents(&bodies.items);
+        let mut expected_ids = vec![numeric, nulled];
+        expected_ids.sort_unstable();
+        assert_eq!(ids_of(&contents), expected_ids);
+        assert_eq!(
+            contents[&numeric],
+            serde_json::json!({
+                "title": "173",
+                "key_claim": "257",
+                "representation": REPRESENTATION,
+            })
+        );
+        assert_eq!(
+            contents[&nulled],
+            serde_json::json!({"representation": REPRESENTATION}),
+            "a JSON null leaves no title/key_claim key"
+        );
+    });
 }
