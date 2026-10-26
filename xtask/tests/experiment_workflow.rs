@@ -149,9 +149,14 @@ fn the_choice_list_and_the_guard_arms_are_the_same_three() {
 fn every_choice_is_a_dispatcher_arm() {
     for name in EXPECTED {
         let arm = format!("Some(\"{name}\") =>");
-        assert!(
-            DISPATCHER.contains(&arm),
-            "xtask/src/main.rs has no dispatcher arm {arm:?} (workflow choice {name:?})"
+        // Line-anchored: a mention in a comment or the usage string cannot stand in for the arm.
+        let arms = DISPATCHER
+            .lines()
+            .filter(|line| line.trim_start().starts_with(&arm))
+            .count();
+        assert_eq!(
+            arms, 1,
+            "xtask/src/main.rs must carry exactly one dispatcher arm {arm:?} (workflow choice {name:?})"
         );
     }
 }
