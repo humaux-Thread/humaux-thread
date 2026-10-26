@@ -1,7 +1,7 @@
 //! `testkit::tests::disposable_guard` — G-M19-11: the throwaway-database guard refuses every non-disposable name.
 //! Depends-on: crates=[postgres]; services=[PostgreSQL(any)]; env=[HUMAUX_TEST_PG_DSN]; modules=[humaux-testkit, testkit::disposable]
 //! Called-by: [cargo-test]
-//! Invariants: [the verdict table is exact: six name shapes, each with its one verdict; the live call runs on the database the
+//! Invariants: [the verdict table is exact: nine names over the six shapes prefixed, exact, non-prefixed, empty, case-shifted, infix; the live call runs on the database the
 //!   test DSN names and, with HUMAUX_REQUIRE_DB set (CI), a missing DSN fails instead of skipping]
 //! Spec: module design M19 D11; ADR-0092; §79.2
 

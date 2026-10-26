@@ -45,6 +45,13 @@ impl Drop for Handle {
         if let Err(e) = purged {
             eprintln!("forget_preview cleanup ({}): {e}", self.tenant_id);
         }
+        let users = vec![self.requester, self.reader, self.other_reader];
+        if let Err(e) = self.admin.execute(
+            "DELETE FROM control.users WHERE user_id = ANY($1)",
+            &[&users],
+        ) {
+            eprintln!("forget_preview cleanup (users): {e}");
+        }
     }
 }
 
@@ -526,6 +533,58 @@ fn runtime_roles_cannot_write_the_request_tables_directly() {
                     .and_then(|e| e.code().map(|c| c.into_owned()));
                 assert_eq!(code.as_deref(), Some("42501"), "{statement}: {refusal}");
             }
+        },
+    );
+}
+
+fn sqlstate(error: &sqlx::Error) -> Option<String> {
+    error
+        .as_database_error()
+        .and_then(|e| e.code().map(|c| c.into_owned()))
+}
+
+/// The freeze door, called as its one granted role: it accepts the session tenant and refuses a foreign tenant, an empty
+/// list and a ragged list (0272).
+#[test]
+fn the_freeze_door_runs_as_role_gateway_and_checks_its_arguments() {
+    run_db_fixture::<Fixture, _>(
+        "the_freeze_door_runs_as_role_gateway_and_checks_its_arguments",
+        |h| {
+            let call =
+                |tenant: Uuid, kinds: Vec<String>, ids: Vec<Uuid>| -> Result<Uuid, sqlx::Error> {
+                    h.rt.block_on(async {
+                        // dep: PostgreSQL(role_gateway) — the door's one granted caller
+                        let mut txn = h.gateway_pool.begin().await?;
+                        sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
+                            .bind(h.tenant_id.to_string())
+                            .execute(&mut *txn)
+                            .await?;
+                        let request_id = sqlx::query_scalar::<_, Uuid>(
+                            "SELECT control.deletion_request_freeze($1, 'MEMORY', $2, $3, \
+                           sha256('door'::bytea), $4::text[], $5::uuid[])",
+                        )
+                        .bind(tenant)
+                        .bind(Uuid::new_v4())
+                        .bind(h.requester)
+                        .bind(kinds)
+                        .bind(ids)
+                        .fetch_one(&mut *txn)
+                        .await?;
+                        txn.rollback().await?;
+                        Ok(request_id)
+                    })
+                };
+            let memory = || vec!["MEMORY".to_owned()];
+            call(h.tenant_id, memory(), vec![Uuid::new_v4()])
+                .expect("the session tenant is accepted");
+            let foreign =
+                call(Uuid::new_v4(), memory(), vec![Uuid::new_v4()]).expect_err("foreign tenant");
+            assert_eq!(sqlstate(&foreign).as_deref(), Some("42501"), "{foreign}");
+            let empty = call(h.tenant_id, vec![], vec![]).expect_err("empty list");
+            assert_eq!(sqlstate(&empty).as_deref(), Some("22023"), "{empty}");
+            let ragged = call(h.tenant_id, memory(), vec![Uuid::new_v4(), Uuid::new_v4()])
+                .expect_err("ragged list");
+            assert_eq!(sqlstate(&ragged).as_deref(), Some("22023"), "{ragged}");
         },
     );
 }

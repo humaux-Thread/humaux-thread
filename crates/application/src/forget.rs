@@ -311,10 +311,10 @@ impl DeletionSubsystem {
 /// ids of different concrete types, and this module has no business minting a sum type for
 /// them (adapters own the real ids, this module only walks the graph).
 ///
-/// **Not yet wired into `DeletionPlan` by this ticket** — verified by grep, nothing outside
-/// this module's own unit tests constructs a [`DeletionGraph`] or reads
-/// [`DeletionSubsystem::CHECKLIST`]. A deletion executed today cascades to no derived
-/// object and the eight-subsystem checklist is never actually answered by any code path.
+/// **Not yet wired into `DeletionPlan` by this ticket** — [`evidence_closure_targets`] (M19-2) is the
+/// only non-test constructor of a [`DeletionGraph`]; nothing reads [`DeletionSubsystem::CHECKLIST`]
+/// outside this module's own unit tests. A deletion executed today cascades only as far as a frozen
+/// closure and the eight-subsystem checklist is never actually answered by any code path.
 /// Recorded here so this remains undelivered-and-known rather than silently read as
 /// covered by T4.8.
 #[derive(Debug, Clone)]
@@ -349,10 +349,15 @@ impl DeletionGraph {
 /// the pairing is reconciled by a contract test (§78.2). Only `Memory` and `EvidenceClosure` have a closure fn so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeletionScopeKind {
+    /// One Memory; its source Evidence is retained.
     Memory,
+    /// Explicit Evidence roots plus everything derived from them (ADR-0079 D-J).
     EvidenceClosure,
+    /// One registered subject (closure fn: M19-7).
     Subject,
+    /// One document (closure fn: ADR-0079 T-DOC-6).
     Document,
+    /// A whole account (closure fn: M19-8a).
     Tenant,
 }
 
@@ -386,7 +391,9 @@ impl DeletionScopeKind {
 /// What a frozen target row names (`control.deletion_targets.kind`, 0272's CHECK).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeletionTargetKind {
+    /// A `private.memory_records` row.
     Memory,
+    /// A `private.evidence_objects` row.
     Evidence,
 }
 
@@ -412,7 +419,9 @@ impl DeletionTargetKind {
 /// One member of a frozen closure: ids only, never content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeletionTarget {
+    /// Which table `id` belongs to.
     pub kind: DeletionTargetKind,
+    /// The row id.
     pub id: Uuid,
 }
 
@@ -489,7 +498,9 @@ pub fn manifest_hash(targets: &[DeletionTarget]) -> [u8; 32] {
 /// A Memory the caller may read, as the preview sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleMemory {
+    /// The readable Memory.
     pub memory_id: Uuid,
+    /// Its title when it has one.
     pub title: Option<String>,
 }
 

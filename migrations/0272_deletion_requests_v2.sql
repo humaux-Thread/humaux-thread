@@ -100,8 +100,8 @@ BEGIN
     RAISE EXCEPTION 'deletion_request_freeze: tenant argument differs from the session tenant (§6.2)'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
-  IF cardinality(p_kinds) IS DISTINCT FROM cardinality(p_ids) THEN
-    RAISE EXCEPTION 'deletion_request_freeze: kinds and ids differ in length'
+  IF coalesce(cardinality(p_kinds), 0) = 0 OR cardinality(p_kinds) IS DISTINCT FROM cardinality(p_ids) THEN
+    RAISE EXCEPTION 'deletion_request_freeze: kinds and ids must be non-empty and of equal length'
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
 

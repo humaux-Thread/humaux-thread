@@ -344,8 +344,11 @@ pub async fn tombstoned_unpurged_over_sla(
 /// closure and the closure itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenDeletion {
+    /// `control.deletion_requests.deletion_request_id`.
     pub request_id: Uuid,
+    /// SHA-256 over the canonical target list ([`manifest_hash`]).
     pub manifest_hash: [u8; 32],
+    /// The frozen closure.
     pub targets: Vec<DeletionTarget>,
 }
 
