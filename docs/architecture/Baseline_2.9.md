@@ -843,6 +843,8 @@ Adapters depend on Domain; Domain does not depend on Adapters.
 
 §28 的 `QUARANTINED -> ACCEPTED` 安全 gate 在沙箱之前，两者不互相替代。
 
+Amended by ADR-0119 (M17): the parse sandbox no longer relies on `CLONE_NEWNET`; Landlock, a seccomp allowlist that denies `socket(AF_INET*/AF_INET6)`, a cleared environment, frame fds and rlimits stand in, and a failed start-up probe disables parsing (intake WAITING) instead of running unsandboxed.
+
 ## 4.4 即时探针的替代方案：`humaux-admin`
 
 旧运维依赖容器内 `python3 - <<PY`，单日 30+ 次。取消 Python 会掐掉这条路 —— 但根因不是缺解释器，是**状态不可寻址**：想知道"公池里 corroboration>1 有几条"没有任何命名入口，只能现场写 SQL。再给一个解释器只是把根因重新埋一次。
@@ -1980,6 +1982,8 @@ A user-uploaded document has four layers with four identities, and none stands i
 - **Revision-graph acyclicity (planned; the first slice builds no revision edge).** Revision relations connect Version to Version, not through `evidence_edges`. When they exist, the graph over one document's versions must be acyclic, the check is serialised per document, and the citation graph is not subject to it.
 - **Deletion.** The unit is a Version or a whole Document, through `retention::tombstone` and the eight steps of §37. Step 1 tombstones **every** `ops.outbox` `stream_seq`, whatever the event type, of the Evidence closure C = {receipt Evidence R} ∪ {excerpts registered in `document_excerpts` with R as source}; C is never taken from generic `evidence_edges` DERIVED_FROM, and no Evidence outside C is tombstoned. A Memory with any source in C is disqualified as a whole, even if other sources remain. Step 5 physically deletes, by `memory_id`, the points of multi-source Memory whose PRIMARY is outside C (no `MEMORY_LIFECYCLE` ticket); read safety until then is the hydrate gate. Step 6 deletes all object versions of R, of each excerpt and of Extraction text objects. A distillation or parse commit re-checks its inputs against the overlay and answers `STALE_INPUT` if any is tombstoned. Append-only `citations` keep their rows. Deletion never widens visibility.
 - **RLS shape.** Every `document_*` table, `memory_source_spans`, `run_document_io` and `citations` uses the form of migrations 0154 and 0252: the NULLIF tenant predicate AND an EXISTS "the parent is visible to the reader". Parents: the version row for `document_receipts`, `document_extractions`, `document_nodes` and `document_excerpts` (the latter also the excerpt Evidence); the head version row for `document_state` (a row without a head requires at least one version visible to the reader, and a `PROJECT` row also the project); the adopted version row plus `basis_evidence_id` for `document_adoptions`; the version row plus the run's bound Evidence for `run_document_io`; `basis_evidence_id` for `citations`; the owning Memory for `memory_source_spans`. A same-tenant reader can learn only that a document exists and, through the tenant-visible relation-kernel link rows (kind, validity, deciders and ids, never content; ADR-0079 D-A ponytail), which projects and tasks it is linked to; a reader who cannot see the head version sees the current version as UNKNOWN.
+
+Amended by ADR-0115 (M17, A1): a receipt's `payload_sha256` is computed over the canonical extraction text, `original_retained` is false, `private.document_nodes.body` is the only copy of the text, and deletion step 6 covers the live temp prefix instead of Extraction text objects.
 
 ## 8.4 Observation
 
@@ -7201,6 +7205,8 @@ PARTIAL_READY
 
 并公开哪些阶段缺失。
 
+Amended by ADR-0115 (M17): upload streams into one session temp prefix, status reports the §28 stages plus per-unit outcomes and the deadline, and a receipt's Evidence is born at PUBLISH from the canonical extraction text; parse and model calls still run only after ACCEPTED, and nothing is indexed before PUBLISH.
+
 ---
 
 # 29. Object Store
@@ -7236,6 +7242,8 @@ artifacts/sha256/ab/cd/<hash>
 ```
 
 ACL/ownership 仍由 PostgreSQL 控制。
+
+Amended by ADR-0115 (M17): the store holds one temp prefix per upload session under a single deadline; no original is content-addressed or retained, and upload is a gateway stream, not a presigned POST.
 
 ---
 
