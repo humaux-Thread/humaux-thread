@@ -100,7 +100,7 @@ fn assert_decision(
     decision: &Decision,
     expected: Result<ApplicabilityStatus, ApplicabilityFailure>,
 ) {
-    let before = row(handle, decision.memory_id);
+    let before = row(handle, decision.expected.memory_id);
     let result = handle
         .rt
         .block_on(applicability_repo::decide(&handle.runtime, auth, decision));
@@ -109,7 +109,7 @@ fn assert_decision(
         "G-M14-8: {:?} {:?}",
         decision.assignment_method, decision.status
     );
-    let after = row(handle, decision.memory_id);
+    let after = row(handle, decision.expected.memory_id);
     if result.is_err() {
         assert_eq!(after, before, "G-M14-8: refusal must preserve every column");
     } else {
@@ -211,7 +211,7 @@ fn matrix_actor(
                     handle,
                     auth,
                     &Decision {
-                        memory_id: memory,
+                        expected: proposal(memory),
                         decision_evidence_id: *evidence_id,
                         assignment_method: method,
                         status,
@@ -243,44 +243,70 @@ fn matrix_expected(
     Ok(status)
 }
 
-/// G-M14-8: replacing a proposal cannot manufacture an approval, including after a prior chat approval.
+fn propose_all_scopes(handle: &mut Handle, auth: &AuthorizationScope, memory: Uuid) -> Proposal {
+    let mut input = proposal(memory);
+    for scope in ApplicabilityScope::ALL {
+        input.scope = scope;
+        input.channel_key =
+            (scope == ApplicabilityScope::ChannelGeneric).then(|| "example_channel".into());
+        input.product_subject_id = (scope == ApplicabilityScope::ProductSpecific).then(|| {
+        handle.admin.query_one("INSERT INTO private.subjects(tenant_id,kind,display_name) VALUES($1,'PRODUCT','fixture product') RETURNING subject_id", &[&handle.tenant_id]).expect("fixture product").get(0)
+        });
+        assert_eq!(
+            handle
+                .rt
+                .block_on(applicability_repo::propose(&handle.runtime, auth, &input)),
+            Ok(ApplicabilityStatus::Proposed)
+        );
+        let current: serde_json::Value = serde_json::from_str(&row(handle, memory)).expect("row");
+        assert_eq!(current["status"], "PROPOSED");
+        assert_eq!(current["assignment_method"], serde_json::Value::Null);
+        assert_eq!(current["decision_evidence_id"], serde_json::Value::Null);
+    }
+    input
+}
+
+/// G-M14-8: PROPOSED/REJECTED may be replaced; APPROVED preserves its exact row and Evidence.
 #[test]
 fn g_m14_8_proposals_and_closed_shape() {
     run_db_fixture::<Fixture, _>("g_m14_8_proposals", |mut handle| {
         let key = owner_key(&mut handle);
         let auth = scope(&handle, key, Some(handle.user_id));
         let memory = handle.seed_workspace_visible_context_record().memory_id;
-        let mut input = proposal(memory);
-        for scope in ApplicabilityScope::ALL {
-            input.scope = scope;
-            input.channel_key =
-                (scope == ApplicabilityScope::ChannelGeneric).then(|| "example_channel".into());
-            input.product_subject_id = (scope == ApplicabilityScope::ProductSpecific).then(|| {
-                handle.admin.query_one("INSERT INTO private.subjects(tenant_id,kind,display_name) VALUES($1,'PRODUCT','fixture product') RETURNING subject_id", &[&handle.tenant_id]).expect("fixture product").get(0)
-            });
-            assert_eq!(
-                handle
-                    .rt
-                    .block_on(applicability_repo::propose(&handle.runtime, &auth, &input)),
-                Ok(ApplicabilityStatus::Proposed)
-            );
-            let current: serde_json::Value =
-                serde_json::from_str(&row(&mut handle, memory)).expect("row");
-            assert_eq!(current["status"], "PROPOSED");
-            assert_eq!(current["assignment_method"], serde_json::Value::Null);
-            assert_eq!(current["decision_evidence_id"], serde_json::Value::Null);
-        }
+        let mut input = propose_all_scopes(&mut handle, &auth, memory);
         let id = evidence(&mut handle, key, "AuthenticatedAgent");
         assert_decision(
             &mut handle,
             &auth,
             &Decision {
-                memory_id: memory,
+                expected: input.clone(),
                 decision_evidence_id: Some(id),
                 assignment_method: AssignmentMethod::AgentOnOwnerChat,
                 status: ApplicabilityStatus::Approved,
             },
             Ok(ApplicabilityStatus::Approved),
+        );
+        let before_approved = row(&mut handle, memory);
+        assert_eq!(
+            handle
+                .rt
+                .block_on(applicability_repo::propose(&handle.runtime, &auth, &input)),
+            refused("applicability_approved_requires_revoke")
+        );
+        assert_eq!(row(&mut handle, memory), before_approved);
+        let approved: serde_json::Value =
+            serde_json::from_str(&row(&mut handle, memory)).expect("row");
+        assert_eq!(approved["decision_evidence_id"], id.to_string());
+        assert_decision(
+            &mut handle,
+            &auth,
+            &Decision {
+                expected: input.clone(),
+                decision_evidence_id: Some(id),
+                assignment_method: AssignmentMethod::AgentOnOwnerChat,
+                status: ApplicabilityStatus::Rejected,
+            },
+            Ok(ApplicabilityStatus::Rejected),
         );
         assert_eq!(
             handle
@@ -303,7 +329,7 @@ fn g_m14_8_proposals_and_closed_shape() {
             &mut handle,
             &auth,
             &Decision {
-                memory_id: memory,
+                expected: input.clone(),
                 decision_evidence_id: Some(id),
                 assignment_method: AssignmentMethod::AgentOnOwnerChat,
                 status: ApplicabilityStatus::Proposed,
@@ -385,5 +411,143 @@ fn g_m14_8_sql_write_boundary_and_qualifiers() {
                 &[&handle.tenant_id],
             )
             .expect("fixture cleanup");
+    });
+}
+
+/// G-M14-8: every expected tuple coordinate is compared; a stale approval never widens a replacement.
+#[test]
+fn g_m14_8_stale_approval_preserves_replacement() {
+    run_db_fixture::<Fixture, _>("g_m14_8_stale", |mut handle| {
+        let key = owner_key(&mut handle);
+        let auth = scope(&handle, key, Some(handle.user_id));
+        let memory = handle.seed_workspace_visible_context_record().memory_id;
+        let product: Uuid = handle.admin.query_one(
+            "INSERT INTO private.subjects(tenant_id,kind,display_name) VALUES($1,'PRODUCT','fixture product') RETURNING subject_id",
+            &[&handle.tenant_id]).expect("product").get(0);
+        let mut original = proposal(memory);
+        original.scope = ApplicabilityScope::ProductSpecific;
+        original.product_subject_id = Some(product);
+        assert_eq!(
+            handle.rt.block_on(applicability_repo::propose(
+                &handle.runtime,
+                &auth,
+                &original
+            )),
+            Ok(ApplicabilityStatus::Proposed)
+        );
+        let replacement = proposal(memory);
+        let peer = handle.seed_peer_user();
+        let member_key = extra_key(&mut handle, key, Some(peer));
+        let member = scope(&handle, member_key, Some(peer));
+        assert_eq!(
+            handle.rt.block_on(applicability_repo::propose(
+                &handle.runtime,
+                &member,
+                &replacement
+            )),
+            Ok(ApplicabilityStatus::Proposed)
+        );
+        let mut scope_only = replacement.clone();
+        scope_only.scope = ApplicabilityScope::ProductSpecific;
+        let mut product_only = replacement.clone();
+        product_only.product_subject_id = Some(product);
+        let mut channel_only = replacement.clone();
+        channel_only.channel_key = Some("example_channel".into());
+        let mut qualifiers_only = replacement.clone();
+        qualifiers_only
+            .exclusions
+            .push("owner-reviewed exclusion".into());
+        let stale = [
+            original,
+            scope_only,
+            product_only,
+            channel_only,
+            qualifiers_only,
+        ];
+        assert_eq!(stale.len(), 5);
+        let id = evidence(&mut handle, key, "AuthenticatedAgent");
+        for expected in stale {
+            assert_decision(
+                &mut handle,
+                &auth,
+                &Decision {
+                    expected,
+                    decision_evidence_id: Some(id),
+                    assignment_method: AssignmentMethod::AgentOnOwnerChat,
+                    status: ApplicabilityStatus::Approved,
+                },
+                refused("applicability_proposal_changed"),
+            );
+        }
+        assert_decision(
+            &mut handle,
+            &auth,
+            &Decision {
+                expected: replacement,
+                decision_evidence_id: Some(id),
+                assignment_method: AssignmentMethod::AgentOnOwnerChat,
+                status: ApplicabilityStatus::Approved,
+            },
+            Ok(ApplicabilityStatus::Approved),
+        );
+        cleanup(&mut handle);
+    });
+}
+
+fn cleanup(handle: &mut Handle) {
+    assert_eq!(
+        handle
+            .admin
+            .execute(
+                "DELETE FROM private.memory_applicability WHERE tenant_id=$1",
+                &[&handle.tenant_id]
+            )
+            .expect("fixture cleanup"),
+        1
+    );
+}
+
+/// G-M14-8: both SQL doors preserve console precedence, including a rejected console decision.
+#[test]
+fn g_m14_8_console_precedence_both_doors() {
+    run_db_fixture::<Fixture, _>("g_m14_8_console", |mut handle| {
+        let key = owner_key(&mut handle);
+        let auth = scope(&handle, key, Some(handle.user_id));
+        let memory = handle.seed_workspace_visible_context_record().memory_id;
+        let input = proposal(memory);
+        let id = evidence(&mut handle, key, "AuthenticatedAgent");
+        assert_eq!(
+            handle
+                .rt
+                .block_on(applicability_repo::propose(&handle.runtime, &auth, &input)),
+            Ok(ApplicabilityStatus::Proposed)
+        );
+        let states = ["APPROVED", "REJECTED"];
+        assert_eq!(states.len(), 2);
+        for state in states {
+            assert_eq!(handle.admin.execute(
+                "UPDATE private.memory_applicability SET status=$1,assignment_method='OWNER_CONSOLE',decision_evidence_id=$2 WHERE memory_id=$3",
+                &[&state, &id, &memory]).expect("seed reserved console row"), 1);
+            let before = row(&mut handle, memory);
+            assert_eq!(
+                handle
+                    .rt
+                    .block_on(applicability_repo::propose(&handle.runtime, &auth, &input)),
+                refused("applicability_console_precedence")
+            );
+            assert_eq!(row(&mut handle, memory), before);
+            assert_decision(
+                &mut handle,
+                &auth,
+                &Decision {
+                    expected: input.clone(),
+                    decision_evidence_id: Some(id),
+                    assignment_method: AssignmentMethod::AgentOnOwnerChat,
+                    status: ApplicabilityStatus::Approved,
+                },
+                refused("applicability_console_precedence"),
+            );
+        }
+        cleanup(&mut handle);
     });
 }

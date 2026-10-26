@@ -13,7 +13,7 @@ select (select count(*)=1 from pg_class
           and pg_get_userbyid(relowner)='role_migration_owner')
  and (select count(*)=2 from pg_proc where oid in (
         to_regprocedure('private.propose_memory_applicability(uuid,uuid,uuid,text,uuid,text,jsonb)'),
-        to_regprocedure('private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text)'))
+        to_regprocedure('private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text,text,uuid,text,jsonb)'))
       and prosecdef and pg_get_userbyid(proowner)='role_migration_owner'
       and proconfig @> ARRAY['search_path=pg_catalog, pg_temp'])
  and not has_table_privilege('role_gateway','private.memory_applicability','INSERT,UPDATE,DELETE')
@@ -23,11 +23,11 @@ select (select count(*)=1 from pg_class
  and has_function_privilege('role_gateway',
        'private.propose_memory_applicability(uuid,uuid,uuid,text,uuid,text,jsonb)','EXECUTE')
  and has_function_privilege('role_gateway',
-       'private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text)','EXECUTE')
+       'private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text,text,uuid,text,jsonb)','EXECUTE')
  and not has_function_privilege('public',
        'private.propose_memory_applicability(uuid,uuid,uuid,text,uuid,text,jsonb)','EXECUTE')
  and not has_function_privilege('public',
-       'private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text)','EXECUTE')
+       'private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text,text,uuid,text,jsonb)','EXECUTE')
  as postcheck_ok
 """
 rollback_or_forward_fix = "Forward fix under ADR-0082; before deployment, drop the two 0273 doors then private.memory_applicability. Never discard deployed decisions."

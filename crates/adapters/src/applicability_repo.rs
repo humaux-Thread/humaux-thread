@@ -23,6 +23,7 @@ pub struct ApplicabilityFailure {
 }
 
 /// ADR-0096 D-A: proposal payload; the SQL CHECK owns closed qualifier validation.
+#[derive(Clone)]
 pub struct Proposal {
     /// Memory version whose applicability is proposed.
     pub memory_id: Uuid,
@@ -40,8 +41,8 @@ pub struct Proposal {
 
 /// ADR-0096 D-B.1: a requested decision; the SQL door proves its provenance.
 pub struct Decision {
-    /// Existing applicability proposal.
-    pub memory_id: Uuid,
+    /// Exact owner-reviewed proposal; compared under the SQL row lock (ADR-0096 D-B.1).
+    pub expected: Proposal,
     /// Missing Evidence must be refused by the same SQL door.
     pub decision_evidence_id: Option<Uuid>,
     /// Provenance method, never caller-supplied credential kind.
@@ -67,6 +68,8 @@ fn db_error(error: sqlx::Error) -> ApplicabilityFailure {
         _ => ErrorCode::Internal,
     };
     let reason = match db.message() {
+        "applicability_proposal_changed" => "applicability_proposal_changed",
+        "applicability_approved_requires_revoke" => "applicability_approved_requires_revoke",
         "applicability_console_unavailable" => "applicability_console_unavailable",
         "applicability_owner_required" => "applicability_owner_required",
         "applicability_evidence_required" => "applicability_evidence_required",
@@ -128,17 +131,25 @@ pub async fn decide(
     confirm_token_repo::set_authorization_local(&mut txn, auth)
         .await
         .map_err(|code| failure(code, "applicability_authorization"))?;
-    let status: String =
-        sqlx::query_scalar("SELECT private.decide_memory_applicability($1,$2,$3,$4,$5,$6)")
-            .bind(auth.principal().0)
-            .bind(workspace.0)
-            .bind(decision.memory_id)
-            .bind(decision.decision_evidence_id)
-            .bind(decision.assignment_method.wire())
-            .bind(decision.status.wire())
-            .fetch_one(&mut *txn)
-            .await
-            .map_err(db_error)?;
+    let status: String = sqlx::query_scalar(
+        "SELECT private.decide_memory_applicability($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    )
+    .bind(auth.principal().0)
+    .bind(workspace.0)
+    .bind(decision.expected.memory_id)
+    .bind(decision.decision_evidence_id)
+    .bind(decision.assignment_method.wire())
+    .bind(decision.status.wire())
+    .bind(decision.expected.scope.wire())
+    .bind(decision.expected.product_subject_id)
+    .bind(&decision.expected.channel_key)
+    .bind(serde_json::json!({
+        "implementation_languages": decision.expected.implementation_languages,
+        "exclusions": decision.expected.exclusions,
+    }))
+    .fetch_one(&mut *txn)
+    .await
+    .map_err(db_error)?;
     let status = ApplicabilityStatus::parse_wire(&status)
         .ok_or_else(|| failure(ErrorCode::Internal, "applicability_status_invalid"))?;
     txn.commit().await.map_err(db_error)?;

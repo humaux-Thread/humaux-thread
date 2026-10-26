@@ -72,8 +72,14 @@ BEGIN
     product_subject_id=EXCLUDED.product_subject_id,channel_key=EXCLUDED.channel_key,
     qualifiers=EXCLUDED.qualifiers,status='PROPOSED',assignment_method=NULL,decision_evidence_id=NULL
   WHERE memory_applicability.tenant_id=v_tenant
-    AND memory_applicability.assignment_method IS DISTINCT FROM 'OWNER_CONSOLE';
+    AND memory_applicability.assignment_method IS DISTINCT FROM 'OWNER_CONSOLE'
+    AND memory_applicability.status <> 'APPROVED';
   IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM private.memory_applicability WHERE memory_id=p_memory_id
+        AND tenant_id=v_tenant AND assignment_method IS DISTINCT FROM 'OWNER_CONSOLE'
+        AND status='APPROVED') THEN
+      RAISE EXCEPTION 'applicability_approved_requires_revoke' USING ERRCODE='42501';
+    END IF;
     RAISE EXCEPTION 'applicability_console_precedence' USING ERRCODE='42501';
   END IF;
   RETURN 'PROPOSED';
@@ -83,12 +89,14 @@ $$;
 -- ADR-0096 D-B.1: relayed instruction Evidence attests the key's authorship, not the owner's words.
 CREATE FUNCTION private.decide_memory_applicability(
   p_api_key_id uuid, p_workspace_id uuid, p_memory_id uuid,
-  p_decision_evidence_id uuid, p_assignment_method text, p_status text)
+  p_decision_evidence_id uuid, p_assignment_method text, p_status text,
+  p_expected_scope text, p_expected_product_subject_id uuid, p_expected_channel_key text,
+  p_expected_qualifiers jsonb)
 RETURNS text LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
   v_tenant uuid := NULLIF(current_setting('humaux.tenant_id',true),'')::uuid;
-  v_previous text;
+  v_proposal private.memory_applicability%ROWTYPE;
 BEGIN
   -- ponytail: console approval needs the M02-10/M26 session binding; M14-5b adds it
   IF p_assignment_method='OWNER_CONSOLE' THEN
@@ -106,13 +114,20 @@ BEGIN
       AND m.state='ACTIVE' AND m.role='OWNER') THEN
     RAISE EXCEPTION 'applicability_owner_required' USING ERRCODE='42501';
   END IF;
-  SELECT a.assignment_method INTO v_previous FROM private.memory_applicability a
+  SELECT a.* INTO v_proposal FROM private.memory_applicability a
     WHERE a.tenant_id=v_tenant AND a.memory_id=p_memory_id FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'applicability_proposal_required' USING ERRCODE='42501';
   END IF;
-  IF v_previous='OWNER_CONSOLE' THEN
+  IF v_proposal.assignment_method='OWNER_CONSOLE' THEN
     RAISE EXCEPTION 'applicability_console_precedence' USING ERRCODE='42501';
+  END IF;
+  -- ADR-0096 D-B.1: compare the exact owner-reviewed proposal under the row lock.
+  IF v_proposal.scope IS DISTINCT FROM p_expected_scope
+     OR v_proposal.product_subject_id IS DISTINCT FROM p_expected_product_subject_id
+     OR v_proposal.channel_key IS DISTINCT FROM p_expected_channel_key
+     OR v_proposal.qualifiers IS DISTINCT FROM p_expected_qualifiers THEN
+    RAISE EXCEPTION 'applicability_proposal_changed' USING ERRCODE='42501';
   END IF;
   IF NOT EXISTS (
     SELECT 1 FROM private.evidence_objects e
@@ -128,8 +143,8 @@ END;
 $$;
 
 ALTER FUNCTION private.propose_memory_applicability(uuid,uuid,uuid,text,uuid,text,jsonb) OWNER TO role_migration_owner;
-ALTER FUNCTION private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text) OWNER TO role_migration_owner;
+ALTER FUNCTION private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text,text,uuid,text,jsonb) OWNER TO role_migration_owner;
 REVOKE ALL ON FUNCTION private.propose_memory_applicability(uuid,uuid,uuid,text,uuid,text,jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text,text,uuid,text,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION private.propose_memory_applicability(uuid,uuid,uuid,text,uuid,text,jsonb) TO role_gateway;
-GRANT EXECUTE ON FUNCTION private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text) TO role_gateway;
+GRANT EXECUTE ON FUNCTION private.decide_memory_applicability(uuid,uuid,uuid,uuid,text,text,text,uuid,text,jsonb) TO role_gateway;

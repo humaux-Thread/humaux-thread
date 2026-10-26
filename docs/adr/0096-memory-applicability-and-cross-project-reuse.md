@@ -50,7 +50,8 @@
 
 ### D-B.1 Approval predicate (lead ruling 2026-10-26)
 
-- The SQL SECURITY DEFINER decision door takes memory id, decision Evidence id, method and APPROVED or REJECTED.
+- The SQL SECURITY DEFINER decision door compares the expected scope, product_subject_id, channel_key and canonical jsonb qualifiers under FOR UPDATE; mismatch refuses with FORBIDDEN / applicability_proposal_changed.
+- Propose refuses APPROVED rows with FORBIDDEN / applicability_approved_requires_revoke; the owner must REJECT/revoke first; PROPOSED and REJECTED may be replaced.
 - The existing 0188 `control.assert_write_scope` authenticates the API-key caller inside the transaction.
 - Its key's user must hold ACTIVE `control.memberships.role = 'OWNER'` in the applicability row's tenant.
 - `AGENT_ON_OWNER_CHAT` (由聊天授权) requires same-tenant Evidence with `origin_class = 'AuthenticatedAgent'`
