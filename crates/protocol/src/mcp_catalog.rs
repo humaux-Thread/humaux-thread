@@ -1,9 +1,9 @@
 //! `protocol::mcp_catalog` — Canonical MCP tool schema and operation registry (§33.1 / §33.10).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests, xtask::architecture_check]
 //! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33)]
-//! Spec: §33.1; §33.10
+//! Spec: §33; §33.1; §33.10
 //!
 //! The embedded schemas own enforced scopes; registry.scope must equal branch.required_scope (§33).
 //! The embedded `contracts/mcp` documents own operation and BMO metadata. This adapter turns
