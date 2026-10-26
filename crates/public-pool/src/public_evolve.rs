@@ -1,7 +1,7 @@
-//! `application::public_evolve` — Deterministic public-root support assessment (§12.6).
+//! `public-pool::public_evolve` — Deterministic public-root support assessment (§12.6).
 //! Depends-on: crates=[humaux-domain, uuid]; services=[];
 //!   env=[]; modules=[domain::error]
-//! Called-by: [adapters::public_repo]
+//! Called-by: [public-pool::public_repo]
 //! Invariants: []
 //! Spec: §12.6
 //!

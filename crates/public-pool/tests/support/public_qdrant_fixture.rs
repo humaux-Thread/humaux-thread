@@ -1,6 +1,6 @@
-//! `adapters::tests::support::public_qdrant_fixture` — Per-run Qdrant collection fixture for the public runtime tests.
+//! `public-pool::tests::support::public_qdrant_fixture` — Per-run Qdrant collection fixture for the public runtime tests.
 //! Depends-on: crates=[humaux-infra-cell, humaux-testkit, serde_json, uuid]; services=[Qdrant(*)]; env=[HUMAUX_TEST_QDRANT_PORT]; modules=[humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport]
-//! Called-by: [adapters::tests::public_runtime_qdrant]
+//! Called-by: [public-pool::tests::public_runtime_qdrant]
 //! Invariants: [Qdrant unreachable -> QdrantTransportError to the caller, no fallback search]
 //! Spec: Baseline §17; §79.2
 //!

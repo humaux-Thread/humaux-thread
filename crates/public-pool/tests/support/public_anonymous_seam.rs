@@ -1,13 +1,14 @@
-//! `adapters::tests::support::public_anonymous_seam` — Shared helpers for the Phase 9 **anonymous** public seam:
+//! `public-pool::tests::support::public_anonymous_seam` — Shared helpers for the Phase 9 **anonymous** public seam:
 //!   assessed prepare -> confirm -> finalize -> `run_anonymous_once` admission -> `control.anonymous_source_lineage`
 //!   read-back -> `evaluate_anonymous_claim`.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, postgres, sha2, uuid];
-//!   services=[PostgreSQL(owner) r=[control.anonymous_source_lineage, public.claims, public.provenance_edges,
-//!   public.sources] w=[control.public_moderator_grants, ops.jobs] x=[public.phase9_public_coverage_for_probe]];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_entry_repo, adapters::postgres, adapters::public_repo,
-//!   adapters::tests::support::contribution_fixture, application::consolidate, application::contribute,
-//!   domain::error, domain::evidence, domain::public]
-//! Called-by: [adapters::tests::public_runtime, adapters::tests::public_runtime_qdrant]
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, postgres,
+//!   sha2, uuid]; services=[PostgreSQL(owner) r=[control.anonymous_source_lineage, public.claims,
+//!   public.provenance_edges, public.sources] w=[control.public_moderator_grants, ops.jobs]
+//!   x=[public.phase9_public_coverage_for_probe]]; env=[HUMAUX_TEST_PG_DSN];
+//!   modules=[adapters::contribution_entry_repo, adapters::postgres, adapters::tests::support::contribution_fixture,
+//!   application::consolidate, application::contribute, domain::error, domain::evidence, domain::public,
+//!   public-pool::public_repo]
+//! Called-by: [public-pool::tests::public_runtime, public-pool::tests::public_runtime_qdrant]
 //! Invariants: [the only live public-tier seam since 0124 revoked role_public_worker's read of
 //!   staging.contribution_releases; admit_release must never be reopened for that role (ADR-0047); callers declare
 //!   the fixture module themselves]
@@ -23,11 +24,11 @@
 //! (ADR-0047).
 //!
 //! Callers must also declare the fixture module at their test-crate root:
-//! `#[path = "support/contribution_fixture.rs"] mod contribution_fixture;`.
+//! `#[path = "../../adapters/tests/support/contribution_fixture.rs"] mod contribution_fixture;`.
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use humaux_adapters::{postgres::PublicWorkerDbPool, public_repo};
+use humaux_adapters::postgres::PublicWorkerDbPool;
 use humaux_application::{
     consolidate::ProviderTraceRef,
     contribute::{
@@ -38,6 +39,7 @@ use humaux_application::{
 };
 use humaux_domain::evidence::payload_sha256;
 use humaux_domain::public::ModerationState;
+use humaux_public_pool::public_repo;
 use postgres::{Client, NoTls};
 use sha2::Digest;
 use uuid::Uuid;

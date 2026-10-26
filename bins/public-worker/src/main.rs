@@ -1,11 +1,11 @@
 //! `public-worker::main` — `humaux-public-worker` explicit bounded Phase 9 runner (§14 / §31).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, tokio, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-public-pool, tokio, uuid];
 //!   services=[PostgreSQL(role_public_worker), Qdrant(*)]; env=[HUMAUX_PUBLIC_WORKER_CALLER,
 //!   HUMAUX_PUBLIC_WORKER_CELL_ID, HUMAUX_PUBLIC_WORKER_LEASE_OWNER, HUMAUX_PUBLIC_WORKER_LIMIT,
 //!   HUMAUX_PUBLIC_WORKER_PG_DSN, HUMAUX_PUBLIC_WORKER_QDRANT_CIDR, HUMAUX_PUBLIC_WORKER_QDRANT_COLLECTION,
 //!   HUMAUX_PUBLIC_WORKER_QDRANT_HOST, HUMAUX_PUBLIC_WORKER_QDRANT_PORT, HUMAUX_PUBLIC_WORKER_QDRANT_TLS,
-//!   HUMAUX_PUBLIC_WORKER_TENANT_ID]; modules=[adapters::postgres, adapters::public_projection,
-//!   adapters::public_repo, domain::ids, infra-cell::permit, infra-cell::resource, infra-cell::transport]
+//!   HUMAUX_PUBLIC_WORKER_TENANT_ID]; modules=[adapters::postgres, domain::ids, infra-cell::permit,
+//!   infra-cell::resource, infra-cell::transport, public-pool::public_projection, public-pool::public_repo]
 //! Called-by: [process(humaux-public-worker)]
 //! Invariants: [a worker that cannot reach PostgreSQL or Qdrant exits non-zero rather than silently skipping its lease]
 //! Spec: Baseline §4.2; §4.4; §31; ADR-0037
@@ -30,15 +30,14 @@ use std::{
     time::Duration,
 };
 
-use humaux_adapters::{
-    postgres::PublicWorkerDbPool, public_projection::PublicProjectionAdapter, public_repo,
-};
+use humaux_adapters::postgres::PublicWorkerDbPool;
 use humaux_domain::ids::TenantId;
 use humaux_infra_cell::{
     CallerId, CellId, HttpIntraCellTransport, IntraCellHttpTransport, IntraCellMethod,
     IntraCellRequest, IntraCellResource, IntraCellResourceRegistry, ResourceEntry,
     authorize_cell_access,
 };
+use humaux_public_pool::{public_projection::PublicProjectionAdapter, public_repo};
 use uuid::Uuid;
 
 fn required(name: &str) -> Result<String, String> {

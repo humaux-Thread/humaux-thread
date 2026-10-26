@@ -1,30 +1,29 @@
-//! `adapters::tests::public_provenance` — Real-PostgreSQL tests of the public provenance target contract and its typed-root closure.
+//! `public-pool::tests::public_provenance` — Real-PostgreSQL tests of the public provenance target contract and its typed-root closure.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, uuid]; services=[PostgreSQL(any)
 //!   r=[staging.contribution_releases] w=[control.public_moderator_grants, public.claims, public.provenance_edges,
 //!   public.source_closure, public.sources, public.syntheses, public.synthesis_inputs]
 //!   x=[public.current_public_roots], PostgreSQL(role_private_worker), PostgreSQL(role_public_worker)];
 //!   env=[HUMAUX_PUBLIC_PROVENANCE_FAULT_DB, HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_repo,
-//!   adapters::postgres, adapters::public_provenance, adapters::public_repo,
-//!   adapters::tests::support::contribution_fixture, domain::ids, domain::public]
+//!   adapters::postgres, adapters::tests::support::contribution_fixture, domain::ids, domain::public,
+//!   public-pool::public_provenance, public-pool::public_repo]
 //! Called-by: [cargo-test]
 //! Invariants: [a provenance target carries exactly one non-nil identity (runs everywhere); the typed-root closure
 //!   and damaged-root guard tests need dedicated databases and are #[ignore] lane tests]
 //! Spec: Baseline §12.6; §79.2; ADR-0047
 //!
-#[path = "support/contribution_fixture.rs"]
+#[path = "../../adapters/tests/support/contribution_fixture.rs"]
 mod contribution_fixture;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Mutex;
 
 use contribution_fixture::ContributionFixture;
-use humaux_adapters::{
-    contribution_repo,
-    postgres::PublicWorkerDbPool,
+use humaux_adapters::{contribution_repo, postgres::PublicWorkerDbPool};
+use humaux_domain::{ids::TenantId, public::ModerationState};
+use humaux_public_pool::{
     public_provenance::{PublicProvenanceTarget, probe_public_provenance},
     public_repo,
 };
-use humaux_domain::{ids::TenantId, public::ModerationState};
 use postgres::{Client, NoTls};
 use uuid::Uuid;
 

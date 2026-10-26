@@ -1,4 +1,4 @@
-//! `adapters::tests::public_runtime` — Phase 9 public-runtime real PostgreSQL tests.
+//! `public-pool::tests::public_runtime` — Phase 9 public-runtime real PostgreSQL tests.
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, postgres, sqlx, tokio, uuid];
 //!   services=[PostgreSQL(any) r=[control.anonymous_claim_trust_authorities, control.anonymous_source_lineage,
 //!   ops.outbox, public.anonymous_source_lifecycle_events, public.claim_independence_attestations,
@@ -9,9 +9,9 @@
 //!   x=[ops.claim_global_anonymous_public_dispatches, ops.enqueue_public_projection_from_anonymous_dispatch,
 //!   public.evaluate_anonymous_claim, public.revoke_anonymous_dispatch], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_public_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_entry_repo,
-//!   adapters::contribution_repo, adapters::postgres, adapters::public_repo,
-//!   adapters::tests::support::contribution_fixture, adapters::tests::support::public_anonymous_seam,
-//!   application::contribute, domain::error, domain::ids, domain::public]
+//!   adapters::contribution_repo, adapters::postgres, adapters::tests::support::contribution_fixture,
+//!   application::contribute, domain::error, domain::ids, domain::public, public-pool::public_repo,
+//!   public-pool::tests::support::public_anonymous_seam]
 //! Called-by: [cargo-test]
 //! Invariants: [public admission is exercised only after the authenticated prepare -> confirm -> finalize entry flow;
 //!   forbidden or duplicate admissions are Forbidden/Conflict; the tests are #[ignore] lane tests]
@@ -20,7 +20,7 @@
 //! Public admission is exercised only after the
 //! authenticated contribution prepare -> confirmation -> finalize entry flow.
 
-#[path = "support/contribution_fixture.rs"]
+#[path = "../../adapters/tests/support/contribution_fixture.rs"]
 mod contribution_fixture;
 #[path = "support/public_anonymous_seam.rs"]
 mod public_anonymous_seam;
@@ -37,11 +37,11 @@ use contribution_fixture::ContributionFixture;
 use humaux_adapters::{
     contribution_repo,
     postgres::{PublicWorkerDbPool, RuntimeDbPool},
-    public_repo,
 };
 use humaux_application::contribute;
 use humaux_domain::ids::TenantId;
 use humaux_domain::public::ModerationState;
+use humaux_public_pool::public_repo;
 use postgres::{Client, NoTls};
 use public_anonymous_seam::{
     NoopProjector, admit_assessed_release, coverage_for_probe, drain_anonymous_queue, dsn_as_role,

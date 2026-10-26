@@ -1,10 +1,10 @@
 //! `adapters::mechanism_observation` — Actual §1.14 runtime observations and immutable E2E execution receipts.
-//! Depends-on: crates=[humaux-contracts, humaux-domain, humaux-infra-cell, serde_json, sha2, sqlx];
+//! Depends-on: crates=[async-trait, humaux-contracts, humaux-domain, humaux-infra-cell, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(any) r=[public.claim_trust_evaluations, public.claims, public.consensus_ready,
 //!   public.corroborated, public.eligible_objects] w=[ops.mechanism_e2e_runs, ops.mechanism_observations]]; env=[];
-//!   modules=[adapters::postgres, adapters::public_repo, contracts::mechanism_registry, domain::error,
-//!   domain::identity, infra-cell::resource]
-//! Called-by: [admin::mechanism, tests, xtask::mechanism_registry]
+//!   modules=[adapters::postgres, contracts::mechanism_registry, domain::error, domain::identity, domain::public,
+//!   infra-cell::resource]
+//! Called-by: [admin::mechanism, public-pool::public_repo, tests, xtask::mechanism_registry]
 //! Invariants: [reads use the dedicated read-only identity; recording runs on role_maintenance through an existing
 //!   authorized operation; no SQL or shell executor is exposed; bad input is InvalidInput]
 //! Spec: none
@@ -13,12 +13,11 @@
 //! calls an existing authorized business operation; it exposes no SQL/shell executor.
 
 use crate::postgres::{AdminDbPool, MaintenanceDbPool, PublicWorkerDbPool};
-use crate::public_repo::{EvaluateClaim, EvaluationResult};
 use humaux_contracts::mechanism_registry::{
     DerivedMechanismStatus, MechanismE2eEvidence, MechanismObservation, MechanismSpec,
     MechanismStatus, ObservationTarget, derive_status, parse_registry,
 };
-use humaux_domain::{error::ErrorCode, identity::AuthorizationScope};
+use humaux_domain::{error::ErrorCode, identity::AuthorizationScope, public::ModerationState};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
@@ -29,6 +28,40 @@ use sqlx::{
 use std::collections::BTreeMap;
 
 const SPEC_TEXT: &str = include_str!("../../../docs/architecture/Baseline_2.9.md");
+
+/// Authenticated, revision-pinned manual review request.  `expected_body_sha256` is the
+/// database body's SHA-256, never a digest supplied in place of the stored body (§12.6).
+#[derive(Clone, Debug)]
+pub struct EvaluateClaim<'a> {
+    pub claim_id: Uuid,
+    pub expected_revision: i64,
+    pub expected_body_sha256: &'a [u8],
+    pub policy_version: &'a str,
+    pub rationale: &'a str,
+    pub target_state: ModerationState,
+}
+
+/// Immutable review result linked from the current object revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvaluationResult {
+    pub evaluation_id: Uuid,
+    pub object_revision: i64,
+    pub moderation_state: String,
+}
+
+/// The one public-claim review call `observe_public_review` needs, inverted so this core crate never names the
+/// cloud `humaux-public-pool` crate (G-M01-2). The signature is that of `public_repo::evaluate_claim`; the cloud
+/// crate implements it and only a cloud entry point constructs a [`PublicObservationRecorder`].
+#[async_trait::async_trait]
+pub trait PublicClaimEvaluator: Send + Sync {
+    /// Stores a complete immutable receipt and applies one allowed manual review state (§12.6).
+    async fn evaluate_claim(
+        &self,
+        pool: &PublicWorkerDbPool,
+        authorization: &AuthorizationScope,
+        input: &EvaluateClaim<'_>,
+    ) -> Result<EvaluationResult, ErrorCode>;
+}
 
 fn db_error(_: sqlx::Error) -> ErrorCode {
     ErrorCode::Internal
@@ -245,6 +278,7 @@ async fn public_scan(
 pub struct PublicObservationRecorder<'a> {
     writer: &'a MaintenanceDbPool,
     business: &'a PublicWorkerDbPool,
+    evaluator: &'a dyn PublicClaimEvaluator,
     target: ObservationTarget,
     binary_build: String,
 }
@@ -255,6 +289,7 @@ impl<'a> PublicObservationRecorder<'a> {
     pub async fn new(
         writer: &'a MaintenanceDbPool,
         business: &'a PublicWorkerDbPool,
+        evaluator: &'a dyn PublicClaimEvaluator,
         writer_resources: &humaux_infra_cell::IntraCellResourceRegistry,
         business_resources: &humaux_infra_cell::IntraCellResourceRegistry,
         deployment_id: Uuid,
@@ -274,6 +309,7 @@ impl<'a> PublicObservationRecorder<'a> {
         Ok(Self {
             writer,
             business,
+            evaluator,
             target: ObservationTarget {
                 deployment_id: deployment_id.to_string(),
                 cell_id: cell_id.0.to_string(),
@@ -298,6 +334,7 @@ impl<'a> PublicObservationRecorder<'a> {
         observe_public_review(
             self.writer,
             self.business,
+            self.evaluator,
             authorization,
             &self.target,
             &self.binary_build,
@@ -311,6 +348,7 @@ impl<'a> PublicObservationRecorder<'a> {
 async fn observe_public_review(
     writer: &MaintenanceDbPool,
     business: &PublicWorkerDbPool,
+    evaluator: &dyn PublicClaimEvaluator,
     authorization: &AuthorizationScope,
     target: &ObservationTarget,
     binary_build: &str,
@@ -328,7 +366,9 @@ async fn observe_public_review(
         .await
         .map_err(db_error)?;
     let before = public_scan(writer).await?;
-    let result = crate::public_repo::evaluate_claim(business, authorization, input).await?;
+    let result = evaluator
+        .evaluate_claim(business, authorization, input)
+        .await?;
     let after = public_scan(writer).await?;
     let completed: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
         // dep: PostgreSQL(any) — executes a query against the pool
