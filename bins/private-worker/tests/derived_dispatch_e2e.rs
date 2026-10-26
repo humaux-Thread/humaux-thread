@@ -1279,7 +1279,10 @@ fn dispatch_discovers_pending_evidence_in_two_tenants() {
 /// else breaks); (b) seats forced to 1 ⇒ a B row waits behind the hang. Red on v1's serial pass
 /// (card 30b evidence).
 #[test]
-#[allow(clippy::too_many_lines)] // one scenario: seed, sweep-after-claim sampler, pass, ordered assertions
+#[allow(clippy::too_many_lines)]
+// one scenario: seed, sweep-after-claim sampler, pass, ordered assertions
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_tenant() {
     run(
         "one_hung_provider_call_does_not_cost_siblings_their_leases_or_stall_another_tenant",
@@ -2273,6 +2276,8 @@ fn abandoned_pre_dispatch_claims_reach_dead_at_the_cap() {
 /// deadline around the whole job future.
 #[test]
 #[allow(clippy::too_many_lines)]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn a_success_at_the_end_of_the_http_window_is_kept_not_resent() {
     run(
         "a_success_at_the_end_of_the_http_window_is_kept_not_resent",
@@ -3764,7 +3769,10 @@ fn disabled_profile_stops_being_used() {
 /// 20 jobs; B's jobs wait RETRY (not WAITING_KEY, the D-G correction). Fault: the claim orders by
 /// least-recently-served only (the 0199 body) ⇒ B takes all four slots.
 #[test]
-#[allow(clippy::too_many_lines)] // one sampled scenario: seed, serve with a sampler, assert
+#[allow(clippy::too_many_lines)]
+// one sampled scenario: seed, serve with a sampler, assert
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn slow_provider_tenant_cannot_take_all_slots() {
     run(
         "slow_provider_tenant_cannot_take_all_slots",
@@ -4093,6 +4101,8 @@ fn channel_name(output: &OutputChannel) -> &'static str {
 #[test]
 #[ignore = "lane(a:shared_db) live two-provider gate (card 33b T24): run with --include-ignored, HUMAUX_REQUIRE_MINIMAX=1 and HUMAUX_REQUIRE_SECOND_PROVIDER=1"]
 #[allow(clippy::too_many_lines)]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn distill_two_provider_live() {
     let Some(mm_key) = live_minimax::load_minimax_key() else {
         humaux_testkit::skip_or_fail(

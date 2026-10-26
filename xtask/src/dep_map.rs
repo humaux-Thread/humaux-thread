@@ -176,7 +176,10 @@ fn blank(m: &mut [u8], from: usize, to: usize) {
 
 /// One pass: comments and string/char contents blanked (newlines kept), literals and
 /// comments collected.
-#[allow(clippy::too_many_lines)] // one byte loop: every token form in one place keeps the masking auditable
+#[allow(clippy::too_many_lines)]
+// one byte loop: every token form in one place keeps the masking auditable
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn lex(src: &str) -> Lexed {
     let b = src.as_bytes();
     let mut m = b.to_vec();
@@ -479,6 +482,8 @@ fn inline_mods(masked: &str) -> Vec<(usize, usize, String)> {
 }
 
 /// `mod name;` declarations: `(name, pos, #[path] value)`.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn mod_decls(lex: &Lexed) -> Vec<(String, usize, Option<String>)> {
     let masked = &lex.masked;
     let b = masked.as_bytes();
@@ -2304,6 +2309,8 @@ impl Analysis {
     }
 
     /// Module tree from every crate root; returns `(root, mod path) → file`.
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn walk_modules(&mut self) -> HashMap<(usize, Vec<String>), usize> {
         let by_rel: HashMap<String, usize> = self
             .files
@@ -2432,6 +2439,8 @@ impl Analysis {
         })
     }
 
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn compute_edges(&mut self, ns: &HashMap<(usize, Vec<String>), usize>) {
         // Crate-root re-exports: name → leaf, and glob modules.
         let mut named: HashMap<usize, HashMap<String, usize>> = HashMap::new();
@@ -2518,6 +2527,8 @@ impl Analysis {
         self.edges = all;
     }
 
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn compute_crates(&mut self) {
         for (f, file) in self.files.iter().enumerate() {
             let pkg = &self.packages[file.pkg];
@@ -3140,6 +3151,8 @@ impl Analysis {
         out
     }
 
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn global_findings(&self) -> Vec<Finding> {
         let mut out = Vec::new();
         let mut same: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
@@ -3631,6 +3644,8 @@ fn migration_stems(root: &Path) -> Result<Vec<(String, String)>, String> {
 }
 
 /// First migration creating each `schema.name` (renames followed).
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn created_in(migrations: &[(String, String)]) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     for (stem, sql) in migrations {
@@ -3894,6 +3909,8 @@ fn trim_doc(mut s: String) -> String {
 
 impl Analysis {
     /// object → role column ("r"/"w"/"x") → process → modules, from declared headers.
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn db_users(&self) -> BTreeMap<String, DbUsers> {
         let mut out: BTreeMap<String, DbUsers> = BTreeMap::new();
         for (f, file) in self.files.iter().enumerate() {
@@ -3926,7 +3943,10 @@ impl Analysis {
         out
     }
 
-    #[allow(clippy::too_many_lines)] // one block per section of the generated doc
+    #[allow(clippy::too_many_lines)]
+    // one block per section of the generated doc
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn render_dependency_map(&self, exemptions: &[Exemption]) -> String {
         let mut s = String::new();
         let _ = writeln!(s, "# Dependency map (generated — do not edit)\n");
@@ -4129,6 +4149,8 @@ impl Analysis {
 
     /// ADR-0066 D-T / D-J: `(repo path, content)` of `example/<p>.env` and `secret-fixture/<p>.secret.env` for every
     /// deployed process, plus the fixture's `migrate.secret.env`, `pg.secret.env` and empty `pg_superuser`.
+    // ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+    #[allow(clippy::excessive_nesting)]
     fn render_env_examples(&self) -> Vec<(String, String)> {
         let rows = self.env_rows();
         let registry = self.env_registry();

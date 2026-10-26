@@ -187,6 +187,8 @@ fn job_attempt(handle: &mut Handle, job_id: Uuid) -> i32 {
 /// every claimed `job_id` is unique across all four results (no job claimed twice) and that
 /// exactly 6 rows total were claimed (every claimable row picked up exactly once).
 #[test]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn claim_has_no_duplicate_across_concurrent_workers() {
     let _guard = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
     run_db_fixture::<JobsFixture, _>(

@@ -23,6 +23,7 @@ pub mod forget;
 pub mod ingest;
 pub mod login;
 pub mod notify;
+pub mod oauth;
 pub mod pin;
 pub mod public_evolve;
 pub mod referral;

@@ -655,6 +655,8 @@ fn g80_23_check3(text: &str, rows: &[GateRow]) -> Verdict {
 
 /// ④ 注错出处所指范围正文必须逐字含「注错」或「注入」；锚为 §80.1.1 时另加一条：§80.1.1
 /// 内必须有一行以该行的闸 id 打头。列值为 — 的行（NOT_ADMITTED）不参与本条。
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn g80_23_check4(text: &str, rows: &[GateRow]) -> Verdict {
     let lines: Vec<&str> = text.lines().collect();
     let headings = build_headings(&lines);
@@ -843,6 +845,8 @@ fn g80_24_check2(families: &[FamilyRow], gate_rows: &[GateRow]) -> Verdict {
 /// §57.1 与 §80.1 都是冻结章，本表本身不存在只可能是被删/被改坏，不是这种对象，因此这里
 /// 缺表判 Fail 而不是 NotApplicable（否则 fail-open：缺表 ⇒ 单条 NotApplicable ⇒
 /// `report` 对 NotApplicable 返回 false ⇒ 进程 EXIT=0）.
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn g80_24_check3(text: &str, gate_rows: &[GateRow]) -> Verdict {
     let phase_rows = match parse_phase_table(text) {
         Ok(r) => r,

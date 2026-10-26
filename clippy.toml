@@ -1,0 +1,14 @@
+# Clippy configuration. The workspace lint levels live in Cargo.toml `[workspace.lints.clippy]` (every member
+# inherits them with `[lints] workspace = true`).
+#
+# §78.4: `too_many_lines` and `excessive_nesting` are the size/complexity signals the spec names;
+# `cognitive_complexity` is explicitly rejected there and is not enabled.
+#
+# excessive_nesting does nothing until this threshold is set — unlike the other lints it has no built-in
+# default (clippy's own documentation only shows an example value). 5 is the M01-6 (G-M01-8) measurement
+# basis, taken from the complete workspace sweep of CI run 39973585345 (clippy as the workspace rustc
+# wrapper at warn level, every target of all 25 members): 76 blocks in 41 functions exceeded it. Those 41
+# plus the 7 sites the earlier targeted clippy rounds found carry one `#[allow(clippy::excessive_nesting)]`
+# each with its `// ponytail:` reason. Raising this value is a reviewed one-line diff; the allow count is
+# pinned exactly in xtask/known_red.toml `[[lint_allows]]` and checked by `cargo xtask architecture-check`.
+excessive-nesting-threshold = 5

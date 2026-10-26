@@ -1212,7 +1212,7 @@ runtime role      对任何 schema 的任何表：无 DELETE / TRUNCATE / DDL
 role_batch_issuer 同上，且域默认全 —— 它只在 §6.2.2 里有一行非空
 role_admin        无 INSERT / UPDATE / DELETE / TRUNCATE / DDL，不继承其他角色
 role_maintenance  无 DELETE / TRUNCATE；修复只能靠 UPDATE，且只在 §6.2.2 逐条列出的表上有 UPDATE
-物理删行唯一出口  migration owner + partition drop（§48.1）；或 §6.2.2 逐条列出的 owner SECURITY DEFINER 清扫门（ADR-0062 闭集，单条语句、LIMIT、回执；role_maintenance 只有 EXECUTE）；partition drop 只经 control.partition_drop（invoker、仅超级用户可执行、库内重推策略/截止月/最新叶/持有/行数，ADR-0063）由超级用户 migrator 主体在操作员 shell 短命执行；常驻进程环境含 HUMAUX_MIGRATOR_PG_DSN 即拒绝启动
+物理删行出口        migration owner + partition drop（§48.1）；§6.2.2 逐条列出的 owner SECURITY DEFINER 清扫门（ADR-0062 闭集，单条语句、LIMIT、回执；role_maintenance 只有 EXECUTE）；以及 ADR-0092 的删除请求门（owner SECURITY DEFINER，EXECUTE 只给 role_maintenance，只删该请求冻结的目标集；其 §6.2.2 行与 rls-check 闭集随 M19-5 的迁移落地，在那之前这里只记设计、不新增授权行）；partition drop 只经 control.partition_drop（invoker、仅超级用户可执行、库内重推策略/截止月/最新叶/持有/行数，ADR-0063）由超级用户 migrator 主体在操作员 shell 短命执行；常驻进程环境含 HUMAUX_MIGRATOR_PG_DSN 即拒绝启动
 逻辑删除唯一出口  retention::tombstone —— 改 state，不删行（§37.2）
 ```
 
@@ -9599,7 +9599,7 @@ envelope（§23）分母随之改写为 `expected − deleted`，并新增 envel
 
 ## 37.2 机制而非纪律
 
-runtime role 对 `projection.stream_log` 只有 `SELECT` / `UPDATE`，**没有 `DELETE`**（并入 §48.2 role invariant 的 CI 枚举）；物理删行只在 migration owner。删除路径唯一出口 `retention::tombstone(scope, seq)`，它在同一事务里只做一件事：把 `state` 改成 `TOMBSTONED`，没有第二个函数能改这张表的 `state`。绕过它是权限错误 + 编译错误，不是评审意见。
+runtime role 对 `projection.stream_log` 只有 `SELECT` / `UPDATE`，**没有 `DELETE`**（并入 §48.2 role invariant 的 CI 枚举）；物理删行只在 migration owner —— 分区 drop（§48.1），或 ADR-0092 的删除请求门（owner SECURITY DEFINER、EXECUTE 只给 `role_maintenance`、只删该请求冻结的目标集）。runtime role 的 DELETE 禁令与本节其余判据不变。删除路径唯一出口 `retention::tombstone(scope, seq)`，它在同一事务里只做一件事：把 `state` 改成 `TOMBSTONED`，没有第二个函数能改这张表的 `state`。绕过它是权限错误 + 编译错误，不是评审意见。
 
 **本节冻结：不存在 `deleted_count` 列，`retention::tombstone` 不递增任何计数器。** `deleted` 是现算量 `count(state = 'TOMBSTONED')`，与 `done` / `skipped` 同取自 `projection.stream_log`（取数面见 §23.1② 那张五行表）。判据与 §15.3 删 `open_gap_count` 逐字同型：一个能从 `state` 现算出来的计数一旦落成物化列，就是同一事实的第二真源，只能靠「每次都记得一起改」保持一致 —— 而那正是本节要消灭的纪律。tombstone 事务少写一次 `deleted_count += 1`（或重放、补偿事务多写一次），`deleted` 就与 `count(state = 'TOMBSTONED')` 永久分叉；而 §23 的 A1、以及 A2 的**账本那一侧**由同一个 `LedgerCounts` 渲染（`visible` 不在其中，字段集冻结见 §22.5 与 §23.1② 的 architecture-check），两条断言会被同一个分叉一起带偏，谁都观察不到自己错了。**验收闸**：architecture-check 断言 `projection.stream_log` 的列集合逐字等于 §15.1 DDL 的列（原 12 列 + 0167 的两个 §15.2.1 审计列 `retired_at` / `retired_by` + 0176 的四个租约/重试列 `lease_owner` / `lease_expires_at` / `attempts` / `next_attempt_at`（ADR-0052）+ 0223 的 `lost_at`（LOST 转换时刻，ADR-0062 D-N），共 19；这七列都是关于一次转换的事实，不是能从 `state` 现算的计数，故不在本节要消灭的「第二真源」之列），多一列少一列即红；注错：加一列 `deleted_count bigint` ⇒ 20 != 19 ⇒ 红。同一条闸顺带盯住 `status`：它同样不在这 19 列里。
 
@@ -9667,6 +9667,18 @@ FAILED
 ```
 
 “已删除”必须对应明确完成条件，不能 API 请求一返回 200 就宣称所有第三方和备份都物理消失。
+
+ADR-0092 把删除请求统一成一条流水线：一个请求一行（`MEMORY` / `EVIDENCE_CLOSURE` / `SUBJECT` / `DOCUMENT` / `TENANT` 五种 scope），冻结的目标集单独存放，0054 的逐 `stream_seq` 行降为其中一行目标。闭包按 scope 取：单条 Memory 保留来源 Evidence（`source_retained`）；Evidence 闭包从显式根出发；文档按 ADR-0079 D-J 的闭包 C；一个人的删除取该 subject 关联的 Evidence（任意 role）与 `memory_subjects` 背后 Memory 的 Evidence；只要一条 Memory 的任一输入落在闭包里，整条 Memory 失去可见性（ADR-0079 的共同依赖）。闭包一旦变化，第二次确认即拒绝。
+
+删除是两次调用：第一次返回影响预览（调用者有权读到对象的计数与标题，`restore_supported:false`，多人来源逐条列出）与绑定预览摘要的确认 token；第二次执行。两轮之间闭包变了即拒绝。账号删除另需一次新鲜的登录证明。见 §33.10 规则 9 与 ADR-0018。
+
+确认事务提交时先把闭包里**每一个** outbox seq 置为 tombstone（第 1 步，全部 event_type，ADR-0079 D-J），追加 `FORGOTTEN` 生命周期事件（只记 id），overlay 从这一刻起隐藏全部目标；晚到的 distill / consolidation / rollup / projection publish 在自己的提交事务里复核输入，命中即 `STALE_INPUT`，不另设 fence 表。物理删行只走 ADR-0092 的一扇 owner SECURITY DEFINER 窄门：EXECUTE 只给 `role_maintenance`，只删该请求冻结的目标集，按外键顺序执行；runtime role 的 DELETE 禁令不变（§6.2.1、§37.2）。
+
+恢复不得复活已删除数据：删除完成时写一条内容无关的 erasure ledger（request id、scope、目标 id 的 sha256 集、完成时刻），在任何早于该时刻的备份仍可能被恢复期间保留。每份备份清单带一份副本；恢复流程在开放服务之前重放 ledger，恢复演练必须断言这一点（ADR-0092 的 Gates 表）。M23 v2 在导出卷上加一份 erasure journal 覆盖上一个已验证导出之后的删除，M19-9 写它。
+
+保留登记按 ADR-0063 的机器执行，但 §37 开头清单里的用户知识（events、evidence、memories、messages）的保留值是 keep-forever（owner）：永不按年龄删除；operational 表按 ADR-0063 的每表全租户策略，值由 owner 用 `retention approve` 批准，且没有 PITR-coverage hold 不得 drop。容量压缩按「计划 → 通知 → 邮件已接受 → 等待期 → 执行」：计划列动作、字节估算与保证，通知发给已验证地址，只有投递商明确接受且等待期已过才执行；动作只允许不丢当前知识的项（改编码、退役被替换/归档/已遗忘记忆的向量点、删可重建的派生产物），永不删 Evidence 或当前 Memory；磁盘压力只阻断新的写入。
+
+用户导出见 §81 的 Export Manifest v1：按用户自身 RLS 上下文生成，逐实体 JSONL 加一份带计数与逐文件 sha256 的清单，不含向量。
 
 ---
 
@@ -16629,6 +16641,8 @@ optional export
 ```
 
 因为权威 Projection 可以从 PostgreSQL/Memory 重建。
+
+ADR-0092 把这份清单定成 **Export Manifest v1**：一个异步导出任务在用户自己的 RLS 上下文里生成 tar，逐实体一个 JSONL（租户/工作区元数据、带 payload 的 Evidence、Memory 修订与 provenance、subjects/relations、生命周期事件、applications/acceptances、tasks/canvas/handoffs、M17 落地后的 artifact 字节、processor/projection 元数据以指纹表示），外加 `manifest.json`（版本、计数、逐文件 sha256）。不含向量（可重嵌入、厂商相关）。产物存节点导出目录（M17 之后为对象存储），经 M26 的签名控制台 URL 一次性下载，7 天后过期（配置项）；「导出就绪」走 M22 通知。磁盘占用超过 65% 守护线时拒绝这类占空间的工作。导入是 M25 的重放路径，消费同一个 schema：`contracts/export/manifest.v1.schema.json`（带指纹）。
 
 
 ## Cloud 与 OSS Contract Parity

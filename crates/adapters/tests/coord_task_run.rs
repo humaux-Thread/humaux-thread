@@ -552,6 +552,8 @@ fn g_t04a_6_verify_waiting_for_a_close_sees_the_close() {
 /// G-T04a-7 (#76): the other order. A verification that got the task row first holds it until its transaction ends, so
 /// a close (complete and fail alike) waits for it and then proceeds.
 #[test]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn g_t04a_7_close_waits_for_a_held_verification() {
     run_db_fixture::<CoordFixture, _>("g_t04a_7_close_waits_for_a_held_verification", |mut h| {
         let a = scope(h.tenant_id);

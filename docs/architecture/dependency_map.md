@@ -13672,6 +13672,7 @@ modules naming it:
 - `application::entitlement`
 - `application::login`
 - `application::notify`
+- `application::oauth`
 - `application::pin`
 - `application::public_evolve`
 - `application::referral`
@@ -13721,6 +13722,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::contribution_execution`
+- `application::oauth`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -13782,11 +13784,24 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::correct`
+- `application::oauth`
 - `application::pin`
 - `application::public_evolve`
 - `application::retrieval_embedding_port`
 - `application::session`
 - `tests`
+
+### humaux-application → `base64` (normal)
+why: unpadded base64url encoding of the PKCE S256 digest
+
+modules naming it:
+- `application::oauth`
+
+### humaux-application → `time` (normal)
+why: OffsetDateTime expiry/ceiling arithmetic of grants
+
+modules naming it:
+- `application::oauth`
 
 ### humaux-application → `tokio` (dev)
 why: async executor for #[tokio::test] fixtures of async ports
@@ -15207,6 +15222,7 @@ why: the onboarding library (provisioning), typed maintenance pool, quota window
 
 modules naming it:
 - `maintenance::backup`
+- `maintenance::deploy_check`
 - `maintenance::drill`
 - `maintenance::health_serve`
 - `maintenance::main`
@@ -17905,9 +17921,9 @@ default run:
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_registry.rs:173` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
-- `crates/retrieval/tests/planner_predicate_eval.rs:218` [table-write] (line) — parses migration SQL text; no DB connection
-- `crates/retrieval/tests/planner_predicate_eval.rs:219` [table-undeclared] (line) — parses migration SQL text; no DB connection
-- `crates/retrieval/tests/planner_predicate_eval.rs:351` [table-undeclared] (line) — parses migration SQL text; no DB connection
+- `crates/retrieval/tests/planner_predicate_eval.rs:222` [table-write] (line) — parses migration SQL text; no DB connection
+- `crates/retrieval/tests/planner_predicate_eval.rs:223` [table-undeclared] (line) — parses migration SQL text; no DB connection
+- `crates/retrieval/tests/planner_predicate_eval.rs:355` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/testkit/Cargo.toml:19` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
 - `xtask/src/dep_map.rs:11` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
 - `xtask/src/dep_map.rs:12` [table-write] (file) — unit-test fixtures spell write statements in strings

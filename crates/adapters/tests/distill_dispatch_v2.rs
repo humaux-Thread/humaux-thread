@@ -414,6 +414,8 @@ fn claims_rotate_across_tenants_not_global_fifo() {
 /// T3 — fault: drop `FOR UPDATE SKIP LOCKED` on the slot pick and the `job_id IS NULL` recheck on
 /// bind (with the arbiter lock also dropped: the arbiter serializes claims on its own, ADR-0058 E2).
 #[test]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn at_most_four_slots_are_bound_under_twelve_concurrent_claimers() {
     run(
         "at_most_four_slots_are_bound_under_twelve_concurrent_claimers",
@@ -474,6 +476,8 @@ fn at_most_four_slots_are_bound_under_twelve_concurrent_claimers() {
 
 /// T4 — fault: drop `FOR UPDATE` on the arbiter row.
 #[test]
+// ponytail: nesting past clippy.toml's 5 (§78.4 / G-M01-8, measured 39973585345); M01-6 refactors nothing
+#[allow(clippy::excessive_nesting)]
 fn each_successful_claim_advances_the_arbiter_turn_exactly_once() {
     run(
         "each_successful_claim_advances_the_arbiter_turn_exactly_once",
