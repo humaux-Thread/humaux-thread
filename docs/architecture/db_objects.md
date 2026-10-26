@@ -396,7 +396,6 @@ grants (runtime roles):
 
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
-- (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::request_guard`
@@ -411,6 +410,7 @@ read by:
 - process(cargo-xtask): `xtask::e2e_seed`
 
 written by:
+- (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
 
@@ -4223,6 +4223,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_evidence_grounding`
