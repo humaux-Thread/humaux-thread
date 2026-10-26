@@ -3,7 +3,7 @@
 //! Depends-on: crates=[axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit,
 //!   serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner)
 //!   r=[control.quota_windows, coord.task_runs, coord.tasks] w=[control.api_keys, coord.task_runs],
-//!   PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::quota_repo,
+//!   PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, contracts::retrieval_config, domain::context,
 //!   domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::mcp_application,
 //!   gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]

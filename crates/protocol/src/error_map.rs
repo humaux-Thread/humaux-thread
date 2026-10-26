@@ -2,7 +2,7 @@
 //!   status").
 //! Depends-on: crates=[humaux-domain]; services=[];
 //!   env=[]; modules=[domain::error]
-//! Called-by: [protocol::mcp]
+//! Called-by: [protocol::mcp, tests]
 //! Invariants: []
 //! Spec: §52.1; §52.4
 //!

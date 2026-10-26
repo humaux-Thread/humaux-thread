@@ -1,6 +1,6 @@
-//! Policy/capacity HTTP contracts (§67.2; §72.3; ADR-0100).
-//! Depends-on: crates=[axum, humaux-domain, humaux-gateway, humaux-protocol, tokio, uuid];
-//!   services=[HTTP(loopback)]; env=[]; modules=[gateway::admission, gateway::limiter, protocol::error_map]
+//! `gateway::tests::admission` — Policy/capacity HTTP contracts (§67.2; §72.3; ADR-0100).
+//! Depends-on: crates=[axum, humaux-domain, humaux-protocol, tokio, uuid];
+//!   services=[HTTP(loopback)]; env=[]; modules=[domain::error, gateway::admission, gateway::limiter, protocol::error_map]
 //! Called-by: [cargo-test]
 //! Invariants: [G-M03-9 uses production admission middleware and policy error mapping; no quota path is entered]
 //! Spec: Baseline §67.2; §72.3; §79; §80.1; ADR-0100
@@ -24,6 +24,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 async fn request(addr: std::net::SocketAddr) -> (u16, Vec<String>, String) {
+    // dep: HTTP(loopback) — production admission middleware under test (§67.2)
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     stream.write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
     let mut raw = String::new();

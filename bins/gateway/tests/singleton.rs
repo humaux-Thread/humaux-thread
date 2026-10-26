@@ -1,7 +1,7 @@
-//! Dedicated session and real gateway boot gates (§67.2; ADR-0100).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-gateway, postgres, tokio, uuid];
+//! `gateway::tests::singleton` — Dedicated session and real gateway boot gates (§67.2; ADR-0100).
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, sha2, tokio, uuid];
 //!   services=[PostgreSQL(owner), PostgreSQL(role_gateway), HTTP(loopback), subprocess(humaux-gateway)];
-//!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN, CARGO_BIN_EXE_humaux-gateway]; modules=[gateway::bootstrap]
+//!   env=[HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS, HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN, CARGO_BIN_EXE_humaux-gateway]; modules=[adapters::postgres, domain::error, gateway::bootstrap, gateway::tests::support::singleton_env]
 //! Called-by: [cargo-test]
 //! Invariants: [missing CI inputs fail; admin termination targets only the fixture-owned lock backend]
 //! Spec: Baseline §67.2; §79; §80.1; ADR-0100
@@ -44,6 +44,7 @@ impl Process {
                 .envs(env)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
+                // dep: subprocess(humaux-gateway) — real singleton boot gate (ADR-0100)
                 .spawn()
                 .expect("spawn gateway"),
         )
@@ -56,6 +57,7 @@ impl Process {
                 None,
                 "gateway refused unexpectedly"
             );
+            // dep: HTTP(loopback) — only this fixture process can bind the selected port (§79)
             if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
                 return;
             }
@@ -122,6 +124,7 @@ fn terminate_lock(admin: &mut Client, key: i64) {
 
 #[tokio::test]
 async fn lease_drop_unlocks_and_dead_original_session_returns_exact_error() {
+    // dep: PostgreSQL(role_gateway) — original-session lifetime gate (ADR-0100)
     let pool = RuntimeDbPool::connect(&input("HUMAUX_GATEWAY_PG_DSN"))
         .await
         .unwrap();
@@ -136,6 +139,8 @@ async fn lease_drop_unlocks_and_dead_original_session_returns_exact_error() {
     let mut lease = pool.try_session_lock(key).await.unwrap().unwrap();
     assert_eq!(lease.check().await, Ok(()));
     tokio::task::spawn_blocking(move || {
+        // dep: PostgreSQL(owner) — terminate only the fixture-owned backend (§79)
+        // dep: PostgreSQL(owner) — terminate only the fixture-owned backend (§79)
         let mut admin = Client::connect(&input("HUMAUX_TEST_PG_DSN"), NoTls).unwrap();
         terminate_lock(&mut admin, key);
     })
@@ -173,6 +178,7 @@ fn gateway_exits_nonzero_when_the_lock_session_is_terminated() {
     let key = i64::from_be_bytes(digest[..8].try_into().unwrap());
     let mut gateway = Process::spawn(&env);
     gateway.started(addr);
+    // dep: PostgreSQL(owner) — terminate only the fixture-owned backend (§79)
     let mut admin = Client::connect(&input("HUMAUX_TEST_PG_DSN"), NoTls).unwrap();
     terminate_lock(&mut admin, key);
     assert_eq!(gateway.exit_code(), Some(1));

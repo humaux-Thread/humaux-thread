@@ -1,5 +1,5 @@
-//! In-process hierarchical token buckets (§72.3; ADR-0100).
-//! Depends-on: crates=[humaux-domain, uuid]; services=[]; env=[]; modules=[domain::error]
+//! `gateway::limiter` — In-process hierarchical token buckets (§72.3; ADR-0100).
+//! Depends-on: crates=[humaux-domain, tokio, uuid]; services=[]; env=[]; modules=[domain::error]
 //! Called-by: [gateway::guard, gateway::bootstrap, tests]
 //! Invariants: [no PG I/O; never an allow decision beyond rate; one mutex makes tier charges atomic;
 //!   buckets start at one refill-second; only fully replenished buckets may be evicted]

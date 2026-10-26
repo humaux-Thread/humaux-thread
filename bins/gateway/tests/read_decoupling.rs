@@ -4,7 +4,7 @@
 //!   humaux-infra-cell, humaux-protocol, humaux-testkit, serde_json,
 //!   tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq, ops.outbox, private.evidence_objects]
 //!   w=[control.workspaces, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
-//!   Qdrant(*)]; env=[HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::qdrant, adapters::quota_repo,
+//!   Qdrant(*)]; env=[HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::qdrant, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember,
 //!   humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,

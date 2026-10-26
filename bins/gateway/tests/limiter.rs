@@ -1,5 +1,5 @@
-//! Exact hierarchical rate gates (§72.3; ADR-0100).
-//! Depends-on: crates=[humaux-gateway, humaux-domain, tokio, uuid]; services=[]; env=[]; modules=[gateway::limiter]
+//! `gateway::tests::limiter` — Exact hierarchical rate gates (§72.3; ADR-0100).
+//! Depends-on: crates=[humaux-domain, tokio, uuid]; services=[]; env=[]; modules=[domain::error, gateway::limiter]
 //! Called-by: [cargo-test]
 //! Invariants: [G-M03-1 calls the production limiter with 80 distinct credentials; frozen time excludes scheduling noise]
 //! Spec: Baseline §72.3; §79; §80.1; ADR-0100

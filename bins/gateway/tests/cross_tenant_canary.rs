@@ -6,7 +6,7 @@
 //!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
 //!   x=[private.publish_continuity_facet, private.register_continuity_project]];
 //!   env=[HUMAUX_TEST_DISPOSABLE_CLUSTER, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, adapters::quota_repo,
+//!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, gateway::limiter,
 //!   adapters::read_gate, adapters::tests::support::operation_receipt_fixture, application::continuity,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
 //!   domain::continuity, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall,

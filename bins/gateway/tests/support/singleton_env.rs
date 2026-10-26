@@ -1,6 +1,6 @@
-//! Boot configuration for the isolated singleton process tests (§79; ADR-0100).
+//! `gateway::tests::support::singleton_env` — Boot configuration for the isolated singleton process tests (§79; ADR-0100).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [tests]
+//! Called-by: [gateway::tests::singleton]
 //! Invariants: [each gateway receives its own deployment unless a test explicitly shares one]
 //! Spec: Baseline §79; ADR-0100
 use std::{collections::BTreeMap, net::SocketAddr};
