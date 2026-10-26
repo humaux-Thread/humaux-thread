@@ -10638,10 +10638,73 @@ fn rerank_pin_parity(root: &Path) -> Verdict {
     }
 }
 
+// §6.1.4 / ADR-0113 D-D: a new, candidate-only ownership list; never shared with another gate.
+const CURATION_STORAGE_HOMES: &[&str] = &[
+    "crates/adapters/src/candidate_repo.rs",
+    "bins/maintenance/src/rls_check.rs",
+    "migrations/0277_curation_candidates.sql",
+];
+
+fn candidate_isolation_sources(root: &Path) -> Verdict {
+    for required in [
+        "crates/adapters/src/read_materialize.rs",
+        CURATION_STORAGE_HOMES[0],
+        CURATION_STORAGE_HOMES[2],
+    ] {
+        if !root.join(required).is_file() {
+            return Verdict::Fail(vec![format!("G-M15-1/G-N09-2: missing input {required}")]);
+        }
+    }
+    let mut violations = Vec::new();
+    for (path, source) in walk_workspace_rs(root) {
+        let relative = display(root, &path);
+        if relative.split('/').any(|part| part == "tests")
+            || CURATION_STORAGE_HOMES.contains(&relative.as_str())
+        {
+            continue;
+        }
+        candidate_isolation_hits(&relative, &code_without_comments(&source), &mut violations);
+    }
+    for path in walk_files(&root.join("migrations"), &["sql"]) {
+        let relative = display(root, &path);
+        if CURATION_STORAGE_HOMES.contains(&relative.as_str()) {
+            continue;
+        }
+        match fs::read_to_string(&path) {
+            Ok(source) => candidate_isolation_hits(&relative, &source, &mut violations),
+            Err(error) => violations.push(format!("{relative}: {error}")),
+        }
+    }
+    if violations.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(violations)
+    }
+}
+
+fn candidate_isolation_hits(path: &str, source: &str, violations: &mut Vec<String>) {
+    for (index, line) in source.lines().enumerate() {
+        let lower = line.to_ascii_lowercase();
+        if ["curation_candidates", "curation_candidate_targets"]
+            .iter()
+            .any(|name| lower.contains(name))
+        {
+            violations.push(format!(
+                "G-M15-1/G-N09-2: {path}:{} candidate storage outside its owner",
+                index + 1
+            ));
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let mut checks: Vec<(&str, Verdict)> = vec![
+        (
+            "G-M15-1 / G-N09-2 (candidate isolation)",
+            candidate_isolation_sources(&root),
+        ),
         (
             "§53.3 规则1 (Outcome<_> fallback outside abstain)",
             rule1_forbidden_fallback(&root),
@@ -21376,6 +21439,50 @@ async fn serving_version_in_txn() {}
                 "humaux-adapters::mandatory_context_lane runs `rename column` ({file}:{next_line})"
             )),
             "{lines:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod candidate_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_isolation_enforces_repository() {
+        assert_eq!(
+            candidate_isolation_sources(&workspace_root()),
+            Verdict::Pass
+        );
+    }
+
+    #[test]
+    fn candidate_isolation_reports_both_tables_and_exact_paths() {
+        let mut hits = Vec::new();
+        candidate_isolation_hits(
+            "crates/adapters/src/read_materialize.rs",
+            "JOIN private.curation_candidates c ON true\nJOIN private.curation_candidate_targets t ON true",
+            &mut hits,
+        );
+        assert_eq!(
+            hits,
+            vec![
+                "G-M15-1/G-N09-2: crates/adapters/src/read_materialize.rs:1 candidate storage outside its owner",
+                "G-M15-1/G-N09-2: crates/adapters/src/read_materialize.rs:2 candidate storage outside its owner",
+            ]
+        );
+        assert_eq!(
+            CURATION_STORAGE_HOMES,
+            &[
+                "crates/adapters/src/candidate_repo.rs",
+                "bins/maintenance/src/rls_check.rs",
+                "migrations/0277_curation_candidates.sql",
+            ]
+        );
+        assert_eq!(
+            candidate_isolation_sources(Path::new("missing-candidate-input")),
+            Verdict::Fail(vec![
+                "G-M15-1/G-N09-2: missing input crates/adapters/src/read_materialize.rs".into()
+            ])
         );
     }
 }

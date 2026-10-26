@@ -1152,6 +1152,12 @@ const MATRIX: &[Cell] = &[
 // Keep its narrow grants executable and bidirectionally checked while the later contract
 // phase decides whether to merge these columns into the Canonical matrix.
 const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
+    cell!("private.curation_candidates", "role_gateway", ["SELECT"]),
+    cell!(
+        "private.curation_candidate_targets",
+        "role_gateway",
+        ["SELECT"]
+    ),
     // §6.2.2 / ADR-0096: all applicability writes use the 0273 doors.
     cell!("private.memory_applicability", "role_gateway", ["SELECT"]),
     cell!(
