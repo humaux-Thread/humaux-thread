@@ -5688,6 +5688,12 @@ impl GatewayProcessConfig {
                 "1".into(),
             ),
         ]);
+        Self::insert_fixture_policies(&mut values);
+        // Retrieval settings deliberately use their registered defaults unless a case overrides them.
+        Self { values, address }
+    }
+
+    fn insert_fixture_policies(values: &mut BTreeMap<String, String>) {
         values.extend(ENUMERATION_KEYS.map(|(key, value)| (key.into(), value.into())));
         values.extend(POOL_KEYS.map(|(key, value)| (key.into(), value.into())));
         for name in ["PREAUTH_IP", "CREDENTIAL", "USER", "TENANT", "OPERATION"] {
@@ -5697,8 +5703,6 @@ impl GatewayProcessConfig {
                 "100".into(),
             );
         }
-        // Retrieval settings deliberately use their registered defaults unless a case overrides them.
-        Self { values, address }
     }
 
     fn command(&self) -> Command {
