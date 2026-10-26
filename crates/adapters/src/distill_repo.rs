@@ -9,8 +9,10 @@
 //!   user installed first; memory.confirm / memory.reject lock a candidate only inside the narrowed write scope
 //!   (its visibility against the scope's one workspace and user, ADR-0054); metrics families emitted:
 //!   private_distill_runs_total and private_distill_outputs_total, counted only after the distill write commits
-//!   ([`commit_distill_write`], ADR-0061 card 34b)]
-//! Spec: Baseline §15.5; §14; ADR-0016; §6.1.1; ADR-0054; ADR-0058; ADR-0060 D-K; §41.2; §42; ADR-0061 D-C
+//!   ([`commit_distill_write`], ADR-0061 card 34b); a confirmed candidate's Memory is written with producer `Confirm`
+//!   and the hop's with `Distill`: both model-produced text, so INTERPRETATION whatever the user's confirmation
+//!   (ADR-0124)]
+//! Spec: Baseline §15.5; §14; ADR-0016; §6.1.1; ADR-0054; ADR-0058; ADR-0060 D-K; §41.2; §42; ADR-0061 D-C; ADR-0124
 //!
 //! §15.5: one Evidence → 0/1/N `private.memory_records`; §14: the `ops.outbox` row remember wrote
 //! is the work item (PENDING → PROCESSING → DONE | FAILED, or back to PENDING when the attempt was
@@ -58,7 +60,8 @@ use crate::{
 // `bins/private-worker` names these at `distill_repo::`; their definitions and the Memory INSERT live in `memory_repo`
 // (M07 D9, gate G-M07-1).
 pub use crate::memory_repo::{
-    AttributionSource, LoadedEvidence, NewMemory, insert_memory_in_txn as insert_memory,
+    AttributionSource, LoadedEvidence, MemoryProducer, NewMemory,
+    insert_memory_in_txn as insert_memory,
 };
 
 /// The database error/transaction types the private-worker binary names without depending on
@@ -1141,6 +1144,8 @@ pub async fn confirm_candidate_atomically(
             note_id: None,
             // ADR-0078 D-D: E2 is a confirmation; the work facts (task run, declared project) are on E1.
             attribution: AttributionSource::CandidateSource(candidate.source_evidence_id),
+            // ADR-0124 D-B: the text is the candidate's, model-produced; the UserConfirmed origin is not the key.
+            producer: MemoryProducer::Confirm,
         },
         attribution,
     )

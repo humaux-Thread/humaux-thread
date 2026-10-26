@@ -1,0 +1,71 @@
+# §46.1 migration manifest. ADR-0124 (M07-5, gate G-M07-6), amending ADR-0067 D-D: private.memory_records.note_kind gains event,
+# plan and episode (all stored under memory_type NOTE) by replacing the two 0235 CHECKs, memory_records_note_kind_check and
+# memory_records_note_kind_memory_type_check, with their twelve-value versions under the same names; and
+# private.memory_records.epistemic_status text NOT NULL DEFAULT 'UNKNOWN' is added with a four-value CHECK. Legacy rows read
+# UNKNOWN by the default, no backfill. No grant, policy, trigger or index changes. Add-constraint style: plain ADD CONSTRAINT,
+# copied from the newest memory_records CHECK migration on main (0236); not NOT VALID + VALIDATE (0247, which targets
+# private.subjects). DROP and ADD are one ALTER TABLE. §46 forward-fix (EXPAND_CONTRACT, number assigned by the lead).
+
+migration_id = "0283_note_kinds_epistemic_status"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the table, one that already has the column, or one whose two note_kind CHECKs are not the
+# nine-value originals (a deparsed literal carries two single quotes: nine labels = 18, nine kind/type pairs = 36).
+precheck = """
+select to_regclass('private.memory_records') is not null
+ and not exists (select 1 from pg_attribute
+                  where attrelid = to_regclass('private.memory_records')
+                    and attname = 'epistemic_status' and not attisdropped)
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('private.memory_records') and co.contype = 'c'
+                and co.conname = 'memory_records_note_kind_check'
+                and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 18)
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('private.memory_records') and co.contype = 'c'
+                and co.conname = 'memory_records_note_kind_memory_type_check'
+                and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 36)
+ as precheck_ok
+"""
+
+# Fails on: a missing, nullable or ACL-carrying column; a default other than 'UNKNOWN'; a missing, unvalidated or renamed
+# epistemic_status CHECK that does not carry exactly the four labels; either note_kind CHECK missing, unvalidated or not
+# carrying exactly the twelve labels (24 quotes) / twelve pairs (48 quotes); a gateway or private-worker lacking INSERT on
+# the table, or any UPDATE grant on the new column.
+postcheck = """
+select
+ (select a.atttypid = 'text'::regtype and a.attnotnull and a.attacl is null
+    from pg_attribute a
+   where a.attrelid = to_regclass('private.memory_records')
+     and a.attname = 'epistemic_status' and not a.attisdropped)
+ and (select pg_get_expr(d.adbin, d.adrelid) = '''UNKNOWN''::text'
+        from pg_attrdef d join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+       where d.adrelid = to_regclass('private.memory_records') and a.attname = 'epistemic_status')
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('private.memory_records') and co.contype = 'c'
+                and co.conname = 'memory_records_epistemic_status_check' and co.convalidated
+                and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 8
+                and (select bool_and(pg_get_constraintdef(co.oid) like '%''' || v || '''%')
+                       from unnest(array['SOURCE_REPORTED', 'INTERPRETATION', 'DIRECT_OBSERVATION', 'UNKNOWN']) v))
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('private.memory_records') and co.contype = 'c'
+                and co.conname = 'memory_records_note_kind_check' and co.convalidated
+                and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 24
+                and (select bool_and(pg_get_constraintdef(co.oid) like '%''' || v || '''%')
+                       from unnest(array['rejected', 'decision', 'fix', 'problem', 'lesson', 'research', 'preference',
+                                         'state', 'note', 'event', 'plan', 'episode']) v))
+ and exists (select 1 from pg_constraint co
+              where co.conrelid = to_regclass('private.memory_records') and co.contype = 'c'
+                and co.conname = 'memory_records_note_kind_memory_type_check' and co.convalidated
+                and length(pg_get_constraintdef(co.oid)) - length(replace(pg_get_constraintdef(co.oid), '''', '')) = 48
+                and (select bool_and(pg_get_constraintdef(co.oid) like '%''' || v || '''%')
+                       from unnest(array['rejected', 'decision', 'fix', 'problem', 'lesson', 'research', 'preference',
+                                         'state', 'note', 'event', 'plan', 'episode']) v))
+ and has_table_privilege('role_gateway', 'private.memory_records', 'INSERT')
+ and has_table_privilege('role_private_worker', 'private.memory_records', 'INSERT')
+ and not has_column_privilege('role_gateway', 'private.memory_records', 'epistemic_status', 'UPDATE')
+ and not has_column_privilege('role_private_worker', 'private.memory_records', 'epistemic_status', 'UPDATE')
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix after deployment. While no row has note_kind event, plan or episode: ALTER TABLE private.memory_records DROP CONSTRAINT memory_records_note_kind_check, DROP CONSTRAINT memory_records_note_kind_memory_type_check, DROP CONSTRAINT memory_records_epistemic_status_check, DROP COLUMN epistemic_status, then re-add the two nine-value CHECKs of 0235 verbatim, and remove the three NoteKind variants and EpistemicStatus in the same release (the §78.2 contract test is red while only one side moves). The re-add fails with 23514 once such a row exists: forward-fix only then, because re-kinding a note changes what it is, and dropping the column discards how every Memory's text came to be. Never edit 0235."
+backup_restore_requirement = "standard pre-migration backup of private.memory_records (one NOT NULL column with a constant default, catalog-only on PostgreSQL 18, and two CHECKs replaced by strict supersets; no row is rewritten and none is deleted)."

@@ -2,10 +2,10 @@
 //!   and the authority decision of `memory.note_put` (ADR-0067 D-C/D-D/D-E).
 //! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::memory, domain::policy]
 //! Called-by: [adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_gate, adapters::read_materialize, gateway::mcp_application, humaux-local-secret-scan, tests]
-//! Invariants: [NoteKind is a closed 9-value set whose memory_type mapping is the DB CHECK of migration 0235; the body is
-//!   never trimmed, normalised or re-encoded; authority is decided by the existing ceiling table and never inferred
-//!   from note_kind, title or body]
-//! Spec: Baseline §8.5; §9; §10.1; ADR-0067
+//! Invariants: [NoteKind is a closed 12-value set whose memory_type mapping is the DB CHECK of migration 0283 (nine kinds
+//!   of 0235 plus event, plan, episode; ADR-0124); the body is never trimmed, normalised or re-encoded; authority is
+//!   decided by the existing ceiling table and never inferred from note_kind, title or body]
+//! Spec: Baseline §8.5; §9; §10.1; ADR-0067; ADR-0124
 //!
 //! Pure data and decisions only: the one SQL statement lives in `adapters::memory_repo::insert_memory_in_txn`, the one
 //! transaction in `adapters::operation_receipt`. A reconciliation test in `adapters` pins [`NoteKind`] against the
@@ -36,8 +36,8 @@ pub const STRATEGY_IDENTITY_NOTE_V1: &str = "identity_note_v1";
 /// origin-ceiling table, read by [`authorize_note`]).
 pub const POLICY_VERSION: &str = "origin_ceiling_v1";
 
-/// ADR-0067 D-D: the author's classification of a note, a closed set of nine. It certifies no truth and decides no
-/// authority.
+/// ADR-0067 D-D, amended by ADR-0124: the author's classification of a note, a closed set of twelve. It certifies no
+/// truth and decides no authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteKind {
     /// A rejected option (`REJECTION`).
@@ -58,11 +58,17 @@ pub enum NoteKind {
     State,
     /// A free-form note (`NOTE`).
     Note,
+    /// A fact about something that happened, such as an email, a chat message or a calendar entry (`NOTE`; ADR-0124 D-A).
+    Event,
+    /// A commitment (`NOTE`; ADR-0124 D-A). Reminders are not this kind's job (M14/M22).
+    Plan,
+    /// One attempt at something and how it went (`NOTE`; ADR-0124 D-A). Its tables land with M07-8.
+    Episode,
 }
 
 impl NoteKind {
-    /// Every kind, in ADR-0067 D-D table order.
-    pub const ALL: [Self; 9] = [
+    /// Every kind: ADR-0067 D-D table order, then the three ADR-0124 kinds.
+    pub const ALL: [Self; 12] = [
         Self::Rejected,
         Self::Decision,
         Self::Fix,
@@ -72,9 +78,12 @@ impl NoteKind {
         Self::Preference,
         Self::State,
         Self::Note,
+        Self::Event,
+        Self::Plan,
+        Self::Episode,
     ];
 
-    /// Wire and DB label (`private.memory_records.note_kind`, migration 0235's CHECK set).
+    /// Wire and DB label (`private.memory_records.note_kind`, migration 0283's CHECK set).
     #[must_use]
     pub const fn wire(self) -> &'static str {
         match self {
@@ -87,6 +96,9 @@ impl NoteKind {
             Self::Preference => "preference",
             Self::State => "state",
             Self::Note => "note",
+            Self::Event => "event",
+            Self::Plan => "plan",
+            Self::Episode => "episode",
         }
     }
 
@@ -96,7 +108,7 @@ impl NoteKind {
         Self::ALL.into_iter().find(|kind| kind.wire() == wire)
     }
 
-    /// The `memory_type` this kind is stored under (ADR-0067 D-D table; the DB CHECK binds the same pairs).
+    /// The `memory_type` this kind is stored under (ADR-0067 D-D table, ADR-0124 D-A; the DB CHECK binds the same pairs).
     #[must_use]
     pub const fn memory_type(self) -> MemoryType {
         match self {
@@ -105,7 +117,9 @@ impl NoteKind {
             Self::Fix => MemoryType::Outcome,
             Self::Problem => MemoryType::Issue,
             Self::Lesson => MemoryType::Lesson,
-            Self::Research | Self::Note => MemoryType::Note,
+            Self::Research | Self::Note | Self::Event | Self::Plan | Self::Episode => {
+                MemoryType::Note
+            }
             Self::Preference => MemoryType::Preference,
             Self::State => MemoryType::State,
         }
@@ -262,8 +276,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn note_kind_wire_round_trips_and_the_set_is_nine() {
-        assert_eq!(NoteKind::ALL.len(), 9);
+    fn note_kind_wire_round_trips_and_the_set_is_twelve() {
+        assert_eq!(NoteKind::ALL.len(), 12);
         for kind in NoteKind::ALL {
             assert_eq!(NoteKind::parse_wire(kind.wire()), Some(kind));
         }
@@ -276,6 +290,19 @@ mod tests {
         assert_eq!(NoteKind::Research.memory_type(), MemoryType::Note);
         assert_eq!(NoteKind::Note.memory_type(), MemoryType::Note);
         assert_ne!(NoteKind::Research.wire(), NoteKind::Note.wire());
+    }
+
+    #[test]
+    fn the_adr_0124_kinds_are_notes_with_their_own_labels() {
+        for (kind, wire) in [
+            (NoteKind::Event, "event"),
+            (NoteKind::Plan, "plan"),
+            (NoteKind::Episode, "episode"),
+        ] {
+            assert_eq!(kind.wire(), wire);
+            assert_eq!(kind.memory_type(), MemoryType::Note);
+            assert_eq!(NoteKind::parse_wire(wire), Some(kind));
+        }
     }
 
     #[test]

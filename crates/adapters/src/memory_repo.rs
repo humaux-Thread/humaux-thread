@@ -9,8 +9,10 @@
 //!   the attribution port runs here exactly once per Memory, after the subject hook, and is a required argument (ADR-0078 D-D,
 //!   xtask G-M29-5(a)); this module never imports its M29 implementation (no L3 -> L4 edge);
 //!   the statement runs inside the caller's transaction and never commits; this module imports no Distill-hop code, the hop imports it;
-//!   this module reads a Memory's canonical text only through `private.memory_text_v` ([`memory_texts_in_txn`], M07 D1)]
-//! Spec: Baseline §8.5; §8.6; §6.1.3; §6.1.4; §10.1; ADR-0016; ADR-0028; ADR-0067; ADR-0078; ADR-0085
+//!   this module reads a Memory's canonical text only through `private.memory_text_v` ([`memory_texts_in_txn`], M07 D1);
+//!   the stored `epistemic_status` is `epistemic_status(producer)` of the caller's [`MemoryProducer`], the one match that maps a
+//!   producer to a status, and it reads neither the Evidence origin class nor the authority class (ADR-0124)]
+//! Spec: Baseline §8.5; §8.6; §6.1.3; §6.1.4; §10.1; ADR-0016; ADR-0028; ADR-0067; ADR-0078; ADR-0085; ADR-0124
 //!
 //! [`insert_memory_in_txn`] writes one Memory (ADR-0016 D4 visibility copy, ADR-0067 D-J note lineage, ADR-0028 subject hook) from the two
 //! types it takes: [`NewMemory`] (what to write) and [`LoadedEvidence`] (the Evidence row it is grounded on and inherits visibility from).
@@ -22,7 +24,7 @@
 
 use humaux_domain::authority::AuthorityClass;
 use humaux_domain::evidence::EvidenceOriginClass;
-use humaux_domain::memory::MemoryType;
+use humaux_domain::memory::{EpistemicStatus, MemoryType};
 use humaux_domain::note::NoteKind;
 use serde_json::Value;
 use sqlx::types::Uuid;
@@ -69,6 +71,36 @@ pub struct NewMemory<'a> {
     /// ADR-0078 D-D (attribution Evidence): which Evidence the §6.1.4 ladder reads and every row's
     /// `decision_evidence_id` names. Required and without a default, so every caller chooses a variant.
     pub attribution: AttributionSource,
+    /// ADR-0124 D-B: who produced the text. `epistemic_status` maps it to the stored status; a caller names a producer,
+    /// never a status. Required and without a default, so every caller chooses a variant.
+    pub producer: MemoryProducer,
+}
+
+/// ADR-0124 D-B: who produced a Memory's text, a closed set of exactly the callers of [`insert_memory_in_txn`] today. It
+/// keys `epistemic_status` and nothing else: it is not the Evidence origin class (a note's origin is the server-fixed
+/// `AuthenticatedAgent`, ADR-0067 D-C) and it never reaches the §10.1 authority decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryProducer {
+    /// `memory.note_put` (`note_repo`): the caller's verbatim assertion.
+    NotePut,
+    /// `memory.correct` (`memory_governance_repo`): the text a user stated as the correction.
+    Correction,
+    /// The Distill hop's write leg (`bins/private-worker`): model-produced text.
+    Distill,
+    /// `memory.confirm` (`distill_repo::confirm_candidate_atomically`): the confirmed candidate's text is model-produced;
+    /// the user's confirmation lives in the Evidence origin and the authority class, not here.
+    Confirm,
+}
+
+/// ADR-0124 D-B: the one place a [`MemoryProducer`] becomes an [`EpistemicStatus`]. No wildcard arm, so a new producer
+/// does not compile until it is ruled on.
+pub(crate) const fn epistemic_status(producer: MemoryProducer) -> EpistemicStatus {
+    // ponytail: consolidate/affect -> Interpretation, tool result -> DirectObservation, import -> SourceReported: each
+    // lands with its first caller, as a producer variant and an arm here.
+    match producer {
+        MemoryProducer::NotePut | MemoryProducer::Correction => EpistemicStatus::SourceReported,
+        MemoryProducer::Distill | MemoryProducer::Confirm => EpistemicStatus::Interpretation,
+    }
 }
 
 /// ADR-0078 D-D (attribution Evidence): a closed choice, not a free id, so no caller can hand
@@ -163,14 +195,14 @@ pub async fn insert_memory_in_txn(
     attribution: &dyn MemoryAttribution,
 ) -> Result<Uuid, sqlx::Error> {
     // ADR-0067 D-J: the id is drawn once (the column's own uuidv7()) so a fresh note's note_id can equal it in the same
-    // statement; `$11` names the note a new version joins.
+    // statement; `$11` names the note a new version joins. `$12` is the ADR-0124 epistemic status.
     let memory_id: Uuid = sqlx::query_scalar(
         "INSERT INTO private.memory_records \
            (memory_id, tenant_id, memory_type, content, visibility_class, visibility_user_id, \
             visibility_workspace_id, authority_class, confidence, status, asserted_at, occurred_at, \
-            note_kind, note_id) \
+            note_kind, note_id, epistemic_status) \
          SELECT g.id, $1, $2, $3, $4, $5, $6, $7, $8, 'active', now(), $9, $10, \
-                CASE WHEN $10::text IS NULL THEN NULL ELSE COALESCE($11::uuid, g.id) END \
+                CASE WHEN $10::text IS NULL THEN NULL ELSE COALESCE($11::uuid, g.id) END, $12 \
            FROM (SELECT uuidv7() AS id) AS g \
          RETURNING memory_id",
     )
@@ -185,6 +217,7 @@ pub async fn insert_memory_in_txn(
     .bind(evidence.occurred_at)
     .bind(memory.note_kind.map(NoteKind::wire))
     .bind(memory.note_id)
+    .bind(epistemic_status(memory.producer).as_db_str())
     .fetch_one(&mut **txn)
     .await?;
     sqlx::query(
@@ -251,4 +284,39 @@ pub async fn memory_texts_in_txn(
             body,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR-0124 D-B: the mapping as a hand-written table, not computed from [`epistemic_status`]. The nested match has no
+    /// wildcard, so a producer added without a row here fails to compile.
+    #[test]
+    fn every_producer_maps_to_its_ruled_status() {
+        fn named(producer: MemoryProducer) {
+            match producer {
+                MemoryProducer::NotePut
+                | MemoryProducer::Correction
+                | MemoryProducer::Distill
+                | MemoryProducer::Confirm => {}
+            }
+        }
+        let table = [
+            (MemoryProducer::NotePut, EpistemicStatus::SourceReported),
+            (MemoryProducer::Correction, EpistemicStatus::SourceReported),
+            (MemoryProducer::Distill, EpistemicStatus::Interpretation),
+            (MemoryProducer::Confirm, EpistemicStatus::Interpretation),
+        ];
+        assert_eq!(table.len(), 4);
+        for (producer, expected) in table {
+            named(producer);
+            assert_eq!(epistemic_status(producer), expected, "{producer:?}");
+            assert_ne!(
+                epistemic_status(producer),
+                EpistemicStatus::Unknown,
+                "the door never writes Unknown; only the column default does"
+            );
+        }
+    }
 }

@@ -1,8 +1,9 @@
-//! `domain::memory` — `MemoryType` (§8.5 / §59).
+//! `domain::memory` — `MemoryType` (§8.5 / §59), the Mandatory facet mapping (§25.4.A) and `EpistemicStatus` (ADR-0124).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::projection_worker, adapters::qdrant, application::confirm, application::correct, domain::authority, domain::context, domain::note, domain::policy, private-worker::distill, projection::card, retrieval::signals, tests]
-//! Invariants: []
-//! Spec: Baseline §8.5; §24; §25.2; ADR-0045
+//! Invariants: [EpistemicStatus is a closed four-value set whose `as_db_str` labels are the CHECK of migration 0283 (the §78.2
+//!   contract test in `adapters` pins the two); it certifies no truth and decides no authority]
+//! Spec: Baseline §8.5; §24; §25.2; ADR-0045; ADR-0124
 //!
 //! §8.5 freezes 12 fixed types: `PROCEDURE` is retrievable procedural knowledge that does
 //! not guarantee the Agent auto-executes it; `OUTCOME` holds Action -> Result -> Validation,
@@ -90,6 +91,42 @@ impl MemoryType {
     #[must_use]
     pub fn parse_wire(wire: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|t| t.wire() == wire)
+    }
+}
+
+/// ADR-0124: how the text of a Memory came to be, a closed set of four. It is a separate axis from the §10.1 origin
+/// ceiling: it certifies no truth, grants no authority, and `authority_class` is decided without reading it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpistemicStatus {
+    /// The text is a source's own assertion, recorded as given (a verbatim note, a user's correction).
+    SourceReported,
+    /// The text is a model's reading of a source (distilled, or a distilled candidate a user confirmed).
+    Interpretation,
+    /// The text is a direct observation, such as a tool result. No writer sets it yet (ADR-0124 D-B).
+    DirectObservation,
+    /// Not known: the column default, and every Memory written before migration 0283.
+    Unknown,
+}
+
+impl EpistemicStatus {
+    /// Every status, in ADR-0124's declaration order. Closed set of 4.
+    pub const ALL: [Self; 4] = [
+        Self::SourceReported,
+        Self::Interpretation,
+        Self::DirectObservation,
+        Self::Unknown,
+    ];
+
+    /// The DB label (`private.memory_records.epistemic_status`, migration 0283's CHECK set), upper-case snake. The
+    /// §78.2 contract test in `adapters` reconciles this list with the live CHECK.
+    #[must_use]
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::SourceReported => "SOURCE_REPORTED",
+            Self::Interpretation => "INTERPRETATION",
+            Self::DirectObservation => "DIRECT_OBSERVATION",
+            Self::Unknown => "UNKNOWN",
+        }
     }
 }
 
@@ -225,6 +262,22 @@ mod tests {
             assert!(t.wire().chars().all(|c| c.is_ascii_uppercase()));
         }
         assert_eq!(MemoryType::parse_wire("STATEFUL"), None);
+    }
+
+    #[test]
+    fn epistemic_status_labels_are_distinct_upper_snake() {
+        assert_eq!(EpistemicStatus::ALL.len(), 4);
+        let labels: std::collections::BTreeSet<&str> = EpistemicStatus::ALL
+            .into_iter()
+            .map(EpistemicStatus::as_db_str)
+            .collect();
+        assert_eq!(labels.len(), 4, "a label is listed twice");
+        assert!(
+            labels
+                .iter()
+                .all(|l| l.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+        );
+        assert_eq!(EpistemicStatus::Unknown.as_db_str(), "UNKNOWN");
     }
 
     #[test]

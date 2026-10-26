@@ -7,8 +7,9 @@
 //!   failure rolls back everything; every status change carries a lifecycle ticket on the target's home stream
 //!   (ADR-0057 D-M, W3); correct issues two lifecycle tickets (E2 projects M2, E1 retires M1) and undoing a
 //!   correction tickets M2 (ADR-0057 D-B); supersede / correct / restore refuse a note operand with Conflict before
-//!   any BMO or token work (ADR-0067 D-J)]
-//! Spec: Baseline §7; §15; ADR-0018; ADR-0020; ADR-0057; ADR-0067
+//!   any BMO or token work (ADR-0067 D-J); a correction's successor is written with producer `Correction`, so its
+//!   epistemic status is SOURCE_REPORTED: the user's own text (ADR-0124)]
+//! Spec: Baseline §7; §15; ADR-0018; ADR-0020; ADR-0057; ADR-0067; ADR-0124
 //!
 //! One `role_gateway` transaction, in this order, every step rolling the whole thing back:
 //! reserve BMO -> consume the confirm token ([`crate::confirm_token_repo::consume_in_txn`],
@@ -59,7 +60,7 @@ use uuid::Uuid;
 use crate::{
     affect_repo::{self, AffectInput, AffectParent},
     confirm_token_repo::{self, ConfirmationClaim},
-    memory_repo::{self, AttributionSource, LoadedEvidence, NewMemory},
+    memory_repo::{self, AttributionSource, LoadedEvidence, MemoryProducer, NewMemory},
     postgres::RuntimeDbPool,
     quota_repo::{self, ReservationStatus, ReserveResult},
     read_gate,
@@ -1768,6 +1769,8 @@ pub async fn correct_atomically(
             note_kind: None,
             note_id: None,
             attribution: AttributionSource::Primary,
+            // ADR-0124 D-B: the text the user stated as the correction (origin DirectUserInput, USER_CORRECTION).
+            producer: MemoryProducer::Correction,
         },
         attribution,
     )
