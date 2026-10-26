@@ -314,18 +314,12 @@ where
 
 /// §41.2 `tombstoned_unpurged_over_sla` (gauge, §65 job收尾 takes the reading) — current-
 /// computed, never a materialized column (§37.2's own "现算不落列" reasoning extends to this
-/// metric, not only to `deleted`). Counts each `TOMBSTONED` `stream_log` row of the tenant once (the `EXISTS` over the
-/// requests makes it DISTINCT by construction) when some deletion request `d` of the tenant attributes it:
-///
-/// * the row's `(scope_kind, scope_id)` is one of `d`'s frozen `control.deletion_targets`, mapped `MEMORY` -> `'memory'`
-///   and `EVIDENCE` -> `'evidence'` (lower-case, the projection's `scope_kind` vocabulary);
-/// * `d.logical_deleted_at` is set and older than `sla` (the SLA clock is the deletion's age; `settled_at` is not used,
-///   a row settled `DONE` before a later tombstone keeps its old `settled_at`, 0011);
-/// * `d` has no recorded `QDRANT_POINTS` step yet (step 5, the physical purge — §37: "字节还在...它必须有自己的出口").
-///
-/// The projection code today writes `stream_log` rows only under `scope_kind` `workspace` / `tenant`, so a Memory or
-/// Evidence target has no stream rows of its own and the gauge reads 0 until a projection keys rows by them; it never
-/// over-counts. v1 requests lost their stream-key columns in 0272: a surviving v1 row has no targets and no longer counts.
+/// metric, not only to `deleted`). Tenant-grain and fail-loud: counts the tenant's `TOMBSTONED` `stream_log` rows with
+/// `settled_at` older than `sla` (a row settled `DONE` before a later tombstone keeps its old `settled_at`, 0011) iff
+/// the tenant has a deletion request `d` with `d.logical_deleted_at` set and older than `sla` and no recorded
+/// `QDRANT_POINTS` step (step 5, the physical purge — §37: "字节还在...它必须有自己的出口"). No such request ⇒ 0;
+/// otherwise `> 0`, which is §42's "tombstone 超 SLA 未 purge". The count is not a per-row attribution and may
+/// include rows of other, already purged requests of the same tenant (0272 dropped the per-row stream key).
 pub async fn tombstoned_unpurged_over_sla(
     pool: &MaintenanceDbPool,
     tenant_id: Uuid,
@@ -335,18 +329,16 @@ pub async fn tombstoned_unpurged_over_sla(
     let mut txn = pool.pool().begin().await?;
     set_tenant_local(&mut txn, tenant_id).await?;
 
+    // ponytail: counts every tombstoned row of a tenant that has a request unpurged past SLA (over-count by design, fail loud); M19-3a records the request id at tombstone time for exact per-row attribution
     let row = sqlx::query(
         "SELECT count(*) AS n \
            FROM projection.stream_log s \
           WHERE s.tenant_id = $1 \
             AND s.state = 'TOMBSTONED' \
+            AND s.settled_at < now() - (interval '1 second' * $2::bigint) \
             AND EXISTS ( \
-                SELECT 1 FROM control.deletion_targets t \
-                  JOIN control.deletion_requests d \
-                    ON d.tenant_id = t.tenant_id AND d.deletion_request_id = t.request_id \
-                 WHERE t.tenant_id = $1 \
-                   AND t.id = s.scope_id \
-                   AND s.scope_kind = CASE t.kind WHEN 'MEMORY' THEN 'memory' WHEN 'EVIDENCE' THEN 'evidence' END \
+                SELECT 1 FROM control.deletion_requests d \
+                 WHERE d.tenant_id = $1 \
                    AND d.logical_deleted_at IS NOT NULL \
                    AND d.logical_deleted_at < now() - (interval '1 second' * $2::bigint) \
                    AND NOT EXISTS ( \

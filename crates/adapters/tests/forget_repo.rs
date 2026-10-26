@@ -255,32 +255,38 @@ fn seed_deletion_request_ago(admin: &mut Client, tenant_id: Uuid, ago_secs: i64)
         .get(0)
 }
 
-/// Freezes `memory_id` as a MEMORY target of `request_id` (what the door writes; the gauge reads it).
-fn seed_memory_target(admin: &mut Client, tenant_id: Uuid, request_id: Uuid, memory_id: Uuid) {
-    admin
-        .execute(
-            "INSERT INTO control.deletion_targets (request_id, tenant_id, kind, id) VALUES ($1, $2, 'MEMORY', $3)",
-            &[&request_id, &tenant_id, &memory_id],
-        )
-        .expect("seed control.deletion_targets row");
-}
-
-/// One `TOMBSTONED` stream row keyed by the Memory it belongs to (`scope_kind` `memory`), settled `settled_ago` seconds ago.
-fn seed_tombstoned_memory_row(handle: &mut Handle, memory_id: Uuid, settled_ago: i64) {
+/// One `DONE` stream row of the tenant, settled `settled_ago` seconds ago; tombstone it with [`tombstone_row`].
+fn seed_done_row(handle: &mut Handle, settled_ago: i64) -> StreamKey {
     let k = StreamKey::new(
         TenantId(handle.tenant_id),
-        "memory",
-        memory_id,
+        "workspace",
+        Uuid::new_v4(),
         "code",
         "retrieval_card",
         "v1",
     );
     seed_checkpoint(&mut handle.admin, &k, 1);
     seed_done_rows_ago(&mut handle.admin, &k, 1, 1, settled_ago);
+    k
+}
+
+/// Tombstones the row through the production path; `settled_at` keeps the settle time (0011).
+fn tombstone_row(handle: &Handle, k: &StreamKey) {
     handle
         .rt
-        .block_on(forget_repo::tombstone(&handle.maintenance, &k, 1))
-        .expect("tombstone the memory row");
+        .block_on(forget_repo::tombstone(&handle.maintenance, k, 1))
+        .expect("tombstone the row");
+}
+
+/// A second tenant, for the cross-tenant isolation case.
+fn seed_other_tenant(admin: &mut Client) -> Uuid {
+    admin
+        .query_one(
+            "INSERT INTO control.tenants (name) VALUES ($1) RETURNING tenant_id",
+            &[&"forget_repo.rs other tenant"],
+        )
+        .expect("seed other tenant")
+        .get(0)
 }
 
 fn over_sla(handle: &Handle, sla_secs: u64) -> i64 {
@@ -525,12 +531,11 @@ fn tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step() {
     run_db_fixture::<ForgetFixture, _>(
         "tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step",
         |mut handle| {
-            // (a) the row settled 600 s ago, BEFORE its request was logically deleted 60 s ago (settled_at stays
-            // put when the row is tombstoned later, 0011), and the request is older than the 30 s SLA.
-            let memory = Uuid::new_v4();
-            seed_tombstoned_memory_row(&mut handle, memory, 600);
+            // (a) real order: the row settles DONE 600 s ago, the request is logically deleted 60 s ago, then the
+            // row is tombstoned; the request is older than the 30 s SLA.
+            let row = seed_done_row(&mut handle, 600);
             let request_id = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
-            seed_memory_target(&mut handle.admin, handle.tenant_id, request_id, memory);
+            tombstone_row(&handle, &row);
             assert_eq!(
                 over_sla(&handle, 30),
                 1,
@@ -551,50 +556,68 @@ fn tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step() {
     );
 }
 
-/// §41.2 (d): three rows under an older, purged request never count again; only the one row under the fresh unpurged
-/// request that is over the SLA does (exactly 1, not the tenant-wide 4 a join-less gauge reports).
+/// Seeds 3 rows settled 3600 s ago under an old (1800 s) request that is purged, then tombstones them.
+fn seed_purged_old_request_with_three_rows(handle: &mut Handle) {
+    let rows: Vec<StreamKey> = (0..3).map(|_| seed_done_row(handle, 3600)).collect();
+    let old_request = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 1800);
+    for row in &rows {
+        tombstone_row(handle, row);
+    }
+    purge(handle, old_request);
+}
+
+/// §41.2 (d): 3 tombstoned rows under an old purged request and a fresh request younger than the SLA ⇒ 0.
 #[test]
-fn over_sla_gauge_counts_only_rows_of_unpurged_requests() {
+fn over_sla_gauge_is_zero_when_only_a_fresh_request_is_unpurged() {
     run_db_fixture::<ForgetFixture, _>(
-        "over_sla_gauge_counts_only_rows_of_unpurged_requests",
+        "over_sla_gauge_is_zero_when_only_a_fresh_request_is_unpurged",
         |mut handle| {
-            let tenant_id = handle.tenant_id;
-            let old_request = seed_deletion_request_ago(&mut handle.admin, tenant_id, 1800);
-            for _ in 0..3 {
-                let memory = Uuid::new_v4();
-                seed_tombstoned_memory_row(&mut handle, memory, 3600);
-                seed_memory_target(&mut handle.admin, tenant_id, old_request, memory);
-            }
-            purge(&handle, old_request);
-
-            let fresh_memory = Uuid::new_v4();
-            seed_tombstoned_memory_row(&mut handle, fresh_memory, 300);
-            let fresh_request = seed_deletion_request_ago(&mut handle.admin, tenant_id, 60);
-            seed_memory_target(&mut handle.admin, tenant_id, fresh_request, fresh_memory);
-
+            seed_purged_old_request_with_three_rows(&mut handle);
+            seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 10);
             assert_eq!(
                 over_sla(&handle, 30),
-                1,
-                "3 rows of a purged request + 1 of an unpurged one over SLA counts exactly 1"
+                0,
+                "no request is unpurged past the SLA ⇒ the normal purge window raises no alert"
             );
         },
     );
 }
 
-/// §41.2 (e): one stream row targeted by two unpurged requests counts once.
+/// §41.2 (e): as (d), but the fresh request is past the SLA and unpurged ⇒ 4, the documented tenant-grain over-count.
 #[test]
-fn over_sla_gauge_counts_a_row_of_two_requests_once() {
+fn over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged() {
     run_db_fixture::<ForgetFixture, _>(
-        "over_sla_gauge_counts_a_row_of_two_requests_once",
+        "over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged",
         |mut handle| {
-            let tenant_id = handle.tenant_id;
-            let memory = Uuid::new_v4();
-            seed_tombstoned_memory_row(&mut handle, memory, 600);
-            for ago in [60, 90] {
-                let request = seed_deletion_request_ago(&mut handle.admin, tenant_id, ago);
-                seed_memory_target(&mut handle.admin, tenant_id, request, memory);
-            }
-            assert_eq!(over_sla(&handle, 30), 1, "one row, two requests, one count");
+            seed_purged_old_request_with_three_rows(&mut handle);
+            let fresh_row = seed_done_row(&mut handle, 300);
+            seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
+            tombstone_row(&handle, &fresh_row);
+            assert_eq!(
+                over_sla(&handle, 30),
+                4,
+                "documented over-count (fail loud): every tombstoned row of a tenant with a request unpurged past SLA counts, \
+                 including the 3 rows of the purged request; exact attribution waits for M19-3a"
+            );
+        },
+    );
+}
+
+/// §41.2 (f): another tenant's unpurged request past the SLA does not raise this tenant's gauge.
+#[test]
+fn over_sla_gauge_ignores_another_tenants_unpurged_request() {
+    run_db_fixture::<ForgetFixture, _>(
+        "over_sla_gauge_ignores_another_tenants_unpurged_request",
+        |mut handle| {
+            let row = seed_done_row(&mut handle, 600);
+            let other_tenant = seed_other_tenant(&mut handle.admin);
+            seed_deletion_request_ago(&mut handle.admin, other_tenant, 60);
+            tombstone_row(&handle, &row);
+            assert_eq!(
+                over_sla(&handle, 30),
+                0,
+                "a request of another tenant never makes this tenant's rows count"
+            );
         },
     );
 }
