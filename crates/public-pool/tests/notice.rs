@@ -25,7 +25,7 @@ use humaux_public_pool::{
 };
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Connection, PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
 fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
@@ -35,8 +35,8 @@ fn dsn_as_role(admin_dsn: &str, role: &str) -> String {
 
 struct Handle {
     rt: tokio::runtime::Runtime,
-    gateway: PgPool,
-    maintenance: PgPool,
+    gateway_dsn: String,
+    maintenance_dsn: String,
     admin: Client,
     tenants: Vec<Uuid>,
     users: Vec<Uuid>,
@@ -104,17 +104,13 @@ impl DbIntegrationFixture for NoticeFixture {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         // dep: PostgreSQL(role_gateway) — the request-path role the doors are granted to
-        let gateway = rt
-            .block_on(PgPool::connect(&dsn_as_role(&dsn, "role_gateway")))
-            .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
+        let gateway_dsn = dsn_as_role(&dsn, "role_gateway");
         // dep: PostgreSQL(role_maintenance) — the only role that may apply the cloud onboarding default
-        let maintenance = rt
-            .block_on(PgPool::connect(&dsn_as_role(&dsn, "role_maintenance")))
-            .map_err(|e| DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
+        let maintenance_dsn = dsn_as_role(&dsn, "role_maintenance");
         Ok(Handle {
             rt,
-            gateway,
-            maintenance,
+            gateway_dsn,
+            maintenance_dsn,
             admin,
             tenants: Vec::new(),
             users: Vec::new(),
@@ -199,61 +195,119 @@ impl Handle {
         (tenant, user, version)
     }
 
-    fn session(&self, pool: &PgPool, tenant: Uuid, user: Uuid) -> Transaction<'static, Postgres> {
+    fn apply_default(&self, tenant: Uuid, user: Uuid) -> bool {
         self.rt.block_on(async {
-            // dep: PostgreSQL(any) — one transaction per door call, on the pool of the role under test
-            let mut tx = pool.begin().await.expect("begin");
-            notice::install_session(&mut tx, TenantId(tenant), UserId(user))
+            let mut conn = connect(&self.maintenance_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let written = policy::apply_cloud_default(&mut tx)
                 .await
-                .expect("install session");
-            tx
+                .expect("apply the cloud default");
+            tx.commit().await.expect("commit");
+            written
         })
     }
 
-    fn apply_default(&self, tenant: Uuid, user: Uuid) -> bool {
-        let mut tx = self.session(&self.maintenance, tenant, user);
-        let written = self
-            .rt
-            .block_on(policy::apply_cloud_default(&mut tx))
-            .expect("apply the cloud default");
-        self.rt.block_on(tx.commit()).expect("commit");
-        written
-    }
-
     fn shown(&self, tenant: Uuid, user: Uuid, version: i32) -> Result<Uuid, Refusal> {
-        let mut tx = self.session(&self.gateway, tenant, user);
-        let result = self
-            .rt
-            .block_on(notice::record_shown(&mut tx, version, NoticeChannel::Popup));
-        if result.is_ok() {
-            self.rt.block_on(tx.commit()).expect("commit");
-        }
-        result
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let result = notice::record_shown(&mut tx, version, NoticeChannel::Popup).await;
+            settle(tx, result.is_ok()).await;
+            result
+        })
     }
 
     fn toggle(&self, tenant: Uuid, user: Uuid, on: bool) -> Result<i64, Refusal> {
-        let mut tx = self.session(&self.gateway, tenant, user);
-        let result = self
-            .rt
-            .block_on(policy::toggle(&mut tx, on, NoticeChannel::Console));
-        if result.is_ok() {
-            self.rt.block_on(tx.commit()).expect("commit");
-        }
-        result
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let result = policy::toggle(&mut tx, on, NoticeChannel::Console).await;
+            settle(tx, result.is_ok()).await;
+            result
+        })
     }
 
     fn current(&self, tenant: Uuid, user: Uuid) -> Option<i32> {
-        let mut tx = self.session(&self.gateway, tenant, user);
-        self.rt
-            .block_on(notice::current_notice(&mut tx))
-            .expect("the current notice")
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let current = notice::current_notice(&mut tx)
+                .await
+                .expect("the current notice");
+            settle(tx, false).await;
+            current
+        })
     }
 
     fn authorized(&self, tenant: Uuid, user: Uuid) -> bool {
-        let mut tx = self.session(&self.gateway, tenant, user);
-        self.rt
-            .block_on(notice::contribution_authorized(&mut tx, TenantId(tenant)))
-            .expect("the predicate")
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let authorized = notice::contribution_authorized(&mut tx, TenantId(tenant))
+                .await
+                .expect("the predicate");
+            settle(tx, false).await;
+            authorized
+        })
+    }
+
+    /// SQLSTATE and text of a statement that `role_gateway` must not be allowed to run.
+    fn gateway_statement_error(
+        &self,
+        tenant: Uuid,
+        user: Uuid,
+        statement: &str,
+    ) -> (Option<String>, String) {
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let error = sqlx::query(statement)
+                .bind(tenant)
+                .execute(&mut *tx)
+                .await
+                .expect_err(statement);
+            (sqlstate(&error), error.to_string())
+        })
+    }
+
+    /// Events a gateway session of `tenant` sees: those of `of`, or all of them.
+    fn visible_events(&self, tenant: Uuid, user: Uuid, of: Option<Uuid>) -> i64 {
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let count = sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM control.contribution_notice_events WHERE $1::uuid IS NULL OR tenant_id = $1",
+            )
+            .bind(of)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("count events");
+            settle(tx, false).await;
+            count
+        })
+    }
+}
+
+async fn connect(dsn: &str) -> PgConnection {
+    // dep: PostgreSQL(any) — one connection per door call, as the role the DSN names
+    PgConnection::connect(dsn).await.expect("connect")
+}
+
+async fn begin(conn: &mut PgConnection, tenant: Uuid, user: Uuid) -> Transaction<'_, Postgres> {
+    // dep: PostgreSQL(any) — one transaction per door call
+    let mut tx = conn.begin().await.expect("begin");
+    notice::install_session(&mut tx, TenantId(tenant), UserId(user))
+        .await
+        .expect("install session");
+    tx
+}
+
+/// Commits when `commit`, rolls back otherwise; consuming the transaction inside the runtime.
+async fn settle(tx: Transaction<'_, Postgres>, commit: bool) {
+    if commit {
+        tx.commit().await.expect("commit");
+    } else {
+        tx.rollback().await.expect("rollback");
     }
 }
 
@@ -410,15 +464,8 @@ fn g_m20_3_e_events_are_append_only() {
             "UPDATE control.contribution_notice_events SET kind = 'ACKED' WHERE tenant_id = $1",
             "DELETE FROM control.contribution_notice_events WHERE tenant_id = $1",
         ] {
-            let mut tx = h.session(&h.gateway, tenant, user);
-            let error =
-                h.rt.block_on(sqlx::query(statement).bind(tenant).execute(&mut *tx))
-                    .expect_err(statement);
-            assert_eq!(
-                sqlstate(&error).as_deref(),
-                Some("42501"),
-                "{statement}: {error}"
-            );
+            let (state, error) = h.gateway_statement_error(tenant, user, statement);
+            assert_eq!(state.as_deref(), Some("42501"), "{statement}: {error}");
         }
         for statement in [
             "UPDATE control.contribution_notice_events SET kind = 'ACKED' WHERE tenant_id = $1",
@@ -448,29 +495,9 @@ fn g_m20_3_f_events_are_tenant_isolated() {
     run_db_fixture::<NoticeFixture, _>("g_m20_3_f_events_are_tenant_isolated", |mut h| {
         let (tenant_a, user_a, _) = h.auto_tenant_shown_on_first_notice();
         let (tenant_b, user_b) = h.new_tenant();
-        let count = |h: &Handle, tenant: Uuid, user: Uuid, of: Uuid| -> i64 {
-            let mut tx = h.session(&h.gateway, tenant, user);
-            h.rt.block_on(
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM control.contribution_notice_events WHERE tenant_id = $1",
-                )
-                .bind(of)
-                .fetch_one(&mut *tx),
-            )
-            .expect("count events")
-        };
-        assert_eq!(count(&h, tenant_a, user_a, tenant_a), 1);
-        assert_eq!(count(&h, tenant_b, user_b, tenant_a), 0);
-        let mut tx = h.session(&h.gateway, tenant_b, user_b);
-        let visible: i64 =
-            h.rt.block_on(
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM control.contribution_notice_events",
-                )
-                .fetch_one(&mut *tx),
-            )
-            .expect("count visible events");
-        assert_eq!(visible, 0);
+        assert_eq!(h.visible_events(tenant_a, user_a, Some(tenant_a)), 1);
+        assert_eq!(h.visible_events(tenant_b, user_b, Some(tenant_a)), 0);
+        assert_eq!(h.visible_events(tenant_b, user_b, None), 0);
     });
 }
 
