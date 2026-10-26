@@ -40,7 +40,8 @@ select (select count(*) = 1 from pg_proc p
  and exists (select 1 from pg_policies where schemaname = 'private' and tablename = 'memory_records'
                and policyname = 'memory_records_tenant_and_visibility'
                and strpos(with_check, 'role_migration_owner') > 0 and strpos(with_check, 'revoked') > 0
-               and strpos(with_check, 'role_private_worker') > 0 and strpos(qual, 'role_migration_owner') > 0)
+               and strpos(with_check, 'role_private_worker') > 0 and strpos(qual, 'role_migration_owner') > 0
+               and strpos(with_check, 'NULLIF(current_setting(''humaux.tenant_id''') > 0 and strpos(with_check, '(current_setting(''humaux.tenant_id''::text, true))::uuid') = 0)
  as postcheck_ok
 """
 rollback_or_forward_fix = "forward-fix only: restore 0167's state guard, revoke and drop the accept door only after disabling its callers; never undo an accepted logical deletion."

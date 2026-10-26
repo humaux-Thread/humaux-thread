@@ -96,10 +96,11 @@ $$;
 -- no owner arm, so the owner-definer UPDATE of an invisible row failed with 42501. This amends the 0163 WITH CHECK by ONE
 -- tenant-bounded, revoke-only owner arm: WITH CHECK sees only the NEW row, so an owner door can write an invisible row only
 -- when it leaves it revoked, never keep it live with other content and never un-revoke it. USING and every existing WITH
--- CHECK branch are unchanged; there is no GUC arm.
+-- CHECK branch are unchanged; there is no GUC arm. The text below is the live WITH CHECK, i.e. 0163's after 0246's NULLIF
+-- rehardening of the tenant GUC cast (rls-check RLS 四项 rejects a plain cast and requires the NULLIF tenant clause).
 ALTER POLICY memory_records_tenant_and_visibility ON private.memory_records
 WITH CHECK (
-  tenant_id = current_setting('humaux.tenant_id', true)::uuid
+  tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid
   AND (
     (current_user = 'role_private_worker'
      AND (visibility_class = 'TENANT_SHARED'
