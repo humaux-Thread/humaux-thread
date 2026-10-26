@@ -1,8 +1,8 @@
 //! `adapters::tests::membership_lifecycle` — §6.3 membership lifecycle admin path (ADR-0033, card 12): live-DB
 //!   acceptance for `adapters::membership_repo` under the real `role_maintenance` login.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, uuid];
-//!   services=[PostgreSQL(any) r=[control.audit_events, public.humaux_test_membership_fault_] w=[control.memberships,
-//!   control.tenants, control.users]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::membership_repo,
+//!   services=[PostgreSQL(any) r=[public.humaux_test_membership_fault_] w=[control.audit_events,
+//!   control.memberships, control.tenants, control.users]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::membership_repo,
 //!   adapters::tests::support::operation_receipt_fixture, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [removing the last ACTIVE OWNER is Conflict(LastOwner) with only a DENIED row; the state change and
