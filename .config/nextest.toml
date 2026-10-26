@@ -56,6 +56,7 @@ serial-health-snapshot = { max-threads = 1 }
 serial-mechanism-observation = { max-threads = 1 }
 serial-phase9-exact-assessed-storage-binding = { max-threads = 1 }
 serial-phase9-independence-attestation = { max-threads = 1 }
+serial-public-notice = { max-threads = 1 }
 serial-public-provenance = { max-threads = 1 }
 serial-public-runtime = { max-threads = 1 }
 serial-public-runtime-qdrant = { max-threads = 1 }
@@ -126,6 +127,10 @@ test-group = 'serial-phase9-exact-assessed-storage-binding'
 [[profile.ci.overrides]]
 filter = 'binary_id(humaux-adapters::phase9_independence_attestation)'
 test-group = 'serial-phase9-independence-attestation'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(humaux-public-pool::notice)'
+test-group = 'serial-public-notice'
 
 [[profile.ci.overrides]]
 filter = 'binary_id(humaux-public-pool::public_provenance)'
