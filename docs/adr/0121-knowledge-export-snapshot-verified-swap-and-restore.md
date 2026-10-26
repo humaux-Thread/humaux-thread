@@ -44,7 +44,7 @@ row in its own card (note :82-83).
 
 EXCLUDED: `projection.*` (derived), all other `ops.*` (logs, query log, jobs, outbox, receipts),
 `coord.{leases, locks, task_runs}` (ephemeral/past retention), billing/quota/credit/referral (`credit_ledger` is
-unused by any billing flow; Creem rebuilds the rest), credentials/sessions/challenges (D-I),
+unused by any billing flow; Creem rebuilds the rest), credentials/sessions/challenges (D9),
 `private.{ingest_tickets, distill_candidates, processing_runs, code_*, memory_rollups*, worktree_overlays}` (derived
 or re-indexable), images/binaries/caches and Qdrant (note :83-87). Every catalog row is reviewed by
 the table's owner module in M23-2 (note :87-88). Rejected: a physical full (owner: not the whole system) and a
@@ -210,7 +210,7 @@ with M23-7 (note :187).
 
 ## Open research
 
-- **U3** Whether the 12 GiB repo image exists on the production node (note :226). Fallback: bind directory + the D-H
+- **U3** Whether the 12 GiB repo image exists on the production node (note :226). Fallback: bind directory + the D8
   guard; no production action (note :226).
 - **U4** Whether the M10 rebuild works from KNOWLEDGE tables alone (empty outbox/stream_log/registry) (note :227).
   Fallback: add the minimal stream rows to the catalog as KNOWLEDGE (catalog change only); proven by G-M23-9
@@ -222,8 +222,8 @@ with M23-7 (note :187).
   rebuildable without an LLM (note :231).
 - Measurements that gate the cards, not open questions: X-M23-1 (scratch postmaster on arm64: initdb + restore of the
   10k fixture, RAM ≤ 1.5 GiB, no socket, no write to the live cluster → M23-4) (note :213-214); X-M23-4 (export at
-  10k/50k: bytes/memory, wall time, p95 impact, drill time, with R11-K → the D-C revisit and the RTO statement)
-  (note :218-219).
+  10k/50k: bytes/memory zstd:3 vs gzip, wall time `-j1`/`-j2`, p95 impact on live queries, drill time → M23-3/-4
+  keys; with R11-K → the D-C revisit and the RTO statement) (note :218-219).
 
 ## Alternatives rejected
 
