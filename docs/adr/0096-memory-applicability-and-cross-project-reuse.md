@@ -48,6 +48,22 @@
   the owner's instruction, and ADR-0078 D-G's rule stands that an agent relaying the owner's words is weaker proof than
   the owner's own confirmation.
 
+### D-B.1 Approval predicate (lead ruling 2026-10-26)
+
+- The SQL SECURITY DEFINER decision door compares the expected scope, product_subject_id, channel_key and canonical jsonb qualifiers under FOR UPDATE; mismatch refuses with FORBIDDEN / applicability_proposal_changed.
+- Propose refuses APPROVED rows with FORBIDDEN / applicability_approved_requires_revoke; the owner must REJECT/revoke first; PROPOSED and REJECTED may be replaced.
+- The existing 0188 `control.assert_write_scope` authenticates the API-key caller inside the transaction.
+- Its key's user must hold ACTIVE `control.memberships.role = 'OWNER'` in the applicability row's tenant.
+- `AGENT_ON_OWNER_CHAT` (由聊天授权) requires same-tenant Evidence with `origin_class = 'AuthenticatedAgent'`
+  and `origin_principal_id = api_key_id`, the principal recorded by the existing remember/ingest writers.
+- This proves the agent's authorship of the relayed instruction, not the owner's words; ADR-0078 D-G stays intact.
+- Missing Evidence, foreign tenant, different author, wrong origin or non-owner is refused with FORBIDDEN and a sub-reason.
+- APPROVED and REJECTED record both method and Evidence; refusal leaves the whole row unchanged; proposals only store PROPOSED.
+- OWNER_CONSOLE is refused until the console session binding exists (M14-5b).
+- A future console approval requires a trusted owner session plus same-tenant DirectUserInput/UserConfirmed Evidence by that caller.
+- A later console approval may supersede a chat approval, never the reverse; applicability changes no visibility or permission.
+- Widening applicability is outside ADR-0078 D-G's high-risk list, so it requires no confirm token.
+
 ### D-C Language independence
 
 - Empty `implementation_languages` means language-independent, so research written for an older language is reusable
@@ -110,8 +126,17 @@
 | G-M14-8 approval provenance | `crates/adapters/tests/applicability.rs` | accept an agent widening WITHOUT the `由聊天授权` label | the broadened row becomes `APPROVED` |
 | G-M14-11 enum contracts | `crates/adapters/tests/facet_contract.rs` (extend) | a Rust variant with no CHECK value | the applicability `scope` / `status` sets differ from the CHECK lists |
 
-No gate exists in this PR (docs only). Each exists when M14-5 or M14-6 lands with its §80.1 inject → red → fix → green
-record; a missing database in CI is a failure, never `not_applicable`.
+M14-5a §80.1 records (a missing database in CI is a failure, never `not_applicable`):
+- G-M14-8 red: [40274367316](https://github.com/humaux/humaux-thread/actions/runs/40274367316), mutation
+  `d807b833462013fa031479151611c25072fcfc83` removes only the OWNER check. The gate's exact refusal assertion
+  (`applicability.rs:107`) fails because a non-owner's agent with matching Evidence reaches APPROVED.
+- G-M14-11 red: [40274691415](https://github.com/humaux/humaux-thread/actions/runs/40274691415), mutation
+  `eed3434ffb40f4d3f145400e58b50a74a8c677fd` adds one Rust scope variant without a CHECK literal;
+  `facet_contract.rs:390` fails on the exact DB/Rust set difference (`UNCHECKED_FOR_RED`).
+- Green for both is the implementing PR's required CI at its current head; acceptance requires that CI to pass.
+  G-M14-6/G-M14-7 remain M14-6 work.
+- First red-a attempt `40273877193` failed on fixture parameter inference (42P08), before the gate assertion;
+  it is not red proof. The explicit UUID casts are fixed in `27848aac`.
 
 ## Open numbers and owner-gated items
 
