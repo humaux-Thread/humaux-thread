@@ -33,6 +33,7 @@ fn free_addr() -> SocketAddr {
 struct Process(Child);
 impl Process {
     fn spawn(env: &BTreeMap<String, String>) -> Self {
+        // dep: subprocess(humaux-gateway) — real singleton boot gate (ADR-0100)
         let mut command = Command::new(env!("CARGO_BIN_EXE_humaux-gateway"));
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("HUMAUX_GATEWAY_") {
