@@ -4,7 +4,7 @@
 //!   postgres, sqlx, tokio]; services=[PostgreSQL(any) w=[control.deletion_requests, control.tenants,
 //!   control.users, ops.deletion_plan_steps, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::postgres, application::forget, domain::ids,
-//!   humaux-testkit, projection::stream]
+//!   humaux-testkit, projection::stream, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [every fixture calls require_disposable before it writes a row; rows are scoped to a throwaway tenant cleaned up on Drop; the TOMBSTONED edge and plan steps run on
 //!   role_maintenance; no DSN, unreachable DB or missing table/function is a visible SKIP]
