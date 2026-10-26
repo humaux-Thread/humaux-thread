@@ -192,3 +192,30 @@ fn g_m03_9_real_guard_subject_capacity_has_retry_after_and_metric() {
         });
     });
 }
+
+#[test]
+fn g_m03_1_real_guard_ip_capacity_keeps_authenticated_room() {
+    run_db_fixture::<Fixture, _>("g_m03_1_guard_tier_capacity", |mut handle| {
+        let credential = seed(&mut handle);
+        let mut settings = guard_settings();
+        settings.rate_max_subjects[0] = 1;
+        let (app, guard) = configured(&handle, settings);
+        frozen().block_on(async {
+            let clock = tokio::spawn(hold_clock());
+            let (addr, server) = start(app).await;
+            // §72.3: unauthenticated traffic fills the only IP slot before any postauth slot exists.
+            let statuses = [
+                wire(addr, None).await.0,
+                wire(addr, Some(&credential.bearer)).await.0,
+            ];
+            assert_eq!(
+                statuses,
+                [401, 200],
+                "IP capacity must leave all four authenticated tiers available"
+            );
+            assert_rate_metrics(&guard, "");
+            server.abort();
+            clock.abort();
+        });
+    });
+}
