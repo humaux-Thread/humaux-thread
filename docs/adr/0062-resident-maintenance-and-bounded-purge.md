@@ -59,6 +59,7 @@ between calls. Keys (prefix `HUMAUX_MAINTENANCE_SERVE_`): `METRICS_ADDR`, `CYCLE
 `interval` and compared with the DB clock inside the door.
 
 ### D-C  The task set (the closed `MaintenanceTask` list, in cycle order)
+**Amended by ADR-0123 (M21):** a §65 daily job is a resident task whose `EVERY_SECONDS` cadence is compared on the DB clock; no scheduler library enters the daemon.
 `lost` (`stream_repo::sweep_lost`, a direct UPDATE as `role_maintenance`, which the 0011/0167 guard requires),
 `quota_reservations` (0113 definer), `provider_budgets` (0117 definer), `confirm_tokens`, `selection_snapshots`,
 `rate_buckets`, `terminal_jobs` (the D-E doors), `reissue` (D-N), `redrive` (D-P). The system tenant (nil id) is
