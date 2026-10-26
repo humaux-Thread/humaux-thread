@@ -1,12 +1,14 @@
-# ADR-0111 — M13 freshness: a per-type policy annotation from Evidence time, never a score or a rank input
+# ADR-0111 — M13 freshness: a per-type policy annotation from Evidence time, never a score, no rank effect now
 
 - Status: Accepted (2026-10-26). Card M13-1 (docs only, wave D, module M13); ADR-M13-b (this ADR). Content authority:
   module design note M13 §4 D4 (note `:69`–`:77`) and the unknowns that bound it (note `:159`–`:161`), with no owner
-  question (note `:166`). This ADR records that decision and re-decides none of it. The code lands in M13-4a
-  (`FreshnessPolicy`, pure classify, values file) and M13-4b (wiring); until then every statement about behaviour is
-  **planned**.
+  question (note `:166`). This ADR records that decision and re-decides none of it, except the cross-note lead ruling
+  recorded in Consequences. The code lands in M13-4a (`FreshnessPolicy`, pure classify, values file) and M13-4b
+  (wiring); until then every statement about behaviour is **planned**.
 - Amends: Baseline §21.5 — one-line pointer: freshness is a per-`MemoryType` policy annotation computed from the
-  backing Evidence's `occurred_at`, is never a ranking input, and always travels with its `policy_id` and age.
+  backing Evidence's `occurred_at` (plus `last_verified_at` once M15-2b lands, per the lead ruling in Consequences);
+  it adds no rank effect now — ranking use is M11's call after its own eval — and always travels with its `policy_id`
+  and age.
 - Relates to: §9 (time semantics), §21.5, §23.3 (the envelope's `freshness` block), §78.1 (no hard-coded business
   config), §78.3 (no clock in domain), §80.1; ADR-0110 (the frontier/totals decisions this annotation sits beside;
   freshness changes no total); design notes M01 (config-registry values file), M11 (ranking), M14 (brief, facet
@@ -20,20 +22,21 @@
 - §21.5 requires freshness to be computed separately, forbids one uniform 7-day rule, and forbids collapsing
   similarity / relevance / association / completeness / temporal freshness / grounding state into one unexplainable
   score.
-- No values file exists for thresholds (note `:104`). B20's defaults are available as starting values; B17 records
-  that retrieval never advances `last_confirmed_at`; B20's `last_verified_at` columns have no writer until M15
-  revalidation exists (note `:74`–`:77`).
+- M13 owns the freshness values file (note `:104`); none exists on main yet. B20's defaults are available as starting
+  values; B17 records that retrieval never advances `last_confirmed_at`; B20's `last_verified_at` columns have no
+  writer until M15 revalidation exists (note `:74`–`:77`).
 - `occurred_at` coverage on legacy / imported Evidence is unknown (U3; note `:159`), so a missing input is a real
   state this decision must answer for.
 
 ## Decisions
 
-### D-A The only input is the backing Evidence's `occurred_at` (note D4)
+### D-A The input is the backing Evidence's `occurred_at`, plus `last_verified_at` after M15-2b (note D4)
 
-The per-item freshness input is only `occurred_at` of the Evidence behind the memory (§9); `now` is the snapshot's
-database clock — the domain takes no clock (§78.3). A missing `occurred_at` yields `unknown`; `recorded_at` /
-`updated_at` are never substituted (note `:69`–`:70`, U3 `:159`). Freshness is an annotation: it never changes rank
-and never downgrades a completeness class (§21.5; note `:13`, gate G-M13-6 `:126`).
+The per-item freshness input is the backing Evidence's `occurred_at` (§9) — plus `last_verified_at` once M15-2b lands,
+as the later of the two (lead ruling in Consequences); `now` is the snapshot's database clock — the domain takes no
+clock (§78.3). A missing `occurred_at` yields `unknown`; `recorded_at` / `updated_at` are never substituted (note
+`:69`–`:70`, U3 `:159`). Freshness is an annotation: it adds no rank effect now — ranking use is M11's call after its
+own eval — and never downgrades a completeness class (§21.5; note `:13`, `:76`, gate G-M13-6 `:126`).
 
 ### D-B Policy per `MemoryType` in a config-registry values file (note D4)
 
@@ -76,10 +79,10 @@ Reads, re-embeds and dedup re-imports never move `latest_evidence_at` (B20 red 1
   implementation and wiring cards. M15-2a folds into M13-4a: M15 D6 start values that name an existing
   MemoryType become policy rows, and the others are listed open. M15-2b shrinks to the `last_verified_at` +
   `verification_evidence_id` guest columns, landing with their first writer. The classifier's input then becomes
-  the later of the evidence `occurred_at` and `last_verified_at`. M15's G-M15-3 (crates/domain/tests/freshness.rs)
-  is an alias of G-M13-5/6, not a second gate.
+  the later of the evidence `occurred_at` and `last_verified_at`. M15's G-M15-3 faults (one global 7-day window;
+  reset on read) are covered by G-M13-5 and G-M13-4; no second gate. Where M15 D6 and D4 name a value for the same
+  type, D4 wins.
 - Asks M14: facet freshness is the freshness of the facet's source memories (U4; note `:160`–`:161`).
-- Asks M26: render `freshness.policy_id` and the age next to the class on the wire (note `:72`–`:74`).
 - Neutral: nothing compiles or runs for this card; no migration, code or gate lands with it.
 
 ## Gates
@@ -92,8 +95,9 @@ Planned, implementer-owned, tri-state (§57.1); none exists here:
 | G-M13-5 policy from config | M13-4a | delete the State row; hard-code 7 d | missing-type check red; §78.1 literal scan red |
 | G-M13-6 freshness ⟂ completeness (DOD-009) | M13-4a | downgrade class when an item is stale | an EXACT envelope with a stale item is no longer exact |
 
-Each needs its inject → red → fix → green record (§80.1) in the implementing card; a missing database is a fail in
-CI, never `not_applicable` (note `:118`).
+Each needs its inject → red → fix → green record (§80.1) in the implementing card. G-M13-4 needs
+`HUMAUX_TEST_PG_DSN`: a missing database is a fail in CI and `not_applicable` locally; G-M13-5 and G-M13-6 need no
+database (note `:118`).
 
 ## Owner-gated
 

@@ -5793,7 +5793,7 @@ Freshness policy 按 memory type / workspace policy 决定，不能用统一 7 �
 
 禁止把 Similarity / Relevance / Association / Completeness / Temporal Freshness / Grounding State 压成一个不可解释总分。
 
-**Amended by ADR-0111 (M13):** 新鲜度是按 `MemoryType` 的策略、只从 backing Evidence 的 `occurred_at` 算出的标注，阈值在 `config/freshness.toml`（§78.1），`policy_id` 与 age 恒随 class 给出；检索不推进它，它也不作为排序输入或完整性降级依据。
+**Amended by ADR-0111 (M13):** 新鲜度是按 `MemoryType` 的策略、从 backing Evidence 的 `occurred_at`（M15-2b 落地后加上 `last_verified_at`，lead ruling 见 ADR-0111 Consequences）算出的标注，阈值在 `config/freshness.toml`（§78.1），`policy_id` 与 age 恒随 class 给出；检索不推进它，它不是完整性降级依据；现在也不加排序效果，排序用途由 M11 在自身 eval 之后决定。
 
 ---
 

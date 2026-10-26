@@ -1,9 +1,9 @@
 # ADR-0110 — M13: `memory.get` reports the ledger frontier, and one totals constructor for the new surface
 
 - Status: Accepted (2026-10-26). Card M13-1 (docs only, wave D, module M13); ADR-M13-a (this ADR). Content authority:
-  module design note M13 §4 D1, D2, D3, D5, D6, D7 and D8 (note `:49`–`:88`), whose owner-questions section is empty
-  (note `:166`). This ADR records those decisions and re-decides none of them. The code lands in M13-2a/2b/3/5/6/7/8;
-  until then every statement about behaviour is **planned**.
+  module design note M13 §4 D1–D3 and D5–D8 — frontier, totals and the M13 envelope bookkeeping (D5–D8) (note
+  `:49`–`:88`) — whose owner-questions section is empty (note `:166`). This ADR records those decisions and re-decides
+  none of them. The code lands in M13-2a/2b/3/5/6/7/8; until then every statement about behaviour is **planned**.
 - Amends: Baseline §23.3 — one-line pointer: get's `pipeline.projection` is a frontier reading, not the closure
   example; the closure shape stays for recall / context / enumerate.
 - Relates to: §15.5, §22.0, §22.1, §22.2, §23.1②, §23.1④, §23.3, §25.3.1, §33.5, §57.1, §80.1; ADR-0041
@@ -22,6 +22,7 @@
   (note `:31`) — yet C6 exposes them as `u64` "0 until it writes" (note `:32`).
 - Totals exist only inside `ExactReport` (note `:43`). §22.1 forbids passing recall counts off as `total`; §33.5
   bounds every tool's output; without one mapping each M26 tool and the M14 brief would invent its own fields.
+  §23.1② pins `LedgerCounts` at exactly 6 fields (note `:21`).
 - The EXACT census covers the subject axis and the ADR-0067 note axes; predicates
   `authorized_memory_enumeration_v1` and `rejected_decisions_v1` are the only two. There is no project axis
   (note `:22`–`:23`, `:46`).
@@ -35,12 +36,14 @@
 
 `pipeline.projection` becomes
 `{mode: "frontier", issued, settled_prefix, behind = issued − settled_prefix, serving, observed_at}`, read through
-C6 `ledger_frontier` (note `:93`); no `visible`, no ratio, no Qdrant count, no closure. `None` (no checkpoint row) →
-`projection: null` with reason `no_checkpoint` — never a fabricated zero (§23.1④; note D1 cites it as §23.3④). Class
-unchanged (`cannot_establish/count_unknown`: a point read establishes no universe). The PostgreSQL read stays
-authoritative (§15.5). `behind` is an upper bound on in-flight tickets and never feeds A2 or a LOST verdict
-(§23.1②). recall / context / enumerate keep the closure (they need A1/A2). Authority: B23 verdict, M09 D3, §23.1②
-(note `:53`–`:54`).
+C6 `ledger_frontier` (note `:93`); no `visible`, no ratio, no Qdrant count, no closure. The contract vehicle is
+`ProjectionReading::{Closure, Frontier}` plus the memory.output schema (note `:94`); the schema file is
+`contracts/mcp/memory.output.schema.json`, fingerprinted in `crates/protocol/src/mcp_catalog.rs` (note `:101`). `None`
+(no checkpoint row) → `projection: null` with reason `no_checkpoint` — never a fabricated zero (§23.1④; note D1 cites
+it as §23.3④). Class unchanged (`cannot_establish/count_unknown`: a point read establishes no universe). The
+PostgreSQL read stays authoritative (§15.5). `behind` is an upper bound on in-flight tickets and never feeds A2 or a
+LOST verdict (§23.1②). recall / context / enumerate keep the closure (they need A1/A2). Authority: B23 verdict, M09
+D3, §23.1② (note `:55`–`:56`).
 
 Which read gets which reading — the single table note §14 points at (note `:174`):
 
@@ -81,13 +84,15 @@ A pure function over a continuity snapshot's slot states against the declared re
 The sum of frontiers over the caller's streams: `{issued, settled_prefix, behind, observed_at}` per workspace,
 worded "not yet confirmed processed" — an upper bound that includes failures — never "failed". The exact `failed` /
 `waiting_key` breakdown exists only in `detailed`, through the closure, rate-limited (`ponytail:` O(stream) per
-detailed call; upgrade = real evidence/knowledge highwaters). Authority: B17 Q4 (processing ≠ done) (note `:81`–`:84`).
+detailed call; upgrade = real evidence/knowledge highwaters). Consumers: M26 `status.health` and M22 (note `:98`).
+Authority: B17 Q4 (processing ≠ done) (note `:81`–`:84`).
 
 ### D-F Project axis on the EXACT census (note D7)
 
 One M29-owned SQL predicate over `private.memory_projects_live` (`security_invoker`), so the M29 reader arm stays the
 single read path (ADR-0078 D-D; xtask `m29_attribution_reader`). Unresolved memories are outside the project universe
-and are reported as such, never guessed (N09 R3) (note `:85`–`:87`).
+and are reported as such, never guessed (N09 R3) (note `:85`–`:87`). The M13→M29 dependency is a declared same-layer,
+read-only edge (note §7 `:109`).
 
 ### D-G DoD verifier rows (note D8)
 
@@ -98,18 +103,18 @@ bookkeeping and nothing in D8 is freshness-specific.
 ## Consequences
 
 - Positive: a get costs one PK lookup (< 0.1 ms) instead of the ≈ 6.8 ms closure plus a Qdrant count; expected PG CPU
-  per get ≈ 13.5 ms, measured by E-M13-1 (note `:113`–`:114`, `:152`). One totals mapping for every new tool; facet
-  coverage and per-account processing status gain a producer.
+  per get ≈ 13.5 ms, measured by E-M13-1 (note `:113`–`:114`), and flat cost across stream sizes is part of G-M13-1
+  (note `:152`). One totals mapping for every new tool; facet coverage and per-account processing status gain a producer.
 - Cost: `behind` is an upper bound, never a failure count (note `:82`); recall still pays the closure, and its
   upgrade (frontier + sampled reconciliation) needs a new ADR when recall p95 passes B23's 200/500 ms with the
   closure above 25 % of PG time (note `:176`–`:178`); detailed status is O(stream) (note `:84`, `:116`).
 - Asks M09: make `evidence_highwater` / `knowledge_highwater` `Option` or drop them (note `:62`–`:63`).
 - Asks M26: render every new-surface total from `envelope::totals` (note `:66`–`:67`, contract row `:95`) and surface
   `status.health` from `processing_status(account)` (note `:98`).
-- Asks M14: take the brief coverage line and the reuse wording ("N eligible, showing k") from `Totals` and
-  `facet_completeness()` (note `:80`, `:95`).
+- Asks M14: take the brief coverage line and the reuse wording ("N eligible, showing k") from `Totals` (note `:95`)
+  and `facet_completeness()` (note `:80`, `:97`).
 - Asks M29: the guest card for `private.memory_in_project(...)` (note `:99`, `:143`).
-- Asks M24: register the five DoD rows in the DoD registry format (note `:130`, `:145`).
+- Asks M24: register the six DoD rows (D240–D243, D248, D253) in the DoD registry format (note `:35`, `:130`, `:145`).
 - Neutral: nothing compiles or runs for this card; no migration, code or gate lands with it.
 
 ## Gates
@@ -118,7 +123,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists here:
 
 | gate | owner card | injected fault | expected red |
 |---|---|---|---|
-| G-M13-1 get is O(1) (B23 red 15) | M13-2b | call `close_ledger_in_txn` / `visible_index_count` from get | permission denied on `stream_log`; Qdrant-count counter ≠ 0 |
+| G-M13-1 get is O(1) (B23 red 15); setup: throwaway DB with `stream_log` SELECT revoked (note `:121`) | M13-2b | call `close_ledger_in_txn` / `visible_index_count` from get | permission denied on `stream_log`; Qdrant-count counter ≠ 0 |
 | G-M13-2 no fabricated frontier | M13-2a (type), M13-2b (wire) | map `None` to a zero frontier; read `evidence_hw` in gateway | `projection` not null on a row-less stream; sentinel count ≠ 0 |
 | G-M13-3 totals honesty | M13-3 | `total = returned` for semantic | Exact without `predicate_id` fails; `Totals {` constructed ≠ 1 |
 | G-M13-7 FACET_COMPLETE | M13-5 | count `STALE` as covered | covered/required wrong; class ≠ `cannot_establish` |
@@ -126,8 +131,9 @@ Planned, implementer-owned, tri-state (§57.1); none exists here:
 | G-M13-9 status wording | M13-6 | emit 0 for a row-less stream; label `behind` as failed | `not_applicable` missing / wire word wrong |
 | G-M13-10 DoD verifiers | M13-8 | point DOD-009 at a nonexistent test | registry check red |
 
-Each needs its inject → red → fix → green record (§80.1) in the implementing card; a missing database is a fail in
-CI, never `not_applicable` (note `:118`).
+Each needs its inject → red → fix → green record (§80.1) in the implementing card. The DB gates (G-M13-1, G-M13-2,
+G-M13-8, G-M13-9) need `HUMAUX_TEST_PG_DSN`: a missing database is a fail in CI and `not_applicable` locally;
+G-M13-3, G-M13-7 and G-M13-10 need no database (note `:118`).
 
 ## Owner-gated
 
@@ -139,8 +145,8 @@ and the cited research, recorded here and not re-decided.
 
 - **U1** When contract C6 `ledger_frontier` lands is unknown (note `:156`). Fallback: M13-2a/3/4a/5/8 proceed;
   M13-2b and M13-6 wait.
-- **U2** Whether any client parses get's `projection.visible` / `completeness_ratio` (note `:157`). Fallback: the old
-  product talks to the M25 facade, not this wire; the contract fingerprint bump is the signal; no dual-shape period.
+- **U2** Whether any client parses get's `projection.visible` / `completeness_ratio` (note `:157`). Fallback: no
+  client of this wire is known to parse it; the contract fingerprint bump is the signal; no dual-shape period.
 - **U5** The required-facet profile per project — which facets are "required" — is undeclared (note `:162`).
   Fallback: the §25.3.1 `SOURCE_BACKED` set minus the unavailable phase-11/12 facets (B90) until M14 declares
   profiles.
