@@ -4,8 +4,8 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(any)
 //!   r=[coord.task_runs_one_open_lease_per_task] w=[control.tenants, coord.task_runs, coord.tasks],
 //!   PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::coord_repo, adapters::postgres, domain::coordination,
-//!   domain::error, domain::identity, domain::ids, humaux-testkit]
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::coord_repo, adapters::postgres, adapters::retrieve,
+//!   domain::coordination, domain::error, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns a throwaway control.tenants row and deletes its coord rows on drop; lease expiry is
 //!   moved on the DB clock by SQL, never by sleeping; every rejection case has a passing positive control in the same
@@ -24,13 +24,15 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use humaux_adapters::coord_repo::{self, VerifiedTaskRun};
-use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::postgres::{PoolSettings, RuntimeDbPool};
+use humaux_adapters::retrieve;
 use humaux_domain::coordination::{FencingToken, TaskRunId, TaskState};
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{TaskId, TenantId, WorkspaceId};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
+use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Uuid;
 
 /// Test-local lease length; long enough that no test run reaches it on its own.
@@ -106,13 +108,38 @@ impl DbIntegrationFixture for CoordFixture {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         let gateway = rt
-            // dep: PostgreSQL(role_gateway) — open a role-scoped PG connection/pool for this test
-            .block_on(RuntimeDbPool::connect(&gateway_dsn))
+            // dep: PostgreSQL(role_gateway) — the fixture's two-connection-capped gateway pool
+            .block_on(RuntimeDbPool::connect_with(
+                &gateway_dsn,
+                &PoolSettings {
+                    max_connections: 2,
+                    min_connections: 0,
+                    acquire_timeout: Duration::from_secs(10),
+                    idle_timeout: Duration::from_secs(60),
+                    max_lifetime: Duration::from_secs(600),
+                    statement_timeout: Duration::from_secs(30),
+                    idle_in_transaction_timeout: Duration::from_secs(30),
+                    application_name: "coord_task_run".to_owned(),
+                },
+            ))
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         let raw = rt
-            // dep: PostgreSQL(role_gateway) — open a role-scoped PG connection/pool for this test
-            .block_on(sqlx::Pool::<sqlx::Postgres>::connect(&gateway_dsn))
+            // dep: PostgreSQL(role_gateway) — the fixture's two-connection-capped raw pool
+            .block_on(
+                PgPoolOptions::new()
+                    .max_connections(2)
+                    .connect(&gateway_dsn),
+            )
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
+        // #273 F4: assert the caps from the pools themselves (not from the literals above), so a revert to the default
+        // 10-connection pools is a red fixture instead of a `too many clients` red under concurrency.
+        let (gateway_cap, _) = retrieve::query_log_limits(&gateway);
+        assert_eq!(gateway_cap, 2, "gateway fixture pool max_connections");
+        assert_eq!(
+            raw.options().get_max_connections(),
+            2,
+            "raw fixture pool max_connections"
+        );
         Ok(Handle {
             rt,
             gateway,
