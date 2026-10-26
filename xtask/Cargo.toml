@@ -18,7 +18,7 @@ toml = "1"
 # §50.1 config-check.rs: reuses contracts::feature_registry parsing, no second parser.
 # why: reuse the typed features.toml parser instead of a second one; used-by: [xtask::config_check, xtask::mechanism_registry]
 humaux-contracts = { path = "../crates/contracts" }
-# why: reuse the real Postgres/Qdrant repo adapters instead of re-typing SQL/wire calls; used-by: [tests, xtask::e2e_onboard, xtask::e2e_seed, xtask::load, xtask::mechanism_registry]
+# why: reuse the real Postgres/Qdrant repo adapters instead of re-typing SQL/wire calls; used-by: [tests, xtask::e2e_onboard, xtask::e2e_seed, xtask::mechanism_registry]
 humaux-adapters = { path = "../crates/adapters" }
 # why: async runtime for the ops subcommands that call async adapters; used-by: [tests, xtask::e2e_seed, xtask::mechanism_registry, xtask::soak]
 tokio = { version = "1", features = ["rt-multi-thread"] }
