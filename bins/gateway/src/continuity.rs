@@ -3,7 +3,7 @@
 //!   serde_json]; services=[]; env=[]; modules=[adapters::continuity_read, adapters::continuity_repo,
 //!   adapters::postgres, application::continuity, domain::context, domain::continuity, domain::error,
 //!   domain::identity, domain::ids]
-//! Called-by: [gateway::mcp_application]
+//! Called-by: [gateway::mcp_application, tests]
 //! Invariants: [an unknown or unpublished continuity project yields the application-layer NotFound error, never a
 //!   partial facet list; a publish hands the adapter's own in-transaction slot read to the compare-and-set and never
 //!   a caller version (ADR-0094 D-C)]
