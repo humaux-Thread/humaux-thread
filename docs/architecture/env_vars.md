@@ -221,6 +221,7 @@ modules:
 - `xtask::phase`
 - `xtask::r4_fault_manifest`
 - `xtask::rls_check`
+- `xtask::schedule_register`
 - `xtask::serial_lane`
 - `xtask::soak`
 - `xtask::threshold_shape`
@@ -345,6 +346,7 @@ processes:
 modules:
 - `xtask::architecture_check`
 - `xtask::contract_impact`
+- `xtask::schedule_register`
 
 ### `GITLEAKS_CONFIG`
 - witness: literal
