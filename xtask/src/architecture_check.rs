@@ -13736,9 +13736,13 @@ runs:
 
     #[test]
     fn m20_26_entities_id_fixture() {
-        for id in ["subject_id", "node_id", "memory_id"] {
-            let sql =
-                format!("SELECT * FROM public.entities e JOIN private.subjects p ON e.{id} = p.id");
+        // Each id joins its own private table: joining private.subjects on `.id` is itself the subject_id bridge.
+        for (id, table) in [
+            ("subject_id", "private.subjects"),
+            ("node_id", "private.nodes"),
+            ("memory_id", "private.memory_records"),
+        ] {
+            let sql = format!("SELECT * FROM public.entities e JOIN {table} p ON e.{id} = p.id");
             assert_eq!(
                 entities_id_join_from(&sql),
                 Verdict::Fail(vec![format!(
