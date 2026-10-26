@@ -9,7 +9,8 @@
 
 [crates]
 # L0 kernel (M01).
-# shared: M20 private-side contribution: core and inert (X-M20-1, M20 U1): domain/src/public.rs.
+# shared: M20 private-side contribution: core and inert (X-M20-1, M20 U1): domain/src/public.rs;
+# contribution purpose/lifecycle variants in ledger.rs and lifecycle.rs (enclosing core contracts remain active).
 humaux-domain = "M01"
 humaux-contracts = "M01"
 humaux-fail-closed-macro = "M01"
@@ -24,6 +25,8 @@ humaux-cache = "M12"
 humaux-infra-network = "M05"
 humaux-infra-egress = "M05"
 humaux-infra-cell = "M05"
+# shared: M20 private-side contribution: core and inert (X-M20-1, M20 U1): local-secret-scan/src/lib.rs
+# contribution scan rules/receipt; retrieval and tool-sealing scans remain active.
 humaux-local-secret-scan = "M05"
 
 # shared: M10 projection, M09 stream.
@@ -36,10 +39,12 @@ humaux-retrieval-provider = "M11"
 # M20 private-side contribution: core and inert (X-M20-1, M20 U1): adapters/src/contribution_reasoner.rs,
 # contribution_entry_repo.rs, contribution_execution_repo.rs, contribution_execution_ingress.rs, contribution_scan.rs,
 # contribution_repo.rs and contribution-purpose encoding in private_inference_rpc.rs; shared provider helpers in
-# byok.rs, consolidation_reasoner.rs and distill_reasoner.rs.
+# byok.rs, consolidation_reasoner.rs and distill_reasoner.rs; contribution seams in jobs.rs, model_call_ledger.rs,
+# reasoning_route_admission.rs and reasoning_route_onboarding.rs (shared job/ledger/route APIs remain active).
 humaux-adapters = "M07"
 # shared: M20 private-side contribution: core and inert (X-M20-1, M20 U1): application/src/contribute.rs,
-# contribution_execution.rs; contribution request types in consolidate.rs.
+# contribution_execution.rs; contribution request types in consolidate.rs and contribution variants in forget.rs/notify.rs
+# (shared deletion and notification contracts remain active).
 humaux-application = "M07"
 # shared: M26 MCP surface, M02 edge types.
 humaux-protocol = "M26"
