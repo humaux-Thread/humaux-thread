@@ -118,20 +118,6 @@ pub const PHASE_4: &[DodVerifier] = &[];
 /// dod-check 报 fail 也不硬凑错映射。
 pub const PHASE_6: &[DodVerifier] = &[
     DodVerifier {
-        id: "DOD-006",
-        phase: 6,
-        // §69: the dense `stream_seq` ledger proves each stream's expected universe. §15.4
-        // reads `expected` (checkpoint `issued_highwater`) and `max_stream_seq` (`MAX` over
-        // `stream_log`) as two independent numbers whose agreement is part of the identity,
-        // so the ledger's own maximum — never the counter alone — licenses the universe.
-        // verifier = the whole `advance_prefix` identity family (positive / gap bound / A1
-        // drift / max-seq drift); fault = the max-seq drift arm, the red for "checkpoint
-        // counter substituted for the dense ledger".
-        fault: "advance_prefix_inconsistent_when_expected_disagrees_with_max_seq",
-        kind: "test",
-        verifier_ref: "test-lib::humaux-projection::advance_prefix",
-    },
-    DodVerifier {
         id: "DOD-007",
         phase: 6,
         // §69: when `done + open_gaps + pending == expected` fails, only `cannot_establish`
@@ -139,7 +125,8 @@ pub const PHASE_6: &[DodVerifier] = &[
         // still carrying the counts (§22.4's "at least N"), and §22.4's `classify()` turns
         // that into `cannot_establish/ledger_not_closed` before the census/lane/planner arms,
         // so a broken ledger cannot be reported as EXACT.
-        // fault = the same test's injected ledger (`done=5` against `expected=10`).
+        // fault = the same test's injected ledgers, short (`done=5`) and over (`done=12`) against
+        // `expected=10`: §69's condition is "≠", so both sides must refuse.
         fault: "broken_ledger_yields_cannot_establish_ledger_not_closed_ahead_of_everything_else",
         kind: "test",
         verifier_ref: "test-lib::humaux-retrieval::broken_ledger_yields_cannot_establish_ledger_not_closed_ahead_of_everything_else",

@@ -19,6 +19,11 @@
 # --- dod -------------------------------------------------------------------
 
 [[dod]]
+id = "DOD-006"
+owner = "M13"
+reason = "no verifier registered in crates/testkit/src/dod.rs; the dense-ledger proof is the DB-backed crates/adapters/tests/stream_repo.rs advance_prefix test, which the known-red lint job (no PostgreSQL) cannot execute (#353)"
+
+[[dod]]
 id = "DOD-008"
 owner = "M13"
 reason = "no verifier registered in crates/testkit/src/dod.rs; completeness block exists in retrieval/src/envelope.rs"
