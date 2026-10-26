@@ -1,6 +1,6 @@
 //! `public-pool::tests::vocab` — Real-PostgreSQL vocabulary loader and closed-set contracts (G-M20-16, §78.2).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, tokio];
-//!   services=[PostgreSQL(any) r=[public.concepts, public.concept_labels, public.concept_relations], PostgreSQL(role_public_worker)];
+//!   services=[PostgreSQL(any) r=[public.concepts, public.concept_labels, public.concept_relations] w=[public.concepts, public.concept_labels, public.concept_relations], PostgreSQL(role_public_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::error, humaux-testkit, public-pool::vocab, public-pool::vocab::model]
 //! Called-by: [cargo-test]
 //! Invariants: [the production write door runs twice; exact full seed with pinned definitions and CHECK sets; PREF/definition edits update in place; ALT removal is rejected naming the concept; each integrity constraint is exercised with SQLSTATE and constraint name; absent DB fails in CI]
@@ -242,7 +242,9 @@ fn violates(worker: &mut Client, sql: &str, state: &SqlState, constraint: &str) 
 
 // §12.3: the worker role has direct INSERT, so these constraints are the real gate.
 fn constraints_reject_direct_writes(dsn: &str) {
+    // dep: PostgreSQL(any) — §12.3 direct-write constraint probes.
     let mut worker = Client::connect(dsn, NoTls).expect("CI PostgreSQL");
+    // dep: PostgreSQL(role_public_worker) — §12.3 the production writer identity.
     worker
         .batch_execute("SET ROLE role_public_worker")
         .expect("worker role");
