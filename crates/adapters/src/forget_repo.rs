@@ -482,7 +482,7 @@ async fn freeze_in_txn(
 }
 
 /// Freezes a `MEMORY`-scope request (ADR-0092 D-A): the Memory alone, its source Evidence retained. The Memory must be
-/// readable by `authorization` (the door re-judges it, §8.6).
+/// readable by `authorization` before the door; the door checks tenant and existence (§6.1.1).
 pub async fn freeze_memory_in_txn(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
