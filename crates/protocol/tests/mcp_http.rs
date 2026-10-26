@@ -358,3 +358,32 @@ async fn authorization_errors_change_the_http_status_before_dispatch() {
     assert_eq!(status, 403);
     server.abort();
 }
+
+#[tokio::test]
+async fn non_capacity_503_has_no_retry_after() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start(app.clone()).await;
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
+        modern_params(r#""name":"remember","arguments":{}"#)
+    );
+    for code in [
+        ErrorCode::DependencyUnavailable,
+        ErrorCode::CannotEstablishCompleteness,
+    ] {
+        for preflight in [true, false] {
+            *app.denied.lock().unwrap() = preflight.then_some(code);
+            *app.invoke_denied.lock().unwrap() = (!preflight).then_some(code);
+            let (status, response, headers) =
+                request(address, "POST", &tool_call_headers(), &body).await;
+            assert_eq!(status, 503, "{code:?} preflight={preflight}: {response}");
+            assert_eq!(
+                headers.get("retry-after"),
+                None,
+                "non-capacity {code:?} preflight={preflight}"
+            );
+        }
+    }
+    assert_eq!(app.invocations.lock().unwrap().len(), 0);
+    server.abort();
+}
