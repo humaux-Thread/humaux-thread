@@ -330,6 +330,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::feature_registry`
 
@@ -1766,6 +1767,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -2244,6 +2246,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `cache::key`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -2307,6 +2310,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `gateway::auth`
 
 #### `gateway::bootstrap`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_ADMISSION_CONCURRENCY`
 - env `HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS`
@@ -2976,6 +2980,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -3996,6 +4001,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -4216,6 +4222,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
@@ -4650,6 +4657,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::supersede`
 
 #### `contracts::config_registry`
+- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::retrieval_config`
 
@@ -12648,6 +12656,7 @@ why: shared contract types for the mechanism-observation adapter
 modules naming it:
 - `adapters::mechanism_observation`
 - `adapters::qdrant`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::qdrant_contract`
 - `tests`
 
