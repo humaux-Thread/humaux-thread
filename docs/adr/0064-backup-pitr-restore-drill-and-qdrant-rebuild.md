@@ -39,6 +39,8 @@
     rulings, scope, findings, tests, limits, E16 table, rejected lists and follow-ups, `card37_extra_gates.env` and
     `c37_rehearse.sh`. No code path changes.
 
+**Superseded in scope by ADR-0121 (M23):** backup is a knowledge-only logical export; WAL/PITR and the Qdrant snapshot leg retire after the first verified export.
+
 ## S1 — schema as built
 
 Migration numbers follow design 10.3 shifted by +2 (card 36 ended at 0231): fingerprints and vectors = 0232,
