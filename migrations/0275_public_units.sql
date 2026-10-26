@@ -20,14 +20,18 @@ CREATE TABLE public.unit_fields (
     (state = 'KNOWN' AND value IN ('"UNKNOWN"'::jsonb,'"SUCCESS"'::jsonb,'"PARTIAL"'::jsonb,'"FAILED"'::jsonb)))
 );
 CREATE TABLE public.unit_conditions (
+  condition_id uuid PRIMARY KEY DEFAULT uuidv7(),
   revision_id uuid NOT NULL REFERENCES public.syntheses(synthesis_id),
   entity_id uuid NOT NULL,
   version_range text,
   platform text,
   constraint_key text NOT NULL,
-  value jsonb NOT NULL,
-  PRIMARY KEY (revision_id, entity_id, constraint_key)
+  value jsonb NOT NULL
 );
+-- §12.6: nullable platform/version_range cannot join the PK; identity is the
+-- coalesced tuple so one revision may state one key per platform/version.
+CREATE UNIQUE INDEX unit_conditions_identity_uq ON public.unit_conditions
+  (revision_id, entity_id, constraint_key, COALESCE(version_range, ''), COALESCE(platform, ''));
 -- §6.2.2: unreleased drafts have no serving-role read grant; M20-12 owns serving.
 REVOKE ALL ON public.units, public.unit_fields, public.unit_conditions FROM PUBLIC,
   role_gateway, role_private_worker, role_consolidation_worker, role_public_worker,

@@ -544,6 +544,40 @@ fn fk_pairs(tx: &mut Transaction<'_>, child: &str, parent: &str) -> Vec<(String,
         .unwrap();
     rows.iter().map(|row| (row.get(0), row.get(1))).collect()
 }
+fn primary_key_columns(tx: &mut Transaction<'_>, relation: &str) -> Vec<String> {
+    let rows = tx
+        .query(
+            "SELECT a.attname FROM pg_constraint c
+               JOIN unnest(c.conkey) WITH ORDINALITY k(attnum, ord) ON true
+               JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum
+              WHERE c.contype='p' AND c.conrelid=$1::text::regclass
+              ORDER BY k.ord",
+            &[&relation],
+        )
+        .unwrap();
+    rows.iter().map(|row| row.get(0)).collect()
+}
+fn unique_index_keys(tx: &mut Transaction<'_>, index: &str) -> Vec<String> {
+    let unique: bool = tx
+        .query_one(
+            "SELECT indisunique FROM pg_index WHERE indexrelid=$1::text::regclass",
+            &[&index],
+        )
+        .unwrap()
+        .get(0);
+    assert!(unique, "{index} must be unique");
+    let rows = tx
+        .query(
+            "SELECT pg_get_indexdef(i.indexrelid, k.ord::int, true)
+               FROM pg_index i
+               JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON true
+              WHERE i.indexrelid=$1::text::regclass
+              ORDER BY k.ord",
+            &[&index],
+        )
+        .unwrap();
+    rows.iter().map(|row| row.get(0)).collect()
+}
 #[test]
 fn f3_entity_tripwire_fails_the_day_public_entities_lands() {
     let mut client = database();
@@ -592,25 +626,45 @@ fn unit_schema_binds_revision_unit_id_and_conditions_exactly() {
         .unwrap()
         .get(0);
     assert_eq!(primary_keys, 1, "exactly one unit_conditions primary key");
-    let rows = tx
-        .query(
-            "SELECT a.attname FROM pg_constraint c
-               JOIN unnest(c.conkey) WITH ORDINALITY k(attnum, ord) ON true
-               JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum
-              WHERE c.contype='p' AND c.conrelid='public.unit_conditions'::regclass
-              ORDER BY k.ord",
-            &[],
-        )
-        .unwrap();
     assert_eq!(
-        rows.iter()
-            .map(|row| row.get::<_, String>(0))
-            .collect::<Vec<_>>(),
+        primary_key_columns(&mut tx, "public.unit_conditions"),
+        vec!["condition_id".to_owned()]
+    );
+    let unique_keys = unique_index_keys(&mut tx, "public.unit_conditions_identity_uq");
+    assert_eq!(unique_keys.len(), 5, "identity index key count");
+    assert_eq!(
+        unique_keys,
         vec![
             "revision_id".to_owned(),
             "entity_id".to_owned(),
-            "constraint_key".to_owned()
+            "constraint_key".to_owned(),
+            "COALESCE(version_range, ''::text)".to_owned(),
+            "COALESCE(platform, ''::text)".to_owned(),
         ]
     );
+    tx.rollback().unwrap();
+}
+#[test]
+fn unit_conditions_identity_allows_two_platforms_and_refuses_duplicate() {
+    let mut client = database();
+    // dep: PostgreSQL(any) — §79.2 rollback-only probes never persist fixtures.
+    let mut tx = client.transaction().unwrap();
+    let revision = revision(&mut tx);
+    let entity = Uuid::from_u128(1);
+    let insert = |tx: &mut Transaction<'_>, platform: &str| {
+        tx.execute(
+            "INSERT INTO public.unit_conditions(revision_id,entity_id,constraint_key,platform,value) VALUES ($1,$2,$3,$4,$5)",
+            &[&revision, &entity, &"license", &platform, &json!({"spdx":"MIT"})],
+        )
+    };
+    assert_eq!(insert(&mut tx, "linux").unwrap(), 1);
+    assert_eq!(insert(&mut tx, "macos").unwrap(), 1);
+    tx.batch_execute("SAVEPOINT condition_probe").unwrap();
+    let error = insert(&mut tx, "linux").expect_err("duplicate platform must be refused");
+    let error = error.as_db_error().expect("database error");
+    assert_eq!(error.code().code(), "23505");
+    assert_eq!(error.constraint(), Some("unit_conditions_identity_uq"));
+    tx.batch_execute("ROLLBACK TO SAVEPOINT condition_probe")
+        .unwrap();
     tx.rollback().unwrap();
 }
