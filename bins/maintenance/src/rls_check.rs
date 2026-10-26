@@ -167,8 +167,7 @@ macro_rules! cell {
 /// for the prose; this is the runnable form of the same table, not a second copy of its
 /// reasoning).
 const MATRIX: &[Cell] = &[
-    // §6.2.2 / ADR-0095 D-B: gateway doors only, zero direct runtime grants.
-    cell!("private.project_channels", "role_gateway", []),
+    // §6.2.2 / ADR-0095 D-B: observations are runtime-readable; mutations use gateway doors.
     cell!("ops.mechanism_observations", "role_gateway", ["SELECT"]),
     cell!(
         "ops.mechanism_observations",
@@ -1724,6 +1723,8 @@ const ADDITIVE_SEAM_MATRIX: &[Cell] = &[
 /// mutation surface is a narrowly granted SECURITY DEFINER function, so they still must bypass
 /// the wider `ops.*` domain default even though there is no non-empty [`Cell`] to carry the name.
 const NAMED_NO_NON_OWNER_GRANTS: &[&str] = &[
+    // §6.2.2 / migration 0271: project channels are owner-only, with no direct runtime grants.
+    "private.project_channels",
     // 0130 R3 health truth is append-only and resolver-only.  These entries must override
     // the `ops.*` domain default completely: no worker, admin, or maintenance pool may read
     // or write observations directly.
