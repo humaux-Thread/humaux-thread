@@ -26,6 +26,7 @@ Cloud onboarding appends `AUTO_AFTER_USER_DISTILLATION`. The contribution sweep 
 version and re-gates the tenant. Core never appends AUTO; DB defaults stay DISABLED/MANUAL. §12.1's policy snapshot and
 consent/grant version stay, with the notice version beside them. Per member: a member's memories are selectable only
 after that member's SHOWN on the current version (`control.contribution_authorized(tenant, user)`, called with the memory's author).
+A member's own OFF makes that member's memories unselectable; tenant ON stays OWNER-only.
 
 ### D-B One notice table and one append-only event table
 
@@ -38,7 +39,8 @@ labels are the F2 labels of ADR-0090.
 ### D-C Toggle and withdraw-all are two actions
 
 `TOGGLED_ON` writes the AUTO successor while a `SHOWN` for the current version exists; `TOGGLED_OFF` writes DISABLED.
-The toggle is OWNER-only in both directions (the policy row is tenant-wide, so there is no per-member opt-out) and OFF is
+The tenant toggle is OWNER-only in both directions (it writes the tenant-wide policy row); a member's own OFF makes that
+member's memories unselectable (a MEMBER-scope event, no policy write); tenant ON stays OWNER-only. OFF is
 never blocked for lack of a notice: with none published the event's `notice_version` is NULL (only for `TOGGLED_OFF`).
 Withdraw-all is not a policy value: it runs W1 over the tenant (ADR-0091). A toggle does not recall earlier releases; a
 withdrawal does. For migrated users the effective date is max(notice email + 14 days, `SHOWN`) and only Memories

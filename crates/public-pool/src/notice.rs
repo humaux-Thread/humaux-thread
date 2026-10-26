@@ -7,13 +7,14 @@
 //! Invariants: [the Rust side never recomputes "current notice" or the predicate: both are the SQL functions
 //!   `control.current_contribution_notice` and `control.contribution_authorized`; tenant and user come from the caller's
 //!   session context (`humaux.tenant_id` / `humaux.user_id`), never from a parameter; a refusal is an `ErrorCode` plus an
-//!   existing `ConflictReason`, no new error enum; the kind and channel sets equal the 0274 CHECK literals exactly (§78.2)]
+//!   existing `ConflictReason`, no new error enum; the kind, channel and scope sets equal the 0274 CHECK literals exactly (§78.2)]
 //! Spec: Baseline §12.1.1; §78.2; ADR-0088 D-A; D-B
 //!
 //! | Rust | DB (migration `0274_contribution_notice.sql`) |
 //! |---|---|
 //! | [`NoticeEventKind`] | `contribution_notice_events_kind_check` |
 //! | [`NoticeChannel`] | `contribution_notice_events_channel_check` |
+//! | [`NoticeEventScope`] | `contribution_notice_events_scope_check` |
 
 use humaux_domain::{
     error::{ConflictReason, ErrorCode},
@@ -58,6 +59,17 @@ closed_set! {
         ToggledOff => "TOGGLED_OFF",
         /// The user withdrew everything (written by M20-4b).
         WithdrawAll => "WITHDRAW_ALL",
+    }
+}
+
+closed_set! {
+    /// `scope` of `control.contribution_notice_events`: whether a toggle event belongs to the tenant-wide flow or is one
+    /// member's personal choice.
+    NoticeEventScope {
+        /// The tenant-wide flow; every event written by the owner toggle, `SHOWN` and `ACKED`.
+        Tenant => "TENANT",
+        /// A member's personal toggle for themselves; never changes the policy head.
+        Member => "MEMBER",
     }
 }
 
@@ -195,8 +207,9 @@ pub async fn acknowledge(
 }
 
 /// ADR-0088 D-A, per member: whether the sweep (M20-6) and finalize (M20-4b) may select `user`'s memories (they pass the
-/// memory's author): the tenant's current policy is AUTO and `user` has a SHOWN on the current notice version. The one
-/// predicate; the caller's session tenant must equal `tenant`.
+/// memory's author): the tenant's current policy is AUTO, `user` has a SHOWN on the current notice version, and `user`'s
+/// latest MEMBER-scope toggle event (if any) is not `TOGGLED_OFF` (a member's own OFF makes that member's memories
+/// unselectable). The one predicate; the caller's session tenant must equal `tenant`.
 ///
 /// # Errors
 /// `Forbidden` when `tenant` is not the session tenant; `DependencyUnavailable` when PostgreSQL refuses the call.

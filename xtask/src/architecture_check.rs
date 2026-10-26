@@ -4459,15 +4459,22 @@ fn m29_5a_attribution_site(root: &Path) -> Verdict {
     }
 }
 
-/// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal, the Rust variant that spells it, and the three doors that can write
-/// an AUTO policy. Each is banned from core-edition `src` except the rows of [`M20_1_EXCEPTIONS`]; the cloud onboarding
-/// default and the toggle live in `humaux-public-pool` only.
-const M20_1_NEEDLES: [&str; 5] = [
+/// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal, the Rust variant that spells it, the doors that can write an AUTO
+/// policy, and the two spellings of reaching the variant by its position in `ContributionPolicy::ALL`. Each is banned from
+/// core-edition `src` except the rows of [`M20_1_EXCEPTIONS`] (none for the last three); the cloud onboarding default and the
+/// toggles live in `humaux-public-pool` only.
+///
+/// ponytail: the position bypass is closed for `ALL[..]` indexing and the full type path only; an iterator chain over a
+/// differently named alias (`.iter().nth(2)`) evades it, so add the spelling here when one appears.
+const M20_1_NEEDLES: [&str; 8] = [
     "AUTO_AFTER_USER_DISTILLATION",
     "AutoAfterUserDistillation",
     "append_contribution_policy_successor",
     "apply_cloud_contribution_default",
     "toggle_contribution",
+    "toggle_member_contribution",
+    "ContributionPolicy::ALL",
+    "::ALL[",
 ];
 
 /// The current exceptions, exact: `(needle, file path without its `.rs` suffix, occurrences in non-comment, non-test code)`.
@@ -17603,6 +17610,15 @@ async fn serving_version_in_txn() {}
                 "toggle_contribution",
                 "async fn f() { sqlx::query(\"SELECT toggle_contribution($1, $2)\"); }\n",
             ),
+            (
+                "toggle_member_contribution",
+                "async fn f() { sqlx::query(\"SELECT toggle_member_contribution($1, $2)\"); }\n",
+            ),
+            (
+                "ContributionPolicy::ALL",
+                "fn f() -> usize { ContributionPolicy::ALL.len() }\n",
+            ),
+            ("::ALL[", "fn f() -> P { P::ALL[2] }\n"),
             (
                 "AUTO_AFTER_USER_DISTILLATION",
                 "async fn f() { sqlx::query(\"UPDATE p SET m = 'AUTO_AFTER_USER_DISTILLATION'\"); }\n",

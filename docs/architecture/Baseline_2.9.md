@@ -1357,7 +1357,7 @@ role_maintenance  无 DELETE / TRUNCATE；修复只能靠 UPDATE，且只在 §6
 
 `private.project_channels`（0271，ADR-0095 D-B）无 runtime 表级权限；读写只通过 `role_gateway` 可执行的 `private.read_project_rollup` / `private.set_project_channel`，FORCE RLS 按 tenant 限定。
 
-`control.contribution_notices` 与 `control.contribution_notice_events`（0274，ADR-0088 D-B）：`role_gateway` 仅 SELECT（events 受 tenant RLS 限定），其余角色无权限；两表的写入只经 owner SECURITY DEFINER 门（`record_notice_shown` / `ack_notice` / `toggle_contribution`），events 另有拒绝 UPDATE/DELETE/TRUNCATE 的触发器。
+`control.contribution_notices` 与 `control.contribution_notice_events`（0274，ADR-0088 D-B）：`role_gateway` 仅 SELECT（events 受 tenant RLS 限定），其余角色无权限；两表的写入只经 owner SECURITY DEFINER 门（`record_notice_shown` / `ack_notice` / `toggle_contribution` / `toggle_member_contribution`），events 另有拒绝 UPDATE/DELETE/TRUNCATE 的触发器。
 
 ### 6.2.3 Typed DB Pool Capability Topology
 

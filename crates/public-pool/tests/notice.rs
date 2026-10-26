@@ -9,7 +9,8 @@
 //!   modules=[domain::error, domain::ids, humaux-testkit, public-pool::notice, public-pool::policy]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns one throwaway tenant, user and the notice versions it publishes, removed on drop; the notice
-//!   table is global, so the binary runs in nextest's serial-public-notice group; a missing database is a visible §79.2 skip, a FAIL
+//!   table is global, so the binary runs in nextest's serial-public-notice group, and plain `cargo test` or targeted.yml must
+//!   pass `-- --test-threads=1` (test (i) needs an empty notice table); a missing database is a visible §79.2 skip, a FAIL
 //!   under HUMAUX_REQUIRE_DB]
 //! Spec: Baseline §12.1.1; §78.2; §79.2; ADR-0088 D-A; D-B; D-C
 
@@ -20,7 +21,7 @@ use humaux_domain::{
     ids::{TenantId, UserId},
 };
 use humaux_public_pool::{
-    notice::{self, NoticeChannel, NoticeEventKind, Refusal},
+    notice::{self, NoticeChannel, NoticeEventKind, NoticeEventScope, Refusal},
     policy,
 };
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -240,6 +241,34 @@ impl Handle {
             let result = policy::toggle(&mut tx, on, NoticeChannel::Console).await;
             settle(tx, result.is_ok()).await;
             result
+        })
+    }
+
+    fn toggle_member(&self, tenant: Uuid, user: Uuid, on: bool) -> Result<Uuid, Refusal> {
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let result = policy::toggle_member(&mut tx, on, NoticeChannel::Console).await;
+            settle(tx, result.is_ok()).await;
+            result
+        })
+    }
+
+    /// SQLSTATE and refusal message of a tenant-level toggle that the door must refuse.
+    fn toggle_error(&self, tenant: Uuid, user: Uuid, on: bool) -> (Option<String>, String) {
+        self.rt.block_on(async {
+            let mut conn = connect(&self.gateway_dsn).await;
+            let mut tx = begin(&mut conn, tenant, user).await;
+            let error = sqlx::query("SELECT control.toggle_contribution($1, 'CONSOLE')")
+                .bind(on)
+                .execute(&mut *tx)
+                .await
+                .expect_err("the toggle is refused");
+            let message = error
+                .as_database_error()
+                .map(|db| db.message().to_owned())
+                .expect("a database error");
+            (sqlstate(&error), message)
         })
     }
 
@@ -508,7 +537,8 @@ fn g_m20_3_g_authorization_is_per_member() {
     });
 }
 
-/// G-M20-3 (h): only an ACTIVE OWNER toggles, in either direction; a refused member writes no event and no policy row.
+/// G-M20-3 (h): only an ACTIVE OWNER toggles the tenant, in either direction; a refused member writes no event and no policy
+/// row, and the refusal reason is exactly `toggle_owner_required`.
 #[test]
 fn g_m20_3_h_toggle_requires_an_owner() {
     run_db_fixture::<NoticeFixture, _>("g_m20_3_h_toggle_requires_an_owner", |mut h| {
@@ -519,6 +549,12 @@ fn g_m20_3_h_toggle_requires_an_owner() {
             code: ErrorCode::Forbidden,
             reason: None,
         });
+        for on in [false, true] {
+            assert_eq!(
+                h.toggle_error(tenant, member, on),
+                (Some("42501".to_owned()), "toggle_owner_required".to_owned())
+            );
+        }
         assert_eq!(h.toggle(tenant, member, false), forbidden);
         assert_eq!(h.toggle(tenant, member, true), forbidden);
         assert_eq!(
@@ -547,6 +583,144 @@ fn g_m20_3_i_toggle_off_without_a_notice_succeeds() {
             assert_eq!(h.toggle(tenant, owner, false), Ok(2));
             assert_eq!(h.head(tenant), Some((2, "DISABLED".to_owned())));
             assert_eq!(h.kinds(tenant), vec!["TOGGLED_OFF".to_owned()]);
+        },
+    );
+}
+
+/// G-M20-3 (k): a member's own OFF makes only that member's memories unselectable and leaves the policy head alone; their own
+/// ON re-opts them in; a member's tenant-level ON is refused with `toggle_owner_required` and writes nothing.
+#[test]
+fn g_m20_3_k_member_opt_out_is_personal() {
+    run_db_fixture::<NoticeFixture, _>("g_m20_3_k_member_opt_out_is_personal", |mut h| {
+        let (tenant, owner, version) = h.auto_tenant_shown_on_first_notice();
+        let member = h.new_member(tenant, "MEMBER");
+        h.shown(tenant, member, version).expect("B SHOWN");
+        let auto = Some((1, "AUTO_AFTER_USER_DISTILLATION".to_owned()));
+        assert!(h.authorized_for(tenant, owner, owner));
+        assert!(h.authorized_for(tenant, owner, member));
+
+        h.toggle_member(tenant, member, false).expect("B OFF");
+        assert!(!h.authorized_for(tenant, owner, member), "B opted out");
+        assert!(h.authorized_for(tenant, owner, owner), "A is unchanged");
+        assert_eq!(h.head(tenant), auto, "the tenant policy head is untouched");
+
+        h.toggle_member(tenant, member, true).expect("B ON again");
+        assert!(h.authorized_for(tenant, owner, member));
+        assert!(h.authorized_for(tenant, owner, owner));
+        assert_eq!(h.head(tenant), auto);
+
+        let kinds_before = h.kinds(tenant);
+        assert_eq!(
+            kinds_before,
+            vec![
+                "SHOWN".to_owned(),
+                "SHOWN".to_owned(),
+                "TOGGLED_OFF".to_owned(),
+                "TOGGLED_ON".to_owned()
+            ]
+        );
+        assert_eq!(
+            h.toggle_error(tenant, member, true),
+            (Some("42501".to_owned()), "toggle_owner_required".to_owned())
+        );
+        assert_eq!(h.kinds(tenant), kinds_before, "nothing was written");
+        assert_eq!(h.head(tenant), auto);
+    });
+}
+
+/// G-M20-3 (l): a member's OFF needs no notice (NULL version), and ON needs a tenant policy that is already AUTO.
+#[test]
+fn g_m20_3_l_member_off_without_notice_and_on_needs_auto() {
+    run_db_fixture::<NoticeFixture, _>(
+        "g_m20_3_l_member_off_without_notice_and_on_needs_auto",
+        |mut h| {
+            let (tenant, owner) = h.new_tenant();
+            let member = h.new_member(tenant, "MEMBER");
+            assert!(h.apply_default(tenant, owner));
+            assert_eq!(h.current(tenant, owner), None, "no notice is published");
+            h.toggle_member(tenant, member, false)
+                .expect("OFF before the first notice");
+            assert_eq!(h.kinds(tenant), vec!["TOGGLED_OFF".to_owned()]);
+            assert_eq!(
+                h.head(tenant),
+                Some((1, "AUTO_AFTER_USER_DISTILLATION".to_owned()))
+            );
+            assert_eq!(
+                h.toggle_member(tenant, member, true),
+                Err(refused(
+                    ErrorCode::Conflict,
+                    ConflictReason::TARGET_NOT_CURRENT
+                )),
+                "ON needs a published notice"
+            );
+            h.publish_notice();
+            assert_eq!(h.toggle(tenant, owner, false), Ok(2));
+            assert_eq!(
+                h.toggle_member(tenant, member, true),
+                Err(Refusal {
+                    code: ErrorCode::Conflict,
+                    reason: None
+                }),
+                "ON needs the tenant policy to be AUTO"
+            );
+            assert_eq!(
+                h.kinds(tenant),
+                vec!["TOGGLED_OFF".to_owned(), "TOGGLED_OFF".to_owned()]
+            );
+        },
+    );
+}
+
+/// G-M20-3 (m): the version CHECK lets `TOGGLED_OFF` and `WITHDRAW_ALL` carry a NULL version and refuses every other kind;
+/// `MEMBER` scope is refused for a kind that is not a toggle.
+#[test]
+fn g_m20_3_m_null_version_is_allowed_only_for_opt_out_kinds() {
+    run_db_fixture::<NoticeFixture, _>(
+        "g_m20_3_m_null_version_is_allowed_only_for_opt_out_kinds",
+        |mut h| {
+            let (tenant, user) = h.new_tenant();
+            for kind in ["TOGGLED_OFF", "WITHDRAW_ALL"] {
+                h.admin
+                    .execute(
+                        "INSERT INTO control.contribution_notice_events (tenant_id, user_id, notice_version, kind, channel) \
+                         VALUES ($1, $2, NULL, $3, 'CONSOLE')",
+                        &[&tenant, &user, &kind],
+                    )
+                    .unwrap_or_else(|e| panic!("{kind} with a NULL version: {e}"));
+            }
+            for kind in ["SHOWN", "ACKED", "TOGGLED_ON"] {
+                let error = h
+                    .admin
+                    .execute(
+                        "INSERT INTO control.contribution_notice_events (tenant_id, user_id, notice_version, kind, channel) \
+                         VALUES ($1, $2, NULL, $3, 'CONSOLE')",
+                        &[&tenant, &user, &kind],
+                    )
+                    .expect_err(kind);
+                let db = error.as_db_error().expect("a database error");
+                assert_eq!(db.code().code(), "23514", "{kind}: {error}");
+                assert_eq!(
+                    db.constraint(),
+                    Some("contribution_notice_events_version_check")
+                );
+            }
+            let version = h.publish_notice();
+            let error = h
+                .admin
+                .execute(
+                    "INSERT INTO control.contribution_notice_events (tenant_id, user_id, notice_version, kind, channel, scope) \
+                     VALUES ($1, $2, $3, 'SHOWN', 'CONSOLE', 'MEMBER')",
+                    &[&tenant, &user, &version],
+                )
+                .expect_err("MEMBER scope on SHOWN");
+            assert_eq!(
+                error.as_db_error().and_then(|db| db.constraint()),
+                Some("contribution_notice_events_scope_kind_check")
+            );
+            assert_eq!(
+                h.kinds(tenant),
+                vec!["TOGGLED_OFF".to_owned(), "WITHDRAW_ALL".to_owned()]
+            );
         },
     );
 }
@@ -648,11 +822,17 @@ fn kind_and_channel_checks_equal_the_rust_sets() {
             .iter()
             .map(|c| c.as_str().to_owned())
             .collect();
+        let scopes: BTreeSet<String> = NoticeEventScope::ALL
+            .iter()
+            .map(|s| s.as_str().to_owned())
+            .collect();
         assert_eq!(kinds.len(), 5);
         assert_eq!(channels.len(), 3);
+        assert_eq!(scopes.len(), 2);
         for (check, expected) in [
             ("contribution_notice_events_kind_check", &kinds),
             ("contribution_notice_events_channel_check", &channels),
+            ("contribution_notice_events_scope_check", &scopes),
         ] {
             let def: String = h
                 .admin
