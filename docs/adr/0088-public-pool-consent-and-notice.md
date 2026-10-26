@@ -24,7 +24,9 @@
 Cloud onboarding appends `AUTO_AFTER_USER_DISTILLATION`. The contribution sweep selects nothing for a tenant until a
 `SHOWN` exists for the **current** notice version; a new category, sensitivity class or widened scope is a new notice
 version and re-gates the tenant. Core never appends AUTO; DB defaults stay DISABLED/MANUAL. §12.1's policy snapshot and
-consent/grant version stay, with the notice version beside them.
+consent/grant version stay, with the notice version beside them. Per member: a member's memories are selectable only
+after that member's SHOWN on the current version (`control.contribution_authorized(tenant, user)`, called with the memory's author).
+A member's own OFF makes that member's memories unselectable; tenant ON stays OWNER-only.
 
 ### D-B One notice table and one append-only event table
 
@@ -37,6 +39,9 @@ labels are the F2 labels of ADR-0090.
 ### D-C Toggle and withdraw-all are two actions
 
 `TOGGLED_ON` writes the AUTO successor while a `SHOWN` for the current version exists; `TOGGLED_OFF` writes DISABLED.
+The tenant toggle is OWNER-only in both directions (it writes the tenant-wide policy row); a member's own OFF makes that
+member's memories unselectable (a MEMBER-scope event, no policy write); tenant ON stays OWNER-only. OFF is
+never blocked for lack of a notice: with none published the event's `notice_version` is NULL (only for `TOGGLED_OFF`).
 Withdraw-all is not a policy value: it runs W1 over the tenant (ADR-0091). A toggle does not recall earlier releases; a
 withdrawal does. For migrated users the effective date is max(notice email + 14 days, `SHOWN`) and only Memories
 created after it are selectable; sending the email is owner-gated, so this ADR does not schedule it.
@@ -62,9 +67,9 @@ Planned, implementer-owned, tri-state (§57.1); none exists here:
 
 | gate | owner card | injected fault | expected red |
 |---|---|---|---|
-| G-M20-1 core never AUTO | M20-4 | core onboarding appends AUTO | the core tenant has AUTO |
+| G-M20-1 core never AUTO | M20-4 | core onboarding appends AUTO | the core tenant has AUTO (red runs 40301237329 leg 1, 40300523163 leg 2) |
 | G-M20-2 floor + migrated | M20-4, M20-28 | ignore the floor or the 14-day rule | a memory below the floor or before the effective date is selected |
-| G-M20-3 notice shown | M20-4 | skip the SHOWN check; count an old version's SHOWN | a release with no SHOWN for the current version |
+| G-M20-3 notice shown | M20-4 | skip the SHOWN check; count an old version's SHOWN | a release with no SHOWN for the current version (red run 40299157074) |
 | G-M20-4 opt-out race + withdraw-all | M20-4 | skip the policy re-check at finalize; withdraw-all only toggles | a release after `TOGGLED_OFF`; a prior revision still servable |
 
 Each needs its inject → red → fix → green record (§80.1) in the implementing card; a missing database is a fail in CI,

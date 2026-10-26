@@ -72,6 +72,8 @@ new ADR; this decision introduces no new scope.
 - The merge function is one deterministic unit in `adapters::continuity_repo`; there is no second merge in the gateway
   or in a caller.
 
+**Amended (M14-fix-289):** Migration 0280 adds an explicit list-merge overload that inherits the CAS-locked version's Memory/Evidence links with their stored hashes; inherited links bypass the publisher check, never the reader check, while caller links retain the existing visibility/hash checks.
+
 ### D-E Facets outside this op
 
 - The six `SOURCE_BACKED` facets whose sources belong to Phase 11 / M18 (`ACTIVE_TASKS`, `RECENT_CHANGES`, `CODE`,
