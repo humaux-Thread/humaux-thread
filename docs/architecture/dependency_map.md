@@ -5508,6 +5508,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -6796,6 +6797,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -6866,6 +6868,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -7248,6 +7251,7 @@ executed by:
 ### `ops.commit_seq_seq`
 read by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7912,6 +7916,7 @@ written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8565,6 +8570,7 @@ executed by:
 
 ### `private.continuity_facet_evidence_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -8578,6 +8584,7 @@ executed by:
 
 ### `private.continuity_facet_memory_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -10044,6 +10051,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
@@ -10842,6 +10850,7 @@ written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
@@ -12752,6 +12761,7 @@ modules naming it:
 - `adapters::session_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::console_session`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
