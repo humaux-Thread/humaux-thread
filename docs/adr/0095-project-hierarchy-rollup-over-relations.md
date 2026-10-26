@@ -61,6 +61,9 @@
   "Project hierarchy (decision #2) is PROVISIONAL … M18 will own the hierarchy contract").
 - **Lead ruling (2026-10-24): the M18-0 hierarchy ADR supersedes D-A–D-D of this ADR, and M29-g2 waits on it.** The
   Project —PART_OF→ Project pair is therefore built under the M18-0 contract, not ahead of it.
+- **Amended by ADR-0101 (M18, 2026-10-23):** the M18-0 hierarchy ADR is ADR-0101. Its D-C replaces this ADR's D-B
+  `private.project_channels` with `private.project_facets(kind CHANNEL|PLATFORM)`, its single-parent tree supersedes
+  D-A–D-D, and M29-g2 is cancelled.
 - This ADR records M14's decision and **does not choose between the two designs**.
 - The M18 design note (2026-10-23) proposes a single-parent tree: guest columns `parent_id`, `kind` and `version` on
   `private.continuity_projects`, a self-FK, a depth limit, `project_ancestors` / `project_subtree`, and moves under a
