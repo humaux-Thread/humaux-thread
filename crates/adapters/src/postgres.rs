@@ -14,7 +14,7 @@
 //!   workspace's one pool-builder site: PoolSettings (only RuntimeDbPool::connect_with today) sizes the pool and sets
 //!   statement_timeout / idle_in_transaction_session_timeout as startup options (pg_settings source = client), never a
 //!   role GUC (ADR-0065 D-A / D-B); every pool's sessions start with jit = off (ADR-0071 D-B); every other pool keeps the sqlx defaults until card 38b]
-//! Spec: Baseline §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A / D-B
+//! Spec: ADR-0100; Baseline §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A / D-B
 //!
 //! Spec canonical path is `crates/adapters/postgres/src/pools.rs`; this repo's crate layout
 //! (§58) flattens adapters into `crates/adapters/src/<name>.rs` modules, so **this file IS
@@ -208,6 +208,24 @@ impl RuntimeDbPool {
             .map(Self)
     }
 
+    /// Hold a session advisory lock on one detached connection, outside the reusable pool (§67.2; ADR-0100).
+    /// Dropping the lease closes its socket; `None` means another session owns the key.
+    pub async fn try_session_lock(&self, key: i64) -> Result<Option<SessionLock>, ErrorCode> {
+        let mut connection = self
+            .0
+            .acquire()
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?
+            .detach();
+        // dep: PostgreSQL(role_gateway) — session lock, no application-table access
+        let held: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(key)
+            .fetch_one(&mut connection)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        Ok(held.then_some(SessionLock { connection }))
+    }
+
     /// ADR-0061 D-F readiness: one `SELECT 1` through the checked pool. A pool that can no longer open or
     /// reuse a connection answers the driver's error, which the gateway's `/status` names under `pg`.
     ///
@@ -226,6 +244,24 @@ impl RuntimeDbPool {
     /// unchanged — this adds a query surface, not a leak of the wrapped value itself.
     pub(crate) fn pool(&self) -> &PgPool {
         &self.0
+    }
+}
+
+/// A dedicated session lease: no SQLx handle crosses the adapter boundary (§6.2.3; ADR-0100).
+/// Its detached connection closes on Drop, releasing every session lock even during unwinding.
+pub struct SessionLock {
+    connection: sqlx::PgConnection,
+}
+
+impl SessionLock {
+    /// Check the original session without reconnecting; a lost session fails closed (§52.1; ADR-0100).
+    pub async fn check(&mut self) -> Result<(), ErrorCode> {
+        // dep: PostgreSQL(role_gateway) — one heartbeat on the lock-owning session
+        sqlx::query("SELECT 1")
+            .execute(&mut self.connection)
+            .await
+            .map(|_| ())
+            .map_err(|_| ErrorCode::DependencyUnavailable)
     }
 }
 

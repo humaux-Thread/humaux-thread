@@ -3,7 +3,7 @@
 //! Depends-on: crates=[axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit,
 //!   serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner)
 //!   r=[control.quota_windows, coord.task_runs, coord.tasks] w=[control.api_keys, coord.task_runs],
-//!   PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::quota_repo,
+//!   PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, contracts::retrieval_config, domain::context,
 //!   domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::mcp_application,
 //!   gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
@@ -17,9 +17,10 @@
 //! Faults these gates are built for: the gateway or repository accepting a stale holder's token (G-T04b-2), a run that
 //! belongs to another task (G-T04b-3), and `coordinate.task_heartbeat` being charged one BMO (G-T04b-1).
 
+use humaux_gateway::limiter::RatePolicy;
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 
-use humaux_adapters::{postgres::RuntimeDbPool, quota_repo::RatePolicy};
+use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_gateway::{
     context::ContextBootstrap,
@@ -73,6 +74,7 @@ fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
                 global_denylist: vec![],
                 global_emergency_allowlist: vec![],
                 tenant_network: BTreeMap::new(),
+                rate_max_subjects: [50_000; 5],
                 rates: GuardRatePolicies {
                     preauth_ip: rate(),
                     credential: rate(),

@@ -11,6 +11,7 @@ pub mod cached_embedding;
 pub mod context;
 pub mod continuity;
 pub mod guard;
+pub mod limiter;
 pub mod mcp_application;
 mod memory;
 pub mod recall;

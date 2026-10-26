@@ -5,7 +5,7 @@
 //!   PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::postgres, domain::audit, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo,
-//!   adapters::operation_receipt, adapters::request_guard_repo, gateway::bootstrap, gateway::guard,
+//!   adapters::operation_receipt, adapters::request_guard_repo, gateway::guard,
 //!   maintenance::main, maintenance::serve, tests, xtask::e2e_seed, xtask::load]
 //! Invariants: [the gateway only consumes existing quota windows; only role_maintenance can issue, renew or reap them;
 //!   exhaustion is QuotaExhausted/RateLimited and a PG error DependencyUnavailable, never an allow; one request's
