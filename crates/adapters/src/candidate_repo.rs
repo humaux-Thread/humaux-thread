@@ -39,8 +39,12 @@ pub struct Proposal {
 }
 
 /// ADR-0113: candidate read surface, isolated from formal memory readers.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct Candidate {
+    /// Provenance only; never an authority basis (ADR-0113 D-A).
+    pub proposed_by: String,
+    /// Proposal score; never an authority basis (ADR-0113 D-A).
+    pub score: f64,
     /// Captured target revisions forming the concrete manifest.
     pub targets: Vec<TargetRevision>,
     /// Candidate identity.
@@ -180,12 +184,14 @@ pub async fn list(
     // dep: PostgreSQL(any) — candidate-only read transaction with authenticated workspace
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
     authorize(&mut txn, auth).await?;
-    let rows = sqlx::query("SELECT candidate_id,kind,state,payload_hash FROM private.curation_candidates ORDER BY candidate_id")
+    let rows = sqlx::query("SELECT candidate_id,proposed_by,kind,state,payload_hash,score FROM private.curation_candidates ORDER BY candidate_id")
         .fetch_all(&mut *txn).await.map_err(db_error)?;
     let mut candidates = Vec::with_capacity(rows.len());
     for row in rows {
         let candidate_id = row.try_get("candidate_id").map_err(db_error)?;
         candidates.push(Candidate {
+            proposed_by: row.try_get("proposed_by").map_err(db_error)?,
+            score: row.try_get("score").map_err(db_error)?,
             targets: target_revisions(&mut txn, candidate_id).await?,
             candidate_id,
             kind: CandidateKind::parse_wire(row.try_get("kind").map_err(db_error)?)

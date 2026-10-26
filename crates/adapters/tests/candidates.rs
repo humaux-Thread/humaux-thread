@@ -1,25 +1,20 @@
 //! `adapters::tests::candidates` — G-M15-2 manifest CAS and non-application through role_gateway.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(role_gateway) r=[private.curation_candidates, private.curation_candidate_targets, private.memory_records, ops.memory_lifecycle_events, control.confirm_tokens] x=[private.curation_transition_allowed]]; env=[]; modules=[adapters::candidate_repo, adapters::memory_governance_repo, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::governance_ops, domain::authority, domain::confirm, domain::error, domain::identity, domain::ids, domain::knowledge, humaux-testkit, projection::stream]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(role_gateway) r=[private.curation_candidates, private.curation_candidate_targets, private.memory_records, ops.memory_lifecycle_events, control.confirm_tokens] w=[private.memory_records] x=[ops.append_memory_lifecycle, private.curation_transition_allowed]]; env=[]; modules=[adapters::candidate_repo, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::error, domain::identity, domain::ids, domain::knowledge, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [exact counts and sets; owner only seeds fixture data; operations and observations use gateway login]
 //! Spec: Baseline §6.1.4; §11.6; §78.2; §79.2; ADR-0113
 
 use humaux_adapters::candidate_repo::{self, CandidateFailure, Proposal};
 use humaux_domain::{
-    confirm::DestructiveOp,
     error::ErrorCode,
     identity::{AuthorizationScope, BoundedSet, PrincipalId},
     ids::{TenantId, UserId, WorkspaceId},
     knowledge::{CANDIDATE_TRANSITIONS, CandidateKind, CandidateState},
 };
-use humaux_projection::stream::StreamKey;
 use humaux_testkit::run_db_fixture;
 use postgres::Transaction;
 use uuid::Uuid;
 
-#[allow(dead_code)]
-#[path = "support/governance_ops.rs"]
-mod governance_ops;
 #[allow(dead_code)]
 #[path = "support/operation_receipt_fixture.rs"]
 mod operation_receipt_fixture;
@@ -98,6 +93,23 @@ fn snapshot(handle: &Handle, auth: &AuthorizationScope, id: Uuid) -> Vec<String>
     ]
 }
 
+fn archive_target(handle: &Handle, auth: &AuthorizationScope, target: Uuid) {
+    let mut client = handle
+        .gateway_client()
+        .expect("actual gateway archive fixture");
+    let mut txn = session(&mut client, auth, handle.workspace_id);
+    let event: Uuid = txn.query_one(
+        "SELECT ops.append_memory_lifecycle($1,'MEMORY',$2,'ARCHIVE','USER_ARCHIVE',$3,NULL,NULL,NULL,NULL,$4,'candidate-revision-fixture',NULL,NULL)",
+        &[&auth.tenant_id().0,&target,&auth.principal().0,&Uuid::new_v4().to_string()],
+    ).expect("real lifecycle append door").get(0);
+    let affected=txn.execute(
+        "UPDATE private.memory_records SET archived_at=clock_timestamp(),lifecycle_head_event_id=$2 WHERE memory_id=$1",
+        &[&target,&event],
+    ).expect("archive fixture and stamp its head atomically");
+    assert_eq!(affected, 1);
+    txn.commit().expect("commit changed target revision");
+}
+
 fn stale(reason: &'static str) -> Result<CandidateState, CandidateFailure> {
     Err(CandidateFailure {
         code: ErrorCode::Conflict,
@@ -148,6 +160,8 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
             h.rt.block_on(candidate_repo::list(&h.runtime, &a))
                 .expect("list");
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].proposed_by, p.proposed_by);
+        assert_eq!(rows[0].score.to_bits(), p.score.to_bits());
         let mut expected_targets = vec![
             candidate_repo::TargetRevision {
                 memory_id: target,
@@ -186,39 +200,20 @@ fn g_m15_2_decide_accept_never_applies_and_payload_cas() {
 #[test]
 fn g_m15_2_decide_archived_revision_is_stale_without_updated_at_change() {
     run_db_fixture::<Fixture, _>("g_m15_2_archive", |mut h| {
-        let governor = governance_ops::Governor::seed(&mut h.admin, h.tenant_id);
-        governor.join(&mut h.admin, h.workspace_id);
-        let a = governor.scope(h.workspace_id);
+        let a = auth(&mut h);
         let record = h.seed_workspace_visible_context_record();
         let p = proposal(vec![record.memory_id]);
         let id =
             h.rt.block_on(candidate_repo::propose(&h.runtime, &a, &p))
                 .expect("propose");
         let before = snapshot(&h, &a, id);
-        let stream = StreamKey::new(
-            TenantId(h.tenant_id),
-            "WORKSPACE",
-            h.workspace_id,
-            "knowledge",
-            "ingest",
-            "v1",
-        );
-        let result = governance_ops::archive(
-            &h.rt,
-            &h.runtime,
-            &a,
-            &stream,
-            record.memory_id,
-            DestructiveOp::MemoryArchive,
-        )
-        .expect("archive");
-        assert!(matches!(
-            result,
-            humaux_adapters::memory_governance_repo::ArchiveResult::Done(_)
-        ));
+        archive_target(&h, &a, record.memory_id);
         let archived = snapshot(&h, &a, id);
         let old: serde_json::Value = serde_json::from_str(&before[0]).expect("before JSON");
         let new: serde_json::Value = serde_json::from_str(&archived[0]).expect("after JSON");
+        assert_eq!(old[0]["archived_at"], serde_json::Value::Null);
+        assert!(new[0]["archived_at"].is_string());
+        assert_eq!((before[3].as_str(), archived[3].as_str()), ("0", "1"));
         assert_eq!(new[0]["updated_at"], old[0]["updated_at"]);
         assert_eq!(new[0]["status"], old[0]["status"]);
         assert_ne!(
@@ -236,7 +231,6 @@ fn g_m15_2_decide_archived_revision_is_stale_without_updated_at_change() {
             stale("candidate_stale_target")
         );
         assert_eq!(snapshot(&h, &a, id), archived, "STALE writes nothing");
-        governance_ops::Governor::cleanup(&mut h.admin, h.tenant_id);
     });
 }
 
