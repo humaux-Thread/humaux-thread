@@ -1,5 +1,5 @@
 //! `contracts::config_registry` — Typed Config Registry + effective config fingerprint (§50).
-//! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[sha2]; services=[]; env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS]; modules=[]
 //! Called-by: [adapters::continuity_repo, adapters::qdrant, contracts::retrieval_config, gateway::bootstrap, infra-egress::http, retrieval::request, tests]
 //! Invariants: [the Qdrant collection knobs (datatype, HNSW, generation label) are read here and nowhere else; the
 //!   unset configuration resolves to Qdrant's own defaults, so a default collection body carries none of them]
