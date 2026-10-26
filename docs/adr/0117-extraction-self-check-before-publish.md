@@ -9,8 +9,8 @@
 
 ## Context
 
-- There is no document publish path today (note :35-46). Coverage exists only as an ADR-0079 receipt field, and the note's
-  receipt gains `unit_outcomes`, `scan_state` and `confidence_label` at PUBLISH (note :72-73).
+- There is no document publish path today (note :35-46). The note's receipt gains `unit_outcomes`, `scan_state` and
+  `confidence_label` at PUBLISH (note :72-73).
 - The quality question is asymmetric: the model's "done" is not evidence of coverage, and the independent local manifest
   is (note :131).
 - Confidence has no calibration in v1; the note fixes the label set and starts at `unknown` (note :136).
@@ -37,20 +37,17 @@ X-M17-1 calibrates it (note :136).
 
 - Positive: a publish answers "every unit has an outcome and a non-empty result" from a local artefact, not from the
   model's own claim; an unreadable unit stays a visible gap instead of becoming text.
-- Cost: the self-check needs the local manifest for every route, so each processor must emit one (note :131); the
-  confidence label stays `unknown` in v1, so no caller may read it as calibrated (note :136).
-- Each processor route emits a per-unit manifest with outcomes, independent of the model response (note :131).
-- Asks M15/M14: the read side treats a `unit_gap` as a gap, never as inferred text (note :79-80, :186-187).
+- Cost: the self-check needs an independent local manifest (note :131); the confidence label stays `unknown` in v1, so no
+  caller may read it as calibrated (note :136).
 - Neutral: no code, migration, config key or wire format changes with this card.
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249). A missing database is a fail in CI,
-never `not_applicable` (ADR-0050).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
-| B-3 missing unit | M17-22 | `bins/worker/tests/publish.rs` | trust model "done" | 10-page manifest, 9 outputs, published COMPLETE |
+| B-3 missing unit | M17-22; M17-18 (pages); M17-20 (attachments) | `bins/worker/tests/publish.rs` | trust model "done" | 10-page manifest, 9 outputs, published COMPLETE |
 | B-4 blank-page hallucination | M17-22 | `publish.rs` | send blank units | invented text published for a blank page |
 | C-3 two accepted revisions | M17-22 | `publish.rs` | drop partial unique | two PUBLISHED extractions for one session |
 | B-6 mojibake/order | M17-18 | `pdf.rs` tests | skip anomaly check | U+FFFD text layer published as LOCAL_TEXT complete |
@@ -84,4 +81,4 @@ verdict rather than a signal (note :136); a calibrated confidence label in v1 (n
 - Module design note M17 v2 §4 (D8, with D2's publish constraint), §5 (consumed contracts), §8 (cards), §9 (gates), §10
   (experiments X-M17-1), §11 (UNKNOWNs with fallbacks), §12 (owner red lines).
 - Baseline §8.4, §10.1, §28, §52, §57.1, §78.1, §80.1.
-- ADR-0079 (receipt coverage), ADR-0115 (PUBLISH transaction), ADR-0116 (unit outcomes); ADR-0050 for the CI-fail rule.
+- ADR-0079 (receipt coverage), ADR-0115 (PUBLISH transaction), ADR-0116 (unit outcomes).

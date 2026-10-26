@@ -10,10 +10,8 @@
 
 ## Context
 
-- Blocks become the only text (ADR-0115 D-C, note :77-78), so whatever searches them must not read the temp store: the
-  original is gone after the purge (note :65-66).
-- `artifact.search` does not exist; recall marks artifact Evidence `artifact_unavailable` today (note :42-43). The
-  projection family for document blocks and the retrieval lane are the missing pieces (note :53-55).
+- Blocks become the only text (ADR-0115 D-C, note :77-78); the original is gone after the purge (note :65-66).
+- `artifact.search` does not exist; recall marks artifact Evidence `artifact_unavailable` today (note :42-43).
 - The owner ruled that all content is embedded, owner (0b2bd5aa), and that a memory stays ≤ 10 KB all-in, owner
   (829c952f) (R11); R11 is what X-M17-2 measures (note :15-16, :55, :166).
 
@@ -44,14 +42,13 @@ with M10 (1024-d f32 + 1.5 KB + backup is already ≈ 11.2 KB) (note :166-167).
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249). A missing database is a fail in CI,
-never `not_applicable` (ADR-0050).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
 | G-M17-11 search re-check | M17-13 | `crates/adapters/tests/artifact_search.rs` | skip PG re-check | tombstoned/other-user block returned |
 
-C-12 (10 KB) belongs to ADR-0115's block cap and to card M17-4a (note :288); M17-13 shares its storage-measure half.
+C-12 (10 KB) belongs to ADR-0115's block cap and to cards M17-4a and M17-13 (note :224, :242, :288).
 
 ## Owner-gated (listed, not decided)
 
@@ -67,12 +64,11 @@ owner (530f7467) (note :16). Open owner questions: none (lead rulings applied; v
 
 ## Alternatives rejected
 
-Embedding a subset of the published blocks — owner (0b2bd5aa) ruled "embed all content" (note :15, :163). D14 states no
-other rejected alternative (note :163-167).
+D14 states no rejected alternative (note :163-167).
 
 ## References
 
 - Module design note M17 v2 §4 (D14), §5 (C-M17-4 and the M10/M11 guests), §8 (cards M17-13), §9 (gates), §10 (X-M17-2),
   §11 (UNKNOWNs with fallbacks), §12 (owner red lines).
 - Baseline §8.3.1, §17, §22.1, §78.1, §80.1.
-- ADR-0086 (collection spec per generation), ADR-0115 (blocks), ADR-0117 (self-check); ADR-0050 for the CI-fail rule.
+- ADR-0086 (collection spec per generation), ADR-0115 (blocks), ADR-0117 (self-check).

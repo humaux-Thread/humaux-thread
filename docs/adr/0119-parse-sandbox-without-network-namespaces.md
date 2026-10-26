@@ -4,9 +4,9 @@
   note M17 v2 D10 (note :144) and the untagged M17 decision D11 (:151) that serves the same topic. Content authority: the
   lead rulings at note :9-11; the note's v1 `CLONE_NEWNET` decision is superseded (note :20). This ADR records them and
   re-decides none. No code, migration or gate lands with it.
-- Amends: Baseline §4.3 — the parse sandbox no longer relies on `CLONE_NEWNET`; Landlock, a seccomp socket deny-list,
-  cleared env, frame fds and rlimits stand in, and a failed start-up probe disables parsing instead of running
-  unsandboxed.
+- Amends: Baseline §4.3 — the parse sandbox no longer relies on `CLONE_NEWNET`; Landlock, a seccomp allowlist that denies
+  `socket(AF_INET*/AF_INET6)`, cleared env, frame fds and rlimits stand in, and a failed start-up probe disables parsing
+  instead of running unsandboxed.
 - Relates to: Baseline §4.3, §45.1, §57.1, §78.1, §80.1; ADR-0115 (per-type routes), ADR-0118 (the scanner runs in this
   runner), ADR-0116 (capabilities); M16 (sandbox runner contract C-M17-3).
 
@@ -18,7 +18,8 @@
   ADR-0115 depends on one (note :90).
 - The v1 decision that the sandbox would use `CLONE_NEWNET` is superseded (note :20). The note's ceiling is recorded in
   the decision below: the seccomp crate is stale, with a hand-built BPF fallback (note :150).
-- Limits are business configuration, not code constants (§78.1); the note gives start values from the digest (note :151).
+- Limits are business configuration, not code constants (§78.1); the note gives start values from the research findings
+  (note :11-13, :151).
 
 ## Decisions
 
@@ -35,7 +36,7 @@ Over a limit → `private.artifact_poison`, no retry until the processor version
 
 `ponytail:` seccompiler 0.5.0 is stale (2025-03); the fallback is a hand-built BPF via `libc` `prctl` (note :150).
 
-### D-B (D11) Limits come from config (§78.1), with start values from the digest
+### D-B (D11) Limits come from config (§78.1), with start values from the research findings
 
 PDF/Office 100 MiB, PDF ≤ 200 pages; audio 512 MiB or 60 min; image 40 MP/frame + cumulative 200 MP/session; zip 512 MiB
 actual, 1,000 members, depth 3; worker 512 MiB (PDF heavy 1 GiB); temp 8 GiB per node. Intake stops (WAITING, not
@@ -50,14 +51,13 @@ vendor table in code (note :151-154).
 - Cost: parsing needs a Linux target with Landlock ABI ≥ 4 and seccomp; the deployment must probe at start-up and expose
   the disabled state (note :147-149); the seccomp crate is stale, so the fallback is hand-built BPF (note :150).
 - Asks M16: consume C-M17-3 (frames, limits, POISON, start-up probe) as the sandbox runner contract (note :186).
-- Asks M01: register the D11 limit keys, the disk/RAM intake thresholds and the temp cap in config (note :151-153,
+- Consumes M01: the D11 limit keys, the disk/RAM intake thresholds and the temp cap are registered in config (note :151-153,
   §78.1).
 - Neutral: no code, migration, config key or wire format changes with this card.
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249). A missing database is a fail in CI,
-never `not_applicable` (ADR-0050).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
@@ -66,8 +66,7 @@ never `not_applicable` (ADR-0050).
 | A-4 zip bomb | M17-19, M17-20 | `bins/worker/tests/sandbox_zip.rs` | count declared sizes | 42.zip-style member exceeds cap |
 | A-6 overlong media | M17-21 | `bins/worker/tests/audio.rs` | trust container duration | 3 h file with 1 min header processed |
 
-Each needs its inject → red → fix → green record (§80.1) in the implementing card. A-4 and A-6 guard the D-B start values
-on the routes of ADR-0115 (note :110, :104-106, :152).
+Each needs its inject → red → fix → green record (§80.1) in the implementing card.
 
 ## Owner-gated (listed, not decided)
 
@@ -80,7 +79,7 @@ store. Open owner questions: none (lead rulings applied; v1 Q1 closed by "no ori
 - **U2.** Landlock/seccomp on the production kernel → the start-up probe disables parsers (intake WAITING), never
   unsandboxed (note :304).
 - **R7.** seccompiler maintenance status against the hand-built BPF fallback (note :315).
-- **X-M17-3.** Sandbox on target — Landlock ABI and seccomp on arm64 Compose and CI, cold start (note :299).
+- **X-M17-3.** Sandbox on target — Landlock ABI and seccomp on arm64 Compose and CI, cold start; gates: M17-5 (note :299).
 
 ## Alternatives rejected
 
@@ -93,4 +92,4 @@ Landlock or seccomp is unavailable (note :147-149); retrying a poisoned input be
 - Module design note M17 v2 §4 (D10, D11), §5 (sandbox runner contract), §8 (cards), §9 (gates), §10 (X-M17-3), §11
   (UNKNOWNs with fallbacks), §12 (research needed, owner red lines), §13 (`ponytail:` ceilings).
 - Baseline §4.3 (parse sandbox security boundary), §45.1, §57.1, §78.1, §80.1.
-- ADR-0115 (routes), ADR-0118 (scanner), ADR-0116 (capabilities); ADR-0050 for the CI-fail rule.
+- ADR-0115 (routes), ADR-0118 (scanner), ADR-0116 (capabilities).

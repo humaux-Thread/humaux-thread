@@ -69,23 +69,22 @@ new attempt with a new reservation. Cost events go through M04 C6 (note :160-162
 
 ## Consequences
 
-- Positive: a modality is used only after a probe whose answer exists only in that modality, never because an endpoint
-  answered 200; consent is per tenant and off by default; each call leaves one disclosure row; the spend cap is reserved
-  before the call, not after.
+- Positive: a probe is a synthetic fixture whose answer exists only in that modality; an HTTP 200, `/models` or the
+  model's claim are never proof of a modality (note :117-118); consent is per tenant and off by default; each call leaves
+  one disclosure row; the spend cap is reserved before the call, not after.
 - Cost: probe spend is part of the owner red line on real model spend in production (note :311-312); the consent columns are
   M15/§7.2-owned, so M17 adds guest columns rather than its own table (note :210).
-- Asks M15: the D5 policy reader and the egress/SSRF rule are reused, and `control.egress_policies` gains M17's consent
+- Consumes M15: the D5 policy reader and the egress/SSRF rule are reused, and `control.egress_policies` gains M17's consent
   columns (note :122, :189-190, :210).
-- Asks M04: C1 spend lease and C6 cost events for extraction (note :162, :190).
-- Asks private-worker: read temp units from a read-only mount by `temp_unit_ref`, with no store credential and no
+- Consumes M04: C1 spend lease and C6 cost events for extraction (note :162, :190).
+- Consumes private-worker: read temp units from a read-only mount by `temp_unit_ref`, with no store credential and no
   provider URL (note :127-129).
-- Asks M01: config keys for parse/external concurrency and the price table (note :159-161, §78.1).
+- Consumes M01: config keys for parse/external concurrency and the price table (note :159-161, §78.1).
 - Neutral: no code, migration, config key or wire format changes with this card.
 
 ## Gates
 
-Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249). A missing database is a fail in CI,
-never `not_applicable` (ADR-0050).
+Planned, implementer-owned, tri-state (§57.1); none exists in this card (note :249).
 
 | gate | owner card | test file | injected fault | expected red |
 |---|---|---|---|---|
@@ -108,10 +107,7 @@ store. Open owner questions: none (lead rulings applied; v1 Q1 closed by "no ori
 ## Open research
 
 - **X-M17-4.** Probe reliability — false OK and false UNSUPPORTED across vendors with test keys — is unmeasured until
-  that experiment runs (note :300). Until then a probe result is at most `UNKNOWN`, which is not `UNSUPPORTED` (note
-  :115, :119).
-- **Per-model limits.** The finding that limits are per model (note :13) is recorded in the probe rows' `limits`; v1
-  reads per-request provider limits from those rows and never from a vendor table in code (note :154).
+  that experiment runs; gates: M17-17 (note :300).
 
 ## Alternatives rejected
 
@@ -125,5 +121,4 @@ an extraction call (note :130).
 - Module design note M17 v2 §4 (D6, D7, D13), §5 (consumed contracts), §6 (table ownership), §8 (cards), §9 (gates), §11
   (UNKNOWNs with fallbacks), §12 (owner red lines).
 - Baseline §7.1, §7.2, §7.4, §10.1, §11.2, §11.2.1, §11.5.1, §45.1, §52, §57.1, §78.1, §78.2, §80.1.
-- ADR-0115 (per-type routes), ADR-0117 (self-check), ADR-0119 (sandbox); ADR-0050 (gate chain truth) for the CI-fail
-  rule.
+- ADR-0115 (per-type routes), ADR-0117 (self-check), ADR-0119 (sandbox).

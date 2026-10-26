@@ -7,8 +7,8 @@
   re-decides none. No code, migration or gate lands with it.
 - Amends: ADR-0079 D-B, D-C, D-J, D-K and D-L through amendment A1 (below); Baseline §29, where the store holds a
   session temp prefix instead of content-addressed originals.
-- Relates to: Baseline §4.1, §4.3, §8.1, §8.3.1, §10.1, §28, §29, §37, §52, §78.1, §78.2, §80.1; ADR-0079 (document
-  layer), ADR-0082 (`DROP NOT NULL` path, note :71), ADR-0092 (deletion pipeline), ADR-0117 (self-check before publish),
+- Relates to: Baseline §4.2, §4.3, §8.1, §8.3.1, §10.1, §28, §29, §37, §52, §78.1, §78.2, §80.1; ADR-0079 (document
+  layer), ADR-0082 (`DROP NOT NULL` path, note :70), ADR-0092 (deletion pipeline), ADR-0117 (self-check before publish),
   ADR-0119 (parse sandbox).
 
 ## Context
@@ -69,8 +69,8 @@ unknown), xlsx sheet+A1 range, email part path, archive member path, audio track
 code-point range (W3C TextPosition). ADR-0079 selectors resolve over the concatenation of blocks in ordinal order (note
 :80-83).
 
-Rejected: B32's separate `text_block` table (a second home for Extraction text); a text object in the store (an original
-by another name) (note :83-84).
+Rejected: the research findings' separate `text_block` table (a second home for Extraction text) (note :11-13, :83); a
+text object in the store (an original by another name) (note :84).
 
 ### D-D (D4) Dedupe: a live session's hash, and nothing after purge
 
@@ -150,10 +150,7 @@ GET only and owns the census, and deleting there is owner-only (note :192-198).
 - Asks M14 and M15: resolve C-M17-4 over blocks; M14 hydrates artifact Evidence from blocks instead of
   `artifact_unavailable` (note :186-187).
 - Asks M25: revise M25-9 to C-M17-6 (note :192).
-- Asks M19: call M17 for step 6's live temp prefix (note :32, :190).
-- Asks M07: the receipt Evidence and the Observation enter only through the M07 doors (note :30-31, :73).
-- Asks M23: catalogue `document_*` as KNOWLEDGE and `upload_sessions`, `artifact_poison` and the probes as EXCLUDED; temp
-  assets are never backed up (note :211).
+- Asks M19: call M17 for step 6's live temp prefix (note :31, :190).
 - Neutral: no code, migration, config key or wire format changes with this card.
 
 ## Gates
@@ -171,13 +168,13 @@ mapped, and M17-11 owns G-DOC-13 and G-M17-6 (note :241, :249). A missing databa
 | G-M17-7 forced privacy | M17-4b | `artifact_intake.rs` | drop image arm | WORKSPACE_SHARED screenshot accepted |
 | A-3 type sniff | M17-6 | `artifact_intake.rs` + `testkit/ingest-threat` | trust extension | PNG-named PDF/polyglot accepted |
 | A-5 image bomb | M17-6 | `artifact_intake.rs` | skip pixel cap | 1-kB 50k×50k PNG decoded |
-| B-5 voice-bubble hallucination | M17-21 | `extract.rs` / `audio.rs` | transcribe without audio | transcript block without an audio unit |
-| C-6 deadline extension | M17-15 | `crates/adapters/tests/upload_deadline.rs` | reset on WAITING; allow > 7 d | deadline moves; derived asset outlives parent |
+| B-5 voice-bubble hallucination | M17-12, M17-21 | `extract.rs` / `audio.rs` | transcribe without audio | transcript block without an audio unit |
+| C-6 deadline extension | M17-4b, M17-15 | `crates/adapters/tests/upload_deadline.rs` | reset on WAITING; allow > 7 d | deadline moves; derived asset outlives parent |
 | C-7 cleanup independence | M17-15 | same | purge only on success | failed job leaves temp past deadline |
 | C-8 residual copies | M17-15 | same | skip N=0 purge | original present after PUBLISHED; temp in M23 set |
 | C-11 hash residue | M17-15 | `upload_deadline.rs` | keep sha / unsalted disclosure hash | original's sha256 findable after purge |
 | C-9 outbox vs delete | M17-7 | `document_repo` tests | skip overlay re-check | publish after tombstone succeeds |
-| C-12 10 KB | M17-4a | `document_repo` tests + xtask storage-measure (M23) | lift block cap | 1,501-B block stored; harness p95 > target |
+| C-12 10 KB | M17-4a, M17-13 | `document_repo` tests + xtask storage-measure (M23) | lift block cap | 1,501-B block stored; harness p95 > target |
 | D-1…D-4 legacy | M17-23 | `bins/maintenance/tests/legacy_artifacts.rs` (with M25) | admin key; write no-owner row; mark legacy complete; double state | any id ≠ exactly one state; admin key used; no-owner row in a tenant; legacy text coverage FULL |
 
 Each needs its inject → red → fix → green record (§80.1) in the implementing card. Route gates for D-E live where the
@@ -212,6 +209,6 @@ second `text_block` table (note :83); a text object in the store (note :84); pre
 
 - Module design note M17 v2 §4 (D1–D5, D12, D15), §4.1 (ADR-0079 amendment rows), §5 and §5.1 (contracts, C-M17-6), §6,
   §11 (UNKNOWNs with fallbacks), §12.
-- Baseline §4.3, §4.1, §8.1, §8.3.1, §10.1, §28, §29, §37, §52, §78.1, §78.2, §80.1.
+- Baseline §4.2, §4.3, §8.1, §8.3.1, §10.1, §28, §29, §37, §52, §78.1, §78.2, §80.1.
 - ADR-0079 (document layer, D-B/D-C/D-J/D-K/D-L), ADR-0082 (amending an applied migration body), ADR-0092 (one deletion
   pipeline), ADR-0117 (self-check), ADR-0119 (sandbox).
