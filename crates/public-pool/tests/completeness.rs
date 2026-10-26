@@ -1,6 +1,6 @@
 //! `public-pool::tests::completeness` — G-M20-6 exact type completeness and Rust/DB contracts (ADR-0090 D-B).
-//! Depends-on: crates=[humaux-public-pool, postgres, serde_json, uuid]; services=[PostgreSQL(any)
-//!   r=[public.syntheses, public.unit_fields, public.units] w=[public.units, public.unit_fields, public.syntheses]];
+//! Depends-on: crates=[postgres, serde_json, uuid]; services=[PostgreSQL(any)
+//!   r=[public.entities, public.syntheses, public.unit_fields, public.units] w=[public.units, public.unit_fields, public.syntheses]];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[public-pool::completeness]
 //! Called-by: [cargo-test]
 //! Invariants: [DB probes roll back; missing CI inputs fail; independent oracle retains every required field]

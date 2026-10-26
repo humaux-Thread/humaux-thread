@@ -1,5 +1,5 @@
 //! `public-pool::completeness` — Type completeness and F3/A1/A2 receipts; no admission authority (ADR-0090 D-B/D-C).
-//! Depends-on: crates=[serde_json, uuid]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[serde_json, uuid]; services=[PostgreSQL(any) r=[public.entities]]; env=[]; modules=[]
 //! Called-by: [tests]
 //! Invariants: [unchecked is NOT_RUN; result is never model-inferred; causal conditions cannot all be stripped]
 //! Spec: Baseline §12.6; §52; §57.1; §78.2; ADR-0090 D-B/D-C
