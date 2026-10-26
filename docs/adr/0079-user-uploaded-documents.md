@@ -9,6 +9,7 @@
   (`memory_evidence`), §8.8 (grounding validity), §10.1 (authority ceiling), §11.10 (grounding revalidation), §37
   (deletion), §78.1, §78.2, §80.1; ADR-0027 / ADR-0028 (Subject axis and Memory↔Subject linkage), ADR-0057 D-B
   (lifecycle ticket on the PRIMARY Evidence), ADR-0078 (M29: relation kernel, attribution ladder, rule N09).
+- Amended by ADR-0115 (M17): A1, text is the knowledge; the file is a temporary asset.
 
 ## Context
 
