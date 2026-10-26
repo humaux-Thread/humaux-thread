@@ -13,7 +13,7 @@ use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
 /// ADR-0101 D-B: task-graph edits must use this same advisory-lock class, hashed by PostgreSQL.
-pub const TOPOLOGY_GUARD_CLASS: &str = "coord.tree";
+pub const TOPOLOGY_GUARD_CLASS: &str = "coord-tree";
 
 /// §50: the deployment config entry for `coord.project_max_depth` (root depth is one).
 pub fn config_registry() -> [ConfigEntry; 1] {
@@ -138,7 +138,8 @@ pub async fn move_in_txn(
     if depth < 1 {
         return Err(ErrorCode::InvalidInput);
     }
-    sqlx::query("SELECT set_config('coord.project_max_depth',$1,true)")
+    // ADR-0101 D-A: `coord.project_max_depth` reaches the door as this transaction-local GUC.
+    sqlx::query("SELECT set_config('humaux.project_max_depth',$1,true)")
         .bind(depth.to_string())
         .execute(&mut **tx)
         .await

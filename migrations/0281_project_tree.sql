@@ -205,7 +205,7 @@ BEGIN
     RAISE EXCEPTION 'tree moves require fresh READ COMMITTED snapshots' USING ERRCODE='25001';
   END IF;
   -- ADR-0101 D-B: the class is shared with coord_tree_repo::TOPOLOGY_GUARD_CLASS.
-  PERFORM pg_advisory_xact_lock(hashtext('coord.tree'),hashtext(p_tenant::text));
+  PERFORM pg_advisory_xact_lock(hashtext('coord-tree'),hashtext(p_tenant::text));
   IF NOT private.declared_project_visible(p_tenant,p_project,p_workspaces)
     OR (p_parent IS NOT NULL AND NOT private.declared_project_visible(p_tenant,p_parent,p_workspaces)) THEN
     RETURN NULL;
@@ -233,18 +233,20 @@ BEGIN
     SELECT c.project_id,c.parent_id FROM private.continuity_projects c
       JOIN parents ON c.project_id=parents.parent_id WHERE c.tenant_id=p_tenant
   ) SELECT count(*)::integer INTO parent_depth FROM parents;
-  depth_limit := NULLIF(current_setting('coord.project_max_depth',true),'')::integer;
+  -- ADR-0101 D-A: the caller installs the deployment's coord.project_max_depth as this transaction-local GUC.
+  depth_limit := NULLIF(current_setting('humaux.project_max_depth',true),'')::integer;
   IF depth_limit IS NULL OR depth_limit < 1 THEN
-    RAISE EXCEPTION 'missing or invalid coord.project_max_depth' USING ERRCODE='22023';
+    RAISE EXCEPTION 'missing or invalid project depth limit' USING ERRCODE='22023';
   END IF;
   IF parent_depth+subtree_height > depth_limit THEN
-    RAISE EXCEPTION 'project depth exceeds coord.project_max_depth' USING ERRCODE='23514';
+    RAISE EXCEPTION 'project depth exceeds the configured limit' USING ERRCODE='23514';
   END IF;
   UPDATE private.continuity_projects SET parent_id=p_parent,version=version+1,updated_at=clock_timestamp()
     WHERE tenant_id=p_tenant AND project_id=p_project RETURNING version INTO current_version;
-  INSERT INTO control.audit_events(tenant_id,action,actor_type,actor_id,resource_type,resource_id,result,metadata)
-    VALUES (p_tenant,'PROJECT_MOVE','PRINCIPAL',p_principal::text,'PROJECT',p_project::text,'SUCCESS',
-      jsonb_build_object('parent_id',p_parent,'version',current_version));
+  -- §77: control.audit_event_insert is the sole INSERT path for control.audit_events (0041).
+  PERFORM control.audit_event_insert(uuidv7(),now(),p_tenant,'PRINCIPAL',p_principal::text,'PROJECT_MOVE',
+    'PROJECT',p_project::text,'SUCCESS','','',NULL::inet,'',ARRAY[]::text[],'','',
+    jsonb_build_object('parent_id',p_parent,'version',current_version));
   RETURN current_version;
 END $$;
 ALTER FUNCTION private.project_move(uuid,uuid,uuid,bigint,uuid[],uuid,uuid) OWNER TO role_migration_owner;

@@ -1,5 +1,5 @@
-//! M18 tree isolation: composite FK and owner-door visibility are independent barriers.
-//! Depends-on: crates=[postgres, uuid]; services=[PostgreSQL(owner) w=[control.tenants, control.workspaces, private.continuity_projects], PostgreSQL(role_gateway) x=[private.project_subtree, private.project_ancestors, private.project_move]]; env=[HUMAUX_TEST_PG_DSN]; modules=[]
+//! `adapters::tests::coord_rls` — G-M18-1 tree isolation: the composite parent FK and the owner doors' per-row visibility are independent barriers.
+//! Depends-on: crates=[postgres, uuid]; services=[PostgreSQL(owner) w=[control.tenants, control.workspaces, private.continuity_projects], PostgreSQL(role_gateway) x=[private.project_subtree, private.project_ancestors]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::tests::support::project_tree_fixture]
 //! Called-by: [cargo-test]
 //! Invariants: [§6.1.1 exact visible sets; fixture DDL rolls back; missing input fails]
 //! Spec: Baseline §6.1.1; §79.2; §80.1; ADR-0101 D-A
@@ -49,16 +49,17 @@ fn g_m18_1_foreign_parent_fk() {
             &[&foreign.to_string()],
         )
         .unwrap();
+    // dep: PostgreSQL(role_gateway) — a foreign-tenant session reads T1's project through the runtime doors.
     fx.client
         .batch_execute("SET LOCAL ROLE role_gateway")
         .unwrap();
-    for door in ["private.project_subtree", "private.project_ancestors"] {
+    for door in [
+        "SELECT * FROM private.project_subtree($1,$2,$3)",
+        "SELECT * FROM private.project_ancestors($1,$2,$3)",
+    ] {
         let rows = fx
             .client
-            .query(
-                &format!("SELECT * FROM {door}($1,$2,$3)"),
-                &[&foreign, &fx.projects[0], &vec![workspace]],
-            )
+            .query(door, &[&foreign, &fx.projects[0], &vec![workspace]])
             .unwrap();
         assert_eq!(rows.len(), 0, "G-M18-1: foreign start is invisible");
     }

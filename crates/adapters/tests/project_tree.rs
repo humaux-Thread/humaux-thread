@@ -1,5 +1,5 @@
-//! M18 project move gates on the exact 0281 doors and Rust adapter.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio, toml, uuid]; services=[PostgreSQL(owner) r=[pg_stat_activity, pg_constraint, private.continuity_projects, control.audit_events] w=[private.continuity_projects], PostgreSQL(role_gateway) x=[private.project_move, private.project_ancestors, private.project_subtree, private.read_project_rollup]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::coord_tree_repo, domain::continuity, domain::identity, domain::ids, domain::project_tree]
+//! `adapters::tests::project_tree` — M18 project-move gates (G-M18-4, G-M18-5) and the 0281 channel-facet preservation proof, on the exact doors and the Rust adapter.
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, serde_json, sqlx, tokio, toml, uuid]; services=[PostgreSQL(owner) r=[control.audit_events, private.continuity_projects, private.project_facets] w=[private.continuity_projects], PostgreSQL(role_gateway) x=[private.project_move, private.project_ancestors, private.project_subtree, private.read_project_rollup, private.set_project_channel]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::coord_tree_repo, adapters::tests::support::project_tree_fixture, adapters::tests::support::throwaway_db, domain::continuity, domain::error, domain::identity, domain::ids, domain::project_tree]
 //! Called-by: [cargo-test]
 //! Invariants: [§80.1 exact counts/sets; lock witnesses fix concurrency ordering; missing inputs fail]
 //! Spec: Baseline §30; §46.1; §78.2; §79.2; §80.1; ADR-0101
@@ -17,6 +17,7 @@ use uuid::Uuid;
 #[path = "support/project_tree_fixture.rs"]
 mod project_tree_fixture;
 #[path = "support/throwaway_db.rs"]
+#[allow(dead_code)]
 mod throwaway_db;
 
 #[test]
@@ -61,7 +62,7 @@ fn g_m18_5_depth_boundary() {
     assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
     assert_eq!(
         error.as_db_error().unwrap().message(),
-        "project depth exceeds coord.project_max_depth"
+        "project depth exceeds the configured limit"
     );
     fx.client
         .batch_execute("ROLLBACK TO depth_refusal; RESET ROLE")
@@ -102,11 +103,11 @@ fn concurrent_move(
     ids: [Uuid; 5],
 ) -> Result<i64, (String, String)> {
     let [tenant, principal, workspace, project, parent] = ids;
-    let mut client = connect(&dsn);
+    let mut client = connect(dsn);
     client
         .batch_execute("BEGIN; SET LOCAL statement_timeout='25s'")
         .unwrap();
-    context(&mut client, tenant, principal, workspace);
+    context(&mut client, tenant, principal);
     let pid: i32 = client
         .query_one("SELECT pg_backend_pid()", &[])
         .unwrap()
@@ -208,6 +209,16 @@ fn g_m18_4_concurrent_cycle() {
 }
 
 #[test]
+fn guard_class_is_the_door_literal() {
+    let sql = include_str!("../../../migrations/0281_project_tree.sql");
+    let class = humaux_adapters::coord_tree_repo::TOPOLOGY_GUARD_CLASS;
+    assert!(
+        sql.contains(&format!("pg_advisory_xact_lock(hashtext('{class}')")),
+        "ADR-0101 D-B: the door and task-graph edits share one lock class"
+    );
+}
+
+#[test]
 fn tree_closed_sets_match_both_checks() {
     use humaux_domain::project_tree::{ProjectFacetKind, ProjectKind};
     assert_eq!(ProjectKind::ALL.len(), 3);
@@ -262,9 +273,11 @@ fn tree_adapter_reads_moves_and_cas() {
     let mut fx = Fixture::new(&db.dsn());
     fx.client.batch_execute("COMMIT").unwrap();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
+    // dep: PostgreSQL(role_gateway) — the Rust adapter's transaction runs as the runtime role after the GUCs below.
     let mut connection = sqlx::PgConnection::connect(&db.dsn()).await.unwrap();
     let mut tx = connection.begin().await.unwrap();
     sqlx::query("SELECT set_config('humaux.tenant_id',$1,true),set_config('humaux.principal_id',$2,true),set_config('humaux.user_id','',true)").bind(fx.tenant.to_string()).bind(fx.principal.to_string()).execute(&mut *tx).await.unwrap();
+    // dep: PostgreSQL(role_gateway) — drop the owner connection to the runtime role before any tree door.
     sqlx::query("SET LOCAL ROLE role_gateway")
         .execute(&mut *tx)
         .await
