@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4
@@ -8801,7 +8801,7 @@ fn mcp_tool_surface_truth_from(
 /// §57.1: absent source trees name their missing object; delivered contract inputs must fail closed.
 fn mcp_tool_surface_truth(root: &Path) -> Verdict {
     if !root.exists() {
-        return Verdict::NotApplicable("bins/gateway/src/mcp_application.rs".to_string());
+        return Verdict::NotApplicable(root.display().to_string());
     }
     let dispatch_path = root.join("bins/gateway/src/mcp_application.rs");
     let baseline_path = root.join("docs/architecture/Baseline_2.9.md");
@@ -8855,45 +8855,56 @@ fn catalog_operation_keys(root: &Path) -> Result<BTreeSet<String>, CatalogDefect
         .ok_or_else(|| {
             CatalogDefect::Malformed("contracts/mcp/manifest.json#/tools".to_string())
         })?;
-    let mut keys = BTreeSet::new();
-    for tool in tools {
-        let file = tool
-            .get("input_schema")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                CatalogDefect::Malformed(
-                    "contracts/mcp/manifest.json#/tools/*/input_schema".to_string(),
-                )
-            })?;
-        let schema = read_contract(&dir, file)?;
-        let branches = schema
-            .get("oneOf")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| CatalogDefect::Malformed(format!("contracts/mcp/{file}#/oneOf")))?;
-        for branch in branches {
-            let key = branch
-                .get("x-humaux-operation")
-                .and_then(|op| op.get("operation_key"))
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    CatalogDefect::Malformed(format!(
-                        "contracts/mcp/{file}#/oneOf/*/x-humaux-operation"
-                    ))
-                })?;
-            keys.insert(key.to_string());
-        }
-    }
-    let failures = operation_registry_failures(&manifest, &keys);
+    let scopes = catalog_operation_scopes(&dir, tools)?;
+    let keys = scopes.keys().cloned().collect();
+    let failures = operation_registry_failures(&manifest, &keys, &scopes);
     if !failures.is_empty() {
         return Err(CatalogDefect::Malformed(failures.join("; ")));
     }
     Ok(keys)
 }
 
+/// §33: authorization metadata comes from the same schema branches the gateway validates.
+fn catalog_operation_scopes(
+    dir: &Path,
+    tools: &[serde_json::Value],
+) -> Result<BTreeMap<String, serde_json::Value>, CatalogDefect> {
+    let mut scopes = BTreeMap::new();
+    for tool in tools {
+        let file = tool["input_schema"].as_str().ok_or_else(|| {
+            CatalogDefect::Malformed(
+                "contracts/mcp/manifest.json#/tools/*/input_schema".to_string(),
+            )
+        })?;
+        let schema = read_contract(dir, file)?;
+        let operations = schema["oneOf"]
+            .as_array()
+            .ok_or_else(|| CatalogDefect::Malformed(format!("contracts/mcp/{file}#/oneOf")))?;
+        for branch in operations {
+            let metadata = &branch["x-humaux-operation"];
+            let key = metadata["operation_key"].as_str().ok_or_else(|| {
+                CatalogDefect::Malformed(format!(
+                    "contracts/mcp/{file}#/oneOf/*/x-humaux-operation"
+                ))
+            })?;
+            if scopes
+                .insert(key.to_string(), metadata["required_scope"].clone())
+                .is_some()
+            {
+                return Err(CatalogDefect::Malformed(format!(
+                    "duplicate schema operation `{key}`"
+                )));
+            }
+        }
+    }
+    Ok(scopes)
+}
+
 /// G-M26-1 extends ADR-0044's schema/dispatch/document equality; no second gate arm (§33.1).
 fn operation_registry_failures(
     manifest: &serde_json::Value,
     schema_keys: &BTreeSet<String>,
+    scopes: &BTreeMap<String, serde_json::Value>,
 ) -> Vec<String> {
     let mut failures = Vec::new();
     if manifest["contract_version"] != "2" {
@@ -8914,8 +8925,8 @@ fn operation_registry_failures(
             failures.push(format!("registry `{op}` is duplicated"));
         }
         for (field, allowed) in [
-            ("edition", &["core", "cloud"][..]),
-            ("effect", &["read", "write", "destructive"][..]),
+            ("edition", humaux_protocol::mcp_catalog::Edition::ALL),
+            ("effect", humaux_protocol::mcp_catalog::Effect::ALL),
         ] {
             if !entry[field]
                 .as_str()
@@ -8924,6 +8935,7 @@ fn operation_registry_failures(
                 failures.push(format!("registry `{op}` lacks valid {field}"));
             }
         }
+        registry_metadata_failures(entry, op, manifest, scopes.get(op), &mut failures);
         if !entry["owner_module"].as_str().is_some_and(is_module_id) {
             failures.push(format!("registry `{op}` lacks known owner_module"));
         }
@@ -8940,7 +8952,61 @@ fn operation_registry_failures(
         schema_keys,
         &mut failures,
     );
+    let destructive_keys = humaux_domain::confirm::DestructiveOp::ALL
+        .iter()
+        .map(|op| op.operation_key().to_string())
+        .collect();
+    name_diff(
+        "registry omits DestructiveOp",
+        &destructive_keys,
+        &registry,
+        &mut failures,
+    );
     failures
+}
+
+/// §33 / ADR-0018: registry metadata records enforcement; it cannot grant permissions.
+fn registry_metadata_failures(
+    entry: &serde_json::Value,
+    op: &str,
+    manifest: &serde_json::Value,
+    required_scope: Option<&serde_json::Value>,
+    failures: &mut Vec<String>,
+) {
+    use humaux_protocol::mcp_catalog::{Effect, Role, Scope};
+    if let Some(required_scope) = required_scope {
+        if entry["scope"] != *required_scope {
+            failures.push(format!(
+                "registry `{op}` scope differs from schema required_scope"
+            ));
+        }
+        let expected = serde_json::from_value::<Scope>(required_scope.clone());
+        let roles = serde_json::from_value::<Vec<Role>>(entry["roles"].clone());
+        if !matches!((expected, roles), (Ok(scope), Ok(roles))
+            if roles.len() == scope.roles().len()
+                && roles.iter().collect::<BTreeSet<_>>() == scope.roles().iter().collect())
+        {
+            failures.push(format!("registry `{op}` roles differ from scope presets"));
+        }
+    }
+    if !matches!((entry["budget_bytes"].as_u64(), manifest["budget_cap_bytes"].as_u64()),
+        (Some(budget), Some(cap)) if budget > 0 && budget <= cap)
+    {
+        failures.push(format!(
+            "registry `{op}` budget_bytes outside configured cap"
+        ));
+    }
+    if let Ok(effect) = serde_json::from_value::<Effect>(entry["effect"].clone()) {
+        let count = humaux_domain::confirm::DestructiveOp::ALL
+            .iter()
+            .filter(|item| item.operation_key() == op)
+            .count();
+        if count != usize::from(effect == Effect::Destructive) {
+            failures.push(format!(
+                "registry `{op}` effect differs from DestructiveOp::ALL"
+            ));
+        }
+    }
 }
 
 /// Card 22 review fix: `x-humaux-v1-supported` was an inert annotation. §33 and ADR-0044 both
@@ -11973,8 +12039,13 @@ runs:
         .unwrap();
         let keys = catalog_operation_keys(&root).unwrap();
         assert_eq!(keys.len(), 53);
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            operation_registry_failures(&manifest, &keys),
+            operation_registry_failures(&manifest, &keys, &scopes),
             Vec::<String>::new()
         );
         let op = manifest["operations"][0]["op"].as_str().unwrap();
@@ -11993,14 +12064,14 @@ runs:
                 entry.insert(field.to_string(), value.into());
             }
             assert_eq!(
-                operation_registry_failures(&fixture, &keys),
+                operation_registry_failures(&fixture, &keys, &scopes),
                 vec![format!("registry `{op}` {message}")]
             );
         }
         let mut fixture = manifest.clone();
         fixture["operations"].as_array_mut().unwrap().remove(0);
         assert_eq!(
-            operation_registry_failures(&fixture, &keys),
+            operation_registry_failures(&fixture, &keys, &scopes),
             vec![format!("registry omits schema operation: `{op}`")]
         );
         let mut extra = manifest["operations"][0].clone();
@@ -12008,10 +12079,85 @@ runs:
         let mut fixture = manifest;
         fixture["operations"].as_array_mut().unwrap().push(extra);
         assert_eq!(
-            operation_registry_failures(&fixture, &keys),
+            operation_registry_failures(&fixture, &keys, &scopes),
             vec![
                 "registry operation is not admitted by wire schemas: `memory.unwired`".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_enforcement_faults() {
+        let root = real_root();
+        let manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys = scopes.keys().cloned().collect();
+        let index = manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|op| op["op"] == "memory.get")
+            .unwrap();
+        for (field, value, message) in [
+            (
+                "scope",
+                serde_json::json!("memory:write"),
+                "scope differs from schema required_scope",
+            ),
+            (
+                "roles",
+                serde_json::json!(["read_only"]),
+                "roles differ from scope presets",
+            ),
+            (
+                "budget_bytes",
+                serde_json::json!(0),
+                "budget_bytes outside configured cap",
+            ),
+            (
+                "budget_bytes",
+                serde_json::json!(manifest["budget_cap_bytes"].as_u64().unwrap() + 1),
+                "budget_bytes outside configured cap",
+            ),
+            (
+                "effect",
+                serde_json::json!("destructive"),
+                "effect differs from DestructiveOp::ALL",
+            ),
+        ] {
+            let mut fixture = manifest.clone();
+            fixture["operations"][index][field] = value;
+            assert_eq!(
+                operation_registry_failures(&fixture, &keys, &scopes),
+                vec![format!("registry `memory.get` {message}")]
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_cannot_hide_confirm_gate() {
+        let root = real_root();
+        let mut manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys = scopes.keys().cloned().collect();
+        let entry = manifest["operations"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|op| op["op"] == "memory.archive")
+            .unwrap();
+        entry["effect"] = serde_json::json!("write");
+        assert_eq!(
+            operation_registry_failures(&manifest, &keys, &scopes),
+            vec!["registry `memory.archive` effect differs from DestructiveOp::ALL".to_string()]
         );
     }
 
@@ -12103,7 +12249,7 @@ runs:
     fn mcp_tool_surface_truth_is_not_applicable_without_its_sources() {
         assert_eq!(
             mcp_tool_surface_truth(Path::new("/nonexistent-humaux-root")),
-            Verdict::NotApplicable("bins/gateway/src/mcp_application.rs".to_string())
+            Verdict::NotApplicable("/nonexistent-humaux-root".to_string())
         );
     }
 
