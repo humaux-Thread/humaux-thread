@@ -17,7 +17,11 @@ SELECT (SELECT count(*)=3 FROM pg_class WHERE oid IN
  AND confrelid='public.units'::regclass AND contype='f')
  AND (SELECT count(*)=1 FROM pg_index
      WHERE indexrelid=to_regclass('public.unit_conditions_identity_uq')
-       AND indrelid='public.unit_conditions'::regclass AND indisunique) AS postcheck_ok
+       AND indrelid='public.unit_conditions'::regclass AND indisunique)
+ AND EXISTS (SELECT 1 FROM pg_constraint c
+     JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=c.conkey[1]
+     WHERE c.conrelid='public.unit_conditions'::regclass AND c.contype='p'
+       AND cardinality(c.conkey)=1 AND a.attname='condition_id') AS postcheck_ok
 """
 rollback_or_forward_fix = "Forward-fix after any unit rows exist; preserve revisions and fields. Before use, drop the three new tables and syntheses.unit_id in reverse FK order."
 backup_restore_requirement = "Standard pre-deploy snapshot; no existing rows rewritten and no production action in this card."
