@@ -85,10 +85,10 @@ pub fn parse_section_65(baseline: &str) -> Option<Vec<String>> {
             in_fence = line.trim() == "```text";
             continue;
         }
-        if let Some(job) = first_cell(line) {
-            if job != "job" {
-                jobs.push(job.to_string());
-            }
+        if let Some(job) = first_cell(line)
+            && job != "job"
+        {
+            jobs.push(job.to_string());
         }
     }
     in_section.then_some(jobs)
