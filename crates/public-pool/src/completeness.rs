@@ -374,6 +374,7 @@ pub struct FrontGateReceipt {
 pub fn f3(draft: &UnitDraft) -> FrontGateReceipt {
     FrontGateReceipt {
         fields: receipt("F3.fields", field_state(draft)),
+        // dep-map: allow table-undeclared — §57.1 names the missing relation; no SQL reads it in this module
         entities: receipt("F3.entities", GateState::NotApplicable("public.entities")),
     }
 }
