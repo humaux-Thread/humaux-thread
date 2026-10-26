@@ -1,17 +1,17 @@
 //! `protocol::mcp_catalog` — Canonical MCP tool schema and operation registry (§33.1 / §33.10).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
-//!   env=[]; modules=[domain::error, protocol::mcp]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests]
-//! Invariants: []
-//! Spec: §33.1; §33.10
+//!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests, xtask::architecture_check]
+//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33)]
+//! Spec: §33; §33.1; §33.10
 //!
-//! The embedded `contracts/mcp` documents are the only operation/permission/
-//! BMO metadata source. This adapter merely turns their validated JSON into
-//! protocol types; it never authenticates, checks entitlement, or logs args.
+//! The embedded schemas own enforced scopes; registry.scope must equal branch.required_scope (§33).
+//! The embedded `contracts/mcp` documents own operation and BMO metadata. This adapter turns
+//! their validated JSON into protocol types; it never authenticates, checks entitlement, or logs args.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use humaux_domain::error::ErrorCode;
+use humaux_domain::{confirm::DestructiveOp, error::ErrorCode};
 use jsonschema::Validator;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -21,13 +21,78 @@ use crate::mcp::{McpToolSchema, ToolName, TrustedMcpCatalog};
 const MANIFEST: &str = include_str!("../../../contracts/mcp/manifest.json");
 const OUTPUT_SCHEMA: &str = include_str!("../../../contracts/mcp/output.schema.json");
 const FEATURE_KEY: &str = "mcp.billable_operations.per_period";
-const SCOPES: [&str; 5] = [
-    "context:read",
-    "memory:write",
-    "artifact:manage",
-    "code:manage",
-    "coordination:manage",
-];
+// §78.2: domain's closed_set! is crate-private; protocol owns these wire vocabularies.
+macro_rules! catalog_set {
+    ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
+        /// Closed registry vocabulary (§33.1, §78.2).
+        #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum $name {
+            $(#[doc = $wire] #[serde(rename = $wire)] $variant,)+
+        }
+        impl $name {
+            /// Exact wire labels, generated from the variant declaration (§78.2).
+            pub const ALL: &'static [&'static str] = &[$($wire,)+];
+        }
+    };
+}
+
+catalog_set!(Edition { Core => "core", Cloud => "cloud" });
+catalog_set!(Effect { Read => "read", Write => "write", Destructive => "destructive" });
+catalog_set!(Role {
+    ReadOnly => "read_only", Agent => "agent", Coordinator => "coordinator", Verifier => "verifier"
+});
+
+catalog_set!(Scope {
+    ContextRead => "context:read", MemoryWrite => "memory:write", ArtifactManage => "artifact:manage",
+    CodeManage => "code:manage", CoordinationManage => "coordination:manage"
+});
+
+impl Scope {
+    /// Presets holding the currently enforced scope (M26 §6; §33).
+    pub const fn roles(self) -> &'static [Role] {
+        match self {
+            Self::ContextRead => &[
+                Role::ReadOnly,
+                Role::Agent,
+                Role::Coordinator,
+                Role::Verifier,
+            ],
+            Self::CoordinationManage => &[Role::Coordinator],
+            Self::MemoryWrite | Self::ArtifactManage | Self::CodeManage => {
+                &[Role::Agent, Role::Coordinator, Role::Verifier]
+            }
+        }
+    }
+}
+
+/// Per-operation registry metadata; wire schemas remain owned by the operation's module (§33.1).
+#[derive(Clone, Debug, Deserialize)]
+pub struct Operation {
+    /// Stable internal dispatch key (ADR-0044).
+    pub op: String,
+    /// Existing wire tool name (§33.1).
+    pub tool: String,
+    /// Internal action, including implicit single-action tools (§33.1).
+    pub action: String,
+    /// Semantic owner from the module contract (ADR-0074).
+    pub owner_module: String,
+    /// Implementing crate's edition (ADR-0074).
+    pub edition: Edition,
+    /// Required credential scope; listing enforcement is M26-3 (§33).
+    pub scope: Scope,
+    /// Credential presets from M26 design §6, without per-operation roles.
+    pub roles: Vec<Role>,
+    /// Confirm-token operations are destructive (ADR-0018).
+    pub effect: Effect,
+    /// Canonical input schema and branch pointer (§33.1).
+    pub input_schema: String,
+    /// Canonical output schema reference (§33.4).
+    pub output_schema: String,
+    /// Recorded result budget; enforcement belongs to M26-4 (§33.5).
+    pub budget_bytes: u64,
+    /// Emergency relay eligibility owned by M04 (§33).
+    pub relay_critical: bool,
+}
 
 /// The accounting meaning selected by a fully validated canonical operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,16 +151,17 @@ impl OperationDescriptor {
 /// checked before the listener can publish a catalog.
 pub struct CanonicalCatalog {
     tools: BTreeMap<ToolName, ToolEntry>,
+    operations: BTreeMap<String, Operation>,
 }
 
 struct ToolEntry {
     advertised: McpToolSchema,
     root_validator: Validator,
     output_validator: Validator,
-    operations: Vec<Operation>,
+    operations: Vec<SchemaOperation>,
 }
 
-struct Operation {
+struct SchemaOperation {
     validator: Validator,
     metadata: OperationMetadata,
 }
@@ -106,6 +172,9 @@ struct Manifest {
     protocol_version: String,
     shared_output_schema: String,
     tools: Vec<ManifestTool>,
+    // M26 D7 / §33.5: the result budget ceiling is contract configuration.
+    budget_cap_bytes: u64,
+    operations: Vec<Operation>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +200,11 @@ impl CanonicalCatalog {
     /// No filesystem or network lookup is available to schema loading.
     pub fn load() -> Result<Self, ErrorCode> {
         Self::from_manifest(MANIFEST)
+    }
+
+    /// Typed entries in deterministic internal-key order (M26 D2; §33.1).
+    pub fn operations(&self) -> &BTreeMap<String, Operation> {
+        &self.operations
     }
 
     /// Converts the exact same source into the MCP SDK-neutral advertised
@@ -181,13 +255,14 @@ impl CanonicalCatalog {
     fn from_manifest(raw_manifest: &str) -> Result<Self, ErrorCode> {
         let manifest: Manifest =
             serde_json::from_str(raw_manifest).map_err(|_| ErrorCode::InvalidInput)?;
-        if manifest.contract_version != "1"
+        if manifest.contract_version != "2"
             || manifest.protocol_version != "2026-07-28"
             || manifest.shared_output_schema != "output.schema.json"
             || manifest.tools.len() != 8
         {
             return Err(ErrorCode::InvalidInput);
         }
+        let operations = registry_from_manifest(&manifest)?;
         let mut tools = BTreeMap::new();
         for item in manifest.tools {
             let tool = parse_tool(&item.name).ok_or(ErrorCode::InvalidInput)?;
@@ -239,8 +314,75 @@ impl CanonicalCatalog {
         if tools.len() != 8 {
             return Err(ErrorCode::InvalidInput);
         }
-        Ok(Self { tools })
+        Ok(Self { tools, operations })
     }
+}
+
+fn registry_from_manifest(manifest: &Manifest) -> Result<BTreeMap<String, Operation>, ErrorCode> {
+    let mut expected = BTreeMap::new();
+    for tool in &manifest.tools {
+        let schema =
+            json_document(schema_source(&tool.input_schema).ok_or(ErrorCode::InvalidInput)?)?;
+        let branches = schema["oneOf"].as_array().ok_or(ErrorCode::InvalidInput)?;
+        for (index, branch) in branches.iter().enumerate() {
+            let key = branch["x-humaux-operation"]["operation_key"]
+                .as_str()
+                .ok_or(ErrorCode::InvalidInput)?
+                .to_string();
+            let scope: Scope =
+                serde_json::from_value(branch["x-humaux-operation"]["required_scope"].clone())
+                    .map_err(|_| ErrorCode::InvalidInput)?;
+            let input = format!("{}#/oneOf/{index}", tool.input_schema);
+            let output = format!(
+                "{}{}",
+                tool.output_schema
+                    .as_deref()
+                    .unwrap_or("output.schema.json"),
+                tool.output_schema_pointer.as_deref().unwrap_or("")
+            );
+            if expected
+                .insert(key, (tool.name.clone(), input, output, scope))
+                .is_some()
+            {
+                return Err(ErrorCode::InvalidInput);
+            }
+        }
+    }
+    let mut registry = BTreeMap::new();
+    for op in manifest.operations.iter().cloned() {
+        let (tool, input, output, scope) =
+            expected.remove(&op.op).ok_or(ErrorCode::InvalidInput)?;
+        let roles: BTreeSet<_> = op.roles.iter().collect();
+        let destructive_count = DestructiveOp::ALL
+            .iter()
+            .filter(|item| item.operation_key() == op.op)
+            .count();
+        if op.tool != tool
+            || op.input_schema != input
+            || op.output_schema != output
+            || op.op != format!("{}.{}", op.tool, op.action)
+            || op.owner_module.is_empty()
+            || roles.len() != op.roles.len()
+            || op.scope != scope
+            || roles != scope.roles().iter().collect()
+            || op.budget_bytes == 0
+            || op.budget_bytes > manifest.budget_cap_bytes
+            || destructive_count != usize::from(op.effect == Effect::Destructive)
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        if registry.insert(op.op.clone(), op).is_some() {
+            return Err(ErrorCode::InvalidInput);
+        }
+    }
+    if !expected.is_empty()
+        || DestructiveOp::ALL
+            .iter()
+            .any(|op| !registry.contains_key(op.operation_key()))
+    {
+        return Err(ErrorCode::InvalidInput);
+    }
+    Ok(registry)
 }
 
 /// Convenience bootstrap entry point for callers that only publish tools.
@@ -307,7 +449,7 @@ fn validator_for(schema: &Value) -> Result<Validator, ErrorCode> {
         .map_err(|_| ErrorCode::InvalidInput)
 }
 
-fn operations_from_schema(schema: &Value) -> Result<Vec<Operation>, ErrorCode> {
+fn operations_from_schema(schema: &Value) -> Result<Vec<SchemaOperation>, ErrorCode> {
     let branches = schema
         .get("oneOf")
         .and_then(Value::as_array)
@@ -327,7 +469,7 @@ fn operations_from_schema(schema: &Value) -> Result<Vec<Operation>, ErrorCode> {
         if !keys.insert(metadata.operation_key.clone()) {
             return Err(ErrorCode::InvalidInput);
         }
-        operations.push(Operation {
+        operations.push(SchemaOperation {
             validator: validator_for(branch)?,
             metadata,
         });
@@ -337,7 +479,7 @@ fn operations_from_schema(schema: &Value) -> Result<Vec<Operation>, ErrorCode> {
 
 fn validate_metadata(metadata: &OperationMetadata) -> Result<(), ErrorCode> {
     if metadata.operation_key.is_empty()
-        || !SCOPES.contains(&metadata.required_scope.as_str())
+        || !Scope::ALL.contains(&metadata.required_scope.as_str())
         || metadata.feature_key != FEATURE_KEY
     {
         return Err(ErrorCode::InvalidInput);
@@ -419,6 +561,198 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    #[test]
+    fn registry_v2_closed_sets_and_schema_coverage() {
+        assert_eq!(Edition::ALL, &["core", "cloud"]);
+        assert_eq!(
+            Scope::ALL,
+            &[
+                "context:read",
+                "memory:write",
+                "artifact:manage",
+                "code:manage",
+                "coordination:manage"
+            ]
+        );
+        assert_eq!(Effect::ALL, &["read", "write", "destructive"]);
+        assert_eq!(
+            Role::ALL,
+            &["read_only", "agent", "coordinator", "verifier"]
+        );
+        for (wire, expected) in [("core", Edition::Core), ("cloud", Edition::Cloud)] {
+            assert_eq!(
+                serde_json::from_value::<Edition>(json!(wire)).unwrap(),
+                expected
+            );
+        }
+        for (wire, expected) in [
+            ("read", Effect::Read),
+            ("write", Effect::Write),
+            ("destructive", Effect::Destructive),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<Effect>(json!(wire)).unwrap(),
+                expected
+            );
+        }
+        let catalog = CanonicalCatalog::load().unwrap();
+        let expected: BTreeSet<_> = catalog
+            .tools
+            .values()
+            .flat_map(|tool| {
+                tool.operations
+                    .iter()
+                    .map(|op| op.metadata.operation_key.clone())
+            })
+            .collect();
+        assert_eq!(catalog.operations().len(), 53);
+        assert_eq!(
+            catalog
+                .operations()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(catalog.operations()["remember.put"].budget_bytes, 8192);
+        assert_eq!(catalog.operations()["memory.get"].budget_bytes, 24576);
+        assert_eq!(catalog.operations()["memory.confirm"].budget_bytes, 24576);
+        assert_eq!(catalog.operations()["memory.reject"].budget_bytes, 24576);
+    }
+
+    #[test]
+    fn registry_scope_contract_matches_enforced_presets() {
+        for (wire, scope, roles) in [
+            (
+                "context:read",
+                Scope::ContextRead,
+                vec![
+                    Role::ReadOnly,
+                    Role::Agent,
+                    Role::Coordinator,
+                    Role::Verifier,
+                ],
+            ),
+            (
+                "memory:write",
+                Scope::MemoryWrite,
+                vec![Role::Agent, Role::Coordinator, Role::Verifier],
+            ),
+            (
+                "artifact:manage",
+                Scope::ArtifactManage,
+                vec![Role::Agent, Role::Coordinator, Role::Verifier],
+            ),
+            (
+                "code:manage",
+                Scope::CodeManage,
+                vec![Role::Agent, Role::Coordinator, Role::Verifier],
+            ),
+            (
+                "coordination:manage",
+                Scope::CoordinationManage,
+                vec![Role::Coordinator],
+            ),
+        ] {
+            assert_eq!(serde_json::from_value::<Scope>(json!(wire)).unwrap(), scope);
+            assert_eq!(scope.roles(), roles.as_slice());
+        }
+        let catalog = CanonicalCatalog::load().unwrap();
+        let relay: BTreeSet<_> = catalog
+            .operations()
+            .values()
+            .filter(|op| op.relay_critical)
+            .map(|op| op.op.as_str())
+            .collect();
+        assert_eq!(
+            relay,
+            BTreeSet::from(["continuity.get", "coordinate.lock_release"])
+        );
+    }
+
+    #[test]
+    fn registry_v2_rejects_missing_unknown_duplicate_and_schema_drift() {
+        let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+        for (field, value) in [
+            ("edition", json!("enterprise")),
+            ("effect", json!("execute")),
+            ("roles", json!(["owner"])),
+            ("roles", json!(["agent", "agent"])),
+            ("scope", json!("root:all")),
+            ("scope", json!("context:read")),
+            ("roles", json!(["read_only"])),
+            ("budget_bytes", json!(0)),
+            (
+                "budget_bytes",
+                json!(manifest["budget_cap_bytes"].as_u64().unwrap() + 1),
+            ),
+            ("effect", json!("destructive")),
+            ("input_schema", json!("recall.schema.json#/oneOf/0")),
+            ("output_schema", json!("other.schema.json")),
+            ("action", json!("unknown")),
+        ] {
+            let mut fixture = manifest.clone();
+            fixture["operations"][0][field] = value;
+            assert_invalid_registry(&fixture);
+        }
+        for field in [
+            "edition",
+            "owner_module",
+            "effect",
+            "budget_bytes",
+            "relay_critical",
+        ] {
+            let mut fixture = manifest.clone();
+            fixture["operations"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert_invalid_registry(&fixture);
+        }
+        let mut fixture = manifest.clone();
+        fixture["operations"].as_array_mut().unwrap().remove(0);
+        assert_invalid_registry(&fixture);
+        let mut fixture = manifest.clone();
+        fixture["operations"]
+            .as_array_mut()
+            .unwrap()
+            .push(manifest["operations"][0].clone());
+        assert_invalid_registry(&fixture);
+    }
+
+    #[test]
+    fn registry_destructive_effect_equals_confirm_gate_set() {
+        let catalog = CanonicalCatalog::load().unwrap();
+        let expected: BTreeSet<_> = DestructiveOp::ALL
+            .iter()
+            .map(|op| op.operation_key())
+            .collect();
+        assert_eq!(expected.len(), DestructiveOp::ALL.len());
+        let actual: BTreeSet<_> = catalog
+            .operations()
+            .values()
+            .filter(|op| op.effect == Effect::Destructive)
+            .map(|op| op.op.as_str())
+            .collect();
+        assert_eq!(actual, expected);
+        let mut fixture: Value = serde_json::from_str(MANIFEST).unwrap();
+        let entry = fixture["operations"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|op| op["op"] == "memory.archive")
+            .unwrap();
+        entry["effect"] = json!("write");
+        assert_invalid_registry(&fixture);
+    }
+
+    fn assert_invalid_registry(fixture: &Value) {
+        assert!(matches!(
+            CanonicalCatalog::from_manifest(&fixture.to_string()),
+            Err(ErrorCode::InvalidInput)
+        ));
+    }
+
     fn manifest_with_memory_output_pointer(pointer: &str) -> String {
         let mut manifest: Value = serde_json::from_str(MANIFEST).expect("manifest fixture");
         let memory = manifest["tools"]
@@ -429,6 +763,11 @@ mod tests {
             .expect("memory tool fixture");
         memory["output_schema"] = json!("context.output.schema.json");
         memory["output_schema_pointer"] = json!(pointer);
+        for op in manifest["operations"].as_array_mut().unwrap() {
+            if op["tool"] == "memory" {
+                op["output_schema"] = json!(format!("context.output.schema.json{pointer}"));
+            }
+        }
         serde_json::to_string(&manifest).expect("manifest serialization")
     }
 
