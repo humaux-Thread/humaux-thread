@@ -201,6 +201,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
+- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -472,6 +473,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.audit_event_identity`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
+- reads `control.contribution_notice_events`
+- reads `control.contribution_notices`
 - reads `control.credential_pepper_state`
 - reads `control.deletion_targets`
 - reads `control.email_challenges`
@@ -493,6 +496,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
+- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -672,6 +676,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
+- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -802,6 +807,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `protocol::edge`
 - env `CARGO_MANIFEST_DIR`
+
+#### `protocol::error_map`
+
+#### `protocol::mcp`
+
+#### `protocol::mcp_catalog`
 
 #### `retrieval::candidate`
 
@@ -1131,6 +1142,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 
 #### `xtask::load`
+- reads `control.rate_buckets`
+- reads `control.workspaces`
 - service `PostgreSQL(any)`
 - service `HTTP(gateway)`
 - service `subprocess(docker)`
@@ -1177,6 +1190,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `xtask::rls_check`
 - env `CARGO_MANIFEST_DIR`
 - env `HUMAUX_TEST_PG_DSN`
+
+#### `xtask::schedule_register`
+- env `CARGO_MANIFEST_DIR`
+- env `GITHUB_ACTIONS`
 
 #### `xtask::serial_lane`
 - reads `ops.schema_migrations`
@@ -1599,6 +1616,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
+- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2103,6 +2121,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
+- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2429,6 +2448,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(loopback)`
 
 #### `gateway::mcp_application`
+- reads `control.rate_buckets`
 - reads `private.memory_records`
 - writes `control.w2_test_request_intervals`
 - executes `private.publish_continuity_facet`
@@ -2671,6 +2691,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop`
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
+- executes `control.purge_idle_rate_buckets`
 - executes `control.retention_policy_approve`
 - executes `ops.auto_redrive_schema_failed`
 - executes `ops.purge_expired_selection_snapshots`
@@ -2808,6 +2829,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
+- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -3184,6 +3206,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.audit_event_identity`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
+- reads `control.contribution_notice_events`
+- reads `control.contribution_notices`
 - reads `control.credential_pepper_state`
 - reads `control.deletion_targets`
 - reads `control.email_challenges`
@@ -3205,6 +3229,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
+- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -3384,6 +3409,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
+- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -3521,6 +3547,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT`
+- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT`
@@ -3858,6 +3887,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
+- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -4506,6 +4536,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
+- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -4872,6 +4903,14 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ## Reverse index: database object → readers / writers / executors
 
+### `control.ack_notice`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::notice`
+
 ### `control.anonymous_claim_trust_authorities`
 read by:
 - (no process): `public-pool::tests::public_runtime`
@@ -4961,6 +5000,14 @@ written by:
 executed by:
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
+
+### `control.apply_cloud_contribution_default`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::policy`
 
 ### `control.assert_reasoning_route_shadow_receipts`
 read by:
@@ -5142,6 +5189,14 @@ written by:
 
 executed by:
 
+### `control.contribution_authorized`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::notice`
+
 ### `control.contribution_confirmations`
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -5153,13 +5208,36 @@ written by:
 
 executed by:
 
+### `control.contribution_notice_events`
+read by:
+- (no process): `public-pool::tests::notice`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::notice`
+
+executed by:
+
+### `control.contribution_notices`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::notice`
+
+executed by:
+
 ### `control.contribution_policies`
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::core_never_auto`
 - (no process): `adapters::tests::project_continuity_0136`
+- (no process): `public-pool::tests::notice`
 - process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
 
@@ -5168,6 +5246,7 @@ written by:
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `public-pool::tests::notice`
 
 executed by:
 
@@ -5248,6 +5327,14 @@ written by:
 
 executed by:
 
+### `control.current_contribution_notice`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::notice`
+
 ### `control.current_reasoning_route_binding`
 read by:
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -5326,6 +5413,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::core_never_auto`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
@@ -5468,6 +5556,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
+- (no process): `public-pool::tests::notice`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -5491,6 +5580,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -5525,6 +5615,7 @@ written by:
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::notice`
 - (no process): `public-pool::tests::public_trust`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `adapters::membership_repo`
@@ -6070,11 +6161,23 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::core_never_auto`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `adapters::plan_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
+
+### `control.purge_idle_rate_buckets`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::maintenance_doors`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.quota_windows`
 read by:
@@ -6094,6 +6197,27 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
+- process(cargo-xtask): `adapters::quota_repo`
+- process(humaux-consolidation-worker): `adapters::quota_repo`
+- process(humaux-gateway): `adapters::quota_repo`
+- process(humaux-maintenance): `adapters::quota_repo`
+- process(humaux-private-worker): `adapters::quota_repo`
+- process(humaux-retrieval-worker): `adapters::quota_repo`
+
+executed by:
+
+### `control.rate_buckets`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::load`
+- process(humaux-gateway): `gateway::mcp_application`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::maintenance_doors`
+- (no process): `adapters::tests::quota_and_rate`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
@@ -6323,6 +6447,14 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.record_notice_shown`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::notice`
 
 ### `control.recovery_codes`
 read by:
@@ -6665,6 +6797,7 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - (no process): `retrieval-provider::tests::router_rls_integration`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -6676,6 +6809,23 @@ written by:
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
+
+### `control.toggle_contribution`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::policy`
+- (no process): `public-pool::tests::notice`
+
+### `control.toggle_member_contribution`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::policy`
 
 ### `control.usage_reservations`
 read by:
@@ -6747,6 +6897,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -6790,6 +6941,7 @@ written by:
 - (no process): `maintenance::tests::serve`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
@@ -6817,6 +6969,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -6839,6 +6992,7 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
+- process(cargo-xtask): `xtask::load`
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7198,6 +7352,7 @@ executed by:
 ### `ops.commit_seq_seq`
 read by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7862,6 +8017,7 @@ written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8515,6 +8671,7 @@ executed by:
 
 ### `private.continuity_facet_evidence_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -8528,6 +8685,7 @@ executed by:
 
 ### `private.continuity_facet_memory_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -9994,6 +10152,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
@@ -10792,6 +10951,7 @@ written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
@@ -11667,6 +11827,7 @@ executed by:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::email_outbox`
@@ -11716,7 +11877,10 @@ executed by:
 - `maintenance::tests::roles_hygiene`
 - `maintenance::tests::serve`
 - `maintenance::throwaway`
+- `public-pool::notice`
+- `public-pool::policy`
 - `public-pool::public_repo`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
@@ -11942,6 +12106,7 @@ executed by:
 - `private-worker::tests::distill_hop_e2e`
 - `private-worker::tests::m29_attribution_e2e`
 - `public-pool::public_repo`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `retrieval-provider::tests::router_rls_integration`
@@ -11963,6 +12128,7 @@ executed by:
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::confirm_token_retention`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
@@ -12006,6 +12172,7 @@ executed by:
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
 - `xtask::soak`
@@ -12702,6 +12869,7 @@ modules naming it:
 - `adapters::session_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::console_session`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -12951,6 +13119,7 @@ modules naming it:
 - `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::quota_repo`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::projection_claim`
@@ -12997,6 +13166,7 @@ modules naming it:
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::note_reads`
@@ -13073,6 +13243,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -13152,6 +13323,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13266,6 +13438,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -13390,6 +13563,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::g80_31_handoff`
@@ -13446,6 +13620,7 @@ modules naming it:
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -13549,6 +13724,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::core_never_auto`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -14204,11 +14380,13 @@ modules naming it:
 why: domain types the public plane reads/returns
 
 modules naming it:
+- `public-pool::notice`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
@@ -14231,8 +14409,11 @@ modules naming it:
 why: public-schema queries and transactions
 
 modules naming it:
+- `public-pool::notice`
+- `public-pool::policy`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
 - `tests`
 
@@ -14280,10 +14461,13 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `public-pool::notice`
+- `public-pool::policy`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
@@ -14314,6 +14498,7 @@ modules naming it:
 why: three-state DB fixture skip contract
 
 modules naming it:
+- `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::support::public_qdrant_fixture`
 - `tests`
@@ -14323,6 +14508,7 @@ why: blocking client for real-Postgres integration tests
 
 modules naming it:
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
@@ -14335,6 +14521,7 @@ why: async runtime driving the pool fixtures
 
 modules naming it:
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime`
 - `tests`
@@ -14343,10 +14530,13 @@ modules naming it:
 why: throwaway ids in fixtures
 
 modules naming it:
+- `public-pool::notice`
+- `public-pool::policy`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::tests::mechanism_observation`
+- `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
@@ -16192,6 +16382,7 @@ modules naming it:
 - `xtask::dep_map`
 - `xtask::known_red`
 - `xtask::r4_fault_manifest`
+- `xtask::schedule_register`
 
 ### xtask → `humaux-contracts` (normal)
 why: reuse the typed features.toml parser instead of a second one
@@ -16207,6 +16398,7 @@ modules naming it:
 - `tests`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
+- `xtask::load`
 - `xtask::mechanism_registry`
 
 ### xtask → `tokio` (normal)
@@ -16266,6 +16458,7 @@ why: reuse compute_api_key_hash instead of re-deriving the keyed hash
 
 modules naming it:
 - `tests`
+- `xtask::architecture_check`
 - `xtask::e2e_seed`
 - `xtask::load`
 
@@ -17104,6 +17297,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/core_never_auto.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/credential_grants.rs`
 db-bound (default run): yes
 
@@ -17630,12 +17832,13 @@ default run:
 - Qdrant
 
 ### `crates/adapters/tests/quota_and_rate.rs`
-db-bound (default run): no
+db-bound (default run): yes
 
 services (computed):
 - PostgreSQL
 
 default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/read_gate_closure.rs`
 db-bound (default run): yes
@@ -17977,6 +18180,15 @@ services (computed):
 - subprocess
 
 default run:
+
+### `crates/public-pool/tests/notice.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/public-pool/tests/public_projection.rs`
 db-bound (default run): yes

@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4
@@ -2256,7 +2256,8 @@ const LINT_BASELINE_FILE: &str = "xtask/known_red.toml";
 
 /// One `allow(...)` / `expect(...)` attribute that silences clippy lints: its line, whether it is an inner
 /// (`#![...]`) attribute covering a whole module/crate, and the `clippy::` paths it names. `cfg_attr(..., allow(...))`
-/// reaches the same scan because the inner `allow(` / `expect(` token is parsed wherever it appears.
+/// reaches the same scan because the inner `allow` / `expect` identifier is parsed wherever it appears, with ASCII
+/// whitespace allowed before its `(`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LintSilencer {
     line: usize,
@@ -2299,11 +2300,12 @@ fn lint_silencers(source: &str) -> Vec<LintSilencer> {
     out
 }
 
-/// The first `allow(` / `expect(` in `code[from..]` that starts at an identifier boundary, with the byte index of
-/// its argument list. `disallow(` / `reallow(` are not the attribute.
+/// The first `allow` / `expect` identifier in `code[from..]` that starts at an identifier boundary and is followed
+/// by optional ASCII whitespace and `(`, with the byte index of its argument list. `disallow (` / `reallow (` are
+/// not the attribute.
 fn next_lint_silencer(code: &str, from: usize) -> Option<(usize, &'static str, usize)> {
-    let mut best: Option<(usize, &'static str)> = None;
-    for (needle, kind) in [("allow(", "allow"), ("expect(", "expect")] {
+    let mut best: Option<(usize, &'static str, usize)> = None;
+    for (needle, kind) in [("allow", "allow"), ("expect", "expect")] {
         let mut search = from;
         while let Some(offset) = code[search..].find(needle) {
             let at = search + offset;
@@ -2311,16 +2313,33 @@ fn next_lint_silencer(code: &str, from: usize) -> Option<(usize, &'static str, u
                 .chars()
                 .next_back()
                 .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-            if starts_word {
-                if best.is_none_or(|(earlier, _)| at < earlier) {
-                    best = Some((at, kind));
-                }
-                break;
+            if !starts_word {
+                search = at + needle.len();
+                continue;
             }
-            search = at + needle.len();
+            let Some(args_at) = attribute_args_at(code, at + needle.len()) else {
+                search = at + needle.len();
+                continue;
+            };
+            if best.is_none_or(|(earlier, _, _)| at < earlier) {
+                best = Some((at, kind, args_at));
+            }
+            break;
         }
     }
-    best.map(|(at, kind)| (at, kind, at + kind.len() + 1))
+    best
+}
+
+/// Byte index just past the `(` that follows `after` once ASCII whitespace is skipped, if `(` is the next
+/// non-whitespace byte. `allow (...)` and `allow\n(...)` are the attribute; `allow = 1` is not.
+fn attribute_args_at(code: &str, after: usize) -> Option<usize> {
+    let rest = &code[after..];
+    let skipped = rest.len()
+        - rest
+            .trim_start_matches(|c: char| c.is_ascii_whitespace())
+            .len();
+    let paren_at = after + skipped;
+    code[paren_at..].starts_with('(').then_some(paren_at + 1)
 }
 
 /// Byte index of the `)` matching the `(` whose body starts at `args_at`. Masked input has no parentheses inside
@@ -4530,6 +4549,118 @@ fn m29_5a_attribution_site(root: &Path) -> Verdict {
                     "{GATE}: the port runs before the PRIMARY memory_evidence link or the subject hook"
                 ));
             }
+        }
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// ADR-0088 D-A / G-M20-1 needles: the AUTO mode literal, the Rust variant that spells it, the doors that can write an AUTO
+/// policy, and `ContributionPolicy::ALL` (reaching the variant by its position). Each is banned from core-edition `src`
+/// except the rows of [`M20_1_EXCEPTIONS`] (none for the last three); the cloud onboarding default and the toggles live in
+/// `humaux-public-pool` only.
+const M20_1_NEEDLES: [&str; 7] = [
+    "AUTO_AFTER_USER_DISTILLATION",
+    "AutoAfterUserDistillation",
+    "append_contribution_policy_successor",
+    "apply_cloud_contribution_default",
+    "toggle_contribution",
+    "toggle_member_contribution",
+    "ContributionPolicy::ALL",
+];
+
+/// The aliased form of the position bypass (`P::ALL[2]`): `ALL[` is banned (0 allowed) in the exception home file and in
+/// any core file that names `ContributionPolicy`; other enums' `X::ALL[i]` elsewhere are not this gate's business.
+///
+/// ponytail: an iterator chain over an alias (`.iter().nth(2)`) evades it; add the spelling here when one appears.
+const M20_1_ALIAS_INDEX: &str = "ALL[";
+
+/// The current exceptions, exact: `(needle, file path without its `.rs` suffix, occurrences in non-comment, non-test code)`.
+/// `ContributionPolicy::as_db_str` spells the mode's wire label (§78.2) and the enum declares the variant, lists it in `ALL`
+/// and matches it in `as_db_str`; none of that appends a policy. The suffix is dropped so the dependency scanner does not
+/// read `<schema>.rs` as a table name.
+const M20_1_EXCEPTIONS: [(&str, &str, usize); 2] = [
+    (
+        "AUTO_AFTER_USER_DISTILLATION",
+        "crates/domain/src/public",
+        1,
+    ),
+    ("AutoAfterUserDistillation", "crates/domain/src/public", 3),
+];
+
+/// Whether `disp` is `src` of a crate or bin whose manifest does not declare `edition = "cloud"` (ADR-0073 D-B).
+fn m20_1_is_core_src(root: &Path, disp: &str) -> bool {
+    let segments: Vec<&str> = disp.split('/').collect();
+    let [kind @ ("crates" | "bins"), pkg, "src", ..] = segments.as_slice() else {
+        return false;
+    };
+    !fs::read_to_string(root.join(kind).join(pkg).join("Cargo.toml"))
+        .is_ok_and(|manifest| manifest.contains("edition = \"cloud\""))
+}
+
+/// Occurrences of `needle` on lines that are not `//` comments.
+fn m20_1_code_hits(source: &str, needle: &str) -> usize {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .map(|line| line.matches(needle).count())
+        .sum()
+}
+
+/// ADR-0088 D-A / G-M20-1 leg 1: [`M20_1_NEEDLES`] occur in core-edition non-test code exactly as [`M20_1_EXCEPTIONS`] lists
+/// (no extra file, no changed count, no vanished row). `not_applicable` names the exception's home file when it is absent.
+fn m20_1_core_never_auto(root: &Path) -> Verdict {
+    const GATE: &str = "ADR-0088 / G-M20-1";
+    let files: Vec<(String, String)> = door_production_sources(root)
+        .into_iter()
+        .filter(|(disp, _)| m20_1_is_core_src(root, disp))
+        .collect();
+    let home = M20_1_EXCEPTIONS[0].1;
+    if !files
+        .iter()
+        .any(|(disp, _)| disp.strip_suffix(".rs") == Some(home))
+    {
+        return Verdict::NotApplicable(format!("missing object: {home}.rs"));
+    }
+    let mut observed: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (disp, source) in &files {
+        let file = disp.strip_suffix(".rs").unwrap_or(disp);
+        for needle in M20_1_NEEDLES {
+            let hits = m20_1_code_hits(source, needle);
+            if hits > 0 {
+                observed.insert((needle, file), hits);
+            }
+        }
+        if file == home || source.contains("ContributionPolicy") {
+            let hits = m20_1_code_hits(source, M20_1_ALIAS_INDEX);
+            if hits > 0 {
+                observed.insert((M20_1_ALIAS_INDEX, file), hits);
+            }
+        }
+    }
+    let expected: BTreeMap<(&str, &str), usize> = M20_1_EXCEPTIONS
+        .iter()
+        .map(|(needle, file, count)| ((*needle, *file), *count))
+        .collect();
+    let mut problems = Vec::new();
+    for (key, hits) in &observed {
+        let allowed = expected.get(key).copied().unwrap_or(0);
+        if allowed != *hits {
+            problems.push(format!(
+                "{GATE}: `{}` occurs {hits} time(s) in core-edition non-test code of {}, the exception list allows {allowed}",
+                key.0, key.1
+            ));
+        }
+    }
+    for (key, count) in &expected {
+        if !observed.contains_key(key) {
+            problems.push(format!(
+                "{GATE}: the exception `{}` x{count} in {} is gone; remove it from M20_1_EXCEPTIONS",
+                key.0, key.1
+            ));
         }
     }
     if problems.is_empty() {
@@ -8878,15 +9009,22 @@ fn mcp_tool_surface_truth_from(
     }
 }
 
-/// Reads the four real sources. Any absent object is `not_applicable` naming it (§57.1 第2条).
+/// §57.1: absent source trees name their missing object; delivered contract inputs must fail closed.
 fn mcp_tool_surface_truth(root: &Path) -> Verdict {
+    if !root.exists() {
+        return Verdict::NotApplicable(root.display().to_string());
+    }
     let dispatch_path = root.join("bins/gateway/src/mcp_application.rs");
     let baseline_path = root.join("docs/architecture/Baseline_2.9.md");
     let Ok(dispatch) = fs::read_to_string(&dispatch_path) else {
-        return Verdict::NotApplicable("bins/gateway/src/mcp_application.rs".to_string());
+        return Verdict::Fail(vec![
+            "required MCP source missing: bins/gateway/src/mcp_application.rs".to_string(),
+        ]);
     };
     let Ok(baseline) = fs::read_to_string(&baseline_path) else {
-        return Verdict::NotApplicable("docs/architecture/Baseline_2.9.md".to_string());
+        return Verdict::Fail(vec![
+            "required MCP source missing: docs/architecture/Baseline_2.9.md".to_string(),
+        ]);
     };
     let catalog = match catalog_operation_keys(root) {
         Ok(keys) => keys,
@@ -8895,7 +9033,11 @@ fn mcp_tool_surface_truth(root: &Path) -> Verdict {
         // `not_applicable` made this arm switchable off by a contract edit (renaming `oneOf`
         // to `anyOf` stopped the whole wired ∪ declared-only == catalog leg from judging
         // anything while the run still exited 0). Present-but-unreadable is a red gate.
-        Err(CatalogDefect::Missing(object)) => return Verdict::NotApplicable(object),
+        Err(CatalogDefect::Missing(object)) => {
+            return Verdict::Fail(vec![format!(
+                "required MCP catalog input missing: {object}"
+            )]);
+        }
         Err(CatalogDefect::Malformed(object)) => {
             return Verdict::Fail(vec![format!(
                 "canonical MCP catalog is present but unreadable, so the catalog leg of this \
@@ -8906,9 +9048,7 @@ fn mcp_tool_surface_truth(root: &Path) -> Verdict {
     mcp_tool_surface_truth_from(&dispatch, &baseline, &catalog)
 }
 
-/// Why a contract could not be turned into a key set. `Missing` = the file is not there at all
-/// (§57.1 `not_applicable`); `Malformed` = it is there and does not have the shape the catalog
-/// is defined by (a failure — see `mcp_tool_surface_truth`).
+/// §57.1 distinguishes absent from malformed inputs; both fail for the delivered MCP catalog.
 #[derive(Debug)]
 enum CatalogDefect {
     Missing(String),
@@ -8926,35 +9066,158 @@ fn catalog_operation_keys(root: &Path) -> Result<BTreeSet<String>, CatalogDefect
         .ok_or_else(|| {
             CatalogDefect::Malformed("contracts/mcp/manifest.json#/tools".to_string())
         })?;
-    let mut keys = BTreeSet::new();
-    for tool in tools {
-        let file = tool
-            .get("input_schema")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                CatalogDefect::Malformed(
-                    "contracts/mcp/manifest.json#/tools/*/input_schema".to_string(),
-                )
-            })?;
-        let schema = read_contract(&dir, file)?;
-        let branches = schema
-            .get("oneOf")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| CatalogDefect::Malformed(format!("contracts/mcp/{file}#/oneOf")))?;
-        for branch in branches {
-            let key = branch
-                .get("x-humaux-operation")
-                .and_then(|op| op.get("operation_key"))
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    CatalogDefect::Malformed(format!(
-                        "contracts/mcp/{file}#/oneOf/*/x-humaux-operation"
-                    ))
-                })?;
-            keys.insert(key.to_string());
-        }
+    let scopes = catalog_operation_scopes(&dir, tools)?;
+    let keys = scopes.keys().cloned().collect();
+    let failures = operation_registry_failures(&manifest, &keys, &scopes);
+    if !failures.is_empty() {
+        return Err(CatalogDefect::Malformed(failures.join("; ")));
     }
     Ok(keys)
+}
+
+/// §33: authorization metadata comes from the same schema branches the gateway validates.
+fn catalog_operation_scopes(
+    dir: &Path,
+    tools: &[serde_json::Value],
+) -> Result<BTreeMap<String, serde_json::Value>, CatalogDefect> {
+    let mut scopes = BTreeMap::new();
+    for tool in tools {
+        let file = tool["input_schema"].as_str().ok_or_else(|| {
+            CatalogDefect::Malformed(
+                "contracts/mcp/manifest.json#/tools/*/input_schema".to_string(),
+            )
+        })?;
+        let schema = read_contract(dir, file)?;
+        let operations = schema["oneOf"]
+            .as_array()
+            .ok_or_else(|| CatalogDefect::Malformed(format!("contracts/mcp/{file}#/oneOf")))?;
+        for branch in operations {
+            let metadata = &branch["x-humaux-operation"];
+            let key = metadata["operation_key"].as_str().ok_or_else(|| {
+                CatalogDefect::Malformed(format!(
+                    "contracts/mcp/{file}#/oneOf/*/x-humaux-operation"
+                ))
+            })?;
+            if scopes
+                .insert(key.to_string(), metadata["required_scope"].clone())
+                .is_some()
+            {
+                return Err(CatalogDefect::Malformed(format!(
+                    "duplicate schema operation `{key}`"
+                )));
+            }
+        }
+    }
+    Ok(scopes)
+}
+
+/// G-M26-1 extends ADR-0044's schema/dispatch/document equality; no second gate arm (§33.1).
+fn operation_registry_failures(
+    manifest: &serde_json::Value,
+    schema_keys: &BTreeSet<String>,
+    scopes: &BTreeMap<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if manifest["contract_version"] != "2" {
+        failures.push("MCP registry contract_version must be 2".to_string());
+    }
+    let Some(operations) = manifest["operations"].as_array() else {
+        failures
+            .push("contracts/mcp/manifest.json#/operations is missing or malformed".to_string());
+        return failures;
+    };
+    let mut registry = BTreeSet::new();
+    for entry in operations {
+        let Some(op) = entry["op"].as_str().filter(|op| !op.is_empty()) else {
+            failures.push("registry entry lacks op".to_string());
+            continue;
+        };
+        if !registry.insert(op.to_string()) {
+            failures.push(format!("registry `{op}` is duplicated"));
+        }
+        for (field, allowed) in [
+            ("edition", humaux_protocol::mcp_catalog::Edition::ALL),
+            ("effect", humaux_protocol::mcp_catalog::Effect::ALL),
+        ] {
+            if !entry[field]
+                .as_str()
+                .is_some_and(|value| allowed.contains(&value))
+            {
+                failures.push(format!("registry `{op}` lacks valid {field}"));
+            }
+        }
+        registry_metadata_failures(entry, op, manifest, scopes.get(op), &mut failures);
+        if !entry["owner_module"].as_str().is_some_and(is_module_id) {
+            failures.push(format!("registry `{op}` lacks known owner_module"));
+        }
+    }
+    name_diff(
+        "registry omits schema operation",
+        schema_keys,
+        &registry,
+        &mut failures,
+    );
+    name_diff(
+        "registry operation is not admitted by wire schemas",
+        &registry,
+        schema_keys,
+        &mut failures,
+    );
+    let destructive_keys = humaux_domain::confirm::DestructiveOp::ALL
+        .iter()
+        .map(|op| op.operation_key().to_string())
+        .collect();
+    name_diff(
+        "registry omits DestructiveOp",
+        &destructive_keys,
+        &registry,
+        &mut failures,
+    );
+    failures
+}
+
+/// §33 / ADR-0018: registry metadata records enforcement; it cannot grant permissions.
+fn registry_metadata_failures(
+    entry: &serde_json::Value,
+    op: &str,
+    manifest: &serde_json::Value,
+    required_scope: Option<&serde_json::Value>,
+    failures: &mut Vec<String>,
+) {
+    use humaux_protocol::mcp_catalog::{Effect, Role, Scope};
+    if let Some(required_scope) = required_scope {
+        if entry["scope"] != *required_scope {
+            failures.push(format!(
+                "registry `{op}` scope differs from schema required_scope"
+            ));
+        }
+        let expected = serde_json::from_value::<Scope>(required_scope.clone());
+        let roles = serde_json::from_value::<Vec<Role>>(entry["roles"].clone());
+        if !matches!((expected, roles), (Ok(scope), Ok(roles))
+            if roles.len() == scope.roles().len()
+                && roles.iter().collect::<BTreeSet<_>>() == scope.roles().iter().collect())
+        {
+            failures.push(format!("registry `{op}` roles differ from scope presets"));
+        }
+    }
+    if !matches!((entry["budget_bytes"].as_u64(), manifest["budget_cap_bytes"].as_u64()),
+        (Some(budget), Some(cap)) if budget > 0 && budget <= cap)
+    {
+        failures.push(format!(
+            "registry `{op}` budget_bytes outside configured cap"
+        ));
+    }
+    if let Ok(effect) = serde_json::from_value::<Effect>(entry["effect"].clone()) {
+        let count = humaux_domain::confirm::DestructiveOp::ALL
+            .iter()
+            .filter(|item| item.operation_key() == op)
+            .count();
+        if count != usize::from(effect == Effect::Destructive) {
+            failures.push(format!(
+                "registry `{op}` effect differs from DestructiveOp::ALL"
+            ));
+        }
+    }
 }
 
 /// Card 22 review fix: `x-humaux-v1-supported` was an inert annotation. §33 and ADR-0044 both
@@ -10931,6 +11194,10 @@ pub fn run(_args: &[String]) -> i32 {
             m29_5a_attribution_site(&root),
         ),
         (
+            "ADR-0088 / G-M20-1 (core-edition non-test code never names AUTO_AFTER_USER_DISTILLATION, the AutoAfterUserDistillation variant, the AUTO policy doors or toggle_contribution, except the exact exception list)",
+            m20_1_core_never_auto(&root),
+        ),
+        (
             "ADR-0078 / G-N09-1 (no provider / inference / embedding name in the memory_projects write path)",
             n09_1_no_model_source(&root),
         ),
@@ -11982,10 +12249,142 @@ runs:
 
     #[test]
     fn mcp_tool_surface_truth_real_sources_are_green() {
+        assert_eq!(mcp_tool_surface_truth(&real_root()), Verdict::Pass);
         let (dispatch, baseline, catalog) = tool_surface_sources();
         assert_eq!(
             mcp_tool_surface_truth_from(&dispatch, &baseline, &catalog),
             Verdict::Pass
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_fixture_faults() {
+        let root = real_root();
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("contracts/mcp/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let keys = catalog_operation_keys(&root).unwrap();
+        assert_eq!(keys.len(), 53);
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            operation_registry_failures(&manifest, &keys, &scopes),
+            Vec::<String>::new()
+        );
+        let op = manifest["operations"][0]["op"].as_str().unwrap();
+        for (field, invalid, message) in [
+            ("owner_module", None, "lacks known owner_module"),
+            ("owner_module", Some("M99"), "lacks known owner_module"),
+            ("owner_module", Some(""), "lacks known owner_module"),
+            ("edition", None, "lacks valid edition"),
+            ("edition", Some("enterprise"), "lacks valid edition"),
+            ("effect", Some("execute"), "lacks valid effect"),
+        ] {
+            let mut fixture = manifest.clone();
+            let entry = fixture["operations"][0].as_object_mut().unwrap();
+            entry.remove(field);
+            if let Some(value) = invalid {
+                entry.insert(field.to_string(), value.into());
+            }
+            assert_eq!(
+                operation_registry_failures(&fixture, &keys, &scopes),
+                vec![format!("registry `{op}` {message}")]
+            );
+        }
+        let mut fixture = manifest.clone();
+        fixture["operations"].as_array_mut().unwrap().remove(0);
+        assert_eq!(
+            operation_registry_failures(&fixture, &keys, &scopes),
+            vec![format!("registry omits schema operation: `{op}`")]
+        );
+        let mut extra = manifest["operations"][0].clone();
+        extra["op"] = "memory.unwired".into();
+        let mut fixture = manifest;
+        fixture["operations"].as_array_mut().unwrap().push(extra);
+        assert_eq!(
+            operation_registry_failures(&fixture, &keys, &scopes),
+            vec![
+                "registry operation is not admitted by wire schemas: `memory.unwired`".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_enforcement_faults() {
+        let root = real_root();
+        let manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys = scopes.keys().cloned().collect();
+        let index = manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|op| op["op"] == "memory.get")
+            .unwrap();
+        for (field, value, message) in [
+            (
+                "scope",
+                serde_json::json!("memory:write"),
+                "scope differs from schema required_scope",
+            ),
+            (
+                "roles",
+                serde_json::json!(["read_only"]),
+                "roles differ from scope presets",
+            ),
+            (
+                "budget_bytes",
+                serde_json::json!(0),
+                "budget_bytes outside configured cap",
+            ),
+            (
+                "budget_bytes",
+                serde_json::json!(manifest["budget_cap_bytes"].as_u64().unwrap() + 1),
+                "budget_bytes outside configured cap",
+            ),
+            (
+                "effect",
+                serde_json::json!("destructive"),
+                "effect differs from DestructiveOp::ALL",
+            ),
+        ] {
+            let mut fixture = manifest.clone();
+            fixture["operations"][index][field] = value;
+            assert_eq!(
+                operation_registry_failures(&fixture, &keys, &scopes),
+                vec![format!("registry `memory.get` {message}")]
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_cannot_hide_confirm_gate() {
+        let root = real_root();
+        let mut manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys = scopes.keys().cloned().collect();
+        let entry = manifest["operations"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|op| op["op"] == "memory.archive")
+            .unwrap();
+        entry["effect"] = serde_json::json!("write");
+        assert_eq!(
+            operation_registry_failures(&manifest, &keys, &scopes),
+            vec!["registry `memory.archive` effect differs from DestructiveOp::ALL".to_string()]
         );
     }
 
@@ -12077,7 +12476,7 @@ runs:
     fn mcp_tool_surface_truth_is_not_applicable_without_its_sources() {
         assert_eq!(
             mcp_tool_surface_truth(Path::new("/nonexistent-humaux-root")),
-            Verdict::NotApplicable("bins/gateway/src/mcp_application.rs".to_string())
+            Verdict::NotApplicable("/nonexistent-humaux-root".to_string())
         );
     }
 
@@ -12133,11 +12532,14 @@ runs:
         fs::write(&victim, "{ not json").unwrap();
         assert!(matches!(mcp_tool_surface_truth(&tmp), Verdict::Fail(_)));
 
-        // …while an ABSENT contract is still §57.1's not_applicable.
+        // §57.1: the delivered registry cannot become not_applicable by deleting an input.
         fs::remove_file(&victim).unwrap();
         assert_eq!(
             mcp_tool_surface_truth(&tmp),
-            Verdict::NotApplicable("contracts/mcp/coordinate.schema.json".to_string())
+            Verdict::Fail(vec![
+                "required MCP catalog input missing: contracts/mcp/coordinate.schema.json"
+                    .to_string()
+            ])
         );
         fs::remove_dir_all(&tmp).ok();
     }
@@ -14404,6 +14806,14 @@ runs:
         format!("#![allow({lints})]")
     }
 
+    fn spaced_allow_attr(sep: &str, lints: &str) -> String {
+        format!("#[allow{sep}({lints})]")
+    }
+
+    fn spaced_inner_allow_attr(sep: &str, lints: &str) -> String {
+        format!("#![allow{sep}({lints})]")
+    }
+
     fn counts(too_many_lines: usize, excessive_nesting: usize) -> BTreeMap<String, usize> {
         BTreeMap::from([
             ("too_many_lines".to_string(), too_many_lines),
@@ -14482,9 +14892,74 @@ runs:
             "a comment mention is not an occurrence"
         );
         assert_eq!(
-            allow_attribute_count("fn disallow(x: u8) -> u8 { x }", "too_many_lines"),
+            allow_attribute_count(
+                "fn f() { disallow(clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
             0,
             "disallow( is not the attribute"
+        );
+    }
+
+    /// ASCII whitespace between the identifier and `(` is the same attribute: `allow (` and `allow\n(` count once,
+    /// a `cfg_attr` inner allow too, while a literal spelling and `disallow (` / `reallow (` stay at zero.
+    #[test]
+    fn allow_attribute_count_counts_ascii_whitespace_before_the_paren() {
+        for (label, sep) in [("space", " "), ("tab", "\t"), ("newline", "\n")] {
+            assert_eq!(
+                allow_attribute_count(
+                    &format!(
+                        "{} fn f() {{}}",
+                        spaced_allow_attr(sep, "clippy::too_many_lines")
+                    ),
+                    "too_many_lines"
+                ),
+                1,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            allow_attribute_count(
+                &format!("#[cfg_attr(test, allow{}(clippy::too_many_lines))]", " "),
+                "too_many_lines"
+            ),
+            1,
+            "cfg_attr"
+        );
+        assert_eq!(
+            allow_attribute_count(
+                "fn f() { disallow (clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
+            0,
+            "disallow ( is not the attribute"
+        );
+        assert_eq!(
+            allow_attribute_count(
+                "fn f() { reallow (clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
+            0,
+            "reallow ( is not the attribute"
+        );
+        assert_eq!(
+            allow_attribute_count(
+                "fn f() { my_allow (clippy::too_many_lines); }",
+                "too_many_lines"
+            ),
+            0,
+            "my_allow ( is not the attribute"
+        );
+        assert_eq!(
+            allow_attribute_count(
+                &format!(
+                    "const S: &str = \"{}\";",
+                    spaced_allow_attr(" ", "clippy::too_many_lines")
+                ),
+                "too_many_lines"
+            ),
+            0,
+            "a literal is not an occurrence"
         );
     }
 
@@ -14518,6 +14993,21 @@ runs:
                 "a.rs:2: `#[expect(clippy::pedantic)]` silences a §78.4 ratcheted lint through its clippy group; name the exact lint instead (G-M01-8)".to_string(),
                 "a.rs:3: `#[allow(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)".to_string(),
                 "b.rs:1: `#![allow(clippy::excessive_nesting)]` is an inner attribute that silences the §78.4 ratchet for a whole crate/module; it is forbidden, not counted (G-M01-8)".to_string(),
+            ]
+        );
+    }
+
+    /// A whitespace-spelled inner group allow is still a forbidden silencer: the same scanner drives both gates.
+    #[test]
+    fn g_m01_8_forbidden_lint_silencers_in_sees_whitespace_spelled_group_allow() {
+        let files = vec![(
+            "c.rs".to_string(),
+            spaced_inner_allow_attr(" ", "clippy::all"),
+        )];
+        assert_eq!(
+            forbidden_lint_silencers_in(&files),
+            vec![
+                "c.rs:1: `#![allow(clippy::all)]` silences every clippy group, including the §78.4 ratcheted lints; name the exact lint instead (G-M01-8)".to_string(),
             ]
         );
     }
@@ -17513,6 +18003,171 @@ async fn serving_version_in_txn() {}
             "impl MemoryAttribution for Noop {}\n",
         );
         red(m29_5a_attribution_site(&tmp), "found 2");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Declaration, `ALL` slot and `as_db_str` arm of the variant (3 hits), and the wire literal (1 hit).
+    const M20_1_HOME_BODY: &str = "enum P { AutoAfterUserDistillation }\n\
+        const ALL: [P; 1] = [P::AutoAfterUserDistillation];\n\
+        fn label(p: P) -> &'static str { match p { P::AutoAfterUserDistillation => \"AUTO_AFTER_USER_DISTILLATION\" } }\n";
+
+    /// The tree as M20-4a leaves it.
+    #[test]
+    fn m20_1_real_repo_passes() {
+        assert_eq!(m20_1_core_never_auto(&real_root()), Verdict::Pass);
+    }
+
+    /// `not_applicable` names the exception's missing home file (§57.1 第2条).
+    #[test]
+    fn m20_1_is_not_applicable_naming_the_missing_home() {
+        let tmp = fresh_tmp("m20-1-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains(M20_1_EXCEPTIONS[0].1), "{detail}")
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M20-1): the AUTO literal or either AUTO door in another core `src` file, a second literal in the home file,
+    /// and a vanished exception are each red; a cloud crate, a test tree and a comment are not.
+    #[test]
+    fn m20_1_fails_on_each_fault() {
+        let tmp = fresh_tmp("m20-1-red");
+        let home = format!("{}.rs", M20_1_EXCEPTIONS[0].1);
+        let seed = |body: &str| {
+            fs::remove_dir_all(&tmp).ok();
+            m07_write(&tmp, &home, body);
+        };
+        let red = |verdict: Verdict, needle: &str| match verdict {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains(needle), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        };
+        seed(M20_1_HOME_BODY);
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            "crates/public-pool/Cargo.toml",
+            "[package.metadata.humaux]\nedition = \"cloud\"\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/public-pool/src/policy.rs",
+            "fn f() { let _ = \"SELECT apply_cloud_contribution_default()\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/adapters/tests/seed.rs",
+            "fn f() { let _ = \"AUTO_AFTER_USER_DISTILLATION\"; }\n",
+        );
+        m07_write(
+            &tmp,
+            "crates/adapters/src/note.rs",
+            "// AUTO_AFTER_USER_DISTILLATION append_contribution_policy_successor\nfn f() {}\n",
+        );
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        for (needle, body) in [
+            (
+                "apply_cloud_contribution_default",
+                "async fn f() { sqlx::query(\"SELECT apply_cloud_contribution_default()\"); }\n",
+            ),
+            (
+                "append_contribution_policy_successor",
+                "async fn f() { sqlx::query(\"SELECT append_contribution_policy_successor($1)\"); }\n",
+            ),
+            (
+                "toggle_contribution",
+                "async fn f() { sqlx::query(\"SELECT toggle_contribution($1, $2)\"); }\n",
+            ),
+            (
+                "toggle_member_contribution",
+                "async fn f() { sqlx::query(\"SELECT toggle_member_contribution($1, $2)\"); }\n",
+            ),
+            (
+                "ContributionPolicy::ALL",
+                "fn f() -> usize { ContributionPolicy::ALL.len() }\n",
+            ),
+            (
+                "AUTO_AFTER_USER_DISTILLATION",
+                "async fn f() { sqlx::query(\"UPDATE p SET m = 'AUTO_AFTER_USER_DISTILLATION'\"); }\n",
+            ),
+            (
+                "AutoAfterUserDistillation",
+                "fn f() -> ContributionPolicy { ContributionPolicy::AutoAfterUserDistillation }\n",
+            ),
+        ] {
+            m07_write(&tmp, "crates/adapters/src/provisioning.rs", body);
+            red(m20_1_core_never_auto(&tmp), needle);
+        }
+        fs::remove_file(tmp.join("crates/adapters/src/provisioning.rs")).unwrap();
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        seed(&format!(
+            "{M20_1_HOME_BODY}fn l2() -> &'static str {{ \"AUTO_AFTER_USER_DISTILLATION\" }}\n"
+        ));
+        red(m20_1_core_never_auto(&tmp), "allows 1");
+        seed(&format!(
+            "{M20_1_HOME_BODY}fn l2() -> P {{ P::AutoAfterUserDistillation }}\n"
+        ));
+        red(m20_1_core_never_auto(&tmp), "allows 3");
+        seed("fn label() -> &'static str { \"AUTO_AFTER_USER_DISTILLATION\" }\n");
+        red(
+            m20_1_core_never_auto(&tmp),
+            "`AutoAfterUserDistillation` x3",
+        );
+        seed(
+            "enum P { AutoAfterUserDistillation }\nconst A: P = P::AutoAfterUserDistillation;\nfn l(p: P) { match p { P::AutoAfterUserDistillation => {} } }\n",
+        );
+        red(
+            m20_1_core_never_auto(&tmp),
+            "`AUTO_AFTER_USER_DISTILLATION` x1",
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M20-1 leg 1, position bypass): `P::ALL[2]` in the home file or in a file naming `ContributionPolicy` is red;
+    /// another enum's `Task::ALL[1]` in an unrelated core file is not.
+    #[test]
+    fn m20_1_fails_on_an_aliased_position_index() {
+        let tmp = fresh_tmp("m20-1-alias");
+        let home = format!("{}.rs", M20_1_EXCEPTIONS[0].1);
+        fs::remove_dir_all(&tmp).ok();
+        m07_write(&tmp, &home, M20_1_HOME_BODY);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/tasks.rs",
+            "fn f() -> Task { Task::ALL[1] }\n",
+        );
+        assert_eq!(m20_1_core_never_auto(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            &home,
+            &format!("{M20_1_HOME_BODY}fn l2() -> P {{ P::ALL[2] }}\n"),
+        );
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("`ALL[` occurs 1 time(s)"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        m07_write(&tmp, &home, M20_1_HOME_BODY);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/uses_policy.rs",
+            "fn f() -> P { ContributionPolicy::Manual; P::ALL[1] }\n",
+        );
+        match m20_1_core_never_auto(&tmp) {
+            Verdict::Fail(lines) => {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                assert!(lines[0].contains("adapters/src/uses_policy"), "{lines:?}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 
