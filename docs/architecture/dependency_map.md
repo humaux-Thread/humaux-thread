@@ -625,6 +625,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
+- reads `public.unit_conditions`
+- reads `public.unit_fields`
+- reads `public.units`
 - reads `staging.contribution_candidate_phase9_assessments`
 - reads `staging.contribution_candidate_sources`
 - reads `staging.contribution_candidates`
@@ -3331,6 +3334,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
+- reads `public.unit_conditions`
+- reads `public.unit_fields`
+- reads `public.units`
 - reads `staging.contribution_candidate_phase9_assessments`
 - reads `staging.contribution_candidate_sources`
 - reads `staging.contribution_candidates`
@@ -11147,6 +11153,7 @@ executed by:
 
 ### `public.entities`
 read by:
+- (no process): `public-pool::tests::completeness`
 - process(cargo-xtask): `xtask::architecture_check`
 
 written by:
@@ -11346,9 +11353,11 @@ executed by:
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::completeness`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
+- (no process): `public-pool::tests::completeness`
 - (no process): `public-pool::tests::public_provenance`
 - process(humaux-public-worker): `public-pool::public_repo`
 
@@ -11363,6 +11372,38 @@ read by:
 written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `public-pool::tests::public_provenance`
+
+executed by:
+
+### `public.unit_conditions`
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `public.unit_fields`
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
+
+executed by:
+
+### `public.units`
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
 
 executed by:
 
@@ -11695,6 +11736,7 @@ executed by:
 - `maintenance::tests::serve`
 - `maintenance::throwaway`
 - `public-pool::public_repo`
+- `public-pool::tests::completeness`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
@@ -14211,8 +14253,10 @@ modules naming it:
 why: projection payload and receipt JSON
 
 modules naming it:
+- `public-pool::completeness`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime_qdrant`
@@ -14240,9 +14284,11 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `public-pool::completeness`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_provenance`
@@ -14282,6 +14328,7 @@ modules naming it:
 why: blocking client for real-Postgres integration tests
 
 modules naming it:
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
@@ -14303,9 +14350,11 @@ modules naming it:
 why: throwaway ids in fixtures
 
 modules naming it:
+- `public-pool::completeness`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_provenance`
@@ -17840,6 +17889,15 @@ services (computed):
 
 default run:
 
+### `crates/public-pool/tests/completeness.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/public-pool/tests/mechanism_observation.rs`
 db-bound (default run): no
 
@@ -18021,6 +18079,7 @@ default run:
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
