@@ -626,9 +626,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
-- reads `public.concept_labels`
-- reads `public.concept_relations`
-- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -811,7 +808,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::edge`
 - env `CARGO_MANIFEST_DIR`
 
-#### `public-pool::vocab::model`
+#### `protocol::error_map`
+
+#### `protocol::mcp`
+
+#### `protocol::mcp_catalog`
 
 #### `retrieval::candidate`
 
@@ -1190,6 +1191,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 - env `HUMAUX_TEST_PG_DSN`
 
+#### `xtask::schedule_register`
+- env `CARGO_MANIFEST_DIR`
+- env `GITHUB_ACTIONS`
+
 #### `xtask::serial_lane`
 - reads `ops.schema_migrations`
 - writes `ops.schema_migrations`
@@ -1232,9 +1237,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `xtask::threshold_shape`
 - env `CARGO_MANIFEST_DIR`
-
-#### `xtask::vocab_check`
-- service `subprocess(git)`
 
 ### process(humaux-admin)
 
@@ -3357,9 +3359,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
-- reads `public.concept_labels`
-- reads `public.concept_relations`
-- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -5581,6 +5580,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -6897,6 +6897,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -6968,6 +6969,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -7350,6 +7352,7 @@ executed by:
 ### `ops.commit_seq_seq`
 read by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -8014,6 +8017,7 @@ written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8667,6 +8671,7 @@ executed by:
 
 ### `private.continuity_facet_evidence_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -8680,6 +8685,7 @@ executed by:
 
 ### `private.continuity_facet_memory_links`
 read by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -10146,6 +10152,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
@@ -10944,6 +10951,7 @@ written by:
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_repo`
@@ -11252,45 +11260,6 @@ written by:
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
 - process(humaux-public-worker): `public-pool::public_repo`
-
-executed by:
-
-### `public.concept_labels`
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
-### `public.concept_relations`
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
-### `public.concepts`
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 
@@ -11916,7 +11885,6 @@ executed by:
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
-- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `testkit::disposable`
 - `testkit::fixture_purge`
@@ -12268,8 +12236,6 @@ executed by:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
-- `public-pool::tests::vocab`
-- `public-pool::vocab`
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
@@ -12429,7 +12395,6 @@ executed by:
 - `gateway::build`
 - `xtask::contract_impact`
 - `xtask::dep_map`
-- `xtask::vocab_check`
 
 ### `subprocess(gitleaks)`
 - `adapters::tests::projection_claim`
@@ -12904,6 +12869,7 @@ modules naming it:
 - `adapters::session_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::console_session`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -14408,8 +14374,6 @@ modules naming it:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
-- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-domain` (normal)
@@ -14428,8 +14392,6 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
-- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-infra-cell` (normal)
@@ -14453,7 +14415,6 @@ modules naming it:
 - `public-pool::public_repo`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
-- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `async-trait` (normal)
@@ -14517,12 +14478,6 @@ modules naming it:
 - `public-pool::tests::support::public_qdrant_fixture`
 - `tests`
 
-### humaux-public-pool → `toml` (normal)
-why: parse PR-controlled public vocabulary
-
-modules naming it:
-- `public-pool::vocab::model`
-
 ### humaux-public-pool → `humaux-application` (dev)
 why: contribute::prepare/finalize drive the fixtures that feed admission
 
@@ -14546,7 +14501,6 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::support::public_qdrant_fixture`
-- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `postgres` (dev)
@@ -14560,7 +14514,6 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `tokio` (dev)
@@ -14571,7 +14524,6 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime`
-- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `uuid` (dev)
@@ -16430,6 +16382,7 @@ modules naming it:
 - `xtask::dep_map`
 - `xtask::known_red`
 - `xtask::r4_fault_manifest`
+- `xtask::schedule_register`
 
 ### xtask → `humaux-contracts` (normal)
 why: reuse the typed features.toml parser instead of a second one
@@ -16505,6 +16458,7 @@ why: reuse compute_api_key_hash instead of re-deriving the keyed hash
 
 modules naming it:
 - `tests`
+- `xtask::architecture_check`
 - `xtask::e2e_seed`
 - `xtask::load`
 
@@ -18285,15 +18239,6 @@ services (computed):
 - PostgreSQL
 
 default run:
-
-### `crates/public-pool/tests/vocab.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
 
 ### `crates/retrieval-provider/tests/contract_tests.rs`
 db-bound (default run): no

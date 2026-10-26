@@ -4,7 +4,7 @@
 //! Invariants: [registration and facet publication go only through the SECURITY DEFINER functions; the slot version a
 //!   publication is checked against is the door's own in-transaction read, never a caller value (§25.3.1, ADR-0094
 //!   D-C); scalar facets never retry, list facets use the registered total attempt budget; their SQLSTATEs map to
-//!   Conflict/Forbidden/InvalidInput, never a silent retry]
+//!   Conflict/Forbidden/InvalidInput, never a silent retry; list merges inherit stored source hashes inside the SQL CAS lock; inherited links bypass only publisher checks, never reader checks]
 //! Spec: Baseline §25.3.1; §52 D-B; ADR-0094
 //!
 //! Two paths over one transaction: `GOAL` / `CURRENT_STATE` are strict compare-and-set; the seven list facets are a
@@ -322,6 +322,7 @@ async fn call_publish_function(
     command: &PublishContinuityFacet<'_>,
     expected_slot_version: i64,
     body: &Value,
+    inherit_sources: bool,
 ) -> Result<ContinuityPublishResult, ErrorCode> {
     let user = authorization.user_id().map(|id| id.0);
     let memory_ids: Vec<Uuid> = command
@@ -347,7 +348,7 @@ async fn call_publish_function(
     let row = sqlx::query(
         "SELECT facet_version_id,facet_version,slot_version,body_sha256 \
          FROM private.publish_continuity_facet(\
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
     )
     .bind(authorization.tenant_id().0)
     .bind(command.workspace_id.0)
@@ -362,6 +363,7 @@ async fn call_publish_function(
     .bind(memory_hashes)
     .bind(evidence_ids)
     .bind(evidence_hashes)
+    .bind(inherit_sources)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_db_error)?;
@@ -394,7 +396,17 @@ async fn publish_attempt(
         } else {
             merge_list_facet(snapshot.body.as_ref(), command.body, command.removals)?
         };
-        call_publish_function(tx, authorization, command, snapshot.slot_version, &body).await
+        // §25.3.1 / ADR-0094 D-D: SQL inherits only from the version locked by this CAS.
+        // ponytail: version-grain links over-approximate after removals; per-item source links if facet visibility proves too strict
+        call_publish_function(
+            tx,
+            authorization,
+            command,
+            snapshot.slot_version,
+            &body,
+            !scalar,
+        )
+        .await
     }
     .await;
     match result {
