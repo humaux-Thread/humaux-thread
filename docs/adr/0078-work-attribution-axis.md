@@ -641,6 +641,19 @@ and the failing lines are in the card's PR description.
     39395982313, step "attribution E-D live" red at `m29_attribution_e2e.rs:1431`, the non-vacuity row check: every L
     ledger row is `("minimax", Some("MiniMax-M3"), false)`, the MiniMax route without reported usage.
   - The per-message comparison adds no red of its own: it is T07's `projection` helper, whose red is r6b above.
+- M29-g1 (G-M29-7), branches `red/m29-g1-r1..r3` off `a4aeb174`, run through `targeted.yml`. Green on that same head:
+  runs 40409857263 (`memory_in_project`) and 40409861835 (xtask `g_m29_7` and `t07_attribution`):
+  - r1: the predicate's body as `FROM private.memory_projects l` (the base table) -> two reds. xtask
+    `g_m29_7_sql_leg_real_repo_passes` red (run 40414268279, `xtask/src/architecture_check.rs:17676`: found 1 table
+    token(s) and 0 view token(s)); `memory_in_project` case (b) red (run 40414274580,
+    `crates/adapters/tests/memory_in_project.rs:202`): the revoked link still answers true.
+  - r2: a second `CREATE OR REPLACE FUNCTION private.memory_in_project(` in `migrations/0283_memory_in_project_twin.sql`
+    -> xtask `g_m29_7_sql_leg_real_repo_passes` red (run 40415713403, `xtask/src/architecture_check.rs:17676`: found 2).
+    The first cut had no manifest and died in the DB setup before any test (run 40414280146); the re-cut adds one.
+  - r3: `GRANT EXECUTE ... TO PUBLIC` instead of `TO role_gateway` -> `memory_in_project` case (f) red (run 40414285981,
+    `crates/adapters/tests/memory_in_project.rs:248`): the EXECUTE holders are PUBLIC and all eight runtime roles.
+  - The 0282 manifest postcheck checks the attributes and `role_gateway`'s EXECUTE only (it ran ok in r1 and r3), so
+    the body and the ACL faults reach the gates above instead of stopping `migrate`.
 
 ## Consequences
 
