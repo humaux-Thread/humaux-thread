@@ -7118,7 +7118,7 @@ GitHub App 只作为官方 Cloud 的 reference adapter：
 
 其他 Git provider 必须实现同一个 `RepositorySourceProvider` Contract，不进入 Domain 分支。
 
-ADR-0114（M16）修订本节：代码来源定为客户端推送（owner 829c952f）——服务端不做 git fetch、webhook、reconcile 或 GitHub App，§27.1/§27.2/§27.6 的 provider 方向据此推迟，重开需 provider ADR；§27 的身份扩为 snapshot identity（repository、kind、commit/dirty tree、target、lockfile、generated code、tree_sitter/grammar/extractor 版本）加 qualified name 与 content hash；§27.3 的 overlay 落成 WORKTREE snapshot（每 run 一个视图，互不覆盖）；§27.4 的不可信输入按路径/内容/哈希校验，先验证再原子发布；§27.5 的每个分母按 snapshot 计数；SCIP 仍为客户端后续上传（M27），服务端 v1 只做 tree-sitter syntax。表、级别、bridge 与闸的唯一判据见 ADR-0114。
+ADR-0114（M16）修订 §27：代码来源定为客户端推送（owner 829c952f），§27.1/§27.2/§27.6 的 provider 方向据此推迟（重开需 provider ADR）；snapshot identity、overlay、不可信输入、完整性分母与 SCIP 后置方向随之改写。判据见 ADR-0114。
 
 ---
 
@@ -8998,7 +8998,7 @@ repository + base_commit + worktree_overlay
 
 Code Tool 不新建第二套 Memory Authority。
 
-ADR-0114（M16）修订本 Tool 的 action 集：`index` 是带 `phase` 的单一 op（begin/put/commit，begin 返回 `needed` 哈希集、put 逐文件复核哈希、commit 入队抽取），并新增 `repo_map`、`history`、`link_memory`；`register_repository` 按 (provider, external_id) 幂等，URL 只是可选 locator。不新建第二套 Memory Authority 不变；判据见 ADR-0114。
+ADR-0114（M16）修订 §33 Tool 7：`index` 改为带 `phase` 的单一 op，action 集增 `repo_map`、`history`、`link_memory`，`register_repository` 按 (provider, external_id) 幂等。判据见 ADR-0114。
 
 ## Tool 8 — coordinate
 
