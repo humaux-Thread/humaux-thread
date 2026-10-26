@@ -528,6 +528,28 @@ fn a_forged_root_or_hash_cannot_be_frozen() {
     });
 }
 
+/// One of two racing freezers: opens its transaction, meets the other at the barrier, freezes, and holds the transaction
+/// open so the other freezer meets an uncommitted request.
+fn racing_freeze(
+    rt: &tokio::runtime::Runtime,
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    barrier: &Barrier,
+    authorization: &AuthorizationScope,
+    root: Uuid,
+) -> Uuid {
+    rt.block_on(async {
+        // dep: PostgreSQL(role_gateway) — one of two racing freezers
+        let mut txn = pool.begin().await.expect("begin");
+        barrier.wait();
+        let frozen = forget_repo::freeze_evidence_closure_in_txn(&mut txn, authorization, &[root])
+            .await
+            .expect("freeze");
+        std::thread::sleep(Duration::from_millis(300));
+        txn.commit().await.expect("commit");
+        frozen.request_id
+    })
+}
+
 /// Two real connections freeze the same scope at once: exactly one request and one target set.
 #[test]
 fn concurrent_freezes_of_one_scope_make_one_request() {
@@ -543,24 +565,7 @@ fn concurrent_freezes_of_one_scope_make_one_request() {
                         let (rt, pool, barrier) = (&h.rt, &h.gateway_pool, &barrier);
                         let authorization = auth_in(h.tenant_id, requester, &[]);
                         let root = seeded.root;
-                        scope.spawn(move || {
-                            rt.block_on(async {
-                                // dep: PostgreSQL(role_gateway) — one of two racing freezers
-                                let mut txn = pool.begin().await.expect("begin");
-                                barrier.wait();
-                                let frozen = forget_repo::freeze_evidence_closure_in_txn(
-                                    &mut txn,
-                                    &authorization,
-                                    &[root],
-                                )
-                                .await
-                                .expect("freeze");
-                                // Hold the transaction open so the second freezer meets an uncommitted request.
-                                std::thread::sleep(Duration::from_millis(300));
-                                txn.commit().await.expect("commit");
-                                frozen.request_id
-                            })
-                        })
+                        scope.spawn(move || racing_freeze(rt, pool, barrier, &authorization, root))
                     })
                     .collect();
                 workers
