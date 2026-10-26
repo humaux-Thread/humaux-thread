@@ -205,13 +205,13 @@ pub fn check(section_65: &[String], entries: &[Entry], variants: &BTreeSet<Strin
         if !expected.contains(entry.job.as_str()) {
             failures.push(format!("register entry `{}` is not a §65 job", entry.job));
         }
-        if let Target::Task(label) = &entry.target {
-            if !variants.contains(label) {
-                failures.push(format!(
-                    "entry `{}` names task `{label}`, which is not a Task variant in {SERVE}",
-                    entry.job
-                ));
-            }
+        if let Target::Task(label) = &entry.target
+            && !variants.contains(label)
+        {
+            failures.push(format!(
+                "entry `{}` names task `{label}`, which is not a Task variant in {SERVE}",
+                entry.job
+            ));
         }
     }
     if failures.is_empty() {
