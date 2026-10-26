@@ -1,7 +1,7 @@
 //! `public-pool::tests::completeness` — G-M20-6 exact type completeness and Rust/DB contracts (ADR-0090 D-B).
 //! Depends-on: crates=[postgres, serde_json, uuid]; services=[PostgreSQL(any)
 //!   r=[public.entities, public.syntheses, public.unit_conditions, public.unit_fields, public.units]
-//!   w=[public.units, public.unit_fields, public.syntheses]];
+//!   w=[public.units, public.unit_fields, public.syntheses, public.unit_conditions]];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[public-pool::completeness]
 //! Called-by: [cargo-test]
 //! Invariants: [DB probes roll back; missing CI inputs fail; independent oracle retains every required field]
@@ -560,7 +560,9 @@ fn primary_key_columns(tx: &mut Transaction<'_>, relation: &str) -> Vec<String> 
 fn unique_index_keys(tx: &mut Transaction<'_>, index: &str) -> Vec<String> {
     let unique: bool = tx
         .query_one(
-            "SELECT indisunique FROM pg_index WHERE indexrelid=$1::text::regclass",
+            "SELECT indisunique FROM pg_index
+              WHERE indexrelid=(SELECT oid FROM pg_class
+                WHERE relname=$1 AND relnamespace='public'::regnamespace)",
             &[&index],
         )
         .unwrap()
@@ -571,7 +573,8 @@ fn unique_index_keys(tx: &mut Transaction<'_>, index: &str) -> Vec<String> {
             "SELECT pg_get_indexdef(i.indexrelid, k.ord::int, true)
                FROM pg_index i
                JOIN unnest(i.indkey) WITH ORDINALITY k(attnum, ord) ON true
-              WHERE i.indexrelid=$1::text::regclass
+              WHERE i.indexrelid=(SELECT oid FROM pg_class
+                WHERE relname=$1 AND relnamespace='public'::regnamespace)
               ORDER BY k.ord",
             &[&index],
         )
@@ -630,7 +633,7 @@ fn unit_schema_binds_revision_unit_id_and_conditions_exactly() {
         primary_key_columns(&mut tx, "public.unit_conditions"),
         vec!["condition_id".to_owned()]
     );
-    let unique_keys = unique_index_keys(&mut tx, "public.unit_conditions_identity_uq");
+    let unique_keys = unique_index_keys(&mut tx, "unit_conditions_identity_uq");
     assert_eq!(unique_keys.len(), 5, "identity index key count");
     assert_eq!(
         unique_keys,
