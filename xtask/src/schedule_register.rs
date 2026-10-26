@@ -235,10 +235,12 @@ pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let baseline = match fs::read_to_string(root.join(BASELINE)) {
         Ok(text) => text,
-        Err(_) => return missing_input(BASELINE),
+        Err(_) => return report(Verdict::NotApplicable(BASELINE.to_string())),
     };
     let Some(section_65) = parse_section_65(&baseline) else {
-        return missing_input("the `# 65.` heading in docs/architecture/Baseline_2.9.md");
+        return report(Verdict::NotApplicable(
+            "the `# 65.` heading in docs/architecture/Baseline_2.9.md".to_string(),
+        ));
     };
     let register = match fs::read_to_string(root.join(REGISTER)) {
         Ok(text) => text,
@@ -268,8 +270,13 @@ fn report(verdict: Verdict) -> i32 {
         }
         Verdict::Fail(reasons) => fail(&reasons),
         Verdict::NotApplicable(missing) => {
-            println!("not_applicable: {missing}");
-            0
+            if std::env::var("GITHUB_ACTIONS").is_ok_and(|value| value == "true") {
+                eprintln!("fail: {missing} is missing and CI cannot report not_applicable (§57.1)");
+                1
+            } else {
+                println!("not_applicable: {missing}");
+                0
+            }
         }
     }
 }
@@ -280,17 +287,6 @@ fn fail(reasons: &[String]) -> i32 {
         eprintln!("fail: {reason}");
     }
     1
-}
-
-/// §57.1: an absent input is `not_applicable` locally, but a CI run that cannot read its input is a failure.
-fn missing_input(object: &str) -> i32 {
-    if std::env::var("GITHUB_ACTIONS").is_ok_and(|value| value == "true") {
-        eprintln!("fail: {object} is missing and CI cannot report not_applicable (§57.1)");
-        1
-    } else {
-        println!("not_applicable: {object}");
-        0
-    }
 }
 
 /// The workspace root this gate reads, from the crate manifest directory.
