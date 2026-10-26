@@ -1,5 +1,5 @@
 name: experiment
-# M24-16 / M24 D9: dispatch-only runner for the xtask measurement harnesses (R11 storage, load, mutant/CodeQL timing).
+# M24-16 / M24 D9: dispatch-only runner for the xtask measurement harnesses (load, load-open, soak; xtask/src/main.rs dispatcher).
 # One `cargo xtask <subcommand> <args>` on the dispatched ref; the JSON reports the harness writes under
 # `experiment-results/` come back as the `experiment-results` artifact. Nothing here is on the required check (no
 # ruleset entry, no `needs:` in ci.yml) and this workflow never dispatches ci.yml.
@@ -33,7 +33,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: experiment-${{ github.ref }}-${{ github.run_id }}
+  # Runs on one ref are serialised: one running plus at most one pending (cancel-in-progress: false keeps the
+  # running one). GitHub replaces a pending run with a newer one, so a third dispatch drops the queued second.
+  group: experiment-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -47,7 +49,9 @@ jobs:
   experiment:
     name: cargo xtask <experiment>
     runs-on: ubuntu-24.04-arm
-    # A load sweep or a soak is minutes, never hours; a hung harness fails here instead of holding the runner.
+    # The longest legitimate run is the gate soak: SOAK_SECS=1800 + SOAK_DRAIN=420 = 37 min, the gate defaults in
+    # docs/ops/soak.md (`--duration-secs`/`--drain-secs` are free flags); a load sweep is minutes. 120 minutes is the
+    # hang cut-off, not a run budget.
     timeout-minutes: 120
     steps:
       # First, before checkout and setup: a value outside the choice list is a bad dispatch and exits 2 without

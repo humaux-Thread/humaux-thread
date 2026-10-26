@@ -4515,6 +4515,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_policy_lifecycle_0132`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
@@ -5737,6 +5738,7 @@ modules:
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
+- `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_ingress_0131`

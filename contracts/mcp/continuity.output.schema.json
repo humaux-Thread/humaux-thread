@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ContinuityResultV1",
-  "description": "Project Continuity v1: fixed 17-facet census from one authorized PostgreSQL snapshot. HANDOFF and COVERAGE are system-derived, never writable source facets.",
+  "title": "ContinuityToolResultV1",
+  "description": "Project Continuity v1: `continuity.get` answers the fixed 17-facet census from one authorized PostgreSQL snapshot (HANDOFF and COVERAGE are system-derived, never writable source facets); `continuity.publish` answers the immutable version it committed or a §52 D-B CONFLICT with the slot version it lost to (ADR-0094).",
   "type": "object",
   "$defs": {
     "CurrentFacet": {
@@ -49,67 +49,118 @@
       ],
       "additionalProperties": false
     },
-    "HandoffV1": {"$ref":"context.output.schema.json#/properties/handoff"}
-  },
-  "required": ["contract_version","project_id","snapshot","facets","handoff","coverage"],
-  "properties": {
-    "contract_version": {"const":"1"},
-    "project_id": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$"
-    },
-    "snapshot": {
+    "HandoffV1": {"$ref":"context.output.schema.json#/properties/handoff"},
+    "ContinuityReadResult": {
+      "title": "continuity.get",
       "type": "object",
-      "required": ["context_snapshot_seq","snapshot_token_sha256","result_sha256"],
+      "required": ["contract_version","project_id","snapshot","facets","handoff","coverage"],
       "properties": {
-        "context_snapshot_seq": {"type":"integer","minimum":0},
-        "snapshot_token_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"},
-        "result_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+        "contract_version": {"const":"1"},
+        "project_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$"
+        },
+        "snapshot": {
+          "type": "object",
+          "required": ["context_snapshot_seq","snapshot_token_sha256","result_sha256"],
+          "properties": {
+            "context_snapshot_seq": {"type":"integer","minimum":0},
+            "snapshot_token_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "result_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        "facets": {
+          "type": "array",
+          "prefixItems": [
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"GOAL"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CURRENT_STATE"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"DECISIONS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"REJECTIONS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CONSTRAINTS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"KNOWN_ISSUES"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"NEXT_ACTIONS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"ACTIVE_TASKS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"RECENT_CHANGES"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CODE"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"TESTS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CONFIG"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"MIGRATIONS"}}}]},
+            {"allOf":[{"$ref":"#/$defs/DerivedFacet"},{"properties":{"kind":{"const":"HANDOFF"},"payload_ref":{"const":"#/handoff"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"PROCEDURES"}}}]},
+            {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"OUTCOMES"}}}]},
+            {"allOf":[{"$ref":"#/$defs/DerivedFacet"},{"properties":{"kind":{"const":"COVERAGE"},"payload_ref":{"const":"#/coverage"}}}]}
+          ],
+          "items": false,
+          "minItems": 17,
+          "maxItems": 17
+        },
+        "handoff": {"$ref":"#/$defs/HandoffV1"},
+        "coverage": {
+          "type": "object",
+          "required": ["required","current","missing","unavailable","stale","conflicted","ratio","completeness_class"],
+          "properties": {
+            "required": {"const":17},
+            "current": {"type":"integer","minimum":0,"maximum":17},
+            "missing": {"type":"integer","minimum":0,"maximum":17},
+            "unavailable": {"type":"integer","minimum":0,"maximum":17},
+            "stale": {"type":"integer","minimum":0,"maximum":17},
+            "conflicted": {"type":"integer","minimum":0,"maximum":17},
+            "ratio": {"type":"number","minimum":0,"maximum":1},
+            "completeness_class": {"enum":["FACET_COMPLETE","CANNOT_ESTABLISH"]}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
-    "facets": {
-      "type": "array",
-      "prefixItems": [
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"GOAL"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CURRENT_STATE"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"DECISIONS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"REJECTIONS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CONSTRAINTS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"KNOWN_ISSUES"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"NEXT_ACTIONS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"ACTIVE_TASKS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"RECENT_CHANGES"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CODE"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"TESTS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"CONFIG"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"MIGRATIONS"}}}]},
-        {"allOf":[{"$ref":"#/$defs/DerivedFacet"},{"properties":{"kind":{"const":"HANDOFF"},"payload_ref":{"const":"#/handoff"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"PROCEDURES"}}}]},
-        {"allOf":[{"$ref":"#/$defs/SourceFacet"},{"properties":{"kind":{"const":"OUTCOMES"}}}]},
-        {"allOf":[{"$ref":"#/$defs/DerivedFacet"},{"properties":{"kind":{"const":"COVERAGE"},"payload_ref":{"const":"#/coverage"}}}]}
-      ],
-      "items": false,
-      "minItems": 17,
-      "maxItems": 17
-    },
-    "handoff": {"$ref":"#/$defs/HandoffV1"},
-    "coverage": {
+    "PublishPublished": {
+      "title": "continuity.publish — published",
       "type": "object",
-      "required": ["required","current","missing","unavailable","stale","conflicted","ratio","completeness_class"],
+      "required": ["contract_version","project_id","facet_kind","facet_version_id","facet_version","slot_version","body_sha256"],
       "properties": {
-        "required": {"const":17},
-        "current": {"type":"integer","minimum":0,"maximum":17},
-        "missing": {"type":"integer","minimum":0,"maximum":17},
-        "unavailable": {"type":"integer","minimum":0,"maximum":17},
-        "stale": {"type":"integer","minimum":0,"maximum":17},
-        "conflicted": {"type":"integer","minimum":0,"maximum":17},
-        "ratio": {"type":"number","minimum":0,"maximum":1},
-        "completeness_class": {"enum":["FACET_COMPLETE","CANNOT_ESTABLISH"]}
+        "contract_version": {"const":"1"},
+        "project_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$"
+        },
+        "facet_kind": {"enum":["GOAL","CURRENT_STATE","DECISIONS","REJECTIONS","CONSTRAINTS","KNOWN_ISSUES","NEXT_ACTIONS","PROCEDURES","OUTCOMES"]},
+        "facet_version_id": {"type":"string","format":"uuid"},
+        "facet_version": {"type":"integer","minimum":1},
+        "slot_version": {"type":"integer","minimum":1},
+        "body_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
       },
+      "additionalProperties": false
+    },
+    "PublishConflict": {
+      "title": "continuity.publish — conflict",
+      "description": "§52 D-B: nothing was written; the caller re-reads and retries against current_slot_version.",
+      "type": "object",
+      "required": ["code","reason","reason_label","current_slot_version"],
+      "properties": {
+        "code": {"const":"CONFLICT"},
+        "reason": {"enum":[1401,1402]},
+        "reason_label": {"enum":["FACET_SLOT_VERSION_CONFLICT","FACET_MERGE_RETRY_EXHAUSTED"]},
+        "current_slot_version": {"type":"integer","minimum":0}
+      },
+      "allOf": [
+        {
+          "if": {"required":["reason"],"properties":{"reason":{"const":1401}}},
+          "then": {"properties":{"reason_label":{"const":"FACET_SLOT_VERSION_CONFLICT"}}}
+        },
+        {
+          "if": {"required":["reason"],"properties":{"reason":{"const":1402}}},
+          "then": {"properties":{"reason_label":{"const":"FACET_MERGE_RETRY_EXHAUSTED"}}}
+        }
+      ],
       "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "oneOf": [
+    {"$ref": "#/$defs/ContinuityReadResult"},
+    {"$ref": "#/$defs/PublishPublished"},
+    {"$ref": "#/$defs/PublishConflict"}
+  ]
 }
