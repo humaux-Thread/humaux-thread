@@ -168,6 +168,7 @@ mapped, and M17-11 owns G-DOC-13 and G-M17-6 (note :241, :249). A missing databa
 | G-M17-2 server hash | M17-6 | same | trust client sha256 | mismatched bytes ACCEPTED |
 | G-M17-8 ObjectStore contract | M17-2 | `crates/adapters/tests/object_store_contract.rs` | `delete_prefix` skips nested dirs | suite red on a derived asset |
 | G-M17-6 temp purge | M17-11 | `crates/adapters/tests/object_purge.rs` | trust delete ack | DONE while a temp file still stats |
+| G-M17-7 forced privacy | M17-4b | `artifact_intake.rs` | drop image arm | WORKSPACE_SHARED screenshot accepted |
 | A-3 type sniff | M17-6 | `artifact_intake.rs` + `testkit/ingest-threat` | trust extension | PNG-named PDF/polyglot accepted |
 | A-5 image bomb | M17-6 | `artifact_intake.rs` | skip pixel cap | 1-kB 50k×50k PNG decoded |
 | B-5 voice-bubble hallucination | M17-21 | `extract.rs` / `audio.rs` | transcribe without audio | transcript block without an audio unit |
@@ -177,8 +178,12 @@ mapped, and M17-11 owns G-DOC-13 and G-M17-6 (note :241, :249). A missing databa
 | C-11 hash residue | M17-15 | `upload_deadline.rs` | keep sha / unsalted disclosure hash | original's sha256 findable after purge |
 | C-9 outbox vs delete | M17-7 | `document_repo` tests | skip overlay re-check | publish after tombstone succeeds |
 | C-12 10 KB | M17-4a | `document_repo` tests + xtask storage-measure (M23) | lift block cap | 1,501-B block stored; harness p95 > target |
+| D-1…D-4 legacy | M17-23 | `bins/maintenance/tests/legacy_artifacts.rs` (with M25) | admin key; write no-owner row; mark legacy complete; double state | any id ≠ exactly one state; admin key used; no-owner row in a tenant; legacy text coverage FULL |
 
-Each needs its inject → red → fix → green record (§80.1) in the implementing card.
+Each needs its inject → red → fix → green record (§80.1) in the implementing card. Route gates for D-E live where the
+guarded rule lives: A-4 and A-6 in ADR-0119, B-6/B-7/B-8 in ADR-0117, A-11/A-12 in ADR-0116. G-M17-7 is a note row whose
+image-arm rule §4 does not state, so it is listed without inventing a decision (note :255). D-5 (old storage retirement)
+is not a gate: no M17/M25 code path issues DELETE to the old MinIO, and A-1 lists it as a forbidden call (note :290-291).
 
 ## Owner-gated (listed, not decided)
 
