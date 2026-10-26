@@ -13378,7 +13378,8 @@ runs:
             "humaux-adapters/cloud-raw-pool",
             "humaux-adapters?/cloud-raw-pool",
         ] {
-            let other = rp_pkg("humaux-cache", vec![], serde_json::json!({"x": [fwd]}));
+            let dep = rp_dep(&[], None);
+            let other = rp_pkg("humaux-cache", vec![dep], serde_json::json!({"x": [fwd]}));
             let out = fail_lines(raw_pool_enablers_from(&ed_doc(&[rp_owner(), other])));
             assert_eq!(out.lines().count(), 1, "{out}");
             assert!(out.contains("package `humaux-cache` enables"), "{out}");
