@@ -240,21 +240,13 @@ fn g_m03_9_preflight_ip_capacity_has_retry_after_and_metric() {
             let clock = tokio::spawn(hold_clock());
             let (addr, server) = start(app).await;
             assert_eq!(
-                wire_from(
-                    addr,
-                    Some(&credential.bearer),
-                    "Forwarded: for=203.0.113.1\r\n"
-                )
-                .await
-                .0,
+                wire_from(addr, Some(&credential.bearer), "Forwarded: 203.0.113.1\r\n")
+                    .await
+                    .0,
                 200
             );
-            let (status, headers, body) = wire_from(
-                addr,
-                Some(&credential.bearer),
-                "Forwarded: for=203.0.113.2\r\n",
-            )
-            .await;
+            let (status, headers, body) =
+                wire_from(addr, Some(&credential.bearer), "Forwarded: 203.0.113.2\r\n").await;
             assert_eq!(status, 503, "G-M03-9 new IP at preflight capacity");
             assert_eq!(body, "DEPENDENCY_UNAVAILABLE");
             assert_eq!(
