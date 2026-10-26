@@ -2233,15 +2233,18 @@ fn next_lint_silencer(code: &str, from: usize) -> Option<(usize, &'static str, u
                 .chars()
                 .next_back()
                 .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-            if starts_word {
-                if let Some(args_at) = attribute_args_at(code, at + needle.len()) {
-                    if best.is_none_or(|(earlier, _, _)| at < earlier) {
-                        best = Some((at, kind, args_at));
-                    }
-                    break;
-                }
+            if !starts_word {
+                search = at + needle.len();
+                continue;
             }
-            search = at + needle.len();
+            let Some(args_at) = attribute_args_at(code, at + needle.len()) else {
+                search = at + needle.len();
+                continue;
+            };
+            if best.is_none_or(|(earlier, _, _)| at < earlier) {
+                best = Some((at, kind, args_at));
+            }
+            break;
         }
     }
     best
