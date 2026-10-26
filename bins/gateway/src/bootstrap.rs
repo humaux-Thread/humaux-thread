@@ -233,6 +233,7 @@ pub struct GatewayBootstrap {
     /// ADR-0065 D-C: the §67.2 admission bounds, from the five `ADMISSION_*` keys.
     admission: AdmissionSettings,
     guard: GuardSettings,
+    continuity_list_merge_attempts: usize,
     remember_policy: RememberPolicy,
     remember_event_kind: RememberEventKind,
     context_bootstrap: ContextBootstrap,
@@ -373,8 +374,18 @@ impl GatewayBootstrap {
     /// registry. Unknown, missing, empty, and malformed configuration fails
     /// before any database connection or listener bind.
     pub fn load_from_env() -> Result<Self, BootstrapError> {
-        let raw = std::env::vars_os()
-            .filter(|(key, _)| key.to_string_lossy().starts_with(PREFIX))
+        Self::from_env_vars(std::env::vars_os())
+    }
+
+    fn from_env_vars(
+        vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Result<Self, BootstrapError> {
+        let shared = humaux_contracts::config_registry::continuity_config_registry();
+        let raw = vars
+            .filter(|(key, _)| {
+                let key = key.to_string_lossy();
+                key.starts_with(PREFIX) || shared.iter().any(|entry| entry.name == key)
+            })
             .map(|(key, value)| {
                 let key = key
                     .into_string()
@@ -421,6 +432,7 @@ impl GatewayBootstrap {
             self.remember_event_kind,
             self.context_bootstrap,
         )
+        .with_continuity_list_merge_attempts(self.continuity_list_merge_attempts)
         .with_confirm_token_ttl(self.confirm_token_ttl)
         .map_err(|_| {
             BootstrapError::new(
@@ -487,7 +499,7 @@ impl GatewayBootstrap {
         let registry = registry();
         let effective = resolve_effective_config(&registry, &raw)
             .map_err(|error| BootstrapError::new(error.entry_name, "missing or undeclared"))?;
-        validate_continuity_config(&effective)?;
+        let continuity_list_merge_attempts = validate_continuity_config(&effective)?;
         let remember_policy = parse_remember_policy(&effective)?;
         let context_bootstrap = parse_context_bootstrap(&effective, &remember_policy)?;
         let guard = parse_guard(&effective)?;
@@ -546,6 +558,7 @@ impl GatewayBootstrap {
             pool_settings,
             admission,
             guard,
+            continuity_list_merge_attempts,
             remember_policy,
             remember_event_kind: parse_remember_event_kind(&effective)?,
             context_bootstrap,
@@ -568,7 +581,9 @@ impl GatewayBootstrap {
     }
 }
 
-fn validate_continuity_config(effective: &BTreeMap<String, String>) -> Result<(), BootstrapError> {
+fn validate_continuity_config(
+    effective: &BTreeMap<String, String>,
+) -> Result<usize, BootstrapError> {
     use humaux_contracts::config_registry::{
         CONTINUITY_LIST_MERGE_ATTEMPTS, continuity_list_merge_attempts,
     };
@@ -577,7 +592,6 @@ fn validate_continuity_config(effective: &BTreeMap<String, String>) -> Result<()
             .get(CONTINUITY_LIST_MERGE_ATTEMPTS)
             .map(String::as_str),
     )
-    .map(|_| ())
     .map_err(|error| BootstrapError::new(error.entry_name, "must be a positive integer"))
 }
 
@@ -1808,6 +1822,85 @@ mod tests {
             raw.insert(entry.name, value);
         }
         raw
+    }
+
+    fn boot_continuity(value: Option<&str>) -> Result<GatewayBootstrap, BootstrapError> {
+        use humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS;
+        let mut values = raw();
+        values.remove(CONTINUITY_LIST_MERGE_ATTEMPTS);
+        if let Some(value) = value {
+            values.insert(CONTINUITY_LIST_MERGE_ATTEMPTS.into(), value.into());
+        }
+        GatewayBootstrap::from_env_vars(
+            values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        )
+    }
+
+    #[test]
+    fn continuity_boot_retains_shared_key_and_adapter_budget() {
+        use humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS;
+        let default = boot_continuity(None).expect("registered default");
+        assert_eq!(default.continuity_list_merge_attempts, 3);
+        let changed = boot_continuity(Some("5")).expect("shared override");
+        assert_eq!(changed.continuity_list_merge_attempts, 5);
+        assert_ne!(default.config_fingerprint, changed.config_fingerprint);
+        let rows: Vec<_> = changed
+            .effective_config
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter(|row| row["name"] == CONTINUITY_LIST_MERGE_ATTEMPTS)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![&serde_json::json!({
+                "name": CONTINUITY_LIST_MERGE_ATTEMPTS, "source": "env", "value": "5"
+            })]
+        );
+        let command = crate::continuity::PublishFacetCommand {
+            list_merge_attempts: changed.continuity_list_merge_attempts,
+            project_id: humaux_domain::continuity::ProjectId(Uuid::now_v7()),
+            workspace_id: humaux_domain::ids::WorkspaceId(Uuid::now_v7()),
+            facet_kind: humaux_domain::continuity::ContinuityFacetKind::Decisions,
+            body: serde_json::json!({"items":[]}),
+            memories: vec![],
+            evidence: vec![],
+            removals: vec![],
+        };
+        assert_eq!(
+            crate::continuity::repository_command(&command).list_merge_attempts,
+            5
+        );
+    }
+
+    #[test]
+    fn continuity_boot_refuses_invalid_shared_values() {
+        use humaux_contracts::config_registry::CONTINUITY_LIST_MERGE_ATTEMPTS;
+        for value in ["0", "bad", "18446744073709551616"] {
+            let error = boot_continuity(Some(value)).err().expect("boot must fail");
+            assert_eq!(
+                error,
+                BootstrapError::new(CONTINUITY_LIST_MERGE_ATTEMPTS, "must be a positive integer")
+            );
+        }
+        let mut values = raw();
+        values.insert("HUMAUX_GATEWAY_UNKNOWN_CONTINUITY_KEY".into(), "5".into());
+        let error = GatewayBootstrap::from_env_vars(
+            values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        )
+        .err()
+        .expect("unknown gateway key must fail");
+        assert_eq!(
+            error,
+            BootstrapError::new(
+                "HUMAUX_GATEWAY_UNKNOWN_CONTINUITY_KEY",
+                "missing or undeclared"
+            )
+        );
     }
 
     /// A per-call generated 32-byte key, hex-encoded (never a literal key).

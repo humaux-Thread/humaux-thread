@@ -33,6 +33,8 @@ use serde_json::Value;
 /// adapter reads it inside the write transaction (ADR-0094 D-C).
 #[derive(Debug, Clone)]
 pub struct PublishFacetCommand {
+    /// §50 / ADR-0094 D-D: process-owned budget, absent from the wire input.
+    pub list_merge_attempts: usize,
     pub project_id: ProjectId,
     pub workspace_id: WorkspaceId,
     pub facet_kind: ContinuityFacetKind,
@@ -86,7 +88,20 @@ pub async fn publish(
     authorization: AuthorizationScope,
     command: PublishFacetCommand,
 ) -> Result<PublishOutcome, ErrorCode> {
-    let repository_command = PublishContinuityFacet {
+    let repository_command = repository_command(&command);
+    let outcome =
+        continuity_repo::publish_facet(&pool, &authorization, &repository_command).await?;
+    Ok(publish_outcome(
+        command.project_id,
+        command.facet_kind,
+        outcome,
+    ))
+}
+
+/// §50: forwards the parsed boot value unchanged to the transaction adapter.
+pub(crate) fn repository_command(command: &PublishFacetCommand) -> PublishContinuityFacet<'_> {
+    PublishContinuityFacet {
+        list_merge_attempts: command.list_merge_attempts,
         workspace_id: command.workspace_id,
         project_id: command.project_id,
         facet_kind: command.facet_kind,
@@ -95,13 +110,18 @@ pub async fn publish(
         memories: &command.memories,
         evidence: &command.evidence,
         removals: &command.removals,
-    };
-    let outcome =
-        continuity_repo::publish_facet(&pool, &authorization, &repository_command).await?;
-    Ok(match outcome {
+    }
+}
+
+fn publish_outcome(
+    project_id: ProjectId,
+    facet_kind: ContinuityFacetKind,
+    outcome: PublishFacetOutcome,
+) -> PublishOutcome {
+    match outcome {
         PublishFacetOutcome::Published(result) => PublishOutcome::Published(PublishedFacet {
-            project_id: command.project_id,
-            facet_kind: command.facet_kind,
+            project_id,
+            facet_kind,
             result,
         }),
         PublishFacetOutcome::Conflict {
@@ -111,5 +131,5 @@ pub async fn publish(
             reason,
             current_slot_version,
         },
-    })
+    }
 }

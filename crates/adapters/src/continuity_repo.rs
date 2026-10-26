@@ -1,5 +1,5 @@
 //! `adapters::continuity_repo` — Typed role_gateway bindings for Project Continuity registration and facet publication.
-//! Depends-on: crates=[humaux-contracts, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS]; modules=[contracts::config_registry, adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[]; modules=[adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [registration and facet publication go only through the SECURITY DEFINER functions; the slot version a
 //!   publication is checked against is the door's own in-transaction read, never a caller value (§25.3.1, ADR-0094
@@ -12,9 +12,6 @@
 //! transaction here — each attempt runs under a savepoint, because a raised SQL error would otherwise poison it.
 
 use crate::postgres::RuntimeDbPool;
-use humaux_contracts::config_registry::{
-    CONTINUITY_LIST_MERGE_ATTEMPTS, continuity_list_merge_attempts, read_env_var,
-};
 use humaux_domain::{
     continuity::{
         ContinuityFacetKind, ContinuityFacetVersionId, ContinuityPublishResult,
@@ -81,6 +78,8 @@ pub struct RegisterContinuityProject<'a> {
 /// door's own in-transaction read, never a caller value (ADR-0094 D-C).
 #[derive(Debug, Clone)]
 pub struct PublishContinuityFacet<'a> {
+    /// §50 / ADR-0094 D-D: positive total attempts, parsed once by process bootstrap.
+    pub list_merge_attempts: usize,
     pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
     pub facet_kind: ContinuityFacetKind,
@@ -432,8 +431,7 @@ pub async fn publish_facets_in_txn(
     let attempts = if scalar {
         1
     } else {
-        continuity_list_merge_attempts(read_env_var(CONTINUITY_LIST_MERGE_ATTEMPTS).as_deref())
-            .map_err(|_| ErrorCode::InvalidInput)?
+        command.list_merge_attempts
     };
     for attempt in 1..=attempts {
         match publish_attempt(tx, &narrowed, command, scalar).await? {
