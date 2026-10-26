@@ -453,7 +453,9 @@ impl StartBarrier {
         true
     }
 
-    fn release_when_ready(&self) -> bool {
+    /// Blocks until every writer has arrived, without releasing them: the test reads the barrier's
+    /// session count there, the only instant at which every writer is connected and none has published.
+    fn wait_ready(&self) -> bool {
         let deadline = Instant::now() + THREAD_TIMEOUT;
         while self.ready.load(Ordering::SeqCst) < self.parties {
             if Instant::now() > deadline {
@@ -461,8 +463,11 @@ impl StartBarrier {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        self.release.store(true, Ordering::SeqCst);
         true
+    }
+
+    fn release(&self) {
+        self.release.store(true, Ordering::SeqCst);
     }
 }
 
@@ -652,16 +657,17 @@ fn g_m14_2_eighty_writers_union_exactly() {
                 publish_until_settled(&rt, &pool, &scope, &command, index)
             }));
         }
+        let mut admin = fixture.admin();
         assert!(
-            barrier.release_when_ready(),
+            barrier.wait_ready(),
             "all {WRITERS} writers must open a connection before any publishes"
         );
-        let mut admin = fixture.admin();
+        let at_barrier = writer_sessions(&mut admin);
         assert_eq!(
-            writer_sessions(&mut admin),
-            WRITERS as i64,
+            at_barrier, WRITERS as i64,
             "each of the {WRITERS} writers must hold exactly one gateway session"
         );
+        barrier.release();
         for writer in writers {
             writer
                 .join()
@@ -670,8 +676,11 @@ fn g_m14_2_eighty_writers_union_exactly() {
         }
         stop.store(true, Ordering::SeqCst);
         let peak = observer.join().expect("session observer");
+        // The observer can sample either side of the barrier's all-connected instant, so the barrier's
+        // own read is folded in: the highest count over the whole run is still exactly one per writer.
         assert_eq!(
-            peak, WRITERS as i64,
+            peak.max(at_barrier),
+            WRITERS as i64,
             "a writer must never open a second gateway session while its transaction returns"
         );
 
