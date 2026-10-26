@@ -169,6 +169,13 @@ macro_rules! cell {
 const MATRIX: &[Cell] = &[
     // §6.2.2 / ADR-0095 D-B: gateway doors only, zero direct runtime grants.
     cell!("private.project_channels", "role_gateway", []),
+    // §6.2.2 / ADR-0088 D-B: gateway reads the notice and (tenant-scoped) its events; every write goes through a 0274 door.
+    cell!("control.contribution_notices", "role_gateway", ["SELECT"]),
+    cell!(
+        "control.contribution_notice_events",
+        "role_gateway",
+        ["SELECT"]
+    ),
     cell!("ops.mechanism_observations", "role_gateway", ["SELECT"]),
     cell!(
         "ops.mechanism_observations",
