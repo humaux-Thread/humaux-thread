@@ -143,12 +143,21 @@ Three-state (§57.1). G-M07-6 is the note's row (note :148); the producer assert
 
 ## Red records
 
-Each fault is injected on its own throwaway branch off the card's green head and run through `targeted.yml`; run ids and
-the failing lines are also in the card's PR description.
+Each fault is injected on its own throwaway branch off the card's code head `e2cb9afc` (code identical to `ff508087`) and
+run through `targeted.yml`; the branches are deleted. Run ids and the failing lines are also in the card's PR description.
+The green records are the same selectors on the unmutated card branch: run 40417588220 (`facet_contract`, `note_put`,
+`memory_attribution`: 8, 12 and 15 tests passed) and run 40417594268 (`distill_hop_e2e d12`: 1 passed), both on `ff508087`.
 
-- r1: pending.
-- r2: pending.
-- r3: pending.
+- r1, `red/m07-5-r1`, run 40419052345: `EpistemicStatus::Hypothesis` added to the enum, `ALL` and `as_db_str` with no CHECK
+  value -> `facet_contract::epistemic_status_equals_the_db_check_and_defaults_to_unknown` red at
+  `crates/adapters/tests/facet_contract.rs:393` (`epistemic_status: the DB literals and the Rust vocabulary drifted`, the
+  Rust side holds `HYPOTHESIS`).
+- r2, `red/m07-5-r2`, run 40419058622: `'episode'` dropped from the 0283 `memory_records_note_kind_check` list (and from the
+  manifest postcheck, so `migrate` still passes) -> `facet_contract::note_kinds_and_their_memory_types_equal_the_db_checks`
+  red at `crates/adapters/tests/facet_contract.rs:393` (`note_kind: ... drifted`, the DB side lacks `episode`).
+- r3, `red/m07-5-r3`, run 40419064900: `MemoryProducer::Distill` mapped to `SourceReported` in `epistemic_status` ->
+  `distill_hop_e2e::d12_a_tool_channel_reply_in_content_is_parsed_and_accepted_once` red at
+  `bins/private-worker/tests/distill_hop_e2e.rs:2618` (left `SOURCE_REPORTED`, right `INTERPRETATION`).
 
 ## References
 
