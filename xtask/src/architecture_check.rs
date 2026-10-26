@@ -17596,7 +17596,7 @@ async fn serving_version_in_txn() {}
             ),
             (
                 "toggle_contribution",
-                "async fn f() { sqlx::query(\"SELECT control.toggle_contribution($1, $2)\"); }\n",
+                "async fn f() { sqlx::query(\"SELECT toggle_contribution($1, $2)\"); }\n",
             ),
             (
                 "AUTO_AFTER_USER_DISTILLATION",

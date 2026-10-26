@@ -2,9 +2,9 @@
 //!   on the current notice version; choice events are append-only and tenant-scoped; the Rust kind and channel sets equal the
 //!   DB CHECK literals.
 //! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
-//!   services=[PostgreSQL(any) r=[control.contribution_notice_events, control.contribution_policies]
-//!   w=[control.contribution_notice_events, control.contribution_notices, control.contribution_policies, control.tenants,
-//!   control.users] x=[control.toggle_contribution], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
+//!   services=[PostgreSQL(any) r=[control.contribution_notice_events, control.contribution_policies, control.memberships]
+//!   w=[control.contribution_notice_events, control.contribution_notices, control.contribution_policies, control.memberships,
+//!   control.tenants, control.users] x=[control.toggle_contribution], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[domain::error, domain::ids, humaux-testkit, public-pool::notice, public-pool::policy]
 //! Called-by: [cargo-test]
