@@ -1,6 +1,6 @@
 //! `public-pool::completeness` — Type completeness and F3/A1/A2 receipts; no admission authority (ADR-0090 D-B/D-C).
 //! Depends-on: crates=[serde_json, uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [tests]
+//! Called-by: [public-pool::admission::deid, tests]
 //! Invariants: [unchecked is NOT_RUN; result is never model-inferred; causal conditions cannot all be stripped]
 //! Spec: Baseline §12.6; §52; §57.1; §78.2; ADR-0090 D-B/D-C
 
@@ -29,6 +29,8 @@ macro_rules! closed_set {
         }
     };
 }
+// §78.2: the A3 detector and surface sets in `admission::deid` use the same macro.
+pub(crate) use closed_set;
 closed_set! {
     /// Phase-one unit domain (ADR-0090 D-B).
     UnitType {
