@@ -5946,6 +5946,7 @@ modules:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`

@@ -1,0 +1,22 @@
+[[concepts]]
+concept_id = "alpha"
+facet = "task"
+status = "DEPRECATED"
+replaced_by = "beta"
+definition = "Fixture alpha."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "alpha"
+
+[[concepts]]
+concept_id = "beta"
+facet = "task"
+status = "DEPRECATED"
+replaced_by = "beta"
+definition = "Fixture beta."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "beta"
+
