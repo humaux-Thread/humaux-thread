@@ -9,7 +9,7 @@
 //! Depends-on: crates=[humaux-adapters, serde_json, time, tokio]; services=[PostgreSQL(any), PostgreSQL(owner)
 //!   r=[control.partition_registry, control.quota_windows, control.retention_policies, ops.maintenance_receipts,
 //!   ops.stage_runs, ops.wal_archive_failures]
-//!   w=[control.confirm_tokens, control.entitlement_snapshots, control.rate_buckets, control.tenants, control.users,
+//!   w=[control.confirm_tokens, control.entitlement_snapshots, control.tenants, control.users,
 //!   control.workspaces,
 //!   ops.backup_receipts, ops.backup_sets, ops.jobs, ops.restore_drills, ops.selection_snapshots,
 //!   projection.stream_log]
@@ -24,7 +24,6 @@
 //!   HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SECONDS, HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS,
-//!   HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN,
 //!   HUMAUX_MIGRATOR_PG_DSN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS];
@@ -64,14 +63,13 @@ const QUOTA_RENEWAL_LEAD: &str = "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SE
 /// ADR-0072 D-D: the renewal gauge's unlabeled sample line prefix.
 const HORIZON_SAMPLE: &str = "quota_window_horizon_seconds ";
 /// Their `/status` and receipt labels, in the same order.
-const LABELS: [&str; 10] = [
+const LABELS: [&str; 9] = [
     "lost",
     "quota_reservations",
     "quota_renewal",
     "provider_budgets",
     "confirm_tokens",
     "snapshots",
-    "rate_buckets",
     "jobs",
     "reissue",
     "redrive",
@@ -650,9 +648,6 @@ fn seed_purgeable(db: &mut Db, tenant: &str) {
                 now() - interval '1 minute', w.workspace_id FROM u, w; \
          INSERT INTO ops.selection_snapshots (tenant_id, query_fingerprint, expires_at) \
            VALUES ('{tenant}', 'c35-once', now() - interval '1 minute'); \
-         INSERT INTO control.rate_buckets (tenant_id, subject_kind, subject_id, operation, bucket_key, capacity, \
-           tokens, refill_per_second, updated_at) \
-           VALUES ('{tenant}', 'tenant', 'c35-once', 'mcp.read', 'default', 5, 5, 1, now() - interval '2 hours'); \
          INSERT INTO ops.jobs (tenant_id, job_type, status, idempotency_key, created_at) \
            VALUES ('{tenant}', 'c35.fixture', 'DONE', gen_random_uuid()::text, now() - interval '2 hours');"
     ));
@@ -716,7 +711,7 @@ fn sweep_once_requires_admin_fields_and_prints_per_task_counts() {
         .client()
         .query_one(
             "SELECT (SELECT count(*) FROM control.confirm_tokens) + (SELECT count(*) FROM ops.selection_snapshots) \
-                  + (SELECT count(*) FROM control.rate_buckets) + (SELECT count(*) FROM ops.jobs)",
+                  + (SELECT count(*) FROM ops.jobs)",
             &[],
         )
         .expect("leftovers")
@@ -727,7 +722,7 @@ fn sweep_once_requires_admin_fields_and_prints_per_task_counts() {
         .query_one("SELECT count(*) FROM ops.maintenance_receipts", &[])
         .expect("receipts")
         .get(0);
-    assert_eq!(receipts, 4, "one receipt per purge door that removed a row");
+    assert_eq!(receipts, 3, "one receipt per purge door that removed a row");
 }
 
 /// Starts one resident mode with `env` (every key it needs plus the migrator key) and returns its exit status and

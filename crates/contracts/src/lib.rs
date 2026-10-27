@@ -9,5 +9,7 @@
 
 pub mod config_registry;
 pub mod feature_registry;
+/// §21.5 / §50 embedded freshness values and exhaustive loading.
+pub mod freshness;
 pub mod mechanism_registry;
 pub mod retrieval_config;

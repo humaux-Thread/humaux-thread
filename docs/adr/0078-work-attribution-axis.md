@@ -181,6 +181,9 @@ of reading the Evidence tables (design v0.2 §15.7 and its 2026-10-20 amendment)
   one SELECT holder (no new grant). No wire or MCP output carries it until a recall output card has a user story for
   it. The xtask arm `m29_attribution_reader` keeps it the one non-test read of the view and forbids a non-test
   `FROM` / `JOIN` of `private.memory_projects` (the writers' `INSERT INTO` is no read).
+- **Amended (M29-g1, ADR-0110 D-F):** `private.memory_in_project(tenant, memory, project)` (migration 0282, invoker,
+  EXECUTE `role_gateway`) is the one SQL-side read of `memory_projects_live`; xtask G-M29-7 keeps it single and
+  table-free.
 - **Revocation shares the correction's transaction.** Correcting a `project_task_relations` revision ("T1 never
   belonged to P1") writes, in the same transaction, a revocation row for every `memory_projects` row that A3 derived
   from it. Dependent continuity outputs keep the existing `continuity_facet_memory_links` + sha check and read as
@@ -323,6 +326,7 @@ module gates there needs its own spec change.
 | G-N09-2 candidate isolation | authoritative read-path functions never reference the candidates table (architecture_check rule) | join candidates in recall hydrate |
 | G-N09-3 unknown stays unknown | same-name trap fixture: two projects with one name and no deterministic ground → zero formal rows, reported `unresolved`; end to end (T07): a put with no ground whose text names the project is distilled into a Memory the reader reports `unresolved`, and the trap project has zero rows tenant-wide | "take the most recent project" |
 | G-N09-4 formal attribution does not depend on a model | design v0.2 §15.8: with the provider off Distill writes no Memory, so "row-for-row identical with models off" is not testable as written; the testable form is (a) the same fixture in two tenants whose providers return different memory text gives, per message, the same projection (projects by fixture role, `source_kind`, `rule_id_ver`, the decision Evidence's message), and (b) provider calls == Distill jobs run (a failed attempt and its retry counted), with correction, relation correction, revocation and reads adding 0 provider calls and 0 `ops.model_call_ledger` rows. E-D reruns the criterion on real corpus | (a) A3 skips a project named in the memory text; (b) one more provider call before the Memory INSERT (make A3 call a model once) |
+| G-M29-7 SQL-side reader single and table-free | `private.memory_in_project` is created by exactly one `CREATE FUNCTION` / `CREATE OR REPLACE FUNCTION` (counted together, quoted spellings included) in `migrations/*.sql`, in `0282_memory_in_project.sql`, which reads `private.memory_projects_live` and never `private.memory_projects` (also not alongside the view) (xtask `m29_attribution_reader_sql`); the predicate is true only for a live link in the session tenant, false for a revoked, unresolved, other-project or other-tenant one, and only `role_gateway` holds EXECUTE (`adapters::tests::memory_in_project`) | (1) the body reads the table; (2) a second `CREATE` (plain, `OR REPLACE`, or quoted) in another migration; (3) a later migration grants EXECUTE to PUBLIC |
 
 **E-D (M29 T08): G-N09-4 under a real model.** `m29_attribution_e2e::g_n09_4_live_minimax`, run by the CI `live` job
 (`--include-ignored live`), puts one corpus through the real `remember_*_atomically` in two tenants and drains Distill
@@ -637,6 +641,33 @@ and the failing lines are in the card's PR description.
     39395982313, step "attribution E-D live" red at `m29_attribution_e2e.rs:1431`, the non-vacuity row check: every L
     ledger row is `("minimax", Some("MiniMax-M3"), false)`, the MiniMax route without reported usage.
   - The per-message comparison adds no red of its own: it is T07's `projection` helper, whose red is r6b above.
+- M29-g1 (G-M29-7), branches `red/m29-g1-r1..r3` off `a4aeb174`, run through `targeted.yml`. Green on that same head:
+  runs 40409857263 (`memory_in_project`) and 40409861835 (xtask `g_m29_7` and `t07_attribution`):
+  - r1: the predicate's body as `FROM private.memory_projects l` (the base table) -> two reds. xtask
+    `g_m29_7_sql_leg_real_repo_passes` red (run 40414268279, `xtask/src/architecture_check.rs:17676`: found 1 table
+    token(s) and 0 view token(s)); `memory_in_project` case (b) red (run 40414274580,
+    `crates/adapters/tests/memory_in_project.rs:202`): the revoked link still answers true.
+  - r2: a second `CREATE OR REPLACE FUNCTION private.memory_in_project(` in `migrations/0283_memory_in_project_twin.sql`
+    -> xtask `g_m29_7_sql_leg_real_repo_passes` red (run 40415713403, `xtask/src/architecture_check.rs:17676`: found 2).
+    The first cut had no manifest and died in the DB setup before any test (run 40414280146); the re-cut adds one.
+  - r3 (superseded by r3' below): `GRANT EXECUTE ... TO PUBLIC` inside 0282 -> case (f) red (run 40414285981). Review
+    rv-366 P2-2 restored the ACL half of the 0282 postcheck, so the same fault inside 0282 now stops `migrate`.
+  - r1 and r2 ran on the matcher before the review round; the fault lines they exercise (table read, second CREATE)
+    are unchanged and now also covered by `g_m29_7_sql_leg_fails_when_the_predicate_reads_the_table`,
+    `..._on_a_second_create_in_another_migration` and `..._on_a_plain_create_overload`.
+- M29-g1 review rv-366 fixes, branches `red/m29-g1-p12` and `red/m29-g1-r3b` off `0f5abeac`, via `targeted.yml`. Green
+  on that same head: runs 40420433007 (xtask `g_m29_7` and `t07_attribution`) and 40420438952 (`memory_in_project`):
+  - P1-2: `migrations/0283_memory_in_project_quoted_twin.sql` carries a second `CREATE OR REPLACE FUNCTION
+    "private"."memory_in_project"(` (quoted, so the unquoted needle alone never sees it) -> xtask
+    `g_m29_7_sql_leg_real_repo_passes` red (run 40420422145, `xtask/src/architecture_check.rs:17957`: found 2).
+  - r3': `migrations/0283_memory_in_project_grant_public.sql` runs `GRANT EXECUTE ON FUNCTION
+    private.memory_in_project(uuid, uuid, uuid) TO PUBLIC` after 0282 -> `memory_in_project` case (f) red (run
+    40420427344, `crates/adapters/tests/memory_in_project.rs:248`): the EXECUTE holders are PUBLIC and all eight
+    runtime roles. It is a later migration so 0282's own postcheck (which now refuses PUBLIC, `role_private_worker` and
+    `role_maintenance`) still passes and the fault reaches the test.
+  - P1-1 (view and table read together) and P2-1 (plain CREATE overload) are covered by fixtures
+    `g_m29_7_sql_leg_fails_when_the_predicate_also_reads_the_table` and `..._on_a_plain_create_overload`; the fixtures
+    are unit tests of the matcher, so they carry no separate branch red.
 
 ## Consequences
 

@@ -102,6 +102,8 @@ with `memory_type()`; a contract test reconciles enum ↔ DB CHECK ↔ mapping �
 Rejected: lesson/note → FACT (loses the existing LESSON/NOTE semantics); research → FACT (hypotheses and citations
 are not facts) or REFERENCE (not a pointer); fix → PROCEDURE; a writable facet (ADR-0045 D-B).
 
+Amended by ADR-0124: `note_kind` gains `event`, `plan` and `episode` (all `NOTE`), twelve values in all.
+
 ### D-E — The verbatim body and its digest
 
 The body is the JSON-decoded `content` string, stored unchanged in `content.key_claim` (no trim, no newline or
