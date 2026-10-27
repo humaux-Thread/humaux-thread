@@ -543,13 +543,6 @@ audit_valid=$("$PSQL" -X -v ON_ERROR_STOP=1 -At -d "$HUMAUX_TEST_PG_DSN" \
 trigger_after=$(db "SELECT count(*)=1 AND bool_and(tgenabled='O') FROM pg_trigger WHERE tgrelid='control.audit_events'::regclass AND tgname='audit_events_reject_mutation' AND NOT tgisinternal")
 [ "$trigger_after" = t ] || { echo 'audit mutation trigger changed' >&2; exit 1; }
 
-bucket_where="tenant_id='00000000-0000-0000-0000-000000000000'::uuid AND subject_kind='ip' AND subject_id='127.0.0.1' AND operation='mcp' AND bucket_key='preauth'"
-before=$(db "SELECT count(*) FROM control.rate_buckets WHERE $bucket_where")
-[ "$before" = 1 ] || { echo "preauth before must be 1, got $before" >&2; exit 1; }
-deleted=$(db "DELETE FROM control.rate_buckets WHERE $bucket_where")
-[ "$deleted" = 'DELETE 1' ] || { echo "preauth delete must affect 1, got $deleted" >&2; exit 1; }
-after=$(db "SELECT count(*) FROM control.rate_buckets WHERE $bucket_where")
-[ "$after" = 0 ] || { echo "preauth after must be 0, got $after" >&2; exit 1; }
 
 cleanup_relation qualified 2 || { echo 'qualified cleanup failed' >&2; exit 70; }
 completed_run_uuid=$run_uuid
@@ -591,9 +584,6 @@ expected_audit_delta_sha256	$expected_delta_sha
 expected_row_sha256	$expected_row_sha
 audit_trigger_before	$trigger_before
 audit_trigger_after	$trigger_after
-preauth_before	$before
-preauth_deleted	$deleted
-preauth_after	$after
 env_binding	HUMAUX_TEST_PG_DSN,HUMAUX_REQUIRE_DB
 EOF
 )

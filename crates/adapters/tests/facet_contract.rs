@@ -1,15 +1,17 @@
 //! `adapters::tests::facet_contract` — §78.2 DB<->Rust contract for the §25.4.A(1)/(2) Mandatory facet projection,
-//!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045) and the plan catalogue's closed sets
-//!   (G-M04-14, migration 0262).
+//!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045), the plan catalogue's closed sets
+//!   (G-M04-14, migration 0262) and the M07 closed sets, note kinds and epistemic status (G-M07-6, migration 0283).
 //! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any)
 //!   r=[control.plan_versions, private.context_bindings, private.memory_applicability, private.memory_records] x=[control.issue_quota_window]];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::applicability, domain::context, domain::memory, domain::plan, humaux-testkit]
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::applicability, domain::context, domain::memory, domain::note, domain::plan, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [judges the expression the database computes (pg_get_expr), round-trips both closed label sets by set
 //!   equality, and checks REGISTRY columns exist; every closed set of control.plan_versions (currency, interval,
 //!   template keys, provider modes) and the quota issuer's period and charge-policy lists equal the domain::plan
-//!   vocabulary by set equality and by count; missing DB goes through skip_or_fail]
-//! Spec: Baseline §25.4; §71.1; §78.1; §78.2; §79.2; ADR-0072
+//!   vocabulary by set equality and by count; `NoteKind::ALL` equals the note_kind CHECK, each kind's memory_type is the
+//!   pair the binding CHECK lists, and `EpistemicStatus::ALL` equals the epistemic_status CHECK whose column default is
+//!   Unknown; missing DB goes through skip_or_fail]
+//! Spec: Baseline §25.4; §71.1; §78.1; §78.2; §79.2; ADR-0072; ADR-0124
 //!
 //! Three things are pinned here, each with a different failure mode:
 //!
@@ -33,7 +35,8 @@
 
 use humaux_domain::applicability::{ApplicabilityScope, ApplicabilityStatus, AssignmentMethod};
 use humaux_domain::context::{REGISTRY, SelectorId};
-use humaux_domain::memory::{MandatoryContextFacet, MemoryType};
+use humaux_domain::memory::{EpistemicStatus, MandatoryContextFacet, MemoryType};
+use humaux_domain::note::NoteKind;
 use humaux_domain::plan::{
     BillingInterval, ChargePolicy, Currency, EntitlementKey, ProviderMode, QuotaPeriod,
 };
@@ -502,5 +505,92 @@ fn plan_catalogue_closed_sets_equal_the_domain_vocabularies() {
     assert!(
         issuer.contains(&format!("'{}'", EntitlementKey::PerPeriod.wire())),
         "the issuer's one entitlement key is the template's per-period key"
+    );
+}
+
+/// The definition of one migration-0283 CHECK of `private.memory_records`, or the §57.1 `not_applicable` that names that
+/// very constraint (and the migration that creates it) when it is absent.
+fn constraint_def_or_skip(client: &mut Client, conname: &str) -> Option<String> {
+    let def = constraint_def(client, conname);
+    if def.is_none() {
+        skip_or_fail(
+            NAME,
+            &format!(
+                "missing object: {conname} — run `cargo xtask migrate` (migrations/0283_note_kinds_epistemic_status.sql)"
+            ),
+            ExternalDep::Postgres,
+        );
+    }
+    def
+}
+
+/// G-M07-6 / §78.2 (ADR-0124): `NoteKind::ALL` is the live `note_kind` CHECK, and every kind's `memory_type` is the pair
+/// the binding CHECK lists, in both directions.
+/// Fault: a Rust kind whose label the CHECK lacks (or the reverse), or a kind bound to another type ⇒ the sets differ ⇒ red.
+#[test]
+fn note_kinds_and_their_memory_types_equal_the_db_checks() {
+    let Some(mut client) = client() else { return };
+    let Some(kinds) = constraint_def_or_skip(&mut client, "memory_records_note_kind_check") else {
+        return;
+    };
+    let Some(binding) =
+        constraint_def_or_skip(&mut client, "memory_records_note_kind_memory_type_check")
+    else {
+        return;
+    };
+    let wires = NoteKind::ALL.map(NoteKind::wire);
+    assert_same_closed_set("note_kind", &quoted_literals(&kinds), &wires);
+
+    // The binding CHECK deparses its literals as kind, memory_type, kind, memory_type, ... in the order written.
+    let literals = quoted_literals(&binding);
+    assert_eq!(
+        literals.len(),
+        2 * NoteKind::ALL.len(),
+        "the binding CHECK lists a pair twice or misses one: {binding}"
+    );
+    let db: BTreeSet<(&str, &str)> = literals
+        .chunks(2)
+        .map(|pair| (pair[0].as_str(), pair[1].as_str()))
+        .collect();
+    let rust: BTreeSet<(&str, &str)> = NoteKind::ALL
+        .iter()
+        .map(|kind| (kind.wire(), kind.memory_type().wire()))
+        .collect();
+    assert_eq!(
+        db, rust,
+        "note_kind -> memory_type binding drifted: {binding}"
+    );
+}
+
+/// G-M07-6 / §78.2 (ADR-0124): `EpistemicStatus::ALL` is the live `epistemic_status` CHECK, and a row that names no status
+/// reads `Unknown` (NOT NULL, default), which is how every legacy Memory reads.
+/// Fault: a Rust status without its CHECK literal (or the reverse), or another default ⇒ red.
+#[test]
+fn epistemic_status_equals_the_db_check_and_defaults_to_unknown() {
+    let Some(mut client) = client() else { return };
+    let Some(def) = constraint_def_or_skip(&mut client, "memory_records_epistemic_status_check")
+    else {
+        return;
+    };
+    let wires = EpistemicStatus::ALL.map(EpistemicStatus::as_db_str);
+    assert_same_closed_set("epistemic_status", &quoted_literals(&def), &wires);
+
+    let column = client
+        .query_one(
+            "SELECT a.attnotnull, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a \
+               JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+              WHERE a.attrelid = 'private.memory_records'::regclass \
+                AND a.attname = 'epistemic_status' AND NOT a.attisdropped",
+            &[],
+        )
+        .expect("epistemic_status column and its default");
+    assert!(
+        column.get::<_, bool>(0),
+        "epistemic_status must be NOT NULL"
+    );
+    assert_eq!(
+        column.get::<_, String>(1),
+        format!("'{}'::text", EpistemicStatus::Unknown.as_db_str()),
+        "a legacy row must read Unknown by the column default"
     );
 }
