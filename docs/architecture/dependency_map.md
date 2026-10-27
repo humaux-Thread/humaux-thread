@@ -555,9 +555,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
-- reads `private.code_active_snapshots`
-- reads `private.code_files`
-- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -881,6 +878,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.resolve_user_reasoning_admission`
 - executes `ops.reasoning_health_observation_reject_mutation`
 - executes `ops.reasoning_model_call_validate`
+- executes `private.memory_in_project`
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
@@ -3298,9 +3296,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
-- reads `private.code_active_snapshots`
-- reads `private.code_files`
-- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -5600,7 +5595,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
@@ -6017,6 +6011,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -6522,15 +6517,6 @@ executed by:
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
-### `control.repositories`
-read by:
-- (no process): `adapters::tests::facet_contract`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
 ### `control.resolve_contribution_deidentify_shadow`
 read by:
 
@@ -6745,7 +6731,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -6772,6 +6757,7 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -6925,7 +6911,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
@@ -7001,7 +6986,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7031,7 +7015,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -7042,6 +7025,7 @@ written by:
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -8619,37 +8603,6 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
-### `private.code_active_snapshots`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
-### `private.code_files`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
-### `private.code_snapshots`
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
 ### `private.comment_only`
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8812,6 +8765,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
 - (no process): `adapters::tests::relation_kernel`
@@ -9249,6 +9203,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -9752,6 +9707,15 @@ written by:
 
 executed by:
 
+### `private.memory_in_project`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::memory_in_project`
+- process(cargo-xtask): `xtask::architecture_check`
+
 ### `private.memory_project_revocations`
 read by:
 - (no process): `adapters::tests::memory_attribution`
@@ -9761,6 +9725,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 
 executed by:
 
@@ -9775,6 +9740,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
@@ -9927,6 +9893,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::note_history`
@@ -12057,7 +12024,6 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
-- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
@@ -12071,6 +12037,7 @@ executed by:
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::note_put`
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
@@ -12192,7 +12159,6 @@ executed by:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12213,6 +12179,7 @@ executed by:
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::note_history`
 - `adapters::tests::note_put`
@@ -12293,6 +12260,7 @@ executed by:
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::maintenance_doors`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
@@ -12358,6 +12326,7 @@ executed by:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
@@ -12864,7 +12833,6 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13397,7 +13365,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13418,6 +13385,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13592,7 +13560,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13632,6 +13599,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13723,7 +13691,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13744,6 +13711,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13785,7 +13753,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13821,6 +13788,7 @@ modules naming it:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -17352,15 +17320,6 @@ services (computed):
 default run:
 - PostgreSQL
 
-### `crates/adapters/tests/code_rls.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
 ### `crates/adapters/tests/confirm_token_retention.rs`
 db-bound (default run): yes
 
@@ -17736,6 +17695,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/memory_evidence_grounding.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/memory_in_project.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -18600,8 +18568,8 @@ default run:
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census

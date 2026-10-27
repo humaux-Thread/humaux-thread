@@ -7,8 +7,10 @@
 //!   and the only producer of PROJECTION_INVISIBLE_LOSS / PROJECTION_LAG, composed loss-then-lag (ADR-0057 D-E);
 //!   PendingEnvelope::finish is the only path to both final retrieval metrics, a dropped pending records neither
 //!   (ADR-0061 D-C); sparse_lane_unavailable is the only producer of SPARSE_LANE_UNAVAILABLE and returns it with the
-//!   Failed lane status, so the two are never reported apart (ADR-0083 D-C)]
-//! Spec: §23; §23.1; §41.2; ADR-0057; ADR-0061 D-C; ADR-0083 D-C
+//!   Failed lane status, so the two are never reported apart (ADR-0083 D-C); totals is the only constructor of Totals
+//!   and reads ExactOutcome's fields alone, never a rendered or body length, so Exact needs the enumeration report and
+//!   a semantic or facet class never yields a total (ADR-0110 D-C, G-M13-3)]
+//! Spec: §22.0; §22.1; §23; §23.1; §41.2; ADR-0057; ADR-0061 D-C; ADR-0083 D-C; ADR-0110 D-C
 //!
 //! Assembles the five blocks
 //! (`pipeline` / `completeness` / `provenance` / `freshness` / `grounding`) and, most
@@ -601,6 +603,70 @@ pub struct ExactOutcome {
     /// 全部」". `Some(returned)` when the census did enumerate before a later trigger (broken
     /// ledger, lane failure) blocked the class; `None` when nothing was ever counted.
     pub known_lower_bound: Option<u64>,
+}
+
+/// ADR-0110 D-C / G-M13-3: the totals one answer may state, derived from its [`ExactOutcome`] alone.
+/// Not an error enum and not serialized here: M26 renders it, and [`totals`] is its only constructor.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Totals {
+    /// `class == exact` with its enumeration report (§22.0: class and predicate share one source).
+    Exact {
+        /// The census count over the enumerable scope (§22.1).
+        total: u64,
+        /// Items returned from that scope.
+        returned: u64,
+        /// `total - returned`.
+        omitted: u64,
+        /// Whether the answer was cut short of `total`.
+        truncated: bool,
+    },
+    /// `cannot_establish` with a census lower bound: at least `n`, not proven to be all (§22.4).
+    AtLeast {
+        /// `known_lower_bound` verbatim.
+        n: u64,
+    },
+    /// No count may be stated: the class is not exact, or an exact claim lacks its report (§22.1).
+    Unknown {
+        /// The outcome's class, so the caller can say why no total exists.
+        class: CompletenessClassWire,
+        /// The outcome's `cannot_establish` reason, when it has one.
+        reason: Option<CannotEstablishReasonWire>,
+    },
+    /// A point read with no enumerable scope (memory.get): there is nothing to count.
+    NotApplicable,
+}
+
+/// The one constructor of [`Totals`] (ADR-0110 D-C; xtask G-M13-3 pins it to this fn).
+///
+/// `None` is a point read with no enumerable scope (memory.get) and yields [`Totals::NotApplicable`].
+/// `Exact` needs `class == exact` and an enumeration report with a predicate id (§22.0), else the
+/// outcome is `Unknown`, never `Exact`; `AtLeast` comes only from `known_lower_bound`; a semantic or
+/// facet class is `Unknown`, because a semantic count is not a total (§22.1). Counts are read from
+/// the outcome's own fields, never from a rendered or body length.
+#[must_use]
+pub fn totals(outcome: Option<&ExactOutcome>) -> Totals {
+    let Some(o) = outcome else {
+        return Totals::NotApplicable;
+    };
+    match (o.class, o.exact.as_ref(), o.known_lower_bound) {
+        (CompletenessClassWire::Exact, Some(r), _) if !r.predicate_id.is_empty() => {
+            // checked: `returned > total` is a corrupt report and falls through to `Unknown`.
+            if let Some(omitted) = r.total.checked_sub(r.returned) {
+                return Totals::Exact {
+                    total: r.total,
+                    returned: r.returned,
+                    omitted,
+                    truncated: r.truncated,
+                };
+            }
+        }
+        (CompletenessClassWire::CannotEstablish, _, Some(n)) => return Totals::AtLeast { n },
+        _ => {}
+    }
+    Totals::Unknown {
+        class: o.class,
+        reason: o.reason,
+    }
 }
 
 /// Borrowed facts required to produce one final, metric-qualified completeness outcome.
@@ -3718,5 +3784,178 @@ mod a2_point_tests {
         let out = build_projection_block(&ledger_of(reads, 12, 6, 0, 0), Some(6), LAG);
         assert_eq!(out.value.completeness_ratio, Some(0.5));
         assert!(!out.value.current, "open_gaps > 0");
+    }
+}
+
+/// ADR-0110 D-C / G-M13-3: [`totals`] maps `ExactOutcome` fields only. The semantic test names the fault that
+/// turns it red: a `SemanticBounded` arm that builds `Totals::Exact` from the report's `returned`.
+#[cfg(test)]
+mod totals_tests {
+    use super::*;
+
+    fn report(predicate_id: &str, total: u64, returned: u64, truncated: bool) -> ExactReport {
+        ExactReport {
+            predicate_id: predicate_id.to_string(),
+            total,
+            returned,
+            coverage: 1.0,
+            truncated,
+            excluded_secret: 0,
+        }
+    }
+
+    fn outcome(
+        class: CompletenessClassWire,
+        reason: Option<CannotEstablishReasonWire>,
+        exact: Option<ExactReport>,
+        known_lower_bound: Option<u64>,
+    ) -> ExactOutcome {
+        ExactOutcome {
+            class,
+            reason,
+            exact,
+            known_lower_bound,
+        }
+    }
+
+    #[test]
+    fn totals_of_a_point_read_is_not_applicable() {
+        assert_eq!(totals(None), Totals::NotApplicable);
+    }
+
+    #[test]
+    fn totals_exact_with_report_carries_the_census_counts() {
+        let o = outcome(
+            CompletenessClassWire::Exact,
+            None,
+            Some(report("rejected_decisions_v1", 17, 10, true)),
+            None,
+        );
+        assert_eq!(
+            totals(Some(&o)),
+            Totals::Exact {
+                total: 17,
+                returned: 10,
+                omitted: 7,
+                truncated: true,
+            }
+        );
+    }
+
+    #[test]
+    fn totals_exact_fully_returned_omits_nothing() {
+        let o = outcome(
+            CompletenessClassWire::Exact,
+            None,
+            Some(report("rejected_decisions_v1", 17, 17, false)),
+            None,
+        );
+        assert_eq!(
+            totals(Some(&o)),
+            Totals::Exact {
+                total: 17,
+                returned: 17,
+                omitted: 0,
+                truncated: false,
+            }
+        );
+    }
+
+    /// §22.0: `class=exact` without a report is an invariant violation, so it is never an `Exact` total.
+    #[test]
+    fn totals_exact_without_a_report_is_unknown() {
+        let o = outcome(CompletenessClassWire::Exact, None, None, Some(5));
+        assert_eq!(
+            totals(Some(&o)),
+            Totals::Unknown {
+                class: CompletenessClassWire::Exact,
+                reason: None,
+            }
+        );
+    }
+
+    #[test]
+    fn totals_exact_with_an_empty_predicate_id_is_unknown() {
+        let o = outcome(
+            CompletenessClassWire::Exact,
+            None,
+            Some(report("", 17, 17, false)),
+            None,
+        );
+        assert_eq!(
+            totals(Some(&o)),
+            Totals::Unknown {
+                class: CompletenessClassWire::Exact,
+                reason: None,
+            }
+        );
+    }
+
+    /// A corrupt report (`returned > total`) must not panic or wrap: it falls through to `Unknown`.
+    #[test]
+    fn totals_exact_with_returned_above_total_is_unknown() {
+        let o = outcome(
+            CompletenessClassWire::Exact,
+            None,
+            Some(report("rejected_decisions_v1", 3, 5, false)),
+            None,
+        );
+        assert_eq!(
+            totals(Some(&o)),
+            Totals::Unknown {
+                class: CompletenessClassWire::Exact,
+                reason: None,
+            }
+        );
+    }
+
+    #[test]
+    fn totals_cannot_establish_with_a_lower_bound_is_at_least() {
+        let o = outcome(
+            CompletenessClassWire::CannotEstablish,
+            Some(CannotEstablishReasonWire::LedgerNotClosed),
+            None,
+            Some(4),
+        );
+        assert_eq!(totals(Some(&o)), Totals::AtLeast { n: 4 });
+    }
+
+    #[test]
+    fn totals_cannot_establish_without_a_lower_bound_is_unknown_with_its_reason() {
+        let o = outcome(
+            CompletenessClassWire::CannotEstablish,
+            Some(CannotEstablishReasonWire::PredicateNotEnumerable),
+            None,
+            None,
+        );
+        assert_eq!(
+            totals(Some(&o)),
+            Totals::Unknown {
+                class: CompletenessClassWire::CannotEstablish,
+                reason: Some(CannotEstablishReasonWire::PredicateNotEnumerable),
+            }
+        );
+    }
+
+    /// §22.1: a semantic count is not a total. Even an outcome that carries a report with `returned > 0` and a lower
+    /// bound yields `Unknown` for the semantic and facet classes, never `Exact` or `AtLeast`.
+    #[test]
+    fn totals_semantic_and_facet_classes_are_never_exact_or_at_least() {
+        for class in [
+            CompletenessClassWire::SemanticBounded,
+            CompletenessClassWire::FacetComplete,
+        ] {
+            let plain = outcome(class, None, None, None);
+            let leaky = outcome(class, None, Some(report("p", 17, 5, true)), Some(5));
+            for o in [plain, leaky] {
+                assert_eq!(
+                    totals(Some(&o)),
+                    Totals::Unknown {
+                        class,
+                        reason: None,
+                    }
+                );
+            }
+        }
     }
 }

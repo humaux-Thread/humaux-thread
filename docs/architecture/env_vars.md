@@ -1748,7 +1748,6 @@ processes:
 - process(humaux-maintenance)
 
 modules:
-- `adapters::tests::code_rls`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::provider_budget`
@@ -5867,7 +5866,6 @@ modules:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -5907,6 +5905,7 @@ modules:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
