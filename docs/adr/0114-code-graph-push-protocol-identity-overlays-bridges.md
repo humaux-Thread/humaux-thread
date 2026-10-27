@@ -34,6 +34,7 @@ stream).
 snapshot_id)`, symbols `(tenant, snapshot_id, file_id)`, edges `(…, from_symbol_id)` / `(…, to_symbol_id)`). FORCE RLS: tenant predicate AND repository
 visible; `worktree_overlays` retires (D-H). Closed sets are CHECK **and** Rust enum (§78.2): `edge_kind` = §27's six, `evidence_level` {syntax_candidate,
 semantic_resolved, runtime_observed}, kind {COMMIT, WORKTREE}, state {BUILDING, READY, FAILED, EXPIRED} (note D2, :61-68; lead 03b9aca9).
+Amendment (M16-3): every parsed file has one file-scope MODULE symbol; it is the from end of top-level IMPORTS/REFERENCES, so from_symbol_id is NOT NULL.
 ### D-C  Snapshot identity is one canonical digest
 `identity_sha256` covers repository_id, kind, commit_sha (NULL for a never-committed tree), dirty_tree_sha256, target_key (triple + sorted features),
 lockfile_sha256, generated_code_sha256 (client-declared paths + hashes), tree_sitter_version, grammar_set (sorted `lang=version`), extractor_version; client

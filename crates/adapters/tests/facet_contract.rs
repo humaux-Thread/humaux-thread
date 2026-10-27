@@ -1,9 +1,9 @@
 //! `adapters::tests::facet_contract` — §78.2 DB<->Rust contract for the §25.4.A(1)/(2) Mandatory facet projection,
 //!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045), the plan catalogue's closed sets
 //!   (G-M04-14, migration 0262), the M07 closed sets, note kinds and epistemic status (G-M07-6, migration 0283), and the
-//!   code-graph closed sets (G-M16-11, migration 0284).
+//!   code-graph closed sets (G-M16-11, migrations 0284 and 0291).
 //! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any)
-//!   r=[control.plan_versions, control.repositories, private.code_snapshots, private.context_bindings, private.memory_applicability, private.memory_records] x=[control.issue_quota_window]];
+//!   r=[control.plan_versions, control.repositories, private.code_edges, private.code_snapshots, private.code_symbols, private.context_bindings, private.memory_applicability, private.memory_records] x=[control.issue_quota_window]];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::applicability, domain::code, domain::context, domain::memory, domain::note, domain::plan, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [judges the expression the database computes (pg_get_expr), round-trips both closed label sets by set
@@ -35,7 +35,9 @@
 //! Read-only: this suite creates nothing and deletes nothing. Three-state per §79.2.
 
 use humaux_domain::applicability::{ApplicabilityScope, ApplicabilityStatus, AssignmentMethod};
-use humaux_domain::code::{RepositoryProvider, SnapshotKind, SnapshotState};
+use humaux_domain::code::{
+    EdgeKind, EvidenceLevel, RepositoryProvider, SnapshotKind, SnapshotState, SymbolKind,
+};
 use humaux_domain::context::{REGISTRY, SelectorId};
 use humaux_domain::memory::{EpistemicStatus, MandatoryContextFacet, MemoryType};
 use humaux_domain::note::NoteKind;
@@ -522,30 +524,56 @@ fn table_check_def(client: &mut Client, table: &str, conname: &str) -> String {
         .get(0)
 }
 
-/// G-M16-11 / §78.2: snapshot kind, snapshot state and repository provider equal their live CHECK lists, item by item,
-/// and every DB literal round-trips through the Rust enum. Fault: a CHECK literal with no Rust variant (or the
-/// reverse) ⇒ the sets differ ⇒ red.
+/// The Rust label a code-graph CHECK literal parses to and prints back, by the CHECK that carries it.
+fn code_round_trip(conname: &str, label: &str) -> Option<&'static str> {
+    match conname {
+        "code_snapshots_kind_check" => {
+            SnapshotKind::from_db_str(label).map(SnapshotKind::as_db_str)
+        }
+        "code_snapshots_state_check" => {
+            SnapshotState::from_db_str(label).map(SnapshotState::as_db_str)
+        }
+        "code_symbols_kind_check" => SymbolKind::from_db_str(label).map(SymbolKind::as_db_str),
+        "code_edges_kind_check" => EdgeKind::from_db_str(label).map(EdgeKind::as_db_str),
+        "code_edges_evidence_level_check" => {
+            EvidenceLevel::from_db_str(label).map(EvidenceLevel::as_db_str)
+        }
+        _ => RepositoryProvider::from_db_str(label).map(RepositoryProvider::as_db_str),
+    }
+}
+
+/// G-M16-11 / §78.2: snapshot kind and state, repository provider, symbol kind, edge kind and evidence level equal their
+/// live CHECK lists, item by item, and every DB literal round-trips through the Rust enum. Fault: a CHECK literal with no
+/// Rust variant (or the reverse) ⇒ the sets differ ⇒ red.
 #[test]
 fn g_m16_11_code_closed_sets_equal_db_checks() {
     let Some(mut client) = client() else { return };
-    let present: bool = client
-        .query_one(
-            "SELECT to_regclass('private.code_snapshots') IS NOT NULL",
-            &[],
-        )
-        .expect("code snapshot table probe")
-        .get(0);
-    if !present {
-        skip_or_fail(
-            NAME,
-            "missing object: private.code_snapshots — run `cargo xtask migrate` (migrations/0284_code_snapshots.sql)",
-            ExternalDep::Postgres,
-        );
-        return;
+    for (table, migration) in [
+        ("private.code_snapshots", "0284_code_snapshots"),
+        ("private.code_symbols", "0291_code_symbols_edges"),
+        ("private.code_edges", "0291_code_symbols_edges"),
+    ] {
+        let present: bool = client
+            .query_one("SELECT to_regclass($1) IS NOT NULL", &[&table])
+            .expect("code table probe")
+            .get(0);
+        if !present {
+            skip_or_fail(
+                NAME,
+                &format!(
+                    "missing object: {table} — run `cargo xtask migrate` (migrations/{migration}.sql)"
+                ),
+                ExternalDep::Postgres,
+            );
+            return;
+        }
     }
     let kinds = SnapshotKind::ALL.map(SnapshotKind::as_db_str);
     let states = SnapshotState::ALL.map(SnapshotState::as_db_str);
     let providers = RepositoryProvider::ALL.map(RepositoryProvider::as_db_str);
+    let symbol_kinds = SymbolKind::ALL.map(SymbolKind::as_db_str);
+    let edge_kinds = EdgeKind::ALL.map(EdgeKind::as_db_str);
+    let levels = EvidenceLevel::ALL.map(EvidenceLevel::as_db_str);
     for (table, conname, wires) in [
         (
             "private.code_snapshots",
@@ -562,21 +590,27 @@ fn g_m16_11_code_closed_sets_equal_db_checks() {
             "repositories_provider_check",
             providers.as_slice(),
         ),
+        (
+            "private.code_symbols",
+            "code_symbols_kind_check",
+            symbol_kinds.as_slice(),
+        ),
+        (
+            "private.code_edges",
+            "code_edges_kind_check",
+            edge_kinds.as_slice(),
+        ),
+        (
+            "private.code_edges",
+            "code_edges_evidence_level_check",
+            levels.as_slice(),
+        ),
     ] {
         let literals = quoted_literals(&table_check_def(&mut client, table, conname));
         assert_same_closed_set(conname, &literals, wires);
         for label in literals {
-            let round_trip = match conname {
-                "code_snapshots_kind_check" => {
-                    SnapshotKind::from_db_str(&label).map(SnapshotKind::as_db_str)
-                }
-                "code_snapshots_state_check" => {
-                    SnapshotState::from_db_str(&label).map(SnapshotState::as_db_str)
-                }
-                _ => RepositoryProvider::from_db_str(&label).map(RepositoryProvider::as_db_str),
-            };
             assert_eq!(
-                round_trip,
+                code_round_trip(conname, &label),
                 Some(label.as_str()),
                 "G-M16-11: DB-to-Rust round trip"
             );
@@ -585,6 +619,9 @@ fn g_m16_11_code_closed_sets_equal_db_checks() {
     assert_eq!(SnapshotKind::from_db_str("commit"), None);
     assert_eq!(SnapshotState::from_db_str("ARCHIVED"), None);
     assert_eq!(RepositoryProvider::from_db_str("GITHUB"), None);
+    assert_eq!(SymbolKind::from_db_str("function"), None);
+    assert_eq!(EdgeKind::from_db_str("CALLED"), None);
+    assert_eq!(EvidenceLevel::from_db_str("precise"), None);
 }
 
 /// The definition of one migration-0283 CHECK of `private.memory_records`, or the §57.1 `not_applicable` that names that
