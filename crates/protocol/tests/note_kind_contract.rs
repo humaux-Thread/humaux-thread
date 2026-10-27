@@ -4,8 +4,9 @@
 //! Called-by: [cargo-test]
 //! Invariants: [every `contracts/mcp/*.json` is scanned at test time; the files holding a note-kind site and their site
 //!   counts are pinned as one map, so a new file with a note-kind enum, or a renamed key dropping out of one, fails
-//!   until the map names it; each site's enum equals `NoteKind::ALL` wire strings in order]
-//! Spec: §78.2; ADR-0067 D-D, D-G
+//!   until the map names it; each site's enum equals `NoteKind::ALL` wire strings in order; the `note_kinds` filter's
+//!   `maxItems` equals `NoteKind::ALL.len()` (its items are unique, so it is the number of distinct kinds)]
+//! Spec: §78.2; ADR-0067 D-D, D-G; ADR-0124
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -27,6 +28,13 @@ fn note_kind_enums(value: &Value, out: &mut Vec<Vec<String>>) {
         Value::Object(map) => {
             for (key, child) in map {
                 if key == "note_kind" || key == "note_kinds" {
+                    if key == "note_kinds" {
+                        assert_eq!(
+                            child["maxItems"].as_u64(),
+                            Some(NoteKind::ALL.len() as u64),
+                            "`note_kinds` maxItems must be the number of distinct kinds: {child}"
+                        );
+                    }
                     let site = child.get("items").unwrap_or(child);
                     let values = site["enum"]
                         .as_array()

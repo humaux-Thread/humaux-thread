@@ -2,8 +2,8 @@
 //! Depends-on: crates=[async-trait, axum, humaux-domain, rmcp, serde, serde_json, uuid]; services=[]; env=[];
 //!   modules=[domain::error, protocol::error_map]
 //! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, tests]
-//! Invariants: []
-//! Spec: none
+//! Invariants: [Retry-After is restricted to limiter capacity refusals (§67.2; ADR-0100)]
+//! Spec: Baseline §67.2; ADR-0100
 //!
 //! This module owns the rmcp/Axum boundary.  It deliberately exposes a
 //! small application port instead of routing directly into a domain handler:
@@ -17,7 +17,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
 };
 
@@ -26,7 +26,7 @@ use axum::{
     Router,
     body::{Body, to_bytes},
     extract::{ConnectInfo, Request, State},
-    http::{HeaderMap, StatusCode, request::Parts},
+    http::{HeaderMap, HeaderValue, StatusCode, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::any_service,
@@ -185,9 +185,15 @@ pub struct McpHttpContext {
     authorization: Option<String>,
     forwarded: Option<String>,
     raw_arguments: Option<Arc<RawValue>>,
+    capacity_denied: Arc<AtomicBool>,
 }
 
 impl McpHttpContext {
+    /// Mark a limiter capacity refusal for the §67.2 / ADR-0100 transport retry hint.
+    pub fn mark_capacity_denied(&self) {
+        self.capacity_denied.store(true, Ordering::Release);
+    }
+
     pub fn request_id(&self) -> Uuid {
         self.request_id
     }
@@ -372,6 +378,7 @@ struct BoundaryConfig {
 struct McpRequestState {
     request_id: Uuid,
     raw_arguments: Option<Arc<RawValue>>,
+    capacity_denied: Arc<AtomicBool>,
     http_status: Arc<AtomicU16>,
 }
 
@@ -418,10 +425,12 @@ async fn native_request_boundary(
         .and_then(|request| request.params.and_then(|params| params.arguments))
         .map(Arc::from);
     let status = Arc::new(AtomicU16::new(StatusCode::OK.as_u16()));
+    let capacity_denied = Arc::new(AtomicBool::new(false));
     let request_state = McpRequestState {
         request_id: Uuid::now_v7(),
         raw_arguments,
         http_status: status.clone(),
+        capacity_denied: capacity_denied.clone(),
     };
     let context = match http_context(&parts, &request_state) {
         Ok(context) => context,
@@ -438,7 +447,7 @@ async fn native_request_boundary(
             code.as_str(),
         )
             .into_response();
-        return with_capacity_retry(response);
+        return with_capacity_retry(response, &capacity_denied);
     }
     if !has_required_native_metadata(&bytes) {
         return StatusCode::BAD_REQUEST.into_response();
@@ -450,15 +459,18 @@ async fn native_request_boundary(
     if let Ok(status) = StatusCode::from_u16(status.load(Ordering::Acquire)) {
         *response.status_mut() = status;
     }
-    with_capacity_retry(response)
+    with_capacity_retry(response, &capacity_denied)
 }
 
 // §67.2 / ADR-0100: capacity refusals at both protocol stages carry a bounded retry hint.
-fn with_capacity_retry(mut response: Response) -> Response {
-    if response.status() == StatusCode::SERVICE_UNAVAILABLE {
+fn with_capacity_retry(mut response: Response, capacity_denied: &AtomicBool) -> Response {
+    // ponytail: fixed 1 s capacity hint; use limiter recovery estimates when available.
+    if capacity_denied.load(Ordering::Acquire)
+        && response.status() == StatusCode::SERVICE_UNAVAILABLE
+    {
         response
             .headers_mut()
-            .insert("retry-after", "1".parse().expect("static header"));
+            .insert("retry-after", HeaderValue::from_static("1"));
     }
     response
 }
@@ -590,6 +602,7 @@ fn http_context(parts: &Parts, state: &McpRequestState) -> Result<McpHttpContext
         authorization: single_header(&parts.headers, "authorization")?,
         forwarded: single_header(&parts.headers, "forwarded")?,
         raw_arguments: state.raw_arguments.clone(),
+        capacity_denied: state.capacity_denied.clone(),
     })
 }
 

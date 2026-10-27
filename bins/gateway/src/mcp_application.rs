@@ -1,6 +1,6 @@
 //! `gateway::mcp_application` — Gateway implementation of the native MCP application port.
 //! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid];
-//!   services=[PostgreSQL(role_gateway) r=[control.rate_buckets, private.memory_records]
+//!   services=[PostgreSQL(role_gateway) r=[private.memory_records]
 //!   w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project],
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID,
 //!   HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo,
@@ -3716,12 +3716,6 @@ mod tests {
                 let dsn = handle.gateway_dsn_for_process().to_owned();
                 let forwarded = fixture_forwarded(handle.tenant_id);
                 let barrier = barrier_config();
-                if let Some(forwarded) = forwarded {
-                    // Baseline §73.2 / ADR-0062 E5: the pre-auth bucket of an IPv6 client is its /64.
-                    handle.seed_legacy_system_preauth_bucket(
-                        humaux_adapters::quota_repo::preauth_ip_subject(forwarded.into(), 64),
-                    );
-                }
                 let runtime_handle = handle.rt.handle().clone();
                 let first_only = runtime_handle.block_on(async {
                     // dep: PostgreSQL(role_gateway) — test fixture pool for a dispatch-table integration test
@@ -3747,24 +3741,6 @@ mod tests {
                     first_only["result"]["structuredContent"]["code"], "NOT_FOUND",
                     "a first-only A authorization cannot read the B parent"
                 );
-                if let Some(forwarded) = forwarded {
-                    let row = handle
-                        .admin
-                        .query_one(
-                            "SELECT capacity, refill_per_second FROM control.rate_buckets \
-                         WHERE tenant_id='00000000-0000-0000-0000-000000000000' \
-                           AND subject_kind='ip' AND subject_id=$1 \
-                           AND operation='mcp' AND bucket_key='preauth'",
-                            &[&humaux_adapters::quota_repo::preauth_ip_subject(
-                                forwarded.into(),
-                                64,
-                            )],
-                        )
-                        .unwrap();
-                    // ADR-0100 / §72.3: the retired PG hot path must leave this fixture's seed policy unchanged.
-                    assert_eq!(row.get::<_, i64>(0), 100);
-                    assert_eq!(row.get::<_, i64>(1), 100);
-                }
                 let first = runtime_handle.block_on(async {
                     // dep: PostgreSQL(role_gateway) — test fixture pool for a dispatch-table integration test
                     let runtime = RuntimeDbPool::connect(&dsn).await.unwrap();

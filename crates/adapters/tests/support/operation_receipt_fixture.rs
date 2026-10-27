@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
 //!   services=[PostgreSQL(owner) w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
 //!   control.memberships, control.operation_receipts, control.private_reasoning_domains, control.quota_windows,
-//!   control.rate_buckets, control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
+//!   control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
 //!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.retrieval_query_log, ops.selection_snapshot_items,
 //!   ops.selection_snapshots,
 //!   private.context_bindings, private.continuity_facet_evidence_links, private.continuity_facet_memory_links,
@@ -106,7 +106,6 @@ pub struct Handle {
     pub auth: AuthorizationScope,
     extra_user_ids: Vec<Uuid>,
     extra_workspace_ids: Vec<Uuid>,
-    system_preauth_subject_ids: Vec<String>,
 }
 
 pub struct Fixture;
@@ -300,7 +299,6 @@ impl DbIntegrationFixture for Fixture {
             auth,
             extra_user_ids: Vec::new(),
             extra_workspace_ids: Vec::new(),
-            system_preauth_subject_ids: Vec::new(),
         })
     }
 }
@@ -410,13 +408,6 @@ impl Drop for Handle {
                 txn.execute(statement, &[&self.tenant_id])?;
             }
             txn.execute(
-                "DELETE FROM control.rate_buckets \
-                 WHERE tenant_id='00000000-0000-0000-0000-000000000000' \
-                   AND subject_kind='ip' AND subject_id=ANY($1) \
-                   AND operation='mcp' AND bucket_key='preauth'",
-                &[&self.system_preauth_subject_ids],
-            )?;
-            txn.execute(
                 "DELETE FROM private.memory_evidence WHERE memory_id IN \
                  (SELECT memory_id FROM private.memory_records WHERE tenant_id=$1)",
                 &[&self.tenant_id],
@@ -437,7 +428,6 @@ impl Drop for Handle {
             for statement in [
                 "DELETE FROM control.audit_events WHERE tenant_id=$1",
                 "DELETE FROM control.usage_reservations WHERE tenant_id=$1",
-                "DELETE FROM control.rate_buckets WHERE tenant_id=$1",
                 "DELETE FROM control.quota_windows WHERE tenant_id=$1",
                 "DELETE FROM control.entitlement_snapshots WHERE tenant_id=$1",
                 "DELETE FROM control.api_keys WHERE tenant_id=$1",
@@ -487,16 +477,6 @@ impl Drop for Handle {
 }
 
 impl Handle {
-    pub fn seed_legacy_system_preauth_bucket(&mut self, subject_id: String) {
-        self.admin.execute(
-            "INSERT INTO control.rate_buckets(tenant_id,subject_kind,subject_id,operation,bucket_key,capacity,tokens,refill_per_second,updated_at) \
-             VALUES('00000000-0000-0000-0000-000000000000','ip',$1,'mcp','preauth',100,0,100,clock_timestamp()-interval '2 seconds') \
-             ON CONFLICT (tenant_id,subject_kind,subject_id,operation,bucket_key) DO UPDATE \
-             SET capacity=EXCLUDED.capacity,tokens=EXCLUDED.tokens,refill_per_second=EXCLUDED.refill_per_second,updated_at=EXCLUDED.updated_at",
-            &[&subject_id],
-        ).unwrap();
-        self.system_preauth_subject_ids.push(subject_id);
-    }
     /// Tracks only fixture-owned identities so teardown also works after an assertion panic.
     pub fn seed_peer_user(&mut self) -> Uuid {
         let user_id = Uuid::new_v4();

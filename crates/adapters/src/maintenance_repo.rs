@@ -1,5 +1,5 @@
 //! `adapters::maintenance_repo` — the resident maintenance daemon's own SQL (ADR-0062): the cross-tenant tenant-id
-//!   page every task walks, three of the four owner purge doors (snapshots, rate buckets, terminal jobs; the
+//!   page every task walks, two of the three owner purge doors (snapshots, terminal jobs; the
 //!   confirm-token door lives with its table in `confirm_token_repo::sweep_expired`), the Q-drain reissue door
 //!   (D-N) and the schema-failed distill auto re-drive with its §77 row (D-P). The per-tenant sweeps it drives besides
 //!   live with their tables (`stream_repo::sweep_lost`, `quota_repo::reap_expired`, `quota_repo::renew_period`
@@ -21,7 +21,7 @@
 //!   projection.private_memory_points, projection.rebuild_tickets, projection.stream_log]
 //!   w=[control.partition_registry, ops.backup_receipts, ops.backup_sets, ops.restore_drills, ops.restore_witnesses,
 //!   ops.wal_archive_failures] x=[
-//!   control.maintenance_tenant_page, control.purge_idle_rate_buckets, ops.auto_redrive_schema_failed,
+//!   control.maintenance_tenant_page, ops.auto_redrive_schema_failed,
 //!   ops.purge_expired_selection_snapshots, ops.purge_terminal_jobs, projection.reissue_unsettled_tickets],
 //!   PostgreSQL(owner) r=[control.partition_registry, control.retention_policies] x=[control.partition_create_month,
 //!   control.partition_drop, control.partition_drop_check, control.partition_drop_statements,
@@ -108,22 +108,6 @@ pub async fn purge_expired_selection_snapshots(
 ) -> Result<i64, sqlx::Error> {
     // dep: PostgreSQL(role_maintenance) — ops.purge_expired_selection_snapshots (0218 owner purge door)
     let door = sqlx::query_scalar("SELECT ops.purge_expired_selection_snapshots($1)").bind(limit);
-    in_tenant(pool, tenant, door).await
-}
-
-/// ADR-0062 D-I: deletes at most `limit` rate buckets of `tenant` idle for longer than `idle` that would be full now
-/// (a recreated bucket answers exactly as the deleted one would).
-pub async fn purge_idle_rate_buckets(
-    pool: &MaintenanceDbPool,
-    tenant: Uuid,
-    idle: Duration,
-    limit: i32,
-) -> Result<i64, sqlx::Error> {
-    // dep: PostgreSQL(role_maintenance) — control.purge_idle_rate_buckets (0218 owner purge door)
-    let door =
-        sqlx::query_scalar("SELECT control.purge_idle_rate_buckets(make_interval(secs => $1), $2)")
-            .bind(idle.as_secs_f64())
-            .bind(limit);
     in_tenant(pool, tenant, door).await
 }
 
@@ -252,8 +236,6 @@ pub enum MaintenanceTask {
     ConfirmTokens,
     /// [`purge_expired_selection_snapshots`] (D-H).
     Snapshots,
-    /// [`purge_idle_rate_buckets`] (D-I).
-    RateBuckets,
     /// [`purge_terminal_jobs`] (D-J).
     Jobs,
     /// [`reissue_unsettled_tickets`] (D-N).
@@ -268,14 +250,13 @@ pub enum MaintenanceTask {
 
 impl MaintenanceTask {
     /// Every task, in D-C cycle order (the counters' slot order).
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::Lost,
         Self::QuotaReservations,
         Self::QuotaRenewal,
         Self::ProviderBudgets,
         Self::ConfirmTokens,
         Self::Snapshots,
-        Self::RateBuckets,
         Self::Jobs,
         Self::Reissue,
         Self::Redrive,
@@ -292,7 +273,6 @@ impl MaintenanceTask {
             Self::ProviderBudgets => "provider_budgets",
             Self::ConfirmTokens => "confirm_tokens",
             Self::Snapshots => "snapshots",
-            Self::RateBuckets => "rate_buckets",
             Self::Jobs => "jobs",
             Self::Reissue => "reissue",
             Self::Redrive => "redrive",

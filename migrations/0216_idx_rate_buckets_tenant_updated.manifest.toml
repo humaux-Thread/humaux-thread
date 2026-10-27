@@ -11,7 +11,7 @@ select to_regclass('control.rate_buckets_tenant_updated_idx') is null as prechec
 """
 
 postcheck = """
-select coalesce((select indisvalid and indisready and indrelid = 'control.rate_buckets'::regclass
+select coalesce((select indisvalid and indisready and indrelid = to_regclass('control.rate_buckets')
                         and pg_get_indexdef(indexrelid) like '%(tenant_id, updated_at)%' and indpred is null
                    from pg_index where indexrelid = to_regclass('control.rate_buckets_tenant_updated_idx')), false) as postcheck_ok
 """
