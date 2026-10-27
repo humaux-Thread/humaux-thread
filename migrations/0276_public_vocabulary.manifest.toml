@@ -1,0 +1,17 @@
+# §46.1 / ADR-0089 D-E: additive public vocabulary; no serve path yet.
+migration_id = "0276_public_vocabulary"
+class = "EXPAND_CONTRACT"
+precheck = """
+select to_regclass('public.concepts') is null
+ and to_regclass('public.concept_labels') is null
+ and to_regclass('public.concept_relations') is null as precheck_ok
+"""
+postcheck = """
+select count(*)=3 and bool_and(pg_get_userbyid(relowner)='role_migration_owner')
+ and bool_and(has_table_privilege('role_public_worker',oid,'SELECT,INSERT,UPDATE'))
+ and bool_and(not has_table_privilege('role_gateway',oid,'SELECT,INSERT,UPDATE,DELETE'))
+ and bool_and(not has_table_privilege('role_public_worker',oid,'DELETE')) as postcheck_ok
+ from pg_class where oid in (to_regclass('public.concepts'),to_regclass('public.concept_labels'),to_regclass('public.concept_relations'))
+"""
+rollback_or_forward_fix = "Forward fix under ADR-0082. Before deployment only, drop concept_relations, concept_labels, concepts in dependency order."
+backup_restore_requirement = "Standard pre-deploy snapshot; additive DDL, no existing-row rewrite."

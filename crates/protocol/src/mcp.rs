@@ -1,7 +1,7 @@
 //! `protocol::mcp` — Native, stateless MCP-over-HTTP adapter.
 //! Depends-on: crates=[async-trait, axum, humaux-domain, rmcp, serde, serde_json, uuid]; services=[]; env=[];
 //!   modules=[domain::error, protocol::error_map]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, tests]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, protocol::mcp_profile, tests]
 //! Invariants: [Retry-After is restricted to limiter capacity refusals (§67.2; ADR-0100)]
 //! Spec: Baseline §67.2; ADR-0100
 //!

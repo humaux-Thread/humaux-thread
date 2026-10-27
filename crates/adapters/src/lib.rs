@@ -30,6 +30,8 @@ pub mod contribution_reasoner;
 pub mod contribution_repo;
 pub mod contribution_scan;
 pub mod coord_repo;
+/// ADR-0101: guarded project-tree reads and moves (§30).
+pub mod coord_tree_repo;
 pub mod credential_repo;
 pub mod dashscope;
 pub mod disclosure;
@@ -52,6 +54,8 @@ pub mod memory_repo;
 pub mod model_call_ledger;
 pub mod note_repo;
 pub mod oauth_repo;
+/// ADR-0115 / C-M17-2: the `ObjectStore` port, typed keys and the filesystem temp store.
+pub mod object_store;
 pub mod openbao;
 pub mod operation_receipt;
 pub mod placement_repo;
