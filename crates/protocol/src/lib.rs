@@ -12,4 +12,5 @@ pub mod edge;
 pub mod error_map;
 pub mod mcp;
 pub mod mcp_catalog;
+pub mod mcp_profile;
 pub mod rest;
