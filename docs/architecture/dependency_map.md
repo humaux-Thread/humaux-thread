@@ -14125,6 +14125,7 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 - `contracts::mechanism_registry`
 
 ### humaux-contracts → `toml` (normal)
@@ -14132,6 +14133,7 @@ why: parses the embedded feature registry TOML
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 
 ### humaux-contracts → `sha2` (normal)
 why: sha256 digests for hashes, fingerprints and scope_hash
@@ -14725,6 +14727,7 @@ modules naming it:
 - `retrieval::handoff`
 - `retrieval::request`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `humaux-contracts` (normal)
@@ -14732,6 +14735,8 @@ why: typed retrieval config registry entries request.rs assembles against
 
 modules naming it:
 - `retrieval::request`
+- `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `serde_json` (normal)
@@ -14741,6 +14746,7 @@ modules naming it:
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `sha2` (normal)
@@ -18251,6 +18257,13 @@ services (computed):
 
 default run:
 
+### `crates/contracts/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/domain/tests/authority_policy_g59_6.rs`
 db-bound (default run): no
 
@@ -18450,6 +18463,13 @@ services (computed):
 
 default run:
 
+### `crates/retrieval/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/retrieval/tests/planner_predicate_eval.rs`
 db-bound (default run): no
 
@@ -18548,8 +18568,8 @@ default run:
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
