@@ -28,7 +28,7 @@ const SNAPSHOT: &str = "snapshot-1";
 const PRINCIPAL: &str = "018f0000-0000-7000-8000-000000000001";
 const OTHER_PRINCIPAL: &str = "018f0000-0000-7000-8000-000000000002";
 /// The two budgets the registry carries today (8 KiB and 24 KiB); `budgets_come_from_the_registry` pins them.
-const OPS: [&str; 2] = ["remember.put", "memory.get"];
+const OPS: [&str; 2] = ["memory.pin", "memory.get"];
 /// Larger than the hard cap, for renderers that can never fit.
 const OVERSIZE: usize = 100_000;
 
@@ -534,7 +534,7 @@ fn g_m26_8_every_rejection_is_the_same_error() {
         (
             "other op",
             token.clone(),
-            bind(PRINCIPAL, "remember.put", &args),
+            bind(PRINCIPAL, "memory.pin", &args),
             NOW,
         ),
         (
