@@ -18533,8 +18533,8 @@ default run:
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
@@ -18543,7 +18543,6 @@ default run:
 - `crates/retrieval/tests/planner_predicate_eval.rs:223` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:355` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/testkit/Cargo.toml:25` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
-- `xtask/src/architecture_check.rs:6` [table-undeclared] (file) — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
-- `xtask/src/dep_map.rs:12` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
-- `xtask/src/dep_map.rs:13` [table-write] (file) — unit-test fixtures spell write statements in strings
-- `xtask/src/dep_map.rs:14` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read
+- `xtask/src/dep_map.rs:11` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
+- `xtask/src/dep_map.rs:12` [table-write] (file) — unit-test fixtures spell write statements in strings
+- `xtask/src/dep_map.rs:13` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read
