@@ -1,13 +1,15 @@
 //! `protocol::mcp_catalog` — Canonical MCP tool schema and operation registry (§33.1 / §33.10).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests, xtask::architecture_check]
-//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1)]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_profile, protocol::page, tests, xtask::architecture_check]
+//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1); every operation's budget_bytes is non-zero and at most the manifest's budget_cap_bytes, which `budget_cap_bytes()` hands to protocol::page]
 //! Spec: §33; §33.1; §33.10
 //!
 //! The embedded schemas own enforced scopes; registry.scope must equal branch.required_scope (§33).
 //! The embedded `contracts/mcp` documents own operation and BMO metadata. This adapter turns
 //! their validated JSON into protocol types; it never authenticates, checks entitlement, or logs args.
+//! `Operation::input_branch` and `Operation::tool_name` are the read-only accessors `protocol::mcp_profile`
+//! uses to derive the flat tool profile (M26 D3); they add no second source for any schema.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -97,6 +99,32 @@ pub struct Operation {
     pub relay_critical: bool,
 }
 
+impl Operation {
+    /// The wire tool this operation belongs to (§33.1).
+    pub fn tool_name(&self) -> Result<ToolName, ErrorCode> {
+        parse_tool(&self.tool).ok_or(ErrorCode::InvalidInput)
+    }
+
+    /// Resolves [`Self::input_schema`] (`<file>#/oneOf/<n>`) to its branch index and JSON. Registry load
+    /// already proved the pointer shape and that the index equals the manifest position (§33.1; M26 D2).
+    pub fn input_branch(&self) -> Result<(usize, Value), ErrorCode> {
+        let (file, pointer) = self
+            .input_schema
+            .split_once('#')
+            .ok_or(ErrorCode::InvalidInput)?;
+        let index = pointer
+            .strip_prefix("/oneOf/")
+            .and_then(|index| index.parse::<usize>().ok())
+            .ok_or(ErrorCode::InvalidInput)?;
+        let document = json_document(schema_source(file).ok_or(ErrorCode::InvalidInput)?)?;
+        let branch = document
+            .pointer(pointer)
+            .cloned()
+            .ok_or(ErrorCode::InvalidInput)?;
+        Ok((index, branch))
+    }
+}
+
 /// The accounting meaning selected by a fully validated canonical operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeterKind {
@@ -155,6 +183,7 @@ impl OperationDescriptor {
 pub struct CanonicalCatalog {
     tools: BTreeMap<ToolName, ToolEntry>,
     operations: BTreeMap<String, Operation>,
+    budget_cap_bytes: u64,
 }
 
 struct ToolEntry {
@@ -208,6 +237,12 @@ impl CanonicalCatalog {
     /// Typed entries in deterministic internal-key order (M26 D2; §33.1).
     pub fn operations(&self) -> &BTreeMap<String, Operation> {
         &self.operations
+    }
+
+    /// Hard ceiling in bytes for any serialized tool result: the manifest's `budget_cap_bytes` (M26 D7; §33.5).
+    /// Every operation's `budget_bytes` was validated to be at most this when the catalog loaded.
+    pub fn budget_cap_bytes(&self) -> u64 {
+        self.budget_cap_bytes
     }
 
     /// Converts the exact same source into the MCP SDK-neutral advertised
@@ -266,6 +301,7 @@ impl CanonicalCatalog {
             return Err(ErrorCode::InvalidInput);
         }
         let operations = registry_from_manifest(&manifest)?;
+        let budget_cap_bytes = manifest.budget_cap_bytes;
         let mut tools = BTreeMap::new();
         for item in manifest.tools {
             let tool = parse_tool(&item.name).ok_or(ErrorCode::InvalidInput)?;
@@ -317,7 +353,11 @@ impl CanonicalCatalog {
         if tools.len() != 8 {
             return Err(ErrorCode::InvalidInput);
         }
-        Ok(Self { tools, operations })
+        Ok(Self {
+            tools,
+            operations,
+            budget_cap_bytes,
+        })
     }
 }
 
@@ -449,7 +489,8 @@ fn object_schema(schema: Value) -> Result<Map<String, Value>, ErrorCode> {
     schema.as_object().cloned().ok_or(ErrorCode::InvalidInput)
 }
 
-fn validator_for(schema: &Value) -> Result<Validator, ErrorCode> {
+/// The one compile path for registry schemas, shared with `protocol::mcp_profile` (formats are enforced).
+pub(crate) fn validator_for(schema: &Value) -> Result<Validator, ErrorCode> {
     jsonschema::draft202012::options()
         .should_validate_formats(true)
         .build(schema)

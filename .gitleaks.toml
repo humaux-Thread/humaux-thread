@@ -60,3 +60,10 @@ targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = ['''^62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb7[5]626$''']
 paths = ['''^deploy/env/values/(retrieval-worker|gateway)\.env$''']
+
+[[allowlists]]
+description = "generic-api-key false positive, history only: the placeholder confirm_token string in the M26-2 flat-profile isolation test, a rejected-field probe that is never a credential (7005769); the test now builds it at runtime"
+condition = "AND"
+targetRules = ["generic-api-key"]
+commits = ["7005769e8d1e373cb51f46387958ae1a1a4cd4cc"]
+paths = ['''^crates/protocol/tests/mcp_profile\.rs$''']
