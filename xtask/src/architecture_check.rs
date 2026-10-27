@@ -23980,6 +23980,56 @@ mod backup_catalog_tests {
         assert_eq!(own_source_count("backup_catalog_", "gate(&root, true),"), 1);
     }
 
+    /// The gate wiring end to end over a fixture tree (M23-2 fix 2): with one D5 row EXCLUDED, G-M23-3b fails naming the
+    /// pin while G-M23-3, which judges completeness only, passes; an all-KNOWLEDGE catalog passes both. r7 deletes the
+    /// `if closure {` wiring in `backup_catalog_gate` and turns this red.
+    #[test]
+    fn backup_catalog_gate_runs_the_d5_pin_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("bc-d5-{}", std::process::id()));
+        fs::create_dir_all(dir.join("docs/architecture")).unwrap();
+        let sections: Vec<(&str, &str, &[&str])> = D5_RESTORE_DEPENDENCIES
+            .iter()
+            .map(|t| (*t, "table", &[] as &[&str]))
+            .collect();
+        fs::write(dir.join(DB_OBJECTS), bc_db(&sections)).unwrap();
+        let catalog = |excluded: &str| {
+            let rows: Vec<(&str, &str)> = D5_RESTORE_DEPENDENCIES
+                .iter()
+                .map(|t| {
+                    (
+                        *t,
+                        if *t == excluded {
+                            BC_EXCLUDED
+                        } else {
+                            BC_KNOWLEDGE
+                        },
+                    )
+                })
+                .collect();
+            bc_catalog(&rows)
+        };
+        fs::write(dir.join(BACKUP_CATALOG), catalog("")).unwrap();
+        for closure in [false, true] {
+            assert_eq!(backup_catalog_gate(&dir, closure), Verdict::Pass);
+        }
+        fs::write(dir.join(BACKUP_CATALOG), catalog("ops.outbox")).unwrap();
+        assert_eq!(
+            backup_catalog_gate(&dir, false),
+            Verdict::Pass,
+            "G-M23-3 judges completeness only"
+        );
+        match backup_catalog_gate(&dir, true) {
+            Verdict::Fail(found) => assert!(
+                found
+                    .iter()
+                    .any(|p| p.starts_with("G-M23-3b: M23 D5 pin") && p.contains("`ops.outbox`")),
+                "{found:?}"
+            ),
+            other => panic!("an EXCLUDED D5 row must fail G-M23-3b, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The D5 pin counts KNOWLEDGE rows and names every entry that is absent or EXCLUDED.
     #[test]
     fn backup_catalog_d5_pin_names_each_missing_or_excluded_entry() {

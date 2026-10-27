@@ -12129,6 +12129,84 @@ written by:
 
 executed by:
 
+### `private.project_subject_relations`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0249_relation_kernel (dynamic DDL)
+
+grants (runtime roles):
+- role_gateway: INSERT
+- role_gateway: SELECT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
+- fk: tenant_id, dst_id -> private.subjects (NOT NULL)
+- fk: tenant_id, src_id -> private.continuity_projects (NOT NULL)
+
+read by:
+- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::relation_kernel`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::project_rollup`
+
+executed by:
+
+### `private.project_task_relations`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0249_relation_kernel (dynamic DDL)
+
+grants (runtime roles):
+- role_gateway: INSERT
+- role_gateway: SELECT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_private_worker: SELECT
+
+foreign keys (outgoing):
+- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
+- fk: tenant_id, dst_id -> coord.tasks (NOT NULL)
+- fk: tenant_id, src_id -> private.continuity_projects (NOT NULL)
+
+read by:
+- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::relation_kernel`
+- (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::attribution_repo`
+
+written by:
+- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::memory_attribution`
+
+executed by:
+
 ### `private.propose_curation_candidate`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -12719,6 +12797,43 @@ written by:
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
 - process(humaux-retrieval-worker): `adapters::subject_repo`
+
+executed by:
+
+### `private.subject_relations`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0249_relation_kernel (dynamic DDL)
+
+grants (runtime roles):
+- role_gateway: INSERT
+- role_gateway: SELECT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
+- fk: tenant_id, dst_id -> private.subjects (NOT NULL)
+- fk: tenant_id, src_id -> private.subjects (NOT NULL)
+
+read by:
+- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::relation_kernel`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::project_rollup`
 
 executed by:
 

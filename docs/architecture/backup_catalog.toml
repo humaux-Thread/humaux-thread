@@ -8,7 +8,8 @@
 # KNOWLEDGE row into a non-KNOWLEDGE one and for any uncovered or stray `set_null`.
 #
 # One `["schema.table"]` row per `kind: table` / `kind: partitioned` section of db_objects.md (partition leaves are never
-# rows: D2 dumps a parent with --table-and-children), grouped by schema, sorted.
+# rows: D2 dumps a parent with --table-and-children), grouped by schema, sorted. `dep-map` also lists a table that a
+# migration creates by dynamic DDL (`created in: <stem> (dynamic DDL)`), so such a table needs its row too.
 #   class    "KNOWLEDGE" | "EXCLUDED"
 #   owner    M01..M29: the module whose design note lists the table as owned data
 #   basis    "<owner source>; <class source>"
@@ -1041,6 +1042,16 @@ class = "KNOWLEDGE"
 owner = "M14"
 basis = "M14:128; D1 principle"
 
+["private.project_subject_relations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0249_relation_kernel (card M29 T05; module_design_M18.md:157 names M29 the owner); D1 private knowledge relations (0249:150 dynamic DDL; served 0271:63)"
+
+["private.project_task_relations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0249_relation_kernel (card M29 T05; module_design_M18.md:157 names M29 the owner); D1 private knowledge relations (0249:150 dynamic DDL; served 0271:63)"
+
 ["private.relations"]
 class = "KNOWLEDGE"
 owner = "M28"
@@ -1056,6 +1067,11 @@ reason = "short-lived query-source log (carries expires_at)"
 class = "KNOWLEDGE"
 owner = "M07"
 basis = "M07:47; D1"
+
+["private.subject_relations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0249_relation_kernel (card M29 T05; module_design_M18.md:157 names M29 the owner); D1 private knowledge relations (0249:150 dynamic DDL; served 0271:63)"
 
 ["private.subject_roles"]
 class = "KNOWLEDGE"

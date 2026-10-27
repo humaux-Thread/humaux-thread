@@ -7,7 +7,8 @@
 //!   unset or unreachable → exit 2 (db_objects.md cannot be checked, a skip is not a pass);
 //!   generated docs are pure functions of the tree and the catalog (sorted, repo-relative, no timestamps, no aggregate counts, one list element per line); each
 //!   table's db_objects.md section lists its outgoing foreign keys with NOT NULL / NULL (ADR-0121 D-A, read by G-M23-3b); a
-//!   generated secret-fixture file never carries a value]
+//!   live table that no migration creates, statically or by dynamic DDL, is the violation `db-object-uncreated` and is never dropped from db_objects.md (G-M23-3);
+//!   a generated secret-fixture file never carries a value]
 //! Spec: Baseline §58; §6.2.2; §78; §79.2; ADR-0050; ADR-0051; ADR-0066 D-T; ADR-0121 D-A
 //! dep-map: allow table-undeclared — unit-test fixtures name schema objects in strings
 //! dep-map: allow table-write — unit-test fixtures spell write statements in strings
@@ -72,6 +73,7 @@ const RULES: &[&str] = &[
     "exemption-grammar",
     "exemption-unused",
     "db-not-at-head",
+    "db-object-uncreated",
     "doc-drift",
 ];
 
@@ -94,6 +96,7 @@ const UNEXEMPTABLE: &[&str] = &[
     "exemption-grammar",
     "exemption-unused",
     "db-not-at-head",
+    "db-object-uncreated",
 ];
 
 // ============================================================================
@@ -3857,12 +3860,69 @@ fn read_catalog(root: &Path, findings: &mut Vec<Finding>) -> Result<Option<Catal
         }
     }
     tx.rollback().map_err(|e| format!("rollback: {e}"))?;
-    let created = created_in(&migrations);
-    objects.retain(|k, _| created.contains_key(k));
+    let created = settle_created(&migrations, &mut objects, findings);
     Ok(Some(Catalog {
         objects,
         created_in: created,
     }))
+}
+
+/// Tables `maintenance::migrate` creates itself (`migrate.rs:87`) before any migration file runs; no migration names them,
+/// and they stay out of `db_objects.md` as they always did.
+const BOOTSTRAP_TABLES: [&str; 1] = ["ops.schema_migrations"];
+
+/// Whether a catalog object is a table the knowledge export must classify (`table` / `partitioned`, never a leaf).
+fn is_table_object(object: &DbObject) -> bool {
+    object.kind == "table" || object.kind.starts_with("partitioned")
+}
+
+/// Dynamic-DDL fallback (ADR-0121 D-A, G-M23-3): the first migration, in order, that holds both `EXECUTE format(` and
+/// `CREATE TABLE` and names the table's bare name as a single-quoted literal, as a template's `VALUES` row does.
+fn dynamic_ddl_created_in<'a>(migrations: &'a [(String, String)], table: &str) -> Option<&'a str> {
+    let literal = format!("'{}'", table.rsplit('.').next().unwrap_or(table));
+    migrations
+        .iter()
+        .find(|(_, sql)| {
+            sql.contains("EXECUTE format(")
+                && sql.contains("CREATE TABLE")
+                && sql.contains(&literal)
+        })
+        .map(|(stem, _)| stem.as_str())
+}
+
+/// The migration that created each kept object. A live table with no static `CREATE TABLE` takes the dynamic-DDL
+/// fallback (`<stem> (dynamic DDL)`); one that neither names is the violation `db-object-uncreated` and stays in
+/// the catalog, so `db_objects.md` and G-M23-3 can see it. Any other kind with no creating migration, such as the
+/// sequence behind an IDENTITY or serial column, is dropped as before.
+fn settle_created(
+    migrations: &[(String, String)],
+    objects: &mut BTreeMap<String, DbObject>,
+    findings: &mut Vec<Finding>,
+) -> BTreeMap<String, String> {
+    let mut created = created_in(migrations);
+    for (name, object) in objects.iter() {
+        if !is_table_object(object)
+            || created.contains_key(name)
+            || BOOTSTRAP_TABLES.contains(&name.as_str())
+        {
+            continue;
+        }
+        if let Some(stem) = dynamic_ddl_created_in(migrations, name) {
+            created.insert(name.clone(), format!("{stem} (dynamic DDL)"));
+        } else {
+            findings.push(finding(
+                DOC_DB,
+                1,
+                "db-object-uncreated",
+                format!("`{name}` is a live table that no migration creates, statically or by dynamic DDL"),
+            ));
+        }
+    }
+    objects.retain(|name, object| {
+        created.contains_key(name)
+            || (is_table_object(object) && !BOOTSTRAP_TABLES.contains(&name.as_str()))
+    });
+    created
 }
 
 /// One outgoing foreign key as db_objects.md prints it: `fk: <cols> -> <schema.table> (NOT NULL|NULL)`.
@@ -7178,6 +7238,56 @@ mod tests {
     }
 
     // ---- DB ------------------------------------------------------------------------------
+
+    /// ADR-0121 D-A / G-M23-3 (M23-2 fix 2): a live table names its creating migration, by static DDL or by dynamic DDL
+    /// (`<stem> (dynamic DDL)`); a live table no migration creates is the violation `db-object-uncreated` and stays
+    /// listed; the sequence behind an IDENTITY or serial column is still dropped.
+    #[test]
+    fn db_objects_resolve_dynamic_ddl_and_flag_uncreated_tables() {
+        let migrations = vec![
+            (
+                "0001_static".to_string(),
+                "CREATE TABLE private.static_t (a int);\n".to_string(),
+            ),
+            (
+                "0002_dynamic".to_string(),
+                "DO $$ BEGIN\n  FOR p IN SELECT * FROM (VALUES ('dyn_t'), ('dyn_u')) v(tbl) LOOP\n    \
+                 EXECUTE format('CREATE TABLE private.%1$I (a int)', p.tbl);\n  END LOOP;\nEND $$;\n"
+                    .to_string(),
+            ),
+        ];
+        let object = |kind: &str| DbObject {
+            kind: kind.into(),
+            ..DbObject::default()
+        };
+        let mut objects = BTreeMap::from([
+            ("private.static_t".to_string(), object("table")),
+            ("private.dyn_t".to_string(), object("table")),
+            ("private.orphan_t".to_string(), object("table")),
+            ("private.static_t_a_seq".to_string(), object("sequence")),
+        ]);
+        let mut findings = Vec::new();
+        let created = settle_created(&migrations, &mut objects, &mut findings);
+        assert_eq!(
+            created.get("private.static_t").map(String::as_str),
+            Some("0001_static")
+        );
+        assert_eq!(
+            created.get("private.dyn_t").map(String::as_str),
+            Some("0002_dynamic (dynamic DDL)")
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].rule, "db-object-uncreated");
+        assert!(findings[0].msg.contains("private.orphan_t"), "{findings:?}");
+        assert!(
+            objects.contains_key("private.orphan_t"),
+            "an uncreated table is reported, never dropped"
+        );
+        assert!(
+            !objects.contains_key("private.static_t_a_seq"),
+            "an implicit sequence stays out"
+        );
+    }
 
     #[test]
     fn db_objects_head_mismatch_refuses() {
