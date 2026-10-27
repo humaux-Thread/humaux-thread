@@ -1,6 +1,6 @@
 //! `adapters::read_gate` — the one home of the final read gate: the all-backing-evidence closure (`readable_memory_ids`) and the
 //!   `memory.get` / `memory.enumerate` materializers that read only through it.
-//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx];
+//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx, time];
 //!   services=[PostgreSQL(any) r=[private.evidence_objects, private.memory_evidence, private.memory_records,
 //!   private.memory_subjects, private.note_heads]]; env=[]; modules=[adapters::context_repo, adapters::postgres,
 //!   adapters::read_materialize, adapters::selection_repo, adapters::stream_repo, domain::authority, domain::error,

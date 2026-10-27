@@ -6,7 +6,7 @@
 //! Called-by: [adapters::tests::a2_point_identity, adapters::tests::confirm_token_retention,
 //!   adapters::tests::entitlement_projector, adapters::tests::enumerate_scale, adapters::tests::ledger_frontier, adapters::tests::maintenance_doors, adapters::tests::plan_catalog, adapters::tests::projection_lag,
 //!   adapters::tests::quota_and_rate, adapters::tests::rebuild, adapters::tests::stream_repo,
-//!   private-worker::tests::derived_dispatch_e2e]
+//!   gateway::tests::memory_get_frontier, private-worker::tests::derived_dispatch_e2e]
 //! Invariants: [the database is humaux_thread_<prefix>_<pid>_<n>, created here and dropped WITH (FORCE) by Drop
 //!   even on panic; migrations are applied one database at a time per process (role DDL is cluster-global)]
 //! Spec: Baseline §79.2; ADR-0062 E8

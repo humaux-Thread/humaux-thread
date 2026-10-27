@@ -5,8 +5,8 @@
 //!   services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq]
 //!   w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users,
 //!   control.workspace_memberships, control.workspaces, private.evidence_objects, private.memory_evidence,
-//!   private.memory_records, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
-//!   PostgreSQL(role_gateway), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
+//!   private.memory_records, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements]
+//!   x=[projection.stream_point_ledger], PostgreSQL(role_gateway), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
 //!   modules=[adapters::postgres, adapters::read_gate, adapters::stream_repo,
 //!   adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
