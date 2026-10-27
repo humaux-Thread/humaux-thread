@@ -426,6 +426,47 @@ tests:
         alertname: PartitionHorizonAbsent
         exp_alerts: []
 
+  # authority I4 violation (M21-2, ADR-0123 D3; §42 injection: DROP the I4 CHECK on a throwaway database and insert one
+  # row with status 'active' and superseded_by set => the daily scan reads 1): the gauge steps from 0 to 1 and
+  # fires at once, carrying the scrape labels (no `by`, §42 freeze 4). Exactly 1 must fire, so a `> 1` threshold is red.
+  - interval: 1m
+    input_series:
+      - series: 'authority_i4_violations{job="humaux-maintenance",mode="serve"}'
+        values: '0x4 1x6'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AuthorityI4Violation
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: AuthorityI4Violation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: humaux-maintenance
+              mode: serve
+
+  # authority I4 violation silent: a clean scan reads 0, and a gauge that is absent (daemon restarted, scan failed and
+  # reset it per §41.2) is no sample at all, so `> 0` has nothing to compare and stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'authority_i4_violations{job="humaux-maintenance",mode="serve"}'
+        values: '0x10'
+      - series: 'maintenance_task_runs_total{job="humaux-maintenance",mode="serve",task="authority_i4",outcome="failed"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AuthorityI4Violation
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'maintenance_task_runs_total{job="humaux-maintenance",mode="serve",task="authority_i4",outcome="ok"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AuthorityI4Violation
+        exp_alerts: []
+
   # backup not offsite (ADR-0064 10.11 F): a standing notice built from no series — firing with no input at all,
   # from the first evaluation on. It has no silent state in card 37 (two firing checks, like Watchdog).
   - interval: 1m

@@ -11,7 +11,7 @@
 # Before any row: the promtool pin is checked, and the unmutated tree must pass test-rules.sh in the
 # same copy layout ("baseline red in copy" otherwise), so a path or layout error is never read as red.
 # Rows: `id|rule-file|from|to|expected`; `expected` is an alert name, or `expr:<record>` for a recording
-# rule; rows-file overrides the built-in 49 (selftest.sh); every `absent(...)` branch of CoreMetricAbsent,
+# rule; rows-file overrides the built-in 50 (selftest.sh); every `absent(...)` branch of CoreMetricAbsent,
 # HealthGaugesAbsent, MaintenanceCountersAbsent and PartitionHorizonAbsent has its own row.
 #
 # Exit codes: 0 = every row printed `mutation=<id> red`; 1 = a row did not apply, broke syntax or
@@ -69,6 +69,7 @@ horizon_le1|alerts.rules.yml|(partition_horizon_months) <= 1|(partition_horizon_
 horizon_min|alerts.rules.yml|min by (table) (partition_horizon_months) <= 1|partition_horizon_months <= 1|PartitionHorizonShort
 horizon_le0|alerts.rules.yml|(partition_horizon_months) <= 0|(partition_horizon_months) < 0|PartitionHorizonExhausted
 horizon_absent|alerts.rules.yml|absent(partition_horizon_months)|absent(vector(1))|PartitionHorizonAbsent
+i4_gt0|alerts.rules.yml|authority_i4_violations > 0|authority_i4_violations > 1|AuthorityI4Violation
 renewal_lt|alerts.rules.yml|(quota_window_horizon_seconds) < 604800|(quota_window_horizon_seconds) < 0|QuotaWindowRenewalMissing
 renewal_min|alerts.rules.yml|min(quota_window_horizon_seconds)|max(quota_window_horizon_seconds)|QuotaWindowRenewalMissing
 not_offsite|alerts.rules.yml|label_replace(vector(0),|label_replace(vector(0) < 0,|BackupNotOffsite
