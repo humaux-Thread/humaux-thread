@@ -14397,8 +14397,18 @@ modules naming it:
 - `protocol::error_map`
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::page`
 - `protocol::tests::mcp_http`
 - `protocol::tests::note_kind_contract`
+- `protocol::tests::page_budget`
+- `tests`
+
+### humaux-protocol → `humaux-application` (normal)
+why: signs and verifies the page@1 cursor with the shared token key set
+
+modules naming it:
+- `protocol::page`
+- `protocol::tests::page_budget`
 - `tests`
 
 ### humaux-protocol → `hmac` (normal)
@@ -14408,10 +14418,11 @@ modules naming it:
 - `protocol::edge`
 
 ### humaux-protocol → `sha2` (normal)
-why: paired digest for the HMAC-SHA256 key-hash verifier
+why: paired digest for the HMAC-SHA256 key-hash verifier and the page@1 args hash
 
 modules naming it:
 - `protocol::edge`
+- `protocol::page`
 
 ### humaux-protocol → `rmcp` (normal)
 why: MCP-over-HTTP server framework this adapter owns
@@ -14443,13 +14454,15 @@ modules naming it:
 - `protocol::mcp_catalog`
 
 ### humaux-protocol → `serde_json` (normal)
-why: JSON-RPC bodies and the embedded contracts/mcp catalog documents
+why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cursor payloads
 
 modules naming it:
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::page`
 - `protocol::tests::mcp_http`
 - `protocol::tests::note_kind_contract`
+- `protocol::tests::page_budget`
 - `tests`
 
 ### humaux-protocol → `jsonschema` (normal)
@@ -18317,6 +18330,13 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/page_budget.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/public-pool/tests/completeness.rs`
 db-bound (default run): yes
 
@@ -18531,7 +18551,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
