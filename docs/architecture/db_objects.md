@@ -3886,6 +3886,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 
 executed by:
 
@@ -4413,6 +4414,7 @@ read by:
 written by:
 - (no process): `adapters::tests::authority_g59_5`
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -8537,6 +8539,35 @@ written by:
 
 executed by:
 
+### `private.code_edges`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0006_private_skeleton
+
+grants (runtime roles):
+- role_gateway: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
+
+executed by:
+
 ### `private.code_files`
 - kind: table
 - owner: role_migration_owner
@@ -8561,6 +8592,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 
 executed by:
 
@@ -8589,6 +8621,36 @@ read by:
 
 written by:
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
+
+executed by:
+
+### `private.code_symbols`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0006_private_skeleton
+
+grants (runtime roles):
+- role_gateway: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 
 executed by:
 
