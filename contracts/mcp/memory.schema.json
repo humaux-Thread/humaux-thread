@@ -98,11 +98,14 @@
               "research",
               "preference",
               "state",
-              "note"
+              "note",
+              "event",
+              "plan",
+              "episode"
             ]
           },
           "minItems": 1,
-          "maxItems": 9,
+          "maxItems": 12,
           "uniqueItems": true
         },
         "since": {
@@ -928,7 +931,7 @@
           "maxLength": 1024
         },
         "note_kind": {
-          "description": "ADR-0067 D-D: the author's classification (closed set of nine, mapped onto memory_type by the server). It certifies no truth and decides no authority.",
+          "description": "ADR-0067 D-D: the author's classification (closed set of twelve, mapped onto memory_type by the server; ADR-0124 added event, plan and episode). It certifies no truth and decides no authority.",
           "type": "string",
           "enum": [
             "rejected",
@@ -939,7 +942,10 @@
             "research",
             "preference",
             "state",
-            "note"
+            "note",
+            "event",
+            "plan",
+            "episode"
           ]
         },
         "requested_authority": {

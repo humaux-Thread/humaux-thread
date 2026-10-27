@@ -5,7 +5,7 @@
 //!   own transaction; M29 T06c: a `remember.put` `project_id` reaches A1 end to end.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
 //!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_project_revocations,
-//!   private.memory_projects, private.memory_subjects] w=[control.tenants, control.workspaces, coord.task_runs,
+//!   private.memory_projects, private.memory_records, private.memory_subjects] w=[control.tenants, control.workspaces, coord.task_runs,
 //!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
 //!   private.memory_project_revocations, private.memory_projects, private.project_task_relations, private.subjects]
 //!   x=[private.link_memory_subjects], PostgreSQL(role_gateway) x=[private.declared_project_visible],
@@ -21,7 +21,7 @@
 //!   enters through the real door (role_private_worker's distill hop, or role_gateway's `memory.confirm`) with the real
 //!   ladder; the owner seeds projects, relations, declared rows and candidates, and counts rows, so no RLS can hide
 //!   one; whatever a test commits it purges before asserting]
-//! Spec: Baseline §6.1.4; §6.1.3; §78.2; §79.2; §80.1; ADR-0078 D-D
+//! Spec: Baseline §6.1.4; §6.1.3; §78.2; §79.2; §80.1; ADR-0078 D-D; ADR-0124
 //!
 //! | test | gate | injected fault that turns it red |
 //! |---|---|---|
@@ -55,7 +55,7 @@ use humaux_adapters::{
     attribution_repo::AttributionLadder,
     coord_repo::{self, ClaimedTaskRun},
     distill_repo::{self, ConfirmOutcome, ConfirmRequest},
-    memory_repo::{self, AttributionSource, NewMemory},
+    memory_repo::{self, AttributionSource, MemoryProducer, NewMemory},
     operation_receipt::{self, AtomicRememberRequest},
     relation_repo,
     remember::RememberCommand,
@@ -361,12 +361,25 @@ async fn door(
             note_kind: None,
             note_id: None,
             attribution: AttributionSource::Primary,
+            producer: MemoryProducer::Distill,
         },
         &AttributionLadder,
     )
     .await?;
     sqlx::query("RESET ROLE").execute(&mut **txn).await?;
     Ok(memory)
+}
+
+/// ADR-0124: `private.memory_records.epistemic_status` of `memory`, read as the owner.
+fn stored_epistemic_status(handle: &mut Handle, memory: Uuid) -> String {
+    handle
+        .admin
+        .query_one(
+            "SELECT epistemic_status FROM private.memory_records WHERE memory_id = $1",
+            &[&memory],
+        )
+        .expect("owner reads epistemic_status")
+        .get(0)
 }
 
 /// The fixture's teardown knows neither the carriers, `coord.task_runs`, nor the append-only attribution and relation
@@ -634,6 +647,7 @@ fn g_t06a_confirm_reads_the_source_evidence() {
         let ConfirmOutcome::Confirmed(done) = outcome else {
             panic!("memory.confirm refused the candidate");
         };
+        let epistemic = stored_epistemic_status(&mut handle, done.memory_id);
         let rows: Vec<Row> = handle
             .admin
             .query(
@@ -648,6 +662,7 @@ fn g_t06a_confirm_reads_the_source_evidence() {
         purge(&mut handle);
         Governor::cleanup(&mut handle.admin, handle.tenant_id);
         assert_ne!(done.evidence_id, e1, "E2 is the confirmation, not E1");
+        assert_eq!(epistemic, "INTERPRETATION", "ADR-0124: model-produced text");
         assert_eq!(
             rows,
             [row(p1, SourceKind::Inherited, RuleId::TaskRun1, e1)],
@@ -886,6 +901,7 @@ fn g_m29_5b_correction_inherits_supersede_does_not() {
             let mb = commit_memory(&handle, plain);
             let before = links(&mut handle, m1);
             let (m2, e2) = w.correct(&handle, m1);
+            let corrected = stored_epistemic_status(&mut handle, m2);
             let inherited = links(&mut handle, m2);
             governance_ops::supersede(
                 &handle.rt,
@@ -898,6 +914,10 @@ fn g_m29_5b_correction_inherits_supersede_does_not() {
             .expect("memory.supersede");
             let superseded = links(&mut handle, mb);
             World::cleanup(&mut handle);
+            assert_eq!(
+                corrected, "SOURCE_REPORTED",
+                "ADR-0124: the user's own text"
+            );
             assert_eq!(
                 before,
                 [

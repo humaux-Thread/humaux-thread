@@ -327,14 +327,22 @@ pub struct GatewayRuntime {
     auth_keys: Option<TokenKeys>,
 }
 
+// §67.2 / ADR-0100: a stalled original session is lost; never reconnect or continue serving.
+async fn session_heartbeat(
+    timeout: Duration,
+    check: impl std::future::Future<Output = Result<(), humaux_domain::error::ErrorCode>>,
+) -> Result<(), humaux_domain::error::ErrorCode> {
+    tokio::time::timeout(timeout, check)
+        .await
+        .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)?
+}
+
 impl GatewayRuntime {
     /// Fail closed when the dedicated singleton session dies; never reconnect (ADR-0100).
     pub async fn watch_session_lock(&mut self) -> Result<(), humaux_domain::error::ErrorCode> {
         loop {
             tokio::time::sleep(self.session_lock_check).await;
-            tokio::time::timeout(self.session_lock_timeout, self.session_lock.check())
-                .await
-                .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)??;
+            session_heartbeat(self.session_lock_timeout, self.session_lock.check()).await?;
         }
     }
 
@@ -1818,6 +1826,24 @@ mod tests {
     use humaux_retrieval_worker::rerank::{
         KEY_MODEL_SHA256, KEY_RECIPE, KEY_REPO, KEY_REVISION, KEY_TOKENIZER_SHA256,
     };
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_timeout_is_session_loss() {
+        use humaux_domain::error::ErrorCode;
+        let timeout = Duration::from_secs(2);
+        let start = tokio::time::Instant::now();
+        assert_eq!(
+            session_heartbeat(timeout, std::future::pending()).await,
+            Err(ErrorCode::DependencyUnavailable),
+            "ADR-0100 heartbeat timeout must fail closed"
+        );
+        assert_eq!(tokio::time::Instant::now() - start, timeout);
+        assert_eq!(session_heartbeat(timeout, async { Ok(()) }).await, Ok(()));
+        assert_eq!(
+            session_heartbeat(timeout, async { Err(ErrorCode::DependencyUnavailable) }).await,
+            Err(ErrorCode::DependencyUnavailable)
+        );
+    }
 
     #[test]
     fn limiter_registry_has_exactly_the_eighteen_expected_defaults() {
