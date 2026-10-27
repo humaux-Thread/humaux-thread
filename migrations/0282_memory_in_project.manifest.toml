@@ -1,0 +1,38 @@
+# §46.1 migration manifest. Card M29-g1 (ADR-0110 D-F, M13 note D7): one new invoker function
+# private.memory_in_project(uuid, uuid, uuid) (LANGUAGE sql, STABLE, search_path = pg_catalog, owner
+# role_migration_owner, EXECUTE role_gateway only: the one role that SELECTs private.memory_projects_live). No table,
+# column, trigger or grant on a table changes; no DML. §46 forward-fix (EXPAND_CONTRACT, number 0282).
+
+migration_id = "0282_memory_in_project"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the live view the predicate reads, or one that already has the predicate.
+precheck = """
+select to_regprocedure('private.memory_in_project(uuid,uuid,uuid)') is null
+ and to_regclass('private.memory_projects_live') is not null
+ as precheck_ok
+"""
+
+# Fails on: a predicate that is missing, not LANGUAGE sql, SECURITY DEFINER, not STABLE, not boolean, without the
+# pinned search_path or not owned by role_migration_owner; and an ACL other than EXECUTE for role_gateway alone (PUBLIC and
+# every other runtime role refused), as 0256's postcheck. The ACL is also asserted by adapters::tests::memory_in_project
+# case (f), which sees a grant made by a LATER migration; the body (the live view, never the base table) is left to that
+# test's case (b) and to xtask G-M29-7, so a body fault reaches its gate instead of stopping the migration.
+postcheck = """
+with r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+                   ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
+select (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('private.memory_in_project(uuid,uuid,uuid)')
+           and p.prolang = (select oid from pg_language where lanname = 'sql')
+           and not p.prosecdef and p.provolatile = 's' and p.prorettype = 'boolean'::regtype
+           and p.proconfig = array['search_path=pg_catalog']
+           and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+ and not has_function_privilege('public', 'private.memory_in_project(uuid,uuid,uuid)', 'EXECUTE')
+ and not exists (select 1 from r
+                  where has_function_privilege(r.role, 'private.memory_in_project(uuid,uuid,uuid)', 'EXECUTE')
+                        is distinct from (r.role = 'role_gateway'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: DROP FUNCTION private.memory_in_project(uuid, uuid, uuid); revert the ADR-0078 amendment, the xtask G-M29-7 leg and adapters::tests::memory_in_project in the same release. No Rust or SQL caller exists until M13-7 binds the census, so the drop is safe before then; afterwards M13-7 is reverted first."
+backup_restore_requirement = "none: one new function; no table, row or grant on a table is touched."

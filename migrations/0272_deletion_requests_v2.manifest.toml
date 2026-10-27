@@ -11,10 +11,10 @@ class = "EXPAND_CONTRACT"
 # row (M19 D1: "0 rows, refuse otherwise"; the SQL file also raises '0272: control.deletion_requests holds v1 per-seq rows; M19 D1
 # requires 0 rows, refusing to migrate'). row_security is read while a statement is rewritten, so a set_config in the same statement
 # cannot switch it off for a table read in that statement; the row count therefore runs as its own query (query_to_xml), planned only
-# after the leading set_config term has been evaluated.
+# inside the CASE branch after its set_config condition has been evaluated (ADR-0082 D-D: guard-only amendment).
 precheck = """
-select (select set_config('row_security', 'off', true)) = 'off'
- and to_regclass('control.deletion_requests') is not null
+select case when (select set_config('row_security', 'off', true)) = 'off' then
+ to_regclass('control.deletion_requests') is not null
  and to_regclass('control.deletion_targets') is null
  and to_regprocedure('control.deletion_request_freeze(uuid,text,uuid[])') is null
  and exists (select 1 from pg_attribute where attrelid = to_regclass('control.deletion_requests')
@@ -22,7 +22,7 @@ select (select set_config('row_security', 'off', true)) = 'off'
  and not exists (select 1 from pg_attribute where attrelid = to_regclass('control.deletion_requests')
                   and attname = 'manifest_hash' and not attisdropped)
  and (xpath('/row/n/text()', query_to_xml('select count(*) as n from control.deletion_requests', false, true, '')))[1]::text = '0'
- as precheck_ok
+ else false end as precheck_ok
 """
 
 # Also fails on: a runtime role holding anything but SELECT on deletion_targets (gateway and maintenance must hold SELECT), a missing

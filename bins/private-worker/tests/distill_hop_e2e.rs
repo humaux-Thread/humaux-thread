@@ -30,7 +30,7 @@
 //!   HUMAUX_REQUIRE_MINIMAX/HUMAUX_REQUIRE_DB make either a panic via skip_or_fail; tests run one at a time and
 //!   foreign scheduler rows are fenced, so the cross-tenant claim only serves the fixture tenant; cleanup deletes
 //!   jobs, slots and data in one printed batch and the tenant row in a separate best-effort batch]
-//! Spec: ADR-0005; ADR-0058; ADR-0059
+//! Spec: ADR-0005; ADR-0058; ADR-0059; ADR-0124
 //!
 //! Four states, mirroring `bins/consolidation-worker/tests/consolidation_hop_e2e.rs`:
 //! 1. `MINIMAX_API_KEY` missing (env + `.env` fallback) ⇒ visible SKIP for D1 only (D2–D6 use a
@@ -2605,4 +2605,15 @@ fn d12_a_tool_channel_reply_in_content_is_parsed_and_accepted_once() {
     assert_eq!((status.as_str(), attempt), ("DONE", 1));
     assert_eq!(o.memories, 1);
     assert_eq!(o.outbox_status, "DONE");
+    // ADR-0124 D-B: the hop's Memory is model-produced text, whatever the Evidence's origin class.
+    let epistemic: String = f
+        .admin
+        .query_one(
+            "SELECT m.epistemic_status FROM private.memory_records m \
+             JOIN private.memory_evidence me ON me.memory_id = m.memory_id WHERE me.evidence_id = $1",
+            &[&evidence],
+        )
+        .expect("the distilled memory's epistemic status")
+        .get(0);
+    assert_eq!(epistemic, "INTERPRETATION");
 }

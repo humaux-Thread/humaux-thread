@@ -18,7 +18,7 @@
 //!   its route's health near expiry and a provider 401 records the credential INVALID (ruling E3); a RETRY settle
 //!   with class TRANSPORT counts `dns_pin_deferred_total` only while a DNS pin is configured (ADR-0066 D-P)]
 //! Spec: Baseline §16.1.1; §10.1; ADR-0016; §15.7; §67.2; §11; §11.2.5; ADR-0058; ADR-0059; ADR-0060 D-B; ADR-0060 D-M;
-//!   ADR-0060 E3; §41.2; ADR-0066 D-P
+//!   ADR-0060 E3; §41.2; ADR-0066 D-P; ADR-0124
 //!
 //! One job (ADR-0058 D-C): take the job's own outbox row, (a) check the Evidence still names the
 //! job's reasoning domain, resolve the admitted Distill route, load the Evidence, record the
@@ -62,8 +62,8 @@ use humaux_adapters::{
         DistillReply, distill_prompt_contract, offers_affects, parse_distill_output_detailed,
     },
     distill_repo::{
-        self, AttributionSource, ClaimedEvidence, DbError, LoadedEvidence, NewMemory, OutboxSettle,
-        ProcessingRunStart, TakenOutbox,
+        self, AttributionSource, ClaimedEvidence, DbError, LoadedEvidence, MemoryProducer,
+        NewMemory, OutboxSettle, ProcessingRunStart, TakenOutbox,
     },
     jobs::{self, CallAdmission, DistillClaim, DistillFinish, DistillLease},
     postgres::PrivateWorkerDbPool,
@@ -1614,6 +1614,8 @@ async fn write_txn(
                         note_kind: None,
                         note_id: None,
                         attribution: AttributionSource::Primary,
+                        // ADR-0124 D-B: model-produced text, INTERPRETATION.
+                        producer: MemoryProducer::Distill,
                     },
                     &MEMORY_ATTRIBUTION,
                 )
