@@ -22496,6 +22496,23 @@ mod candidate_isolation_tests {
             ])
         );
     }
+}
+
+#[cfg(test)]
+mod backup_catalog_tests {
+    use super::*;
+
+    /// Non-comment occurrences of `head` + `tail` in this file's own source; the needle is passed in two halves so
+    /// that this test's source does not contain it and cannot count itself.
+    fn own_source_count(head: &str, tail: &str) -> usize {
+        let needle = format!("{head}{tail}");
+        fs::read_to_string(workspace_root().join(SELF_FILE))
+            .expect("read architecture_check.rs")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(&needle))
+            .count()
+    }
 
     // -- M23-2: G-M23-3 backup catalog complete / G-M23-3b catalog closed under foreign keys ------------
 
@@ -22866,9 +22883,10 @@ mod candidate_isolation_tests {
     /// r1/r2/r3/r4/r5 (ADR-0121 D-A, #332) are mutations of `docs/architecture/backup_catalog.toml` that turn this red.
     #[test]
     fn repository_backup_catalog_is_complete_and_closed() {
-        let root = real_root();
-        assert_eq!(backup_catalog_gate(&root, false), Verdict::Pass);
-        assert_eq!(backup_catalog_gate(&root, true), Verdict::Pass);
+        let root = workspace_root();
+        for closure in [false, true] {
+            assert_eq!(backup_catalog_gate(&root, closure), Verdict::Pass);
+        }
         let db = fs::read_to_string(root.join(DB_OBJECTS)).expect("db_objects.md is readable");
         let tables = parse_db_tables(&db).expect("db_objects.md parses");
         assert!(tables.len() > 200, "{} tables", tables.len());
