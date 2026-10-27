@@ -227,6 +227,7 @@ impl Handle {
 
     /// A memory in an explicit lifecycle state. The memory and its links are one statement, so the deferred orphan trigger
     /// (0004) sees the closure at COMMIT.
+    /// Each body (`key_claim`) is unique: the 0269 exact-dedupe index keys active first-version notes on its digest.
     fn memory_in_state(
         &mut self,
         t: Tenant,
@@ -246,7 +247,7 @@ impl Handle {
                    INSERT INTO private.memory_records \
                      (memory_id, tenant_id, memory_type, content, visibility_class, authority_class, confidence, \
                       status, asserted_at, archived_at, note_kind, note_id) \
-                   VALUES ($1::uuid, $2, $3, jsonb_build_object('title', 'fixture'), 'TENANT_SHARED', 'PrivateKnowledge', \
+                   VALUES ($1::uuid, $2, $3, jsonb_build_object('title', 'fixture', 'key_claim', gen_random_uuid()::text), 'TENANT_SHARED', 'PrivateKnowledge', \
                            0.9, $4, now(), CASE WHEN $5 THEN now() END, $6::text, \
                            CASE WHEN $6::text IS NULL THEN NULL ELSE $1::uuid END) \
                    RETURNING memory_id), \
