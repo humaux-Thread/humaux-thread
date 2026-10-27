@@ -6,7 +6,7 @@
 //!   exceeds min(op budget, manifest cap) bytes; records are appended whole in the caller's order and only the first
 //!   record of a page is ever split, at a UTF-8 boundary; a `page@1` cursor is MAC-verified before one payload byte
 //!   is read, then bound to principal, op, args hash and expiry, and every failure is the same `InvalidInput`]
-//! Spec: §33.4; §33.5
+//! Spec: §33.4; §33.5; §78.1
 //!
 //! M26 D7: the budget is the UTF-8 byte length of the serialized tool `result` (text, `structuredContent` and `_meta`,
 //! after JSON escaping), the exact bytes the caller sends. The per-op value and the hard cap are registry data
