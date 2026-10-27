@@ -200,3 +200,29 @@ never `Eligible`. The reader lives in `adapters`, not in `public-pool`, which ma
   `research` to `RESEARCH`; every other note kind and a non-note memory (NULL) give `KIND_NOT_MAPPED`. `USAGE`, `CHECKLIST`
   and `FAILURE_CASE` have no source kind yet (M07/M15); a row is added with a contract test when one exists. Rust holds no
   copy; a §78.2 test asserts every returned unit type is a `UnitType`.
+
+## Amendment 2 (M20-5 fix 1, 2026-10-27) — corrects the amendment above after the rv-394 privacy review
+
+Three statements of the first amendment are corrected; the first text stays as written.
+
+- **Grant.** EXECUTE on `private.contribution_eligibility` is held by `role_private_worker` ONLY, not by `role_gateway` and
+  `role_private_worker`. The predicate reads `private.memory_records` through the owner arm (0163), which ignores the session's
+  memory visibility (0012 `memory_records_tenant_and_visibility`, the 0155 RESTRICTIVE policy), so a user-facing caller would
+  learn the state of memories it may not see inside its own tenant. Its one planned caller is the M20-6 sweep, a system
+  worker. A user-facing caller must first apply the session's visibility inside the definer and read `NOT_FOUND` when hidden.
+  The manifest postcheck pins the set to exactly `{role_private_worker}` (no other runtime role, no `role_public_disclosure`, no
+  PUBLIC) and test (j) asserts it per role.
+- **Verdict order.** `EVIDENCE_DELETED` is a new verdict, checked right after `NO_EVIDENCE`: it fires when ANY closure
+  Evidence is tombstoned. Forgetting tombstones the Evidence's `projection.stream_log` row without revoking the memory, so
+  `NOT_ACTIVE` does not cover it. It is found the way the shared read gate finds it (`crates/adapters/src/read_materialize.rs`
+  `sl.state = 'TOMBSTONED'`: `ops.outbox` by `evidence_id`, `projection.stream_log` by `commit_seq`). The order is now
+  `NOT_FOUND`, `NOT_ACTIVE`, `KIND_NOT_MAPPED`, `NO_NOTICE`, `CATEGORY_NOT_IN_NOTICE`, `NO_EVIDENCE`, `EVIDENCE_DELETED`,
+  `DATA_CLASS`, `AFFECT`, `PERSON_OR_CUSTOMER_LINK`, `ELIGIBLE`.
+- **Links.** D-A's "no person, customer or relationship link" includes the relation hop. Start from every subject linked to
+  the memory or to any closure Evidence and follow `private.subject_relations` outward (`src` to `dst`, kinds `OWNED_BY` and
+  `PART_OF`) transitively; the link exists if ANY reached subject has kind `PERSON` or holds the `CUSTOMER` role. Only the
+  current revision of a relation counts (the highest revision per `relation_id`, as `adapters::relation_repo::current_revision`
+  reads it), and a retracted one (`valid = '{}'`) is skipped. The validity window is not consulted (fail closed): ever-valid
+  current revisions count until the M18 validity reader exists.
+- **Sentinel.** The `pg_get_functiondef` sentinel now rejects `memory_applicability`, `memory_project` (which covers
+  `memory_projects`, `memory_project_revocations` and `memory_projects_live`), `memory_in_project`, `evidence_projects` and `public.`.

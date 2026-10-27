@@ -11,18 +11,25 @@
 -- manifest precheck refuses to run while a row would violate the CHECK.
 --
 -- Verdict order (ADR-0090 D-A; the SQL text is the wire, humaux_adapters::contribution_eligibility::EligibilityVerdict is its Rust set):
---   NOT_FOUND -> NOT_ACTIVE -> KIND_NOT_MAPPED -> NO_NOTICE -> CATEGORY_NOT_IN_NOTICE -> NO_EVIDENCE -> DATA_CLASS -> AFFECT
---   -> PERSON_OR_CUSTOMER_LINK -> ELIGIBLE.
+--   NOT_FOUND -> NOT_ACTIVE -> KIND_NOT_MAPPED -> NO_NOTICE -> CATEGORY_NOT_IN_NOTICE -> NO_EVIDENCE -> EVIDENCE_DELETED ->
+--   DATA_CLASS -> AFFECT -> PERSON_OR_CUSTOMER_LINK -> ELIGIBLE.
 --
 --   * Closure: every private.memory_evidence row of the memory, whatever its role (the all-backing-evidence closure of §8.6, M07
 --     D5). A memory is as sensitive as its most sensitive Evidence: any closure Evidence above INTERNAL fails, and so does
 --     Evidence whose class cannot be read (below).
 --   * Active: the lifecycle the recall gate calls current (status 'active', which G59-4 ties to superseded_by IS NULL, and
 --     archived_at IS NULL); revoked, expired, superseded and archived memories are NOT_ACTIVE.
+--   * Deleted: any closure Evidence whose stream_log row is TOMBSTONED (forget, ADR-0092), found the way the shared read gate
+--     finds it (crates/adapters/src/read_materialize.rs:371: ops.outbox by evidence_id, projection.stream_log by commit_seq,
+--     sl.state = 'TOMBSTONED'). Forgetting tombstones the Evidence without revoking the memory, so NOT_ACTIVE does not cover it.
 --   * Affect: any affect row on the memory, or on any closure Evidence.
---   * Link: any subject link of the memory or of any closure Evidence to a PERSON subject, or to a subject holding the CUSTOMER
---     role. An ORGANISATION, BUSINESS, BRAND, PRODUCT or WEBSITE subject without that role is not a person link: reuse needs
---     entities (ADR-0090 D-A).
+--   * Link: start from every subject linked to the memory or to any closure Evidence (memory_subjects, memory_subject_mentions,
+--     evidence_subjects) and follow private.subject_relations outward, src -> dst, kinds OWNED_BY and PART_OF, transitively (a
+--     recursive CTE with UNION, so a cycle terminates). The link exists if ANY reached subject has kind PERSON or holds the
+--     CUSTOMER role: a product owned by a customer's brand is the customer's product (ADR-0090 D-A "no relationship link").
+--     A subject that reaches neither is not a person link: reuse needs entities. Only the current revision of each relation
+--     counts (the highest revision per relation_id, as adapters::relation_repo::current_revision defines it), and a retracted
+--     one (valid = '{}', 0249) is skipped. The validity window is NOT consulted (the ponytail line above the function).
 --   * Applicability is never a licence (ADR-0096 D-F): the body reads neither the applicability rows (0273) nor the project
 --     attribution rows (0252, 0282). A pg_get_functiondef sentinel in crates/adapters/tests/contribution_eligibility.rs pins that.
 --
@@ -34,9 +41,12 @@
 -- argument must equal the session tenant, else 42501; a memory of another tenant under the session tenant is NOT_FOUND, the
 -- verdict of an absent id, so the predicate is no cross-tenant existence oracle.
 --
--- Grants: EXECUTE for role_gateway and role_private_worker only (the existing contribution path, 0107). M20-6 adds its own grant
--- if its job runs under another role. No public role may execute it: role_public_worker, role_public_disclosure and
--- role_retrieval_worker never read private.* (module design M20 §7). The helper is called only by the predicate and has no grant.
+-- Grants: EXECUTE for role_private_worker ONLY. The predicate reads memory_records through the owner arm (0163), which escapes the
+-- session's memory visibility (0012 memory_records_tenant_and_visibility, the 0155 RESTRICTIVE policy), so a user-facing caller
+-- would learn the state of memories it may not see (rv-394 P1). Its one planned caller is the M20-6 sweep, a system worker.
+-- No other role may execute it: not role_gateway, role_maintenance, role_admin, role_batch_issuer, role_consolidation_worker,
+-- role_retrieval_worker, role_public_worker or role_public_disclosure, and not PUBLIC (module design M20 §7). The helper is called
+-- only by the predicate and has no grant.
 --
 -- Locks: ADD CONSTRAINT takes ACCESS EXCLUSIVE on the empty notices table for the length of one scan; CREATE FUNCTION locks no
 -- table.
@@ -54,6 +64,7 @@ RETURN CASE p_note_kind
   WHEN 'research' THEN 'RESEARCH'
 END;
 
+-- ponytail: ever-valid current revisions count (fail closed); a time-scoped hop needs the M18 validity reader
 CREATE FUNCTION private.contribution_eligibility(p_tenant_id uuid, p_memory_id uuid) RETURNS text
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
@@ -100,6 +111,15 @@ BEGIN
     RETURN 'NO_EVIDENCE';
   END IF;
   IF EXISTS (SELECT 1
+               FROM ops.outbox ob
+               JOIN projection.stream_log sl
+                 ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq
+              WHERE ob.tenant_id = p_tenant_id
+                AND ob.evidence_id = ANY (v_closure)
+                AND sl.state = 'TOMBSTONED') THEN
+    RETURN 'EVIDENCE_DELETED';
+  END IF;
+  IF EXISTS (SELECT 1
                FROM unnest(v_closure) AS c(evidence_id)
                LEFT JOIN private.evidence_objects eo
                  ON eo.tenant_id = p_tenant_id AND eo.evidence_id = c.evidence_id
@@ -112,17 +132,32 @@ BEGIN
                  WHERE ea.tenant_id = p_tenant_id AND ea.evidence_id = ANY (v_closure)) THEN
     RETURN 'AFFECT';
   END IF;
-  IF EXISTS (SELECT 1
-               FROM (SELECT ms.subject_id FROM private.memory_subjects ms
-                      WHERE ms.tenant_id = p_tenant_id AND ms.memory_id = p_memory_id
-                     UNION
-                     SELECT mm.subject_id FROM private.memory_subject_mentions mm
-                      WHERE mm.tenant_id = p_tenant_id AND mm.memory_id = p_memory_id
-                     UNION
-                     SELECT es.subject_id FROM private.evidence_subjects es
-                      WHERE es.tenant_id = p_tenant_id AND es.evidence_id = ANY (v_closure)) l
+  IF EXISTS (WITH RECURSIVE
+               seed(subject_id) AS (
+                 SELECT ms.subject_id FROM private.memory_subjects ms
+                  WHERE ms.tenant_id = p_tenant_id AND ms.memory_id = p_memory_id
+                 UNION
+                 SELECT mm.subject_id FROM private.memory_subject_mentions mm
+                  WHERE mm.tenant_id = p_tenant_id AND mm.memory_id = p_memory_id
+                 UNION
+                 SELECT es.subject_id FROM private.evidence_subjects es
+                  WHERE es.tenant_id = p_tenant_id AND es.evidence_id = ANY (v_closure)),
+               edge(src_id, dst_id) AS (
+                 SELECT r.src_id, r.dst_id
+                   FROM private.subject_relations r
+                  WHERE r.tenant_id = p_tenant_id
+                    AND r.relation_kind IN ('OWNED_BY', 'PART_OF')
+                    AND r.valid <> '{}'::tstzmultirange
+                    AND r.revision = (SELECT max(c.revision) FROM private.subject_relations c
+                                       WHERE c.tenant_id = r.tenant_id AND c.relation_id = r.relation_id)),
+               reached(subject_id) AS (
+                 SELECT seed.subject_id FROM seed
+                 UNION
+                 SELECT edge.dst_id FROM reached JOIN edge ON edge.src_id = reached.subject_id)
+             SELECT 1
+               FROM reached
                JOIN private.subjects s
-                 ON s.tenant_id = p_tenant_id AND s.subject_id = l.subject_id
+                 ON s.tenant_id = p_tenant_id AND s.subject_id = reached.subject_id
               WHERE s.kind = 'PERSON'
                  OR EXISTS (SELECT 1 FROM private.subject_roles r
                              WHERE r.tenant_id = p_tenant_id AND r.subject_id = s.subject_id AND r.role = 'CUSTOMER')) THEN
@@ -136,13 +171,15 @@ ALTER FUNCTION private.contribution_unit_type(text) OWNER TO role_migration_owne
 ALTER FUNCTION private.contribution_eligibility(uuid, uuid) OWNER TO role_migration_owner;
 REVOKE ALL ON FUNCTION private.contribution_unit_type(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION private.contribution_eligibility(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION private.contribution_eligibility(uuid, uuid) TO role_gateway, role_private_worker;
+-- ponytail: no gateway grant; a user-facing caller must first apply the session's memory visibility (0012 memory_records_tenant_and_visibility + 0155:96 memory_subject_visibility_ok) inside the definer and read NOT_FOUND when hidden (rv-394 P1).
+GRANT EXECUTE ON FUNCTION private.contribution_eligibility(uuid, uuid) TO role_private_worker;
 
 COMMENT ON FUNCTION private.contribution_unit_type(text) IS
   'ADR-0090 D-A (migration 0286, M20-5): the one kind -> unit-type map of phase 1. fix -> FIX, decision -> DECISION, research -> RESEARCH; '
   'every other note kind and a non-note memory (NULL) -> NULL. Only the eligibility predicate calls it; no grant.';
 COMMENT ON FUNCTION private.contribution_eligibility(uuid, uuid) IS
   'ADR-0090 D-A (migration 0286, M20-5, G-M20-5): the sole public-pool eligibility predicate over the M07 closure. One closed '
-  'verdict, the first failure of NOT_FOUND, NOT_ACTIVE, KIND_NOT_MAPPED, NO_NOTICE, CATEGORY_NOT_IN_NOTICE, NO_EVIDENCE, DATA_CLASS, AFFECT, '
-  'PERSON_OR_CUSTOMER_LINK, else ELIGIBLE. Applicability and attribution rows are never read (ADR-0096 D-F). Tenant argument must be the '
-  'session tenant (42501). Owner SECURITY DEFINER, EXECUTE role_gateway and role_private_worker only.';
+  'verdict, the first failure of NOT_FOUND, NOT_ACTIVE, KIND_NOT_MAPPED, NO_NOTICE, CATEGORY_NOT_IN_NOTICE, NO_EVIDENCE, EVIDENCE_DELETED, DATA_CLASS, AFFECT, '
+  'PERSON_OR_CUSTOMER_LINK (subjects linked to the memory or its closure, plus everything reached through current OWNED_BY and PART_OF relations), '
+  'else ELIGIBLE. Applicability and attribution rows are never read (ADR-0096 D-F). Tenant argument must be the '
+  'session tenant (42501). Owner SECURITY DEFINER, EXECUTE role_private_worker only: the owner arm ignores the session''s memory visibility.';

@@ -3,7 +3,8 @@
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) x=[private.contribution_eligibility]]; env=[];
 //!   modules=[domain::authority, domain::error, domain::ids]
 //! Called-by: [tests]
-//! Invariants: [lives here, not in public-pool, because that crate may not name `private.` (G-M20-23b); the Rust side holds
+//! Invariants: [lives here, not in public-pool, because that crate may not name `private.` (G-M20-23b); only `role_private_worker`
+//!   may execute the SQL predicate (the owner arm ignores session visibility, rv-394 P1); the Rust side holds
 //!   no copy of the predicate or of the note-kind to unit-type map: both are SQL (`private.contribution_eligibility`,
 //!   `private.contribution_unit_type`), and the verdict wire is the SQL text; the verdict set equals the literals the
 //!   function returns (§78.2); a verdict string outside the set is `Internal` (the terminal `ErrorCode`, no new error enum)
@@ -31,11 +32,14 @@ pub enum EligibilityVerdict {
     CategoryNotInNotice,
     /// The memory has no backing Evidence (an empty closure fails closed).
     NoEvidence,
+    /// Some closure Evidence is tombstoned (forgotten): the memory itself is not revoked, its source is gone.
+    EvidenceDeleted,
     /// Some closure Evidence is above INTERNAL, or its class cannot be read.
     DataClass,
     /// The memory or some closure Evidence carries an affect row.
     Affect,
-    /// The memory or some closure Evidence links to a person or to a customer.
+    /// The memory or some closure Evidence links, directly or through current OWNED_BY and PART_OF relations, to a person or
+    /// to a customer.
     PersonOrCustomerLink,
     /// Every check passed; F1 authorisation and the admission rules still apply (M20-6, ADR-0090 D-C).
     Eligible,
@@ -43,13 +47,14 @@ pub enum EligibilityVerdict {
 
 impl EligibilityVerdict {
     /// Every variant, in check order: the §78.2 contract-test surface.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::NotFound,
         Self::NotActive,
         Self::KindNotMapped,
         Self::NoNotice,
         Self::CategoryNotInNotice,
         Self::NoEvidence,
+        Self::EvidenceDeleted,
         Self::DataClass,
         Self::Affect,
         Self::PersonOrCustomerLink,
@@ -66,6 +71,7 @@ impl EligibilityVerdict {
             Self::NoNotice => "NO_NOTICE",
             Self::CategoryNotInNotice => "CATEGORY_NOT_IN_NOTICE",
             Self::NoEvidence => "NO_EVIDENCE",
+            Self::EvidenceDeleted => "EVIDENCE_DELETED",
             Self::DataClass => "DATA_CLASS",
             Self::Affect => "AFFECT",
             Self::PersonOrCustomerLink => "PERSON_OR_CUSTOMER_LINK",
@@ -83,6 +89,10 @@ impl EligibilityVerdict {
 /// ADR-0090 D-A: whether `memory` of `tenant` may enter the public pool's selection, judged over the M07 closure by the SQL
 /// predicate in the caller's open transaction. Private applicability is never read (ADR-0096 D-F). Closure Evidence the
 /// session cannot see is unknown and reads `DataClass`, so the sweep must run each candidate under its author's session.
+///
+/// Call it as `role_private_worker` only, the one role granted EXECUTE (migration 0286): the predicate reads the memory through
+/// the owner arm, which ignores the session's memory visibility, so a user-facing caller (`role_gateway`) would learn the
+/// state of memories it may not see (rv-394 P1) and is refused.
 ///
 /// # Errors
 /// `Forbidden` when `tenant` is not the session tenant or the role may not execute the predicate; `DependencyUnavailable`

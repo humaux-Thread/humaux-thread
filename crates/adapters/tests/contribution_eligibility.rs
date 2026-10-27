@@ -1,30 +1,38 @@
 //! `adapters::tests::contribution_eligibility` — G-M20-5 (ADR-0090 D-A, migration 0286): the public-pool eligibility predicate
-//!   judges the whole M07 closure, one verdict per failing check in a fixed order; applicability is never a licence; the
+//!   judges the whole M07 closure and the subjects reached from it through current OWNED_BY and PART_OF relations, one verdict
+//!   per failing check in a fixed order; applicability is never a licence; only `role_private_worker` may execute it; the
 //!   verdict set equals the Rust set and the notice categories equal the unit types.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
-//!   services=[PostgreSQL(any) r=[] w=[control.contribution_notices, control.private_reasoning_domains, control.tenants,
-//!   control.users, private.evidence_affects, private.evidence_objects, private.evidence_subjects, private.memory_affects,
-//!   private.memory_applicability, private.memory_evidence, private.memory_records, private.memory_subjects,
-//!   private.subject_roles, private.subjects] x=[private.contribution_eligibility, private.contribution_unit_type],
-//!   PostgreSQL(role_gateway), PostgreSQL(role_public_worker)]; env=[HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::contribution_eligibility, domain::authority, domain::dataclass, domain::error, domain::ids,
-//!   domain::note, humaux-testkit, testkit::disposable, testkit::fixture_purge]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, sqlx, tokio, uuid];
+//!   services=[PostgreSQL(any) r=[ops.commit_seq_seq] w=[control.contribution_notices, control.private_reasoning_domains,
+//!   control.tenants, control.users, ops.outbox, private.evidence_affects, private.evidence_objects,
+//!   private.evidence_subjects, private.memory_affects, private.memory_applicability, private.memory_evidence,
+//!   private.memory_records, private.memory_subjects, private.subject_relations, private.subject_roles, private.subjects,
+//!   projection.stream_checkpoints, projection.stream_log] x=[private.contribution_eligibility,
+//!   private.contribution_unit_type], PostgreSQL(role_gateway), PostgreSQL(role_maintenance),
+//!   PostgreSQL(role_private_worker), PostgreSQL(role_public_worker)]; env=[HUMAUX_TEST_PG_DSN];
+//!   modules=[adapters::contribution_eligibility, adapters::forget_repo, adapters::postgres, domain::authority,
+//!   domain::dataclass, domain::error, domain::ids, domain::note, humaux-testkit, projection::stream, testkit::disposable,
+//!   testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns throwaway tenants, users and the notice versions it publishes, removed on drop; closure links are
 //!   SUPPORTING or CONTRADICTING only, because a PRIMARY link fires the derived-consolidate enqueue and the affect copy hook,
-//!   cluster-global effects this binary must not cause; the notice table is global and public-pool's notice binary needs it
-//!   empty, so this binary runs in nextest's serial-public-notice group beside it, and plain `cargo test` or targeted.yml must
-//!   pass `-- --test-threads=1` (the no-notice test needs an empty notice table); the unit types are read from the DB's
-//!   `units_type_check` (0275), which public-pool's completeness test pins to `UnitType`, so this crate holds no copy; a
-//!   missing database is a visible §79.2 skip, a FAIL under HUMAUX_REQUIRE_DB]
-//! Spec: Baseline §7.5.1; §52; §78.2; §79.2; ADR-0088 D-A; ADR-0090 D-A; ADR-0096 D-F
+//!   cluster-global effects this binary must not cause; the Evidence tombstone goes through the production
+//!   `forget_repo::tombstone` on a stream row and an outbox row of an event type no trigger acts on; the notice table is global
+//!   and public-pool's notice binary needs it empty, so this binary runs in nextest's serial-public-notice group beside it, and
+//!   plain `cargo test` or targeted.yml must pass `-- --test-threads=1` (the no-notice test needs an empty notice table); the
+//!   unit types are read from the DB's `units_type_check` (0275), which public-pool's completeness test pins to `UnitType`, so
+//!   this crate holds no copy; a missing database is a visible §79.2 skip, a FAIL under HUMAUX_REQUIRE_DB]
+//! Spec: Baseline §7.5.1; §52; §78.2; §79.2; ADR-0088 D-A; ADR-0090 D-A; ADR-0092 D-C; ADR-0096 D-F
 
 use std::collections::BTreeSet;
 
 use humaux_adapters::contribution_eligibility::{self, EligibilityVerdict};
+use humaux_adapters::forget_repo;
+use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_domain::{
     authority::MemoryId, dataclass::DataClass, error::ErrorCode, ids::TenantId, note::NoteKind,
 };
+use humaux_projection::stream::StreamKey;
 use humaux_testkit::{
     DbFixtureSkipReason, DbIntegrationFixture, disposable::require_disposable,
     fixture_purge::purge_tenant_fixture_sql, run_db_fixture,
@@ -47,8 +55,10 @@ struct Tenant {
 
 struct Handle {
     rt: tokio::runtime::Runtime,
+    worker_dsn: String,
     gateway_dsn: String,
     public_dsn: String,
+    maintenance: MaintenanceDbPool,
     admin: Client,
     tenants: Vec<Uuid>,
     users: Vec<Uuid>,
@@ -107,14 +117,25 @@ impl DbIntegrationFixture for EligibilityFixture {
         }
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-        // dep: PostgreSQL(role_gateway) — the request-path role the predicate is granted to
+        // dep: PostgreSQL(role_private_worker) — the one role the predicate is granted to
+        let worker_dsn = dsn_as_role(&dsn, "role_private_worker");
+        // dep: PostgreSQL(role_gateway) — a user-facing role, which must be refused (rv-394 P1)
         let gateway_dsn = dsn_as_role(&dsn, "role_gateway");
         // dep: PostgreSQL(role_public_worker) — a public role, which must be refused
         let public_dsn = dsn_as_role(&dsn, "role_public_worker");
+        // dep: PostgreSQL(role_maintenance) — the production tombstone path runs as this role
+        let maintenance = rt
+            .block_on(MaintenanceDbPool::connect(&dsn_as_role(
+                &dsn,
+                "role_maintenance",
+            )))
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         Ok(Handle {
             rt,
+            worker_dsn,
             gateway_dsn,
             public_dsn,
+            maintenance,
             admin,
             tenants: Vec::new(),
             users: Vec::new(),
@@ -379,6 +400,113 @@ impl Handle {
             .expect("insert applicability");
     }
 
+    /// One revision of a subject relation (`edge` = src, dst, kind). `relation` is an existing relation's id, or `None` for a
+    /// new one; `valid` is the multirange text (`{[2020-01-01,)}` live, `{}` retracted, 0249). Returns the relation id.
+    fn relation_revision(
+        &mut self,
+        t: Tenant,
+        relation: Option<Uuid>,
+        revision: i64,
+        edge: (Uuid, Uuid, &str),
+        valid: &str,
+        authorization: Uuid,
+    ) -> Uuid {
+        let (src, dst, kind) = edge;
+        self.admin
+            .query_one(
+                "INSERT INTO private.subject_relations \
+                   (tenant_id, relation_id, revision, src_id, dst_id, relation_kind, valid, decided_by, \
+                    factual_evidence_ids, authorization_evidence_id) \
+                 VALUES ($1, coalesce($2::uuid, uuidv7()), $3, $4, $5, $6, $7::text::tstzmultirange, \
+                         'rule:fixture@1', '{}', $8) RETURNING relation_id",
+                &[&t.id, &relation, &revision, &src, &dst, &kind, &valid, &authorization],
+            )
+            .expect("insert relation revision")
+            .get(0)
+    }
+
+    /// A live relation of the 0249 whitelist.
+    fn relation(&mut self, t: Tenant, edge: (Uuid, Uuid, &str), authorization: Uuid) -> Uuid {
+        self.relation_revision(t, None, 1, edge, "{[2020-01-01,)}", authorization)
+    }
+
+    /// A live relation OUTSIDE the 0249 whitelist (it has no PERSON endpoint today): replica mode skips the guard trigger so
+    /// the predicate's PERSON arm on a reached subject is pinned for the day the whitelist widens.
+    fn relation_unlisted(
+        &mut self,
+        t: Tenant,
+        edge: (Uuid, Uuid, &str),
+        authorization: Uuid,
+    ) -> Uuid {
+        self.admin
+            .batch_execute("SET session_replication_role = replica")
+            .expect("replica mode");
+        let relation = self.relation(t, edge, authorization);
+        self.admin
+            .batch_execute("SET session_replication_role = DEFAULT")
+            .expect("origin mode");
+        relation
+    }
+
+    /// Appends the retracting revision (`valid` = `{}`) of `relation`, which keeps its edge (0249).
+    fn retract(
+        &mut self,
+        t: Tenant,
+        relation: Uuid,
+        edge: (Uuid, Uuid, &str),
+        authorization: Uuid,
+    ) {
+        self.relation_revision(t, Some(relation), 2, edge, "{}", authorization);
+    }
+
+    /// Tombstones `evidence` through the production path: a stream row, the outbox row that names the Evidence on it (an event
+    /// type no trigger acts on, already DONE so no worker claims it), then `forget_repo::tombstone` as `role_maintenance`.
+    fn tombstone_evidence(&mut self, t: Tenant, evidence: Uuid) {
+        let scope = Uuid::new_v4();
+        let key = StreamKey::new(
+            TenantId(t.id),
+            "workspace",
+            scope,
+            "code",
+            "retrieval_card",
+            "v1",
+        );
+        let seq: i64 = self
+            .admin
+            .query_one("SELECT nextval('ops.commit_seq_seq')", &[])
+            .expect("commit_seq")
+            .get(0);
+        self.admin
+            .execute(
+                "INSERT INTO projection.stream_checkpoints \
+                   (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, issued_highwater) \
+                 VALUES ($1, 'workspace', $2, 'code', 'retrieval_card', 'v1', 1)",
+                &[&t.id, &scope],
+            )
+            .expect("insert checkpoint");
+        self.admin
+            .execute(
+                "INSERT INTO projection.stream_log \
+                   (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, stream_seq, \
+                    commit_seq, state, settled_at) \
+                 VALUES ($1, 'workspace', $2, 'code', 'retrieval_card', 'v1', 1, $3, 'DONE', now())",
+                &[&t.id, &scope, &seq],
+            )
+            .expect("insert stream row");
+        self.admin
+            .execute(
+                "INSERT INTO ops.outbox (tenant_id, commit_seq, stream_seq, event_type, evidence_id, status, processed_at) \
+                 VALUES ($1, $2, 1, 'G_M20_5_FIXTURE', $3, 'DONE', now())",
+                &[&t.id, &seq, &evidence],
+            )
+            .expect("insert outbox row");
+        let tombstoned = self
+            .rt
+            .block_on(forget_repo::tombstone(&self.maintenance, &key, 1))
+            .expect("tombstone the stream row");
+        assert!(tombstoned, "this call performed the TOMBSTONED transition");
+    }
+
     /// The predicate asked as `dsn`'s role from a session of `session_tenant` and `user`, with `arg_tenant` as its argument.
     fn call(
         &self,
@@ -402,9 +530,9 @@ impl Handle {
         })
     }
 
-    /// The verdict `role_gateway` gets for `memory` of `tenant` in a session of that tenant and `user`.
+    /// The verdict `role_private_worker` gets for `memory` of `tenant` in a session of that tenant and `user`.
     fn verdict(&self, tenant: Uuid, user: Uuid, memory: Uuid) -> EligibilityVerdict {
-        self.call(&self.gateway_dsn, tenant, user, tenant, memory)
+        self.call(&self.worker_dsn, tenant, user, tenant, memory)
             .expect("the predicate")
     }
 }
@@ -663,7 +791,7 @@ fn g_m20_5_h_foreign_tenant_memory_is_not_found() {
                 "an absent id reads the same"
             );
             assert_eq!(
-                h.call(&h.gateway_dsn, mine.id, user, theirs.id, foreign),
+                h.call(&h.worker_dsn, mine.id, user, theirs.id, foreign),
                 Err(ErrorCode::Forbidden)
             );
         },
@@ -693,29 +821,39 @@ fn g_m20_5_i_universal_applicability_is_no_licence() {
     );
 }
 
-/// G-M20-5 (j): a public role may not execute the predicate, by catalog and by call; the two roles of the existing contribution
-/// path may.
+/// G-M20-5 (j): exactly `role_private_worker` may execute the predicate (rv-394 P1: the owner arm ignores session visibility, so
+/// no user-facing or public role may), by catalog for every runtime role, PUBLIC and `role_public_disclosure`, and by call.
 #[test]
-fn g_m20_5_j_public_roles_cannot_execute_the_predicate() {
+fn g_m20_5_j_only_the_private_worker_can_execute_the_predicate() {
     run_db_fixture::<EligibilityFixture, _>(
-        "g_m20_5_j_public_roles_cannot_execute_the_predicate",
+        "g_m20_5_j_only_the_private_worker_can_execute_the_predicate",
         |mut h| {
             let t = h.new_tenant();
             let user = h.new_user();
             h.publish_notice(&["FIX"]);
             let evidence = h.evidence(t, "INTERNAL", None);
             let memory = h.memory(t, Some(NoteKind::Fix), &supporting(&[evidence]));
-            assert_eq!(
-                h.call(&h.public_dsn, t.id, user, t.id, memory),
-                Err(ErrorCode::Forbidden),
-                "role_public_worker is refused"
-            );
+            assert_eq!(h.verdict(t.id, user, memory), EligibilityVerdict::Eligible);
+            for (name, dsn) in [
+                ("role_gateway", &h.gateway_dsn),
+                ("role_public_worker", &h.public_dsn),
+            ] {
+                assert_eq!(
+                    h.call(dsn, t.id, user, t.id, memory),
+                    Err(ErrorCode::Forbidden),
+                    "{name} is refused"
+                );
+            }
             for (role, expected) in [
-                ("role_gateway", true),
                 ("role_private_worker", true),
-                ("role_public_worker", false),
-                ("role_retrieval_worker", false),
+                ("role_gateway", false),
+                ("role_maintenance", false),
+                ("role_admin", false),
+                ("role_batch_issuer", false),
                 ("role_consolidation_worker", false),
+                ("role_retrieval_worker", false),
+                ("role_public_worker", false),
+                ("public", false),
             ] {
                 let held: bool = h
                     .admin
@@ -859,6 +997,187 @@ fn g_m20_5_m_the_first_failure_wins() {
     });
 }
 
+/// G-M20-5 (n), rv-394 P1: the relation hop. A memory linked to a PRODUCT owned by a BRAND owned by a BUSINESS that holds the
+/// CUSTOMER role is a customer link two hops away, whether the link is the memory's or its closure Evidence's; the same chain
+/// without the role, and a product with no relation, stay ELIGIBLE. (The 0249 whitelist has no ORGANISATION endpoint, so the
+/// chain is PRODUCT, BRAND, BUSINESS.)
+#[test]
+fn g_m20_5_n_relation_hop_reaches_a_customer() {
+    run_db_fixture::<EligibilityFixture, _>(
+        "g_m20_5_n_relation_hop_reaches_a_customer",
+        |mut h| {
+            let t = h.new_tenant();
+            let user = h.new_user();
+            h.publish_notice(&["FIX"]);
+            let auth = h.evidence(t, "INTERNAL", None);
+            let product = h.subject(t, "PRODUCT", false);
+            let brand = h.subject(t, "BRAND", false);
+            let customer = h.subject(t, "BUSINESS", true);
+            h.relation(t, (product, brand, "OWNED_BY"), auth);
+            h.relation(t, (brand, customer, "OWNED_BY"), auth);
+            let own_product = h.subject(t, "PRODUCT", false);
+            let own_brand = h.subject(t, "BRAND", false);
+            let own_business = h.subject(t, "BUSINESS", false);
+            h.relation(t, (own_product, own_brand, "OWNED_BY"), auth);
+            h.relation(t, (own_brand, own_business, "OWNED_BY"), auth);
+            let lone_product = h.subject(t, "PRODUCT", false);
+
+            let by_memory = {
+                let e = h.evidence(t, "INTERNAL", None);
+                let m = h.memory(t, Some(NoteKind::Fix), &supporting(&[e]));
+                h.link_memory(t, m, product);
+                m
+            };
+            let by_evidence = {
+                let e = h.evidence(t, "INTERNAL", None);
+                let m = h.memory(t, Some(NoteKind::Fix), &supporting(&[e]));
+                h.link_evidence(t, e, product);
+                m
+            };
+            let mut clean = Vec::new();
+            for subject in [own_product, lone_product] {
+                let e = h.evidence(t, "INTERNAL", None);
+                let m = h.memory(t, Some(NoteKind::Fix), &supporting(&[e]));
+                h.link_memory(t, m, subject);
+                clean.push(m);
+            }
+            for memory in [by_memory, by_evidence] {
+                assert_eq!(
+                    h.verdict(t.id, user, memory),
+                    EligibilityVerdict::PersonOrCustomerLink
+                );
+            }
+            for memory in clean {
+                assert_eq!(h.verdict(t.id, user, memory), EligibilityVerdict::Eligible);
+            }
+        },
+    );
+}
+
+/// G-M20-5 (o), rv-394 P1: PART_OF is followed too, and the hop reaches a PERSON as well as a CUSTOMER. A PRODUCT PART_OF a
+/// PRODUCT that is OWNED_BY a BRAND holding the CUSTOMER role is blocked; a PRODUCT PART_OF a PRODUCT owned by a PERSON is
+/// blocked (that last edge is outside the 0249 whitelist, see `relation_unlisted`).
+#[test]
+fn g_m20_5_o_part_of_then_owner_reaches_a_customer_or_a_person() {
+    run_db_fixture::<EligibilityFixture, _>(
+        "g_m20_5_o_part_of_then_owner_reaches_a_customer_or_a_person",
+        |mut h| {
+            let t = h.new_tenant();
+            let user = h.new_user();
+            h.publish_notice(&["FIX"]);
+            let auth = h.evidence(t, "INTERNAL", None);
+            let part = h.subject(t, "PRODUCT", false);
+            let whole = h.subject(t, "PRODUCT", false);
+            let customer = h.subject(t, "BRAND", true);
+            h.relation(t, (part, whole, "PART_OF"), auth);
+            h.relation(t, (whole, customer, "OWNED_BY"), auth);
+            let part_p = h.subject(t, "PRODUCT", false);
+            let whole_p = h.subject(t, "PRODUCT", false);
+            let person = h.subject(t, "PERSON", false);
+            h.relation(t, (part_p, whole_p, "PART_OF"), auth);
+            h.relation_unlisted(t, (whole_p, person, "OWNED_BY"), auth);
+            for subject in [part, part_p] {
+                let e = h.evidence(t, "INTERNAL", None);
+                let m = h.memory(t, Some(NoteKind::Fix), &supporting(&[e]));
+                h.link_memory(t, m, subject);
+                assert_eq!(
+                    h.verdict(t.id, user, m),
+                    EligibilityVerdict::PersonOrCustomerLink
+                );
+            }
+        },
+    );
+}
+
+/// G-M20-5 (p), rv-394 P1: only the CURRENT revision of a relation counts. The chain is blocked while revision 1 is live and
+/// no longer blocks once revision 2 retracts it (`valid` = `{}`).
+#[test]
+fn g_m20_5_p_a_retracted_relation_does_not_block() {
+    run_db_fixture::<EligibilityFixture, _>(
+        "g_m20_5_p_a_retracted_relation_does_not_block",
+        |mut h| {
+            let t = h.new_tenant();
+            let user = h.new_user();
+            h.publish_notice(&["FIX"]);
+            let auth = h.evidence(t, "INTERNAL", None);
+            let product = h.subject(t, "PRODUCT", false);
+            let customer = h.subject(t, "BRAND", true);
+            let relation = h.relation(t, (product, customer, "OWNED_BY"), auth);
+            let e = h.evidence(t, "INTERNAL", None);
+            let memory = h.memory(t, Some(NoteKind::Fix), &supporting(&[e]));
+            h.link_memory(t, memory, product);
+            assert_eq!(
+                h.verdict(t.id, user, memory),
+                EligibilityVerdict::PersonOrCustomerLink
+            );
+            h.retract(t, relation, (product, customer, "OWNED_BY"), auth);
+            assert_eq!(h.verdict(t.id, user, memory), EligibilityVerdict::Eligible);
+        },
+    );
+}
+
+/// G-M20-5 (q), rv-394 P1: a relation cycle terminates (the recursive CTE dedupes with UNION) and judges what the cycle
+/// reaches: PRODUCT A PART_OF B and B PART_OF A is ELIGIBLE, and becomes blocked once B holds the CUSTOMER role.
+#[test]
+fn g_m20_5_q_a_relation_cycle_terminates() {
+    run_db_fixture::<EligibilityFixture, _>("g_m20_5_q_a_relation_cycle_terminates", |mut h| {
+        let t = h.new_tenant();
+        let user = h.new_user();
+        h.publish_notice(&["FIX"]);
+        let auth = h.evidence(t, "INTERNAL", None);
+        let a = h.subject(t, "PRODUCT", false);
+        let b = h.subject(t, "PRODUCT", false);
+        h.relation(t, (a, b, "PART_OF"), auth);
+        h.relation(t, (b, a, "PART_OF"), auth);
+        let e = h.evidence(t, "INTERNAL", None);
+        let memory = h.memory(t, Some(NoteKind::Fix), &supporting(&[e]));
+        h.link_memory(t, memory, a);
+        assert_eq!(h.verdict(t.id, user, memory), EligibilityVerdict::Eligible);
+        h.admin
+            .execute(
+                "INSERT INTO private.subject_roles (tenant_id, subject_id, role) VALUES ($1, $2, 'CUSTOMER')",
+                &[&t.id, &b],
+            )
+            .expect("insert subject role");
+        assert_eq!(
+            h.verdict(t.id, user, memory),
+            EligibilityVerdict::PersonOrCustomerLink
+        );
+    });
+}
+
+/// G-M20-5 (r), rv-394 P2: closure Evidence that was forgotten (its stream row TOMBSTONED through
+/// `forget_repo::tombstone`) is EVIDENCE_DELETED while the memory itself stays active, and the verdict comes before
+/// DATA_CLASS: the tombstoned Evidence here is SENSITIVE too. A memory whose Evidence is untouched stays ELIGIBLE.
+#[test]
+fn g_m20_5_r_tombstoned_closure_evidence_is_evidence_deleted() {
+    run_db_fixture::<EligibilityFixture, _>(
+        "g_m20_5_r_tombstoned_closure_evidence_is_evidence_deleted",
+        |mut h| {
+            let t = h.new_tenant();
+            let user = h.new_user();
+            h.publish_notice(&["FIX"]);
+            let kept = h.evidence(t, "INTERNAL", None);
+            let gone = h.evidence(t, "SENSITIVE", None);
+            let untouched = h.memory(t, Some(NoteKind::Fix), &supporting(&[kept]));
+            let forgotten = h.memory(t, Some(NoteKind::Fix), &supporting(&[kept, gone]));
+            assert_eq!(
+                h.verdict(t.id, user, forgotten),
+                EligibilityVerdict::DataClass
+            );
+            h.tombstone_evidence(t, gone);
+            assert_eq!(
+                h.verdict(t.id, user, forgotten),
+                EligibilityVerdict::EvidenceDeleted
+            );
+            assert_eq!(
+                h.verdict(t.id, user, untouched),
+                EligibilityVerdict::Eligible
+            );
+        },
+    );
+}
+
 /// §78.2: the verdicts the function returns equal [`EligibilityVerdict::ALL`], both ways, and the function is the owner-owned
 /// SECURITY DEFINER the migration declares.
 #[test]
@@ -884,7 +1203,7 @@ fn verdict_literals_equal_the_rust_set_and_the_function_is_pinned() {
                 .iter()
                 .map(|v| v.wire().to_owned())
                 .collect();
-            assert_eq!(rust.len(), 10);
+            assert_eq!(rust.len(), 11);
             assert_eq!(db, rust);
 
             let row = h
@@ -924,8 +1243,9 @@ fn the_predicate_body_reads_no_applicability_or_public_object() {
             assert!(definition.contains("memory_evidence"), "sentinel positive");
             for forbidden in [
                 "memory_applicability",
-                "memory_projects",
+                "memory_project",
                 "memory_in_project",
+                "evidence_projects",
                 "public.",
             ] {
                 assert!(
