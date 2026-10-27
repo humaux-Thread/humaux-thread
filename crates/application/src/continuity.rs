@@ -3,8 +3,9 @@
 //!   services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::identity, domain::ids,
 //!   retrieval::handoff]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, gateway::continuity, tests]
-//! Invariants: []
-//! Spec: §25.3
+//! Invariants: [facet_completeness is the one FACET_COMPLETE predicate: only ContinuityStatus::Current covers a
+//!   required facet, and an empty required profile fails closed (§22.0, ADR-0110 D-D)]
+//! Spec: §25.3; §25.3.1; §22.2; §22.0; ADR-0110
 //!
 //! 端口反转的原因是依赖方向：`adapters` 依赖本 crate（不能反过来 import
 //! `adapters::context_repo`），所以取数以 [`ContextReadPort`] 注入——`adapters` 侧实现它、
@@ -303,6 +304,71 @@ fn unavailable_in_w2(kind: ContinuityFacetKind) -> bool {
     W2_FORCED_UNAVAILABLE.contains(&kind)
 }
 
+/// U5 fallback required-facet profile (ADR-0110 :150-151): the §25.3.1 SOURCE_BACKED set minus
+/// [`W2_FORCED_UNAVAILABLE`], in [`ContinuityFacetKind::ALL`] order.
+// ponytail: U5 fallback profile (ADR-0110 :150-151); M14 declares the real required-facet profile and switches the brief coverage line to it
+pub fn fallback_required_facets() -> Vec<ContinuityFacetKind> {
+    ContinuityFacetKind::ALL
+        .into_iter()
+        .filter(|kind| !unavailable_in_w2(*kind))
+        .collect()
+}
+
+/// [`facet_completeness`] verdict (§22.2, ADR-0110 D-D).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetCompleteness {
+    /// `FacetComplete` iff the required profile is non-empty and every required facet is covered,
+    /// else `CannotEstablish` (§22.0: no unproven completeness claim).
+    pub class: CompletenessClass,
+    /// Required facets whose slot is `Current`.
+    pub covered: u8,
+    /// Distinct facets in the required profile.
+    pub required: u8,
+    /// Required facets that are not covered, in [`ContinuityFacetKind::ALL`] order.
+    pub missing: Vec<ContinuityFacetKind>,
+}
+
+/// §22.2 FACET_COMPLETE over a snapshot's slot states (ADR-0110 D-D). Pure: the caller supplies the
+/// required profile; no clock, no I/O.
+///
+/// Only [`ContinuityStatus::Current`] covers a facet: `Missing`, `Unavailable`, `Stale`,
+/// `Conflicted` and a required facet absent from `slots` never do, and a kind listed twice is
+/// covered only if every entry is `Current`. An empty profile is `CannotEstablish` (§22.0).
+pub fn facet_completeness(
+    slots: &[(ContinuityFacetKind, ContinuityStatus)],
+    required: &[ContinuityFacetKind],
+) -> FacetCompleteness {
+    let covered_kind = |kind: ContinuityFacetKind| {
+        let mut states = slots
+            .iter()
+            .filter(|(slot, _)| *slot == kind)
+            .map(|(_, status)| *status);
+        states.next() == Some(ContinuityStatus::Current)
+            && states.all(|status| status == ContinuityStatus::Current)
+    };
+    let wanted: Vec<ContinuityFacetKind> = ContinuityFacetKind::ALL
+        .into_iter()
+        .filter(|kind| required.contains(kind))
+        .collect();
+    let missing: Vec<ContinuityFacetKind> = wanted
+        .iter()
+        .copied()
+        .filter(|kind| !covered_kind(*kind))
+        .collect();
+    let class = if wanted.is_empty() || !missing.is_empty() {
+        CompletenessClass::CannotEstablish
+    } else {
+        CompletenessClass::FacetComplete
+    };
+    // `wanted` is a subset of the 15-kind closed set, so the conversions cannot saturate.
+    FacetCompleteness {
+        class,
+        covered: u8::try_from(wanted.len().saturating_sub(missing.len())).unwrap_or(u8::MAX),
+        required: u8::try_from(wanted.len()).unwrap_or(u8::MAX),
+        missing,
+    }
+}
+
 fn source_wire(input: SourceFacetInput) -> ContinuityFacetWire {
     let kind = input.kind.as_str();
     if unavailable_in_w2(input.kind) {
@@ -383,7 +449,16 @@ fn assemble_continuity_result(
     {
         return Err(ErrorCode::CannotEstablishCompleteness);
     }
-    let mut source = closed.facets.into_iter().map(source_wire);
+    let source: Vec<ContinuityFacetWire> = closed.facets.into_iter().map(source_wire).collect();
+    // §22.2: slot kinds were checked equal to `ALL` above; statuses are the wire statuses
+    // (W2 forced-unavailable included), so the verdict is exactly "all 15 source facets Current".
+    let slots: Vec<(ContinuityFacetKind, ContinuityStatus)> = ContinuityFacetKind::ALL
+        .into_iter()
+        .zip(source.iter().map(status_of))
+        .collect();
+    let facet_complete = facet_completeness(&slots, &ContinuityFacetKind::ALL).class
+        == CompletenessClass::FacetComplete;
+    let mut source = source.into_iter();
     let mut facets = Vec::with_capacity(17);
     facets.extend(source.by_ref().take(13));
     facets.push(ContinuityFacetWire::Derived(DerivedFacetWire {
@@ -408,7 +483,7 @@ fn assemble_continuity_result(
     if accounted != 17 {
         return Err(ErrorCode::CannotEstablishCompleteness);
     }
-    let completeness_class = if counts[0] == 17 && !closed.handoff.counts.overflow {
+    let completeness_class = if facet_complete && !closed.handoff.counts.overflow {
         CompletenessClass::FacetComplete
     } else {
         CompletenessClass::CannotEstablish
@@ -810,5 +885,188 @@ mod w2_tests {
             mutate(&mut candidate);
             assert_ne!(recompute(&candidate), baseline_hash, "mutation: {label}");
         }
+    }
+
+    type Slots = Vec<(ContinuityFacetKind, ContinuityStatus)>;
+
+    fn required_count() -> u8 {
+        u8::try_from(ContinuityFacetKind::ALL.len()).expect("closed set fits u8")
+    }
+
+    /// Every kind `Current`, except `kind`, which carries `status` or is left out when `None`.
+    fn slots_except(kind: ContinuityFacetKind, status: Option<ContinuityStatus>) -> Slots {
+        ContinuityFacetKind::ALL
+            .into_iter()
+            .filter_map(|slot| {
+                if slot == kind {
+                    status.map(|status| (slot, status))
+                } else {
+                    Some((slot, ContinuityStatus::Current))
+                }
+            })
+            .collect()
+    }
+
+    fn assert_only_missing(kind: ContinuityFacetKind, status: Option<ContinuityStatus>) {
+        let n = required_count();
+        assert_eq!(
+            facet_completeness(&slots_except(kind, status), &ContinuityFacetKind::ALL),
+            FacetCompleteness {
+                class: CompletenessClass::CannotEstablish,
+                covered: n - 1,
+                required: n,
+                missing: vec![kind],
+            },
+            "{kind:?} as {status:?}"
+        );
+    }
+
+    #[test]
+    fn facet_completeness_all_current_is_facet_complete() {
+        let n = required_count();
+        let slots = ContinuityFacetKind::ALL
+            .into_iter()
+            .map(|kind| (kind, ContinuityStatus::Current))
+            .collect::<Slots>();
+        assert_eq!(
+            facet_completeness(&slots, &ContinuityFacetKind::ALL),
+            FacetCompleteness {
+                class: CompletenessClass::FacetComplete,
+                covered: n,
+                required: n,
+                missing: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn facet_completeness_stale_is_not_covered() {
+        assert_only_missing(
+            ContinuityFacetKind::Decisions,
+            Some(ContinuityStatus::Stale),
+        );
+    }
+
+    #[test]
+    fn facet_completeness_conflicted_is_not_covered() {
+        assert_only_missing(
+            ContinuityFacetKind::Constraints,
+            Some(ContinuityStatus::Conflicted),
+        );
+    }
+
+    #[test]
+    fn facet_completeness_unavailable_is_not_covered() {
+        assert_only_missing(
+            ContinuityFacetKind::Code,
+            Some(ContinuityStatus::Unavailable),
+        );
+    }
+
+    #[test]
+    fn facet_completeness_missing_is_not_covered() {
+        assert_only_missing(ContinuityFacetKind::Goal, Some(ContinuityStatus::Missing));
+    }
+
+    #[test]
+    fn facet_completeness_absent_slot_is_not_covered() {
+        assert_only_missing(ContinuityFacetKind::Outcomes, None);
+    }
+
+    #[test]
+    fn facet_completeness_mixed_names_missing_in_closed_set_order() {
+        let n = required_count();
+        // Built in reverse closed-set order so the order of `missing` cannot come from the input.
+        let slots = ContinuityFacetKind::ALL
+            .into_iter()
+            .rev()
+            .filter_map(|kind| match kind {
+                ContinuityFacetKind::Outcomes => Some((kind, ContinuityStatus::Stale)),
+                ContinuityFacetKind::Code => Some((kind, ContinuityStatus::Unavailable)),
+                ContinuityFacetKind::Decisions => Some((kind, ContinuityStatus::Conflicted)),
+                ContinuityFacetKind::Goal => None,
+                _ => Some((kind, ContinuityStatus::Current)),
+            })
+            .collect::<Slots>();
+        assert_eq!(
+            facet_completeness(&slots, &ContinuityFacetKind::ALL),
+            FacetCompleteness {
+                class: CompletenessClass::CannotEstablish,
+                covered: n - 4,
+                required: n,
+                missing: vec![
+                    ContinuityFacetKind::Goal,
+                    ContinuityFacetKind::Decisions,
+                    ContinuityFacetKind::Code,
+                    ContinuityFacetKind::Outcomes,
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn facet_completeness_empty_profile_fails_closed() {
+        let slots = slots_except(ContinuityFacetKind::Goal, Some(ContinuityStatus::Current));
+        assert_eq!(
+            facet_completeness(&slots, &[]),
+            FacetCompleteness {
+                class: CompletenessClass::CannotEstablish,
+                covered: 0,
+                required: 0,
+                missing: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn facet_completeness_profile_governs_and_duplicates_fail_closed() {
+        // Only the required profile counts: a non-required facet being Unavailable is irrelevant,
+        // and a repeated required kind is one facet.
+        let profile = [
+            ContinuityFacetKind::Goal,
+            ContinuityFacetKind::Decisions,
+            ContinuityFacetKind::Goal,
+        ];
+        let slots = slots_except(
+            ContinuityFacetKind::Code,
+            Some(ContinuityStatus::Unavailable),
+        );
+        assert_eq!(
+            facet_completeness(&slots, &profile),
+            FacetCompleteness {
+                class: CompletenessClass::FacetComplete,
+                covered: 2,
+                required: 2,
+                missing: Vec::new(),
+            }
+        );
+        // The same kind reported both Current and Stale is ambiguous, so not covered.
+        let mut ambiguous = slots;
+        ambiguous.push((ContinuityFacetKind::Goal, ContinuityStatus::Stale));
+        let verdict = facet_completeness(&ambiguous, &profile);
+        assert_eq!(verdict.class, CompletenessClass::CannotEstablish);
+        assert_eq!(verdict.missing, vec![ContinuityFacetKind::Goal]);
+    }
+
+    #[test]
+    fn fallback_required_facets_is_all_minus_w2_forced_unavailable() {
+        let profile = fallback_required_facets();
+        assert_eq!(
+            profile.len(),
+            ContinuityFacetKind::ALL.len() - W2_FORCED_UNAVAILABLE.len()
+        );
+        for kind in ContinuityFacetKind::ALL {
+            assert_eq!(
+                profile.contains(&kind),
+                !W2_FORCED_UNAVAILABLE.contains(&kind),
+                "{kind:?}"
+            );
+        }
+        // Closed-set order, so `facet_completeness` names missing facets the same way.
+        let positions = profile
+            .iter()
+            .map(|kind| ContinuityFacetKind::ALL.iter().position(|k| k == kind))
+            .collect::<Vec<_>>();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

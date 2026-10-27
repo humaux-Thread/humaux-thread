@@ -564,6 +564,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
+- reads `private.curation_candidate_targets`
+- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -853,6 +855,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_facet_slots`
 - reads `private.continuity_facet_versions`
 - reads `private.continuity_projects`
+- reads `private.curation_candidate_targets`
+- reads `private.curation_candidates`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
 - reads `private.nodes`
@@ -3300,6 +3304,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
+- reads `private.curation_candidate_targets`
+- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -5029,6 +5035,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::confirm_token_repo`
@@ -5176,6 +5183,7 @@ executed by:
 
 ### `control.confirm_tokens`
 read by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7151,6 +7159,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -7862,6 +7871,7 @@ executed by:
 
 ### `ops.memory_lifecycle_events`
 read by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8832,6 +8842,46 @@ written by:
 
 executed by:
 
+### `private.curation_candidate_targets`
+read by:
+- (no process): `adapters::candidate_repo`
+- (no process): `adapters::tests::candidates`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `private.curation_candidates`
+read by:
+- (no process): `adapters::candidate_repo`
+- (no process): `adapters::tests::candidates`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `private.curation_transition_allowed`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::candidates`
+
+### `private.decide_curation_candidate`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::candidate_repo`
+
 ### `private.decide_memory_applicability`
 read by:
 
@@ -9706,6 +9756,7 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -9812,6 +9863,7 @@ read by:
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -10141,6 +10193,14 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 
 executed by:
+
+### `private.propose_curation_candidate`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::candidate_repo`
 
 ### `private.propose_memory_applicability`
 read by:
@@ -11808,6 +11868,7 @@ executed by:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12078,6 +12139,7 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12547,6 +12609,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12684,6 +12747,7 @@ modules naming it:
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
 - `adapters::byok`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12746,6 +12810,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13097,6 +13162,7 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_execution_0131`
@@ -13256,6 +13322,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13275,6 +13342,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13353,6 +13421,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13467,6 +13536,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13576,6 +13646,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13595,6 +13666,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13655,6 +13727,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -14026,6 +14099,7 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 - `contracts::mechanism_registry`
 
 ### humaux-contracts → `toml` (normal)
@@ -14033,6 +14107,7 @@ why: parses the embedded feature registry TOML
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 
 ### humaux-contracts → `sha2` (normal)
 why: sha256 digests for hashes, fingerprints and scope_hash
@@ -14475,11 +14550,9 @@ modules naming it:
 why: projection payload and receipt JSON
 
 modules naming it:
-- `public-pool::admission::deid`
 - `public-pool::completeness`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
-- `public-pool::tests::admission_deid`
 - `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
@@ -14628,6 +14701,7 @@ modules naming it:
 - `retrieval::handoff`
 - `retrieval::request`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `humaux-contracts` (normal)
@@ -14635,6 +14709,8 @@ why: typed retrieval config registry entries request.rs assembles against
 
 modules naming it:
 - `retrieval::request`
+- `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `serde_json` (normal)
@@ -14644,6 +14720,7 @@ modules naming it:
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `sha2` (normal)
@@ -17208,6 +17285,15 @@ services (computed):
 
 default run:
 
+### `crates/adapters/tests/candidates.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/confirm_token_retention.rs`
 db-bound (default run): yes
 
@@ -18136,6 +18222,13 @@ services (computed):
 
 default run:
 
+### `crates/contracts/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/domain/tests/authority_policy_g59_6.rs`
 db-bound (default run): no
 
@@ -18218,13 +18311,6 @@ services (computed):
 default run:
 
 ### `crates/protocol/tests/note_kind_contract.rs`
-db-bound (default run): no
-
-services (computed):
-
-default run:
-
-### `crates/public-pool/tests/admission_deid.rs`
 db-bound (default run): no
 
 services (computed):
@@ -18342,6 +18428,13 @@ services (computed):
 
 default run:
 
+### `crates/retrieval/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/retrieval/tests/planner_predicate_eval.rs`
 db-bound (default run): no
 
@@ -18439,9 +18532,9 @@ default run:
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
-- `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
+- `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
