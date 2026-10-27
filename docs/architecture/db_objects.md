@@ -4479,7 +4479,6 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
-- (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::rebuild_cli`
 - (no process): `maintenance::tests::retention`
@@ -6630,27 +6629,21 @@ executed by:
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
-### `ops.i4_authority_scan`
+### `ops.i4_authority_consistency_scan`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
 - RLS: —
 - FORCE: —
-- created in: 0287_repair_findings_i4_scan
+- created in: 0004_private_evidence_memory
 
 grants (runtime roles):
-- role_maintenance: EXECUTE
-- role_migration_owner: EXECUTE
+- PUBLIC (default): EXECUTE
 
 read by:
 
 written by:
 
 executed by:
-- (no process): `maintenance::tests::i4_scan`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.jobs`
 - kind: table
@@ -7728,36 +7721,6 @@ executed by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::jobs`
-
-### `ops.repair_findings`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0287_repair_findings_i4_scan
-
-grants (runtime roles):
-- role_maintenance: INSERT
-- role_maintenance: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `maintenance::tests::i4_scan`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `maintenance::tests::i4_scan`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-
-executed by:
 
 ### `ops.requeue_dead_distill`
 - kind: function (SECURITY DEFINER)
@@ -10775,7 +10738,6 @@ read by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
-- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -10919,7 +10881,6 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
-- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
@@ -13707,6 +13668,102 @@ grants (runtime roles):
 read by:
 
 written by:
+
+executed by:
+
+### `public.concept_labels`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0276_public_vocabulary
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_public_worker: INSERT
+- role_public_worker: SELECT
+- role_public_worker: UPDATE
+
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
+### `public.concept_relations`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0276_public_vocabulary
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_public_worker: INSERT
+- role_public_worker: SELECT
+- role_public_worker: UPDATE
+
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
+### `public.concepts`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0276_public_vocabulary
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_public_worker: INSERT
+- role_public_worker: SELECT
+- role_public_worker: UPDATE
+
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
 
 executed by:
 

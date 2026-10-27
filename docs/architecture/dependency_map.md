@@ -539,7 +539,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.public_release_revocations`
 - reads `ops.reasoning_account_health_observations`
 - reads `ops.reasoning_provider_health_observations`
-- reads `ops.repair_findings`
 - reads `ops.restore_drills`
 - reads `ops.restore_witnesses`
 - reads `ops.retrieval_embedding_rpc_calls`
@@ -627,6 +626,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
+- reads `public.concept_labels`
+- reads `public.concept_relations`
+- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -712,7 +714,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.distill_slots_all_bound`
 - executes `ops.finish_derived_work_v2`
 - executes `ops.health_snapshot`
-- executes `ops.i4_authority_scan`
 - executes `ops.model_call_identity_claim`
 - executes `ops.purge_expired_selection_snapshots`
 - executes `ops.purge_terminal_jobs`
@@ -818,6 +819,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `protocol::mcp_catalog`
 
+#### `public-pool::vocab::model`
+
 #### `retrieval::candidate`
 
 #### `retrieval::compiler`
@@ -876,7 +879,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `projection.stream_log`
 - executes `control.deletion_request_freeze`
 - executes `control.resolve_user_reasoning_admission`
-- executes `ops.i4_authority_scan`
 - executes `ops.reasoning_health_observation_reject_mutation`
 - executes `ops.reasoning_model_call_validate`
 - executes `private.memory_in_project`
@@ -1244,6 +1246,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `xtask::threshold_shape`
 - env `CARGO_MANIFEST_DIR`
+
+#### `xtask::vocab_check`
+- service `subprocess(git)`
 
 ### process(humaux-admin)
 
@@ -2687,7 +2692,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.partition_registry`
 - writes `ops.backup_receipts`
 - writes `ops.backup_sets`
-- writes `ops.repair_findings`
 - writes `ops.restore_drills`
 - writes `ops.restore_witnesses`
 - writes `ops.wal_archive_failures`
@@ -2698,7 +2702,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_statements`
 - executes `control.retention_policy_approve`
 - executes `ops.auto_redrive_schema_failed`
-- executes `ops.i4_authority_scan`
 - executes `ops.purge_expired_selection_snapshots`
 - executes `ops.purge_terminal_jobs`
 - executes `projection.reissue_unsettled_tickets`
@@ -3277,7 +3280,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.public_release_revocations`
 - reads `ops.reasoning_account_health_observations`
 - reads `ops.reasoning_provider_health_observations`
-- reads `ops.repair_findings`
 - reads `ops.restore_drills`
 - reads `ops.restore_witnesses`
 - reads `ops.retrieval_embedding_rpc_calls`
@@ -3365,6 +3367,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
+- reads `public.concept_labels`
+- reads `public.concept_relations`
+- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -3450,7 +3455,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.distill_slots_all_bound`
 - executes `ops.finish_derived_work_v2`
 - executes `ops.health_snapshot`
-- executes `ops.i4_authority_scan`
 - executes `ops.model_call_identity_claim`
 - executes `ops.purge_expired_selection_snapshots`
 - executes `ops.purge_terminal_jobs`
@@ -3534,7 +3538,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`
 - env `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`
 - env `HUMAUX_MAINTENANCE_PG_DSN`
-- env `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT`
@@ -6779,7 +6782,6 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
-- (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::rebuild_cli`
 - (no process): `maintenance::tests::retention`
@@ -7688,18 +7690,6 @@ executed by:
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
-### `ops.i4_authority_scan`
-read by:
-
-written by:
-
-executed by:
-- (no process): `maintenance::tests::i4_scan`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-- process(humaux-maintenance): `maintenance::rls_check`
-
 ### `ops.jobs`
 read by:
 - (no process): `adapters::tests::contribution_execution_ingress_0131`
@@ -8271,18 +8261,6 @@ executed by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::jobs`
-
-### `ops.repair_findings`
-read by:
-- (no process): `maintenance::tests::i4_scan`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `maintenance::tests::i4_scan`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-
-executed by:
 
 ### `ops.requeue_dead_distill`
 read by:
@@ -9788,7 +9766,6 @@ read by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
-- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -9932,7 +9909,6 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
-- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
@@ -11357,6 +11333,45 @@ written by:
 
 executed by:
 
+### `public.concept_labels`
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
+### `public.concept_relations`
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
+### `public.concepts`
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
 ### `public.consensus_ready`
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
@@ -12017,6 +12032,7 @@ executed by:
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
+- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `testkit::disposable`
 - `testkit::fixture_purge`
@@ -12096,7 +12112,6 @@ executed by:
 - `maintenance::tests::backup`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
-- `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partition_pg_facts`
@@ -12239,7 +12254,6 @@ executed by:
 - `maintenance::drill`
 - `maintenance::migrate`
 - `maintenance::rls_check`
-- `maintenance::tests::i4_scan`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partitions`
 - `private-worker::tests::distill_hop_e2e`
@@ -12301,7 +12315,6 @@ executed by:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
-- `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partition_pg_facts`
@@ -12380,6 +12393,8 @@ executed by:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
+- `public-pool::tests::vocab`
+- `public-pool::vocab`
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
@@ -12539,6 +12554,7 @@ executed by:
 - `gateway::build`
 - `xtask::contract_impact`
 - `xtask::dep_map`
+- `xtask::vocab_check`
 
 ### `subprocess(gitleaks)`
 - `adapters::tests::projection_claim`
@@ -12571,7 +12587,6 @@ executed by:
 - `maintenance::tests::drill`
 - `maintenance::tests::exit_codes`
 - `maintenance::tests::health_serve`
-- `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partitions`
@@ -13367,6 +13382,7 @@ why: id minting/binding
 
 modules naming it:
 - `adapters::applicability_repo`
+- `adapters::audit_sink`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13378,6 +13394,8 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
+- `adapters::object_store`
+- `adapters::object_store::fs`
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
@@ -13414,6 +13432,7 @@ modules naming it:
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -13513,6 +13532,7 @@ modules naming it:
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
 - `adapters::tests::oauth_persistence`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -13695,6 +13715,7 @@ why: id minting/binding
 
 modules naming it:
 - `adapters::applicability_repo`
+- `adapters::audit_sink`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13706,6 +13727,8 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
+- `adapters::object_store`
+- `adapters::object_store::fs`
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
@@ -13742,6 +13765,7 @@ modules naming it:
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -14450,8 +14474,20 @@ modules naming it:
 - `protocol::error_map`
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::page`
 - `protocol::tests::mcp_http`
+- `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
+- `protocol::tests::page_budget`
+- `tests`
+
+### humaux-protocol → `humaux-application` (normal)
+why: signs and verifies the page@1 cursor with the shared token key set
+
+modules naming it:
+- `protocol::page`
+- `protocol::tests::page_budget`
 - `tests`
 
 ### humaux-protocol → `hmac` (normal)
@@ -14461,10 +14497,11 @@ modules naming it:
 - `protocol::edge`
 
 ### humaux-protocol → `sha2` (normal)
-why: paired digest for the HMAC-SHA256 key-hash verifier
+why: paired digest for the HMAC-SHA256 key-hash verifier and the page@1 args hash
 
 modules naming it:
 - `protocol::edge`
+- `protocol::page`
 
 ### humaux-protocol → `rmcp` (normal)
 why: MCP-over-HTTP server framework this adapter owns
@@ -14496,13 +14533,17 @@ modules naming it:
 - `protocol::mcp_catalog`
 
 ### humaux-protocol → `serde_json` (normal)
-why: JSON-RPC bodies and the embedded contracts/mcp catalog documents
+why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cursor payloads
 
 modules naming it:
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::page`
 - `protocol::tests::mcp_http`
+- `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
+- `protocol::tests::page_budget`
 - `tests`
 
 ### humaux-protocol → `jsonschema` (normal)
@@ -14510,6 +14551,9 @@ why: validates the embedded contracts/mcp catalog documents at load time
 
 modules naming it:
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::tests::mcp_profile`
+- `tests`
 
 ### humaux-protocol → `tokio` (normal)
 why: async runtime the Axum/rmcp server and its tests run on
@@ -14545,6 +14589,8 @@ modules naming it:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
+- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-domain` (normal)
@@ -14563,6 +14609,8 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
+- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-infra-cell` (normal)
@@ -14586,6 +14634,7 @@ modules naming it:
 - `public-pool::public_repo`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
+- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `async-trait` (normal)
@@ -14653,6 +14702,12 @@ modules naming it:
 - `public-pool::tests::support::public_qdrant_fixture`
 - `tests`
 
+### humaux-public-pool → `toml` (normal)
+why: parse PR-controlled public vocabulary
+
+modules naming it:
+- `public-pool::vocab::model`
+
 ### humaux-public-pool → `humaux-application` (dev)
 why: contribute::prepare/finalize drive the fixtures that feed admission
 
@@ -14676,6 +14731,7 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::support::public_qdrant_fixture`
+- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `postgres` (dev)
@@ -14690,6 +14746,7 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `tokio` (dev)
@@ -14700,6 +14757,7 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime`
+- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `uuid` (dev)
@@ -16997,17 +17055,6 @@ default run:
 - PostgreSQL
 - subprocess
 
-### `bins/maintenance/tests/i4_scan.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-- subprocess
-
-default run:
-- PostgreSQL
-- subprocess
-
 ### `bins/maintenance/tests/measure.rs`
 db-bound (default run): no
 
@@ -17859,6 +17906,13 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/object_store_contract.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/adapters/tests/offset_pagination_positive_control.rs`
 db-bound (default run): yes
 
@@ -18390,7 +18444,21 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/mcp_profile.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/protocol/tests/note_kind_contract.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `crates/protocol/tests/page_budget.rs`
 db-bound (default run): no
 
 services (computed):
@@ -18473,6 +18541,15 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/public-pool/tests/vocab.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/retrieval-provider/tests/contract_tests.rs`
 db-bound (default run): no
@@ -18611,7 +18688,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access

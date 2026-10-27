@@ -301,7 +301,6 @@ kind:
 processes:
 
 modules:
-- `maintenance::tests::i4_scan`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
 - `maintenance::tests::serve`
@@ -3175,21 +3174,6 @@ modules:
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 
-### `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-- `maintenance::tests::i4_scan`
-- `maintenance::tests::support::throwaway`
-
 ### `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - witness: literal
 - registry: raw
@@ -5960,6 +5944,7 @@ modules:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`
