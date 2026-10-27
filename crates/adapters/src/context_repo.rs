@@ -2649,6 +2649,8 @@ async fn apply_binding_write(
         | DestructiveOp::MemoryCorrect
         | DestructiveOp::MemoryConfirm
         | DestructiveOp::MemoryReject
+        | DestructiveOp::MemoryForget
+        | DestructiveOp::AccountDelete
         | DestructiveOp::MemoryNoteReplace => Err(ErrorCode::InvalidInput),
     }
 }
