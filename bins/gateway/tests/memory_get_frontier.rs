@@ -15,10 +15,11 @@
 //!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving, projection::stream,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
-//! Invariants: [the door tests run in their own throwaway database because they REVOKE every right of role_gateway on
-//!   `projection.stream_log` and EXECUTE on `projection.stream_point_ledger`: a `memory.get` that closed the ledger
-//!   would fail with permission denied, which proves the O(1) claim by construction (the closure door, run first as a
-//!   control and again after the revoke, has teeth); the MCP tests run against the isolated operation-receipt fixture
+//! Invariants: [the door tests run in their own throwaway database because they REVOKE role_gateway's SELECT on
+//!   `projection.stream_log` (leaving only the three columns the get's own tombstone gate reads, read_materialize.rs,
+//!   ADR-0071 D-A) and EXECUTE on `projection.stream_point_ledger`: a `memory.get` that closed the ledger would fail with
+//!   permission denied, which proves the O(1) claim by construction (the closure door, run first as a control and again
+//!   after the restriction, has teeth); the MCP tests run against the isolated operation-receipt fixture
 //!   tenant with a counting Qdrant transport, so "no Qdrant count" is an observed zero and a positive control (a recall
 //!   on the same app) proves the spy sees traffic; no DSN or unreachable DB is a visible SKIP]
 //! Spec: Baseline §15.5; §23.1; §23.3; §79.2; ADR-0110 D-A
@@ -102,7 +103,7 @@ const DIMENSION: u32 = 4;
 const QUERY: &str = "frontier reading scoped context";
 
 // ----------------------------------------------------------------------------------------------
-// Door level: a throwaway database, role_gateway, stream_log revoked
+// Door level: a throwaway database, role_gateway, stream_log narrowed to the body gate
 // ----------------------------------------------------------------------------------------------
 
 /// The identities of the one seeded tenant tree.
@@ -261,27 +262,46 @@ fn seed_stream(admin: &mut Client, ids: &Ids) {
         .expect("seed the ISSUED stream_log row");
 }
 
-/// Takes every right on the O(stream) closure's two sources away from `role_gateway` and proves it took.
-fn revoke_closure_sources(admin: &mut Client) {
+/// The `stream_log` columns the get's own final body gate still reads: its tombstone anti-join (ADR-0071 D-A) joins
+/// `ops.outbox` to `stream_log` on `tenant_id` and `commit_seq` and tests `state`, bounded by the requested ids.
+const GATE_COLUMNS: [&str; 3] = ["tenant_id", "commit_seq", "state"];
+
+/// Takes the O(stream) closure's two sources away from `role_gateway` and proves it took: EXECUTE on the point-ledger
+/// definer entirely, and `stream_log` down to [`GATE_COLUMNS`]. A whole-table revoke would fail the Memory read itself
+/// (the tombstone check above), not the frontier. The closure also needs the five key columns and `stream_seq` /
+/// `issued_at`, so it stays denied.
+fn restrict_closure_sources(admin: &mut Client) {
     admin
-        .batch_execute(
+        .batch_execute(&format!(
             "REVOKE ALL ON projection.stream_log FROM role_gateway; \
+             GRANT SELECT ({columns}) ON projection.stream_log TO role_gateway; \
              REVOKE EXECUTE ON FUNCTION \
                projection.stream_point_ledger(uuid,text,uuid,text,text,text,text,uuid[]) \
              FROM role_gateway",
-        )
-        .expect("revoke stream_log and stream_point_ledger from role_gateway");
-    let table_revoked: bool = admin
-        .query_one(
-            "SELECT NOT has_any_column_privilege('role_gateway', 'projection.stream_log', 'SELECT')",
-            &[],
-        )
-        .expect("privilege probe")
-        .get(0);
-    assert!(
-        table_revoked,
-        "precondition: role_gateway cannot read stream_log any more"
-    );
+            columns = GATE_COLUMNS.join(", ")
+        ))
+        .expect("restrict stream_log and revoke stream_point_ledger for role_gateway");
+    let privilege = |admin: &mut Client, column: &str| -> bool {
+        admin
+            .query_one(
+                "SELECT has_column_privilege('role_gateway'::name, 'projection.stream_log'::text, $1::text, 'SELECT'::text)",
+                &[&column],
+            )
+            .expect("column privilege probe")
+            .get(0)
+    };
+    for column in GATE_COLUMNS {
+        assert!(
+            privilege(admin, column),
+            "precondition: role_gateway keeps {column}, which the get's body gate reads"
+        );
+    }
+    for column in ["scope_kind", "scope_id", "stream_seq", "issued_at"] {
+        assert!(
+            !privilege(admin, column),
+            "precondition: role_gateway cannot read {column} any more"
+        );
+    }
     let function_revoked: bool = admin
         .query_one(
             "SELECT NOT has_function_privilege('role_gateway', \
@@ -365,23 +385,26 @@ fn pipeline_json(frontier: Option<Frontier>) -> Value {
     serde_json::to_value(pipeline).expect("pipeline serializes")
 }
 
-/// G-M13-1: with every right on `stream_log` and the point ledger revoked from `role_gateway`, the closure door is
-/// denied while the frontier door still returns the Memory and the checkpoint's numbers; `behind` follows the row.
+/// G-M13-1: with `stream_log` narrowed to the body gate's columns and the point ledger revoked from `role_gateway`, the
+/// closure door is denied while the frontier door still returns the Memory and the checkpoint's numbers; `behind`
+/// follows the row.
 #[test]
 fn get_frontier_door_needs_neither_stream_log_nor_the_point_ledger() {
     run_db_fixture::<DoorFixture, _>(
         "get_frontier_door_needs_neither_stream_log_nor_the_point_ledger",
         |mut h| {
             seed_stream(&mut h.admin, &h.ids);
-            // Control: before the revoke the closure door works, and counts the four tickets.
-            let before = h.closure_read().expect("closure door before the revoke");
+            // Control: before the restriction the closure door works, and counts the four tickets.
+            let before = h
+                .closure_read()
+                .expect("closure door before the restriction");
             assert_eq!(before.ledger.counts().expected(), 4);
 
-            revoke_closure_sources(&mut h.admin);
+            restrict_closure_sources(&mut h.admin);
             let denied = h.closure_read();
             assert!(
                 matches!(denied, Err(ErrorCode::DependencyUnavailable)),
-                "the closure needs stream_log, so the revoke has teeth: {:?}",
+                "the closure needs the stream_log key columns, so the restriction has teeth: {:?}",
                 denied.as_ref().err()
             );
 

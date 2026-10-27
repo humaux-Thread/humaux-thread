@@ -1875,6 +1875,24 @@ fn native_mcp_gateway_real_auth_atomic_replay_and_fail_closed_acceptance() {
     );
 }
 
+/// ADR-0110 D-A: a `memory.get` envelope reports the stream frontier from one checkpoint lookup, so its
+/// `pipeline.projection` carries no `visible`, no ratio and no Qdrant count; the closure stays recall / context /
+/// enumerate's. A helper rather than inline so the route loop stays within clippy.toml's nesting ceiling.
+fn assert_get_reports_the_frontier(route: &str, value: &Value) {
+    let projection = &value["pipeline"]["projection"];
+    assert_eq!(projection["mode"], "frontier", "{route}: {value}");
+    assert_eq!(projection["serving"], true, "{route}: {value}");
+    assert!(projection["behind"].is_u64(), "{route}: {value}");
+    for gone in ["visible", "completeness_ratio", "current"] {
+        assert!(projection.get(gone).is_none(), "{route}: {gone}: {value}");
+    }
+    assert_eq!(
+        value["pipeline"]["projection_reason"],
+        Value::Null,
+        "{route}: {value}"
+    );
+}
+
 #[test]
 #[ignore = "lane(a:request_guard) requires the isolated request-guard PostgreSQL fixture, pinned scanner and disposable Qdrant"]
 #[allow(clippy::too_many_lines)] // Keep the real Gateway, Qdrant, PG and serving-race causal chain together.
@@ -2306,19 +2324,7 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                     );
                     let projection = &value["pipeline"]["projection"];
                     if route == "memory.get" {
-                        // ADR-0110 D-A: a get reports the stream frontier from one checkpoint lookup, so it carries no
-                        // `visible`, no ratio and no Qdrant count; the closure stays recall / context / enumerate's.
-                        assert_eq!(projection["mode"], "frontier", "{route}: {value}");
-                        assert_eq!(projection["serving"], true, "{route}: {value}");
-                        assert!(projection["behind"].is_u64(), "{route}: {value}");
-                        for gone in ["visible", "completeness_ratio", "current"] {
-                            assert!(projection.get(gone).is_none(), "{route}: {gone}: {value}");
-                        }
-                        assert_eq!(
-                            value["pipeline"]["projection_reason"],
-                            Value::Null,
-                            "{route}: {value}"
-                        );
+                        assert_get_reports_the_frontier(route, value);
                     } else {
                         assert_eq!(
                             projection["visible"], 3,
