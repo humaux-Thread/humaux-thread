@@ -14,7 +14,7 @@
 //! pairs to its tenant by the opaque [`TenantRef`] carried in the provider's checkout metadata, never by the buyer's
 //! e-mail address. [`BillingProvider::verify_webhook`] is the only place a raw body becomes a [`VerifiedBillingEvent`],
 //! and it takes the bytes the signature covers. Errors are `ErrorCode` with no bespoke port error type, the precedent of
-//! `application::retrieval_embedding_port` (§52: two error enums, no third).
+//! `application::retrieval_embedding_port` (§52.1: two error enums, no third).
 
 use async_trait::async_trait;
 use humaux_domain::billing::{BillingProviderId, ObservedStatus};
