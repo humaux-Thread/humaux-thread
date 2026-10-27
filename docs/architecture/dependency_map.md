@@ -726,6 +726,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.complete_contribution_a_exact`
 - executes `private.complete_contribution_b_exact`
 - executes `private.compute_contribution_source_backing_closure_v1`
+- executes `private.contribution_eligibility`
 - executes `private.contribution_execution_closure_seal_immutable`
 - executes `private.contribution_unregistered_fixture`
 - executes `private.declared_project_visible`
@@ -3506,6 +3507,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.complete_contribution_a_exact`
 - executes `private.complete_contribution_b_exact`
 - executes `private.compute_contribution_source_backing_closure_v1`
+- executes `private.contribution_eligibility`
 - executes `private.contribution_execution_closure_seal_immutable`
 - executes `private.contribution_unregistered_fixture`
 - executes `private.declared_project_visible`
@@ -5277,6 +5279,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `public-pool::tests::notice`
 
 executed by:
@@ -6047,6 +6050,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_authorization`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_reasoner`
 - (no process): `adapters::tests::contribution_repo`
@@ -6754,6 +6758,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
@@ -6938,6 +6943,7 @@ written by:
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -7397,6 +7403,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -8068,6 +8075,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8811,6 +8819,17 @@ written by:
 
 executed by:
 
+### `private.contribution_eligibility`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::contribution_eligibility`
+- (no process): `adapters::tests::contribution_eligibility`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `private.contribution_execution_closure_seal_immutable`
 read by:
 
@@ -8863,6 +8882,14 @@ written by:
 - (no process): `maintenance::tests::retention`
 
 executed by:
+
+### `private.contribution_unit_type`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::contribution_eligibility`
 
 ### `private.contribution_unregistered_fixture`
 read by:
@@ -9117,6 +9144,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::affect_repo`
@@ -9224,6 +9252,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_authorization`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
@@ -9356,6 +9385,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -9528,6 +9558,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
@@ -9557,6 +9588,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::contribution_eligibility`
 
 executed by:
 
@@ -9687,6 +9719,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_authorization`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
@@ -9920,6 +9953,7 @@ written by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
@@ -10116,6 +10150,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::subject_repo`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
@@ -10560,6 +10595,7 @@ read by:
 
 written by:
 - (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::project_rollup`
 
 executed by:
@@ -10570,6 +10606,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::subject_registry_rls`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
@@ -10588,6 +10625,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
@@ -10972,6 +11010,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::forget_confirm`
@@ -11111,6 +11150,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
@@ -12009,6 +12049,7 @@ executed by:
 - `adapters::context_repo`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
+- `adapters::contribution_eligibility`
 - `adapters::contribution_entry_repo`
 - `adapters::contribution_execution_ingress`
 - `adapters::contribution_execution_repo`
@@ -12054,6 +12095,7 @@ executed by:
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_disclosure_sources_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
@@ -12284,6 +12326,7 @@ executed by:
 - `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::distill_dispatch_v2`
@@ -12381,6 +12424,7 @@ executed by:
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::confirm_token_retention`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
@@ -12448,6 +12492,7 @@ executed by:
 ### `PostgreSQL(role_private_worker)`
 - `adapters::postgres`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::disclosure_ledger`
@@ -12482,6 +12527,7 @@ executed by:
 
 ### `PostgreSQL(role_public_worker)`
 - `adapters::postgres`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::phase9_assessed_contract`
 - `gateway::tests::service_credentials`
@@ -12771,6 +12817,7 @@ modules naming it:
 - `adapters::context_repo`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
+- `adapters::contribution_eligibility`
 - `adapters::contribution_entry_repo`
 - `adapters::contribution_execution_ingress`
 - `adapters::contribution_execution_repo`
@@ -12835,6 +12882,7 @@ modules naming it:
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::disclosure_ledger`
@@ -12912,6 +12960,7 @@ modules naming it:
 - `adapters::context_repo`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
+- `adapters::contribution_eligibility`
 - `adapters::contribution_entry_repo`
 - `adapters::contribution_execution_ingress`
 - `adapters::contribution_execution_repo`
@@ -12973,6 +13022,7 @@ modules naming it:
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_reasoner`
@@ -13188,6 +13238,7 @@ modules naming it:
 - `adapters::serving_repo`
 - `adapters::stream_repo`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
@@ -13516,6 +13567,7 @@ modules naming it:
 - `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_disclosure_sources_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
@@ -13603,6 +13655,7 @@ modules naming it:
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_pipeline`
@@ -13721,6 +13774,7 @@ modules naming it:
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_disclosure_sources_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
@@ -13858,6 +13912,7 @@ modules naming it:
 - `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_disclosure_sources_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
@@ -13926,6 +13981,7 @@ modules naming it:
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_repo`
@@ -14032,6 +14088,7 @@ modules naming it:
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_repo`
@@ -17592,6 +17649,15 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/adapters/tests/contribution_eligibility.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/contribution_execution_0131.rs`
 db-bound (default run): no
