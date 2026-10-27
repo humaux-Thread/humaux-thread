@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[private.curation_candidate_targets, private.curation_candidates, ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4
@@ -10901,10 +10901,73 @@ fn rerank_pin_parity(root: &Path) -> Verdict {
     }
 }
 
+// §6.1.4 / ADR-0113 D-D: a new, candidate-only ownership list; never shared with another gate.
+const CURATION_STORAGE_HOMES: &[&str] = &[
+    "crates/adapters/src/candidate_repo.rs",
+    "bins/maintenance/src/rls_check.rs",
+    "migrations/0277_curation_candidates.sql",
+];
+
+fn candidate_isolation_sources(root: &Path) -> Verdict {
+    for required in [
+        "crates/adapters/src/read_materialize.rs",
+        CURATION_STORAGE_HOMES[0],
+        CURATION_STORAGE_HOMES[2],
+    ] {
+        if !root.join(required).is_file() {
+            return Verdict::Fail(vec![format!("G-M15-1/G-N09-2: missing input {required}")]);
+        }
+    }
+    let mut violations = Vec::new();
+    for (path, source) in walk_workspace_rs(root) {
+        let relative = display(root, &path);
+        if relative.split('/').any(|part| part == "tests")
+            || CURATION_STORAGE_HOMES.contains(&relative.as_str())
+        {
+            continue;
+        }
+        candidate_isolation_hits(&relative, &code_without_comments(&source), &mut violations);
+    }
+    for path in walk_files(&root.join("migrations"), &["sql"]) {
+        let relative = display(root, &path);
+        if CURATION_STORAGE_HOMES.contains(&relative.as_str()) {
+            continue;
+        }
+        match fs::read_to_string(&path) {
+            Ok(source) => candidate_isolation_hits(&relative, &source, &mut violations),
+            Err(error) => violations.push(format!("{relative}: {error}")),
+        }
+    }
+    if violations.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(violations)
+    }
+}
+
+fn candidate_isolation_hits(path: &str, source: &str, violations: &mut Vec<String>) {
+    for (index, line) in source.lines().enumerate() {
+        let lower = line.to_ascii_lowercase();
+        if ["curation_candidates", "curation_candidate_targets"]
+            .iter()
+            .any(|name| lower.contains(name))
+        {
+            violations.push(format!(
+                "G-M15-1/G-N09-2: {path}:{} candidate storage outside its owner",
+                index + 1
+            ));
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let mut checks: Vec<(&str, Verdict)> = vec![
+        (
+            "G-M15-1 / G-N09-2 (candidate isolation)",
+            candidate_isolation_sources(&root),
+        ),
         (
             "§53.3 规则1 (Outcome<_> fallback outside abstain)",
             rule1_forbidden_fallback(&root),
@@ -22031,6 +22094,50 @@ async fn serving_version_in_txn() {}
                 "humaux-adapters::mandatory_context_lane runs `rename column` ({file}:{next_line})"
             )),
             "{lines:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod candidate_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_isolation_enforces_repository() {
+        assert_eq!(
+            candidate_isolation_sources(&workspace_root()),
+            Verdict::Pass
+        );
+    }
+
+    #[test]
+    fn candidate_isolation_reports_both_tables_and_exact_paths() {
+        let mut hits = Vec::new();
+        candidate_isolation_hits(
+            "crates/adapters/src/read_materialize.rs",
+            "JOIN private.curation_candidates c ON true\nJOIN private.curation_candidate_targets t ON true",
+            &mut hits,
+        );
+        assert_eq!(
+            hits,
+            vec![
+                "G-M15-1/G-N09-2: crates/adapters/src/read_materialize.rs:1 candidate storage outside its owner",
+                "G-M15-1/G-N09-2: crates/adapters/src/read_materialize.rs:2 candidate storage outside its owner",
+            ]
+        );
+        assert_eq!(
+            CURATION_STORAGE_HOMES,
+            &[
+                "crates/adapters/src/candidate_repo.rs",
+                "bins/maintenance/src/rls_check.rs",
+                "migrations/0277_curation_candidates.sql",
+            ]
+        );
+        assert_eq!(
+            candidate_isolation_sources(Path::new("missing-candidate-input")),
+            Verdict::Fail(vec![
+                "G-M15-1/G-N09-2: missing input crates/adapters/src/read_materialize.rs".into()
+            ])
         );
     }
 }
