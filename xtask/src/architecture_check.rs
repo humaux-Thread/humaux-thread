@@ -8573,7 +8573,8 @@ fn w2_continuity_contract_from(
         "humaux.continuity.result.v1\\0",
         "ContinuityFacetKind::ALL",
         "if accounted != 17",
-        "if counts[0] == 17 && !closed.handoff.counts.overflow",
+        "let facet_complete = facet_completeness(&slots, &ContinuityFacetKind::ALL).class",
+        "if facet_complete && !closed.handoff.counts.overflow",
     ] {
         if !application.contains(needle) {
             failures.push(format!("application continuity surface missing `{needle}`"));
@@ -12172,7 +12173,11 @@ runs:
             ),
             (2, "humaux.continuity.result.v1\\0"),
             (2, "if accounted != 17"),
-            (2, "if counts[0] == 17 && !closed.handoff.counts.overflow"),
+            (
+                2,
+                "let facet_complete = facet_completeness(&slots, &ContinuityFacetKind::ALL).class",
+            ),
+            (2, "if facet_complete && !closed.handoff.counts.overflow"),
             (
                 3,
                 "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
