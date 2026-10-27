@@ -5692,6 +5692,7 @@ grants (runtime roles):
 read by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7240,6 +7241,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8977,7 +8979,6 @@ executed by:
 - created in: 0286_contribution_eligibility
 
 grants (runtime roles):
-- role_gateway: EXECUTE
 - role_migration_owner: EXECUTE
 - role_private_worker: EXECUTE
 
@@ -12927,6 +12928,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::forget_confirm`
@@ -13117,6 +13119,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
