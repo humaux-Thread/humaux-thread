@@ -8,7 +8,7 @@
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
-//! fault gate G-M01-4 (M01 D4, ADR-0077) and the §78.4 allow-count ratchet G-M01-8 (M01 D6).
+//! fault gate G-M01-4 (M01 D4, ADR-0077) and the §78.4 allow-count ratchet G-M01-8 (M01 D6), and the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -9098,17 +9098,27 @@ fn operation_registry_failures(
         schema_keys,
         &mut failures,
     );
-    let destructive_keys = humaux_domain::confirm::DestructiveOp::ALL
-        .iter()
-        .map(|op| op.operation_key().to_string())
-        .collect();
-    name_diff(
-        "registry omits DestructiveOp",
-        &destructive_keys,
-        &registry,
-        &mut failures,
-    );
+    confirm_wire_registry_failures(&registry, &mut failures);
     failures
+}
+
+/// G-M26-1 / ADR-0092 C-M19-1, both directions, one line per violating op: a `DestructiveOp` whose `wire()` is
+/// `Mcp` must be a registry row; a `McpPending` or `Rest` op must not be one (a pending op never quietly appears
+/// as a live tool before its card adds the row). The per-row effect check stays in [`registry_metadata_failures`].
+fn confirm_wire_registry_failures(registry: &BTreeSet<String>, failures: &mut Vec<String>) {
+    use humaux_domain::confirm::{ConfirmWire, DestructiveOp};
+    for op in DestructiveOp::ALL {
+        let key = op.operation_key();
+        match (op.wire(), registry.contains(key)) {
+            (ConfirmWire::Mcp, true) | (ConfirmWire::McpPending | ConfirmWire::Rest, false) => {}
+            (ConfirmWire::Mcp, false) => {
+                failures.push(format!("registry omits DestructiveOp: `{key}`"));
+            }
+            (wire @ (ConfirmWire::McpPending | ConfirmWire::Rest), true) => {
+                failures.push(format!("registry carries {wire:?} DestructiveOp: `{key}`"));
+            }
+        }
+    }
 }
 
 /// §33 / ADR-0018: registry metadata records enforcement; it cannot grant permissions.
@@ -12312,6 +12322,50 @@ runs:
         assert_eq!(
             operation_registry_failures(&manifest, &keys, &scopes),
             vec!["registry `memory.archive` effect differs from DestructiveOp::ALL".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_confirm_wire_both_ways() {
+        let root = real_root();
+        let manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys: BTreeSet<String> = scopes.keys().cloned().collect();
+        let template = manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|op| op["op"] == "memory.archive")
+            .unwrap()
+            .clone();
+        // McpPending / Rest op registered (its schema branch admitted, so only the wire rule can fire).
+        for (key, wire) in [("memory.forget", "McpPending"), ("account.delete", "Rest")] {
+            let mut entry = template.clone();
+            entry["op"] = key.into();
+            let mut fixture = manifest.clone();
+            fixture["operations"].as_array_mut().unwrap().push(entry);
+            let mut admitted = keys.clone();
+            admitted.insert(key.to_string());
+            let mut admitted_scopes = scopes.clone();
+            admitted_scopes.insert(key.to_string(), scopes["memory.archive"].clone());
+            assert_eq!(
+                operation_registry_failures(&fixture, &admitted, &admitted_scopes),
+                vec![format!("registry carries {wire} DestructiveOp: `{key}`")]
+            );
+        }
+        // Mcp op dropped from the registry.
+        let mut fixture = manifest.clone();
+        fixture["operations"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|op| op["op"] != "memory.archive");
+        assert!(
+            operation_registry_failures(&fixture, &keys, &scopes)
+                .contains(&"registry omits DestructiveOp: `memory.archive`".to_string())
         );
     }
 

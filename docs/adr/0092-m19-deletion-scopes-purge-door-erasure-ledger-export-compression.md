@@ -67,6 +67,7 @@ Amended (M19-3a, lead resume2/3 ruling):
 - MEMORY targets are hidden by `status='revoked'`; only EVIDENCE targets' seqs are tombstoned. The §41.2 gauge counts deletion targets past SLA without a DONE QDRANT_POINTS step.
 - The deletion accept door (owner, EXECUTE role_gateway only) is the second `* -> TOMBSTONED` exit, limited to the frozen EVIDENCE targets of the request it accepts; 0278 adds the owner arm to the stream_log state guard.
 - 0278 adds a tenant-bounded, revoke-only `role_migration_owner` arm to `memory_records` WITH CHECK so the accept door can revoke closure Memories the accepter cannot read (WITH CHECK sees only the new row: an owner door can write an invisible row only by leaving it revoked); USING and every other branch are unchanged.
+- **Amended (M19-3a, M26-1 reconciliation):** `DestructiveOp::wire()` classifies each confirm-gated op as Mcp | McpPending | Rest. The M26-1 catalog invariant covers Mcp ops only, both directions. `memory.forget` is McpPending until M19-6 adds its registry row; `account.delete` is Rest (C-M19-1).
 
 Physical erasure of live rows runs through one owner `SECURITY DEFINER` function,
 `control.purge_deletion_request(request_id)`: owner `role_migration_owner`, EXECUTE to `role_maintenance` only, deleting

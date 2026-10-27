@@ -3,13 +3,15 @@
 //!   (ADR-0018).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::error]
 //! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, protocol::mcp_catalog, tests, xtask::architecture_check]
-//! Invariants: []
-//! Spec: Baseline §78.2; §52.1
+//! Invariants: [DestructiveOp::wire is exhaustive with no wildcard arm: every gated op chooses Mcp | McpPending | Rest]
+//! Spec: Baseline §78.2; §52.1; §33.10
 //!
 //! Two closed types, no strings (§78.2):
 //! - [`DestructiveOp`] is the closed set of operations that go through the gate. Its
 //!   `operation_key` is the *only* place the wire key of a gated operation is spelled; the
 //!   gateway's supported-operation table and its dispatch arm both read it from here.
+//!   [`DestructiveOp::wire`] classifies each op as [`ConfirmWire`], and the M26-1 catalog
+//!   invariant (G-M26-1) reads that class in both directions: only `Mcp` ops are in the registry.
 //! - [`ConfirmToken`] is the 32-byte nonce handed to the client (base64url on the wire,
 //!   sha256 at rest — the server never stores the nonce itself).
 //!
@@ -74,6 +76,44 @@ closed_set! { operation_key, parse_operation_key, array;
         MemoryForget => "memory.forget",
         /// ADR-0092 D-E: reserved for the separately re-authenticated tenant deletion entry.
         AccountDelete => "account.delete",
+    }
+}
+
+/// How a confirm-gated operation is reachable on the wire (ADR-0092 D-B / C-M19-1). Closed: a new class is
+/// an architecture change, not a default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConfirmWire {
+    /// A live MCP operation: it is in the MCP registry with effect `destructive` (G-M26-1).
+    Mcp,
+    /// Gated, but its MCP registry row has not landed yet: it must NOT be in the registry, so a pending op
+    /// never quietly appears as a live tool.
+    McpPending,
+    /// REST entry only, never an MCP operation: it must NOT be in the registry.
+    Rest,
+}
+
+impl DestructiveOp {
+    /// The wire class of this op. The match has no `_` arm on purpose: a new `DestructiveOp` variant must choose
+    /// its class here, and the M26-1 catalog invariant then checks the registry against it (§78.2).
+    pub const fn wire(self) -> ConfirmWire {
+        match self {
+            Self::MemorySupersede
+            | Self::MemoryPin
+            | Self::MemoryUnpin
+            | Self::MemoryRestore
+            | Self::MemoryArchive
+            | Self::MemoryUnarchive
+            | Self::MemoryCorrect
+            | Self::MemoryConfirm
+            | Self::MemoryReject
+            | Self::MemoryBind
+            | Self::MemoryUnbind
+            | Self::MemoryNoteReplace => ConfirmWire::Mcp,
+            // ADR-0092 D-B; flips to `Mcp` in card M19-6, which adds its registry row.
+            Self::MemoryForget => ConfirmWire::McpPending,
+            // ADR-0092 D-E / C-M19-1: REST entry, never an MCP op.
+            Self::AccountDelete => ConfirmWire::Rest,
+        }
     }
 }
 
@@ -186,6 +226,8 @@ fn base64url_decode_32(wire: &str) -> Result<[u8; CONFIRM_TOKEN_BYTES], ErrorCod
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -198,6 +240,22 @@ mod tests {
         }
         assert_eq!(DestructiveOp::parse_operation_key("memory.get"), None);
         assert_eq!(DestructiveOp::parse_operation_key(""), None);
+    }
+
+    /// The ops whose wire is not `Mcp`, pinned with `==` both ways (ADR-0092 C-M19-1): adding a pending or REST op
+    /// is a reviewed edit of this table, never a silent widening of the M26-1 catalog invariant.
+    #[test]
+    fn non_mcp_wire_ops_are_pinned_exactly() {
+        let pinned: HashSet<(DestructiveOp, ConfirmWire)> = HashSet::from([
+            (DestructiveOp::MemoryForget, ConfirmWire::McpPending),
+            (DestructiveOp::AccountDelete, ConfirmWire::Rest),
+        ]);
+        let actual: HashSet<(DestructiveOp, ConfirmWire)> = DestructiveOp::ALL
+            .iter()
+            .map(|op| (*op, op.wire()))
+            .filter(|(_, wire)| *wire != ConfirmWire::Mcp)
+            .collect();
+        assert_eq!(actual, pinned);
     }
 
     #[test]
