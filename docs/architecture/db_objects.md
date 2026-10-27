@@ -515,6 +515,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -1225,6 +1226,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -1556,8 +1558,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.login_challenge_issue`
@@ -1576,9 +1578,10 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.login_challenge_settle`
@@ -1597,8 +1600,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.maintenance_tenant_page`
@@ -4146,9 +4149,10 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - (no process): `adapters::tests::console_session`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_lookup`
@@ -4167,8 +4171,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_revoke`
@@ -4187,8 +4191,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_touch`
@@ -4207,8 +4211,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.sessions`
@@ -4237,6 +4241,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::console_session`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -4632,6 +4637,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -4767,6 +4773,7 @@ written by:
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
+- (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -6226,9 +6233,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -6282,9 +6290,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -6339,8 +6348,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 

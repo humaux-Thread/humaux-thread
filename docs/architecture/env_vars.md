@@ -1233,6 +1233,71 @@ processes:
 modules:
 - `gateway::bootstrap`
 
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
 - witness: literal
 - registry: gateway
@@ -1488,6 +1553,19 @@ modules:
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::singleton`
 
+### `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_EMBEDDING_DIMENSION`
 - witness: literal
 - registry: gateway
@@ -1665,6 +1743,38 @@ processes:
 
 modules:
 - `xtask::dep_map`
+
+### `HUMAUX_GATEWAY_LOGIN_CODE_PEPPER`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
+
+### `HUMAUX_GATEWAY_LOGIN_MAIL_FROM`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
 
 ### `HUMAUX_GATEWAY_MAX_FORWARDED_HOPS`
 - witness: literal
@@ -1896,6 +2006,22 @@ modules:
 - `maintenance::tests::serve`
 - `maintenance::tests::support::throwaway`
 - `xtask::e2e_onboard`
+
+### `HUMAUX_GATEWAY_PUBLIC_BASE_URL`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
 
 ### `HUMAUX_GATEWAY_QDRANT_CIDR`
 - witness: literal
@@ -5947,6 +6073,7 @@ modules:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
+- `gateway::tests::auth_pages`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`

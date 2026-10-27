@@ -2,15 +2,17 @@
 //!   the body-size key), then a per-credential slot K, the global concurrency C, the waiter cap Q and the wait W;
 //!   overflow is HTTP 503 + `Retry-After` + the pre-parse `RATE_LIMITED` body.
 //! Depends-on: crates=[axum, humaux-domain, humaux-telemetry, sha2, tokio]; services=[HTTP(loopback)]; env=[];
-//!   modules=[domain::error, telemetry::admission]
+//!   modules=[domain::error, gateway::guard, telemetry::admission]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [no admission state is touched before the whole body is read; the permit, the waiter count and the
 //!   per-key count are released by Drop on every path (success, refusal, a client that disconnects while queued, a
-//!   handler panic); an admitted request's permit and key slot live in the task that runs it until the handler
+//!   handler panic); a caller without an `Authorization` header is keyed by the IP the pre-auth bucket charges it, so
+//!   one client's in-flight requests never consume another client's slots; an admitted request's permit and key slot
+//!   live in the task that runs it until the handler
 //!   returns, also when its client disconnects, so C bounds in-flight work and not just connected clients; exactly
 //!   one counter increment per 503 and no log line; `/livez` and `/readyz` never pass this layer (`wrap` merges them
 //!   after the layer)]
-//! Spec: Baseline §67.2; §41.2; §52; ADR-0065 D-C
+//! Spec: Baseline §67.2; §41.2; §52; ADR-0065 D-C; ADR-0125
 //!
 //! [`Admission::enter`] is the core and returns a [`Refusal`]; the axum function is a thin translation of it, so tests
 //! assert the variant directly. The layer sits outside `native_request_boundary`, whose own `to_bytes` returns at once
@@ -18,6 +20,7 @@
 
 use std::{
     collections::HashMap,
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -28,8 +31,8 @@ use std::{
 use axum::{
     Router,
     body::{Body, to_bytes},
-    extract::{Request, State},
-    http::{HeaderValue, StatusCode, header},
+    extract::{ConnectInfo, Request, State},
+    http::{HeaderValue, StatusCode, header, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
@@ -37,6 +40,8 @@ use humaux_domain::error::ErrorCode;
 use humaux_telemetry::admission::count_admission_rejected;
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use crate::guard::GatewayGuard;
 
 /// Why a request was refused (the closed `reason` label set of `admission_rejected_total`, ADR-0065 D-C).
 pub use humaux_telemetry::admission::AdmissionRefusal as Refusal;
@@ -77,6 +82,8 @@ pub struct Admission {
     keys: Mutex<HashMap<u64, u32>>,
     /// EWMA of admitted service time, microseconds (feeds `Retry-After` only).
     service_ewma_us: AtomicU64,
+    /// ADR-0125: the source of an anonymous caller's key. `None` (unit tests) keys every anonymous caller as 0.
+    clients: Option<Arc<GatewayGuard>>,
 }
 
 /// An admitted request: holds one permit and one per-key slot until dropped. Owned (no borrow of [`Admission`]), so
@@ -126,7 +133,29 @@ impl Admission {
             waiting: AtomicUsize::new(0),
             keys: Mutex::new(HashMap::new()),
             service_ewma_us: AtomicU64::new(0),
+            clients: None,
         }
+    }
+
+    /// ADR-0125: key callers without an `Authorization` header by the client IP `guard`'s pre-auth bucket charges them,
+    /// instead of all sharing key 0 (one client at K in flight would otherwise refuse every `/auth/*` login).
+    #[must_use]
+    pub fn keyed_by_client(mut self, guard: Arc<GatewayGuard>) -> Self {
+        self.clients = Some(guard);
+        self
+    }
+
+    /// The IP the pre-auth bucket charges this request to, when the layer knows the guard and the peer address.
+    fn client_ip(&self, parts: &Parts) -> Option<IpAddr> {
+        let guard = self.clients.as_ref()?;
+        let ConnectInfo(peer) = parts.extensions.get::<ConnectInfo<SocketAddr>>()?;
+        let mut forwarded = parts.headers.get_all("forwarded").iter();
+        // A repeated or non-text `Forwarded` is refused by the handlers; here it is simply not believed.
+        let forwarded = match (forwarded.next(), forwarded.next()) {
+            (Some(value), None) => value.to_str().ok(),
+            _ => None,
+        };
+        guard.bucket_ip(peer.ip(), forwarded)
     }
 
     /// ADR-0065 D-C steps 1-4: the per-key slot, then a free permit, else a counted wait of at most W.
@@ -212,15 +241,22 @@ impl Admission {
     }
 }
 
-/// The fairness key: the first 8 bytes of SHA-256 of the raw `Authorization` value; a missing header is key 0. It is
-/// unverified on purpose — it decides fairness, never authorization (ADR-0065 D-C, L3) — and never logged.
-fn fairness_key(authorization: Option<&HeaderValue>) -> u64 {
-    authorization.map_or(0, |value| {
-        let digest = Sha256::digest(value.as_bytes());
-        let mut first = [0_u8; 8];
-        first.copy_from_slice(&digest[..8]);
-        u64::from_be_bytes(first)
-    })
+/// The fairness key: the first 8 bytes of SHA-256 of a one-byte kind tag and the raw `Authorization` value; with no
+/// header, of the tag and the client IP; with neither, 0. The tag keeps the two spaces apart, so a header value can
+/// never be chosen to land on another client's IP key. It is unverified on purpose — it decides fairness, never
+/// authorization (ADR-0065 D-C, L3) — and never logged.
+fn fairness_key(authorization: Option<&HeaderValue>, client: Option<IpAddr>) -> u64 {
+    let (tag, bytes) = match (authorization, client) {
+        (Some(value), _) => (b'a', value.as_bytes().to_vec()),
+        (None, Some(ip)) => (b'i', ip.to_string().into_bytes()),
+        (None, None) => return 0,
+    };
+    let digest = Sha256::new_with_prefix([tag])
+        .chain_update(bytes)
+        .finalize();
+    let mut first = [0_u8; 8];
+    first.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(first)
 }
 
 async fn admit(State(admission): State<Arc<Admission>>, request: Request, next: Next) -> Response {
@@ -241,7 +277,10 @@ async fn admit(State(admission): State<Arc<Admission>>, request: Request, next: 
             return (StatusCode::REQUEST_TIMEOUT, [(header::CONNECTION, "close")]).into_response();
         }
     };
-    let key = fairness_key(parts.headers.get(header::AUTHORIZATION));
+    let key = fairness_key(
+        parts.headers.get(header::AUTHORIZATION),
+        admission.client_ip(&parts),
+    );
     let ticket = match admission.enter(key).await {
         Ok(ticket) => ticket,
         Err(reason) => return admission.refuse(reason),
@@ -611,13 +650,31 @@ mod tests {
         );
     }
 
+    /// ADR-0125: anonymous callers get one key per client IP, apart from every credential key and from key 0.
+    #[test]
+    fn anonymous_callers_are_keyed_by_client_ip_and_apart_from_credentials() {
+        let ip = |text: &str| Some(text.parse::<IpAddr>().expect("an IP literal"));
+        let first = fairness_key(None, ip("198.51.100.1"));
+        assert_ne!(first, fairness_key(None, ip("198.51.100.2")));
+        assert_ne!(first, 0);
+        assert_eq!(first, fairness_key(None, ip("198.51.100.1")));
+        assert_eq!(fairness_key(None, None), 0);
+        // The header wins when present, and its text can never collide with an IP key by construction (kind tag).
+        let spoof = HeaderValue::from_static("198.51.100.1");
+        assert_ne!(fairness_key(Some(&spoof), None), first);
+        assert_eq!(
+            fairness_key(Some(&spoof), ip("203.0.113.9")),
+            fairness_key(Some(&spoof), None)
+        );
+    }
+
     /// K bounds one credential while another is still admitted. Fault: the per-key check removed ⇒ red.
     #[tokio::test]
     async fn one_key_at_its_limit_is_rejected_while_another_key_is_admitted() {
         let _serial = SERIAL.lock().await;
         let admission = Arc::new(Admission::new(settings(4, 4, 200, 2)));
-        let a = fairness_key(Some(&HeaderValue::from_static("Bearer a")));
-        let b = fairness_key(Some(&HeaderValue::from_static("Bearer b")));
+        let a = fairness_key(Some(&HeaderValue::from_static("Bearer a")), None);
+        let b = fairness_key(Some(&HeaderValue::from_static("Bearer b")), None);
         assert_ne!(a, b);
         let held = [
             admission.enter(a).await.expect("a1"),
