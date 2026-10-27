@@ -13328,6 +13328,7 @@ why: id minting/binding
 
 modules naming it:
 - `adapters::applicability_repo`
+- `adapters::audit_sink`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13339,6 +13340,8 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
+- `adapters::object_store`
+- `adapters::object_store::fs`
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
@@ -13375,6 +13378,7 @@ modules naming it:
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -13474,6 +13478,7 @@ modules naming it:
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
 - `adapters::tests::oauth_persistence`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -13656,6 +13661,7 @@ why: id minting/binding
 
 modules naming it:
 - `adapters::applicability_repo`
+- `adapters::audit_sink`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13667,6 +13673,8 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
+- `adapters::object_store`
+- `adapters::object_store::fs`
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
@@ -13703,6 +13711,7 @@ modules naming it:
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -17815,6 +17824,13 @@ services (computed):
 
 default run:
 - PostgreSQL
+
+### `crates/adapters/tests/object_store_contract.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
 
 ### `crates/adapters/tests/offset_pagination_positive_control.rs`
 db-bound (default run): yes
