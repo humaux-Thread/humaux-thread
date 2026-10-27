@@ -15,6 +15,8 @@ pub mod attribution_repo;
 pub mod audit_sink;
 pub mod batch;
 pub mod byok;
+/// ADR-0113: isolated candidate-only proposal and confirmation API.
+pub mod candidate_repo;
 pub mod confirm_token_repo;
 pub mod consolidate_repo;
 pub mod consolidation_reasoner;
