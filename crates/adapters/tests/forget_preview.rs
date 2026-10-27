@@ -373,6 +373,18 @@ fn freeze_as(h: &Handle, user: Uuid, roots: &[Uuid]) -> Result<FrozenDeletion, F
     freeze_with(&h.rt, &h.gateway_pool, &auth(h, user, &[]), roots)
 }
 
+/// #315 / §6.1.1: a refused root must not acquire the write lock that the freeze door's INSERT takes.
+async fn assert_freeze_door_not_reached(txn: &mut sqlx::Transaction<'_, sqlx::Postgres>) {
+    let writes: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() \
+         AND relation = 'control.deletion_requests'::regclass AND mode = 'RowExclusiveLock'",
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .expect("observe the still-open refused transaction");
+    assert_eq!(writes, 0, "freeze door was reached before root readability");
+}
+
 fn freeze_with(
     rt: &tokio::runtime::Runtime,
     pool: &sqlx::Pool<sqlx::Postgres>,
@@ -382,8 +394,18 @@ fn freeze_with(
     rt.block_on(async {
         // dep: PostgreSQL(role_gateway) — the door's one granted caller
         let mut txn = pool.begin().await.map_err(ForgetRepoError::Db)?;
-        let frozen =
-            forget_repo::freeze_evidence_closure_in_txn(&mut txn, authorization, roots).await?;
+        let result =
+            forget_repo::freeze_evidence_closure_in_txn(&mut txn, authorization, roots).await;
+        if matches!(
+            &result,
+            Err(ForgetRepoError::Refused {
+                reason: "root_unreadable",
+                ..
+            })
+        ) {
+            assert_freeze_door_not_reached(&mut txn).await;
+        }
+        let frozen = result?;
         txn.commit().await.map_err(ForgetRepoError::Db)?;
         Ok(frozen)
     })
@@ -410,7 +432,7 @@ fn sorted(set: &[&str]) -> Vec<String> {
 }
 
 fn refusal(result: Result<FrozenDeletion, ForgetRepoError>) -> (ErrorCode, &'static str) {
-    match result.expect_err("the door must refuse") {
+    match result.expect_err("the adapter or door must refuse") {
         ForgetRepoError::Refused { code, reason } => (code, reason),
         other => panic!("expected a door refusal, got {other}"),
     }
@@ -750,7 +772,9 @@ fn a_scoped_caller_cannot_freeze_another_workspaces_root() {
             let memory = h.rt.block_on(async {
                 // dep: PostgreSQL(role_gateway) — a W2 Memory root under a W1 scope
                 let mut txn = h.gateway_pool.begin().await.expect("begin");
-                forget_repo::freeze_memory_in_txn(&mut txn, &scoped, memory_w2).await
+                let result = forget_repo::freeze_memory_in_txn(&mut txn, &scoped, memory_w2).await;
+                assert_freeze_door_not_reached(&mut txn).await;
+                result
             });
             assert_eq!(
                 refusal(memory),
@@ -847,7 +871,7 @@ fn memory_scope_freezes_the_memory_alone_with_source_retained() {
             assert!(!shown.restore_supported);
 
             let refused = h.rt.block_on(async {
-                // dep: PostgreSQL(role_gateway) — an unreadable Memory root is refused by the door
+                // dep: PostgreSQL(role_gateway) — an unreadable Memory root is refused before the door
                 let mut txn = h.gateway_pool.begin().await.expect("begin");
                 forget_repo::freeze_memory_in_txn(&mut txn, &authorization, private).await
             });

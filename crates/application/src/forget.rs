@@ -9,12 +9,8 @@
 //!
 //! Pure, no I/O — same rule as every other module in this crate (see `scheduler.rs`'s doc:
 //! `humaux-application`'s `Cargo.toml` carries no SQL/HTTP driver dependency, §3/§78.3).
-//! **`retention::tombstone`, the §37.2 sole function allowed to change
-//! `projection.stream_log.state` to `TOMBSTONED`, is therefore not defined in this module.**
-//! It lives in `humaux_adapters::forget_repo::tombstone` — the only place in this workspace
-//! this crate's own purity rule allows a literal `SET state = 'TOMBSTONED'` to exist. This
-//! module owns everything the DB write does *not* decide: fixed step order, legal state
-//! transitions, and which derived objects a deletion must cascade to.
+//! ADR-0092 D-C amends §37.2: `adapters::forget_repo::tombstone` and the 0278 deletion accept door are the two
+//! tombstone exits. This pure module owns scope and manifest encodings, never database writes.
 
 use std::collections::BTreeSet;
 
@@ -484,6 +480,17 @@ pub fn manifest_hash(targets: &[DeletionTarget]) -> [u8; 32] {
         hasher.update(id.as_bytes());
     }
     hasher.finalize().into()
+}
+
+/// ADR-0092 D-B: confirmation intent binds the scope and frozen manifest independently of the nonce and request id.
+/// Migration 0278 computes the same encoding inside the accept door (Baseline §33.10 rule 9).
+pub fn confirmation_digest(scope: DeletionScopeKind, manifest: &[u8; 32]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"humaux.deletion.confirm.v1\n");
+    hash.update(scope.as_db_str().as_bytes());
+    hash.update([0u8]);
+    hash.update(manifest);
+    hash.finalize().into()
 }
 
 /// A Memory the caller may read, as the preview sees it.
