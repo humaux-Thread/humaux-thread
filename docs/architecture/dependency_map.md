@@ -13328,6 +13328,7 @@ why: id minting/binding
 
 modules naming it:
 - `adapters::applicability_repo`
+- `adapters::audit_sink`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13339,6 +13340,8 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
+- `adapters::object_store`
+- `adapters::object_store::fs`
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
@@ -13375,6 +13378,7 @@ modules naming it:
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -13474,6 +13478,7 @@ modules naming it:
 - `adapters::tests::note_replace`
 - `adapters::tests::note_text_once`
 - `adapters::tests::oauth_persistence`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -13656,6 +13661,7 @@ why: id minting/binding
 
 modules naming it:
 - `adapters::applicability_repo`
+- `adapters::audit_sink`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13667,6 +13673,8 @@ modules naming it:
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
+- `adapters::object_store`
+- `adapters::object_store::fs`
 - `adapters::operation_receipt`
 - `adapters::project_rollup`
 - `adapters::provisioning`
@@ -13703,6 +13711,7 @@ modules naming it:
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::object_store_contract`
 - `adapters::tests::offset_pagination_positive_control`
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -14411,8 +14420,20 @@ modules naming it:
 - `protocol::error_map`
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::page`
 - `protocol::tests::mcp_http`
+- `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
+- `protocol::tests::page_budget`
+- `tests`
+
+### humaux-protocol → `humaux-application` (normal)
+why: signs and verifies the page@1 cursor with the shared token key set
+
+modules naming it:
+- `protocol::page`
+- `protocol::tests::page_budget`
 - `tests`
 
 ### humaux-protocol → `hmac` (normal)
@@ -14422,10 +14443,11 @@ modules naming it:
 - `protocol::edge`
 
 ### humaux-protocol → `sha2` (normal)
-why: paired digest for the HMAC-SHA256 key-hash verifier
+why: paired digest for the HMAC-SHA256 key-hash verifier and the page@1 args hash
 
 modules naming it:
 - `protocol::edge`
+- `protocol::page`
 
 ### humaux-protocol → `rmcp` (normal)
 why: MCP-over-HTTP server framework this adapter owns
@@ -14457,13 +14479,17 @@ modules naming it:
 - `protocol::mcp_catalog`
 
 ### humaux-protocol → `serde_json` (normal)
-why: JSON-RPC bodies and the embedded contracts/mcp catalog documents
+why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cursor payloads
 
 modules naming it:
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::page`
 - `protocol::tests::mcp_http`
+- `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
+- `protocol::tests::page_budget`
 - `tests`
 
 ### humaux-protocol → `jsonschema` (normal)
@@ -14471,6 +14497,9 @@ why: validates the embedded contracts/mcp catalog documents at load time
 
 modules naming it:
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::tests::mcp_profile`
+- `tests`
 
 ### humaux-protocol → `tokio` (normal)
 why: async runtime the Axum/rmcp server and its tests run on
@@ -14564,11 +14593,9 @@ modules naming it:
 why: projection payload and receipt JSON
 
 modules naming it:
-- `public-pool::admission::deid`
 - `public-pool::completeness`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
-- `public-pool::tests::admission_deid`
 - `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
@@ -17811,6 +17838,13 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/object_store_contract.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/adapters/tests/offset_pagination_positive_control.rs`
 db-bound (default run): yes
 
@@ -18342,6 +18376,13 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/mcp_profile.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/protocol/tests/note_kind_contract.rs`
 db-bound (default run): no
 
@@ -18349,7 +18390,7 @@ services (computed):
 
 default run:
 
-### `crates/public-pool/tests/admission_deid.rs`
+### `crates/protocol/tests/page_budget.rs`
 db-bound (default run): no
 
 services (computed):
@@ -18570,8 +18611,8 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
-- `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
+- `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
