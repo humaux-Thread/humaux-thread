@@ -1,9 +1,14 @@
 //! `adapters::exact_census` — §22.1 EXACT enumeration census: the physical IO behind `completeness::CensusResult`.
-//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
+//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool] x=[private.memory_in_project]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, domain::continuity, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
 //! Called-by: [adapters::context_repo, tests]
 //! Invariants: [total, returned items and the probe snapshot come from ONE REPEATABLE READ transaction (§22.1); total
-//!   is its own count(*), never the recall length; a census failure is trigger 4 (Internal), never a guessed total]
-//! Spec: Baseline §22.4; §22.1; §23.4; §23.1; §60; ADR-0062 D-K; ADR-0067 D-G, D-J2
+//!   is its own count(*), never the recall length; a census failure is trigger 4 (Internal), never a guessed total;
+//!   the project axis (ADR-0110 D-F) is the one conjunct here that names private.memory_in_project, appended as the
+//!   same text with the same bind to the count, items and secret statements and absent (no placeholder, no bind) when
+//!   the call names no project; this module never reads private.memory_projects or its live view; a project the
+//!   caller cannot see, or that does not exist, yields total 0 under the predicate's invoker rights and the caller's
+//!   RLS, and the census never learns why]
+//! Spec: Baseline §22.4; §22.1; §23.4; §23.1; §60; ADR-0062 D-K; ADR-0067 D-G, D-J2; ADR-0078 D-D; ADR-0110 D-F
 //!
 //! Split of responsibilities (frozen by the pure crates' own docs):
 //! - `retrieval::predicate_registry` validates rows but "does not import sqlx or issue any
@@ -31,9 +36,17 @@
 //! `ops.outbox(evidence_id → stream_seq)` → `projection.stream_log(state)` under the caller's
 //! [`StreamKey`] (`ops.outbox` is written in the same transaction as the seq issuance, §60, so
 //! the mapping shares the write's atomicity).
+//!
+//! ADR-0110 D-F project axis: `project_id: Some(p)` narrows the universe of the count, the items and the secret
+//! statements to memories with a live link to `p`, decided only by `private.memory_in_project` (migration 0282,
+//! invoker rights, `role_gateway` EXECUTE), so the M29 reader arm stays the single read path (xtask
+//! `m29_attribution_reader`, G-M29-7). A memory with no live link at all is outside every project universe: it is
+//! neither counted nor returned, and never guessed into one (N09 R3). The candidate pass does not carry the axis; the
+//! three readout statements decide membership from one shared text.
 
 use std::collections::BTreeSet;
 
+use humaux_domain::continuity::ProjectId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::WorkspaceId;
@@ -201,6 +214,36 @@ fn before_bounded(placeholder: u8) -> String {
     BEFORE_BOUNDED.replace("{n}", &placeholder.to_string())
 }
 
+/// ADR-0110 D-F project axis, EXACT-channel face: the one place in the workspace's census code that names
+/// `private.memory_in_project` (migration 0282), which reads the live attribution view, so a revoked link is outside
+/// the project universe and the M29 reader arm stays the single read path. `$1` is the tenant (the
+/// `enumerable_scope` contract); `{n}` is the project placeholder, filled by [`project_scoped`].
+const IN_PROJECT: &str = "private.memory_in_project($1, memory_records.memory_id, ${n}::uuid)";
+
+/// ` AND ` + [`IN_PROJECT`] for a project-scoped call and the empty string otherwise. Unlike the `NULL`-guarded
+/// axes above, an absent project leaves no placeholder in the text, so a project-less census runs byte for byte the
+/// SQL it ran before ADR-0110 D-F; statement and bind agree through [`bind_project`].
+fn project_scoped(project: Option<ProjectId>, placeholder: u8) -> String {
+    project.map_or_else(String::new, |_| {
+        format!(
+            " AND {}",
+            IN_PROJECT.replace("{n}", &placeholder.to_string())
+        )
+    })
+}
+
+/// Binds [`project_scoped`]'s one value after whatever `query` already bound; `None` binds nothing, because the
+/// statement then has no placeholder for it.
+fn bind_project<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    project: Option<ProjectId>,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    match project {
+        Some(project) => query.bind(project.0),
+        None => query,
+    }
+}
+
 /// ADR-0067 D-G note axes, both faces: `note_kind` ∈ the bound `text[]` of wire strings, then `occurred_at` in the
 /// half-open window `[since, until)`. A NULL bind means "axis absent"; a row with NULL `occurred_at` fails either bound
 /// (`NULL >= x` is not true), so it is outside every bounded window. Same placeholder rule as [`SUBJECT_SCOPED`].
@@ -248,24 +291,27 @@ const SECRET_LINKED: &str = "memory_records.memory_id IN ( \
    WHERE me2.memory_id = ANY($8) AND eo.data_class = 'SECRET_MATERIAL')";
 
 /// The readout statements' binds: `$1..$7` tenant, workspace, stream key; `$8` authorized ids; `$9` subject; `$10`
-/// segment bound; `$11..$16` [`note_axes`].
+/// segment bound; `$11..$16` [`note_axes`]; `$17` the project, only when the call names one ([`project_scoped`]).
 fn bind_readout<'q>(
     sql: &'q str,
     args: &CensusArgs<'q>,
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    bind_note_axes(
-        sqlx::query(sql)
-            .bind(args.tenant_id)
-            .bind(args.workspace_id)
-            .bind(&args.stream.scope_kind)
-            .bind(args.stream.scope_id)
-            .bind(&args.stream.domain)
-            .bind(&args.stream.projection_kind)
-            .bind(&args.stream.projection_version)
-            .bind(args.authorized_ids)
-            .bind(args.subject_id)
-            .bind(args.before_id),
-        args.notes,
+    bind_project(
+        bind_note_axes(
+            sqlx::query(sql)
+                .bind(args.tenant_id)
+                .bind(args.workspace_id)
+                .bind(&args.stream.scope_kind)
+                .bind(args.stream.scope_id)
+                .bind(&args.stream.domain)
+                .bind(&args.stream.projection_kind)
+                .bind(&args.stream.projection_version)
+                .bind(args.authorized_ids)
+                .bind(args.subject_id)
+                .bind(args.before_id),
+            args.notes,
+        ),
+        args.project_id,
     )
 }
 
@@ -284,8 +330,12 @@ struct CensusArgs<'a> {
     subject_id: Option<Uuid>,
     before_id: Option<Uuid>,
     notes: &'a NoteEnumerationFilter,
+    project_id: Option<ProjectId>,
 }
 
+// ponytail: the candidate pass carries no project axis (the three readout statements decide membership), so a
+// project-scoped call still gates the whole stream's candidates through `readable_memory_ids`; bind the axis here
+// too if E-M13-1 shows that pass over budget (ADR-0110 D-F)
 struct CandidateQuery<'a> {
     authorization: &'a AuthorizationScope,
     workspace_id: WorkspaceId,
@@ -350,32 +400,52 @@ async fn authorized_candidate_ids(
     Ok(authorized_ids)
 }
 
+/// The three readout statements of one census run. Each is built from the one `axes` text, so the count, the items
+/// and the secret count cannot disagree on the universe they describe (§22.1 one predicate, several faces).
+struct ReadoutSql {
+    total: String,
+    ids: String,
+    secret: String,
+}
+
+fn readout_sql(scope: &str, predicate: &str, project: Option<ProjectId>) -> ReadoutSql {
+    // `bind_readout`'s map: `$9` subject, `$10` segment bound, `$11..$16` `note_axes` (incl. the D-J2 lifecycle), then
+    // `$17` the project when the call names one (ADR-0110 D-F).
+    let axes = format!(
+        "{} AND {} AND {}{}",
+        subject_scoped(9),
+        before_bounded(10),
+        note_axes(11),
+        project_scoped(project, 17)
+    );
+    ReadoutSql {
+        total: format!(
+            "SELECT count(*) FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
+             AND {AUTHORIZED_CANDIDATE} AND {axes}"
+        ),
+        ids: format!(
+            "SELECT memory_id FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
+             AND {AUTHORIZED_CANDIDATE} AND {axes} AND NOT ({SECRET_LINKED}) ORDER BY memory_id"
+        ),
+        secret: format!(
+            "SELECT count(*) FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
+             AND {AUTHORIZED_CANDIDATE} AND {axes} AND {SECRET_LINKED}"
+        ),
+    }
+}
+
 async fn census_readout(
     txn: &mut Txn<'_>,
     scope: &str,
     predicate: &str,
     args: &CensusArgs<'_>,
 ) -> Result<(i64, Vec<Uuid>, i64), ErrorCode> {
-    // `bind_readout`'s map: `$9` subject, `$10` segment bound, `$11..$16` `note_axes` (incl. the D-J2 lifecycle).
-    let subject = format!(
-        "{} AND {} AND {}",
-        subject_scoped(9),
-        before_bounded(10),
-        note_axes(11)
-    );
-    let total_sql = format!(
-        "SELECT count(*) FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
-         AND {AUTHORIZED_CANDIDATE} AND {subject}"
-    );
-    let total = census_count(txn, &total_sql, args)
+    let sql = readout_sql(scope, predicate, args.project_id);
+    let total = census_count(txn, &sql.total, args)
         .await
         .map_err(|_| ErrorCode::Internal)?;
 
-    let ids_sql = format!(
-        "SELECT memory_id FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
-         AND {AUTHORIZED_CANDIDATE} AND {subject} AND NOT ({SECRET_LINKED}) ORDER BY memory_id"
-    );
-    let ids: Vec<Uuid> = bind_readout(&ids_sql, args)
+    let ids: Vec<Uuid> = bind_readout(&sql.ids, args)
         .fetch_all(&mut **txn)
         .await
         .map_err(|_| ErrorCode::Internal)?
@@ -384,11 +454,7 @@ async fn census_readout(
         .collect::<Result<_, _>>()
         .map_err(|_| ErrorCode::Internal)?;
 
-    let secret_sql = format!(
-        "SELECT count(*) FROM {scope} AND ({predicate}) AND {NOT_TOMBSTONED} \
-         AND {AUTHORIZED_CANDIDATE} AND {subject} AND {SECRET_LINKED}"
-    );
-    let excluded_secret = census_count(txn, &secret_sql, args)
+    let excluded_secret = census_count(txn, &sql.secret, args)
         .await
         .map_err(|_| ErrorCode::Internal)?;
     Ok((total, ids, excluded_secret))
@@ -420,6 +486,10 @@ pub struct CensusInputs<'a> {
     /// ADR-0067 D-G / D-J2: the note axes (kinds, `occurred_at` window, note) and the lifecycle selection, bound on
     /// every statement; the default is "no note axis" under [`Lifecycle::CURRENT`].
     pub notes: &'a NoteEnumerationFilter,
+    /// ADR-0110 D-F: restrict the universe to memories with a live link to this project, decided by
+    /// `private.memory_in_project` on the count, items and secret statements alike; `None` = no project axis and the
+    /// pre-D-F SQL text.
+    pub project_id: Option<ProjectId>,
     /// ADR-0071 D-C: the shared final gate's `can_read` set, computed in this snapshot over a superset of this census's
     /// candidates (`memory.enumerate`'s mint: same scope and predicate without the stream overlay). The census narrows
     /// its own candidates by membership; `None` = run [`readable_memory_ids`] here. A candidate outside the set is
@@ -497,6 +567,7 @@ async fn census_readout_in_savepoint(
         subject_id: inputs.subject_id,
         before_id: inputs.before_id,
         notes: inputs.notes,
+        project_id: inputs.project_id,
     };
     let (total, ids, excluded_secret) =
         census_readout(sp, inputs.enumerable_scope, inputs.sql_predicate, &args)
@@ -509,6 +580,7 @@ async fn census_readout_in_savepoint(
     let returned = ids.len() as u64;
     // The constructor refusing our own readout means the three statements disagree beyond what
     // one snapshot allows — that *is* a failed census (§22.4 trigger 4), not a transport error.
+    // ponytail: unresolved count not reported until the recall.list(project) wire card names its field (ADR-0110 D-F)
     let enumeration =
         ExactEnumeration::new(inputs.predicate_id, total, returned, excluded).map_err(|_| ())?;
     Ok(ExactCensusOutcome {
@@ -521,6 +593,34 @@ async fn census_readout_in_savepoint(
 /// [`probe_predicate_inputs`] → `decide()` and got `PlannerDecision::Enumerate`; running this
 /// for an unestablished predicate measures nothing the classifier will ever consume).
 ///
+/// This is [`exact_enumerate_in_project`] with no project axis; see there for the transaction and error contract.
+///
+/// # Errors
+/// As [`exact_enumerate_in_project`].
+pub async fn exact_enumerate(
+    pool: &RuntimeDbPool,
+    entry: &PredicateEntry,
+    authorization: &AuthorizationScope,
+    requested_workspace: WorkspaceId,
+    stream: &StreamKey,
+) -> Result<ExactCensusOutcome, ErrorCode> {
+    exact_enumerate_in_project(
+        pool,
+        entry,
+        authorization,
+        requested_workspace,
+        stream,
+        None,
+    )
+    .await
+}
+
+/// [`exact_enumerate`] with the ADR-0110 D-F project axis: `Some(project)` counts and returns only the memories of the
+/// registry universe that have a live link to `project` (`private.memory_in_project`), on the count and the items
+/// statements of the same snapshot, so `returned_ids` is a subset of the counted `total` universe by construction
+/// (§22.1 one predicate, two faces). A memory with no live link is outside every project universe and is neither
+/// counted nor returned. `None` is the project-less census, whose SQL and results are those of [`exact_enumerate`].
+///
 /// One `REPEATABLE READ READ ONLY` transaction first establishes the raw scope/predicate
 /// candidate ids, passes them through `read_gate::readable_memory_ids` (the sole backing
 /// source-visibility authority), then performs independent total, returned-id, and
@@ -529,20 +629,22 @@ async fn census_readout_in_savepoint(
 /// The registry fragments (`enumerable_scope` / `sql_predicate`) are interpolated, not bound:
 /// they are §50 typed config from `control.retrieval_predicates` (operator-written,
 /// fail-loud-validated, CHECK-constrained), not caller input — same trust boundary as the
-/// migration files themselves.
+/// migration files themselves. The project id is bound, never interpolated.
 ///
 /// # Errors
 /// [`ErrorCode::Internal`] only when the transaction itself cannot be opened/committed. A
 /// statement-level failure inside the census (e.g. a predicate referencing a column the
 /// snapshot does not have) is §22.4 trigger 4 — returned as `Ok` with
 /// [`CensusResult::failed`], so `classify()` renders it `cannot_establish/census_failed`
-/// instead of this adapter swallowing the verdict into a transport error.
-pub async fn exact_enumerate(
+/// instead of this adapter swallowing the verdict into a transport error. A project the caller cannot see yields
+/// `total` 0, not an error.
+pub async fn exact_enumerate_in_project(
     pool: &RuntimeDbPool,
     entry: &PredicateEntry,
     authorization: &AuthorizationScope,
     requested_workspace: WorkspaceId,
     stream: &StreamKey,
+    project_id: Option<ProjectId>,
 ) -> Result<ExactCensusOutcome, ErrorCode> {
     let authorization = authorization.narrow(requested_workspace)?;
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
@@ -571,6 +673,7 @@ pub async fn exact_enumerate(
             subject_id: None,
             before_id: None,
             notes: &registry_axes,
+            project_id,
             readable: None,
         },
     )
@@ -590,7 +693,59 @@ pub async fn exact_enumerate(
 
 #[cfg(test)]
 mod tests {
-    use super::scope_table;
+    use super::{
+        AUTHORIZED_CANDIDATE, NOT_TOMBSTONED, ProjectId, SECRET_LINKED, before_bounded, note_axes,
+        project_scoped, readout_sql, scope_table, subject_scoped,
+    };
+
+    const SCOPE: &str = "private.memory_records WHERE memory_records.tenant_id = $1";
+    const CALL: &str = "private.memory_in_project($1, memory_records.memory_id, $17::uuid)";
+
+    /// ADR-0110 D-F: a project-less census runs the SQL it ran before the project axis existed. The expected text is
+    /// that earlier recipe spelled out, so touching the `None` path (a placeholder, a guard, a space) is red.
+    #[test]
+    fn project_less_readout_sql_is_the_pre_d_f_text() {
+        let subject = format!(
+            "{} AND {} AND {}",
+            subject_scoped(9),
+            before_bounded(10),
+            note_axes(11)
+        );
+        let got = readout_sql(SCOPE, "true", None);
+        let head = format!(
+            "FROM {SCOPE} AND (true) AND {NOT_TOMBSTONED} AND {AUTHORIZED_CANDIDATE} AND {subject}"
+        );
+        assert_eq!(got.total, format!("SELECT count(*) {head}"));
+        assert_eq!(
+            got.ids,
+            format!("SELECT memory_id {head} AND NOT ({SECRET_LINKED}) ORDER BY memory_id")
+        );
+        assert_eq!(
+            got.secret,
+            format!("SELECT count(*) {head} AND {SECRET_LINKED}")
+        );
+        assert_eq!(project_scoped(None, 17), "");
+    }
+
+    /// ADR-0110 D-F: the count, the items and the secret statements carry the identical project conjunct (so items stay
+    /// inside the counted universe), and it names the predicate, never the attribution table or its live view.
+    #[test]
+    fn project_axis_is_one_predicate_call_on_all_three_statements() {
+        let project = ProjectId::new();
+        assert_eq!(project_scoped(Some(project), 17), format!(" AND {CALL}"));
+        let got = readout_sql(SCOPE, "true", Some(project));
+        for (face, sql) in [
+            ("total", &got.total),
+            ("ids", &got.ids),
+            ("secret", &got.secret),
+        ] {
+            assert_eq!(sql.matches(CALL).count(), 1, "{face}: one project conjunct");
+            assert!(
+                !sql.contains("memory_projects"),
+                "{face}: no attribution read"
+            );
+        }
+    }
 
     #[test]
     fn scope_table_parses_the_registry_shape_and_rejects_mixed_scopes() {
