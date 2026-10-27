@@ -1,7 +1,7 @@
 //! `adapters::login_repo` — the passwordless login challenge over the three `control.login_challenge_*` doors (migration 0266)
 //!   and the §74.6 email door. Writes only through definers; role_gateway has SELECT only on `control.email_challenges`.
 //! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) x=[control.login_challenge_claim, control.login_challenge_issue, control.login_challenge_settle]]; env=[]; modules=[adapters::email, adapters::email::outbox, adapters::postgres, application::auth, application::login, domain::error, domain::ids]
-//! Called-by: [tests]
+//! Called-by: [gateway::auth_pages, tests]
 //! Invariants: [a start answers LoginStartResponse::UNIFORM on every path and enqueues mail only for a stored code; the
 //!   code goes to the outbox payload and nowhere else, only its keyed hash is stored; a verify counts or consumes through
 //!   one conditional UPDATE inside one transaction, so a consumed, expired or exhausted challenge never accepts and two

@@ -176,3 +176,15 @@ no live keys); a future GitHub App needs live keys and is out of scope (note :22
   gates), :205-219 (experiments, UNKNOWNs), :221-234 (owner questions, research, maintenance); card row M16-1 at :172.
 - Baseline §27, §27.1–§27.6, §4.2, §4.3, §6.1.1, §17.1, §33 Tool 7, §34.0.1, §49, §57.1, §78.1, §78.2, §80.1.
 - ADR-0078 D-B (repository identity, deferred project target), ADR-0050 (gate truth), ADR-0066 D-B (parse-sandbox).
+
+## Red records (§80.1)
+
+M16-2 (migration 0284). Each red is a targeted.yml run on a throwaway branch carrying one mutation; the branches are deleted after recording. Green is the implementing PR's required CI at its current head.
+
+- G-M16-7 red (r1): [40457234614](https://github.com/humaux/humaux-thread/actions/runs/40457234614), mutation `7dfa986042be1e094dbdd192c2662fe509290175`
+  makes the `code_files` policy tenant-only. `crates/adapters/tests/code_rls.rs:411` fails: A1 reads six files instead of its two.
+- G-M16-11 red (r2): [40457735105](https://github.com/humaux/humaux-thread/actions/runs/40457735105), mutation `25fbf8d7edf43cfe852763eccc12342f0406ca12`
+  adds `'ARCHIVED'` to the `code_snapshots` state CHECK only. `crates/adapters/tests/facet_contract.rs:391` fails on the DB/Rust set difference `{ARCHIVED}`.
+- G-M16-7 red (r3): [40458365522](https://github.com/humaux/humaux-thread/actions/runs/40458365522), mutation `f86ef5e5f9e5298475af35a06032efcc7390595b`
+  keys the `code_files` FK on `snapshot_id` alone. `crates/adapters/tests/code_rls.rs:489` (`expect_err` in `rejected_fk`, reached from the cross-tenant assertion) fails because tenant B's file naming tenant A's snapshot is accepted.
+- Green on the unmutated card branch before the PR: [40456029676](https://github.com/humaux/humaux-thread/actions/runs/40456029676) (`code_rls` 3 passed, `facet_contract` 7 passed).
