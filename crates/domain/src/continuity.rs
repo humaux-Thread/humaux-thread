@@ -1,6 +1,6 @@
 //! `domain::continuity` — Project Continuity W1 identities and the closed source-backed facet set (§25.3.1).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [adapters::attribution_repo, adapters::continuity_read, adapters::continuity_repo, adapters::coord_task_repo, adapters::coord_tree_repo, adapters::operation_receipt, adapters::project_rollup, adapters::remember, application::continuity, domain::attribution, gateway::continuity, gateway::guard, gateway::mcp_application, tests]
+//! Called-by: [adapters::attribution_repo, adapters::continuity_read, adapters::continuity_repo, adapters::coord_task_repo, adapters::coord_tree_repo, adapters::exact_census, adapters::operation_receipt, adapters::project_rollup, adapters::remember, application::continuity, domain::attribution, gateway::continuity, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: []
 //! Spec: Baseline §25.3.1
 
