@@ -420,8 +420,18 @@ impl GatewayGuard {
         )
     }
 
-    fn rate(&self, subjects: &[Subject]) -> Result<(), ErrorCode> {
+    /// The one limiter path. A capacity denial marks `context` so `Retry-After` goes only on limiter capacity refusals
+    /// (§67.2; ADR-0100); `/auth/*` has no `McpHttpContext` and passes `None`.
+    // ponytail: /auth/* capacity refusals carry no Retry-After (no McpHttpContext); headers on admission refusals are tracked in #375
+    fn rate(
+        &self,
+        context: Option<&McpHttpContext>,
+        subjects: &[Subject],
+    ) -> Result<(), ErrorCode> {
         self.limiter.check(subjects).map_err(|denial| {
+            if let Some(context) = context.filter(|_| denial.scope == "capacity") {
+                context.mark_capacity_denied();
+            }
             if matches!(
                 denial.code,
                 ErrorCode::RateLimited | ErrorCode::DependencyUnavailable
@@ -498,24 +508,27 @@ impl GatewayGuard {
             context.peer_ip(),
             context.forwarded(),
             "protocol",
+            Some(context),
         )
         .await
     }
 
     /// ADR-0125: the one pre-auth IP tier (network policy, then the `Subject::Ip` bucket) for any HTTP surface.
-    /// `/mcp` reaches it through [`Self::preflight`], `/auth/*` directly; `surface` is the audit `resource_id`.
+    /// `/mcp` reaches it through [`Self::preflight`] with its context, `/auth/*` directly with `None`; `surface` is the
+    /// audit `resource_id`.
     pub async fn preflight_peer(
         &self,
         request_id: Uuid,
         peer_ip: IpAddr,
         forwarded: Option<&str>,
         surface: &str,
+        context: Option<&McpHttpContext>,
     ) -> Result<(), ErrorCode> {
         let network = self.network_of(peer_ip, forwarded);
         let result = if !self.network_allowed(&network, None) {
             Err(ErrorCode::Forbidden)
         } else {
-            self.rate(&[self.ip_subject(&network)?])
+            self.rate(context, &[self.ip_subject(&network)?])
         };
         if let Err(code) = result {
             let event = self.audit_event_for(
@@ -546,7 +559,7 @@ impl GatewayGuard {
         let result = if !self.network_allowed(&network, Some(auth)) {
             Err(ErrorCode::Forbidden)
         } else {
-            self.postauth_rate(auth, "protocol").await
+            self.postauth_rate(context, auth, "protocol").await
         };
         self.audit(
             context,
@@ -567,6 +580,7 @@ impl GatewayGuard {
     /// Preserve the §72.3 credential/user/account/operation coverage with zero PG rate I/O (ADR-0100).
     async fn postauth_rate(
         &self,
+        context: &McpHttpContext,
         auth: &AuthorizationScope,
         operation: &str,
     ) -> Result<(), ErrorCode> {
@@ -578,7 +592,7 @@ impl GatewayGuard {
         }
         subjects.push(Subject::Account(tenant));
         subjects.push(Subject::Operation(tenant, credential, operation.to_owned()));
-        self.rate(&subjects)
+        self.rate(Some(context), &subjects)
     }
 
     /// Only local reads with no external provider cost can use this entry.
@@ -1275,7 +1289,7 @@ impl GatewayGuard {
             if !self.network_allowed(&network, Some(request.authorization())) {
                 return Err(ErrorCode::Forbidden);
             }
-            self.postauth_rate(request.authorization(), operation.operation_key())
+            self.postauth_rate(context, request.authorization(), operation.operation_key())
                 .await?;
             let facts = request_guard_repo::read_effective_entitlements(
                 &self.pool,

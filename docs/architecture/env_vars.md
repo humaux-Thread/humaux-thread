@@ -3610,47 +3610,6 @@ processes:
 modules:
 - `maintenance::serve`
 
-### `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-
-### `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-- `maintenance::tests::serve`
-- `maintenance::tests::support::throwaway`
-
-### `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-
 ### `HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS`
 - witness: literal
 - registry: raw
@@ -6031,6 +5990,7 @@ modules:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`

@@ -207,6 +207,7 @@ async fn gate(
             peer.ip(),
             forwarded.as_deref(),
             AUDIT_SURFACE,
+            None,
         )
         .await;
     harden(match admitted {
