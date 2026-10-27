@@ -1167,26 +1167,44 @@ mod tests {
         )
     }
 
+    /// DOD-007 (§69) is "≠", so the over-count side must refuse too, not only the short side.
+    fn over_counted_ledger() -> LedgerClosure {
+        ledger::close(
+            ledger::LedgerReads {
+                expected: 10,
+                done: 12,
+                deleted: 0,
+                skipped: 0,
+                open_gaps: 0,
+                pending: 0, // 12 != 10
+            },
+            ledger::ProjectionReads::default(),
+        )
+    }
+
     /// §22.5's frozen first branch: a broken ledger wins even when everything else (census,
     /// lane, planner) looks fine — read *before* `planner_output`.
     #[test]
     fn broken_ledger_yields_cannot_establish_ledger_not_closed_ahead_of_everything_else() {
-        let class = classify(
-            &PlannerDecision::Enumerate {
-                predicate_id: "rejected_decisions_v1".to_string(),
-            },
-            LaneStatus::Ok,
-            &CensusResult::ok_without_enumeration(),
-            &broken_ledger(),
-            0,
-            LAG,
-        );
-        assert_eq!(
-            class,
-            CompletenessClass::CannotEstablish {
-                reason: CannotEstablishReason::LedgerNotClosed
-            }
-        );
+        for (label, closure) in [("short", broken_ledger()), ("over", over_counted_ledger())] {
+            let class = classify(
+                &PlannerDecision::Enumerate {
+                    predicate_id: "rejected_decisions_v1".to_string(),
+                },
+                LaneStatus::Ok,
+                &CensusResult::ok_without_enumeration(),
+                &closure,
+                0,
+                LAG,
+            );
+            assert_eq!(
+                class,
+                CompletenessClass::CannotEstablish {
+                    reason: CannotEstablishReason::LedgerNotClosed
+                },
+                "{label}"
+            );
+        }
     }
 
     #[test]
