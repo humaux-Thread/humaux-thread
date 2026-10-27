@@ -1283,13 +1283,14 @@ echo "completeness: memory.enumerate class='${CMP_CLASS:-<absent>}'" | tee -a $E
 # start_gw passes no (tenant, workspace): every governance / subject / affect write derives its
 # pair per request. One leg per seeded tenant, each on its own bearer and workspace: supersede ->
 # restore -> archive -> unarchive -> pin -> bind (REFERENCE_ONLY) -> annotate_affect. Fixture
-# writes (superuser PGQ, no product path creates them — ADR-0044): one coord.tasks row per tenant,
+# writes (superuser PGQ, no product path creates them — ADR-0044): one coord.tasks row per tenant (in a project
+# row of its own, coord.tasks.project_id being NOT NULL since 0289, ADR-0102 D-D),
 # and one bindable memory per leg (ProjectConstraint + TenantAdmin evidence — distilled memories are
 # PrivateKnowledge, which §10.1 never lets bind MANDATORY). The leg's tickets must land on its own
 # (tenant, 'workspace', workspace) stream and on no other seeded stream.
 step governance_both_tenants
 typeset -gA GOV
-PGQ "insert into coord.tasks(tenant_id,title) values ('$TENANT','card29 rehearsal task'),('$TENANT_B','card29 rehearsal task')" >/dev/null
+PGQ "with p as (insert into private.continuity_projects(project_id,tenant_id,workspace_id,title) values (uuidv7(),'$TENANT','$WS','card29 rehearsal'),(uuidv7(),'$TENANT_B','$WS_B','card29 rehearsal') returning project_id,tenant_id) insert into coord.tasks(tenant_id,title,project_id) select tenant_id,'card29 rehearsal task',project_id from p" >/dev/null
 governance_leg() { # $1=label $2=bearer $3=tenant $4=workspace $5=reasoning domain
   local L=$1 b=$2 t=$3 w=$4 rd=$5
   local pick=($(PGQ "select memory_id from private.memory_records where tenant_id='$t' and status='active' and visibility_workspace_id='$w' and memory_id <> '${LC_TARGET:-00000000-0000-0000-0000-000000000000}' order by created_at desc limit 2"))

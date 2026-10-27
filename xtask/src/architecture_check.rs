@@ -3868,22 +3868,55 @@ const M18_TASK_PROJECT_DOORS: [DoorStatement; 2] = [
     ("SET project_id", M18_TASK_PROJECT_HOME),
 ];
 
+/// The file that defines `append_contains_revision`; the only other file that may name it besides the home file.
+const M18_CONTAINS_DEFINITION: &str = "crates/adapters/src/relation_repo.rs";
+
+/// Files (other than the home file) whose `UPDATE coord.tasks` statement assigns `project_id`, in whatever column order
+/// the `SET` list spells it: the `SET project_id` needle only sees the first column.
+fn m18_project_id_updates_elsewhere(files: &[(String, String)]) -> Vec<String> {
+    let needle = door_normalised("update coord.tasks");
+    files
+        .iter()
+        .filter(|(disp, _)| disp != M18_TASK_PROJECT_HOME)
+        .filter(|(_, source)| {
+            let text = door_normalised(source);
+            text.match_indices(needle.as_str()).any(|(at, _)| {
+                let tail = &text[at..];
+                tail[..tail.find(" where ").unwrap_or(tail.len())].contains("project_id")
+            })
+        })
+        .map(|(disp, _)| disp.clone())
+        .collect()
+}
+
+/// Files that name `append_contains_revision` in code without a call site of it, such as a `use ... as w` alias that a
+/// later `w(` call would hide from the call count. The definition file and the home file are exempt.
+fn m18_contains_writer_aliases(files: &[(String, String)]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|(disp, _)| disp != M18_TASK_PROJECT_HOME && disp != M18_CONTAINS_DEFINITION)
+        .filter(|(_, source)| {
+            count_call_sites(source, M18_CONTAINS_WRITER) == 0
+                && door_normalised(source).contains(M18_CONTAINS_WRITER)
+        })
+        .map(|(disp, _)| disp.clone())
+        .collect()
+}
+
 /// M18-3a / G-M18-6, static half (ADR-0102 D-A, D-C): `coord.tasks.project_id` has one writer and the Project CONTAINS
 /// Task relation has one writer behind it. In non-test code, `append_contains_revision(` has `== 1` call site and it is
-/// in `coord_task_repo.rs`; `INSERT INTO coord.tasks` and `SET project_id` each appear once, there. `REFERENCES` is not
-/// gated (D-C). The 注错 is a production call of `append_contains_revision` from another module (`found 2`).
-/// `not_applicable`, naming the door, until `set_task_project_in_txn` exists.
+/// in `coord_task_repo.rs`; no other file names it; `INSERT INTO coord.tasks` and `SET project_id` each appear once,
+/// there, and no other file's `UPDATE coord.tasks` assigns `project_id`. `REFERENCES` is not gated (D-C). The 注错 is a
+/// production call of `append_contains_revision` from another module (`found 2`). `not_applicable`, naming the door,
+/// only while neither the door nor its home file exists and nothing else violates; a home file without the door, or a
+/// violation beside an absent door, is red.
 fn m18_task_project_sole_writer(root: &Path) -> Verdict {
     let files = door_production_sources(root);
-    if !files
-        .iter()
-        .any(|(_, source)| source.contains(M18_TASK_PROJECT_DOOR))
-    {
-        return Verdict::NotApplicable(format!(
-            "missing object: `{M18_TASK_PROJECT_DOOR}` is not delivered yet (ADR-0102 D-A)"
-        ));
-    }
     let gate = "M18-3a / G-M18-6";
+    let door_present = files
+        .iter()
+        .any(|(_, source)| source.contains(M18_TASK_PROJECT_DOOR));
+    let home_exists = files.iter().any(|(disp, _)| disp == M18_TASK_PROJECT_HOME);
     let sites: Vec<(String, usize)> = files
         .iter()
         .filter_map(|(disp, source)| {
@@ -3893,10 +3926,27 @@ fn m18_task_project_sole_writer(root: &Path) -> Verdict {
         .collect();
     let total: usize = sites.iter().map(|(_, n)| n).sum();
     let mut problems = Vec::new();
-    if total != 1 || sites.iter().any(|(disp, _)| disp != M18_TASK_PROJECT_HOME) {
+    if home_exists && !door_present {
+        problems.push(format!(
+            "{gate}: `{M18_TASK_PROJECT_DOOR}` is missing from {M18_TASK_PROJECT_HOME}"
+        ));
+    }
+    if (door_present || home_exists || total > 0)
+        && (total != 1 || sites.iter().any(|(disp, _)| disp != M18_TASK_PROJECT_HOME))
+    {
         problems.push(format!(
             "{gate}: expected exactly 1 `{M18_CONTAINS_WRITER}(` call in non-test code, in {M18_TASK_PROJECT_HOME}; \
              found {total}: {sites:?}"
+        ));
+    }
+    for disp in m18_contains_writer_aliases(&files) {
+        problems.push(format!(
+            "{gate}: {disp} names `{M18_CONTAINS_WRITER}` without calling it (an alias hides the call from the count)"
+        ));
+    }
+    for disp in m18_project_id_updates_elsewhere(&files) {
+        problems.push(format!(
+            "{gate}: `UPDATE coord.tasks` in {disp} assigns project_id; only {M18_TASK_PROJECT_HOME} may"
         ));
     }
     if let Verdict::Fail(lines) = sole_door_statements(
@@ -3908,10 +3958,14 @@ fn m18_task_project_sole_writer(root: &Path) -> Verdict {
     ) {
         problems.extend(lines);
     }
-    if problems.is_empty() {
+    if !problems.is_empty() {
+        Verdict::Fail(problems)
+    } else if door_present {
         Verdict::Pass
     } else {
-        Verdict::Fail(problems)
+        Verdict::NotApplicable(format!(
+            "missing object: `{M18_TASK_PROJECT_DOOR}` is not delivered yet (ADR-0102 D-A)"
+        ))
     }
 }
 
@@ -17394,6 +17448,61 @@ async fn serving_version_in_txn() {}
         };
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("INSERT INTO coord.tasks"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M18-6): a renamed or reformatted door must not turn the gate `not_applicable` while the home file exists
+    /// or a violation sits beside it.
+    #[test]
+    fn m18_task_project_sole_writer_fails_when_the_door_is_missing_but_something_else_is_not() {
+        let tmp = fresh_tmp("m18-3a-red-door");
+        let renamed = M18_HOME_SOURCE.replace("set_task_project_in_txn", "move_task_in_txn");
+        m07_write(&tmp, M18_TASK_PROJECT_HOME, &renamed);
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("a home file without the door must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("is missing from"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+
+        let tmp = fresh_tmp("m18-3a-red-no-home");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/coord_repo.rs",
+            "fn submit() { relation_repo::append_contains_revision(a, b); }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("a call beside an absent door must fail, not be not_applicable")
+        };
+        assert!(lines.iter().any(|l| l.contains("found 1")), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M18-6): a multi-column `SET` that assigns `project_id` and an alias that hides a call are each red.
+    #[test]
+    fn m18_task_project_sole_writer_fails_on_a_multi_column_update_and_an_alias() {
+        let tmp = fresh_tmp("m18-3a-red-set");
+        m07_write(&tmp, M18_TASK_PROJECT_HOME, M18_HOME_SOURCE);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/coord_repo.rs",
+            "fn f() { let _ = \"UPDATE coord.tasks SET state = $3, project_id = $4 WHERE task_id = $1\"; }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("a multi-column project_id assignment must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("assigns project_id"), "{lines:?}");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/coord_repo.rs",
+            "use crate::relation_repo::append_contains_revision as w;\nfn f() { w(); }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("an alias must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("without calling it"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 

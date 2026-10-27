@@ -805,12 +805,31 @@ fn relation_kernel_round_trip_through_the_adapter() {
                 .unwrap();
             assert_eq!((current.revision, current.valid.is_retracted()), (2, true));
 
-            // ADR-0102 D-C: the repository refuses CONTAINS before any SQL, so a kind change to it is INVALID_INPUT here
-            // too; the guard's own edge-change leg is exercised by the src and dst cases below.
-            let other_project_kind = RelationEdge {
-                kind: RelationKind::Contains,
-                ..edge
+            // ADR-0102 D-C: the repository refuses CONTAINS before any SQL, so the Project-Task pair no longer offers two
+            // kinds for one (src, dst) and the guard's kind leg is exercised on a pair that does: PROJECT TARGETS BRAND,
+            // then the same pair as SERVES.
+            let targets = RelationEdge {
+                src_id: project,
+                kind: RelationKind::Targets,
+                dst_id: brand,
             };
+            let kind_relation = RelationId::new();
+            let open = Validity::new(&[(Included(Timestamp::Micros(T0)), Unbounded)]).unwrap();
+            assert_eq!(
+                append_revision(
+                    &mut txn,
+                    &targets,
+                    kind_relation,
+                    0,
+                    &open,
+                    &rule,
+                    None,
+                    &[],
+                    auth
+                )
+                .await,
+                Ok(1)
+            );
             let refused: [(&str, RelationEdge, RelationId, i64, ErrorCode); 9] = [
                 (
                     "stale expected_revision",
@@ -827,10 +846,13 @@ fn relation_kernel_round_trip_through_the_adapter() {
                     ErrorCode::Conflict,
                 ),
                 (
-                    "edge change",
-                    other_project_kind,
-                    relation,
-                    2,
+                    "kind change",
+                    RelationEdge {
+                        kind: RelationKind::Serves,
+                        ..targets
+                    },
+                    kind_relation,
+                    1,
                     ErrorCode::InvalidInput,
                 ),
                 (

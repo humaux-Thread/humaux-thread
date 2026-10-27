@@ -232,8 +232,10 @@ async fn append_edge(
     .map(|_revision| ())
 }
 
-/// Step 4: ends the open segment of the old edge at `at`. A project without an edge (a legacy row) or an edge with no
-/// open segment has nothing to close; the move itself then re-establishes the invariant on the new side.
+/// Step 4: ends every segment of the old edge that still reaches `at`. A project without an edge (a legacy row) or an
+/// edge already over before `at` has nothing to close; the move itself then re-establishes the invariant on the new
+/// side. A backfilled edge may end in the future (0289 takes any CONTAINS whose valid contains `now()`), so a finite
+/// end after `at` is cut too, or A3 would read the old project next to the new one.
 async fn close_edge(
     txn: &mut Txn<'_>,
     tenant: Uuid,
@@ -249,16 +251,19 @@ async fn close_edge(
         .await?
         .ok_or(ErrorCode::Internal)?;
     let segments = current.valid.segments();
-    if segments.iter().all(|&(_, end)| end.is_some()) {
+    if segments
+        .iter()
+        .all(|&(_, end)| end.is_some_and(|end| end <= at))
+    {
         return Ok(());
     }
-    // An open segment that starts at or after `at` would end empty or reversed: it is dropped, not closed.
+    // A segment that starts at or after `at` would end empty or reversed: it is dropped, not cut.
     let ranges: Vec<RawRange> = segments
         .iter()
         .filter_map(|&(start, end)| match end {
-            None if start >= at => None,
-            None => Some(range((start, Some(at)))),
-            Some(_) => Some(range((start, end))),
+            Some(end) if end <= at => Some(range((start, Some(end)))),
+            _ if start >= at => None,
+            _ => Some(range((start, Some(at)))),
         })
         .collect();
     let valid = Validity::new(&ranges)?;
@@ -323,7 +328,7 @@ async fn open_edge(
 ///    project fails it too, 0254 ②);
 /// 2. the task row is read `FOR UPDATE`; a task already in `project` is `Ok` and nothing is written;
 /// 3. `t` is one `clock_timestamp()` read after the lock: the close's upper bound and the open's lower bound;
-/// 4. the old edge's open segment ends at `t` (skipped when the old project is an Unfiled project);
+/// 4. every segment of the old edge that reaches `t` ends at `t` (skipped when the old project is an Unfiled project);
 /// 5. the new edge is opened at `t` (skipped when `project` is an Unfiled project: Unfiled carries no CONTAINS);
 /// 6. the column is updated.
 ///

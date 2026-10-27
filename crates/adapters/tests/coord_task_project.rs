@@ -4,7 +4,7 @@
 //!   CONTAINS revision.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, sqlx, tokio];
 //!   services=[PostgreSQL(owner) r=[coord.tasks, coord.workspace_unfiled_projects, private.memory_projects,
-//!   private.project_task_relations] w=[private.continuity_projects, private.evidence_objects,
+//!   private.project_task_relations] w=[coord.tasks, private.continuity_projects, private.evidence_objects,
 //!   private.evidence_task_runs, private.memory_evidence, private.memory_records, private.project_task_relations],
 //!   PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::coord_task_repo,
@@ -31,6 +31,7 @@
 //! | `g_m18_6_d_append_revision_refuses_contains` | G-M18-6 (d) | `append_revision` stops refusing CONTAINS (r3) |
 //! | `g_m18_6_e_an_invisible_target_is_not_found_and_writes_nothing` | G-M18-6 (e) | the visibility check moves after a write |
 //! | `g_m18_6_f_concurrent_moves_never_leave_two_open_edges` | G-M18-6 (f) | the task row is read without `FOR UPDATE` |
+//! | `g_m18_6_g_a_backfilled_edge_that_ends_in_the_future_is_cut_at_the_move` | ADR-0102 D-D | the close only ends open segments |
 //!
 //! Skip contract (`humaux_testkit`, §79.2): no DSN / unreachable / migrations not applied each print a visible SKIP and
 //! return (a required-DB run turns a skip red).
@@ -522,6 +523,53 @@ fn g_m18_6_c_moving_back_reopens_the_same_relation() {
                 on_p1[2].2,
                 [(t0, Some(t1)), (t2, None)],
                 "revision 3 keeps the first stay and opens a second at the move back"
+            );
+        },
+    );
+}
+
+/// ADR-0102 D-D: 0289 backfills the column from any CONTAINS whose valid contains `now()`, a finite future end included;
+/// the first move away must cut that segment at `t` too, or A3 would read the old project next to the new one.
+#[test]
+fn g_m18_6_g_a_backfilled_edge_that_ends_in_the_future_is_cut_at_the_move() {
+    run_db_fixture::<Fixture, _>(
+        "g_m18_6_g_a_backfilled_edge_that_ends_in_the_future_is_cut_at_the_move",
+        |mut handle| {
+            let (p1, p2, authz) = world(&mut handle);
+            let task = submit(&handle);
+            // The state the backfill leaves: the column names P1 and P1's edge is valid until next month.
+            handle
+                .admin
+                .execute(
+                    "INSERT INTO private.project_task_relations (tenant_id, relation_id, revision, src_id, dst_id, \
+                       relation_kind, valid, decided_by, factual_evidence_ids, authorization_evidence_id) \
+                     VALUES ($1, uuidv7(), 1, $2, $3, 'CONTAINS', \
+                       tstzmultirange(tstzrange(now() - interval '1 hour', now() + interval '30 days', '[)')), \
+                       'rule:fixture@1', '{}', $4)",
+                    &[&handle.tenant_id, &p1, &task.0, &authz],
+                )
+                .expect("owner seeds the legacy edge");
+            handle
+                .admin
+                .execute(
+                    "UPDATE coord.tasks SET project_id = $2 WHERE tenant_id = $1 AND task_id = $3",
+                    &[&handle.tenant_id, &p1, &task.0],
+                )
+                .expect("owner places the task in P1");
+            assert_eq!(move_task(&handle, authz, task, p2), Ok(()), "P1 -> P2");
+            let on_p1 = edges(&mut handle, p1, task);
+            let on_p2 = edges(&mut handle, p2, task);
+            purge_relations(&mut handle);
+            let t = on_p2[0].2[0].0;
+            assert_eq!(on_p1.iter().map(|e| e.1).collect::<Vec<_>>(), [1, 2]);
+            assert_eq!(
+                on_p1[1]
+                    .2
+                    .iter()
+                    .map(|segment| segment.1)
+                    .collect::<Vec<_>>(),
+                [Some(t)],
+                "the legacy segment now ends where P2's begins"
             );
         },
     );
