@@ -564,8 +564,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
-- reads `private.curation_candidate_targets`
-- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -631,6 +629,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
+- reads `public.unit_conditions`
+- reads `public.unit_fields`
+- reads `public.units`
 - reads `staging.contribution_candidate_phase9_assessments`
 - reads `staging.contribution_candidate_sources`
 - reads `staging.contribution_candidates`
@@ -852,8 +853,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_facet_slots`
 - reads `private.continuity_facet_versions`
 - reads `private.continuity_projects`
-- reads `private.curation_candidate_targets`
-- reads `private.curation_candidates`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
 - reads `private.nodes`
@@ -3301,8 +3300,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
-- reads `private.curation_candidate_targets`
-- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -3368,6 +3365,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
+- reads `public.unit_conditions`
+- reads `public.unit_fields`
+- reads `public.units`
 - reads `staging.contribution_candidate_phase9_assessments`
 - reads `staging.contribution_candidate_sources`
 - reads `staging.contribution_candidates`
@@ -5029,7 +5029,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::confirm_token_repo`
@@ -5177,7 +5176,6 @@ executed by:
 
 ### `control.confirm_tokens`
 read by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7153,7 +7151,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -7865,7 +7862,6 @@ executed by:
 
 ### `ops.memory_lifecycle_events`
 read by:
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8836,46 +8832,6 @@ written by:
 
 executed by:
 
-### `private.curation_candidate_targets`
-read by:
-- (no process): `adapters::candidate_repo`
-- (no process): `adapters::tests::candidates`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `private.curation_candidates`
-read by:
-- (no process): `adapters::candidate_repo`
-- (no process): `adapters::tests::candidates`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `private.curation_transition_allowed`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::candidates`
-
-### `private.decide_curation_candidate`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::candidate_repo`
-
 ### `private.decide_memory_applicability`
 read by:
 
@@ -9750,7 +9706,6 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -9857,7 +9812,6 @@ read by:
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -10187,14 +10141,6 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 
 executed by:
-
-### `private.propose_curation_candidate`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::candidate_repo`
 
 ### `private.propose_memory_applicability`
 read by:
@@ -11385,6 +11331,7 @@ executed by:
 
 ### `public.entities`
 read by:
+- (no process): `public-pool::tests::completeness`
 - process(cargo-xtask): `xtask::architecture_check`
 
 written by:
@@ -11584,9 +11531,11 @@ executed by:
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::completeness`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
+- (no process): `public-pool::tests::completeness`
 - (no process): `public-pool::tests::public_provenance`
 - process(humaux-public-worker): `public-pool::public_repo`
 
@@ -11601,6 +11550,39 @@ read by:
 written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `public-pool::tests::public_provenance`
+
+executed by:
+
+### `public.unit_conditions`
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
+
+executed by:
+
+### `public.unit_fields`
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
+
+executed by:
+
+### `public.units`
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
 
 executed by:
 
@@ -11826,7 +11808,6 @@ executed by:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -11941,6 +11922,7 @@ executed by:
 - `public-pool::notice`
 - `public-pool::policy`
 - `public-pool::public_repo`
+- `public-pool::tests::completeness`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
@@ -12096,7 +12078,6 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12566,7 +12547,6 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12704,7 +12684,6 @@ modules naming it:
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
 - `adapters::byok`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12767,7 +12746,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13119,7 +13097,6 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_execution_0131`
@@ -13279,7 +13256,6 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13299,7 +13275,6 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13378,7 +13353,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13493,7 +13467,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13603,7 +13576,6 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
-- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13623,7 +13595,6 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
-- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13684,7 +13655,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -14505,8 +14475,10 @@ modules naming it:
 why: projection payload and receipt JSON
 
 modules naming it:
+- `public-pool::completeness`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime_qdrant`
@@ -14534,11 +14506,13 @@ modules naming it:
 why: id minting/binding
 
 modules naming it:
+- `public-pool::completeness`
 - `public-pool::notice`
 - `public-pool::policy`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
@@ -14580,6 +14554,7 @@ modules naming it:
 why: blocking client for real-Postgres integration tests
 
 modules naming it:
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
@@ -14603,11 +14578,13 @@ modules naming it:
 why: throwaway ids in fixtures
 
 modules naming it:
+- `public-pool::completeness`
 - `public-pool::notice`
 - `public-pool::policy`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
@@ -17229,15 +17206,6 @@ services (computed):
 
 default run:
 
-### `crates/adapters/tests/candidates.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
 ### `crates/adapters/tests/confirm_token_retention.rs`
 db-bound (default run): yes
 
@@ -18254,6 +18222,15 @@ services (computed):
 
 default run:
 
+### `crates/public-pool/tests/completeness.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/public-pool/tests/mechanism_observation.rs`
 db-bound (default run): no
 
@@ -18453,6 +18430,7 @@ default run:
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
