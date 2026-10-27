@@ -786,7 +786,7 @@ owner = "M17"
 basis = "M17:209; D1 principle"
 reason = "binary-object pointer and parse manifest; the bytes are not exported (D1 images/binaries)"
 
-["private.code_edges"]
+["private.code_active_snapshots"]
 class = "EXCLUDED"
 owner = "M16"
 basis = "M16:157; D1"
@@ -802,12 +802,6 @@ reason = "re-indexable code graph (D1 code_*)"
 class = "EXCLUDED"
 owner = "M16"
 basis = "M16:156; D1"
-reason = "re-indexable code graph (D1 code_*)"
-
-["private.code_symbols"]
-class = "EXCLUDED"
-owner = "M16"
-basis = "M16:157; D1"
 reason = "re-indexable code graph (D1 code_*)"
 
 ["private.context_bindings"]
