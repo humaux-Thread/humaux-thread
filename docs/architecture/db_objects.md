@@ -797,7 +797,6 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `public-pool::tests::eligibility`
 - (no process): `public-pool::tests::notice`
 
 executed by:
@@ -2635,7 +2634,6 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
-- (no process): `public-pool::tests::eligibility`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
@@ -4488,7 +4486,6 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
-- (no process): `public-pool::tests::eligibility`
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - (no process): `retrieval-provider::tests::router_rls_integration`
@@ -4771,7 +4768,6 @@ written by:
 - (no process): `maintenance::tests::serve`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -8969,28 +8965,6 @@ written by:
 
 executed by:
 
-### `private.contribution_eligibility`
-- kind: function (SECURITY DEFINER)
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0286_contribution_eligibility
-
-grants (runtime roles):
-- role_gateway: EXECUTE
-- role_migration_owner: EXECUTE
-- role_private_worker: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-- (no process): `public-pool::eligibility`
-- (no process): `public-pool::tests::eligibility`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
 ### `private.contribution_execution_closure_seal_immutable`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -9141,23 +9115,6 @@ read by:
 written by:
 
 executed by:
-
-### `private.contribution_unit_type`
-- kind: function
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0286_contribution_eligibility
-
-grants (runtime roles):
-- role_migration_owner: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-- (no process): `public-pool::tests::eligibility`
 
 ### `private.conversations`
 - kind: table
@@ -9634,7 +9591,6 @@ read by:
 written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::affect_repo`
 - process(humaux-consolidation-worker): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::affect_repo`
@@ -9844,7 +9800,6 @@ written by:
 - (no process): `maintenance::tests::partitions`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `adapters::evidence_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -9982,7 +9937,6 @@ written by:
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
@@ -10303,7 +10257,6 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::affect_repo`
 - process(humaux-consolidation-worker): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::affect_repo`
@@ -10357,7 +10310,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
-- (no process): `public-pool::tests::eligibility`
 
 executed by:
 
@@ -10592,7 +10544,6 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -10931,7 +10882,6 @@ written by:
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -11238,7 +11188,6 @@ written by:
 - (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
-- (no process): `public-pool::tests::eligibility`
 
 executed by:
 
@@ -12088,7 +12037,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::subject_registry_rls`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
@@ -12140,7 +12088,6 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
