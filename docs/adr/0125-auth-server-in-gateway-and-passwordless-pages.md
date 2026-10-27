@@ -126,9 +126,19 @@ cap are `AuthConfig::default()`, the registry default, until a config card names
   `g_m03_1_the_pre_auth_limiter_applies_to_the_auth_pages` (g). The bootstrap and `deploy_check` rules above are pinned
   by `auth_page_values_are_required_validated_and_distinct_when_the_surface_is_on`, `public_origin_is_strict_and_normalized`
   and `env_login_values_are_required_only_when_the_auth_surface_is_on`.
-- Red records (targeted runs on throwaway branches, deleted after recording; each failed on the gate's own assertion):
-  - r1 (unknown mailbox answers 404): pending.
-  - r2 (Origin check dropped): pending.
-  - r3 (`HttpOnly` dropped from the session cookie): pending.
-  - r4 (logout skips the CSRF verify): pending.
+- Red records (targeted runs `-p humaux-gateway --test auth_pages` on throwaway branches, deleted after recording; each
+  failed on the gate's own assertion; file:line is `bins/gateway/tests/auth_pages.rs` as of commit 2d287f30, the base of
+  every red branch):
+  - r1 (unknown mailbox answers 404): run 40422238153 on `df7774bf`; `g_m02_3_existing_cooling_down_and_unknown_mailbox_answer_identically`
+    red at `auth_pages.rs:418` ("an unknown mailbox must be indistinguishable from an existing one"); the other 7 pass.
+  - r2 (Origin check dropped): run 40422247902 on `203c2f1f`; `g_m02_3_post_without_the_configured_origin_is_forbidden_and_writes_nothing`
+    red at `auth_pages.rs:543` (303 where 403 is required); the other 7 pass.
+  - r3 (`HttpOnly` dropped from the session cookie): run 40422257449 on `60199b05`;
+    `g_m02_3_correct_code_sets_the_session_cookie_and_the_session_authenticates` red at `auth_pages.rs:452` (attributes
+    lack `HttpOnly`); the other 7 pass.
+  - r4 (logout skips the CSRF verify): run 40422267308 on `ddc85cb1`; `g_m02_5_logout_needs_the_session_bound_csrf_token`
+    red at `auth_pages.rs:604` (303 where 403 is required). The same run also failed
+    `g_m02_3_attempt_after_the_cap_is_rejected_even_with_the_right_code` at `auth_pages.rs:513`: not the mutation but a
+    flake in the test, which compared two replies including their `Date` header across a second boundary
+    (`00:21:08` vs `00:21:09`). Fixed by comparing `Reply::comparable()`; the run is cited for the logout assertion only.
   - Green: the PR's CI on the unmutated branch.
