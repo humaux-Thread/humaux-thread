@@ -322,7 +322,7 @@ fn g_m26_2_looser_field_is_carried_while_the_action_keeps_its_own_constraint() {
 fn g_m26_3_read_action_rejects_a_mutation_only_field() {
     let reason = rejected(
         ToolName::Memory,
-        json!({ "action": "get", "memory_id": UUID, "confirm_token": "0123456789abcdef" }),
+        json!({ "action": "get", "memory_id": UUID, "confirm_token": "x".repeat(16) }),
     );
     assert!(
         reason.contains("confirm_token") && reason.contains("get"),
