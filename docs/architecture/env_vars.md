@@ -5864,6 +5864,7 @@ modules:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
