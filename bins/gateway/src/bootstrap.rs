@@ -2794,14 +2794,17 @@ mod tests {
         for (gateway_key, worker_key) in [
             (
                 "HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID",
+                // dep-map: allow env-undeclared — a values-file key compared as data; the gateway never reads it
                 "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER",
             ),
             (
                 "HUMAUX_GATEWAY_EMBEDDING_MODEL_ID",
+                // dep-map: allow env-undeclared — a values-file key compared as data; the gateway never reads it
                 "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL",
             ),
             (
                 "HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION",
+                // dep-map: allow env-undeclared — a values-file key compared as data; the gateway never reads it
                 "HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION",
             ),
         ] {
