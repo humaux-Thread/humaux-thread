@@ -178,6 +178,8 @@ jobs:
             done
           echo "rendered $(find "$out" -type f -name '*.json' | wc -l) compose file(s) to $out"
 
+      - name: cargo xtask vocab-check (G-M20-16)
+        run: cargo xtask vocab-check
       - name: cargo xtask architecture-check
         run: cargo xtask architecture-check
 

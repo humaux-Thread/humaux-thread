@@ -1212,6 +1212,21 @@ class = "KNOWLEDGE"
 owner = "M20"
 basis = "M20:61; D1"
 
+["public.concept_labels"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.concept_relations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.concepts"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
 ["public.knowledge_gaps"]
 class = "KNOWLEDGE"
 owner = "M20"

@@ -12,14 +12,18 @@ edition = "core"
 workspace = true
 
 [dependencies]
-# why: domain ErrorCode/DegradeCode mapping and error types; used-by: [protocol::error_map, protocol::mcp, protocol::mcp_catalog, tests]
+# why: domain ErrorCode/DegradeCode mapping and error types; used-by: [protocol::error_map, protocol::mcp, protocol::mcp_catalog, protocol::page, tests]
 humaux-domain = { version = "0.1.0", path = "../domain" }
+# M26 D7: the `page@1` cursor is signed by the application's labelled-HMAC `TokenKeys` (TokenKeys/TokenLabel only).
+# Workspace path dependency, not a new external crate; application does not depend on protocol (no cycle).
+# why: signs and verifies the page@1 cursor with the shared token key set; used-by: [protocol::page, tests]
+humaux-application = { version = "0.1.0", path = "../application" }
 # §73.5: API key keyed-hash verifier (HMAC-SHA256). Same sha2 line as `humaux-domain`
 # (§8.1/§48.0①); hmac reused from the workspace's own already-resolved dependency graph
 # (paired digest 0.11.x, see Cargo.lock) rather than introducing a second major line.
 # why: control.api_keys.key_hash keyed-hash verifier; used-by: [protocol::edge]
 hmac = "0.13"
-# why: paired digest for the HMAC-SHA256 key-hash verifier; used-by: [protocol::edge]
+# why: paired digest for the HMAC-SHA256 key-hash verifier and the page@1 args hash; used-by: [protocol::edge, protocol::page]
 sha2 = "0.11"
 # §33: SDK and HTTP wire types stay inside the Protocol adapter.
 # Native 2026-07-28 only; no provider/client/auth SDK feature is enabled.
@@ -31,7 +35,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 async-trait = "0.1"
 # why: MCP tool schema and JSON-RPC (de)serialization; used-by: [protocol::mcp, protocol::mcp_catalog]
 serde = { version = "1", features = ["derive"] }
-# why: JSON-RPC bodies and the embedded contracts/mcp catalog documents; used-by: [protocol::mcp, protocol::mcp_catalog, tests]
+# why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cursor payloads; used-by: [protocol::mcp, protocol::mcp_catalog, protocol::page, tests]
 serde_json = { version = "1", features = ["raw_value"] }
 # why: validates the embedded contracts/mcp catalog documents at load time; used-by: [protocol::mcp_catalog]
 jsonschema = { version = "=0.52.0", default-features = false }
