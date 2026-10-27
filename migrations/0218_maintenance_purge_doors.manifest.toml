@@ -50,7 +50,7 @@ select
  -- every purge table and the receipt table keep FORCE RLS
  and (select bool_and(c.relrowsecurity and c.relforcerowsecurity) from pg_class c
        where c.oid in ('control.confirm_tokens'::regclass, 'ops.selection_snapshots'::regclass,
-                       'ops.selection_snapshot_items'::regclass, 'control.rate_buckets'::regclass,
+                       'ops.selection_snapshot_items'::regclass, to_regclass('control.rate_buckets'),
                        'ops.jobs'::regclass, 'ops.maintenance_receipts'::regclass))
  as postcheck_ok
 """

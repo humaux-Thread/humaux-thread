@@ -2,7 +2,8 @@
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
 //! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::page, tests, xtask::architecture_check]
-//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); every operation's budget_bytes is
+//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly
+//!   the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1); every operation's budget_bytes is
 //!   non-zero and at most the manifest's budget_cap_bytes, which `budget_cap_bytes()` hands to protocol::page]
 //! Spec: §33; §33.1; §33.10
 //!
@@ -12,7 +13,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use humaux_domain::{confirm::DestructiveOp, error::ErrorCode};
+use humaux_domain::{
+    confirm::{ConfirmWire, DestructiveOp},
+    error::ErrorCode,
+};
 use jsonschema::Validator;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -388,14 +392,18 @@ fn registry_from_manifest(manifest: &Manifest) -> Result<BTreeMap<String, Operat
             return Err(ErrorCode::InvalidInput);
         }
     }
-    if !expected.is_empty()
-        || DestructiveOp::ALL
-            .iter()
-            .any(|op| !registry.contains_key(op.operation_key()))
-    {
+    if !expected.is_empty() || !confirm_wire_holds(&registry) {
         return Err(ErrorCode::InvalidInput);
     }
     Ok(registry)
+}
+
+/// G-M26-1 / ADR-0092 C-M19-1, both directions: every `DestructiveOp` whose `wire()` is `Mcp` is a registry row
+/// (its `destructive` effect is the per-row `destructive_count` check above), and no `McpPending` / `Rest` op is.
+fn confirm_wire_holds(registry: &BTreeMap<String, Operation>) -> bool {
+    DestructiveOp::ALL
+        .iter()
+        .all(|op| registry.contains_key(op.operation_key()) == (op.wire() == ConfirmWire::Mcp))
 }
 
 /// Convenience bootstrap entry point for callers that only publish tools.
@@ -736,11 +744,16 @@ mod tests {
     #[test]
     fn registry_destructive_effect_equals_confirm_gate_set() {
         let catalog = CanonicalCatalog::load().unwrap();
-        let expected: BTreeSet<_> = DestructiveOp::ALL
+        let keys: BTreeSet<_> = DestructiveOp::ALL
             .iter()
             .map(|op| op.operation_key())
             .collect();
-        assert_eq!(expected.len(), DestructiveOp::ALL.len());
+        assert_eq!(keys.len(), DestructiveOp::ALL.len());
+        let expected: BTreeSet<_> = DestructiveOp::ALL
+            .iter()
+            .filter(|op| op.wire() == ConfirmWire::Mcp)
+            .map(|op| op.operation_key())
+            .collect();
         let actual: BTreeSet<_> = catalog
             .operations()
             .values()
@@ -757,6 +770,27 @@ mod tests {
             .unwrap();
         entry["effect"] = json!("write");
         assert_invalid_registry(&fixture);
+    }
+
+    #[test]
+    fn registry_carries_exactly_the_mcp_wire_confirm_ops() {
+        let registry = CanonicalCatalog::load().unwrap().operations().clone();
+        assert!(confirm_wire_holds(&registry));
+        let template = registry["memory.archive"].clone();
+        for key in ["memory.forget", "account.delete"] {
+            let mut widened = registry.clone();
+            widened.insert(
+                key.to_string(),
+                Operation {
+                    op: key.to_string(),
+                    ..template.clone()
+                },
+            );
+            assert!(!confirm_wire_holds(&widened), "{key} must stay out");
+        }
+        let mut omitted = registry;
+        omitted.remove("memory.archive");
+        assert!(!confirm_wire_holds(&omitted));
     }
 
     fn assert_invalid_registry(fixture: &Value) {
