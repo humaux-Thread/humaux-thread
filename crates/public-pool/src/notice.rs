@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) r=[]
 //!   x=[control.ack_notice, control.contribution_authorized, control.current_contribution_notice,
 //!   control.record_notice_shown]]; env=[]; modules=[domain::error, domain::ids]
-//! Called-by: [public-pool::policy, tests]
+//! Called-by: [public-pool::eligibility, public-pool::policy, tests]
 //! Invariants: [the Rust side never recomputes "current notice" or the predicate: both are the SQL functions
 //!   `control.current_contribution_notice` and `control.contribution_authorized`; tenant and user come from the caller's
 //!   session context (`humaux.tenant_id` / `humaux.user_id`), never from a parameter; a refusal is an `ErrorCode` plus an
