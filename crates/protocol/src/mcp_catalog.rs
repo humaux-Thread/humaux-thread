@@ -1,8 +1,8 @@
 //! `protocol::mcp_catalog` — Canonical MCP tool schema and operation registry (§33.1 / §33.10).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_profile, tests, xtask::architecture_check]
-//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1)]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_profile, protocol::page, tests, xtask::architecture_check]
+//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1); every operation's budget_bytes is non-zero and at most the manifest's budget_cap_bytes, which `budget_cap_bytes()` hands to protocol::page]
 //! Spec: §33; §33.1; §33.10
 //!
 //! The embedded schemas own enforced scopes; registry.scope must equal branch.required_scope (§33).
@@ -183,6 +183,7 @@ impl OperationDescriptor {
 pub struct CanonicalCatalog {
     tools: BTreeMap<ToolName, ToolEntry>,
     operations: BTreeMap<String, Operation>,
+    budget_cap_bytes: u64,
 }
 
 struct ToolEntry {
@@ -236,6 +237,12 @@ impl CanonicalCatalog {
     /// Typed entries in deterministic internal-key order (M26 D2; §33.1).
     pub fn operations(&self) -> &BTreeMap<String, Operation> {
         &self.operations
+    }
+
+    /// Hard ceiling in bytes for any serialized tool result: the manifest's `budget_cap_bytes` (M26 D7; §33.5).
+    /// Every operation's `budget_bytes` was validated to be at most this when the catalog loaded.
+    pub fn budget_cap_bytes(&self) -> u64 {
+        self.budget_cap_bytes
     }
 
     /// Converts the exact same source into the MCP SDK-neutral advertised
@@ -294,6 +301,7 @@ impl CanonicalCatalog {
             return Err(ErrorCode::InvalidInput);
         }
         let operations = registry_from_manifest(&manifest)?;
+        let budget_cap_bytes = manifest.budget_cap_bytes;
         let mut tools = BTreeMap::new();
         for item in manifest.tools {
             let tool = parse_tool(&item.name).ok_or(ErrorCode::InvalidInput)?;
@@ -345,7 +353,11 @@ impl CanonicalCatalog {
         if tools.len() != 8 {
             return Err(ErrorCode::InvalidInput);
         }
-        Ok(Self { tools, operations })
+        Ok(Self {
+            tools,
+            operations,
+            budget_cap_bytes,
+        })
     }
 }
 
