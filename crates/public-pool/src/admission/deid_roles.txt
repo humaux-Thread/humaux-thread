@@ -1,0 +1,33 @@
+# source: hand-written short list of job titles for the job-title quasi-identifier class, authored for M20-8a; no corpus, user file or record of a real person was read
+# version: 1 (2026-10-27)
+# use: lowercase; matched ASCII-case-insensitively, ASCII entries as whole words (D6' A3 combined identifiability)
+# excluded on purpose: generic nouns that are technical terms on their own (manager, engineer, lead, head of)
+ceo
+cto
+cfo
+coo
+founder
+co-founder
+vice president
+product manager
+project manager
+general manager
+engineering manager
+professor
+attorney
+lawyer
+surgeon
+nurse
+accountant
+总经理
+总监
+创始人
+首席执行官
+董事长
+产品经理
+项目经理
+教授
+律师
+会计师
+主任医师
+护士

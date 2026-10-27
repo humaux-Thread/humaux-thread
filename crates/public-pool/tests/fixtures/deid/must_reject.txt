@@ -1,0 +1,117 @@
+# E-M20-1 A3 slice (G-M20-7): items that A3 must reject. Every value is invented and synthetic: example.com and example.org hosts,
+# 555 and 7946 phone ranges, reserved test addresses, published test card numbers, generated IDs with valid checksums, made-up names.
+# Line grammar: id :: surface :: lang :: expected detector ids (comma separated) :: text
+# surface `multi` carries several surface=text pieces joined by " §§ " and counts as a combined-floor case.
+# Every expected detector must fire; extra detectors may fire.
+body-en-1 :: body :: en :: email :: Reach out to pat.sampleton@example.com about the failing build.
+body-en-2 :: body :: en :: phone :: Call +1 555 010 0199 or text 138 0013 8000 after noon.
+body-en-3 :: body :: en :: person_name_en,org_marker :: Hannah Sampleton from Northwind Labs Ltd reproduced the crash.
+body-en-4 :: body :: en :: url_query :: Open https://example.com/profile?uid=8841&name=pat to see it.
+body-zh-1 :: body :: zh :: email :: 请联系 pat.sampleton@example.com 了解构建失败的原因。
+body-zh-2 :: body :: zh :: phone :: 白天请拨打手机 13800138000 联系。
+body-zh-3 :: body :: zh :: person_name_zh,org_marker :: 我叫王测试，来自星河数据有限公司，复现了崩溃。
+body-zh-4 :: body :: zh :: contract_marker :: 这份设计属于内部资料，请保密，不要外传。
+title-en-1 :: title :: en :: email :: Crash when pat.sampleton@example.com signs in
+title-en-2 :: title :: en :: person_name_en :: Fix Hannah Sampleton's sync regression
+title-en-3 :: title :: en :: ip_address :: Timeouts reaching 198.18.0.7 from CI
+title-en-4 :: title :: en :: contract_marker :: NDA review checklist for vendor onboarding
+title-zh-1 :: title :: zh :: email :: 用户 pat.sampleton@example.com 无法登录的崩溃
+title-zh-2 :: title :: zh :: person_name_zh :: 联系人：李示例 报告的同步回归
+title-zh-3 :: title :: zh :: org_marker :: 星河数据有限公司接口超时问题
+title-zh-4 :: title :: zh :: phone :: 回拨 13800138000 前先重启服务
+tags-en-1 :: tags :: en :: email :: pat.sampleton@example.com
+tags-en-2 :: tags :: en :: person_name_en :: Hannah Sampleton
+tags-en-3 :: tags :: en :: org_marker :: Acme Dynamics Inc.
+tags-en-4 :: tags :: en :: phone :: +44 20 7946 0958
+tags-zh-1 :: tags :: zh :: org_marker :: 星河数据有限公司
+tags-zh-2 :: tags :: zh :: person_name_zh :: 负责人是赵样例
+tags-zh-3 :: tags :: zh :: phone :: 13800138000
+tags-zh-4 :: tags :: zh :: contract_marker :: 内部资料
+alias-en-1 :: entity_aliases :: en :: person_name_en :: Hannah Sampleton
+alias-en-2 :: entity_aliases :: en :: email :: dev_box+ci@mail.example.org
+alias-en-3 :: entity_aliases :: en :: org_marker :: Sampleton Systems GmbH
+alias-en-4 :: entity_aliases :: en :: person_name_en :: Mr. Testerson
+alias-zh-1 :: entity_aliases :: zh :: person_name_zh :: 联系人：李示例
+alias-zh-2 :: entity_aliases :: zh :: org_marker :: 云端示例股份有限公司
+alias-zh-3 :: entity_aliases :: zh :: email :: pat.sampleton@example.com
+alias-zh-4 :: entity_aliases :: zh :: phone :: +86 138 0013 8000
+code-en-1 :: code_comments :: en :: person_name_en,email :: // TODO: ask Hannah Sampleton (pat.sampleton@example.com) to review
+code-en-2 :: code_comments :: en :: phone :: # owner phone +1 555 010 0199, do not rotate
+code-en-3 :: code_comments :: en :: user_home_path :: // generated from /Users/psampleton/work/app/build.rs
+code-en-4 :: code_comments :: en :: url_query :: /* docs: https://example.com/docs?uid=8841&view=full */
+code-zh-1 :: code_comments :: zh :: person_name_zh,phone :: // 联系人：王测试 13800138000
+code-zh-2 :: code_comments :: zh :: email :: # 维护者邮箱 dev_box+ci@mail.example.org
+code-zh-3 :: code_comments :: zh :: contract_marker :: // 保密：本文件不得外传
+code-zh-4 :: code_comments :: zh :: user_home_path :: // 路径 /home/devbox_tester/src 仅限本机
+paths-en-1 :: paths :: en :: user_home_path :: /Users/psampleton/work/app/src/main.rs
+paths-en-2 :: paths :: en :: user_home_path :: C:\Users\tsampleton\Desktop\notes.txt
+paths-en-3 :: paths :: en :: user_home_path :: ~priyat/notes/todo.md
+paths-en-4 :: paths :: en :: email :: /srv/exports/pat.sampleton@example.com/report.csv
+paths-zh-1 :: paths :: zh :: user_home_path :: /Users/psampleton/项目/应用/main.rs
+paths-zh-2 :: paths :: zh :: user_home_path :: /home/devbox_tester/文档/说明.md
+paths-zh-3 :: paths :: zh :: phone :: /data/导出/13800138000/通讯录.csv
+paths-zh-4 :: paths :: zh :: person_name_zh :: /data/联系人：赵样例/档案.txt
+query-en-1 :: url_queries :: en :: url_query :: uid=8841&name=pat
+query-en-2 :: url_queries :: en :: url_query,email :: ?email=pat.sampleton@example.com
+query-en-3 :: url_queries :: en :: url_query :: #user=8841&tab=profile
+query-en-4 :: url_queries :: en :: url_query,phone :: phone=+1 555 010 0199&ref=home
+query-zh-1 :: url_queries :: zh :: url_query :: 姓名=李示例&城市=北京
+query-zh-2 :: url_queries :: zh :: url_query,phone :: tel=13800138000&来源=首页
+query-zh-3 :: url_queries :: zh :: url_query,email :: ?邮箱=pat.sampleton@example.com
+query-zh-4 :: url_queries :: zh :: url_query :: #用户=8841
+quote-en-1 :: quotes :: en :: email :: "Please email dev_box+ci@mail.example.org if the build breaks," she wrote.
+quote-en-2 :: quotes :: en :: phone :: He said: call me on +44 20 7946 0958 any time.
+quote-en-3 :: quotes :: en :: payment_card :: The invoice listed card 5555-5555-5555-4444 in plain text.
+quote-en-4 :: quotes :: en :: contract_marker :: "This clause is confidential and must not leave the company."
+quote-zh-1 :: quotes :: zh :: phone :: “有事请打 13800138000，随时都在。”
+quote-zh-2 :: quotes :: zh :: cn_resident_id :: 表格里写着身份证号 110105199001010010 这一栏。
+quote-zh-3 :: quotes :: zh :: person_name_zh :: 邮件署名为“我叫张样例，负责支付”。
+quote-zh-4 :: quotes :: zh :: contract_marker :: “合同编号 HT-0001 属于商业秘密。”
+edge-en-1 :: edge_text :: en :: person_name_en :: reported_by Hannah Sampleton
+edge-en-2 :: edge_text :: en :: org_marker :: works_at Northwind Labs Ltd
+edge-en-3 :: edge_text :: en :: email :: owner_contact pat.sampleton@example.com
+edge-en-4 :: edge_text :: en :: ip_address :: served_from 198.18.0.7
+edge-zh-1 :: edge_text :: zh :: person_name_zh :: 负责人：赵样例
+edge-zh-2 :: edge_text :: zh :: org_marker :: 隶属于星河数据有限公司
+edge-zh-3 :: edge_text :: zh :: phone :: 联系电话 13800138000
+edge-zh-4 :: edge_text :: zh :: contract_marker :: 受保密协议约束
+num-en-1 :: numbers :: en :: phone :: +1 555 010 0199
+num-en-2 :: numbers :: en :: payment_card :: 4111 1111 1111 1111
+num-en-3 :: numbers :: en :: cn_resident_id :: 310101198512310020
+num-en-4 :: numbers :: en :: phone :: 15900001234
+num-zh-1 :: numbers :: zh :: phone :: 手机：13800138000
+num-zh-2 :: numbers :: zh :: cn_resident_id :: 身份证：31010119851221002X
+num-zh-3 :: numbers :: zh :: payment_card :: 卡号：4242424242424242
+num-zh-4 :: numbers :: zh :: phone :: +86 138 0013 8000
+date-en-1 :: dates :: en :: phone :: born 1990-05-17, call +1 555 010 0199
+date-en-2 :: dates :: en :: email :: 2023-04-15 pat.sampleton@example.com
+date-en-3 :: dates :: en :: combined_identifiability :: March 5, 2023 at 10 Elm Street
+date-en-4 :: dates :: en :: combined_identifiability :: She was born on 12 June 1990 in Springfield
+date-zh-1 :: dates :: zh :: phone :: 出生于1990年5月17日，手机 13800138000
+date-zh-2 :: dates :: zh :: cn_resident_id :: 1990-01-01 身份证 110105199001010010
+date-zh-3 :: dates :: zh :: combined_identifiability :: 2023年4月15日，北京市朝阳区建国路88号
+date-zh-4 :: dates :: zh :: combined_identifiability :: 1985-12-31 张先生
+attr-en-1 :: attribution :: en :: attribution,person_name_en :: Hannah Sampleton
+attr-en-2 :: attribution :: en :: attribution,email :: pat.sampleton@example.com
+attr-en-3 :: attribution :: en :: attribution :: psampleton
+attr-en-4 :: attribution :: en :: attribution,phone :: +1 555 010 0199
+attr-zh-1 :: attribution :: zh :: attribution :: 贡献者
+attr-zh-2 :: attribution :: zh :: attribution,person_name_zh :: 联系人：李示例
+attr-zh-3 :: attribution :: zh :: attribution,phone :: 13800138000
+attr-zh-4 :: attribution :: zh :: attribution,org_marker :: 星河数据有限公司
+comb-en-1 :: body :: en :: combined_identifiability :: The reporter, a 34-year-old product manager, filed this on March 5, 2023.
+comb-en-2 :: multi :: en :: combined_identifiability :: body=The maintainer is a woman who lives in Berlin. §§ title=Question from Berlin
+comb-en-3 :: multi :: en :: combined_identifiability :: body=Our CTO joined last spring. §§ dates=2022-03-14
+comb-en-4 :: multi :: en :: combined_identifiability,org_marker :: edge_text=works_at Acme Dynamics Inc. §§ quotes=a 29-year-old founder
+comb-en-5 :: multi :: en :: combined_identifiability :: body=The patient, aged 52, lives on Maple Road.
+comb-en-6 :: multi :: en :: combined_identifiability :: tags=attorney §§ tags=Seattle
+comb-en-7 :: multi :: en :: combined_identifiability :: entity_aliases=Springfield §§ dates=14 July 2021
+comb-en-8 :: multi :: en :: combined_identifiability,org_marker :: code_comments=// vendor: Fixture Works LLC §§ dates=2021-09-30
+comb-en-9 :: body :: en :: combined_identifiability :: He is a 41-year-old.
+comb-zh-1 :: body :: zh :: combined_identifiability :: 她今年34岁，是一名产品经理。
+comb-zh-2 :: body :: zh :: combined_identifiability :: 王先生是总经理
+comb-zh-3 :: multi :: zh :: combined_identifiability :: body=项目负责人住在杭州。 §§ dates=2021年6月1日
+comb-zh-4 :: multi :: zh :: combined_identifiability :: title=女士在深圳 §§ body=创始人访谈
+comb-zh-5 :: multi :: zh :: combined_identifiability :: tags=律师 §§ edge_text=住在中山路12号
+comb-zh-6 :: multi :: zh :: combined_identifiability,org_marker :: code_comments=// 星河数据有限公司 §§ body=她是42岁的教授
+comb-zh-7 :: body :: zh :: combined_identifiability :: 他今年50岁，是男性

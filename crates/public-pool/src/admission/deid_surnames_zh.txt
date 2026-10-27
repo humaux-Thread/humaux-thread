@@ -1,0 +1,14 @@
+# source: hand-written list of common Chinese family names, authored for M20-8a; no corpus, user file or record of a real person was read
+# version: 1 (2026-10-27)
+# use: person_name_zh detector, a name-context marker followed by one of these characters and 1-2 Han characters (D6' A3, any hit rejects)
+# excluded on purpose: surnames that double as everyday function characters (于, 向, 方, 万)
+王 李 张 刘 陈 杨 黄 赵 吴 周
+徐 孙 马 朱 胡 郭 何 林 罗 郑
+梁 谢 宋 唐 许 韩 冯 邓 曹 彭
+曾 肖 田 董 袁 潘 蒋 蔡 余 杜
+叶 程 苏 魏 吕 丁 任 沈 姚 卢
+姜 崔 钟 谭 陆 汪 范 金 石 廖
+贾 夏 韦 付 邹 孟 熊 秦 邱 江
+尹 薛 闫 段 雷 侯 龙 史 陶 黎
+贺 顾 毛 郝 龚 邵 钱 严 覃 武
+戴 莫 孔 汤 高 白
