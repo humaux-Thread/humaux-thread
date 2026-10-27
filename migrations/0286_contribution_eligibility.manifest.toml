@@ -1,0 +1,72 @@
+# §46.1 migration manifest. Card M20-5 (ADR-0090 D-A, ADR-0088 D-A, gate G-M20-5): a CHECK on control.contribution_notices.scope_categories
+# (a subset of the six phase-1 unit-type names), the kind -> unit-type map private.contribution_unit_type(text) and the eligibility
+# predicate private.contribution_eligibility(uuid, uuid). No table, column, row or table grant changes (number 0286).
+
+migration_id = "0286_contribution_eligibility"
+class = "EXPAND_CONTRACT"
+
+# Refuses unless every relation the predicate reads exists (note_kind is the 0235/0283 column), none of the 0286 objects does, and no
+# notice row would violate the new CHECK (the table is expected empty outside tests).
+precheck = """
+select to_regclass('control.contribution_notices') is not null
+   and to_regprocedure('control.current_contribution_notice()') is not null
+   and to_regclass('private.memory_records') is not null
+   and to_regclass('private.memory_evidence') is not null
+   and to_regclass('private.evidence_objects') is not null
+   and to_regclass('private.memory_affects') is not null
+   and to_regclass('private.evidence_affects') is not null
+   and to_regclass('private.memory_subjects') is not null
+   and to_regclass('private.memory_subject_mentions') is not null
+   and to_regclass('private.evidence_subjects') is not null
+   and to_regclass('private.subjects') is not null
+   and to_regclass('private.subject_roles') is not null
+   and exists (select 1 from pg_attribute a where a.attrelid = to_regclass('private.memory_records')
+                  and a.attname = 'note_kind' and not a.attisdropped)
+   and to_regprocedure('private.contribution_unit_type(text)') is null
+   and to_regprocedure('private.contribution_eligibility(uuid,uuid)') is null
+   and not exists (select 1 from pg_constraint c where c.conrelid = to_regclass('control.contribution_notices')
+                  and c.conname = 'contribution_notices_scope_categories_unit_types_check')
+   and not exists (select 1 from control.contribution_notices n
+                  where not (n.scope_categories <@ array['FIX', 'DECISION', 'RESEARCH', 'USAGE', 'CHECKLIST', 'FAILURE_CASE']::text[]))
+ as precheck_ok
+"""
+
+# Fails on: a missing, unvalidated or differently spelled category CHECK (exactly the six literals); a predicate that is not owner-owned
+# SECURITY DEFINER, STABLE, text-returning, with the pinned search_path; a map that is not IMMUTABLE, text-returning and owner-owned;
+# any EXECUTE on the map for PUBLIC, a runtime role or role_public_disclosure; and any EXECUTE on the predicate other than
+# role_gateway and role_private_worker (PUBLIC, the public roles and role_retrieval_worker included).
+postcheck = """
+with r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+                   ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'))
+select coalesce((select bool_and(strpos(d.def, '''' || u.name || '''') > 0)
+                         and length(d.def) - length(replace(d.def, '''', '')) = 12
+                    from (select pg_get_constraintdef(c.oid) as def from pg_constraint c
+                           where c.conrelid = to_regclass('control.contribution_notices')
+                             and c.conname = 'contribution_notices_scope_categories_unit_types_check'
+                             and c.contype = 'c' and c.convalidated) d
+                   cross join unnest(array['FIX', 'DECISION', 'RESEARCH', 'USAGE', 'CHECKLIST', 'FAILURE_CASE']) as u(name)
+                   group by d.def), false)
+   and (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('private.contribution_eligibility(uuid,uuid)')
+           and p.prosecdef and p.provolatile = 's' and p.prorettype = 'text'::regtype
+           and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+           and p.proconfig = array['search_path=pg_catalog, pg_temp'])
+   and (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('private.contribution_unit_type(text)')
+           and not p.prosecdef and p.provolatile = 'i' and p.prorettype = 'text'::regtype
+           and pg_get_userbyid(p.proowner) = 'role_migration_owner')
+   and not has_function_privilege('public', 'private.contribution_eligibility(uuid,uuid)', 'EXECUTE')
+   and not has_function_privilege('public', 'private.contribution_unit_type(text)', 'EXECUTE')
+   and not exists (select 1 from r
+                    where has_function_privilege(r.role, 'private.contribution_eligibility(uuid,uuid)', 'EXECUTE')
+                          is distinct from (r.role in ('role_gateway', 'role_private_worker')))
+   and not exists (select 1 from r where has_function_privilege(r.role, 'private.contribution_unit_type(text)', 'EXECUTE'))
+   and not exists (select 1 from pg_roles x
+                    where x.rolname = 'role_public_disclosure'
+                      and (has_function_privilege(x.rolname, 'private.contribution_eligibility(uuid,uuid)', 'EXECUTE')
+                           or has_function_privilege(x.rolname, 'private.contribution_unit_type(text)', 'EXECUTE')))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "rollback: DROP FUNCTION private.contribution_eligibility(uuid, uuid), DROP FUNCTION private.contribution_unit_type(text) and ALTER TABLE control.contribution_notices DROP CONSTRAINT contribution_notices_scope_categories_unit_types_check, together with crates/public-pool/src/eligibility.rs and tests/eligibility.rs. No caller exists until M20-6 binds the sweep, so the drop is safe before then; afterwards M20-6 is reverted first."
+backup_restore_requirement = "none: two new functions and one CHECK on an empty platform table; no row is rewritten."

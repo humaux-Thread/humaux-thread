@@ -3500,6 +3500,11 @@ const R4_INTERNAL_FUNCTIONS: &[&str] = &[
 /// The migration whose `CREATE TABLE` set the R4 registry must name, read from the embedded set (ADR-0066 D-Q).
 const R4_MIGRATION: &str = "0131_contribution_execution";
 
+/// SECURITY DEFINER functions whose name contains `contribution` but which are outside the R4 execution boundary: the M20-5
+/// eligibility predicate reads the M07 closure and writes nothing (ADR-0090 D-A, migration 0286). Exact signatures, so a
+/// second function of that name still reads as unregistered.
+const R4_OUT_OF_BOUNDARY_FUNCTIONS: &[&str] = &["private.contribution_eligibility(uuid,uuid)"];
+
 fn r4_create_tables(sql: &str) -> BTreeSet<String> {
     sql.lines()
         .filter_map(|line| {
@@ -3585,8 +3590,9 @@ pub fn check_r4_execution_function_boundary(client: &mut impl GenericClient) -> 
            AND n.nspname IN ('private', 'ops') \
            AND (p.proname LIKE '%contribution%' \
                 OR pg_get_functiondef(p.oid) LIKE '%private.contribution_executions%') \
+           AND p.oid::regprocedure::text <> ALL ($1::text[]) \
          ORDER BY 1",
-        &[],
+        &[&R4_OUT_OF_BOUNDARY_FUNCTIONS],
     ) {
         Ok(rows) => {
             let actual: BTreeSet<String> = rows

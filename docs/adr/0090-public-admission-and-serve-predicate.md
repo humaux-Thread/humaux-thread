@@ -173,3 +173,30 @@ sending raw private task text to the public lane; a combined trust score on card
 
 Module design note M20 v2, D3' to D9', D15', D16', §8 to §10 and §12; batch-33 public-pool research digest (B33);
 Baseline §12.1.1, §12.3, §12.6, §7.1, §7.2, §23.3, §52, §57.1; ADR-0083; ADR-0084; ADR-0088; ADR-0089; ADR-0091.
+
+## Amendment (M20-5, 2026-10-27) — the D-A predicate and its kind-to-unit-type map (migration 0286)
+
+`private.contribution_eligibility(p_tenant_id, p_memory_id) RETURNS text` is the one D-A predicate (SECURITY DEFINER, owner
+`role_migration_owner`, `search_path = pg_catalog, pg_temp`; EXECUTE for `role_gateway` and `role_private_worker` only, so
+`role_public_worker`, `role_public_disclosure` and `role_retrieval_worker` hold none). It returns the first failure of a fixed
+order, else `ELIGIBLE`: `NOT_FOUND`, `NOT_ACTIVE`, `KIND_NOT_MAPPED`, `NO_NOTICE`, `CATEGORY_NOT_IN_NOTICE`, `NO_EVIDENCE`,
+`DATA_CLASS`, `AFFECT`, `PERSON_OR_CUSTOMER_LINK`, `ELIGIBLE`. The Rust set is
+`humaux_public_pool::eligibility::EligibilityVerdict`; the SQL text is the wire and an unknown string is a decode refusal,
+never `Eligible`.
+
+- **Closure.** Every `private.memory_evidence` row of the memory, whatever its role (§8.6). The affect and link checks cover
+  the memory and every closure Evidence row; `DATA_CLASS` fails on any closure Evidence above `INTERNAL`.
+- **Active.** `status = 'active'` and `archived_at IS NULL` (the recall gate's lifecycle; `status = 'active'` is tied to
+  `superseded_by IS NULL` by G59-4).
+- **Fail closed on hidden evidence.** `private.evidence_objects` has no owner arm in its policy (0163), so closure Evidence
+  the session cannot see is unknown and reads `DATA_CLASS`. The sweep (M20-6) runs each candidate under its author's session.
+- **Tenant.** The tenant argument must be the session tenant (42501, the 0255 pin); a memory of another tenant reads
+  `NOT_FOUND`, the verdict of an absent id.
+- **Links.** A subject of kind `PERSON`, or any subject holding the `CUSTOMER` role, fails. An `ORGANISATION` (or other
+  non-person kind) without that role does not: reuse needs entities.
+- **Applicability is never a licence.** The body names neither `memory_applicability`, `memory_projects*` nor
+  `memory_in_project`, nor any `public.*` table; a `pg_get_functiondef` sentinel pins it.
+- **Kind map.** One home, `private.contribution_unit_type(note_kind text)`: `fix` to `FIX`, `decision` to `DECISION`,
+  `research` to `RESEARCH`; every other note kind and a non-note memory (NULL) give `KIND_NOT_MAPPED`. `USAGE`, `CHECKLIST`
+  and `FAILURE_CASE` have no source kind yet (M07/M15); a row is added with a contract test when one exists. Rust holds no
+  copy; a §78.2 test asserts every returned unit type is a `UnitType`.
