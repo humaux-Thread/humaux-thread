@@ -18,8 +18,12 @@
 //!   the anti-join SQL of `read_materialize::final_memory_ids_with_readable_in_txn`, which calls it first; the
 //!   materializers here read under one REPEATABLE READ snapshot and surface absent, hidden and gated rows alike as
 //!   NotFound, a PG error as DependencyUnavailable or Internal, never an empty page; no cached allow decision, and
-//!   the only write is the enumeration manifest a first page mints through `context_repo` and `selection_repo`]
-//! Spec: Baseline §6.1.1; §6.1.3; §8.6; §22.1; ADR-0067 D-J2; ADR-0071
+//!   the only write is the enumeration manifest a first page mints through `context_repo` and `selection_repo`;
+//!   `memory.get` goes through `materialize_memory_get_frontier_target`, which reads the stream frontier (one
+//!   `stream_checkpoints` primary-key lookup) in its snapshot and never the ledger closure, `stream_log` or an index
+//!   count, and `frontier_pipeline_block` is the one mapping from that read to the wire, where no checkpoint row is
+//!   `projection: null` with `no_checkpoint`, never a zero frontier (ADR-0110 D-A, §15.5, §23.1④)]
+//! Spec: Baseline §6.1.1; §6.1.3; §8.6; §15.5; §22.1; §23.1④; ADR-0067 D-J2; ADR-0071; ADR-0110 D-A
 //!
 //! M08 D1 (module design "one gate, one home"): every read op passes the shared final gate before any body leaves
 //! PostgreSQL, and the closure it rests on lives in this file, so a change to the readability rule edits one module.
@@ -49,7 +53,7 @@ use humaux_domain::note::NoteKind;
 use humaux_domain::selection::{AUTHORIZED_MEMORY_ENUMERATION_V1, Cursor, query_fingerprint};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
-use humaux_retrieval::envelope::GroundingBlock;
+use humaux_retrieval::envelope::{FrontierBlock, FrontierPipelineBlock, GroundingBlock};
 use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
@@ -67,7 +71,7 @@ use crate::read_materialize::{
     memory_versions_in_txn,
 };
 use crate::selection_repo::fetch_authorized_snapshot_page_in_txn;
-use crate::stream_repo::close_ledger_in_txn;
+use crate::stream_repo::{Frontier, close_ledger_in_txn, ledger_frontier_in_txn};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -156,12 +160,15 @@ pub(crate) async fn readable_memory_ids(
 ///
 /// `bodies` carries the same RR snapshot identity as the final Memory body. `ledger` and
 /// `grounding` were read in that same transaction, but this type does not claim a complete
-/// stream or pipeline census.
-pub struct MaterializedMemory {
+/// stream or pipeline census. `L` is the projection-side reading `ledger` holds: the stream
+/// ledger closure by default (enumerate, [`materialize_memory_get_target`]), and the checkpoint
+/// frontier on the one door `memory.get` uses ([`materialize_memory_get_frontier_target`],
+/// ADR-0110 D-A).
+pub struct MaterializedMemory<L = humaux_retrieval::completeness::LedgerClosure> {
     /// The final body rows, gated and read in one RR snapshot.
     pub bodies: MaterializedBodies,
-    /// The stream ledger closure read in that same transaction.
-    pub ledger: humaux_retrieval::completeness::LedgerClosure,
+    /// The projection-side reading taken in that same transaction (see the type's `L`).
+    pub ledger: L,
     /// The §8.8 grounding tally of the admitted Memory rows.
     pub grounding: GroundingBlock,
     /// §6.1.3 (ADR-0028 D-D): `memory_id → linked subject ids` (link order) for every body in
@@ -445,10 +452,41 @@ async fn note_head_in_txn(
     head.map(MemoryId).ok_or(ErrorCode::NotFound)
 }
 
-/// [`materialize_memory_get_versioned`] for either [`MemoryGetTarget`]. A note resolves to its head in the same RR
-/// snapshot, then runs exactly the version read: a head that fails the final gate (forgotten, tombstoned, revoked,
-/// invisible) is `NOT_FOUND`, never an older version. `include_history` with a note targets the head.
-pub async fn materialize_memory_get_target(
+/// Everything one `memory.get` snapshot reads except its projection-side reading: the body, grounding, subject links,
+/// note identity and history that [`begin_get_snapshot`] reads under one RR transaction. The reading itself is the one
+/// thing the two doors differ in, so it is attached last by [`GetRead::with_reading`].
+struct GetRead {
+    bodies: MaterializedBodies,
+    grounding: GroundingBlock,
+    subjects: HashMap<Uuid, Vec<Uuid>>,
+    archived: bool,
+    note_kinds: HashMap<Uuid, NoteKind>,
+    note_ids: HashMap<Uuid, Uuid>,
+    history: Option<MemoryHistory>,
+}
+
+impl GetRead {
+    /// The finished [`MaterializedMemory`], carrying the reading taken in the same transaction. The enumerate-only
+    /// fields are empty: a get names its one item, it does not page (ADR-0067 D-J2).
+    fn with_reading<L>(self, ledger: L) -> MaterializedMemory<L> {
+        MaterializedMemory {
+            bodies: self.bodies,
+            ledger,
+            grounding: self.grounding,
+            subjects: self.subjects,
+            archived: self.archived,
+            archived_ids: HashSet::new(),
+            statuses: HashMap::new(),
+            note_kinds: self.note_kinds,
+            note_ids: self.note_ids,
+            history: self.history,
+        }
+    }
+}
+
+/// Opens the RR READ ONLY snapshot of one `memory.get` and reads everything but the projection side. The transaction
+/// is handed back uncommitted so the caller reads its reading in the same snapshot.
+async fn begin_get_snapshot(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
     scope: &Scope,
@@ -456,7 +494,7 @@ pub async fn materialize_memory_get_target(
     validated_key: &StreamKey,
     target: MemoryGetTarget,
     include_history: bool,
-) -> Result<MaterializedMemory, ErrorCode> {
+) -> Result<(Txn<'static>, GetRead), ErrorCode> {
     let (read_authorization, _) = canonical_scope(authorization, scope)?;
     materialized_identity(scope, expected_family, validated_key)?;
     let mut txn = pool
@@ -519,24 +557,108 @@ pub async fn materialize_memory_get_target(
     } else {
         None
     };
+    let read = GetRead {
+        bodies,
+        grounding,
+        subjects,
+        archived,
+        note_kinds,
+        note_ids,
+        history,
+    };
+    Ok((txn, read))
+}
+
+/// [`materialize_memory_get_versioned`] for either [`MemoryGetTarget`], reading the stream ledger closure: O(stream)
+/// in `projection.stream_point_ledger` and `stream_log`. `memory.get` no longer calls it (ADR-0110 D-A:
+/// [`materialize_memory_get_frontier_target`]); it stays for the closure-reading callers and their tests. A note
+/// resolves to its head in the same RR snapshot, then runs exactly the version read: a head that fails the final gate
+/// (forgotten, tombstoned, revoked, invisible) is `NOT_FOUND`, never an older version. `include_history` with a note
+/// targets the head.
+pub async fn materialize_memory_get_target(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    target: MemoryGetTarget,
+    include_history: bool,
+) -> Result<MaterializedMemory, ErrorCode> {
+    let (mut txn, read) = begin_get_snapshot(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        target,
+        include_history,
+    )
+    .await?;
     let ledger = close_ledger_in_txn(&mut txn, validated_key, authorization)
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
     txn.commit()
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    Ok(MaterializedMemory {
-        bodies,
-        ledger,
-        grounding,
-        subjects,
-        archived,
-        archived_ids: HashSet::new(),
-        statuses: HashMap::new(),
-        note_kinds,
-        note_ids,
-        history,
-    })
+    Ok(read.with_reading(ledger))
+}
+
+/// ADR-0110 D-A: the `memory.get` door. Everything [`materialize_memory_get_target`] reads, but the projection side is
+/// the stream frontier, one primary-key lookup on `stream_checkpoints` in the same RR snapshot
+/// ([`ledger_frontier_in_txn`]): never the closure, `stream_log`, the point ledger or an index count. The PostgreSQL
+/// read stays authoritative (§15.5). `None` in `ledger` means the stream has no checkpoint row; callers report that
+/// through [`frontier_pipeline_block`], never as a zero frontier (§23.1④).
+pub async fn materialize_memory_get_frontier_target(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    target: MemoryGetTarget,
+    include_history: bool,
+) -> Result<MaterializedMemory<Option<Frontier>>, ErrorCode> {
+    let (mut txn, read) = begin_get_snapshot(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        target,
+        include_history,
+    )
+    .await?;
+    let frontier = ledger_frontier_in_txn(&mut txn, validated_key)
+        .await
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    txn.commit()
+        .await
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    Ok(read.with_reading(frontier))
+}
+
+/// ADR-0110 D-A: the `pipeline` of a `memory.get` envelope from the frontier its snapshot read. The one mapping from a
+/// [`Frontier`] to the wire: `None` (no checkpoint row) is `projection: null` with `no_checkpoint`, never a zero
+/// frontier (§23.1④, G-M13-2); a row becomes a [`FrontierBlock`], whose `behind` is derived there and nowhere else.
+/// `observed_at` is the row's DB-clock write time in RFC 3339.
+pub fn frontier_pipeline_block(
+    frontier: Option<Frontier>,
+) -> Result<FrontierPipelineBlock, ErrorCode> {
+    let block = match frontier {
+        Some(frontier) => {
+            let observed_at = frontier
+                .updated_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| ErrorCode::Internal)?;
+            Some(FrontierBlock::new(
+                frontier.issued_hw,
+                frontier.projection_hw,
+                frontier.serving,
+                observed_at,
+            ))
+        }
+        None => None,
+    };
+    Ok(FrontierPipelineBlock::new(block))
 }
 
 fn enumeration_fingerprint(

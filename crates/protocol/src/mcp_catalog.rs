@@ -1253,6 +1253,120 @@ mod tests {
         })
     }
 
+    /// ADR-0110 D-A: a `memory.get` envelope, [`minimal_memory_envelope`] with the frontier in place of the closure.
+    fn minimal_get_envelope() -> Value {
+        let mut envelope = minimal_memory_envelope();
+        envelope["pipeline"]["projection"] = json!({
+            "mode": "frontier", "issued": 4, "settled_prefix": 3, "behind": 1,
+            "serving": true, "observed_at": "2026-10-27T01:02:03.5Z"
+        });
+        envelope["pipeline"]["projection_reason"] = Value::Null;
+        envelope
+    }
+
+    /// ADR-0110 D-A / G-M13-2 (schema half): `GetEnvelope` is the canonical Envelope in every part but
+    /// `pipeline.projection`, so a field added to the Envelope cannot silently miss `memory.get`.
+    #[test]
+    fn memory_get_envelope_differs_from_the_canonical_envelope_only_in_the_projection() {
+        let catalog = CanonicalCatalog::load().expect("catalog");
+        let advertised = Value::Object(
+            catalog.tools[&ToolName::Memory]
+                .advertised
+                .output_schema
+                .clone()
+                .expect("advertised output schema"),
+        );
+        let get = &advertised["$defs"]["GetEnvelope"];
+        let canonical = &advertised["$defs"]["Envelope"];
+        assert_eq!(get["required"], canonical["required"]);
+        assert_eq!(
+            get["additionalProperties"],
+            canonical["additionalProperties"]
+        );
+        let keys = |schema: &Value| -> Vec<String> {
+            schema["properties"]
+                .as_object()
+                .expect("properties")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(keys(get), keys(canonical));
+        for key in keys(canonical).iter().filter(|key| *key != "pipeline") {
+            assert_eq!(
+                get["properties"][key]["$ref"],
+                format!("#/$defs/Envelope/properties/{key}"),
+                "{key} is the canonical Envelope's, by reference"
+            );
+        }
+        assert_eq!(
+            keys(&get["properties"]["pipeline"]),
+            ["evidence", "knowledge", "projection", "projection_reason"]
+        );
+        // The memory.enumerate page keeps the closure: its content is still the canonical Envelope.
+        assert_eq!(
+            advertised["oneOf"][1]["properties"]["content"]["$ref"],
+            "#/$defs/Envelope"
+        );
+    }
+
+    /// ADR-0110 D-A, no dual-shape period: `memory.get` is exactly the frontier, or `null` together with
+    /// `no_checkpoint`; the closure, extra counts and an unpaired reason are refused.
+    #[test]
+    fn memory_get_output_is_the_frontier_or_null_with_a_reason_and_nothing_else() {
+        let catalog = CanonicalCatalog::load().expect("catalog");
+        let accepted = |value: &Value| catalog.validate_output(ToolName::Memory, value).is_ok();
+        let with = |projection: Value, reason: Value| {
+            let mut envelope = minimal_get_envelope();
+            envelope["pipeline"]["projection"] = projection;
+            envelope["pipeline"]["projection_reason"] = reason;
+            envelope
+        };
+        let frontier = minimal_get_envelope()["pipeline"]["projection"].clone();
+        assert!(accepted(&with(frontier.clone(), Value::Null)));
+        assert!(accepted(&with(Value::Null, json!("no_checkpoint"))));
+
+        let closure = minimal_memory_envelope()["pipeline"]["projection"].clone();
+        let mut refused = vec![
+            with(closure, Value::Null),
+            with(Value::Null, Value::Null),
+            with(frontier.clone(), json!("no_checkpoint")),
+            with(Value::Null, json!("no_such_reason")),
+        ];
+        // The closure Envelope itself (no `projection_reason` key) is no longer a memory.get answer.
+        refused.push(minimal_memory_envelope());
+        for (field, value) in [
+            ("visible", json!(3)),
+            ("completeness_ratio", json!(1.0)),
+            ("mode", json!("closure")),
+            ("behind", json!(-1)),
+            ("observed_at", json!("yesterday")),
+            ("issued", json!("4")),
+        ] {
+            let mut tampered = frontier.clone();
+            tampered[field] = value;
+            refused.push(with(tampered, Value::Null));
+        }
+        for field in [
+            "mode",
+            "issued",
+            "settled_prefix",
+            "behind",
+            "serving",
+            "observed_at",
+        ] {
+            let mut missing = frontier.clone();
+            missing.as_object_mut().expect("frontier").remove(field);
+            refused.push(with(missing, Value::Null));
+        }
+        for (index, value) in refused.iter().enumerate() {
+            assert!(
+                !accepted(value),
+                "refused shape {index} was accepted: {value}"
+            );
+        }
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)] // one exhaustive pin of the memory.output oneOf branch order
     fn memory_output_accepts_bare_and_snapshot_page_shapes() {
@@ -1278,7 +1392,9 @@ mod tests {
                 .len(),
             19
         );
-        assert_eq!(advertised["oneOf"][0]["$ref"], "#/$defs/Envelope");
+        // ADR-0110 D-A: memory.get's branch is the frontier envelope (the contract fingerprint bump of M13-2); the
+        // closure Envelope is still the `content` of the enumerate page (branch 1, asserted below).
+        assert_eq!(advertised["oneOf"][0]["$ref"], "#/$defs/GetEnvelope");
         // ADR-0018: memory.supersede's two results are the third and fourth branches.
         assert_eq!(
             advertised["oneOf"][2]["$ref"],
@@ -1393,13 +1509,13 @@ mod tests {
         );
         let advertised_validator =
             validator_for(&advertised).expect("self-contained advertised schema");
-        let bare = minimal_memory_envelope();
+        let bare = minimal_get_envelope();
         catalog
             .validate_output(ToolName::Memory, &bare)
-            .expect("bare canonical envelope");
+            .expect("bare memory.get frontier envelope");
         assert!(advertised_validator.is_valid(&bare));
         let page = json!({
-            "content": bare,
+            "content": minimal_memory_envelope(),
             "pagination": {"snapshot_id":"018d32a7-0000-7000-8000-000000000001", "next_cursor":null}
         });
         catalog

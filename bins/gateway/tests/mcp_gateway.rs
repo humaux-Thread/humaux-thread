@@ -2305,15 +2305,31 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                         "{route}: no envelope found in the response shape"
                     );
                     let projection = &value["pipeline"]["projection"];
-                    assert_eq!(
-                        projection["visible"], 3,
-                        "{route} must report the SAME live Qdrant count recall.search does —                          it reads the same stream on the same serving version: {value}"
-                    );
-                    assert_eq!(
-                        projection["completeness_ratio"], 1.0,
-                        "{route} reported a null ratio on a healthy projection before card 18:                          {value}"
-                    );
-                    assert_eq!(projection["current"], true, "{route}: {value}");
+                    if route == "memory.get" {
+                        // ADR-0110 D-A: a get reports the stream frontier from one checkpoint lookup, so it carries no
+                        // `visible`, no ratio and no Qdrant count; the closure stays recall / context / enumerate's.
+                        assert_eq!(projection["mode"], "frontier", "{route}: {value}");
+                        assert_eq!(projection["serving"], true, "{route}: {value}");
+                        assert!(projection["behind"].is_u64(), "{route}: {value}");
+                        for gone in ["visible", "completeness_ratio", "current"] {
+                            assert!(projection.get(gone).is_none(), "{route}: {gone}: {value}");
+                        }
+                        assert_eq!(
+                            value["pipeline"]["projection_reason"],
+                            Value::Null,
+                            "{route}: {value}"
+                        );
+                    } else {
+                        assert_eq!(
+                            projection["visible"], 3,
+                            "{route} must report the SAME live Qdrant count recall.search does —                          it reads the same stream on the same serving version: {value}"
+                        );
+                        assert_eq!(
+                            projection["completeness_ratio"], 1.0,
+                            "{route} reported a null ratio on a healthy projection before card 18:                          {value}"
+                        );
+                        assert_eq!(projection["current"], true, "{route}: {value}");
+                    }
                     assert_ne!(
                         value["completeness"]["reason"], "index_count_unavailable",
                         "{route}: {value}"

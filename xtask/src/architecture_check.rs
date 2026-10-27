@@ -2,13 +2,13 @@
 //! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
-//! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; ADR-0110 D-C
+//! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C
 //!
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
-//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6) and the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C).
+//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C) and the dormant-highwater gate G-M13-2 (ADR-0110 D-B).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -5321,6 +5321,103 @@ fn g_m13_3_totals_sole_constructor(root: &Path) -> Verdict {
             "ADR-0110 D-C / G-M13-3: expected exactly 1 constructing fn (`fn {M13_3_FN}` in {M13_3_HOME}) for `Totals` in \
              non-test code; found {}: {listed:?}",
             fns.len()
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+// ============================================================================
+// ADR-0110 D-B / G-M13-2: the dormant highwaters stay unread
+// ============================================================================
+
+/// The one file that may name the dormant `stream_checkpoints` highwaters (ADR-0110 D-B): `stream_repo` owns the
+/// frontier read (M09 C6), which selects `issued_hw / projection_hw / serving / updated_at` only.
+const M13_2_HOME: &str = "crates/adapters/src/stream_repo.rs";
+/// Production files other than [`M13_2_HOME`] that name a dormant highwater without reading its value: file, the exact
+/// number of mentions, and why. A row is `==`, so a mention added or removed there is red until this table says so.
+const M13_2_NAMED_NOT_READ: [(&str, usize, &str); 1] = [(
+    "bins/maintenance/src/rls_check.rs",
+    2,
+    "the grant-matrix cell listing the columns role_retrieval_worker may UPDATE (migration 0011); it reads no value",
+)];
+
+/// The two dormant highwaters in both spellings, the column name and the `Frontier`-style field name. Built from halves
+/// so this file's own text never holds one whole (it is also excluded from the scan by [`door_production_sources`]).
+fn m13_2_needles() -> Vec<String> {
+    ["evidence", "knowledge"]
+        .iter()
+        .flat_map(|layer| {
+            ["highwater", "hw"]
+                .iter()
+                .map(move |suffix| format!("{layer}_{suffix}"))
+        })
+        .collect()
+}
+
+/// How many times `text` (comments already dropped) names a dormant highwater as a whole identifier.
+fn m13_2_mentions(text: &str, needles: &[String]) -> usize {
+    needles
+        .iter()
+        .map(|needle| {
+            text.match_indices(needle.as_str())
+                .filter(|(idx, _)| {
+                    !text
+                        .as_bytes()
+                        .get(idx + needle.len())
+                        .is_some_and(|b| is_ident_byte(*b))
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// ADR-0110 D-B / G-M13-2 (module design M13 D2): `stream_checkpoints.evidence_highwater` / `knowledge_highwater` have
+/// no writer, so exposing them would present a fabricated 0 (§23.1④). No production code outside [`M13_2_HOME`] names
+/// either one (as a column in SQL or as an `evidence_hw` / `knowledge_hw` field), so the number of reads outside it is
+/// exactly 0, never `<= 0`; the only mentions that are not reads are the [`M13_2_NAMED_NOT_READ`] rows, each pinned
+/// with `==`. Comment lines, test modules and test trees are excluded like the sibling door gates
+/// ([`door_production_sources`]).
+///
+/// `not_applicable` only when [`M13_2_HOME`] is absent, and it names it (§57.1 第2条): without the home there is no
+/// frontier read to keep the highwaters out of.
+fn g_m13_2_dormant_highwaters_unread(root: &Path) -> Verdict {
+    let files = door_production_sources(root);
+    if !files.iter().any(|(disp, _)| disp == M13_2_HOME) {
+        return Verdict::NotApplicable(format!(
+            "missing object: {M13_2_HOME} (M09-2 `ledger_frontier`, ADR-0110 D-B) is not in the tree"
+        ));
+    }
+    let needles = m13_2_needles();
+    let mut problems = Vec::new();
+    let mut reads = 0;
+    for (disp, source) in files.iter().filter(|(disp, _)| disp != M13_2_HOME) {
+        let n = m13_2_mentions(&door_normalised(source), &needles);
+        let declared = M13_2_NAMED_NOT_READ
+            .iter()
+            .find(|(file, _, _)| file == disp);
+        match declared {
+            Some((_, expected, _)) if n == *expected => {}
+            Some((_, expected, reason)) => problems.push(format!(
+                "ADR-0110 D-B / G-M13-2: {disp} names a dormant highwater {n} time(s), its row in M13_2_NAMED_NOT_READ \
+                 says {expected} ({reason})"
+            )),
+            None => reads += n,
+        }
+        if declared.is_none() && n > 0 {
+            problems.push(format!(
+                "ADR-0110 D-B / G-M13-2: {disp} names a dormant highwater {n} time(s) outside {M13_2_HOME}; only \
+                 `stream_repo` may, until a writer exists"
+            ));
+        }
+    }
+    if reads > 0 {
+        problems.push(format!(
+            "ADR-0110 D-B / G-M13-2: expected exactly 0 reads of `evidence_hw` / `knowledge_hw` outside {M13_2_HOME}; found \
+             {reads}"
         ));
     }
     if problems.is_empty() {
@@ -11412,6 +11509,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "ADR-0110 D-C / G-M13-3 (Totals: every construction in non-test code sits in envelope::totals, one constructing fn)",
             g_m13_3_totals_sole_constructor(&root),
+        ),
+        (
+            "ADR-0110 D-B / G-M13-2 (dormant highwaters: no production read of evidence_hw / knowledge_hw outside stream_repo)",
+            g_m13_2_dormant_highwaters_unread(&root),
         ),
         (
             "§20#G20-2 / G80-39 (online recall 无隐藏生成调用)",
@@ -21037,6 +21138,138 @@ async fn serving_version_in_txn() {}
     fn run_wires_the_m13_3_gate_exactly_once() {
         assert_eq!(
             own_source_count("g_m13_3_totals_sole_", "constructor(&root),"),
+            1
+        );
+    }
+
+    // -- ADR-0110 D-B / G-M13-2: the dormant highwaters stay unread ----------------------------
+
+    /// The two dormant column names, built from halves so this test source holds neither whole.
+    const M13_2_EVIDENCE_COLUMN: &str = concat!("evidence", "_highwater");
+    const M13_2_KNOWLEDGE_FIELD: &str = concat!("knowledge", "_hw");
+
+    /// A `stream_repo` that selects the live frontier columns and documents the dormant one in a doc comment.
+    const M13_2_HOME_SRC: &str = concat!(
+        "/// the dormant ",
+        "evidence",
+        "_highwater",
+        " has no writer\n",
+        "pub fn frontier() -> &'static str { \"SELECT issued_highwater, projection_highwater\" }\n"
+    );
+
+    fn m13_2_fail_lines(root: &Path) -> Vec<String> {
+        match g_m13_2_dormant_highwaters_unread(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The tree as M13-2 leaves it: only `stream_repo` and the declared grant-matrix cell name a dormant highwater.
+    #[test]
+    fn m13_2_real_repo_passes() {
+        assert_eq!(
+            g_m13_2_dormant_highwaters_unread(&real_root()),
+            Verdict::Pass
+        );
+    }
+
+    /// Green fixture, plus everything that must NOT count: a comment naming a column, a test module, a test tree, and a
+    /// longer identifier that merely starts with a needle.
+    #[test]
+    fn m13_2_passes_and_ignores_comments_test_modules_test_trees_and_longer_identifiers() {
+        let tmp = fresh_tmp("m13-2-green");
+        m07_write(&tmp, M13_2_HOME, M13_2_HOME_SRC);
+        m07_write(
+            &tmp,
+            "bins/gateway/src/memory.rs",
+            &format!(
+                "// {M13_2_EVIDENCE_COLUMN} is dormant (ADR-0110 D-B)\nfn f() -> u8 {{ let {M13_2_KNOWLEDGE_FIELD}x = 1; \
+                 {M13_2_KNOWLEDGE_FIELD}x }}\n#[cfg(test)]\nmod tests {{ const S: &str = \"{M13_2_EVIDENCE_COLUMN}\"; }}\n"
+            ),
+        );
+        m07_write(
+            &tmp,
+            "bins/gateway/tests/seed.rs",
+            &format!("const S: &str = \"INSERT INTO t ({M13_2_EVIDENCE_COLUMN})\";\n"),
+        );
+        assert_eq!(g_m13_2_dormant_highwaters_unread(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing home (§57.1 第2条).
+    #[test]
+    fn m13_2_is_not_applicable_naming_the_missing_home() {
+        let tmp = fresh_tmp("m13-2-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match g_m13_2_dormant_highwaters_unread(&tmp) {
+            Verdict::NotApplicable(detail) => assert!(detail.contains(M13_2_HOME), "{detail}"),
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M13-2): gateway code selects a dormant column → 红, `found 1` read outside `stream_repo`.
+    #[test]
+    fn m13_2_fails_when_gateway_code_selects_a_dormant_column() {
+        let tmp = fresh_tmp("m13-2-red-column");
+        m07_write(&tmp, M13_2_HOME, M13_2_HOME_SRC);
+        m07_write(
+            &tmp,
+            "bins/gateway/src/memory.rs",
+            &format!(
+                "fn f() -> &'static str {{ \"SELECT {M13_2_EVIDENCE_COLUMN} FROM checkpoints\" }}\n"
+            ),
+        );
+        let lines = m13_2_fail_lines(&tmp);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("bins/gateway/src/memory.rs"), "{lines:?}");
+        assert!(lines[1].contains("found 1"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M13-2): a `knowledge_hw` field read, the `Frontier`-style spelling, is the same fault.
+    #[test]
+    fn m13_2_fails_when_code_reads_a_dormant_frontier_field() {
+        let tmp = fresh_tmp("m13-2-red-field");
+        m07_write(&tmp, M13_2_HOME, M13_2_HOME_SRC);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/read_gate.rs",
+            &format!("fn f(frontier: Frontier) -> u64 {{ frontier.{M13_2_KNOWLEDGE_FIELD} }}\n"),
+        );
+        let lines = m13_2_fail_lines(&tmp);
+        assert!(
+            lines[0].contains("crates/adapters/src/read_gate.rs"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.last().is_some_and(|l| l.contains("found 1")),
+            "{lines:?}"
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A declared not-a-read row is pinned with `==`: the grant-matrix cell gaining a third mention is red.
+    #[test]
+    fn m13_2_fails_when_a_declared_row_drifts_from_its_pinned_count() {
+        let (file, expected, _) = M13_2_NAMED_NOT_READ[0];
+        let mention = format!("\"{M13_2_EVIDENCE_COLUMN}\",\n");
+        let tmp = fresh_tmp("m13-2-red-row");
+        m07_write(&tmp, M13_2_HOME, M13_2_HOME_SRC);
+        m07_write(&tmp, file, &mention.repeat(expected));
+        assert_eq!(g_m13_2_dormant_highwaters_unread(&tmp), Verdict::Pass);
+        m07_write(&tmp, file, &mention.repeat(expected + 1));
+        let lines = m13_2_fail_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(file), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `run()` must list the gate exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_m13_2_gate_exactly_once() {
+        assert_eq!(
+            own_source_count("g_m13_2_dormant_highwaters_", "unread(&root),"),
             1
         );
     }
