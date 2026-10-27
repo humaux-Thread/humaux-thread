@@ -18916,7 +18916,9 @@ async fn serving_version_in_txn() {}
                 "fn scan_authority_i4(",
             ),
             (
-                m21_3_adapter("; UPDATE  \\\"private\\\".\\\"memory_records\\\" SET status = 'active'"),
+                m21_3_adapter(
+                    "; UPDATE  \\\"private\\\".\\\"memory_records\\\" SET status = 'active'",
+                ),
                 m21_3_runner(""),
                 m21_3_definer(create, ""),
                 "fn scan_authority_i4(",

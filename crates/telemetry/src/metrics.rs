@@ -329,7 +329,7 @@ pub mod families {
     /// `authority_i4_violations`.
     pub const AUTHORITY_I4_VIOLATIONS: Family = f(
         "authority_i4_violations",
-        "Rows of private.memory_records violating the §59.1 I4 status/superseded_by biconditional at the last successful scan.",
+        "Memory records violating the §59.1 I4 status/superseded_by biconditional at the last successful scan.",
         Kind::Gauge,
         &[],
     );
