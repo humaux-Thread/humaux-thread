@@ -132,7 +132,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists in this PR:
 
 | gate | owner card | injected fault | expected red |
 |---|---|---|---|
-| G-M20-5 eligibility | M20-5 | read direct evidence only; read M14 UNIVERSAL as a licence | a SENSITIVE, affect or customer-linked item, or an applicability-only item, is selected |
+| G-M20-5 eligibility | M20-5 | read direct evidence only; read M14 UNIVERSAL as a licence; drop the CUSTOMER-role branch; drop the category-in-notice check | a SENSITIVE, affect or customer-linked item, or an applicability-only item, is selected (red runs 40503799025 r1 `crates/adapters/tests/contribution_eligibility.rs:473` and :507, :531, :559, :690, :763, :850; 40503804172 r2 :690 and the functiondef sentinel :931; 40503810693 r3 :559; 40503817610 r4 :620, :845 and the verdict-literal contract :888; green 40503792310, 17 passed) |
 | G-M20-6 completeness | M20-7 | drop one required field per type; infer result from tone | a FIX without repro is admitted; `SUCCESS` with `assist = MODEL` (red runs 40303466537 r1, 40303894848 r2, 40323143436 r3) |
 | G-M20-7 rules (A1 to A7, F1 to F4, one each) | M20-8a, -8b, -11 | remove one rule | a fragment, PII in a title/path/URL query/code comment, an AWS key, an unknown licence, "ignore previous instructions" in an alias, or a missing receipt is admitted |
 | G-M20-8 dedupe/conflict | M20-9 | merge variants; vote on a conflict | a variant is lost; one side of a conflict is `SUPPORTED` |
