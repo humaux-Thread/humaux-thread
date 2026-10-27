@@ -26,7 +26,10 @@ use tokio::{
 
 #[derive(Default)]
 struct MockApplication {
+    /// Refuses only the pre-parse `Preflight` access check.
     denied: Mutex<Option<ErrorCode>>,
+    /// Refuses every later per-operation access check (`authorize`), the second 503 source of `protocol::mcp`.
+    operation_denied: Mutex<Option<ErrorCode>>,
     invoke_denied: Mutex<Option<ErrorCode>>,
     operations: Mutex<Vec<McpOperation>>,
     invocations: Mutex<Vec<(ToolName, String, String)>>,
@@ -40,12 +43,17 @@ impl McpApplication for MockApplication {
         context: &McpHttpContext,
         operation: McpOperation,
     ) -> Result<(), ErrorCode> {
+        let stage = if operation == McpOperation::Preflight {
+            &self.denied
+        } else {
+            &self.operation_denied
+        };
         self.operations.lock().expect("operations").push(operation);
         self.request_ids
             .lock()
             .expect("request ids")
             .push(context.request_id());
-        self.denied
+        stage
             .lock()
             .expect("denied")
             .as_ref()
@@ -356,5 +364,42 @@ async fn authorization_errors_change_the_http_status_before_dispatch() {
     *app.invoke_denied.lock().expect("invoke denied") = Some(ErrorCode::Forbidden);
     let (status, _body, _) = request(address, "POST", &tool_call_headers(), &body).await;
     assert_eq!(status, 403);
+    server.abort();
+}
+
+#[tokio::test]
+async fn non_capacity_503_has_no_retry_after() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start(app.clone()).await;
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
+        modern_params(r#""name":"remember","arguments":{}"#)
+    );
+    let list = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}}"#,
+        modern_params("")
+    );
+    for code in [
+        ErrorCode::DependencyUnavailable,
+        ErrorCode::CannotEstablishCompleteness,
+    ] {
+        // Both 503 sources of §67.2: the pre-parse preflight and a later per-operation access check.
+        for preflight in [true, false] {
+            *app.denied.lock().unwrap() = preflight.then_some(code);
+            *app.operation_denied.lock().unwrap() = (!preflight).then_some(code);
+            let (status, response, headers) = if preflight {
+                request(address, "POST", &tool_call_headers(), &call).await
+            } else {
+                request(address, "POST", &modern_headers("tools/list"), &list).await
+            };
+            assert_eq!(status, 503, "{code:?} preflight={preflight}: {response}");
+            assert_eq!(
+                headers.get("retry-after"),
+                None,
+                "non-capacity {code:?} preflight={preflight}"
+            );
+        }
+    }
+    assert_eq!(app.invocations.lock().unwrap().len(), 0);
     server.abort();
 }

@@ -2,31 +2,29 @@
 //!   single-statement manifest page read (D-H), against a real PostgreSQL throwaway database per test.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(owner) r=[ops.commit_seq_seq, ops.maintenance_receipts] w=[control.confirm_tokens,
-//!   control.private_reasoning_domains, control.rate_buckets, control.tenants, control.users, control.workspaces,
+//!   control.private_reasoning_domains, control.tenants, control.users, control.workspaces,
 //!   ops.contribution_execution_job_links, ops.distill_calls, ops.jobs, ops.outbox,
 //!   ops.selection_snapshot_items, ops.selection_snapshots, private.evidence_objects] x=[ops.admit_distill_budget,
 //!   ops.requeue_dead_distill], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)
-//!   x=[control.purge_idle_rate_buckets, control.sweep_confirm_tokens, ops.purge_expired_selection_snapshots,
+//!   x=[control.sweep_confirm_tokens, ops.purge_expired_selection_snapshots,
 //!   ops.purge_terminal_jobs], PostgreSQL(role_retrieval_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::confirm_token_repo, adapters::maintenance_repo,
-//!   adapters::postgres, adapters::quota_repo, adapters::selection_repo, adapters::tests::support::throwaway_db,
-//!   domain::error, domain::selection, humaux-testkit]
+//!   adapters::postgres, adapters::selection_repo, adapters::tests::support::throwaway_db,
+//!   domain::selection, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns its throwaway database humaux_thread_c35_doors_<pid>_<n>, created and migrated by
 //!   the fixture and dropped WITH (FORCE) by its Drop even on panic, so no purge ever runs on the shared dev
 //!   database (ruling E8); every door is called the way the daemon calls it: role_maintenance, one transaction,
 //!   the tenant GUC, one statement; no DSN or unreachable DB is a visible §79.2 skip]
 //! Spec: Baseline §6.2.1; §20.4; §79.2; ADR-0058 R4; ADR-0062 D-E; ADR-0062 D-F; ADR-0062 D-G; ADR-0062 D-H;
-//!   ADR-0062 D-I; ADR-0062 D-J
+//!   ADR-0062 D-J
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humaux_adapters::confirm_token_repo;
 use humaux_adapters::maintenance_repo::{self, JobRetention};
-use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool, RuntimeDbPool};
-use humaux_adapters::quota_repo::{self, RatePolicy, RateSubject};
+use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use humaux_adapters::selection_repo::{self, SelectionRepoError};
-use humaux_domain::error::ErrorCode;
 use humaux_domain::selection::{Cursor, query_fingerprint};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, IsolationLevel, NoTls};
@@ -50,7 +48,6 @@ struct Handle {
     rt: tokio::runtime::Runtime,
     maintenance: MaintenanceDbPool,
     retrieval: RetrievalWorkerDbPool,
-    runtime: RuntimeDbPool,
     admin: Client,
     dsn: String,
     tenant: Uuid,
@@ -95,15 +92,10 @@ impl DbIntegrationFixture for DoorsFixture {
                 "role_retrieval_worker",
             )))
             .map_err(|e| setup(e.to_string()))?;
-        // dep: PostgreSQL(role_gateway) — the rate-bucket consumer
-        let runtime = rt
-            .block_on(RuntimeDbPool::connect(&dsn_as_role(&dsn, "role_gateway")))
-            .map_err(|e| setup(e.to_string()))?;
         Ok(Handle {
             rt,
             maintenance,
             retrieval,
-            runtime,
             admin,
             dsn,
             tenant,
@@ -143,17 +135,6 @@ impl Handle {
                 limit,
             ))
             .expect("snapshot door")
-    }
-
-    fn purge_buckets(&self, tenant: Uuid, idle: Duration, limit: i32) -> i64 {
-        self.rt
-            .block_on(maintenance_repo::purge_idle_rate_buckets(
-                &self.maintenance,
-                tenant,
-                idle,
-                limit,
-            ))
-            .expect("rate-bucket door")
     }
 
     fn purge_jobs(&self, retention: JobRetention, limit: i32) -> Result<i64, sqlx::Error> {
@@ -245,47 +226,6 @@ impl Handle {
                 MAC_KEY,
             ))
             .map(|page| page.items)
-    }
-
-    /// One `user` bucket of `tenant` (capacity, tokens, refill/s) last touched `idle_secs` ago.
-    fn seed_bucket(
-        &mut self,
-        tenant: Uuid,
-        kind: &str,
-        subject: &str,
-        bucket: (i64, i64, i64),
-        idle_secs: i32,
-    ) {
-        let (capacity, tokens, refill) = bucket;
-        self.admin
-            .execute(
-                "INSERT INTO control.rate_buckets (tenant_id, subject_kind, subject_id, operation, bucket_key, \
-                   capacity, tokens, refill_per_second, updated_at) \
-                 VALUES ($1, $2, $3, 'mcp.read', 'default', $4, $5::bigint, $6, \
-                         now() - make_interval(secs => $7))",
-                &[
-                    &tenant,
-                    &kind,
-                    &subject,
-                    &capacity,
-                    &tokens,
-                    &refill,
-                    &f64::from(idle_secs),
-                ],
-            )
-            .expect("seed rate bucket");
-    }
-
-    fn buckets(&mut self, tenant: Uuid) -> Vec<String> {
-        self.admin
-            .query(
-                "SELECT subject_id FROM control.rate_buckets WHERE tenant_id = $1 ORDER BY subject_id",
-                &[&tenant],
-            )
-            .expect("buckets")
-            .iter()
-            .map(|r| r.get(0))
-            .collect()
     }
 
     /// One job of this tenant created `age_secs` ago.
@@ -423,7 +363,6 @@ fn a_call_that_deletes_nothing_writes_no_receipt() {
         let tenant = h.tenant;
         h.seed_token(tenant, "t.live", 600);
         h.seed_snapshot(tenant, 600, 2);
-        h.seed_bucket(tenant, "user", "recent", (10, 10, 1), 0);
         h.seed_job("c35.fixture", "PENDING", 7200);
         let confirm =
             h.rt.block_on(confirm_token_repo::sweep_expired(
@@ -434,9 +373,8 @@ fn a_call_that_deletes_nothing_writes_no_receipt() {
             ))
             .expect("confirm door");
         let snapshots = h.purge_snapshots(tenant, 10);
-        let buckets = h.purge_buckets(tenant, HOUR, 10);
         let jobs = h.purge_jobs(ZERO_RETENTION, 10).expect("jobs door");
-        assert_eq!((confirm, snapshots, buckets, jobs), (0, 0, 0, 0));
+        assert_eq!((confirm, snapshots, jobs), (0, 0, 0));
         assert_eq!(
             h.count(
                 "SELECT count(*) FROM ops.maintenance_receipts WHERE tenant_id = $1",
@@ -531,96 +469,6 @@ fn a_purge_after_the_page_read_began_cannot_empty_it() {
                 matches!(fresh, Err(SelectionRepoError::SnapshotNotFound)),
                 "{fresh:?}"
             );
-        },
-    );
-}
-
-/// T-I1 (D-I): with idle = 1 h, a full idle bucket and an idle one that has refilled go; an idle bucket that is
-/// still draining and a full but recent one stay, and so does the bystander's. Fault: drop the refill predicate ⇒
-/// the draining bucket goes ⇒ red.
-#[test]
-fn only_buckets_that_would_be_full_now_are_purged() {
-    run_db_fixture::<DoorsFixture, _>("only_buckets_that_would_be_full_now_are_purged", |mut h| {
-        let (tenant, other) = (h.tenant, h.other);
-        h.seed_bucket(tenant, "user", "full.idle", (10, 10, 1), 7200);
-        h.seed_bucket(tenant, "user", "refilled.idle", (10, 0, 1), 7200);
-        h.seed_bucket(tenant, "user", "draining.idle", (1_000_000, 0, 1), 7200);
-        h.seed_bucket(tenant, "user", "full.recent", (10, 10, 1), 0);
-        h.seed_bucket(other, "user", "other.full.idle", (10, 10, 1), 7200);
-        assert_eq!(h.purge_buckets(tenant, HOUR, 10), 2);
-        assert_eq!(h.buckets(tenant), ["draining.idle", "full.recent"]);
-        assert_eq!(h.buckets(other), ["other.full.idle"]);
-        assert_eq!(h.receipts(tenant, "rate_buckets"), [(2, 10)]);
-    });
-}
-
-/// T-I2 (D-I): a purged pre-auth bucket (system tenant) answers the next two requests exactly as an identical
-/// bucket that was never purged: allowed, then RATE_LIMITED. Fault: the consumer recreates a bucket with 0
-/// tokens ⇒ the purged one answers RATE_LIMITED first ⇒ red.
-#[test]
-fn a_purged_bucket_answers_the_same_rate_decision() {
-    run_db_fixture::<DoorsFixture, _>("a_purged_bucket_answers_the_same_rate_decision", |mut h| {
-        let system = Uuid::nil();
-        let (purged, kept) = ("203.0.113.7", "203.0.113.8");
-        h.seed_bucket(system, "ip", purged, (1, 1, 1), 7200);
-        assert_eq!(h.purge_buckets(system, HOUR, 10), 1);
-        assert_eq!(h.buckets(system), Vec::<String>::new());
-        h.seed_bucket(system, "ip", kept, (1, 1, 1), 7200);
-        let policy = RatePolicy::new(1, 1).expect("policy");
-        let decide = |ip: &str| -> Vec<Result<(), ErrorCode>> {
-            (0..2)
-                .map(|_| {
-                    h.rt.block_on(quota_repo::consume_rate(
-                        &h.runtime,
-                        RateSubject::PreauthIp(ip.parse().expect("ip"), 64),
-                        "mcp.read",
-                        "default",
-                        policy,
-                        Duration::from_secs(2),
-                    ))
-                })
-                .collect()
-        };
-        let (after_purge, never_purged) = (decide(purged), decide(kept));
-        println!("purged {after_purge:?} / never purged {never_purged:?}");
-        assert_eq!(after_purge, never_purged);
-        assert_eq!(after_purge, [Ok(()), Err(ErrorCode::RateLimited)]);
-    });
-}
-
-/// SEC-6 x D-I: the consumer keys an IPv6 client by its /64 (ADR-0062 E5), and that one bucket is what the purge
-/// door removes once it would be full; the next address of the /64 starts from a full bucket again. Fault: key by
-/// the full address ⇒ two buckets, the second call is allowed ⇒ red.
-#[test]
-fn an_ipv6_64_preauth_bucket_goes_through_the_purge_door() {
-    run_db_fixture::<DoorsFixture, _>(
-        "an_ipv6_64_preauth_bucket_goes_through_the_purge_door",
-        |mut h| {
-            let system = Uuid::nil();
-            let policy = RatePolicy::new(1, 1).expect("policy");
-            let consume = |h: &Handle, ip: &str| {
-                h.rt.block_on(quota_repo::consume_rate(
-                    &h.runtime,
-                    RateSubject::PreauthIp(ip.parse().expect("ip"), 64),
-                    "mcp.read",
-                    "default",
-                    policy,
-                    Duration::from_secs(2),
-                ))
-            };
-            assert_eq!(consume(&h, "2001:db8:5:6::1"), Ok(()));
-            assert_eq!(consume(&h, "2001:db8:5:6::2"), Err(ErrorCode::RateLimited));
-            assert_eq!(h.buckets(system), ["2001:db8:5:6::/64"]);
-            h.admin
-                .execute(
-                    "UPDATE control.rate_buckets SET updated_at = now() - interval '2 hours' \
-                     WHERE tenant_id = $1",
-                    &[&system],
-                )
-                .expect("age the /64 bucket");
-            assert_eq!(h.purge_buckets(system, HOUR, 10), 1);
-            assert_eq!(h.buckets(system), Vec::<String>::new());
-            assert_eq!(consume(&h, "2001:db8:5:6::3"), Ok(()));
         },
     );
 }
@@ -771,7 +619,6 @@ fn a_door_takes_no_table_name() {
         for call in [
             "SELECT control.sweep_confirm_tokens('control.users'::text)",
             "SELECT ops.purge_expired_selection_snapshots('ops.outbox'::text)",
-            "SELECT control.purge_idle_rate_buckets('control.rate_buckets'::text)",
             "SELECT ops.purge_terminal_jobs('ops.outbox'::text)",
         ] {
             let error = maintenance.query(call, &[]).expect_err(call);
