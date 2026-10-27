@@ -1,0 +1,88 @@
+# §46.1 migration manifest. Card M04-8: the billing core schema — control.billing_customers, control.subscriptions,
+# control.subscription_events, control.billing_payments and control.billing_inbox, the two append-only reject-mutation
+# trigger functions, and the access shape: every non-owner role and PUBLIC lose every privilege on all five tables, then
+# role_gateway gets INSERT on control.billing_inbox and nothing else (contract C4). The four tenant tables are RLS + FORCE
+# with the tenant policy of control.entitlement_grants. No role, no existing table and no existing grant is touched.
+# §46 forward-fix (EXPAND_CONTRACT, number 0288).
+
+migration_id = "0288_billing_core"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database that already has any of the five tables or the two trigger functions, or that lacks the tenant table,
+# the plan catalogue the subscriptions pin, or one of the ten roles the ownership and the REVOKE name (a missing role would
+# otherwise fail inside ALTER OWNER / REVOKE without naming the check).
+precheck = """
+select to_regclass('control.billing_customers') is null
+   and to_regclass('control.subscriptions') is null
+   and to_regclass('control.subscription_events') is null
+   and to_regclass('control.billing_payments') is null
+   and to_regclass('control.billing_inbox') is null
+   and to_regprocedure('control.subscription_events_reject_mutation()') is null
+   and to_regprocedure('control.billing_payments_reject_mutation()') is null
+   and to_regclass('control.tenants') is not null
+   and to_regclass('control.plan_versions') is not null
+   and (select count(*) = 10 from pg_roles
+         where rolname in ('role_migration_owner', 'role_gateway', 'role_private_worker', 'role_consolidation_worker',
+                           'role_public_worker', 'role_retrieval_worker', 'role_batch_issuer', 'role_maintenance',
+                           'role_admin', 'role_health_reader'))
+ as precheck_ok
+"""
+
+# Fails on: a table not owned by role_migration_owner; a tenant table without RLS, FORCE RLS or its tenant policy; a missing
+# closed-set CHECK, key or the one-live-subscription index; a missing or disabled append-only trigger; any role of the
+# frozen set, role_health_reader included, holding any table-level or column-level privilege on the five tables other than
+# role_gateway's INSERT on control.billing_inbox (effective privileges, membership inheritance counted); PUBLIC holding any
+# table-level or column-level privilege on them.
+postcheck = """
+with t(name) as (values ('control.billing_customers'), ('control.subscriptions'), ('control.subscription_events'),
+       ('control.billing_payments'), ('control.billing_inbox')),
+r(role) as (values ('role_gateway'), ('role_private_worker'), ('role_consolidation_worker'), ('role_public_worker'),
+       ('role_retrieval_worker'), ('role_batch_issuer'), ('role_maintenance'), ('role_admin'), ('role_health_reader')),
+v(verb) as (values ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES'), ('DELETE'), ('TRUNCATE'), ('TRIGGER'))
+select (select count(*) = 5 from t join pg_class c on c.oid = to_regclass(t.name)
+         where c.relkind = 'r' and pg_get_userbyid(c.relowner) = 'role_migration_owner')
+ and (select count(*) = 4 from pg_class c
+       where c.oid in (to_regclass('control.billing_customers'), to_regclass('control.subscriptions'),
+                       to_regclass('control.subscription_events'), to_regclass('control.billing_payments'))
+         and c.relrowsecurity and c.relforcerowsecurity)
+ and (select count(*) = 4 from pg_policies
+       where schemaname = 'control'
+         and policyname in ('billing_customers_tenant_isolation', 'subscriptions_tenant_isolation',
+                            'subscription_events_tenant_isolation', 'billing_payments_tenant_isolation'))
+ and (select count(*) = 19 from pg_constraint
+       where conrelid in (to_regclass('control.billing_customers'), to_regclass('control.subscriptions'),
+                          to_regclass('control.subscription_events'), to_regclass('control.billing_payments'),
+                          to_regclass('control.billing_inbox'))
+         and conname in ('billing_customers_provider_v1_check', 'billing_customers_provider_ref_unique',
+                         'subscriptions_provider_v1_check', 'subscriptions_state_v1_check', 'subscriptions_period_check',
+                         'subscriptions_provider_ref_unique', 'subscriptions_tenant_subscription_unique',
+                         'subscription_events_subscription_fk', 'subscription_events_from_state_v1_check',
+                         'subscription_events_to_state_v1_check', 'subscription_events_source_provider_v1_check',
+                         'subscription_events_source_pair_check', 'billing_payments_provider_v1_check',
+                         'billing_payments_kind_v1_check', 'billing_payments_amount_nonnegative',
+                         'billing_payments_currency_v1_check', 'billing_payments_txn_unique',
+                         'billing_inbox_provider_v1_check', 'billing_inbox_status_v1_check'))
+ and to_regclass('control.subscriptions_one_live_per_tenant') is not null
+ and (select count(*) = 2 from pg_trigger tg
+       where tg.tgrelid in (to_regclass('control.subscription_events'), to_regclass('control.billing_payments'))
+         and tg.tgname in ('subscription_events_reject_mutation', 'billing_payments_reject_mutation')
+         and tg.tgenabled = 'O' and not tg.tgisinternal)
+ and not exists (
+       select 1 from t cross join r cross join v
+        where (case when v.verb in ('DELETE', 'TRUNCATE', 'TRIGGER')
+                    then has_table_privilege(r.role, t.name, v.verb)
+                    else has_any_column_privilege(r.role, t.name, v.verb) end)
+              is distinct from (v.verb = 'INSERT' and r.role = 'role_gateway' and t.name = 'control.billing_inbox'))
+ and not exists (
+       select 1 from t join pg_class c on c.oid = to_regclass(t.name),
+              aclexplode(coalesce(c.relacl, '{}'::aclitem[])) x
+        where x.grantee = 0)
+ and not exists (
+       select 1 from t join pg_attribute a on a.attrelid = to_regclass(t.name),
+              aclexplode(a.attacl) x
+        where x.grantee = 0)
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: DROP TABLE control.subscription_events, control.billing_payments, control.billing_inbox, control.subscriptions, control.billing_customers (in that order; the trigger functions control.subscription_events_reject_mutation() and control.billing_payments_reject_mutation() follow) — safe while no billing writer exists (none at 0288; the processor is M04-11). After a writer lands the tables hold money facts: add a forward migration instead of dropping."
+backup_restore_requirement = "none: five new empty tables and two trigger functions; no existing row is read, copied, rewritten or deleted."

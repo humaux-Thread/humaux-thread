@@ -47,6 +47,8 @@ pub mod applicability;
 pub mod attribution;
 pub mod audit;
 pub mod authority;
+/// M04 D7: billing vocabularies (§71.2, §71.3) and the pure subscription-state projection.
+pub mod billing;
 pub mod boundary;
 pub mod code;
 pub mod confirm;
