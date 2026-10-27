@@ -226,3 +226,23 @@ Three statements of the first amendment are corrected; the first text stays as w
   current revisions count until the M18 validity reader exists.
 - **Sentinel.** The `pg_get_functiondef` sentinel now rejects `memory_applicability`, `memory_project` (which covers
   `memory_projects`, `memory_project_revocations` and `memory_projects_live`), `memory_in_project`, `evidence_projects` and `public.`.
+
+### Red records for G-M20-5 after fix 1 (head d27c9793, `targeted.yml`, one throwaway branch per fault)
+
+All lines are `crates/adapters/tests/contribution_eligibility.rs` at the head the runs were taken on. The earlier row of the gate
+table keeps its own runs; the lines there moved when the file grew.
+
+| fault | run | red at |
+|---|---|---|
+| green control (no fault) | 40513603074 | 22 passed, 0 failed |
+| r1 read direct evidence only (closure emptied after `NO_EVIDENCE`) | 40513609136 | (b) :601, (c) :635, (d) :659, (e) :687, (i) :818, (k) :901, (m) :988, (n) :1045, (r) :1164 |
+| r2 read M14 UNIVERSAL as a licence | 40513615880 | (i) :818 and the functiondef sentinel :1251 |
+| r3 drop the CUSTOMER-role branch | 40513625054 | (e) :687, (n) :1045, (o) :1083, (p) :1109, (q) :1142 |
+| r4 drop the category-in-notice check | 40513633087 | (g) :748, (m) :983 and the verdict-literal contract :1207 |
+| r5 drop the relation hop | 40513640504 | (n) :1045, (o) :1083, (p) :1109, (q) :1142 |
+| r6 drop the `EVIDENCE_DELETED` check | 40513648007 | (r) :1169 and the verdict-literal contract :1207 |
+| r7 re-add `GRANT EXECUTE ... TO role_gateway` (manifest postcheck loosened so the migration applies) | 40513654466 | (j) :841, `role_gateway is refused`, left `Ok(Eligible)` |
+| r7p the same grant with the manifest postcheck intact | 40513662459 | the migration itself: `0286_contribution_eligibility: postcheck refused the migration` |
+
+r7 and r7p are two independent reds for one fault: the manifest postcheck refuses the grant at migrate time, and, with the
+postcheck loosened, test (j) still refuses it at run time.
