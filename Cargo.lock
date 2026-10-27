@@ -1357,6 +1357,7 @@ dependencies = [
  "async-trait",
  "axum",
  "hmac 0.13.0",
+ "humaux-application",
  "humaux-domain",
  "jsonschema",
  "rmcp",
