@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[private.curation_candidate_targets, private.curation_candidates, ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; ADR-0110 D-C
@@ -8,7 +8,7 @@
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
-//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6) and the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C).
+//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C) and the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -37,6 +37,86 @@ use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// G-M03-2 (§67.2; ADR-0100): retired PG rate names occur exactly zero times in non-migration code.
+fn m03_2_no_pg_rate_path(root: &Path) -> Verdict {
+    let needles = [
+        "control.".to_owned() + "rate_buckets",
+        "rate_".to_owned() + "lock_key",
+    ];
+    let mut counts = [0_usize; 2];
+    let mut errors = Vec::new();
+    for directory in ["crates", "bins", "xtask"] {
+        if !root.join(directory).is_dir() {
+            errors.push(format!("G-M03-2 missing input {directory}"));
+        }
+    }
+    let files = match m03_2_code_files(root, root) {
+        Ok(files) => files,
+        Err(error) => return Verdict::Fail(vec![format!("G-M03-2 incomplete code scan: {error}")]),
+    };
+    for directory in ["crates", "bins", "xtask"] {
+        if !files.iter().any(|p| {
+            p.starts_with(root.join(directory)) && p.extension().is_some_and(|ext| ext == "rs")
+        }) {
+            errors.push(format!("G-M03-2 missing source input {directory}"));
+        }
+    }
+    for path in files {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                errors.push(format!(
+                    "G-M03-2 unreadable {}: {error}",
+                    display(root, &path)
+                ));
+                continue;
+            }
+        };
+        for (index, needle) in needles.iter().enumerate() {
+            let count = source.matches(needle).count();
+            counts[index] += count;
+            if count != 0 {
+                errors.push(format!(
+                    "{}: {needle} occurrences = {count}, expected == 0",
+                    display(root, &path)
+                ));
+            }
+        }
+    }
+    if counts == [0, 0] && errors.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(errors)
+    }
+}
+
+// §67.2 / G-M03-2: migrations are historical inputs; test and script code stay in the scan.
+fn m03_2_code_files(root: &Path, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path == root.join("migrations") {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            if matches!(
+                entry.file_name().to_str(),
+                Some("target" | ".git" | "node_modules")
+            ) {
+                continue;
+            }
+            out.extend(m03_2_code_files(root, &path)?);
+        } else if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("rs" | "sh" | "py" | "sql")
+        ) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
 
 /// Absolute path to the workspace root, derived from `xtask`'s own manifest dir rather than
 /// the process CWD — tests need this to be stable regardless of where `cargo test` is
@@ -3735,6 +3815,21 @@ fn sole_door_statements(
     }
 }
 
+/// ADR-0092 D-A / #315: the sole caller must perform the caller-scope root check before the freeze door.
+fn m19_freeze_sole_call(root: &Path) -> Verdict {
+    const HOME: &str = "crates/adapters/src/forget_repo.rs";
+    if !root.join(HOME).is_file() {
+        return Verdict::Fail(vec![format!("M19 freeze: missing required input {HOME}")]);
+    }
+    sole_door_statements(
+        root,
+        "M19 freeze",
+        "freeze caller",
+        &[("control.deletion_request_freeze(", HOME)],
+        &[],
+    )
+}
+
 /// M07 D9 / G-M07-1: the Evidence and Memory INSERT doors ([`M07_INSERT_DOORS`]).
 fn m07_1_insert_doors(root: &Path) -> Verdict {
     sole_door_statements(
@@ -4354,6 +4449,10 @@ fn t07_tokens(text: &str) -> (usize, usize) {
 /// [`T07_CATALOG_SITE`] bound aside. `not_applicable` only when the view is
 /// read nowhere and the home file does not exist, naming that file (§57.1 第2条); a direct table read is red
 /// regardless.
+///
+/// This is the Rust leg. The one SQL-side read path of the view is `private.memory_in_project` (ADR-0110 D-F,
+/// migration 0282); its sibling leg [`m29_attribution_reader_sql`] (G-M29-7) keeps it single and table-free. Rust
+/// callers of that function are not T07 tokens (they name the function, not the view) and need no change here.
 fn m29_attribution_reader(root: &Path) -> Verdict {
     let gate = "M29 T07 / ADR-0078 D-D reader";
     let files = door_production_sources(root);
@@ -4396,6 +4495,89 @@ fn m29_attribution_reader(root: &Path) -> Verdict {
     if !(total == 1 && readers.iter().all(|(disp, _)| disp == T07_READER_HOME)) {
         problems.push(format!(
             "{gate}: expected exactly 1 read of private.memory_projects_live in non-test code, in {T07_READER_HOME}; found {total}: {readers:?}"
+        ));
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// Home of the one SQL-side read of `private.memory_projects_live`: `private.memory_in_project` (ADR-0110 D-F, M13 note
+/// D7, migration 0282).
+const T07_PREDICATE_HOME: &str = "migrations/0282_memory_in_project.sql";
+/// The predicate's defining statements as [`t07_sql_normalised`] spells them, counted together. `OR REPLACE` can
+/// silently redefine the function in a later migration, and a plain `CREATE FUNCTION` with a different argument list
+/// is an overload that migrates fine (one with the same list fails at migrate time).
+const T07_PREDICATE_NEEDLES: [&str; 2] = [
+    "create or replace function private.memory_in_project(",
+    "create function private.memory_in_project(",
+];
+
+/// [`t07_normalised`] of a `.sql` file: `--` line comments are dropped first (the Rust lexer does not know them);
+/// `/* */` blocks, SQL quoting, case and spacing are [`t07_normalised`]'s. Its quote-to-space step runs after
+/// [`door_normalised`] has collapsed the space before `(`, so `"private"."memory_in_project"(` would read
+/// `memory_in_project (`; the collapse is applied once more here.
+///
+/// ponytail: a `--` inside a string literal cuts its line short, so a read after it on that line is missed; upgrade to
+/// SQL-aware lexing if a migration ever spells one (`migration_rehearsal` already lexes SQL for its own scan).
+fn t07_sql_normalised(sql: &str) -> String {
+    let code: Vec<&str> = sql
+        .lines()
+        .map(|line| line.split("--").next().unwrap_or(""))
+        .collect();
+    t07_normalised(&code.join("\n")).replace(" (", "(")
+}
+
+/// G-M29-7 (ADR-0078 D-D reader, ADR-0110 D-F): the SQL leg of [`m29_attribution_reader`]. In `migrations/*.sql` the
+/// predicate's [`T07_PREDICATE_NEEDLES`] (both `CREATE` forms, summed) occur `== 1` times, in [`T07_PREDICATE_HOME`],
+/// and that file reads `private.memory_projects_live` (`>= 1` view tokens) and never `private.memory_projects` (`== 0`
+/// table tokens, per [`t07_tokens`]); the two checks report separately, so each has its own red. A missing home file is red naming it: the card that adds this leg delivers the file, so there is no
+/// `not_applicable` here (§57.1 第2条).
+///
+/// ponytail: other migrations' trigger and definer bodies that read the view (0255's revocation functions, 0256's A3')
+/// are writer internals and are not counted; a duplicate that is not spelled `CREATE [OR REPLACE] FUNCTION` (a `DROP`
+/// plus a dynamic `EXECUTE`, say) is invisible to the needles (upgrade to DDL parsing if one ever appears).
+fn m29_attribution_reader_sql(root: &Path) -> Verdict {
+    let gate = "M29 G-M29-7 / ADR-0110 D-F SQL reader";
+    let mut sites: Vec<(String, usize)> = Vec::new();
+    let mut home: Option<String> = None;
+    for (path, source) in read_files(&walk_files(&root.join("migrations"), &["sql"])) {
+        let disp = display(root, &path);
+        let text = t07_sql_normalised(&source);
+        let n: usize = T07_PREDICATE_NEEDLES
+            .iter()
+            .map(|needle| text.matches(needle).count())
+            .sum();
+        if n > 0 {
+            sites.push((disp.clone(), n));
+        }
+        if disp == T07_PREDICATE_HOME {
+            home = Some(text);
+        }
+    }
+    let Some(home) = home else {
+        return Verdict::Fail(vec![format!(
+            "{gate}: missing object: the predicate's home file {T07_PREDICATE_HOME}"
+        )]);
+    };
+    let mut problems = Vec::new();
+    let total: usize = sites.iter().map(|(_, n)| n).sum();
+    if !(total == 1 && sites.iter().all(|(disp, _)| disp == T07_PREDICATE_HOME)) {
+        problems.push(format!(
+            "{gate}: expected exactly 1 `create [or replace] function private.memory_in_project(` in migrations/*.sql, in {T07_PREDICATE_HOME}; found {total}: {sites:?}"
+        ));
+    }
+    let (table, view) = t07_tokens(&home);
+    if table != 0 {
+        problems.push(format!(
+            "{gate}: {T07_PREDICATE_HOME} reads the base table private.memory_projects ({table} table token(s)); the predicate reads the live view only"
+        ));
+    }
+    if view == 0 {
+        problems.push(format!(
+            "{gate}: {T07_PREDICATE_HOME} never reads private.memory_projects_live (0 view token(s))"
         ));
     }
     if problems.is_empty() {
@@ -9335,17 +9517,27 @@ fn operation_registry_failures(
         schema_keys,
         &mut failures,
     );
-    let destructive_keys = humaux_domain::confirm::DestructiveOp::ALL
-        .iter()
-        .map(|op| op.operation_key().to_string())
-        .collect();
-    name_diff(
-        "registry omits DestructiveOp",
-        &destructive_keys,
-        &registry,
-        &mut failures,
-    );
+    confirm_wire_registry_failures(&registry, &mut failures);
     failures
+}
+
+/// G-M26-1 / ADR-0092 C-M19-1, both directions, one line per violating op: a `DestructiveOp` whose `wire()` is
+/// `Mcp` must be a registry row; a `McpPending` or `Rest` op must not be one (a pending op never quietly appears
+/// as a live tool before its card adds the row). The per-row effect check stays in [`registry_metadata_failures`].
+fn confirm_wire_registry_failures(registry: &BTreeSet<String>, failures: &mut Vec<String>) {
+    use humaux_domain::confirm::{ConfirmWire, DestructiveOp};
+    for op in DestructiveOp::ALL {
+        let key = op.operation_key();
+        match (op.wire(), registry.contains(key)) {
+            (ConfirmWire::Mcp, true) | (ConfirmWire::McpPending | ConfirmWire::Rest, false) => {}
+            (ConfirmWire::Mcp, false) => {
+                failures.push(format!("registry omits DestructiveOp: `{key}`"));
+            }
+            (wire @ (ConfirmWire::McpPending | ConfirmWire::Rest), true) => {
+                failures.push(format!("registry carries {wire:?} DestructiveOp: `{key}`"));
+            }
+        }
+    }
 }
 
 /// §33 / ADR-0018: registry metadata records enforcement; it cannot grant permissions.
@@ -11217,6 +11409,10 @@ pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let mut checks: Vec<(&str, Verdict)> = vec![
         (
+            "M03 D1 / G-M03-2 (retired PostgreSQL rate names in non-migration code == 0)",
+            m03_2_no_pg_rate_path(&root),
+        ),
+        (
             "G-M15-1 / G-N09-2 (candidate isolation)",
             candidate_isolation_sources(&root),
         ),
@@ -11397,6 +11593,10 @@ pub fn run(_args: &[String]) -> i32 {
             adr0061_no_box_leak_labels(&root),
         ),
         (
+            "M19 / #315 (freeze door has exactly one Rust call site)",
+            m19_freeze_sole_call(&root),
+        ),
+        (
             "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
             m07_1_insert_doors(&root),
         ),
@@ -11423,6 +11623,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "M29 T07 / ADR-0078 D-D reader (no direct private.memory_projects read; one memory_projects_live reader, in attribution_repo.rs, non-test code)",
             m29_attribution_reader(&root),
+        ),
+        (
+            "M29 G-M29-7 / ADR-0110 D-F (the memory_in_project predicate is the one SQL-side read of memory_projects_live: one CREATE OR REPLACE in migrations/*.sql, in 0282, reading the view and never the table)",
+            m29_attribution_reader_sql(&root),
         ),
         (
             "ADR-0078 / G-M29-5(a) (attribution port: one call, inside insert_memory_in_txn, required parameter; one implementation)",
@@ -11466,6 +11670,14 @@ pub fn run(_args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn g_m03_2_no_pg_rate_path() {
+        assert_eq!(
+            super::m03_2_no_pg_rate_path(&super::workspace_root()),
+            super::Verdict::Pass
+        );
+    }
+
     use super::*;
     use std::collections::BTreeSet;
 
@@ -12616,6 +12828,50 @@ runs:
         assert_eq!(
             operation_registry_failures(&manifest, &keys, &scopes),
             vec!["registry `memory.archive` effect differs from DestructiveOp::ALL".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_confirm_wire_both_ways() {
+        let root = real_root();
+        let manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys: BTreeSet<String> = scopes.keys().cloned().collect();
+        let template = manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|op| op["op"] == "memory.archive")
+            .unwrap()
+            .clone();
+        // McpPending / Rest op registered (its schema branch admitted, so only the wire rule can fire).
+        for (key, wire) in [("memory.forget", "McpPending"), ("account.delete", "Rest")] {
+            let mut entry = template.clone();
+            entry["op"] = key.into();
+            let mut fixture = manifest.clone();
+            fixture["operations"].as_array_mut().unwrap().push(entry);
+            let mut admitted = keys.clone();
+            admitted.insert(key.to_string());
+            let mut admitted_scopes = scopes.clone();
+            admitted_scopes.insert(key.to_string(), scopes["memory.archive"].clone());
+            assert_eq!(
+                operation_registry_failures(&fixture, &admitted, &admitted_scopes),
+                vec![format!("registry carries {wire} DestructiveOp: `{key}`")]
+            );
+        }
+        // Mcp op dropped from the registry.
+        let mut fixture = manifest.clone();
+        fixture["operations"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|op| op["op"] != "memory.archive");
+        assert!(
+            operation_registry_failures(&fixture, &keys, &scopes)
+                .contains(&"registry omits DestructiveOp: `memory.archive`".to_string())
         );
     }
 
@@ -16927,6 +17183,41 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
+    /// #315: the production tree must contain exactly one call in the checked adapter.
+    #[test]
+    fn m19_freeze_sole_call_real_repo() {
+        assert_eq!(m19_freeze_sole_call(&real_root()), Verdict::Pass);
+    }
+
+    /// #315: the same sentinel rejects zero, two, misplaced and missing callers.
+    #[test]
+    fn m19_freeze_sole_call_fixture() {
+        let tmp = fresh_tmp("m19-freeze");
+        let home = "crates/adapters/src/forget_repo.rs";
+        let call = "fn door() { let _ = \"SELECT control.deletion_request_freeze($1,$2,$3)\"; }";
+        m07_write(&tmp, home, call);
+        assert_eq!(m19_freeze_sole_call(&tmp), Verdict::Pass);
+        for source in [String::new(), format!("{call}\n{call}")] {
+            m07_write(&tmp, home, &source);
+            let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+                panic!("expected fail")
+            };
+            assert_eq!(lines.len(), 1);
+        }
+        m07_write(&tmp, home, "fn door() {}");
+        m07_write(&tmp, "crates/adapters/src/other.rs", call);
+        let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+            panic!("expected fail")
+        };
+        assert_eq!(lines.len(), 1);
+        fs::remove_file(tmp.join(home)).unwrap();
+        let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+            panic!("expected fail")
+        };
+        assert_eq!(lines.len(), 1);
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
     // -- M07 D9 / G-M07-1: one INSERT statement per door ------------------------------------
 
     const M07_EVIDENCE_HOME: &str = "crates/adapters/src/evidence_repo.rs";
@@ -18163,6 +18454,174 @@ async fn serving_version_in_txn() {}
             }
             other => panic!("expected Fail, got {other:?}"),
         }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- M29 G-M29-7 / ADR-0110 D-F: the SQL leg of the reader arm ---------------------------------------------------
+
+    /// The predicate's home as 0282 leaves it, reduced: one `CREATE OR REPLACE`, the view in its body, and the table
+    /// named only in a `--` comment.
+    const G7_PREDICATE: &str = "-- reads private.memory_projects in this comment only\nCREATE OR REPLACE FUNCTION private.memory_in_project(p_tenant_id uuid, p_memory_id uuid, p_project_id uuid)\nRETURNS boolean LANGUAGE sql STABLE SET search_path = pg_catalog AS $$\n  SELECT EXISTS (SELECT 1 FROM private.memory_projects_live l WHERE l.tenant_id = p_tenant_id)\n$$;\n";
+    /// A second `CREATE OR REPLACE` of the predicate, spelled across lines and in capitals.
+    const G7_TWIN: &str = "CREATE\n  OR REPLACE FUNCTION\n  private.memory_in_project(a uuid) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;\n";
+    const G7_TWIN_FILE: &str = "migrations/0283_twin.sql";
+
+    /// The problem lines of a red verdict (any other verdict panics).
+    fn g7_lines(root: &Path) -> Vec<String> {
+        match m29_attribution_reader_sql(root) {
+            Verdict::Fail(lines) => lines,
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    /// The tree as G-M29-7 leaves it: one `CREATE OR REPLACE`, in 0282, reading the view and never the table.
+    #[test]
+    fn g_m29_7_sql_leg_real_repo_passes() {
+        assert_eq!(m29_attribution_reader_sql(&real_root()), Verdict::Pass);
+    }
+
+    /// The reduced fixture passes (so each red below is its one mutation), and a table read or a second `CREATE` inside
+    /// a `--` comment or a `/* */` block is no read and no site.
+    #[test]
+    fn g_m29_7_sql_leg_accepts_the_predicate_and_ignores_comments() {
+        let tmp = fresh_tmp("g7-sql-ok");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        assert_eq!(m29_attribution_reader_sql(&tmp), Verdict::Pass);
+        m07_write(
+            &tmp,
+            G7_TWIN_FILE,
+            "-- CREATE OR REPLACE FUNCTION private.memory_in_project(\n/* FROM private.memory_projects\n   CREATE OR REPLACE FUNCTION private.memory_in_project( */\nSELECT 1;\n",
+        );
+        assert_eq!(m29_attribution_reader_sql(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: the predicate reads the base table instead of the view, spelled plainly, quoted, or with spaces around the
+    /// dot -> 红 each time with both problems: the table token and the missing view.
+    #[test]
+    fn g_m29_7_sql_leg_fails_when_the_predicate_reads_the_table() {
+        let tmp = fresh_tmp("g7-sql-table");
+        for read in [
+            "private.memory_projects l",
+            "\"private\".\"memory_projects\" l",
+            "private . memory_projects l",
+        ] {
+            let body = G7_PREDICATE.replace("private.memory_projects_live l", read);
+            m07_write(&tmp, T07_PREDICATE_HOME, &body);
+            let lines = g7_lines(&tmp);
+            assert_eq!(lines.len(), 2, "{read}: {lines:?}");
+            assert!(lines[0].contains("1 table token(s)"), "{read}: {lines:?}");
+            assert!(lines[1].contains("0 view token(s)"), "{read}: {lines:?}");
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`table == 0` pinned on its own, review rv-366 P1-1): the body keeps the view and also joins the base table,
+    /// spelled in the same three ways -> 红 with the table problem alone.
+    #[test]
+    fn g_m29_7_sql_leg_fails_when_the_predicate_also_reads_the_table() {
+        let tmp = fresh_tmp("g7-sql-both");
+        for read in [
+            "private.memory_projects t",
+            "\"private\".\"memory_projects\" t",
+            "private . memory_projects t",
+        ] {
+            let joined = format!("private.memory_projects_live l JOIN {read} ON true");
+            let body = G7_PREDICATE.replace("private.memory_projects_live l", &joined);
+            m07_write(&tmp, T07_PREDICATE_HOME, &body);
+            let lines = g7_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{read}: {lines:?}");
+            assert!(lines[0].contains("1 table token(s)"), "{read}: {lines:?}");
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`== 1` pinned from above): a second `CREATE OR REPLACE` of the predicate in another migration -> 红, `found 2`,
+    /// naming that file.
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_second_create_in_another_migration() {
+        let tmp = fresh_tmp("g7-sql-second");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        m07_write(&tmp, G7_TWIN_FILE, G7_TWIN);
+        let lines = g7_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains(G7_TWIN_FILE), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (review rv-366 P1-2): a second `CREATE OR REPLACE` with the name quoted in any of the three ways, or with a
+    /// space before the `(`, in another migration -> 红, `found 2`, naming that file (quote stripping must not hide the
+    /// `(` from the needle).
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_quoted_second_create() {
+        let tmp = fresh_tmp("g7-sql-quoted");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        for name in [
+            "\"private\".\"memory_in_project\"(a uuid)",
+            "private.\"memory_in_project\"(a uuid)",
+            "\"private\".memory_in_project (a uuid)",
+        ] {
+            let twin = format!(
+                "CREATE OR REPLACE FUNCTION {name} RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;\n"
+            );
+            m07_write(&tmp, G7_TWIN_FILE, &twin);
+            let lines = g7_lines(&tmp);
+            assert_eq!(lines.len(), 1, "{name}: {lines:?}");
+            assert!(lines[0].contains("found 2"), "{name}: {lines:?}");
+            assert!(lines[0].contains(G7_TWIN_FILE), "{name}: {lines:?}");
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (review rv-366 P2-1): a plain `CREATE FUNCTION` overload with another argument list, reading the base table,
+    /// in a second migration -> 红, `found 2`: it migrates fine, so only the count can refuse it.
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_plain_create_overload() {
+        let tmp = fresh_tmp("g7-sql-overload");
+        m07_write(&tmp, T07_PREDICATE_HOME, G7_PREDICATE);
+        m07_write(
+            &tmp,
+            G7_TWIN_FILE,
+            "CREATE FUNCTION private.memory_in_project(a uuid, b uuid) RETURNS boolean LANGUAGE sql AS $$ SELECT EXISTS (SELECT 1 FROM private.memory_projects) $$;\n",
+        );
+        let lines = g7_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains(G7_TWIN_FILE), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错: no home file -> 红 naming it (never `not_applicable`, §57.1), on an empty root, on a root with other
+    /// migrations, and when the predicate is created in another file only (`found 1`, not in the home).
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_missing_home() {
+        let tmp = fresh_tmp("g7-sql-home");
+        fs::create_dir_all(&tmp).unwrap();
+        let empty = g7_lines(&tmp);
+        assert!(empty[0].contains(T07_PREDICATE_HOME), "{empty:?}");
+        m07_write(&tmp, "migrations/0001_x.sql", "SELECT 1;\n");
+        let others = g7_lines(&tmp);
+        assert!(others[0].contains(T07_PREDICATE_HOME), "{others:?}");
+        m07_write(&tmp, G7_TWIN_FILE, G7_TWIN);
+        let elsewhere = g7_lines(&tmp);
+        assert!(elsewhere[0].contains(T07_PREDICATE_HOME), "{elsewhere:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (`>= 1` pinned from below): the predicate's body reads another relation, and the view survives only in a
+    /// `--` comment -> 红, `0 view token(s)`.
+    #[test]
+    fn g_m29_7_sql_leg_fails_on_a_body_without_the_view() {
+        let tmp = fresh_tmp("g7-sql-view");
+        let body = G7_PREDICATE.replace(
+            "FROM private.memory_projects_live l",
+            "FROM private.memory_records l -- not private.memory_projects_live",
+        );
+        m07_write(&tmp, T07_PREDICATE_HOME, &body);
+        let lines = g7_lines(&tmp);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("0 view token(s)"), "{lines:?}");
         fs::remove_dir_all(&tmp).ok();
     }
 

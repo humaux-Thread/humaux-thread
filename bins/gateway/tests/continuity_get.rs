@@ -677,7 +677,6 @@ fn native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output() 
                 );
                 let source = handle.seed_workspace_visible_context_record();
                 let other_workspace = handle.seed_workspace();
-                handle.seed_legacy_system_preauth_bucket(forwarded.to_string());
                 owned.seed_wrong_tenant(
                     &mut handle.admin,
                     wrong_tenant,

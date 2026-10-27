@@ -1,13 +1,11 @@
 //! `xtask::load` — `cargo xtask load`: closed-loop keep-alive load against one gateway, phase by phase, graded by the ADR-0065 D-F assertions.
-//! Depends-on: crates=[humaux-adapters, humaux-protocol, postgres, serde_json, time]; services=[PostgreSQL(any) r=[control.rate_buckets,
-//!   control.workspaces], HTTP(gateway), subprocess(docker), subprocess(sh), subprocess(sysctl)]; env=[];
-//!   modules=[adapters::quota_repo, xtask::soak]
+//! Depends-on: crates=[humaux-protocol, postgres, serde_json, time]; services=[PostgreSQL(any), HTTP(gateway), subprocess(docker), subprocess(sh), subprocess(sysctl)]; env=[];
+//!   modules=[xtask::soak]
 //! Called-by: [xtask::load_open, xtask::main]
 //! Invariants: [no load-report.json and a non-zero exit unless the gateway's /readyz answered 200 before the first phase and
 //!   after every restart (assertion 0); every number in the report and every LOAD / ISO / ISO_NOISE line carries its n,
 //!   its unit, host= and measured_at=; admission 503s (body RATE_LIMITED) are counted apart from failed_calls; a 503
-//!   pauses its client for Retry-After seconds; the database sessions are READ ONLY and read pg_stat_activity,
-//!   pg_locks, control.rate_buckets and control.workspaces only]
+//!   pauses its client for Retry-After seconds; the database sampler is READ ONLY (pg_stat_activity)]
 //! Spec: Baseline §67.2; §72.3; §73.2; §78.1; ADR-0065
 //!
 //! The measurement harness of card 38 (ADR-0065 D-F). The rehearsal (`docs/ops/rehearse.sh`, step `load`) starts a
@@ -18,18 +16,15 @@
 //! Phases, in order: `L<n>` for each level (LA, 16 keys round-robin, warm-up then measured window), `BURST` (LA),
 //! `ISO-BASE-<i>` / `ISO-BURST-<i>` pairs (LB alone, then LA on ONE key plus LB), and `BURST-W` (LA, after a restart
 //! command given with `--restart BURST-W=<sh>` or, shell-less, `--restart BURST-W=file:<dir>` (ADR-0066 D-S); skipped without one). Each phase scrapes the gateway's ops `/metrics`
-//! before and after it and samples `pg_stat_activity` at 1 Hz on its own read-only connection; a second read-only
-//! connection samples the rate advisory-lock waits of `role_gateway` every `--lock-sample-ms` (the `LOCKWAIT` line:
-//! ADR-0065 D-D's measure of the tenant lock's cost).
+//! before and after it and samples `pg_stat_activity` at 1 Hz on its own read-only connection.
 //!
 //! The S7 measurement-only runs (ADR-0065 "Measurement": the C sweep and the load faults) reuse the same plan:
 //! `--only <prefix,..>` keeps the phases whose name starts with one of the prefixes, and `--rfc7239-lane <letter>`
 //! appends phase `FWD`, whose clients send the RFC 7239 quoted form `for="[…]"` the edge parser refuses (fault F-FWD).
-//! Assertion 8 grades exactly the lanes the run's phases used.
 //!
 //! Every client keeps one HTTP/1.1 connection alive (a fresh socket per call exhausts macOS's ephemeral ports near
 //! 546 connections/s, design F14) and sends the bare `Forwarded: 2001:db8:<lane>::<n>` form, the only one the edge
-//! parser accepts (`crates/protocol/src/edge.rs`), so each lane keys into its own preauth /64 bucket (assertion 8).
+//! parser accepts (`crates/protocol/src/edge.rs`), so each lane has a distinct preauth /64 identity.
 //!
 //! §78.1: every duration, ceiling and endpoint is a required flag; the bearers are named by env var and never printed.
 //! The gateway is dialed with std's `TcpStream` for the reason `xtask::soak` gives (no HTTP dependency in xtask).
@@ -56,7 +51,7 @@ const USAGE: &str = "usage: cargo xtask load \
 --levels <n,n,..> --burst <n> --warmup-secs <n> --level-secs <n> --burst-secs <n> \
 --iso-pairs <n> --iso-secs <n> --iso-base-clients <n> --iso-burst-clients <n> --burst-w-secs <n> \
 --max-wait-ms <n> --burst-w-max-wait-ms <n> --handler-timeout-secs <n> --pool-max <n> --max-backends <n> \
---iso-floor-ms <n> --ready-timeout-secs <n> --lock-sample-ms <n> --pg-dsn-env <VAR> (--pg-container <name> | --meminfo-path <file>) --report <path> \
+--iso-floor-ms <n> --ready-timeout-secs <n> --pg-dsn-env <VAR> (--pg-container <name> | --meminfo-path <file>) --report <path> \
 [--host-class <name>] [--restart <PHASE>=<sh>|file:<dir> (repeat)] [--only <PHASE_PREFIX,..>] [--rfc7239-lane <letter>]";
 
 /// Share of `memory.enumerate` in each client's closed loop, in tenths (the rest is `tools/list`).
@@ -94,8 +89,6 @@ pub struct Config {
     max_backends: i64,
     iso_floor_ms: f64,
     ready_timeout: Duration,
-    /// Interval of the rate advisory-lock wait sampler: the resolution of every `LOCKWAIT` number.
-    lock_sample: Duration,
     pg_dsn: Option<String>,
     meminfo: MemInfo,
     /// ADR-0066 D-S: `--host-class <name>` prefixes the `host=` label (`a5` on the A5 runner).
@@ -260,8 +253,6 @@ pub fn parse_config(args: &[String]) -> Result<Config, String> {
             .map_err(|e| format!("--max-backends: {e}"))?,
         iso_floor_ms: ms("--iso-floor-ms")?,
         ready_timeout: Duration::from_secs(num(args, "--ready-timeout-secs")?),
-        lock_sample: Duration::from_millis(num(args, "--lock-sample-ms")?)
-            .max(Duration::from_millis(1)),
         pg_dsn,
         meminfo: meminfo_source(args)?,
         host_class: values(args, "--host-class").pop(),
@@ -725,7 +716,6 @@ pub struct PhaseReport {
     admission_delta: Option<BTreeMap<String, f64>>,
     pg: PgPeaks,
     /// Rate advisory-lock waits of `role_gateway` (ADR-0065 D-D); `None` without a database or a tenant to name.
-    lock: Option<LockWaits>,
     measured_at: String,
 }
 
@@ -773,7 +763,6 @@ fn phase_json(p: &PhaseReport) -> serde_json::Value {
             "wait_event_type_peak": p.pg.waits, "by_user_state_peak": p.pg.by_user_state,
             "mem_available_kb_at_peak": p.pg.mem_available_kb_at_peak, "error": p.pg.error,
         },
-        "rate_lock_wait": p.lock.as_ref().map(lock_json),
         "measured_at": p.measured_at,
     })
 }
@@ -791,57 +780,6 @@ fn load_lines(p: &PhaseReport, host: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// The `pct`-th percentile of the wait of ALL `acquisitions` of one lock (nearest rank), from the waits the sampler
-/// saw. An acquisition the sampler never saw waiting waited less than one sampling interval, so it ranks below every
-/// observed wait: `None` = the percentile is below the resolution. Integer ranks: no float rounding at the boundary.
-pub fn wait_quantile(observed_ms: &[f64], acquisitions: u64, pct: u64) -> Option<f64> {
-    let mut desc = observed_ms.to_vec();
-    desc.sort_by(|a, b| b.total_cmp(a));
-    let rank = (acquisitions * (100 - pct.min(100))).div_ceil(100).max(1);
-    desc.get(usize::try_from(rank).ok()? - 1).copied()
-}
-
-fn lock_json(l: &LockWaits) -> serde_json::Value {
-    let q = |p| wait_quantile(&l.tenant_waits_ms, l.acquisitions, p);
-    serde_json::json!({
-        "lock": "tenant", "tenant_id": l.tenant, "acquisitions": l.acquisitions,
-        "observed_waits": l.tenant_waits_ms.len(), "p50_ms": q(50), "p99_ms": q(99),
-        "max_ms": l.tenant_waits_ms.iter().copied().fold(0.0, f64::max),
-        "other_rate_lock_observed_waits": l.other_waits_ms.len(),
-        "other_rate_lock_max_ms": l.other_waits_ms.iter().copied().fold(0.0, f64::max),
-        "resolution_ms": l.interval_ms, "samples": l.samples, "error": l.error,
-        "note": "a quantile of null is below resolution_ms; acquisitions = the tenant bucket's version delta",
-    })
-}
-
-/// The `LOCKWAIT` line of one phase (ADR-0065 D-D, the S7 measure of the tenant lock).
-fn lock_line(p: &PhaseReport, host: &str) -> Option<String> {
-    let l = p.lock.as_ref()?;
-    let q = |p| {
-        wait_quantile(&l.tenant_waits_ms, l.acquisitions, p).map_or_else(
-            || format!("<{:.0}ms", l.interval_ms),
-            |v| format!("{v:.1}ms"),
-        )
-    };
-    Some(format!(
-        "LOCKWAIT {} lock=tenant group=LA acquisitions={} observed_waits={} p50={} p99={} max={:.1}ms other_rate_lock_waits={} other_max={:.1}ms resolution={:.0}ms samples={}{} host={host} measured_at={}",
-        p.name,
-        l.acquisitions,
-        l.tenant_waits_ms.len(),
-        q(50),
-        q(99),
-        l.tenant_waits_ms.iter().copied().fold(0.0, f64::max),
-        l.other_waits_ms.len(),
-        l.other_waits_ms.iter().copied().fold(0.0, f64::max),
-        l.interval_ms,
-        l.samples,
-        l.error
-            .as_ref()
-            .map_or_else(String::new, |e| format!(" error={e}")),
-        p.measured_at
-    ))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1081,32 +1019,7 @@ fn a6_backends(cfg: &Config, phases: &[PhaseReport]) -> Verdict {
     }
 }
 
-/// Assertion 8 over the `2001:db8:` preauth subjects written since the load started.
-pub fn a8_lanes(lanes: &[char], subjects: Option<&[String]>) -> Verdict {
-    let want: Vec<String> = lanes.iter().map(|l| format!("2001:db8:{l}::/64")).collect();
-    let (pass, detail) = match subjects {
-        Some(got) => {
-            let ours: Vec<&String> = got.iter().filter(|s| want.contains(s)).collect();
-            (
-                ours.len() == want.len(),
-                format!("want {want:?} got {ours:?}"),
-            )
-        }
-        None => (false, "control.rate_buckets not read".to_string()),
-    };
-    Verdict {
-        id: "load_forwarded_lanes_keyed",
-        pass,
-        detail,
-    }
-}
-
-fn grade(
-    cfg: &Config,
-    phases: &[PhaseReport],
-    lanes_used: &[char],
-    subjects: Option<&[String]>,
-) -> Vec<Verdict> {
+fn grade(cfg: &Config, phases: &[PhaseReport]) -> Vec<Verdict> {
     vec![
         a1_no_pool_or_statement_timeout(cfg, phases),
         a2_overflow(cfg, phases),
@@ -1114,7 +1027,6 @@ fn grade(
         a4_p95(cfg, phases),
         a5_isolation(cfg, phases),
         a6_backends(cfg, phases),
-        a8_lanes(lanes_used, subjects),
     ]
 }
 
@@ -1262,7 +1174,7 @@ fn utc_now() -> String {
 
 /// Read-only session for the sampler and assertion 8.
 fn pg_connect(dsn: &str) -> Result<Client, String> {
-    // dep: PostgreSQL(any) — read-only sampler session (pg_stat_activity, control.rate_buckets).
+    // dep: PostgreSQL(any) — read-only sampler session (pg_stat_activity).
     let mut c = Client::connect(dsn, NoTls).map_err(|e| format!("connect: {e}"))?;
     c.batch_execute(
         "SET default_transaction_read_only = on; SET application_name = 'xtask-load-sampler'",
@@ -1332,127 +1244,6 @@ fn sampler(db: Option<&mut Client>, container: &MemInfo, stop: &AtomicBool) -> P
     peaks
 }
 
-/// The tenant whose bucket lock the `LOCKWAIT` lines measure (lane a's tenant) and that lock's 64-bit key.
-#[derive(Debug, Clone)]
-pub struct TenantLock {
-    tenant: String,
-    key: i64,
-}
-
-/// Rate advisory-lock waits of `role_gateway` over one phase, split into the tenant lock and every other rate lock.
-#[derive(Debug, Clone, Default)]
-pub struct LockWaits {
-    tenant: String,
-    interval_ms: f64,
-    samples: usize,
-    /// Tenant-bucket takes in the phase (its `version` delta): every one took the tenant lock first.
-    acquisitions: u64,
-    /// The longest age the sampler saw of each distinct wait (backend pid, statement start), ms.
-    tenant_waits_ms: Vec<f64>,
-    other_waits_ms: Vec<f64>,
-    error: Option<String>,
-}
-
-/// Lane a's tenant and its tenant-bucket lock key, read once on the sampler session.
-fn tenant_lock(db: &mut Client, workspace: &str) -> Result<TenantLock, String> {
-    // dep: PostgreSQL(any) — control.workspaces, read-only: lane a's tenant.
-    let tenant: String = db
-        .query_one(
-            "select tenant_id::text from control.workspaces where workspace_id::text = $1",
-            &[&workspace],
-        )
-        .map_err(|e| format!("control.workspaces: {e}"))?
-        .get(0);
-    let text = humaux_adapters::quota_repo::rate_lock_key(
-        &tenant,
-        "tenant",
-        &tenant,
-        humaux_adapters::quota_repo::SHARED_RATE_OPERATION,
-        "tenant",
-    );
-    // dep: PostgreSQL(any) — the server's own hash, so the key is the one consume_rate_batch locks.
-    let key: i64 = db
-        .query_one("select hashtextextended($1, 0)", &[&text])
-        .map_err(|e| format!("hashtextextended: {e}"))?
-        .get(0);
-    Ok(TenantLock { tenant, key })
-}
-
-// A bigint advisory key shows as classid = high half, objid = low half, objsubid = 1 (PostgreSQL pg_locks docs).
-const LOCK_WAIT_SQL: &str = "select a.pid, extract(epoch from a.query_start)::float8, \
- (extract(epoch from clock_timestamp() - a.query_start) * 1000)::float8, \
- ((l.classid::bigint << 32) | l.objid::bigint) = $1 \
- from pg_locks l join pg_stat_activity a on a.pid = l.pid \
- where l.locktype = 'advisory' and l.objsubid = 1 and not l.granted and a.usename = 'role_gateway'";
-const TENANT_VERSION_SQL: &str = "select coalesce(sum(version), 0)::bigint from control.rate_buckets \
- where tenant_id::text = $1 and subject_kind = 'tenant'";
-
-/// Every `interval` until `stop`, on its own read-only session: the age of each waiting rate advisory lock of
-/// `role_gateway`. One wait is one (pid, statement start); its longest observed age is its wait, short by at most one
-/// interval. The first error ends sampling for the phase and is recorded.
-fn lock_sampler(
-    dsn: &str,
-    target: &TenantLock,
-    interval: Duration,
-    stop: &AtomicBool,
-) -> LockWaits {
-    let mut out = LockWaits {
-        tenant: target.tenant.clone(),
-        interval_ms: interval.as_secs_f64() * 1000.0,
-        ..LockWaits::default()
-    };
-    let mut db = match pg_connect(dsn) {
-        Ok(c) => c,
-        Err(e) => {
-            out.error = Some(e);
-            return out;
-        }
-    };
-    let version = |db: &mut Client| -> Result<i64, String> {
-        // dep: PostgreSQL(any) — control.rate_buckets, read-only: the tenant bucket's take count.
-        db.query_one(TENANT_VERSION_SQL, &[&target.tenant])
-            .map(|r| r.get(0))
-            .map_err(|e| format!("control.rate_buckets: {e}"))
-    };
-    let start = version(&mut db);
-    let mut seen: BTreeMap<(i32, u64), (bool, f64)> = BTreeMap::new();
-    while !stop.load(Ordering::Relaxed) {
-        let tick = Instant::now();
-        // dep: PostgreSQL(any) — pg_locks / pg_stat_activity, read-only.
-        match db.query(LOCK_WAIT_SQL, &[&target.key]) {
-            Ok(rows) => {
-                for r in rows {
-                    let (pid, since, age, tenant): (i32, f64, f64, bool) =
-                        (r.get(0), r.get(1), r.get(2), r.get(3));
-                    let e = seen.entry((pid, since.to_bits())).or_insert((tenant, 0.0));
-                    e.1 = e.1.max(age);
-                }
-                out.samples += 1;
-            }
-            Err(e) => {
-                out.error = Some(format!("pg_locks: {e}"));
-                break;
-            }
-        }
-        if let Some(rest) = interval.checked_sub(tick.elapsed()) {
-            std::thread::sleep(rest);
-        }
-    }
-    match (start, version(&mut db)) {
-        (Ok(a), Ok(b)) => out.acquisitions = u64::try_from(b - a).unwrap_or(0),
-        (Err(e), _) | (_, Err(e)) => out.error = Some(e),
-    }
-    for (tenant, ms) in seen.into_values() {
-        if tenant {
-            out.tenant_waits_ms.push(ms);
-        } else {
-            out.other_waits_ms.push(ms);
-        }
-    }
-    out
-}
-
-/// The `ISO_NOISE` line of one pair: what else was running when the number was taken (ruling R-10).
 fn iso_noise(cfg: &Config, pair: &str, host: &str) -> String {
     // dep: subprocess(sysctl) — `sysctl -n vm.loadavg`, read-only.
     let load = run_cmd("sysctl", &["-n", "vm.loadavg"]).unwrap_or_else(|| "?".to_string());
@@ -1501,12 +1292,7 @@ fn clients(cfg: &Config, mix: &Mix) -> Vec<ClientSpec> {
     out
 }
 
-fn run_phase(
-    cfg: &Config,
-    db: Option<&mut Client>,
-    lock: Option<&TenantLock>,
-    phase: &Phase,
-) -> PhaseReport {
+fn run_phase(cfg: &Config, db: Option<&mut Client>, phase: &Phase) -> PhaseReport {
     let (name, mix, warm, dur, max_wait_ms) = (&phase.0, &phase.1, phase.2, phase.3, phase.4);
     let specs = clients(cfg, mix);
     let target = Target {
@@ -1520,12 +1306,8 @@ fn run_phase(
     let before = scrape(cfg);
     let stop = AtomicBool::new(false);
     let started = Instant::now();
-    let (samples, pg, lock) = std::thread::scope(|s| {
+    let (samples, pg) = std::thread::scope(|s| {
         let sampler = s.spawn(|| sampler(db, &cfg.meminfo, &stop));
-        let locks = s.spawn(|| {
-            let dsn = cfg.pg_dsn.as_deref()?;
-            Some(lock_sampler(dsn, lock?, cfg.lock_sample, &stop))
-        });
         let handles: Vec<_> = specs
             .iter()
             .map(|spec| {
@@ -1537,11 +1319,7 @@ fn run_phase(
             .flat_map(|h| h.join().unwrap_or_default())
             .collect();
         stop.store(true, Ordering::Relaxed);
-        (
-            samples,
-            sampler.join().unwrap_or_default(),
-            locks.join().ok().flatten(),
-        )
+        (samples, sampler.join().unwrap_or_default())
     });
     let after = scrape(cfg);
     let handler_ms = cfg.handler_timeout.as_secs_f64() * 1000.0;
@@ -1557,7 +1335,6 @@ fn run_phase(
         groups,
         admission_delta: before.and_then(|b| after.map(|a| delta(&b, &a))).ok(),
         pg,
-        lock,
         measured_at: utc_now(),
     }
 }
@@ -1639,19 +1416,6 @@ fn lanes_used(phases: &[(String, Mix, Duration, Duration, f64)]) -> Vec<char> {
     out
 }
 
-/// `2001:db8:` preauth subjects written since `since` (DB clock), read-only.
-fn lane_subjects(db: &mut Client, since: &str) -> Result<Vec<String>, String> {
-    // dep: PostgreSQL(any) — control.rate_buckets, read-only (assertion 8).
-    let rows = db
-        .query(
-            "select distinct subject_id from control.rate_buckets where subject_kind = 'ip' \
-             and subject_id like '2001:db8:%' and updated_at >= $1::text::timestamptz order by 1",
-            &[&since],
-        )
-        .map_err(|e| format!("control.rate_buckets: {e}"))?;
-    Ok(rows.iter().map(|r| r.get(0)).collect())
-}
-
 /// §57.1 tri-state: with `--only`, the phases an assertion grades that did not run make it NOT_APPLICABLE, named.
 /// Without `--only` this is always `None`: a phase that never ran stays a FAIL.
 fn not_applicable(cfg: &Config, ran: &[String], id: &str) -> Option<Vec<String>> {
@@ -1710,18 +1474,6 @@ pub fn execute(cfg: &Config) -> i32 {
             eprintln!("load: sampler session unavailable: {e}");
             None
         });
-    // dep: PostgreSQL(any) — the DB clock marks the start for assertion 8.
-    let since = db
-        .as_mut()
-        .and_then(|c| c.query_one("select now()::text", &[]).ok())
-        .map(|r| r.get::<_, String>(0));
-    let first_a = cfg.lanes.get(&'a').and_then(|keys| keys.first());
-    let lock = match (db.as_mut(), first_a) {
-        (Some(c), Some(k)) => tenant_lock(c, &k.workspace)
-            .map_err(|e| eprintln!("load: no LOCKWAIT lines: {e}"))
-            .ok(),
-        _ => None,
-    };
     let mut phases = Vec::new();
     let mut ready_after_restarts = Vec::new();
     let plan = plan(cfg);
@@ -1759,33 +1511,20 @@ pub fn execute(cfg: &Config) -> i32 {
         if let Some(pair) = name.strip_prefix("ISO-BASE-") {
             println!("{}", iso_noise(cfg, pair, &host));
         }
-        let p = run_phase(cfg, db.as_mut(), lock.as_ref(), &phase);
+        let p = run_phase(cfg, db.as_mut(), &phase);
         for l in load_lines(&p, &host) {
-            println!("{l}");
-        }
-        if let Some(l) = lock_line(&p, &host) {
             println!("{l}");
         }
         phases.push(p);
     }
-    finish(
-        cfg,
-        &mut db,
-        &phases,
-        &lanes,
-        &host,
-        since.as_deref(),
-        &ready_after_restarts,
-    )
+    finish(cfg, &phases, &lanes, &host, &ready_after_restarts)
 }
 
 fn finish(
     cfg: &Config,
-    db: &mut Option<Client>,
     phases: &[PhaseReport],
     lanes: &[char],
     host: &str,
-    since: Option<&str>,
     restarts: &[String],
 ) -> i32 {
     for (i, (base, burst)) in iso_pairs(phases, cfg.iso_pairs).iter().enumerate() {
@@ -1796,16 +1535,12 @@ fn finish(
             utc_now()
         );
     }
-    let subjects = match (db.as_mut(), since) {
-        (Some(c), Some(t)) => lane_subjects(c, t).map_err(|e| eprintln!("load: {e}")).ok(),
-        _ => None,
-    };
     let mut verdicts = vec![Verdict {
         id: "load_gateway_ready",
         pass: true,
         detail: format!("before the first phase and after restarts {restarts:?}"),
     }];
-    verdicts.extend(grade(cfg, phases, lanes, subjects.as_deref()));
+    verdicts.extend(grade(cfg, phases));
     let ran: Vec<String> = phases.iter().map(|p| p.name.clone()).collect();
     let graded: Vec<(Verdict, Option<Vec<String>>)> = verdicts
         .into_iter()
@@ -1827,7 +1562,7 @@ fn finish(
         "host": host, "measured_at": utc_now(),
         "note": "counts cover the whole phase; latency percentiles (nearest rank, admitted 2xx only) the window after warm-up",
         "phases": phases.iter().map(phase_json).collect::<Vec<_>>(),
-        "lane_subjects_since_start": subjects,
+        "lanes_sent": lanes,
         "assertions": graded.iter().map(|(v, na)| serde_json::json!({
             "id": v.id, "state": if na.is_some() { "not_applicable" } else if v.pass { "pass" } else { "fail" },
             "missing_phases": na, "detail": v.detail,
@@ -2037,7 +1772,7 @@ mod tests {
             bearer: "b".to_string(),
         };
         let t = target(1);
-        let mut subjects = Vec::new();
+        let mut clients = Vec::new();
         for lane in ['a', 'b'] {
             for i in [0, 7, 127] {
                 let wire = request(&t, &key, &forwarded_for(lane, i), Op::Enumerate);
@@ -2047,17 +1782,28 @@ mod tests {
                     .expect("Forwarded header sent");
                 let id = build_client_network_identity(peer, Some(header), &trusted, None, None);
                 assert!(id.risk_tags.is_empty(), "{header}: {:?}", id.risk_tags);
-                let subject = humaux_adapters::quota_repo::preauth_ip_subject(id.client_ip, 64);
-                assert_eq!(subject, format!("2001:db8:{lane}::/64"), "{header}");
-                subjects.push(subject);
+                let expected: std::net::IpAddr =
+                    format!("2001:db8:{lane}::{:x}", i + 1).parse().unwrap();
+                assert_eq!(id.client_ip, expected, "{header}");
+                clients.push(id.client_ip);
             }
             assert!(
                 !request(&t, &key, "x", Op::ToolsList).contains("Connection: close"),
                 "keep-alive"
             );
         }
-        subjects.dedup();
-        assert_eq!(subjects.len(), 2, "the two lanes key apart");
+        let expected: Vec<std::net::IpAddr> = [
+            "2001:db8:a::1",
+            "2001:db8:a::8",
+            "2001:db8:a::80",
+            "2001:db8:b::1",
+            "2001:db8:b::8",
+            "2001:db8:b::80",
+        ]
+        .map(|ip| ip.parse().unwrap())
+        .to_vec();
+        assert_eq!(clients.len(), 6);
+        assert_eq!(clients, expected);
     }
 
     fn closed_port() -> u16 {
@@ -2095,7 +1841,6 @@ mod tests {
             max_backends: 1,
             iso_floor_ms: 2.0,
             ready_timeout: Duration::from_secs(1),
-            lock_sample: Duration::from_millis(10),
             pg_dsn: None,
             meminfo: MemInfo::Docker("humaux-c38-load-none".to_string()),
             host_class: None,
@@ -2107,9 +1852,9 @@ mod tests {
     }
 
     /// The S7 runs: `--only` keeps a prefix of the plan, `--rfc7239-lane` adds phase FWD in the form the edge parser
-    /// refuses, and assertion 8 grades exactly the lanes the run sent on (fault F-FWD reds it, a / b do not).
+    /// refuses, and the request plan retains the exact lanes and Forwarded values.
     #[test]
-    fn only_and_rfc7239_lane_shape_the_plan_and_the_graded_lanes() {
+    fn only_and_rfc7239_lane_shape_the_plan_and_sent_lanes() {
         let mut cfg = cfg_for(closed_port(), String::new());
         cfg.lanes.insert('f', cfg.lanes[&'a'].clone());
         cfg.rfc7239_lane = Some('f');
@@ -2120,21 +1865,11 @@ mod tests {
         assert_eq!(lanes_used(&fwd), ['f']);
         let specs = clients(&cfg, &fwd[0].1);
         assert_eq!(specs[0].forwarded, "for=\"[2001:db8:f::1]\"");
-        let ab = ["2001:db8:a::/64".to_string(), "2001:db8:b::/64".to_string()];
-        let v = a8_lanes(&lanes_used(&fwd), Some(&ab));
-        assert!(!v.pass, "no f row: {}", v.detail);
-        assert!(
-            v.detail.starts_with("want [\"2001:db8:f::/64\"]"),
-            "{}",
-            v.detail
-        );
-
         cfg.rfc7239_lane = None;
         cfg.only = vec!["ISO".to_string()];
         let iso = plan(&cfg);
         assert!(iso.iter().all(|p| p.0.starts_with("ISO-")) && iso.len() == 2 * cfg.iso_pairs);
         assert_eq!(lanes_used(&iso), ['a', 'b']);
-        assert!(a8_lanes(&lanes_used(&iso), Some(&ab)).pass);
         assert_eq!(clients(&cfg, &iso[0].1)[0].forwarded, "2001:db8:b::1");
     }
 
@@ -2241,21 +1976,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn assertion_8_requires_every_lane_that_ran() {
-        let got = vec![
-            "2001:db8:a::/64".to_string(),
-            "2001:db8:b::/64".to_string(),
-            "2001:db8:fb4b:46ad::/64".to_string(),
-        ];
-        assert!(a8_lanes(&['a', 'b'], Some(&got)).pass);
-        assert!(
-            !a8_lanes(&['a', 'b', 'f'], Some(&got)).pass,
-            "a lane whose Forwarded did not parse has no row"
-        );
-        assert!(!a8_lanes(&['a', 'b'], None).pass);
-    }
-
     /// Assertion 3 compares the scraped `admission_rejected_total` delta with the client's own 503 count per phase:
     /// equal passes; a scrape that saw fewer (the wrong ops endpoint, a lost increment) or none fails, naming the
     /// phase. Fault: the comparison reduced to "a scrape exists" ⇒ the mismatch passes ⇒ red.
@@ -2285,45 +2005,6 @@ mod tests {
         );
         assert_eq!(v.detail, "ISO-BURST-1: scraped=0 client_503=1120");
         assert!(!a3_counter(&[phase("BURST", 3, None)]).pass, "no scrape");
-    }
-
-    /// The `LOCKWAIT` quantile ranks over EVERY acquisition: the ones the sampler never saw waiting waited less than
-    /// one interval and rank below the observed waits. 1000 acquisitions, 11 observed: p99 is the 10th longest
-    /// observed wait, p50 is below the resolution. Fault: the quantile taken over the observed waits only ⇒ p99 =
-    /// the longest wait, p50 an observed one ⇒ red.
-    #[test]
-    fn lock_wait_quantile_ranks_unobserved_acquisitions_below_the_resolution() {
-        let observed = [
-            11.0, 500.0, 12.0, 11.0, 300.0, 15.0, 11.0, 400.0, 20.0, 11.0, 11.0,
-        ];
-        assert_eq!(wait_quantile(&observed, 1000, 99), Some(11.0));
-        assert_eq!(wait_quantile(&observed, 1000, 50), None, "below resolution");
-        assert_eq!(
-            wait_quantile(&observed, 100, 99),
-            Some(500.0),
-            "rank 1 = the longest"
-        );
-        assert_eq!(wait_quantile(&[], 0, 99), None, "no acquisition, no wait");
-        let p = PhaseReport {
-            name: "L64".to_string(),
-            measured_at: "2026-10-07T00:00:00Z".to_string(),
-            lock: Some(LockWaits {
-                tenant: "t".to_string(),
-                interval_ms: 10.0,
-                samples: 4500,
-                acquisitions: 1000,
-                tenant_waits_ms: observed.to_vec(),
-                other_waits_ms: vec![3.0],
-                error: None,
-            }),
-            ..PhaseReport::default()
-        };
-        assert_eq!(
-            lock_line(&p, "h").as_deref(),
-            Some(
-                "LOCKWAIT L64 lock=tenant group=LA acquisitions=1000 observed_waits=11 p50=<10ms p99=11.0ms max=500.0ms other_rate_lock_waits=1 other_max=3.0ms resolution=10ms samples=4500 host=h measured_at=2026-10-07T00:00:00Z"
-            )
-        );
     }
 
     /// A meminfo file with `MemTotal` 22 GiB (in kB), removed when dropped.
