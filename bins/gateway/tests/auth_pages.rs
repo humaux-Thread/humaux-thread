@@ -6,14 +6,18 @@
 //!   control.user_emails, control.users, ops.email_delivery_events, ops.email_outbox]
 //!   x=[control.login_challenge_issue, control.session_issue], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email, adapters::postgres, adapters::session_repo, application::auth,
-//!   application::session, application::signed_token, gateway::auth_pages, gateway::guard, gateway::limiter,
+//!   application::session, application::signed_token, gateway::admission, gateway::auth_pages, gateway::guard,
+//!   gateway::limiter,
 //!   humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [an existing, a cooling-down and an unknown mailbox get the same status, headers and body from a start;
 //!   a consumed code and a code after the attempt cap are both rejected with the one rejection page and mint no session;
 //!   a POST without the configured Origin is a 403 that writes nothing; logout needs the session-bound CSRF token and
-//!   only then revokes and clears the cookie; every route, refusals included, carries the four hardening headers; the
-//!   pre-auth limiter answers the third request of a capacity-two bucket with 429; each test owns one throwaway user;
+//!   only then revokes and clears the cookie, and a foreign Origin stops it even with a live session and the token; an
+//!   expired, forged or foreign-kind pending cookie is the one rejection; every route the pages serve, refusals
+//!   included, carries the four hardening headers; the pre-auth limiter answers the third request of a capacity-two
+//!   bucket with 429; one client's held requests do not starve another client's login at admission; each test owns one
+//!   throwaway user;
 //!   a missing database is a visible §79.2 skip, a FAIL under HUMAUX_REQUIRE_DB]
 //! Spec: Baseline §73.6; §74.3; §79.2; ADR-0125
 //!
@@ -21,23 +25,28 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::str::FromStr as _;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use axum::{Router, routing::get};
 
 use humaux_adapters::email::RecipientAllowlist;
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_adapters::session_repo;
 use humaux_application::auth::AuthConfig;
 use humaux_application::session::{SessionPolicy, SessionSecret, VerifiedSession, csrf_token};
-use humaux_application::signed_token::TokenKeys;
-use humaux_gateway::auth_pages::{self, AuthPagesConfig};
+use humaux_application::signed_token::{FIELD_SEP, TokenKeys, TokenLabel};
+use humaux_gateway::admission::{self, Admission, AdmissionSettings};
+use humaux_gateway::auth_pages::{self, AuthPagesConfig, PENDING_LABEL};
 use humaux_gateway::guard::{GatewayGuard, GuardRatePolicies, GuardSettings};
 use humaux_gateway::limiter::RatePolicy;
-use humaux_protocol::edge::{CSRF_HEADER_NAME, SESSION_COOKIE_NAME, TrustedProxyConfig};
+use humaux_protocol::edge::{CSRF_HEADER_NAME, Cidr, SESSION_COOKIE_NAME, TrustedProxyConfig};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -197,16 +206,20 @@ fn guard(h: &Handle, preauth_capacity: i64) -> Arc<GatewayGuard> {
     Arc::new(GatewayGuard::new(pool, guard_settings(preauth_capacity)).expect("guard settings"))
 }
 
-/// The production router on a loopback socket, with connect info as `main` serves it.
-async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
-    let config = AuthPagesConfig {
+fn pages_config() -> AuthPagesConfig {
+    AuthPagesConfig {
         keys: keys(),
         public_origin: ORIGIN.to_owned(),
         mail_from: "no-reply@humaux.example".to_owned(),
         code_pepper: b"auth-pages-test-login-code-pepper".to_vec(),
         allowlist: RecipientAllowlist::allow_all(),
         auth: AuthConfig::default(),
-    };
+    }
+}
+
+/// The production router on a loopback socket, with connect info as `main` serves it.
+async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
+    let config = pages_config();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -220,6 +233,59 @@ async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
         .expect("serve loopback /auth/*");
     });
     (address, server)
+}
+
+/// `main`'s wiring: the `/auth/*` router merged with one more anonymous route, wrapped by an admission layer keyed by
+/// client as `bootstrap` builds it (per-key limit 8). `GET /hold` signals `entered`, then waits for a `release` permit.
+async fn start_admitted(
+    guard: Arc<GatewayGuard>,
+    entered: Arc<Semaphore>,
+    release: Arc<Semaphore>,
+) -> (SocketAddr, JoinHandle<()>) {
+    let hold = get(move || {
+        let (entered, release) = (Arc::clone(&entered), Arc::clone(&release));
+        async move {
+            entered.add_permits(1);
+            let _held = release.acquire().await;
+            "held"
+        }
+    });
+    let admission = Admission::new(AdmissionSettings {
+        concurrency: 64,
+        queue_depth: 0,
+        max_wait: Duration::from_secs(1),
+        per_key_limit: 8,
+        body_read_timeout: Duration::from_secs(5),
+        max_request_body_bytes: 65_536,
+    })
+    .keyed_by_client(Arc::clone(&guard));
+    let app = admission::wrap(
+        auth_pages::router(guard, pages_config()).merge(Router::new().route("/hold", hold)),
+        Router::new(),
+        Arc::new(admission),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("loopback address");
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve loopback app");
+    });
+    (address, server)
+}
+
+/// A guard that trusts the loopback peer as a proxy, so a `Forwarded` header names the client a test speaks as.
+fn guard_behind_loopback_proxy(h: &Handle) -> Arc<GatewayGuard> {
+    let mut settings = guard_settings(10_000);
+    settings.trusted_proxies.trusted_proxy_cidrs =
+        vec![Cidr::from_str("127.0.0.1/32").expect("cidr")];
+    let pool = gateway_pool(&h.rt, &h.dsn).expect("role_gateway pool");
+    Arc::new(GatewayGuard::new(pool, settings).expect("guard settings"))
 }
 
 fn serve(h: &Handle) -> SocketAddr {
@@ -549,9 +615,12 @@ fn g_m02_3_post_without_the_configured_origin_is_forbidden_and_writes_nothing() 
     run_db_fixture::<PagesFixture, _>("g_m02_3_http_origin", |mut h| {
         let address = serve(&h);
         let body = format!("email={}", h.email);
+        // An origin that only starts with the configured one is another origin (a `starts_with` regression).
+        let prefixed = format!("{ORIGIN}.evil.example");
         for headers in [
             vec![],
             vec![("Origin", "https://evil.example.test")],
+            vec![("Origin", prefixed.as_str())],
             vec![("Origin", "null")],
             vec![("Origin", ORIGIN), ("Origin", ORIGIN)],
             vec![("Referer", "https://evil.example.test/auth/login")],
@@ -640,6 +709,127 @@ fn g_m02_5_logout_needs_the_session_bound_csrf_token() {
             authenticate(&h, &session).is_none(),
             "the session is revoked"
         );
+    });
+}
+
+/// Review rv-369 P2-1: logout's own `Origin` check, alone. A live session, the right CSRF token and a same-origin
+/// fetch still get 403 from a foreign, `null` or merely prefixed `Origin`, and the session survives; with the configured
+/// origin the same request signs out. Fault: delete the `same_origin` check in `logout` ⇒ red.
+#[test]
+fn g_m02_5_logout_with_a_foreign_origin_is_forbidden_even_with_a_live_session_and_token() {
+    run_db_fixture::<PagesFixture, _>("g_m02_5_http_logout_origin", |mut h| {
+        let address = serve(&h);
+        let session = sign_in(&mut h, address);
+        let verified = authenticate(&h, &session).expect("live session");
+        let token = csrf_token(&keys(), verified.session_id);
+        let cookie = format!("{SESSION_COOKIE_NAME}={session}");
+        let logout = |h: &Handle, origin: &str| {
+            let headers = [
+                ("Origin", origin),
+                ("Cookie", cookie.as_str()),
+                ("Sec-Fetch-Site", "same-origin"),
+                (CSRF_HEADER_NAME, token.as_str()),
+            ];
+            call(h, address, "POST", "/auth/logout", &headers, "")
+        };
+        let prefixed = format!("{ORIGIN}.evil.example");
+        for origin in ["https://evil.example.test", "null", prefixed.as_str()] {
+            let reply = logout(&h, origin);
+            assert_eq!(reply.status, 403, "{origin}");
+            assert!(
+                authenticate(&h, &session).is_some(),
+                "the session is still live after {origin}"
+            );
+        }
+        let reply = logout(&h, ORIGIN);
+        assert_eq!(reply.status, 303, "{reply:?}");
+        assert!(authenticate(&h, &session).is_none(), "revoked");
+    });
+}
+
+/// Review rv-369 P3-7: a pending-login cookie that is expired, signed under another label, tampered, empty or not
+/// hex is the same rejection as a wrong code, even when the code itself is the right one; no session is minted.
+#[test]
+fn g_m02_3_expired_forged_or_foreign_pending_cookie_gets_the_uniform_rejection() {
+    run_db_fixture::<PagesFixture, _>("g_m02_3_http_pending_forged", |mut h| {
+        let address = serve(&h);
+        let email = h.email.clone();
+        let genuine = post_login(&h, address, &email)
+            .cookie_value(PENDING_COOKIE)
+            .expect("a pending-login cookie");
+        let code = emailed_code(&mut h);
+        let baseline = submit_code(&h, address, &genuine, &wrong_code(&code));
+        assert_eq!(baseline.status, 400);
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs();
+        let signed = |label: &TokenLabel, expires: u64| {
+            keys().sign(label, &format!("{expires}{FIELD_SEP}{email}"))
+        };
+        let other = TokenLabel::new(b"humaux.other.v1", b"humaux.other.kid.v1");
+        let mut tampered = genuine.clone();
+        let last = if tampered.ends_with('0') { '1' } else { '0' };
+        tampered.pop();
+        tampered.push(last);
+        for (what, pending) in [
+            ("expired", signed(&PENDING_LABEL, now - 10)),
+            ("another token kind", signed(&other, now + 600)),
+            ("tampered", tampered),
+            ("not hex", "zz".to_owned()),
+            ("empty", String::new()),
+        ] {
+            let reply = submit_code(&h, address, &pending, &code);
+            assert_eq!(reply.comparable(), baseline.comparable(), "{what}");
+        }
+        assert_eq!(
+            count(&mut h, "control.sessions"),
+            0,
+            "no session was minted"
+        );
+    });
+}
+
+/// Review rv-369 P2-2: anonymous requests are keyed by client IP at admission. Eight requests held in flight by client A
+/// fill A's per-key slots (A's ninth is refused) but leave client B's `/auth/login` served. Fault: key every anonymous
+/// caller as 0 (ignore the client IP in `admit`) ⇒ B is refused ⇒ red.
+#[test]
+fn g_m03_1_one_clients_held_requests_do_not_starve_another_clients_login() {
+    run_db_fixture::<PagesFixture, _>("g_m03_1_http_admission_client_key", |h| {
+        let guard = guard_behind_loopback_proxy(&h);
+        let (entered, release) = (Arc::new(Semaphore::new(0)), Arc::new(Semaphore::new(0)));
+        h.rt.block_on(async {
+            let (address, server) =
+                start_admitted(guard, Arc::clone(&entered), Arc::clone(&release)).await;
+            let get_as = |client: &'static str, path: &'static str| async move {
+                http(address, "GET", path, &[("Forwarded", client)], "").await
+            };
+            let held: Vec<_> = (0..8)
+                .map(|_| tokio::spawn(get_as("198.51.100.1", "/hold")))
+                .collect();
+            tokio::time::timeout(Duration::from_secs(10), entered.acquire_many(8))
+                .await
+                .expect("eight requests in flight")
+                .expect("semaphore open")
+                .forget();
+
+            assert_eq!(
+                get_as("198.51.100.1", "/hold").await.status,
+                503,
+                "client A is at its per-key limit"
+            );
+            assert_eq!(
+                get_as("203.0.113.9", "/auth/login").await.status,
+                200,
+                "client B is not starved by client A"
+            );
+            release.add_permits(8);
+            for task in held {
+                assert_eq!(task.await.expect("held request").status, 200);
+            }
+            server.abort();
+        });
     });
 }
 

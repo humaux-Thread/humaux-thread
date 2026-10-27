@@ -19,7 +19,9 @@
 //!   HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX,
 //!   HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS,
 //!   HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST, HUMAUX_GATEWAY_LOGIN_CODE_PEPPER, HUMAUX_GATEWAY_LOGIN_MAIL_FROM,
-//!   HUMAUX_GATEWAY_PUBLIC_BASE_URL,
+//!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
+//!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
 //!   HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS,
@@ -79,7 +81,7 @@ use humaux_adapters::{
     postgres::{PoolSettings, RuntimeDbPool, SessionLock},
     retrieve::{TokenKeys, install_token_keys},
 };
-use humaux_application::auth::{AuthConfig, canonicalize_email};
+use humaux_application::auth::{AuthConfig, ChallengePolicy, canonicalize_email};
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_cache::CacheConfig;
 use humaux_contracts::config_registry::{
@@ -143,6 +145,13 @@ const LOGIN_MAIL_FROM_KEY: &str = "HUMAUX_GATEWAY_LOGIN_MAIL_FROM";
 const LOGIN_CODE_PEPPER_KEY: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
 /// ADR-0125 8c: the enqueue-time recipient allowlist of the email door (`adapters::email::RecipientAllowlist`).
 const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST";
+/// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
+/// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
+const AUTH_SESSION_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS";
+const AUTH_SESSION_IDLE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS";
+const AUTH_LOGIN_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS";
+const AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS";
+const AUTH_LOGIN_CODE_COOLDOWN_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS";
 const CREDENTIAL_TOUCH_INTERVAL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS";
 /// Largest accepted credential touch interval: one hour. A technical bound, not a business limit: the stamp feeds the
 /// 24 h activity window of `ops.health_snapshot` (0261), and an interval beyond an hour would blur it by more than a
@@ -522,6 +531,8 @@ impl GatewayBootstrap {
             }
         }
         let application = Arc::new(application);
+        // ADR-0125: anonymous callers are keyed by the IP the pre-auth bucket charges them.
+        let admission = Admission::new(self.admission).keyed_by_client(Arc::clone(&guard));
         Ok(GatewayRuntime {
             session_lock,
             session_lock_check: self.session_lock_check,
@@ -534,7 +545,7 @@ impl GatewayBootstrap {
                 semantic,
             }),
             guard,
-            admission: Arc::new(Admission::new(self.admission)),
+            admission: Arc::new(admission),
             metrics_addr: self.metrics_addr,
             readiness_refresh: self.readiness_refresh,
             effective_config: self.effective_config,
@@ -807,12 +818,91 @@ fn parse_auth_pages(
         mail_from,
         code_pepper,
         allowlist,
-        auth: AuthConfig::default(),
+        auth: parse_auth_lifetimes(effective)?,
     }))
 }
 
+/// `key` as whole seconds (or a count) inside `range`; the bounds catch a unit slip, they are not business limits.
+fn bounded(
+    effective: &BTreeMap<String, String>,
+    key: &str,
+    range: std::ops::RangeInclusive<u64>,
+    reason: &'static str,
+) -> Result<u64, BootstrapError> {
+    required(effective, key)?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|value| range.contains(value))
+        .ok_or_else(|| BootstrapError::new(key, reason))
+}
+
+/// ADR-0125 8e: the session and login-code lifetimes, the attempt cap and the resend cooldown (§78.1). The idle
+/// lifetime may not outlast the absolute one and the cooldown may not outlast the code.
+fn parse_auth_lifetimes(
+    effective: &BTreeMap<String, String>,
+) -> Result<AuthConfig, BootstrapError> {
+    let session = bounded(
+        effective,
+        AUTH_SESSION_TTL_KEY,
+        3_600..=7_776_000,
+        "must be 3600..=7776000 seconds",
+    )?;
+    let idle = bounded(
+        effective,
+        AUTH_SESSION_IDLE_TTL_KEY,
+        300..=7_776_000,
+        "must be 300..=7776000 seconds",
+    )?;
+    if idle > session {
+        return Err(BootstrapError::new(
+            AUTH_SESSION_IDLE_TTL_KEY,
+            "must not exceed HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS",
+        ));
+    }
+    let code_ttl = bounded(
+        effective,
+        AUTH_LOGIN_CODE_TTL_KEY,
+        60..=3_600,
+        "must be 60..=3600 seconds",
+    )?;
+    let attempts = bounded(
+        effective,
+        AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY,
+        1..=10,
+        "must be 1..=10",
+    )?;
+    let cooldown = bounded(
+        effective,
+        AUTH_LOGIN_CODE_COOLDOWN_KEY,
+        1..=3_600,
+        "must be 1..=3600 seconds",
+    )?;
+    if cooldown > code_ttl {
+        return Err(BootstrapError::new(
+            AUTH_LOGIN_CODE_COOLDOWN_KEY,
+            "must not exceed HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS",
+        ));
+    }
+    Ok(AuthConfig {
+        login_challenge: ChallengePolicy {
+            ttl: Duration::from_secs(code_ttl),
+            max_attempts: i32::try_from(attempts).map_err(|_| {
+                BootstrapError::new(AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "must be 1..=10")
+            })?,
+            send_cooldown: Duration::from_secs(cooldown),
+        },
+        session_ttl: Duration::from_secs(session),
+        session_idle_ttl: Duration::from_secs(idle),
+        ..AuthConfig::default()
+    })
+}
+
 /// ADR-0125 8a: an absolute `https` origin, lowercased and without a path; `http` only for a loopback host. The
-/// result is compared byte for byte with a request's `Origin`, so write it as a browser serializes it (no default port).
+/// result is compared byte for byte with a request's `Origin`, which a browser serializes without the scheme's default
+/// port, so `:443` (https) and `:80` (http) are dropped here and an empty, zero or non-numeric port is refused.
+// ponytail: loopback `http` is allowed in any environment (the gateway has no dev/test marker); `deploy-check --env`
+// refuses a non-https value in the production values file instead.
 fn parse_public_origin(value: &str) -> Result<String, BootstrapError> {
     const REASON: &str = "must be an absolute https origin (http only for a loopback host)";
     let lowered = value.trim().to_ascii_lowercase();
@@ -824,15 +914,40 @@ fn parse_public_origin(value: &str) -> Result<String, BootstrapError> {
         && authority.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
         });
-    let loopback = ["localhost", "127.0.0.1", "[::1]"].iter().any(|host| {
-        authority == *host
-            || authority
-                .strip_prefix(*host)
-                .is_some_and(|rest| rest.starts_with(':'))
-    });
+    // A bracketed IPv6 host keeps its colons; the port is whatever follows the last colon outside the brackets.
+    let (host, port) = match authority.rfind(':') {
+        Some(at) if !authority[at..].contains(']') => {
+            (&authority[..at], Some(&authority[at + 1..]))
+        }
+        _ => (authority, None),
+    };
+    let port = port
+        .map(|digits| {
+            digits
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .ok_or_else(|| {
+                    BootstrapError::new(PUBLIC_BASE_URL_KEY, "must carry a valid port or none")
+                })
+        })
+        .transpose()?;
+    let host_ok = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .map_or_else(
+            || !host.is_empty() && !host.contains([':', '[', ']']),
+            |inner| inner.parse::<std::net::Ipv6Addr>().is_ok(),
+        );
+    let loopback = ["localhost", "127.0.0.1", "[::1]"].contains(&host);
+    let port = port.filter(|port| !matches!((scheme, *port), ("https", 443) | ("http", 80)));
+    let normalized = match port {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    };
     match scheme {
-        "https" if well_formed => Ok(origin.to_owned()),
-        "http" if well_formed && loopback => Ok(origin.to_owned()),
+        "https" if well_formed && host_ok => Ok(normalized),
+        "http" if well_formed && host_ok && loopback => Ok(normalized),
         _ => Err(BootstrapError::new(PUBLIC_BASE_URL_KEY, REASON)),
     }
 }
@@ -1477,6 +1592,18 @@ pub fn registry() -> Vec<ConfigEntry> {
             EMAIL_RECIPIENT_ALLOWLIST_KEY,
         ]
         .map(|name| entry_with_default(name, "string", false, "")),
+    );
+    // ADR-0125 8e: lifetimes, attempt cap and cooldown; the defaults are the values `AuthConfig::default()` carried
+    // (30 d, 7 d, 15 min, 5 attempts, 60 s). Validated only once the auth surface is on.
+    entries.extend(
+        [
+            (AUTH_SESSION_TTL_KEY, "u64", "2592000"),
+            (AUTH_SESSION_IDLE_TTL_KEY, "u64", "604800"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "u64", "900"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "u32", "5"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "u64", "60"),
+        ]
+        .map(|(name, type_name, default)| entry_with_default(name, type_name, false, default)),
     );
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
@@ -2606,6 +2733,11 @@ mod tests {
             ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
             ("http://localhost", "http://localhost"),
             ("http://[::1]:8080", "http://[::1]:8080"),
+            // A browser serializes an Origin without the scheme's default port, so the configured one must match.
+            ("https://humaux.com:443", "https://humaux.com"),
+            ("http://localhost:80", "http://localhost"),
+            ("https://humaux.com:80", "https://humaux.com:80"),
+            ("http://127.0.0.1:443", "http://127.0.0.1:443"),
         ] {
             assert_eq!(
                 parse_public_origin(input).as_deref(),
@@ -2624,6 +2756,13 @@ mod tests {
             "https://humaux.com?x=1",
             "https://user@humaux.com",
             "https://humaux .com",
+            "https://humaux.com:",
+            "https://humaux.com:0",
+            "https://humaux.com:http",
+            "https://humaux.com:65536",
+            "https://humaux.com:1:2",
+            "https://[::1",
+            "https://[]",
         ] {
             assert_eq!(
                 parse_public_origin(bad).map_err(|error| error.key),
@@ -2631,6 +2770,91 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// ADR-0125 8e (§78.1): the session and login-code lifetimes, the attempt cap and the cooldown are registry keys whose
+    /// defaults are the former `AuthConfig::default()` values; each is bounded and the two orderings hold. Read only
+    /// once the surface is on. Fault: build `AuthConfig::default()` again in `parse_auth_pages` ⇒ red.
+    #[test]
+    fn auth_lifetimes_are_registry_keys_with_the_former_defaults_and_are_bounded() {
+        let enabled = |overrides: &[(&str, &str)]| {
+            let mut values = raw();
+            values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+            values.insert(AUTH_HMAC_KEY_KEY.into(), generated_key_hex());
+            values.extend(auth_page_values());
+            for (key, value) in overrides {
+                values.insert((*key).to_owned(), (*value).to_owned());
+            }
+            values
+        };
+        let refused_key =
+            |overrides: &[(&str, &str)]| match GatewayBootstrap::from_raw(enabled(overrides)) {
+                Err(error) => error.key,
+                Ok(_) => panic!("configuration must be rejected: {overrides:?}"),
+            };
+
+        let default = GatewayBootstrap::from_raw(enabled(&[]))
+            .expect("defaults boot")
+            .auth_pages
+            .expect("surface on")
+            .auth;
+        assert_eq!(
+            default,
+            AuthConfig::default(),
+            "the defaults are the former literals"
+        );
+
+        let tuned = GatewayBootstrap::from_raw(enabled(&[
+            (AUTH_SESSION_TTL_KEY, "86400"),
+            (AUTH_SESSION_IDLE_TTL_KEY, "3600"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "600"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "3"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "30"),
+        ]))
+        .expect("tuned values boot")
+        .auth_pages
+        .expect("surface on")
+        .auth;
+        assert_eq!(tuned.session_ttl, Duration::from_secs(86_400));
+        assert_eq!(tuned.session_idle_ttl, Duration::from_secs(3_600));
+        assert_eq!(tuned.login_challenge.ttl, Duration::from_secs(600));
+        assert_eq!(tuned.login_challenge.max_attempts, 3);
+        assert_eq!(tuned.login_challenge.send_cooldown, Duration::from_secs(30));
+
+        for (key, bad) in [
+            (AUTH_SESSION_TTL_KEY, "0"),
+            (AUTH_SESSION_TTL_KEY, "3599"),
+            (AUTH_SESSION_TTL_KEY, "7776001"),
+            (AUTH_SESSION_TTL_KEY, "30d"),
+            (AUTH_SESSION_IDLE_TTL_KEY, "299"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "59"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "3601"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "0"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "11"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "0"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "3601"),
+        ] {
+            assert_eq!(refused_key(&[(key, bad)]), key, "{key}={bad}");
+        }
+        // Idle may not outlast the absolute lifetime; the cooldown may not outlast the code.
+        assert_eq!(
+            refused_key(&[
+                (AUTH_SESSION_TTL_KEY, "7200"),
+                (AUTH_SESSION_IDLE_TTL_KEY, "7201")
+            ]),
+            AUTH_SESSION_IDLE_TTL_KEY
+        );
+        assert_eq!(
+            refused_key(&[
+                (AUTH_LOGIN_CODE_TTL_KEY, "120"),
+                (AUTH_LOGIN_CODE_COOLDOWN_KEY, "121")
+            ]),
+            AUTH_LOGIN_CODE_COOLDOWN_KEY
+        );
+        // Surface off: a bad value is never read.
+        let mut off = raw();
+        off.insert(AUTH_SESSION_TTL_KEY.into(), "0".into());
+        assert!(GatewayBootstrap::from_raw(off).is_ok());
     }
 
     #[test]

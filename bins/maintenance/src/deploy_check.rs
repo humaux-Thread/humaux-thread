@@ -178,11 +178,11 @@ const AUTH_HMAC_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
 const LOGIN_CODE_PEPPER: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
 /// The secrets that are optional only while the auth surface is off, and judged for length once it is on.
 const AUTH_SURFACE_SECRETS: [&str; 2] = [AUTH_HMAC_KEY, LOGIN_CODE_PEPPER];
+/// M02-7 / ADR-0125 8a: the one origin a console POST may come from. Bootstrap allows loopback `http` (the gateway has
+/// no dev/test marker), so the release gate holds production to `https` (`public_base_url_not_https`).
+const PUBLIC_BASE_URL: &str = "HUMAUX_GATEWAY_PUBLIC_BASE_URL";
 /// M02-7 / ADR-0125 8a, 8c: the non-secret values the auth surface cannot boot without (`value_empty` when blank).
-const AUTH_SURFACE_VALUES: [&str; 2] = [
-    "HUMAUX_GATEWAY_PUBLIC_BASE_URL",
-    "HUMAUX_GATEWAY_LOGIN_MAIL_FROM",
-];
+const AUTH_SURFACE_VALUES: [&str; 2] = [PUBLIC_BASE_URL, "HUMAUX_GATEWAY_LOGIN_MAIL_FROM"];
 /// The gateway key that turns the auth surface on (`bins/gateway` bootstrap, registered default `false`).
 const AUTH_SURFACE_ENABLED: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
 
@@ -1022,6 +1022,12 @@ pub fn presence_reasons(
                 && auth_surface_enabled(&[values, secrets, compose], p)
             {
                 reasons.push(format!("value_empty:{p}:{key}"));
+            } else if key == PUBLIC_BASE_URL
+                && all.iter().any(|value| {
+                    !value.is_empty() && !value.trim().to_ascii_lowercase().starts_with("https://")
+                })
+            {
+                reasons.push(format!("public_base_url_not_https:{p}:{key}"));
             }
         }
     }
@@ -2672,8 +2678,9 @@ mod tests {
 
     /// M02-7 / ADR-0125 8a, 8c, 8d: with the auth surface on, the login-code pepper is a `secret_empty` / `secret_short`
     /// secret like the auth MAC key and the public origin and the sender are `value_empty`; with it off all four may be
-    /// blank. Fault: drop the pepper from `AUTH_SURFACE_SECRETS` (it is then judged like any secret even when the
-    /// surface is off) or drop the values check ⇒ red.
+    /// blank; a public origin that is not `https` is refused either way. Fault: drop the pepper from
+    /// `AUTH_SURFACE_SECRETS` (it is then judged like any secret even when the surface is off), drop the values check
+    /// or drop the https rule ⇒ red.
     #[test]
     fn env_login_values_are_required_only_when_the_auth_surface_is_on() {
         let examples = files(&[(
@@ -2723,6 +2730,23 @@ mod tests {
         assert_eq!(
             reasons("true", "abcd", "https://humaux.com", "login@example.test"),
             vec!["secret_short:gateway:HUMAUX_GATEWAY_LOGIN_CODE_PEPPER".to_owned()]
+        );
+        // The release gate holds the public origin to https, surface on or off (P3-6: bootstrap alone allows loopback).
+        let insecure =
+            vec!["public_base_url_not_https:gateway:HUMAUX_GATEWAY_PUBLIC_BASE_URL".to_owned()];
+        assert_eq!(
+            reasons(
+                "true",
+                &strong,
+                "http://localhost:8080",
+                "login@example.test"
+            ),
+            insecure
+        );
+        assert_eq!(reasons("false", "", "http://humaux.com", ""), insecure);
+        assert_eq!(
+            reasons("false", "", "HTTPS://humaux.com", ""),
+            Vec::<String>::new()
         );
     }
 

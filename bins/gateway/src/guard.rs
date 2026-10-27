@@ -6,7 +6,7 @@
 //!   domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
 //!   gateway::bootstrap, gateway::limiter,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
-//! Called-by: [gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
+//! Called-by: [gateway::admission, gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
 //! Invariants: [transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
 //!
@@ -382,6 +382,23 @@ impl GatewayGuard {
         )
     }
 
+    /// The pre-auth bucket identity of a caller (§73.3): the one place the masked `Subject::Ip` is derived.
+    fn ip_subject(&self, network: &ClientNetworkIdentity) -> Result<Subject, ErrorCode> {
+        Subject::ip(
+            network.client_ip,
+            self.settings.rates.preauth_ipv6_prefix_bits,
+        )
+    }
+
+    /// ADR-0125: the IP the pre-auth bucket would charge this caller, for the admission layer's fairness key. It is
+    /// derived exactly as [`Self::preflight_peer`] derives it, so the two tiers always agree on who a caller is.
+    pub fn bucket_ip(&self, peer_ip: IpAddr, forwarded: Option<&str>) -> Option<IpAddr> {
+        let Subject::Ip(ip) = self.ip_subject(&self.network_of(peer_ip, forwarded)).ok()? else {
+            return None;
+        };
+        Some(ip)
+    }
+
     fn network_allowed(
         &self,
         network: &ClientNetworkIdentity,
@@ -498,10 +515,7 @@ impl GatewayGuard {
         let result = if !self.network_allowed(&network, None) {
             Err(ErrorCode::Forbidden)
         } else {
-            self.rate(&[Subject::ip(
-                network.client_ip,
-                self.settings.rates.preauth_ipv6_prefix_bits,
-            )?])
+            self.rate(&[self.ip_subject(&network)?])
         };
         if let Err(code) = result {
             let event = self.audit_event_for(

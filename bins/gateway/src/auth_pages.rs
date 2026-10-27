@@ -5,8 +5,9 @@
 //!   gateway::guard, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [every /auth/* request passes the pre-auth guard entry exactly once before any handler runs and every
-//!   response, refusals included, carries the hardening headers; a POST is acted on only when its Origin (Referer when
-//!   Origin is absent) is the configured public origin, checked before any body is read or any row is written; a start
+//!   response the pages produce, refusals included, carries the hardening headers; a POST is acted on only when its
+//!   Origin (Referer when Origin is absent) is the configured public origin, checked before any form field is acted
+//!   on or any row is written (admission has already buffered the body by then); a start
 //!   answers one byte-identical redirect whether the mailbox is unknown, in cooldown or issued; every failed code
 //!   attempt answers one rejection page; the mailbox rides between the two steps only in a signed, expiring,
 //!   HttpOnly cookie, never in a URL and never in HTML; logout revokes only on a session-bound CSRF token]
@@ -61,8 +62,9 @@ const CONSOLE_ROOT: &str = "/";
 const AUDIT_SURFACE: &str = "auth";
 /// Cookie that carries the canonical mailbox from the email step to the code step.
 const PENDING_COOKIE_NAME: &str = "__Host-humaux_login";
-/// MAC and kid domains of the pending-login value; distinct from every other token kind under the auth key.
-const PENDING_LABEL: TokenLabel =
+/// MAC and kid domains of the pending-login value; distinct from every other token kind under the auth key. `pub` so the
+/// forged-cookie test signs with the production label and fails on the expiry check, not on a label mismatch.
+pub const PENDING_LABEL: TokenLabel =
     TokenLabel::new(b"humaux.login_pending.v1", b"humaux.login_pending.kid.v1");
 const LOGIN_MAIL_SUBJECT: &str = "Your Humaux sign-in code";
 /// RFC 5321 §4.5.3.1.3 path limit; a longer mailbox cannot exist.
@@ -159,7 +161,7 @@ pub struct AuthPagesConfig {
     pub code_pepper: Vec<u8>,
     /// `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST`; blank allows every recipient at enqueue.
     pub allowlist: RecipientAllowlist,
-    /// §78.1 challenge and session lifetimes. ponytail: the registry default until a config card names keys for them.
+    /// §78.1 challenge and session lifetimes, from the `HUMAUX_GATEWAY_AUTH_*` lifetime keys (ADR-0125 8e).
     pub auth: AuthConfig,
 }
 

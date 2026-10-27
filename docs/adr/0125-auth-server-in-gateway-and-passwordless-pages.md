@@ -67,16 +67,19 @@ unknown path is one statement faster) stands; its upgrade path is a fixed latenc
 
 The session cookie is `__Host-humaux_session`, `Secure; HttpOnly; SameSite=Lax; Path=/`, no `Domain`, `Max-Age` from
 `SessionPolicy::absolute_ttl`. Every `POST /auth/*` requires the request's `Origin` — its `Referer` when `Origin` is
-absent — to equal the configured public origin, else `403` (login CSRF), checked before the body is read or a row is
-written. `null`, a repeated `Origin` and a Referer that merely starts with the origin's text all fail. `POST
+absent — to equal the configured public origin, else `403` (login CSRF), checked before any form field is acted on or a
+row is written. The body is already buffered by admission (§67.2 step 0) and parsed by the extractor when the check
+runs; the check does not precede the read. `null`, a repeated `Origin` and a Referer that merely starts with the
+origin's text all fail; a logout carrying a live session and a valid token still needs the origin. `POST
 /auth/logout` additionally needs the M02-6 token for the caller's own session in `x-humaux-csrf-token` and a
 `Sec-Fetch-Site` of `same-origin` or `none` (`protocol::edge::verify_csrf`); without them the session stays live.
 
 ### D7  Response hardening
 
-On every `/auth/*` response, refusals included: `Cache-Control: no-store`; `Content-Security-Policy: default-src
-'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`; `X-Content-Type-Options:
-nosniff`; `Referrer-Policy: same-origin`. The pages are semantic HTML (`lang`, `label for`, `autocomplete="email"` /
+On every response the pages produce, refusals included: `Cache-Control: no-store`; `Content-Security-Policy:
+default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`;
+`X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin`. Admission's own 413/408/503 and the router's 404
+for an unrouted `/auth/*` path are produced outside the pages and do not carry them; that is a pre-go-live item. The pages are semantic HTML (`lang`, `label for`, `autocomplete="email"` /
 `"one-time-code"`, `inputmode="numeric"`), no script, no stylesheet, and echo no dynamic text, so nothing needs
 escaping.
 
@@ -90,19 +93,35 @@ green. `same-origin` sends nothing to any other origin, which is the property th
 
 | key | kind | rule |
 |---|---|---|
-| `HUMAUX_GATEWAY_PUBLIC_BASE_URL` | value | M02 D9 `PUBLIC_BASE_URL` (note :140). An absolute `https` origin, lowercased, no path; `http` only for `localhost`, `127.0.0.1`, `[::1]`. Not `HUMAUX_GATEWAY_ALLOWED_ORIGINS`, the MCP Host/Origin allowlist. Prod `https://humaux.com`. |
+| `HUMAUX_GATEWAY_PUBLIC_BASE_URL` | value | M02 D9 `PUBLIC_BASE_URL` (note :140). An absolute `https` origin, lowercased, no path; the scheme's default port (`:443`, `:80`) is dropped, an empty, zero or non-numeric port is refused; `http` only for `localhost`, `127.0.0.1`, `[::1]` (the gateway has no dev/test marker, so `deploy-check --env` refuses a non-`https` value in the production values file: `public_base_url_not_https`). Not `HUMAUX_GATEWAY_ALLOWED_ORIGINS`, the MCP Host/Origin allowlist. Prod `https://humaux.com`. |
 | `HUMAUX_GATEWAY_LOGIN_MAIL_FROM` | value | A bare address. Owner-provided; blank in prod values. |
 | `HUMAUX_GATEWAY_LOGIN_CODE_PEPPER` | secret, hex | ≥ 32 bytes and equal to no byte of the credential pepper pair, the consistency-token keys or the auth keys: login codes and API keys rotate independently. Placeholder in `render-secrets.sh`, no value in git. |
+| `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS` | value | Console session absolute lifetime, 3600..=7776000. Registry default 2592000 (30 d, §74.4). |
+| `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS` | value | Idle lifetime, 300..=7776000 and not above the absolute one. Default 604800 (7 d, M02 D6). |
+| `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS` | value | Login code and pending-cookie lifetime, 60..=3600. Default 900 (15 min). |
+| `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS` | value | Wrong attempts per code, 1..=10. Default 5. |
+| `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS` | value | Resend cooldown, 1..=3600 and not above the code lifetime. Default 60. |
 | `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST` | value, CSV | `adapters::email::RecipientAllowlist`, applied at enqueue. M02-4 defined no key for it. Blank allows everyone: the registry cannot tell unset from blank, the sink is the default mode, and the sender enforces the list again at send time. |
 
-All four may be blank while the surface is off (prod stays off); once `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is true
-bootstrap refuses to start without the first three, naming the key, and `deploy-check --env` reports `secret_empty`,
-`secret_short` and `value_empty` — the M02-3 pattern. The email mode and sink directory are keys of the process that
+The first four may be blank while the surface is off (prod stays off); once `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is
+true bootstrap refuses to start without the first three, naming the key, and `deploy-check --env` reports
+`secret_empty`, `secret_short` and `value_empty` — the M02-3 pattern. The five lifetime keys always carry their registry
+default; bootstrap bounds them (the bounds catch a unit slip, they are not business limits) and refuses a value outside
+them, naming the key, once the surface is on (§78.1: no lifetime or cap is a literal in code). The email mode and sink directory are keys of the process that
 sends mail (M22-2's worker); the gateway only enqueues, so it gets neither and no test here sends or can send mail.
 The subject of the mail is code-level English copy; the body is built by the sender from `template_id` and payload.
 
-The post-login target is the route constant `/` (a path is code, not §78.1 business config); the TTLs and the attempt
-cap are `AuthConfig::default()`, the registry default, until a config card names keys for them.
+The post-login target is the route constant `/` (a path is code, not §78.1 business config).
+
+### D9  Admission fairness keys anonymous callers by client IP (review rv-369 P2-2)
+
+Admission (ADR-0065 D-C) gives every request without an `Authorization` header the same fairness key, and `/auth/*`
+requests carry none, so one client holding K requests in flight made every other login answer 503 (the IP bucket runs
+inside admission and could not help). `Admission::keyed_by_client(guard)` keys such a request by the IP the pre-auth
+bucket charges it: `GatewayGuard::bucket_ip(peer, forwarded)` shares its one derivation (`ip_subject`: trusted-proxy
+`Forwarded` walk, IPv6 prefix mask) with `preflight_peer`, so the two tiers cannot disagree on who a caller is. The key
+is SHA-256 over a kind tag and the IP, apart from credential keys, so an `Authorization` value cannot be chosen to land on
+another client's key. An unreadable peer keeps key 0.
 
 ## Consequences
 
@@ -112,7 +131,8 @@ cap are `AuthConfig::default()`, the registry default, until a config card names
 - ponytail: console mounts at `/` until the M26 console card names its root; upgrade is that card's constant.
 - ponytail: the CSRF token travels in a header only (M02-6), so the logout control is a `fetch` of the console, not a
   bare `<form>`; the page that renders it belongs to M26.
-- The configured origin is compared byte for byte; write it as a browser serializes it (no default port).
+- The configured origin is compared byte for byte against what a browser serializes; bootstrap drops the scheme's
+  default port so a `:443` value cannot turn every POST into a 403.
 - `preflight_peer` shares `resource_type = MCP_OPERATION` in the audit row with `/mcp`; `resource_id` tells the surfaces
   apart.
 
@@ -123,8 +143,13 @@ cap are `AuthConfig::default()`, the registry default, until a config card names
   `g_m02_3_consumed_code_replayed_is_rejected` and `g_m02_3_attempt_after_the_cap_is_rejected_even_with_the_right_code`
   (c), `g_m02_3_post_without_the_configured_origin_is_forbidden_and_writes_nothing` (d),
   `g_m02_5_logout_needs_the_session_bound_csrf_token` (e), `g_m02_3_every_route_carries_the_hardening_headers` (f),
-  `g_m03_1_the_pre_auth_limiter_applies_to_the_auth_pages` (g). The bootstrap and `deploy_check` rules above are pinned
-  by `auth_page_values_are_required_validated_and_distinct_when_the_surface_is_on`, `public_origin_is_strict_and_normalized`
+  `g_m03_1_the_pre_auth_limiter_applies_to_the_auth_pages` (g). Review rv-369 added
+  `g_m02_5_logout_with_a_foreign_origin_is_forbidden_even_with_a_live_session_and_token` (P2-1),
+  `g_m03_1_one_clients_held_requests_do_not_starve_another_clients_login` (P2-2) and
+  `g_m02_3_expired_forged_or_foreign_pending_cookie_gets_the_uniform_rejection` (P3-7, with a prefixed-Origin case in
+  (d)). The bootstrap and `deploy_check` rules above are pinned by
+  `auth_page_values_are_required_validated_and_distinct_when_the_surface_is_on`,
+  `auth_lifetimes_are_registry_keys_with_the_former_defaults_and_are_bounded`, `public_origin_is_strict_and_normalized`
   and `env_login_values_are_required_only_when_the_auth_surface_is_on`.
 - Red records (targeted runs `-p humaux-gateway --test auth_pages` on throwaway branches, deleted after recording; each
   failed on the gate's own assertion; file:line is `bins/gateway/tests/auth_pages.rs` as of commit 2d287f30, the base of
