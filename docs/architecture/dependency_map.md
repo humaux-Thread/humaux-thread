@@ -626,6 +626,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
+- reads `public.concept_labels`
+- reads `public.concept_relations`
+- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -815,6 +818,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::mcp`
 
 #### `protocol::mcp_catalog`
+
+#### `public-pool::vocab::model`
 
 #### `retrieval::candidate`
 
@@ -1241,6 +1246,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `xtask::threshold_shape`
 - env `CARGO_MANIFEST_DIR`
+
+#### `xtask::vocab_check`
+- service `subprocess(git)`
 
 ### process(humaux-admin)
 
@@ -3359,6 +3367,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
+- reads `public.concept_labels`
+- reads `public.concept_relations`
+- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -11364,6 +11375,45 @@ written by:
 
 executed by:
 
+### `public.concept_labels`
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
+### `public.concept_relations`
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
+### `public.concepts`
+read by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::vocab`
+- (no process): `public-pool::vocab`
+
+executed by:
+
 ### `public.consensus_ready`
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
@@ -12024,6 +12074,7 @@ executed by:
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
+- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `testkit::disposable`
 - `testkit::fixture_purge`
@@ -12391,6 +12442,8 @@ executed by:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
+- `public-pool::tests::vocab`
+- `public-pool::vocab`
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
@@ -12550,6 +12603,7 @@ executed by:
 - `gateway::build`
 - `xtask::contract_impact`
 - `xtask::dep_map`
+- `xtask::vocab_check`
 
 ### `subprocess(gitleaks)`
 - `adapters::tests::projection_claim`
@@ -14604,6 +14658,8 @@ modules naming it:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
+- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-domain` (normal)
@@ -14622,6 +14678,8 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
+- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-infra-cell` (normal)
@@ -14645,6 +14703,7 @@ modules naming it:
 - `public-pool::public_repo`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
+- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `async-trait` (normal)
@@ -14712,6 +14771,12 @@ modules naming it:
 - `public-pool::tests::support::public_qdrant_fixture`
 - `tests`
 
+### humaux-public-pool → `toml` (normal)
+why: parse PR-controlled public vocabulary
+
+modules naming it:
+- `public-pool::vocab::model`
+
 ### humaux-public-pool → `humaux-application` (dev)
 why: contribute::prepare/finalize drive the fixtures that feed admission
 
@@ -14735,6 +14800,7 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::support::public_qdrant_fixture`
+- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `postgres` (dev)
@@ -14749,6 +14815,7 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `tokio` (dev)
@@ -14759,6 +14826,7 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime`
+- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `uuid` (dev)
@@ -18560,6 +18628,15 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/public-pool/tests/vocab.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/retrieval-provider/tests/contract_tests.rs`
 db-bound (default run): no
