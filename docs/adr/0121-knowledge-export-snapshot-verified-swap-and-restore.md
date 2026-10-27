@@ -264,3 +264,7 @@ with M23-7 (note :187).
 Module design note M23 v2, §3, §7 D1–D11, §9, §11, §12, §13 and the owner answers of 2026-10-23; module design
 notes M10 (C7) and M19 (D6/D8); Baseline §16.3, §37, §44, §66, §78.2, §81; ADR-0062; ADR-0063; ADR-0064; ADR-0084;
 ADR-0092.
+
+## Amendments
+
+- **Amended (M23-2):** the `set_null` restore action named in D-A is one restore step, shared by the M23-5 `restore knowledge` and the M23-4 drill, run right after `pg_restore` and before the restore FK audit (D-F): for every `set_null` column of every KNOWLEDGE row of `docs/architecture/backup_catalog.toml` (C-M23-0) it sets the column to NULL, because the referenced table is not exported and every non-NULL value would dangle. G-M23-3b checks the catalog against the `fk:` lines of `db_objects.md`, which `dep-map` generates from `pg_constraint` (static half; the drill's orphan audit stays M23-4).

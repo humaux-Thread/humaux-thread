@@ -18543,6 +18543,6 @@ default run:
 - `crates/retrieval/tests/planner_predicate_eval.rs:223` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:355` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/testkit/Cargo.toml:25` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
-- `xtask/src/dep_map.rs:11` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
-- `xtask/src/dep_map.rs:12` [table-write] (file) — unit-test fixtures spell write statements in strings
-- `xtask/src/dep_map.rs:13` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read
+- `xtask/src/dep_map.rs:12` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
+- `xtask/src/dep_map.rs:13` [table-write] (file) — unit-test fixtures spell write statements in strings
+- `xtask/src/dep_map.rs:14` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read
