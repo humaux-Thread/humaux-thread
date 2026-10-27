@@ -165,3 +165,30 @@ Owner questions: none (note :193).
 - ADR-0062 D-C (the closed task set this ADR amends); ADR-0063 D-H/D-K; ADR-0064 D-K; ADR-0072 D-C; ADR-0018;
   ADR-0050.
 - `docs/architecture/schedule_register.toml` (C-M21-3) and `xtask/src/schedule_register.rs` (G-M21-1).
+
+## M21-2 resolution and red records (appended 2026-10-27)
+
+Card M21-2 lands D3's I4 scan as the AUTHORITY_I4 task of `humaux-maintenance --serve` (report-only; `EVERY` =
+86400 from `deploy/env/values/maintenance.env`), migration 0287, the `authority_i4_violations` gauge and the §42
+`AuthorityI4Violation` alert. Nothing above is re-decided.
+
+- U3 resolved: `ops.i4_authority_scan()` (owner SECURITY DEFINER, STABLE, `search_path = pg_catalog, pg_temp`, EXECUTE
+  `role_maintenance` only, count plus at most 100 ids ordered by `memory_id`) replaces the PUBLIC-executable
+  `ops.i4_authority_consistency_scan()` of 0004, which no code called; the old name is dropped in 0287. The two
+  mentions of the old name above are this ADR's historical text and stay as written. The run appends one row to the
+  append-only `ops.repair_findings` (`role_maintenance` SELECT + INSERT, no UPDATE or DELETE for anyone; `job` is the
+  exact §65 name, `tenant_id` NULL for a cluster-level job).
+- A failed run resets the gauge to absent, never to 0 (§41.2): a 0 would silence `authority_i4_violations > 0` while the
+  scan is broken; the failure shows on `maintenance_task_runs_total{task="authority_i4",outcome="failed"}`.
+
+Red records (§80.1; each a throwaway branch cut from `c0aeb2cb` with one mutation, dispatched through
+`targeted.yml`, then deleted; the green is the card's PR CI). Line numbers are those of `c0aeb2cb`.
+
+| gate | injection | run | fails at |
+|---|---|---|---|
+| G-M21-2 | `red/m21-2-r1` (`dc526418`): the definer's `SELECT (SELECT count(*) FROM v),` becomes `SELECT 0::bigint,` (a hard-coded 0) | 40503024799 (`-p humaux-maintenance --test i4_scan`, as root) | `bins/maintenance/tests/i4_scan.rs:192` in `a_violating_row_is_counted_sampled_and_left_unchanged`, `left: 0.0, right: 1.0`; the compliant-database and grant tests stay green |
+| G-M21-3 | `red/m21-2-r2` (`2f61e420`): `scan_authority_i4` also runs `UPDATE private.memory_records SET superseded_by = NULL WHERE status = 'active' AND superseded_by IS NOT NULL` | 40503487507 (`-p xtask g_m21_3_real_repo_passes`) | `xtask/src/architecture_check.rs:18859`, `Fail(["... `fn scan_authority_i4(` holds 1 write(s) against private.*; the scan is report-only (expected 0)"])` |
+| alert | `red/m21-2-r3` (`fadeb972`): `authority_i4_violations > 0` becomes `> 1` | 40503999626 (`prom_rules=true`) | promtool case `alertname: AuthorityI4Violation, time: 8m` (`deploy/prometheus/tests/alerts.test.yml:440`), expected the critical alert, got none |
+
+The same alert token is the `mutations.sh` row `i4_gt0`; the unmutated tree records it red (run 40501327275:
+`mutation=i4_gt0 red`, `red=50/50`).
