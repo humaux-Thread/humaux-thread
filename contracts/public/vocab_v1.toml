@@ -1,0 +1,83 @@
+# changed by PR only; concept ids never change; labels/definitions are editable, removals need a migration; DEPRECATED needs replaced_by
+# ADR-0090 D-B: phase-1 only; domain/task/project_type/industry intentionally empty.
+relations = []
+
+[[concepts]]
+concept_id = "knowledge-fix"
+facet = "knowledge_type"
+status = "ACTIVE"
+definition = "Reproduction, expected versus actual, root cause, change, regression check, rollback and failure conditions."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "FIX"
+
+[[concepts]]
+concept_id = "knowledge-decision"
+facet = "knowledge_type"
+status = "ACTIVE"
+definition = "Goal, at least two candidates, constraints, trade-offs, rejected alternatives and redecision triggers."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "DECISION"
+
+[[concepts]]
+concept_id = "knowledge-research"
+facet = "knowledge_type"
+status = "ACTIVE"
+definition = "Per-claim source, version and locator, fact or inference, applicability and limits."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "RESEARCH"
+
+[[concepts]]
+concept_id = "knowledge-usage"
+facet = "knowledge_type"
+status = "ACTIVE"
+definition = "Environment, input, steps, expected output, verification state, errors and inapplicable cases."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "USAGE"
+
+[[concepts]]
+concept_id = "knowledge-checklist"
+facet = "knowledge_type"
+status = "ACTIVE"
+definition = "Preconditions, steps, checkpoints, completion criteria, exception branches and rollback."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "CHECKLIST"
+
+[[concepts]]
+concept_id = "knowledge-failure-case"
+facet = "knowledge_type"
+status = "ACTIVE"
+definition = "Hypothesis, attempt, environment, observation, excluded causes and unknowns."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "FAILURE_CASE"
+
+[[concepts]]
+concept_id = "en"
+facet = "content_language"
+status = "ACTIVE"
+definition = "English-language content."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "English"
+
+[[concepts]]
+concept_id = "zh"
+facet = "content_language"
+status = "ACTIVE"
+definition = "Chinese-language content."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "Chinese"

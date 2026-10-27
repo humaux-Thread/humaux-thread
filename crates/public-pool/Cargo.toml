@@ -36,6 +36,9 @@ hex = "0.4"
 # why: id minting/binding; used-by: [public-pool::public_evolve, public-pool::public_projection, public-pool::public_provenance, tests]
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
 
+# why: parse PR-controlled public vocabulary; used-by: [public-pool::vocab::model]
+toml = "1"
+
 [dev-dependencies]
 # why: contribute::prepare/finalize drive the fixtures that feed admission; used-by: [tests]
 humaux-application = { path = "../application" }
