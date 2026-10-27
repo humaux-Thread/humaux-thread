@@ -1,0 +1,48 @@
+# §46.1 / ADR-0092 D-B, D-C: additive closed token vocabulary, the gateway-only owner accept door, and one revoke-only owner arm on memory_records WITH CHECK.
+migration_id = "0278_deletion_accept"
+class = "EXPAND_CONTRACT"
+# §46.1: plan the cross-tenant count only after row_security=off, as in 0272; non-bypass migrators fail closed.
+precheck = """
+with invalid_operations as materialized (
+ select case when (select set_config('row_security', 'off', true)) = 'off' then
+  (xpath('/row/n/text()', query_to_xml(
+   'select count(*) as n from control.confirm_tokens where operation not in (
+     ''memory.supersede'',''memory.pin'',''memory.unpin'',''memory.restore'',''memory.archive'',
+     ''memory.unarchive'',''memory.correct'',''memory.confirm'',''memory.reject'',''memory.bind'',''memory.unbind'',
+     ''memory.note_put'',''memory.forget'',''account.delete'')', false, true, '')))[1]::text::bigint
+  else null end as n
+)
+select case when n <> 0 then
+ ('0278: control.confirm_tokens has ' || n || ' rows outside the operation closed set, refusing migration')::boolean
+ else n = 0 and to_regclass('control.deletion_targets') is not null
+  and to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)') is null
+  and exists (select 1 from pg_policies where schemaname = 'private' and tablename = 'memory_records'
+               and policyname = 'memory_records_tenant_and_visibility' and strpos(with_check, 'role_migration_owner') = 0)
+ end as precheck_ok from invalid_operations
+"""
+postcheck = """
+select (select count(*) = 1 from pg_proc p
+         where p.oid = to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)')
+           and p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+           and p.proconfig = array['search_path=pg_catalog, pg_temp'])
+ and has_function_privilege('role_gateway', 'control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)', 'EXECUTE')
+ and not exists (select 1 from pg_proc p
+                  cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                 where p.oid = to_regprocedure('control.deletion_request_accept(uuid,bytea,text,bytea,uuid,uuid)')
+                   and a.grantee <> p.proowner and (a.grantee = 0 or pg_get_userbyid(a.grantee) <> 'role_gateway'))
+ and (select count(*) = 1 from pg_constraint
+       where conrelid = to_regclass('control.confirm_tokens') and conname = 'confirm_tokens_operation_closed_set'
+         and pg_get_constraintdef(oid) like '%memory.forget%' and pg_get_constraintdef(oid) like '%account.delete%')
+ and (select count(*) = 1 from pg_proc p
+       where p.oid = to_regprocedure('projection.stream_log_guard_state_transition()')
+         and not p.prosecdef and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and strpos(p.prosrc, 'current_user = ''role_migration_owner'' AND NEW.state = ''TOMBSTONED'' AND OLD.state <> ''TOMBSTONED''') > 0)
+ and exists (select 1 from pg_policies where schemaname = 'private' and tablename = 'memory_records'
+               and policyname = 'memory_records_tenant_and_visibility'
+               and strpos(with_check, 'role_migration_owner') > 0 and strpos(with_check, 'revoked') > 0
+               and strpos(with_check, 'role_private_worker') > 0 and strpos(qual, 'role_migration_owner') > 0
+               and strpos(with_check, 'NULLIF(current_setting(''humaux.tenant_id''') > 0 and strpos(with_check, '(current_setting(''humaux.tenant_id''::text, true))::uuid') = 0)
+ as postcheck_ok
+"""
+rollback_or_forward_fix = "forward-fix only: restore 0167's state guard, revoke and drop the accept door only after disabling its callers; never undo an accepted logical deletion."
+backup_restore_requirement = "standard migration backup; no existing knowledge is updated by this migration, accepted deletions are not reversible (ADR-0092)."

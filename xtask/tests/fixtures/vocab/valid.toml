@@ -1,0 +1,20 @@
+[[concepts]]
+concept_id = "alpha"
+facet = "task"
+status = "ACTIVE"
+definition = "Fixture alpha."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "alpha"
+
+[[concepts]]
+concept_id = "beta"
+facet = "task"
+status = "ACTIVE"
+definition = "Fixture beta."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "beta"
+

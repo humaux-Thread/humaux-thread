@@ -10,6 +10,7 @@
 //! `humaux-adapters`. The reverse seam is `humaux_adapters::mechanism_observation::PublicClaimEvaluator`, implemented
 //! here by [`public_repo::PublicRepoEvaluator`].
 
+pub mod admission;
 pub mod completeness;
 pub mod notice;
 pub mod policy;
@@ -17,3 +18,6 @@ pub mod public_evolve;
 pub mod public_projection;
 pub mod public_provenance;
 pub mod public_repo;
+
+/// Controlled public vocabulary and its only write door (ADR-0089 D-E).
+pub mod vocab;

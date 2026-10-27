@@ -1000,6 +1000,18 @@ processes:
 modules:
 - `xtask::dep_map`
 
+### `HUMAUX_COORD_PROJECT_MAX_DEPTH`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+
+modules:
+- `adapters::coord_tree_repo`
+
 ### `HUMAUX_DRILL_CPUS`
 - witness: literal
 - registry: raw
@@ -1208,6 +1220,71 @@ modules:
 - `maintenance::deploy_check`
 
 ### `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
 - witness: literal
 - registry: gateway
 
@@ -1475,6 +1552,19 @@ modules:
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::singleton`
 
+### `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_EMBEDDING_DIMENSION`
 - witness: literal
 - registry: gateway
@@ -1653,6 +1743,38 @@ processes:
 modules:
 - `xtask::dep_map`
 
+### `HUMAUX_GATEWAY_LOGIN_CODE_PEPPER`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
+
+### `HUMAUX_GATEWAY_LOGIN_MAIL_FROM`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
+
 ### `HUMAUX_GATEWAY_MAX_FORWARDED_HOPS`
 - witness: literal
 - registry: gateway
@@ -1748,6 +1870,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `adapters::tests::code_rls`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::provider_budget`
@@ -1883,6 +2006,22 @@ modules:
 - `maintenance::tests::serve`
 - `maintenance::tests::support::throwaway`
 - `xtask::e2e_onboard`
+
+### `HUMAUX_GATEWAY_PUBLIC_BASE_URL`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(cargo-xtask)
+- process(humaux-gateway)
+- process(humaux-maintenance)
+
+modules:
+- `gateway::bootstrap`
+- `maintenance::deploy_check`
 
 ### `HUMAUX_GATEWAY_QDRANT_CIDR`
 - witness: literal
@@ -5831,6 +5970,7 @@ modules:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -5844,6 +5984,7 @@ modules:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
@@ -5853,8 +5994,10 @@ modules:
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
+- `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
+- `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
@@ -5887,6 +6030,7 @@ modules:
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
@@ -5913,6 +6057,7 @@ modules:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::task_grant_contract`
 - `adapters::tests::tenant_placements_migration`
@@ -5921,6 +6066,7 @@ modules:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
+- `gateway::tests::auth_pages`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
@@ -5949,6 +6095,7 @@ modules:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
+- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`
