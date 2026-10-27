@@ -298,6 +298,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::confirm_token_repo`
@@ -659,6 +660,7 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -5350,6 +5352,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -6994,6 +6997,7 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -9205,6 +9209,100 @@ written by:
 
 executed by:
 
+### `private.curation_candidate_targets`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0277_curation_candidates
+
+grants (runtime roles):
+- role_gateway: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::candidate_repo`
+- (no process): `adapters::tests::candidates`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `private.curation_candidates`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0277_curation_candidates
+
+grants (runtime roles):
+- role_gateway: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::candidate_repo`
+- (no process): `adapters::tests::candidates`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `private.curation_transition_allowed`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0277_curation_candidates
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::candidates`
+
+### `private.decide_curation_candidate`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0277_curation_candidates
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::candidate_repo`
+
 ### `private.decide_memory_applicability`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -10663,6 +10761,7 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -10769,6 +10868,7 @@ read by:
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -11361,6 +11461,24 @@ read by:
 written by:
 
 executed by:
+
+### `private.propose_curation_candidate`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0277_curation_candidates
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::candidate_repo`
 
 ### `private.propose_memory_applicability`
 - kind: function (SECURITY DEFINER)
