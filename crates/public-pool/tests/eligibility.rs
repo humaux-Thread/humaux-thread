@@ -246,9 +246,9 @@ impl Handle {
                    INSERT INTO private.memory_records \
                      (memory_id, tenant_id, memory_type, content, visibility_class, authority_class, confidence, \
                       status, asserted_at, archived_at, note_kind, note_id) \
-                   VALUES ($1, $2, $3, jsonb_build_object('title', 'fixture'), 'TENANT_SHARED', 'PrivateKnowledge', \
+                   VALUES ($1::uuid, $2, $3, jsonb_build_object('title', 'fixture'), 'TENANT_SHARED', 'PrivateKnowledge', \
                            0.9, $4, now(), CASE WHEN $5 THEN now() END, $6::text, \
-                           CASE WHEN $6::text IS NULL THEN NULL ELSE $1 END) \
+                           CASE WHEN $6::text IS NULL THEN NULL ELSE $1::uuid END) \
                    RETURNING memory_id), \
                  l AS ( \
                    INSERT INTO private.memory_evidence (memory_id, evidence_id, role, ordinal) \
