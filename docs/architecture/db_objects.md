@@ -208,6 +208,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 
@@ -1410,6 +1411,7 @@ written by:
 - (no process): `adapters::tests::quota_and_rate`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::serve`
 
 executed by:
