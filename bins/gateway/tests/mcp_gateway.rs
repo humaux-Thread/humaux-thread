@@ -105,7 +105,7 @@ use humaux_domain::{
 };
 use humaux_gateway::{
     context::ContextBootstrap,
-    guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
+    guard::{GatewayGuard, GuardRatePolicies, GuardSettings, TenantNetworkPolicy},
     mcp_application::GatewayMcpApplication,
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
     remember::{ProcessFamily, RememberEventKind, RememberPolicy},
