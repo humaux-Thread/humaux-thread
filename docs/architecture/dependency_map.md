@@ -470,9 +470,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.anonymous_source_lineage`
 - reads `control.api_keys`
 - reads `control.audit_event_identity`
-- reads `control.billing_customers`
-- reads `control.billing_inbox`
-- reads `control.billing_payments`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.contribution_notice_events`
@@ -508,8 +505,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.recovery_codes`
 - reads `control.retention_policies`
 - reads `control.sessions`
-- reads `control.subscription_events`
-- reads `control.subscriptions`
 - reads `control.team_invitations`
 - reads `control.usage_reservations`
 - reads `control.workspace_memberships`
@@ -598,7 +593,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
 - reads `private.note_heads`
-- reads `private.project_channels`
+- reads `private.project_facets`
 - reads `private.project_subject_relations`
 - reads `private.project_task_relations`
 - reads `private.read_continuity_project_storage_v1`
@@ -3216,9 +3211,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.anonymous_source_lineage`
 - reads `control.api_keys`
 - reads `control.audit_event_identity`
-- reads `control.billing_customers`
-- reads `control.billing_inbox`
-- reads `control.billing_payments`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.contribution_notice_events`
@@ -3254,8 +3246,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.recovery_codes`
 - reads `control.retention_policies`
 - reads `control.sessions`
-- reads `control.subscription_events`
-- reads `control.subscriptions`
 - reads `control.team_invitations`
 - reads `control.usage_reservations`
 - reads `control.workspace_memberships`
@@ -3344,7 +3334,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
 - reads `private.note_heads`
-- reads `private.project_channels`
+- reads `private.project_facets`
 - reads `private.project_subject_relations`
 - reads `private.project_task_relations`
 - reads `private.read_continuity_project_storage_v1`
@@ -5114,6 +5104,7 @@ read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::request_guard`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -5146,40 +5137,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
-
-executed by:
-
-### `control.billing_customers`
-read by:
-- (no process): `adapters::tests::billing_repo`
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `control.billing_inbox`
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::billing_repo`
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
-
-### `control.billing_payments`
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::billing_repo`
 
 executed by:
 
@@ -6008,7 +5965,6 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
-- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
@@ -6019,7 +5975,6 @@ read by:
 - (no process): `adapters::tests::entitlement_projector`
 
 written by:
-- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
@@ -6708,28 +6663,6 @@ executed by:
 - process(cargo-xtask): `adapters::provisioning`
 - process(humaux-maintenance): `adapters::provisioning`
 
-### `control.subscription_events`
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
-
-### `control.subscriptions`
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
-
 ### `control.sweep_confirm_tokens`
 read by:
 
@@ -6774,13 +6707,13 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
@@ -6840,6 +6773,7 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `adapters::tests::visible_index_count`
@@ -7062,6 +6996,7 @@ written by:
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -7079,6 +7014,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -8805,18 +8741,22 @@ executed by:
 ### `private.continuity_projects`
 read by:
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -10224,14 +10164,35 @@ written by:
 
 executed by:
 
-### `private.project_channels`
+### `private.project_ancestors`
 read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::coord_rls`
+- (no process): `adapters::tests::project_tree`
+
+### `private.project_facets`
+read by:
+- (no process): `adapters::tests::project_tree`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
 executed by:
+
+### `private.project_move`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::project_tree`
+- (no process): `adapters::tests::support::project_tree_fixture`
 
 ### `private.project_subject_relations`
 read by:
@@ -10245,6 +10206,16 @@ written by:
 - (no process): `adapters::tests::project_rollup`
 
 executed by:
+
+### `private.project_subtree`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::coord_rls`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.project_task_relations`
 read by:
@@ -10323,6 +10294,7 @@ written by:
 
 executed by:
 - (no process): `adapters::project_rollup`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.register_continuity_project`
 read by:
@@ -10470,6 +10442,7 @@ written by:
 
 executed by:
 - (no process): `adapters::project_rollup`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.settle_contribution_job_if_live`
 read by:
@@ -12119,8 +12092,8 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
-- `adapters::tests::billing_repo`
 - `adapters::tests::continuity_publish`
+- `adapters::tests::coord_rls`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -12139,6 +12112,7 @@ executed by:
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_lag`
 - `adapters::tests::provider_budget`
 - `adapters::tests::reasoning_route_foundation`
@@ -12163,6 +12137,7 @@ executed by:
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::task_grant_contract`
@@ -12237,7 +12212,7 @@ executed by:
 - `gateway::tests::mcp_gateway`
 
 ### `PostgreSQL(role_gateway)`
-- `adapters::billing_repo`
+- `adapters::coord_tree_repo`
 - `adapters::grep_repo`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
@@ -12256,10 +12231,10 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
+- `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -12293,6 +12268,7 @@ executed by:
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
@@ -12310,6 +12286,7 @@ executed by:
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
 - `gateway::bootstrap`
 - `gateway::mcp_application`
@@ -12736,7 +12713,6 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
-- `adapters::billing_repo`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
@@ -12750,6 +12726,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_repo`
 - `adapters::coord_repo`
+- `adapters::coord_tree_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -12839,6 +12816,7 @@ modules naming it:
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -12875,7 +12853,6 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
-- `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -12891,6 +12868,7 @@ modules naming it:
 - `adapters::contribution_repo`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
+- `adapters::coord_tree_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -12939,7 +12917,6 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::console_session`
@@ -12993,6 +12970,7 @@ modules naming it:
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13027,6 +13005,7 @@ modules naming it:
 why: shared contract types for the mechanism-observation adapter
 
 modules naming it:
+- `adapters::coord_tree_repo`
 - `adapters::mechanism_observation`
 - `adapters::qdrant`
 - `adapters::tests::continuity_publish`
@@ -13257,7 +13236,6 @@ why: jsonb column binding
 modules naming it:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
-- `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -13298,7 +13276,6 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
@@ -13336,6 +13313,7 @@ modules naming it:
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::qdrant_contract`
@@ -13467,6 +13445,7 @@ modules naming it:
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
+- `adapters::coord_tree_repo`
 - `adapters::distill_reasoner`
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
@@ -13482,7 +13461,6 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
@@ -13496,6 +13474,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::coord_rls`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
@@ -13519,6 +13498,7 @@ modules naming it:
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::reasoning_route_foundation`
@@ -13532,6 +13512,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::private_route`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
 - `tests`
 
@@ -13564,7 +13545,6 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
@@ -13620,6 +13600,7 @@ modules naming it:
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13683,7 +13664,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
@@ -13698,6 +13678,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
@@ -13746,6 +13727,7 @@ modules naming it:
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13775,6 +13757,7 @@ modules naming it:
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::support::truncate_probe`
 - `adapters::tests::task_grant_contract`
@@ -13788,6 +13771,7 @@ why: migration manifest postcheck in tests
 modules naming it:
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_policy_lifecycle_0132`
+- `adapters::tests::project_tree`
 - `tests`
 
 ### humaux-adapters → `uuid` (dev)
@@ -13803,6 +13787,7 @@ modules naming it:
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
+- `adapters::coord_tree_repo`
 - `adapters::distill_reasoner`
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
@@ -13818,7 +13803,6 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
-- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
@@ -13832,6 +13816,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_scan`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::coord_rls`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_completeness_eval`
@@ -13855,6 +13840,7 @@ modules naming it:
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::qdrant_contract`
 - `adapters::tests::qdrant_live`
 - `adapters::tests::reasoning_route_foundation`
@@ -13868,6 +13854,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::private_route`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
 - `tests`
 
@@ -13883,7 +13870,6 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
@@ -13989,7 +13975,6 @@ modules naming it:
 - `adapters::byok`
 - `adapters::postgres`
 - `adapters::stream_repo`
-- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
@@ -14030,6 +14015,7 @@ modules naming it:
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -14064,7 +14050,6 @@ modules naming it:
 - `application::affect`
 - `application::archive`
 - `application::auth`
-- `application::billing`
 - `application::confirm`
 - `application::consolidate`
 - `application::continuity`
@@ -14169,7 +14154,6 @@ modules naming it:
 why: object-safe async ports (PrivateReasoningPort et al.)
 
 modules naming it:
-- `application::billing`
 - `application::consolidate`
 - `application::continuity`
 - `application::contribute`
@@ -14181,7 +14165,6 @@ why: entity ids threaded through every use case
 
 modules naming it:
 - `application::affect`
-- `application::billing`
 - `application::confirm`
 - `application::consolidate`
 - `application::continuity`
@@ -14205,7 +14188,6 @@ modules naming it:
 why: OffsetDateTime expiry/ceiling arithmetic of grants
 
 modules naming it:
-- `application::billing`
 - `application::oauth`
 
 ### humaux-application → `tokio` (dev)
@@ -14324,7 +14306,6 @@ why: typed UTC instant for Authority.asserted_at
 
 modules naming it:
 - `domain::authority`
-- `domain::billing`
 - `tests`
 
 ### humaux-domain → `trybuild` (dev)
@@ -17476,15 +17457,6 @@ services (computed):
 default run:
 - PostgreSQL
 
-### `crates/adapters/tests/billing_repo.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
 ### `crates/adapters/tests/byok_egress_rebinding.rs`
 db-bound (default run): no
 
@@ -17632,6 +17604,15 @@ services (computed):
 - PostgreSQL
 
 default run:
+
+### `crates/adapters/tests/coord_rls.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `crates/adapters/tests/coord_task_run.rs`
 db-bound (default run): yes
@@ -18124,6 +18105,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/project_rollup.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/project_tree.rs`
 db-bound (default run): yes
 
 services (computed):
