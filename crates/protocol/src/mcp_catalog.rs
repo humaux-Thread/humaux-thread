@@ -1,17 +1,22 @@
 //! `protocol::mcp_catalog` — Canonical MCP tool schema and operation registry (§33.1 / §33.10).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests, xtask::architecture_check]
-//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33)]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_profile, tests, xtask::architecture_check]
+//! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1)]
 //! Spec: §33; §33.1; §33.10
 //!
 //! The embedded schemas own enforced scopes; registry.scope must equal branch.required_scope (§33).
 //! The embedded `contracts/mcp` documents own operation and BMO metadata. This adapter turns
 //! their validated JSON into protocol types; it never authenticates, checks entitlement, or logs args.
+//! `Operation::input_branch` and `Operation::tool_name` are the read-only accessors `protocol::mcp_profile`
+//! uses to derive the flat tool profile (M26 D3); they add no second source for any schema.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use humaux_domain::{confirm::DestructiveOp, error::ErrorCode};
+use humaux_domain::{
+    confirm::{ConfirmWire, DestructiveOp},
+    error::ErrorCode,
+};
 use jsonschema::Validator;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -92,6 +97,32 @@ pub struct Operation {
     pub budget_bytes: u64,
     /// Emergency relay eligibility owned by M04 (§33).
     pub relay_critical: bool,
+}
+
+impl Operation {
+    /// The wire tool this operation belongs to (§33.1).
+    pub fn tool_name(&self) -> Result<ToolName, ErrorCode> {
+        parse_tool(&self.tool).ok_or(ErrorCode::InvalidInput)
+    }
+
+    /// Resolves [`Self::input_schema`] (`<file>#/oneOf/<n>`) to its branch index and JSON. Registry load
+    /// already proved the pointer shape and that the index equals the manifest position (§33.1; M26 D2).
+    pub fn input_branch(&self) -> Result<(usize, Value), ErrorCode> {
+        let (file, pointer) = self
+            .input_schema
+            .split_once('#')
+            .ok_or(ErrorCode::InvalidInput)?;
+        let index = pointer
+            .strip_prefix("/oneOf/")
+            .and_then(|index| index.parse::<usize>().ok())
+            .ok_or(ErrorCode::InvalidInput)?;
+        let document = json_document(schema_source(file).ok_or(ErrorCode::InvalidInput)?)?;
+        let branch = document
+            .pointer(pointer)
+            .cloned()
+            .ok_or(ErrorCode::InvalidInput)?;
+        Ok((index, branch))
+    }
 }
 
 /// The accounting meaning selected by a fully validated canonical operation.
@@ -375,14 +406,18 @@ fn registry_from_manifest(manifest: &Manifest) -> Result<BTreeMap<String, Operat
             return Err(ErrorCode::InvalidInput);
         }
     }
-    if !expected.is_empty()
-        || DestructiveOp::ALL
-            .iter()
-            .any(|op| !registry.contains_key(op.operation_key()))
-    {
+    if !expected.is_empty() || !confirm_wire_holds(&registry) {
         return Err(ErrorCode::InvalidInput);
     }
     Ok(registry)
+}
+
+/// G-M26-1 / ADR-0092 C-M19-1, both directions: every `DestructiveOp` whose `wire()` is `Mcp` is a registry row
+/// (its `destructive` effect is the per-row `destructive_count` check above), and no `McpPending` / `Rest` op is.
+fn confirm_wire_holds(registry: &BTreeMap<String, Operation>) -> bool {
+    DestructiveOp::ALL
+        .iter()
+        .all(|op| registry.contains_key(op.operation_key()) == (op.wire() == ConfirmWire::Mcp))
 }
 
 /// Convenience bootstrap entry point for callers that only publish tools.
@@ -442,7 +477,8 @@ fn object_schema(schema: Value) -> Result<Map<String, Value>, ErrorCode> {
     schema.as_object().cloned().ok_or(ErrorCode::InvalidInput)
 }
 
-fn validator_for(schema: &Value) -> Result<Validator, ErrorCode> {
+/// The one compile path for registry schemas, shared with `protocol::mcp_profile` (formats are enforced).
+pub(crate) fn validator_for(schema: &Value) -> Result<Validator, ErrorCode> {
     jsonschema::draft202012::options()
         .should_validate_formats(true)
         .build(schema)
@@ -723,11 +759,16 @@ mod tests {
     #[test]
     fn registry_destructive_effect_equals_confirm_gate_set() {
         let catalog = CanonicalCatalog::load().unwrap();
-        let expected: BTreeSet<_> = DestructiveOp::ALL
+        let keys: BTreeSet<_> = DestructiveOp::ALL
             .iter()
             .map(|op| op.operation_key())
             .collect();
-        assert_eq!(expected.len(), DestructiveOp::ALL.len());
+        assert_eq!(keys.len(), DestructiveOp::ALL.len());
+        let expected: BTreeSet<_> = DestructiveOp::ALL
+            .iter()
+            .filter(|op| op.wire() == ConfirmWire::Mcp)
+            .map(|op| op.operation_key())
+            .collect();
         let actual: BTreeSet<_> = catalog
             .operations()
             .values()
@@ -744,6 +785,27 @@ mod tests {
             .unwrap();
         entry["effect"] = json!("write");
         assert_invalid_registry(&fixture);
+    }
+
+    #[test]
+    fn registry_carries_exactly_the_mcp_wire_confirm_ops() {
+        let registry = CanonicalCatalog::load().unwrap().operations().clone();
+        assert!(confirm_wire_holds(&registry));
+        let template = registry["memory.archive"].clone();
+        for key in ["memory.forget", "account.delete"] {
+            let mut widened = registry.clone();
+            widened.insert(
+                key.to_string(),
+                Operation {
+                    op: key.to_string(),
+                    ..template.clone()
+                },
+            );
+            assert!(!confirm_wire_holds(&widened), "{key} must stay out");
+        }
+        let mut omitted = registry;
+        omitted.remove("memory.archive");
+        assert!(!confirm_wire_holds(&omitted));
     }
 
     fn assert_invalid_registry(fixture: &Value) {
