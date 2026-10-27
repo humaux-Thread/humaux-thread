@@ -5974,6 +5974,7 @@ modules:
 - `private-worker::tests::m29_attribution_e2e`
 - `private-worker::tests::start_manual_contribution_command_0131`
 - `private-worker::tests::support::double_spend`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
@@ -5982,7 +5983,6 @@ modules:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `retrieval-provider::tests::dashscope_live_smoke`
 - `retrieval-provider::tests::router_rls_integration`

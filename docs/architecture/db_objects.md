@@ -13555,102 +13555,6 @@ written by:
 
 executed by:
 
-### `public.concept_labels`
-- kind: table
-- owner: role_migration_owner
-- RLS: no
-- FORCE: no
-- created in: 0276_public_vocabulary
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-- role_public_worker: INSERT
-- role_public_worker: SELECT
-- role_public_worker: UPDATE
-
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
-### `public.concept_relations`
-- kind: table
-- owner: role_migration_owner
-- RLS: no
-- FORCE: no
-- created in: 0276_public_vocabulary
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-- role_public_worker: INSERT
-- role_public_worker: SELECT
-- role_public_worker: UPDATE
-
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
-### `public.concepts`
-- kind: table
-- owner: role_migration_owner
-- RLS: no
-- FORCE: no
-- created in: 0276_public_vocabulary
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-- role_public_worker: INSERT
-- role_public_worker: SELECT
-- role_public_worker: UPDATE
-
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
 ### `public.current_anonymous_source_objects`
 - kind: view
 - owner: role_migration_owner
@@ -14356,9 +14260,11 @@ grants (runtime roles):
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
+- (no process): `public-pool::tests::completeness`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
+- (no process): `public-pool::tests::completeness`
 - (no process): `public-pool::tests::public_provenance`
 - process(humaux-public-worker): `public-pool::public_repo`
 
@@ -14424,6 +14330,96 @@ grants (runtime roles):
 read by:
 
 written by:
+
+executed by:
+
+### `public.unit_conditions`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0275_public_units
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_public_worker: INSERT
+- role_public_worker: SELECT
+- role_public_worker: UPDATE
+
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
+
+executed by:
+
+### `public.unit_fields`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0275_public_units
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_public_worker: INSERT
+- role_public_worker: SELECT
+- role_public_worker: UPDATE
+
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
+
+executed by:
+
+### `public.units`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0275_public_units
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+- role_public_worker: INSERT
+- role_public_worker: SELECT
+- role_public_worker: UPDATE
+
+read by:
+- (no process): `public-pool::tests::completeness`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `public-pool::tests::completeness`
 
 executed by:
 

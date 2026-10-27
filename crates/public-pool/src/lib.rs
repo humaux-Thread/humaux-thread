@@ -10,6 +10,7 @@
 //! `humaux-adapters`. The reverse seam is `humaux_adapters::mechanism_observation::PublicClaimEvaluator`, implemented
 //! here by [`public_repo::PublicRepoEvaluator`].
 
+pub mod completeness;
 pub mod notice;
 pub mod policy;
 pub mod public_evolve;
