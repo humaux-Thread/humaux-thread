@@ -684,8 +684,11 @@ fn cards(c: &[char]) -> Vec<Span> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < c.len() {
-        let starts_run = c[i].is_ascii_digit() && !(i > 0 && c[i - 1].is_ascii_digit());
-        if starts_run && let Some(span) = card_at(c, i) {
+        let digit_before = i > 0 && c[i - 1].is_ascii_digit();
+        if c[i].is_ascii_digit()
+            && !digit_before
+            && let Some(span) = card_at(c, i)
+        {
             out.push(span);
             i = span.0 + span.1;
         } else {
@@ -717,14 +720,8 @@ fn luhn(digits: &[u32]) -> bool {
     let mut sum: u32 = 0;
     let mut double = false;
     for d in digits.iter().rev() {
-        let mut v = *d;
-        if double {
-            v *= 2;
-            if v > 9 {
-                v -= 9;
-            }
-        }
-        sum += v;
+        let v = if double { *d * 2 } else { *d };
+        sum += v / 10 + v % 10;
         double = !double;
     }
     sum.is_multiple_of(10)
@@ -1516,8 +1513,11 @@ fn ages(c: &[char]) -> Vec<Span> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < lower.len() {
-        let starts_run = lower[i].is_ascii_digit() && !(i > 0 && lower[i - 1].is_ascii_digit());
-        if starts_run && let Some(len) = age_at(&lower, i) {
+        let digit_before = i > 0 && lower[i - 1].is_ascii_digit();
+        if lower[i].is_ascii_digit()
+            && !digit_before
+            && let Some(len) = age_at(&lower, i)
+        {
             out.push((i, len));
             i += len;
         } else {
