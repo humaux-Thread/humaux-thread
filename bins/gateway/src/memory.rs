@@ -820,6 +820,8 @@ pub(crate) async fn write_binding(
         | DestructiveOp::MemoryCorrect
         | DestructiveOp::MemoryConfirm
         | DestructiveOp::MemoryReject
+        | DestructiveOp::MemoryForget
+        | DestructiveOp::AccountDelete
         | DestructiveOp::MemoryNoteReplace => Err(ErrorCode::InvalidInput),
     }
 }
