@@ -539,6 +539,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.public_release_revocations`
 - reads `ops.reasoning_account_health_observations`
 - reads `ops.reasoning_provider_health_observations`
+- reads `ops.repair_findings`
 - reads `ops.restore_drills`
 - reads `ops.restore_witnesses`
 - reads `ops.retrieval_embedding_rpc_calls`
@@ -714,6 +715,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.distill_slots_all_bound`
 - executes `ops.finish_derived_work_v2`
 - executes `ops.health_snapshot`
+- executes `ops.i4_authority_scan`
 - executes `ops.model_call_identity_claim`
 - executes `ops.purge_expired_selection_snapshots`
 - executes `ops.purge_terminal_jobs`
@@ -879,6 +881,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `projection.stream_log`
 - executes `control.deletion_request_freeze`
 - executes `control.resolve_user_reasoning_admission`
+- executes `ops.i4_authority_scan`
 - executes `ops.reasoning_health_observation_reject_mutation`
 - executes `ops.reasoning_model_call_validate`
 - executes `private.memory_in_project`
@@ -2692,6 +2695,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.partition_registry`
 - writes `ops.backup_receipts`
 - writes `ops.backup_sets`
+- writes `ops.repair_findings`
 - writes `ops.restore_drills`
 - writes `ops.restore_witnesses`
 - writes `ops.wal_archive_failures`
@@ -2702,6 +2706,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_statements`
 - executes `control.retention_policy_approve`
 - executes `ops.auto_redrive_schema_failed`
+- executes `ops.i4_authority_scan`
 - executes `ops.purge_expired_selection_snapshots`
 - executes `ops.purge_terminal_jobs`
 - executes `projection.reissue_unsettled_tickets`
@@ -3280,6 +3285,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.public_release_revocations`
 - reads `ops.reasoning_account_health_observations`
 - reads `ops.reasoning_provider_health_observations`
+- reads `ops.repair_findings`
 - reads `ops.restore_drills`
 - reads `ops.restore_witnesses`
 - reads `ops.retrieval_embedding_rpc_calls`
@@ -3455,6 +3461,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.distill_slots_all_bound`
 - executes `ops.finish_derived_work_v2`
 - executes `ops.health_snapshot`
+- executes `ops.i4_authority_scan`
 - executes `ops.model_call_identity_claim`
 - executes `ops.purge_expired_selection_snapshots`
 - executes `ops.purge_terminal_jobs`
@@ -3538,6 +3545,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`
 - env `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`
 - env `HUMAUX_MAINTENANCE_PG_DSN`
+- env `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT`
@@ -6785,6 +6793,7 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::rebuild_cli`
 - (no process): `maintenance::tests::retention`
@@ -7695,6 +7704,18 @@ executed by:
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `ops.i4_authority_scan`
+read by:
+
+written by:
+
+executed by:
+- (no process): `maintenance::tests::i4_scan`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `ops.jobs`
 read by:
 - (no process): `adapters::tests::contribution_execution_ingress_0131`
@@ -8266,6 +8287,18 @@ executed by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::jobs`
+
+### `ops.repair_findings`
+read by:
+- (no process): `maintenance::tests::i4_scan`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `maintenance::tests::i4_scan`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+
+executed by:
 
 ### `ops.requeue_dead_distill`
 read by:
@@ -9775,6 +9808,7 @@ read by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -9918,6 +9952,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
@@ -12157,6 +12192,7 @@ executed by:
 - `maintenance::tests::backup`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partition_pg_facts`
@@ -12303,6 +12339,7 @@ executed by:
 - `maintenance::drill`
 - `maintenance::migrate`
 - `maintenance::rls_check`
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partitions`
 - `private-worker::tests::distill_hop_e2e`
@@ -12364,6 +12401,7 @@ executed by:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partition_pg_facts`
@@ -12636,6 +12674,7 @@ executed by:
 - `maintenance::tests::drill`
 - `maintenance::tests::exit_codes`
 - `maintenance::tests::health_serve`
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::partitions`
@@ -17114,6 +17153,17 @@ default run:
 - subprocess
 
 ### `bins/maintenance/tests/health_serve.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+- subprocess
+
+default run:
+- PostgreSQL
+- subprocess
+
+### `bins/maintenance/tests/i4_scan.rs`
 db-bound (default run): yes
 
 services (computed):
