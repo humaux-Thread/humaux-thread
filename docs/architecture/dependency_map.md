@@ -564,6 +564,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
+- reads `private.curation_candidate_targets`
+- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -626,9 +628,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
-- reads `public.concept_labels`
-- reads `public.concept_relations`
-- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -820,8 +819,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `protocol::mcp_catalog`
 
-#### `public-pool::vocab::model`
-
 #### `retrieval::candidate`
 
 #### `retrieval::compiler`
@@ -858,6 +855,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.continuity_facet_slots`
 - reads `private.continuity_facet_versions`
 - reads `private.continuity_projects`
+- reads `private.curation_candidate_targets`
+- reads `private.curation_candidates`
 - reads `private.memory_projects`
 - reads `private.memory_projects_live`
 - reads `private.nodes`
@@ -1245,9 +1244,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `xtask::threshold_shape`
 - env `CARGO_MANIFEST_DIR`
-
-#### `xtask::vocab_check`
-- service `subprocess(git)`
 
 ### process(humaux-admin)
 
@@ -3308,6 +3304,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.contribution_execution_future_probe`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
+- reads `private.curation_candidate_targets`
+- reads `private.curation_candidates`
 - reads `private.distill_candidates`
 - reads `private.event_identity`
 - reads `private.events`
@@ -3370,9 +3368,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.claim_independence_attestations`
 - reads `public.claim_trust_evaluation_sources`
 - reads `public.claim_trust_evaluations`
-- reads `public.concept_labels`
-- reads `public.concept_relations`
-- reads `public.concepts`
 - reads `public.current_anonymous_source_objects`
 - reads `public.eligible_objects`
 - reads `public.poisoning_signals`
@@ -5040,6 +5035,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::confirm_token_repo`
@@ -5187,6 +5183,7 @@ executed by:
 
 ### `control.confirm_tokens`
 read by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7162,6 +7159,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -7873,6 +7871,7 @@ executed by:
 
 ### `ops.memory_lifecycle_events`
 read by:
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8843,6 +8842,46 @@ written by:
 
 executed by:
 
+### `private.curation_candidate_targets`
+read by:
+- (no process): `adapters::candidate_repo`
+- (no process): `adapters::tests::candidates`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `private.curation_candidates`
+read by:
+- (no process): `adapters::candidate_repo`
+- (no process): `adapters::tests::candidates`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `private.curation_transition_allowed`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::candidates`
+
+### `private.decide_curation_candidate`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::candidate_repo`
+
 ### `private.decide_memory_applicability`
 read by:
 
@@ -9717,6 +9756,7 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -9823,6 +9863,7 @@ read by:
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -10152,6 +10193,14 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 
 executed by:
+
+### `private.propose_curation_candidate`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::candidate_repo`
 
 ### `private.propose_memory_applicability`
 read by:
@@ -11280,45 +11329,6 @@ written by:
 
 executed by:
 
-### `public.concept_labels`
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
-### `public.concept_relations`
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
-### `public.concepts`
-read by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
-
-executed by:
-
 ### `public.consensus_ready`
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
@@ -11858,6 +11868,7 @@ executed by:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -11978,7 +11989,6 @@ executed by:
 - `public-pool::tests::public_provenance_revocation_eval`
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
-- `public-pool::tests::vocab`
 - `retrieval-provider::adapters`
 - `testkit::disposable`
 - `testkit::fixture_purge`
@@ -12129,6 +12139,7 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12330,8 +12341,6 @@ executed by:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
-- `public-pool::tests::vocab`
-- `public-pool::vocab`
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
@@ -12491,7 +12500,6 @@ executed by:
 - `gateway::build`
 - `xtask::contract_impact`
 - `xtask::dep_map`
-- `xtask::vocab_check`
 
 ### `subprocess(gitleaks)`
 - `adapters::tests::projection_claim`
@@ -12601,6 +12609,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12738,6 +12747,7 @@ modules naming it:
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
 - `adapters::byok`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -12800,6 +12810,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13151,6 +13162,7 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_execution_0131`
@@ -13310,6 +13322,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13329,6 +13342,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13407,6 +13421,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13521,6 +13536,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13630,6 +13646,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::byok`
+- `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::continuity_read`
@@ -13649,6 +13666,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
+- `adapters::tests::candidates`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13709,6 +13727,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -14471,8 +14490,6 @@ modules naming it:
 - `public-pool::tests::public_runtime_qdrant`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
-- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-domain` (normal)
@@ -14491,8 +14508,6 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
-- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `humaux-infra-cell` (normal)
@@ -14516,7 +14531,6 @@ modules naming it:
 - `public-pool::public_repo`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
-- `public-pool::vocab`
 - `tests`
 
 ### humaux-public-pool → `async-trait` (normal)
@@ -14584,12 +14598,6 @@ modules naming it:
 - `public-pool::tests::support::public_qdrant_fixture`
 - `tests`
 
-### humaux-public-pool → `toml` (normal)
-why: parse PR-controlled public vocabulary
-
-modules naming it:
-- `public-pool::vocab::model`
-
 ### humaux-public-pool → `humaux-application` (dev)
 why: contribute::prepare/finalize drive the fixtures that feed admission
 
@@ -14613,7 +14621,6 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::support::public_qdrant_fixture`
-- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `postgres` (dev)
@@ -14628,7 +14635,6 @@ modules naming it:
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
 - `public-pool::tests::support::public_anonymous_seam`
-- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `tokio` (dev)
@@ -14639,7 +14645,6 @@ modules naming it:
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::public_runtime`
-- `public-pool::tests::vocab`
 - `tests`
 
 ### humaux-public-pool → `uuid` (dev)
@@ -17274,6 +17279,15 @@ services (computed):
 
 default run:
 
+### `crates/adapters/tests/candidates.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/confirm_token_retention.rs`
 db-bound (default run): yes
 
@@ -18366,15 +18380,6 @@ services (computed):
 - PostgreSQL
 
 default run:
-
-### `crates/public-pool/tests/vocab.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
 
 ### `crates/retrieval-provider/tests/contract_tests.rs`
 db-bound (default run): no
