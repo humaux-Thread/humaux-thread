@@ -1,5 +1,5 @@
 //! `xtask::main` — cargo xtask entry point: dispatches every gate subcommand.
-//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[CARGO_BIN_NAME, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[humaux-telemetry, xtask::architecture_check, xtask::benchset_declaration, xtask::card_version, xtask::config_check, xtask::contract_impact, xtask::dep_map, xtask::direction_table, xtask::dod_check, xtask::e2e_onboard, xtask::e2e_seed, xtask::gate_registry, xtask::gate_truth, xtask::known_red, xtask::load, xtask::load_open, xtask::mechanism_registry, xtask::member, xtask::metrics_registry, xtask::migrate, xtask::migration_rehearsal, xtask::phase, xtask::projection_serve, xtask::r4_fault_manifest, xtask::rls_check, xtask::schedule_register, xtask::serial_lane, xtask::soak, xtask::threshold_shape]
+//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[CARGO_BIN_NAME, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[humaux-telemetry, public-pool::vocab::model, xtask::architecture_check, xtask::benchset_declaration, xtask::card_version, xtask::config_check, xtask::contract_impact, xtask::dep_map, xtask::direction_table, xtask::dod_check, xtask::e2e_onboard, xtask::e2e_seed, xtask::gate_registry, xtask::gate_truth, xtask::known_red, xtask::load, xtask::load_open, xtask::mechanism_registry, xtask::member, xtask::metrics_registry, xtask::migrate, xtask::migration_rehearsal, xtask::phase, xtask::projection_serve, xtask::r4_fault_manifest, xtask::rls_check, xtask::schedule_register, xtask::serial_lane, xtask::soak, xtask::threshold_shape, xtask::vocab_check]
 //! Called-by: [process(cargo-xtask)]
 //! Invariants: [unknown subcommand exits 2 with the usage string; `--version` is the shared telemetry line (first token `xtask`); every subcommand module is registered in both mod list and dispatch match]
 //! Spec: Baseline §78; ADR-0051
@@ -38,6 +38,10 @@ mod schedule_register;
 mod serial_lane;
 mod soak;
 mod threshold_shape;
+mod vocab_check;
+/// §78.2: the pure public-plane model, without a core-to-cloud crate dependency.
+#[path = "../../crates/public-pool/src/vocab/model.rs"]
+pub mod vocab_model;
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -53,6 +57,7 @@ fn main() -> std::process::ExitCode {
         );
     }
     let code = match args.get(1).map(String::as_str) {
+        Some("vocab-check") => vocab_check::run(&args[2..]),
         Some("architecture-check") => architecture_check::run(&args[2..]),
         Some("mechanism-registry") => mechanism_registry::run(&args[2..]),
         Some("migration-rehearsal") => migration_rehearsal::run(&args[2..]),
@@ -84,7 +89,7 @@ fn main() -> std::process::ExitCode {
         Some("deploy-env") => dep_map::run_deploy_env(&args[2..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <architecture-check|mechanism-registry|migration-rehearsal|metrics-registry|contract-impact|config-check|rls-check|schedule-register|threshold-shape|benchset-declaration|gate-registry|dod-check|phase-check|r4-fault-manifest|direction-table|card-version|migrate|e2e-seed|e2e-onboard|member|projection-serve|serial-lane|soak|load|load-open|gate-truth|known-red|dep-map|deploy-env>"
+                "usage: cargo xtask <vocab-check|architecture-check|mechanism-registry|migration-rehearsal|metrics-registry|contract-impact|config-check|rls-check|schedule-register|threshold-shape|benchset-declaration|gate-registry|dod-check|phase-check|r4-fault-manifest|direction-table|card-version|migrate|e2e-seed|e2e-onboard|member|projection-serve|serial-lane|soak|load|load-open|gate-truth|known-red|dep-map|deploy-env>"
             );
             2
         }
