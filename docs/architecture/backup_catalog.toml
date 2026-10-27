@@ -1037,10 +1037,10 @@ owner = "M15"
 basis = "M15:156; ADR-0121 D-A / #332"
 set_null = ["profile_id", "profile_version"]
 
-["private.project_channels"]
+["private.project_facets"]
 class = "KNOWLEDGE"
-owner = "M14"
-basis = "M14:128; D1 principle"
+owner = "M18"
+basis = "M18:50, :136; D1 principle (0281 copies the retired private.project_channels rows, which were KNOWLEDGE, into it)"
 
 ["private.project_subject_relations"]
 class = "KNOWLEDGE"

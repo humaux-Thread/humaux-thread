@@ -43,10 +43,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
-
 read by:
 
 written by:
@@ -69,13 +65,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NOT NULL)
-- fk: evaluator_user_id -> control.users (NOT NULL)
-- fk: independence_attestation_id -> public.claim_independence_attestations (NOT NULL)
-- fk: public_receipt_id -> public.anonymous_claim_trust_receipts (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `public-pool::tests::public_runtime`
@@ -105,10 +94,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: INSERT(contribution_release_id,tenant_id)
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, contribution_release_id -> staging.contribution_releases (NOT NULL)
 
 read by:
 - (no process): `adapters::contribution_repo`
@@ -204,11 +189,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, workspace_id -> control.workspaces (NULL)
-- fk: user_id -> control.users (NULL)
 
 read by:
 - (no process): `adapters::tests::credential_grants`
@@ -365,8 +345,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -470,14 +448,11 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: actor_user_id -> control.users (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::request_guard`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -535,9 +510,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NULL)
-
 read by:
 - (no process): `adapters::tests::auth_contract`
 
@@ -568,9 +540,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 
@@ -691,11 +660,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, workspace_id -> control.workspaces (NULL)
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
@@ -757,9 +721,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id, user_id, candidate_id, disclosed_payload_sha256, policy_version -> staging.contribution_candidates (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -787,11 +748,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: notice_version -> control.contribution_notices (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - (no process): `public-pool::tests::notice`
@@ -837,8 +793,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -870,9 +824,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
@@ -972,8 +923,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
@@ -1006,9 +955,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -1049,10 +995,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: reverses_entry_id -> control.credit_ledger (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -1186,10 +1128,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: requested_by -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::forget_repo`
 
@@ -1218,10 +1156,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: request_id, tenant_id -> control.deletion_requests (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::forget_repo`
@@ -1258,9 +1192,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -1285,10 +1216,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: user_email_id -> control.user_emails (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::auth_contract`
@@ -1319,9 +1246,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::credential_grants`
@@ -1399,10 +1323,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: created_by -> control.users (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -1473,9 +1393,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `maintenance::tests::onboarding`
@@ -1568,9 +1485,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 
@@ -1733,10 +1647,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
@@ -1847,10 +1757,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 
 written by:
@@ -1879,9 +1785,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 
@@ -1912,10 +1815,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NULL)
-
 read by:
 
 written by:
@@ -1938,12 +1837,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: client_id -> control.oauth_client_registrations (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
 
 read by:
 - (no process): `adapters::tests::credential_grants`
@@ -2011,8 +1904,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::auth_contract`
@@ -2143,12 +2034,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: client_id -> control.oauth_client_registrations (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
-
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
@@ -2216,9 +2101,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: grant_id -> control.oauth_grants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::auth_contract`
@@ -2323,13 +2205,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: audit_event_id -> control.audit_event_identity (NOT NULL)
-- fk: evidence_id -> private.evidence_objects (NULL)
-- fk: reservation_id -> control.usage_reservations (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, request_id -> control.usage_reservations (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
@@ -2505,9 +2380,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: drop_policy_id -> control.retention_policies (NULL)
-
 read by:
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::retention`
@@ -2545,9 +2417,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -2575,9 +2444,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::credential_grants`
@@ -2610,9 +2476,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: plan_id -> control.plans (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::facet_contract`
@@ -2662,8 +2525,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `adapters::tests::entitlement_projector`
 
@@ -2694,11 +2555,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: owner_user_id -> control.users (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_reasoning_profile_id -> control.user_reasoning_profiles (NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
@@ -2822,8 +2678,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `private-worker::tests::support::distill_lane`
@@ -2860,10 +2714,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: owner_user_id -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -2916,11 +2766,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: owner_user_id -> control.users (NOT NULL)
-- fk: provider_account_id -> control.provider_accounts (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -2965,12 +2810,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: billing_account_id -> control.provider_billing_accounts (NOT NULL)
-- fk: owner_user_id -> control.users (NOT NULL)
-- fk: payer_user_id -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -3014,10 +2853,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: provider_account_id -> control.provider_accounts (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -3076,8 +2911,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
@@ -3107,9 +2940,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_public_worker: SELECT
-
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -3184,9 +3014,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
@@ -3295,12 +3122,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: credential_ref -> control.credentials (NOT NULL)
-- fk: owner_user_id -> control.users (NOT NULL)
-- fk: provider_account_id -> control.provider_accounts (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -3357,10 +3178,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
 
 read by:
 
@@ -3484,16 +3301,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: billing_account_id -> control.provider_billing_accounts (NULL)
-- fk: credential_ref -> control.credentials (NOT NULL)
-- fk: default_billing_instrument_id -> control.provider_billing_instruments (NULL)
-- fk: endpoint_id -> control.provider_endpoints (NOT NULL)
-- fk: owner_user_id -> control.users (NOT NULL)
-- fk: processor_model_id -> control.processor_models (NOT NULL)
-- fk: provider_account_id -> control.provider_accounts (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::reasoning_route_runtime`
@@ -3549,11 +3356,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, route_policy_id, route_policy_version -> control.reasoning_route_policies (NOT NULL)
-
 read by:
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -3607,11 +3409,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, profile_id, profile_version -> control.reasoning_profiles (NOT NULL)
-- fk: tenant_id, route_policy_id, route_policy_version -> control.reasoning_route_policies (NOT NULL)
-
 read by:
 - (no process): `maintenance::tests::reasoning_routes`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -3664,12 +3461,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: legacy_profile_id -> control.user_reasoning_profiles (NULL)
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, binding_id, binding_version -> control.reasoning_route_bindings (NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -3719,10 +3510,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: policy_owner_user_id -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `maintenance::tests::reasoning_routes`
@@ -3792,12 +3579,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: legacy_profile_id -> control.user_reasoning_profiles (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, profile_id, profile_version -> control.reasoning_profiles (NOT NULL)
-- fk: tenant_id, route_policy_id, policy_version -> control.reasoning_route_policies (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -3913,9 +3694,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -3948,12 +3726,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: referral_code_id -> control.referral_codes (NOT NULL)
-- fk: referred_tenant_id -> control.tenants (NOT NULL)
-- fk: referred_user_id -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -3983,10 +3755,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: created_by -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -4015,12 +3783,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: attribution_id -> control.referral_attributions (NOT NULL)
-- fk: credit_ledger_entry_id -> control.credit_ledger (NULL)
-- fk: reversal_ledger_entry_id -> control.credit_ledger (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -4115,10 +3877,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
-
 read by:
 
 written by:
@@ -4147,10 +3905,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: repository_id -> control.repositories (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -4224,8 +3978,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -4282,8 +4034,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `adapters::tests::exact_completeness_eval`
 
@@ -4313,8 +4063,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `maintenance::tests::onboarding`
@@ -4352,9 +4100,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NULL)
 
 read by:
 
@@ -4485,9 +4230,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -4562,10 +4304,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: approved_by -> control.users (NULL)
-- fk: target_tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -4617,11 +4355,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: accepted_by -> control.users (NULL)
-- fk: invited_by -> control.users (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::credential_grants`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -4654,8 +4387,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -4679,6 +4410,7 @@ written by:
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
@@ -4738,6 +4470,7 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `adapters::tests::visible_index_count`
@@ -4843,10 +4576,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, entitlement_key, window_start -> control.quota_windows (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
@@ -4896,9 +4625,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `xtask::e2e_onboard`
@@ -4931,11 +4657,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: credential_ref -> control.credentials (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
@@ -4985,8 +4706,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `gateway::tests::mcp_gateway`
@@ -5084,9 +4803,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 
 written by:
@@ -5115,10 +4831,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id, user_id -> control.memberships (NOT NULL)
-- fk: tenant_id, workspace_id -> control.workspaces (NOT NULL)
 
 read by:
 - (no process): `maintenance::tests::onboarding`
@@ -5169,9 +4881,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `adapters::provisioning`
@@ -5187,6 +4896,7 @@ written by:
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -5204,6 +4914,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -5266,9 +4977,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: canvas_id -> coord.canvases (NOT NULL)
-
 read by:
 
 written by:
@@ -5299,9 +5007,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -5334,10 +5039,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: task_id -> coord.tasks (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -5368,9 +5069,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -5403,9 +5101,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NULL)
-
 read by:
 
 written by:
@@ -5436,10 +5131,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: task_id -> coord.tasks (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `gateway::tests::coordinate_task`
@@ -5486,9 +5177,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `gateway::tests::coordinate_task`
@@ -5584,9 +5272,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: revoke_event_id -> ops.outbox (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -5693,8 +5378,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 
 written by:
@@ -5772,9 +5455,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: backup_label, verified_manifest_sha256 -> ops.backup_sets (NULL)
-
 read by:
 - (no process): `maintenance::tests::backup`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -5807,8 +5487,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `maintenance::tests::backup`
@@ -5988,8 +5666,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - process(cargo-xtask): `xtask::gate_registry`
 
@@ -6118,9 +5794,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NULL)
-
 read by:
 
 written by:
@@ -6160,10 +5833,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id, execution_id -> private.contribution_executions (NOT NULL)
-- fk: tenant_id, job_id -> ops.jobs (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
@@ -6244,17 +5913,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: disclosure_id -> ops.data_disclosures (NOT NULL)
-- fk: evidence_id -> private.evidence_objects (NULL)
-- fk: memory_id -> private.memory_records (NULL)
-- fk: query_source_id -> private.retrieval_query_sources (NULL)
-- fk: release_id -> staging.contribution_releases (NULL)
-- fk: rollup_id -> private.memory_rollups (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, disclosure_id -> ops.data_disclosures (NOT NULL)
-- fk: tenant_id, query_source_id -> private.retrieval_query_sources (NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
@@ -6338,10 +5996,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, model_call_id, processor_id -> ops.model_call_identity (NULL)
-
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_repo_0131`
@@ -6414,10 +6068,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: deletion_request_id -> control.deletion_requests (NOT NULL)
-- fk: deletion_request_id, tenant_id -> control.deletion_requests (NOT NULL)
-
 read by:
 - (no process): `adapters::forget_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -6463,9 +6113,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, job_id -> ops.jobs (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
@@ -6542,9 +6189,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
@@ -6576,9 +6220,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: INSERT
 
-foreign keys (outgoing):
-- fk: outbox_id -> ops.email_outbox (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6606,8 +6247,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -6637,9 +6276,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_private_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: user_id -> control.users (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6667,8 +6303,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -6698,8 +6332,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_private_worker: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -7049,10 +6681,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: outbox_event_id -> ops.outbox (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::contribution_execution_ingress_0131`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
@@ -7186,9 +6814,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `maintenance::tests::serve`
@@ -7246,10 +6871,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: after_observation_id -> ops.mechanism_observations (NOT NULL)
-- fk: before_observation_id -> ops.mechanism_observations (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7287,8 +6908,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::mechanism_registry`
@@ -7321,10 +6940,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: undoes_event_id -> ops.memory_lifecycle_events (NULL)
 
 read by:
 - (no process): `adapters::tests::candidates`
@@ -7360,8 +6975,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `maintenance::tests::partitions`
@@ -7421,21 +7034,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: model_call_id -> ops.model_call_identity (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, account_health_observation_id -> ops.reasoning_account_health_observations (NULL)
-- fk: tenant_id, billing_account_id -> control.provider_billing_accounts (NULL)
-- fk: tenant_id, billing_instrument_id -> control.provider_billing_instruments (NULL)
-- fk: tenant_id, binding_id, binding_version -> control.reasoning_route_bindings (NULL)
-- fk: tenant_id, credential_ref, provider_account_id -> control.reasoning_credential_bindings (NULL)
-- fk: tenant_id, profile_id, profile_version -> control.reasoning_profiles (NULL)
-- fk: tenant_id, provider_account_id -> control.provider_accounts (NULL)
-- fk: tenant_id, provider_endpoint_id, egress_processor_id -> control.provider_endpoints (NULL)
-- fk: tenant_id, provider_health_observation_id -> ops.reasoning_provider_health_observations (NULL)
-- fk: tenant_id, route_policy_id, route_policy_version -> control.reasoning_route_policies (NULL)
-- fk: workspace_id -> control.workspaces (NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
@@ -7540,10 +7138,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: notification_id -> control.notifications (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -7577,13 +7171,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: evidence_id -> private.evidence_objects (NULL)
-- fk: public_claim_id -> public.claims (NULL)
-- fk: public_synthesis_id -> public.syntheses (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, contribution_release_id -> staging.contribution_releases (NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
@@ -7730,9 +7317,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_private_worker: UPDATE(claimed_at,claimed_by,finished_at,outcome,response_failure_message,response_model_call_id,response_output_bytes,response_output_sha256,response_provider_trace,state)
 
-foreign keys (outgoing):
-- fk: consolidation_run_id -> private.memory_consolidation_runs (NULL)
-
 read by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -7762,8 +7346,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
@@ -7790,8 +7372,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
@@ -7823,9 +7403,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: outbox_event_id -> ops.outbox (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::phase9_independence_attestation`
@@ -7877,10 +7454,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: release_id -> staging.contribution_releases (NOT NULL)
-- fk: revoke_event_id -> ops.outbox (NOT NULL)
 
 read by:
 - (no process): `public-pool::tests::public_trust`
@@ -7972,13 +7545,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: credential_ref -> control.credentials (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, billing_account_id -> control.provider_billing_accounts (NULL)
-- fk: tenant_id, billing_instrument_id -> control.provider_billing_instruments (NULL)
-- fk: tenant_id, provider_account_id -> control.provider_accounts (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::reasoning_route_runtime`
 - (no process): `maintenance::tests::reasoning_routes`
@@ -8048,11 +7614,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: processor_model_id -> control.processor_models (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, provider_endpoint_id -> control.provider_endpoints (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::reasoning_route_runtime`
@@ -8232,8 +7793,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `maintenance::tests::drill`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8265,8 +7824,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `adapters::maintenance_repo`
@@ -8297,8 +7854,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE(claimed_at,claimed_by,finished_at,outcome,response_dimension,response_failure_code,response_model_id,response_model_revision,response_provider_id,response_vector,state)
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `gateway::tests::recall_embedding_cache`
@@ -8345,10 +7900,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: limit_id -> control.retrieval_provider_admission_limits (NOT NULL)
-- fk: tenant_id, reservation_id -> ops.retrieval_provider_budget_reservations (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8392,10 +7943,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, model_call_id -> ops.model_call_identity (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8425,9 +7972,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8477,8 +8021,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 
 written by:
@@ -8517,10 +8059,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: selection_snapshot_id -> ops.selection_snapshots (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::enumerate_scale`
@@ -8570,9 +8108,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::note_history`
@@ -8667,9 +8202,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: knowledge_gap_id -> public.knowledge_gaps (NOT NULL)
-
 read by:
 
 written by:
@@ -8706,9 +8238,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `maintenance::tests::serve`
@@ -8751,9 +8280,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -8805,8 +8331,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-
 read by:
 - (no process): `maintenance::tests::backup`
 - (no process): `maintenance::tests::serve`
@@ -8845,10 +8369,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: artifact_id -> private.artifacts (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -8880,9 +8400,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: artifact_id -> private.evidence_objects (NOT NULL)
 
 read by:
 
@@ -9003,10 +8520,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: from_symbol_id -> private.code_symbols (NOT NULL)
-- fk: to_symbol_id -> private.code_symbols (NOT NULL)
-
 read by:
 
 written by:
@@ -9038,10 +8551,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: code_snapshot_id -> private.code_snapshots (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -9075,10 +8584,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: repository_id -> control.repositories (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -9110,10 +8615,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: code_file_id -> private.code_files (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -9233,10 +8734,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: memory_id -> private.memory_records (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::facet_contract`
 
@@ -9291,10 +8788,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, workspace_id, project_id, facet_kind, facet_version, facet_version_id -> private.continuity_facet_versions (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -9324,10 +8817,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id, workspace_id, project_id, facet_kind, facet_version, facet_version_id -> private.continuity_facet_versions (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::continuity_publish`
@@ -9360,10 +8849,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, workspace_id, project_id -> private.continuity_projects (NOT NULL)
-- fk: tenant_id, workspace_id, project_id, facet_kind, slot_version, current_version_id -> private.continuity_facet_versions (NULL)
 
 read by:
 - (no process): `adapters::tests::continuity_publish`
@@ -9398,9 +8883,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, workspace_id, project_id -> private.continuity_projects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::continuity_publish`
@@ -9452,23 +8934,24 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id, workspace_id -> control.workspaces (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -9559,11 +9042,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id, evidence_id -> private.evidence_objects (NULL)
-- fk: tenant_id, execution_id -> private.contribution_executions (NOT NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NULL)
-
 read by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_ingress_0131`
@@ -9596,17 +9074,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, assessment_disclosure_id -> ops.data_disclosures (NULL)
-- fk: tenant_id, assessment_model_call_id -> ops.model_call_identity (NULL)
-- fk: tenant_id, binding_id, binding_version -> control.reasoning_route_bindings (NOT NULL)
-- fk: tenant_id, coverage_disclosure_id -> ops.data_disclosures (NULL)
-- fk: tenant_id, coverage_model_call_id -> ops.model_call_identity (NULL)
-- fk: tenant_id, policy_id, policy_version -> control.contribution_policies (NOT NULL)
-- fk: tenant_id, reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: tenant_id, user_id -> control.memberships (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_ingress_0131`
@@ -9652,10 +9119,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: memory_id -> private.memory_records (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -9688,10 +9151,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
-
 read by:
 
 written by:
@@ -9717,9 +9176,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, workspace_id, candidate_id -> private.curation_candidates (NOT NULL)
 
 read by:
 - (no process): `adapters::candidate_repo`
@@ -9749,10 +9205,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, workspace_id -> control.workspaces (NOT NULL)
 
 read by:
 - (no process): `adapters::candidate_repo`
@@ -9868,11 +9320,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: source_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::note_put`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -9943,9 +9390,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -9968,9 +9412,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: event_id -> private.evidence_objects (NOT NULL)
 
 read by:
 - (no process): `maintenance::tests::partitions`
@@ -10038,9 +9479,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: event_id -> private.evidence_objects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
@@ -10148,11 +9586,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, target_subject_id -> private.subjects (NULL)
-
 read by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -10202,10 +9635,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: child_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: parent_evidence_id -> private.evidence_objects (NOT NULL)
-
 read by:
 
 written by:
@@ -10235,13 +9664,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: visibility_user_id -> control.users (NULL)
-- fk: visibility_workspace_id -> control.workspaces (NULL)
 
 read by:
 - (no process): `adapters::contribution_repo`
@@ -10424,10 +9846,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, project_id -> private.continuity_projects (NOT NULL)
-
 read by:
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -10467,9 +9885,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
@@ -10515,11 +9930,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, subject_id -> private.subjects (NOT NULL)
-
 read by:
 - (no process): `adapters::forget_repo`
 - (no process): `gateway::tests::mcp_gateway`
@@ -10564,10 +9974,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, task_run_id -> coord.task_runs (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -10629,11 +10035,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, output_memory_id -> private.memory_records (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::note_put`
@@ -10718,10 +10119,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: redeemed_event_id -> private.event_identity (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::projection_worker`
@@ -10859,12 +10256,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id, target_subject_id -> private.subjects (NULL)
-
 read by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -10920,11 +10311,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id, decision_evidence_id -> private.evidence_objects (NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id, product_subject_id -> private.subjects (NULL)
-
 read by:
 - (no process): `adapters::tests::applicability`
 - (no process): `adapters::tests::facet_contract`
@@ -10956,10 +10342,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: memory_id -> private.memory_records (NOT NULL)
-- fk: run_id -> private.memory_consolidation_runs (NOT NULL)
 
 read by:
 - process(cargo-xtask): `adapters::postgres`
@@ -11007,11 +10389,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
@@ -11055,10 +10432,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: evidence_id -> private.evidence_objects (NOT NULL)
-- fk: memory_id -> private.memory_records (NOT NULL)
 
 read by:
 - (no process): `adapters::forget_repo`
@@ -11234,9 +10607,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id, memory_id, project_id -> private.memory_projects (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -11269,13 +10639,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: INSERT
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id, decision_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, derived_task_id -> coord.tasks (NULL)
-- fk: tenant_id, inherited_from_memory_id, project_id -> private.memory_projects (NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id, project_id -> private.continuity_projects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
@@ -11365,12 +10728,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: superseded_by -> private.memory_records (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: visibility_user_id -> control.users (NULL)
-- fk: visibility_workspace_id -> control.workspaces (NULL)
 
 read by:
 - (no process): `adapters::contribution_repo`
@@ -11584,11 +10941,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: evidence_id -> private.evidence_objects (NOT NULL)
-- fk: memory_id -> private.memory_records (NOT NULL)
-- fk: rollup_id -> private.memory_rollups (NOT NULL)
-
 read by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -11625,11 +10977,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, rollup_id -> private.memory_rollups (NOT NULL)
-- fk: tenant_id, subject_id -> private.subjects (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
@@ -11661,12 +11008,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: run_id -> private.memory_consolidation_runs (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: visibility_user_id -> control.users (NULL)
-- fk: visibility_workspace_id -> control.workspaces (NULL)
 
 read by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
@@ -11709,10 +11050,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, memory_id, subject_id -> private.memory_subjects (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -11741,9 +11078,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -11818,11 +11152,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id, subject_id -> private.subjects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::memory_attribution`
@@ -11953,11 +11282,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: conversation_id -> private.conversations (NOT NULL)
-- fk: event_id -> private.event_identity (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -11986,10 +11310,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, head_memory_id -> private.memory_records (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::note_history`
@@ -12041,11 +11361,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: evidence_id -> private.evidence_objects (NOT NULL)
-- fk: processing_run_id -> private.processing_runs (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -12079,11 +11394,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, profile_id, profile_version -> control.reasoning_profiles (NULL)
-
 read by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -12101,12 +11411,32 @@ written by:
 
 executed by:
 
-### `private.project_channels`
+### `private.project_ancestors`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0281_project_tree
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::coord_rls`
+- (no process): `adapters::tests::project_tree`
+
+### `private.project_facets`
 - kind: table
 - owner: role_migration_owner
 - RLS: yes
 - FORCE: yes
-- created in: 0271_project_channels
+- created in: 0281_project_tree
 
 grants (runtime roles):
 - role_migration_owner: DELETE
@@ -12118,10 +11448,8 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id, project_id -> private.continuity_projects (NOT NULL)
-
 read by:
+- (no process): `adapters::tests::project_tree`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -12129,83 +11457,45 @@ written by:
 
 executed by:
 
-### `private.project_subject_relations`
-- kind: table
+### `private.project_move`
+- kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0249_relation_kernel (dynamic DDL)
+- RLS: —
+- FORCE: —
+- created in: 0281_project_tree
 
 grants (runtime roles):
-- role_gateway: INSERT
-- role_gateway: SELECT
-- role_maintenance: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, dst_id -> private.subjects (NOT NULL)
-- fk: tenant_id, src_id -> private.continuity_projects (NOT NULL)
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
 
 read by:
-- (no process): `adapters::relation_repo`
-- (no process): `adapters::tests::relation_kernel`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::relation_repo`
-- (no process): `adapters::tests::project_rollup`
 
 executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::project_tree`
+- (no process): `adapters::tests::support::project_tree_fixture`
 
-### `private.project_task_relations`
-- kind: table
+### `private.project_subtree`
+- kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0249_relation_kernel (dynamic DDL)
+- RLS: —
+- FORCE: —
+- created in: 0281_project_tree
 
 grants (runtime roles):
-- role_gateway: INSERT
-- role_gateway: SELECT
-- role_maintenance: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-- role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, dst_id -> coord.tasks (NOT NULL)
-- fk: tenant_id, src_id -> private.continuity_projects (NOT NULL)
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
 
 read by:
-- (no process): `adapters::relation_repo`
-- (no process): `adapters::tests::relation_kernel`
-- (no process): `private-worker::tests::m29_attribution_e2e`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::attribution_repo`
-- process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-private-worker): `adapters::attribution_repo`
 
 written by:
-- (no process): `adapters::relation_repo`
-- (no process): `adapters::tests::memory_attribution`
 
 executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::coord_rls`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.propose_curation_candidate`
 - kind: function (SECURITY DEFINER)
@@ -12318,6 +11608,7 @@ written by:
 
 executed by:
 - (no process): `adapters::project_rollup`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.register_continuity_project`
 - kind: function (SECURITY DEFINER)
@@ -12493,11 +11784,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: from_entity_id -> private.entities (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: to_entity_id -> private.entities (NOT NULL)
-
 read by:
 
 written by:
@@ -12630,9 +11916,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12713,6 +11996,7 @@ written by:
 
 executed by:
 - (no process): `adapters::project_rollup`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.settle_contribution_job_if_live`
 - kind: function (SECURITY DEFINER)
@@ -12778,10 +12062,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, subject_id -> private.subjects (NOT NULL)
-
 read by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -12797,43 +12077,6 @@ written by:
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
 - process(humaux-retrieval-worker): `adapters::subject_repo`
-
-executed by:
-
-### `private.subject_relations`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0249_relation_kernel (dynamic DDL)
-
-grants (runtime roles):
-- role_gateway: INSERT
-- role_gateway: SELECT
-- role_maintenance: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, dst_id -> private.subjects (NOT NULL)
-- fk: tenant_id, src_id -> private.subjects (NOT NULL)
-
-read by:
-- (no process): `adapters::relation_repo`
-- (no process): `adapters::tests::relation_kernel`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::relation_repo`
-- (no process): `adapters::tests::project_rollup`
 
 executed by:
 
@@ -12859,10 +12102,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, subject_id -> private.subjects (NOT NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -12901,10 +12140,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, merged_into -> private.subjects (NULL)
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -12954,11 +12189,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, authorization_evidence_id -> private.evidence_objects (NOT NULL)
-- fk: tenant_id, context_binding_id, scope_kind, task_id, memory_id, mode -> private.context_bindings (NOT NULL)
 
 read by:
 - (no process): `gateway::tests::mcp_gateway`
@@ -13022,10 +12252,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: repository_id -> control.repositories (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 
 written by:
@@ -13088,8 +12314,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::note_chunk_count_parity`
@@ -13160,8 +12384,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::projection_worker`
@@ -13225,9 +12447,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version -> projection.stream_checkpoints (NOT NULL)
-
 read by:
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
@@ -13261,9 +12480,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 
@@ -13312,10 +12528,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE(purged_at,vector)
-
-foreign keys (outgoing):
-- fk: fingerprint_sha256 -> projection.embedding_fingerprints (NOT NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
 
 read by:
 - (no process): `maintenance::tests::drill`
@@ -13401,11 +12613,6 @@ grants (runtime roles):
 - role_retrieval_worker: INSERT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id, memory_id, fingerprint_sha256, input_sha256 -> projection.memory_vectors (NULL)
 
 read by:
 - (no process): `adapters::tests::note_chunk_count_parity`
@@ -13543,10 +12750,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
-foreign keys (outgoing):
-- fk: fingerprint_sha256 -> projection.embedding_fingerprints (NOT NULL)
-- fk: tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version -> projection.stream_checkpoints (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::rebuild`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -13577,10 +12780,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: run_id, generation -> projection.rebuild_runs (NOT NULL)
-- fk: tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, stream_seq -> projection.stream_log (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::rebuild`
@@ -13677,11 +12876,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: memory_id -> private.memory_records (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: workspace_id -> control.workspaces (NULL)
-
 read by:
 
 written by:
@@ -13716,8 +12910,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE(evidence_highwater,knowledge_highwater,projection_highwater,projection_processor_id)
-
-foreign keys (outgoing):
 
 read by:
 - process(cargo-xtask): `adapters::memory_governance_repo`
@@ -13864,8 +13056,6 @@ grants (runtime roles):
 - role_private_worker: UPDATE(error_class,state)
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::forget_repo`
@@ -14098,9 +13288,6 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 - role_retrieval_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `maintenance::tests::onboarding`
@@ -14183,9 +13370,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::a2_point_identity`
@@ -14282,10 +13466,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NOT NULL)
-- fk: independence_attestation_id -> public.claim_independence_attestations (NOT NULL)
-
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -14311,8 +13491,6 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -14343,11 +13521,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: anonymous_source_id, candidate_envelope_sha256 -> public.sources (NOT NULL)
-- fk: claim_id -> public.claims (NULL)
-- fk: synthesis_id -> public.syntheses (NULL)
 
 read by:
 - (no process): `public-pool::tests::public_runtime`
@@ -14436,9 +13609,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NOT NULL)
-
 read by:
 - (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -14467,11 +13637,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_public_worker: INSERT(contribution_release_id,evaluation_id,root_source_id,source_content_hash)
-
-foreign keys (outgoing):
-- fk: contribution_release_id -> staging.contribution_releases (NULL)
-- fk: evaluation_id -> public.claim_trust_evaluations (NOT NULL)
-- fk: root_source_id -> public.sources (NOT NULL)
 
 read by:
 - (no process): `public-pool::tests::public_runtime`
@@ -14502,11 +13667,6 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 - role_public_worker: INSERT(body_sha256,checks_complete,claim_id,contradiction_count,evaluation_id,evaluator_grant_version,evaluator_user_id,identity_incomplete,independent_support_count,moderation_state,object_revision,policy_version,rationale,support_count,synthesis_id,trusted_source_count)
-
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NULL)
-- fk: evaluator_user_id -> control.users (NULL)
-- fk: synthesis_id -> public.syntheses (NULL)
 
 read by:
 - (no process): `public-pool::tests::public_provenance_revocation_eval`
@@ -14545,12 +13705,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: current_anonymous_trust_receipt_id -> public.anonymous_claim_trust_receipts (NULL)
-- fk: current_evaluation_id -> public.claim_trust_evaluations (NULL)
-- fk: intake_release_id -> staging.contribution_releases (NULL)
-- fk: supersedes_claim_id -> public.claims (NULL)
 
 read by:
 - (no process): `adapters::tests::phase9_independence_attestation`
@@ -14609,9 +13763,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: concept_id, facet -> public.concepts (NOT NULL)
-
 read by:
 - (no process): `public-pool::tests::vocab`
 - (no process): `public-pool::vocab`
@@ -14644,10 +13795,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: from_id -> public.concepts (NOT NULL)
-- fk: to_id -> public.concepts (NOT NULL)
-
 read by:
 - (no process): `public-pool::tests::vocab`
 - (no process): `public-pool::vocab`
@@ -14679,9 +13826,6 @@ grants (runtime roles):
 - role_public_worker: INSERT
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: replaced_by -> public.concepts (NULL)
 
 read by:
 - (no process): `public-pool::tests::vocab`
@@ -15006,8 +14150,6 @@ grants (runtime roles):
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 
 written by:
@@ -15058,9 +14200,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_public_worker: INSERT(check_version,detected,evaluation_id,signal_code)
 
-foreign keys (outgoing):
-- fk: evaluation_id -> public.claim_trust_evaluations (NOT NULL)
-
 read by:
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::public_trust`
@@ -15094,10 +14233,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NOT NULL)
-- fk: source_id -> public.sources (NOT NULL)
 
 read by:
 - (no process): `public-pool::public_provenance`
@@ -15195,10 +14330,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: from_claim_id -> public.claims (NOT NULL)
-- fk: to_claim_id -> public.claims (NOT NULL)
 
 read by:
 - process(humaux-public-worker): `public-pool::public_repo`
@@ -15333,11 +14464,6 @@ grants (runtime roles):
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NULL)
-- fk: root_source_id -> public.sources (NOT NULL)
-- fk: synthesis_id -> public.syntheses (NULL)
-
 read by:
 - (no process): `public-pool::public_provenance`
 
@@ -15374,9 +14500,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
-
-foreign keys (outgoing):
-- fk: contribution_release_id -> staging.contribution_releases (NULL)
 
 read by:
 - (no process): `adapters::contribution_repo`
@@ -15418,11 +14541,6 @@ grants (runtime roles):
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: current_evaluation_id -> public.claim_trust_evaluations (NULL)
-- fk: supersedes_synthesis_id -> public.syntheses (NULL)
-- fk: unit_id -> public.units (NULL)
-
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
@@ -15459,11 +14577,6 @@ grants (runtime roles):
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-- fk: claim_id -> public.claims (NULL)
-- fk: input_synthesis_id -> public.syntheses (NULL)
-- fk: synthesis_id -> public.syntheses (NOT NULL)
-
 read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
@@ -15498,8 +14611,6 @@ grants (runtime roles):
 - role_public_worker: UPDATE
 - role_retrieval_worker: SELECT
 
-foreign keys (outgoing):
-
 read by:
 
 written by:
@@ -15525,9 +14636,6 @@ grants (runtime roles):
 - role_public_worker: INSERT
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
-
-foreign keys (outgoing):
-- fk: revision_id -> public.syntheses (NOT NULL)
 
 read by:
 - (no process): `public-pool::tests::completeness`
@@ -15559,9 +14667,6 @@ grants (runtime roles):
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
 
-foreign keys (outgoing):
-- fk: revision_id -> public.syntheses (NOT NULL)
-
 read by:
 - (no process): `public-pool::tests::completeness`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -15591,8 +14696,6 @@ grants (runtime roles):
 - role_public_worker: INSERT
 - role_public_worker: SELECT
 - role_public_worker: UPDATE
-
-foreign keys (outgoing):
 
 read by:
 - (no process): `public-pool::tests::completeness`
@@ -15694,10 +14797,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id, candidate_id -> staging.contribution_candidates (NOT NULL)
-- fk: tenant_id, candidate_id, candidate_payload_sha256, probe_source_manifest_hash, assessment_provider_trace -> staging.contribution_candidates (NOT NULL)
-
 read by:
 - (no process): `adapters::tests::contribution_execution_repo_0131`
 - (no process): `public-pool::tests::public_runtime`
@@ -15747,11 +14846,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 
-foreign keys (outgoing):
-- fk: tenant_id, candidate_id -> staging.contribution_candidates (NOT NULL)
-- fk: tenant_id, evidence_id -> private.evidence_objects (NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NULL)
-
 read by:
 - (no process): `adapters::tests::contribution_execution_repo_0131`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -15784,15 +14878,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: INSERT
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: reasoning_domain_id -> control.private_reasoning_domains (NOT NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, binding_id, binding_version -> control.reasoning_route_bindings (NULL)
-- fk: tenant_id, contribution_execution_id -> private.contribution_executions (NULL)
-- fk: tenant_id, model_call_id, binding_id, binding_version, reasoning_domain_id, profile_version -> ops.model_call_identity (NULL)
-- fk: tenant_id, policy_id, policy_version -> control.contribution_policies (NOT NULL)
-- fk: user_id -> control.users (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_execution_repo_0131`
@@ -15833,14 +14918,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 
-foreign keys (outgoing):
-- fk: contribution_release_id -> staging.contribution_releases (NOT NULL)
-- fk: evidence_id -> private.evidence_objects (NULL)
-- fk: memory_id -> private.memory_records (NULL)
-- fk: tenant_id, contribution_release_id -> staging.contribution_releases (NOT NULL)
-- fk: tenant_id, evidence_id -> private.evidence_objects (NULL)
-- fk: tenant_id, memory_id -> private.memory_records (NULL)
-
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -15875,11 +14952,6 @@ grants (runtime roles):
 - role_private_worker: INSERT
 - role_private_worker: SELECT
 - role_private_worker: UPDATE(revoked_at,state)
-
-foreign keys (outgoing):
-- fk: candidate_id -> staging.contribution_candidates (NULL)
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, confirmation_id -> control.contribution_confirmations (NULL)
 
 read by:
 - (no process): `adapters::tests::contribution_pipeline`
@@ -16120,10 +15192,6 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 - role_private_worker: INSERT(anonymous_source_id,assessment_digest,assessment_outcome,content_sha256,envelope_sha256,policy_digest,policy_version,sanitized_content,tenant_id)
 - role_private_worker: SELECT
-
-foreign keys (outgoing):
-- fk: tenant_id -> control.tenants (NOT NULL)
-- fk: tenant_id, anonymous_source_id -> control.anonymous_source_lineage (NOT NULL)
 
 read by:
 - (no process): `adapters::contribution_repo`

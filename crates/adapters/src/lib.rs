@@ -30,6 +30,8 @@ pub mod contribution_reasoner;
 pub mod contribution_repo;
 pub mod contribution_scan;
 pub mod coord_repo;
+/// ADR-0101: guarded project-tree reads and moves (§30).
+pub mod coord_tree_repo;
 pub mod credential_repo;
 pub mod dashscope;
 pub mod disclosure;
