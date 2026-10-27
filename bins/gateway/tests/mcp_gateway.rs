@@ -9195,11 +9195,25 @@ fn golden_facet(memory_type: &str) -> Option<&'static str> {
 /// (`context_repo::resolve_task_in_txn`) on both the bind write path and the assemble read
 /// path, so a fixture task is a row now, not just a fresh uuid.
 fn seed_task(handle: &mut Handle, title: &str) -> Uuid {
+    // ADR-0102 D-A: coord.tasks.project_id is NOT NULL; the fixture's tasks share one project of its workspace.
+    let project: Uuid = handle
+        .admin
+        .query_one(
+            "WITH e AS (SELECT project_id FROM private.continuity_projects \
+                         WHERE tenant_id=$1 AND workspace_id=$2 ORDER BY project_id LIMIT 1), \
+                  m AS (INSERT INTO private.continuity_projects (project_id, tenant_id, workspace_id, title) \
+                        SELECT uuidv7(),$1,$2,'seed task project' WHERE NOT EXISTS (SELECT 1 FROM e) \
+                        RETURNING project_id) \
+             SELECT project_id FROM e UNION ALL SELECT project_id FROM m",
+            &[&handle.tenant_id, &handle.workspace_id],
+        )
+        .expect("owner seeds the task project")
+        .get(0);
     handle
         .admin
         .query_one(
-            "INSERT INTO coord.tasks(tenant_id,title) VALUES($1,$2) RETURNING task_id",
-            &[&handle.tenant_id, &title],
+            "INSERT INTO coord.tasks(tenant_id,title,project_id) VALUES($1,$2,$3) RETURNING task_id",
+            &[&handle.tenant_id, &title, &project],
         )
         .expect("owner seeds a coord task")
         .get(0)

@@ -1,0 +1,61 @@
+# §46.1 migration manifest. Card M18-3a / ADR-0102 D-A…D-D (Baseline §6.1.4, §30): coord.tasks.project_id (composite
+# tenant-leg NO ACTION FK to private.continuity_projects, tenant+project index, NOT NULL after the backfill), the Unfiled
+# marker table coord.workspace_unfiled_projects (owner, FORCE RLS with the tenant clause, role_gateway SELECT and INSERT
+# only), and the backfill: the task's current CONTAINS project, else the Unfiled project of the tenant's oldest workspace
+# (created here with its 15 facet slots when missing). The only DML is the backfill; no CONTAINS revision is written and
+# no Evidence is minted. §46 forward-fix (EXPAND_CONTRACT, number 0289).
+
+migration_id = "0289_task_project_authority"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database without the 0249 relation kernel and the 0281 tree, or one that already has this migration's objects.
+precheck = """
+select to_regclass('private.project_task_relations') is not null
+ and to_regclass('private.continuity_projects') is not null
+ and to_regclass('coord.tasks') is not null
+ and to_regclass('coord.workspace_unfiled_projects') is null
+ and not exists (select 1 from pg_attribute where attrelid = to_regclass('coord.tasks')
+                  and attname = 'project_id' and not attisdropped)
+ as precheck_ok
+"""
+
+# Fails on: a NULL project_id (the backfill missed a task), a nullable column, a missing, NOT VALID or cascading FK, a
+# marker table that is not owned by role_migration_owner, lacks FORCE RLS or its tenant policy, carries two markers
+# for one workspace, or is readable or writable by any role beyond role_gateway's SELECT and INSERT. The backfill
+# statement, the lazy registration and the door that writes the column are left to adapters::tests::coord_task_project
+# (G-M18-6) so each of those faults reaches its gate instead of stopping the migration.
+postcheck = """
+select not exists (select 1 from coord.tasks where project_id is null)
+ and exists (select 1 from pg_attribute where attrelid = 'coord.tasks'::regclass
+              and attname = 'project_id' and attnotnull and not attisdropped)
+ and (select count(*) = 1 from pg_constraint
+       where conrelid = 'coord.tasks'::regclass and conname = 'tasks_project_fkey' and contype = 'f'
+         and convalidated and confdeltype = 'a' and confupdtype = 'a'
+         and confrelid = 'private.continuity_projects'::regclass)
+ and exists (select 1 from pg_indexes where schemaname = 'coord' and tablename = 'tasks'
+              and indexname = 'tasks_tenant_project_idx')
+ and exists (select 1 from pg_class where oid = to_regclass('coord.workspace_unfiled_projects')
+              and relrowsecurity and relforcerowsecurity and relowner = 'role_migration_owner'::regrole)
+ and (select count(*) = 1 from pg_policy where polrelid = 'coord.workspace_unfiled_projects'::regclass
+       and polname = 'workspace_unfiled_projects_tenant_isolation')
+ and (select count(*) = 1 from pg_constraint
+       where conrelid = 'coord.workspace_unfiled_projects'::regclass
+         and conname = 'workspace_unfiled_projects_project_fkey' and contype = 'f' and convalidated)
+ and not exists (select 1 from coord.workspace_unfiled_projects group by tenant_id, workspace_id having count(*) > 1)
+ and has_table_privilege('role_gateway', 'coord.workspace_unfiled_projects', 'SELECT')
+ and has_table_privilege('role_gateway', 'coord.workspace_unfiled_projects', 'INSERT')
+ and not has_table_privilege('role_gateway', 'coord.workspace_unfiled_projects',
+                             'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ and not has_any_column_privilege('role_gateway', 'coord.workspace_unfiled_projects', 'UPDATE,REFERENCES')
+ and not exists (select 1 from unnest(array['role_private_worker', 'role_consolidation_worker',
+       'role_public_worker', 'role_retrieval_worker', 'role_batch_issuer', 'role_maintenance',
+       'role_admin']) as r(role_name)
+     where has_table_privilege(role_name, 'coord.workspace_unfiled_projects',
+                               'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        or has_any_column_privilege(role_name, 'coord.workspace_unfiled_projects',
+                                    'SELECT,INSERT,UPDATE,REFERENCES'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix only: the Unfiled projects and markers the backfill created are registry rows that tasks may already reference, so a rollback would orphan them. A wrong placement is corrected through adapters::coord_task_repo::set_task_project_in_txn, never by editing coord.tasks.project_id."
+backup_restore_requirement = "Standard pre-deploy snapshot of coord.tasks, private.continuity_projects, private.continuity_facet_slots and private.project_task_relations. No production deployment is performed by M18-3a."

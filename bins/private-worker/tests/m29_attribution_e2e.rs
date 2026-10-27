@@ -10,11 +10,12 @@
 //!   ops.model_call_ledger, private.evidence_objects, private.evidence_projects, private.memory_evidence,
 //!   private.memory_project_revocations, private.memory_projects, private.memory_records,
 //!   private.project_task_relations] w=[control.private_reasoning_domains,
-//!   control.tenants, ops.jobs, ops.provider_slots, private.continuity_projects] x=[control.set_workspace_membership],
+//!   control.tenants, ops.jobs, ops.provider_slots, private.continuity_projects, private.project_task_relations]
+//!   x=[control.set_workspace_membership],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS,
 //!   HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::byok, adapters::coord_repo,
 //!   adapters::operation_receipt,
-//!   adapters::postgres, adapters::relation_repo, adapters::remember, adapters::tests::support::governance_ops,
+//!   adapters::postgres, adapters::remember, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::attribution, domain::audit, domain::authority,
 //!   domain::continuity, domain::error, domain::evidence, domain::identity, domain::ids, domain::relation,
 //!   domain::subject,
@@ -22,8 +23,9 @@
 //!   private-worker::tests::support::distill_lane, private-worker::tests::support::live_minimax,
 //!   private-worker::tests::support::live_provider, protocol::edge, testkit::fixture_purge]
 //! Called-by: [cargo-test]
-//! Invariants: [every write goes through its production path (put, Distill, correction, relation revision, PAT
-//!   authentication); the owner only seeds projects and the admission lane and counts rows; one test, run alone
+//! Invariants: [every write goes through its production path (put, Distill, correction, PAT authentication) except
+//!   the CONTAINS revisions, which `relate` INSERTs as role_gateway because ADR-0102 D-C leaves the door only one project
+//!   per task at the DB clock; the owner only seeds projects and the admission lane and counts rows; one test, run alone
 //!   (nextest global-db), with foreign scheduler rows fenced; the fixture tenants are purged before their handles drop]
 //! Spec: Baseline §6.1.4; §52; §79.2; §80.1; ADR-0078 D-D, D-E
 //!
@@ -63,7 +65,6 @@ use humaux_adapters::{
     coord_repo::{self, ClaimedTaskRun},
     operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult},
     postgres::PrivateWorkerDbPool,
-    relation_repo,
     remember::RememberCommand,
 };
 use humaux_domain::{
@@ -73,9 +74,9 @@ use humaux_domain::{
     continuity::ProjectId,
     error::ErrorCode,
     evidence::{EvidenceOriginClass, payload_sha256},
-    identity::{AuthorizationScope, PrincipalId},
+    identity::AuthorizationScope,
     ids::{TaskId, TenantId, WorkspaceId},
-    relation::{DecidedBy, RelationEdge, RelationId, RelationKind, Timestamp, Validity},
+    relation::{Timestamp, Validity},
 };
 use humaux_gateway::auth::{CredentialScope, TouchThrottle, authenticate_service_credential};
 use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport, dispatch_pass};
@@ -419,8 +420,11 @@ async fn gateway_txn<'c>(
     txn
 }
 
-/// Revision `expected + 1` of `relation` (`src` CONTAINS `task`) through the real `append_revision`, decided by U and
-/// authorised by Evidence `authz` (ADR-0078 T06d).
+/// Revision `expected + 1` of `relation` (`src` CONTAINS `task`) as a raw `role_gateway` INSERT, decided by U and
+/// authorised by Evidence `authz` (ADR-0078 T06d). ADR-0102 D-C leaves `coord_task_repo::set_task_project_in_txn` the
+/// only production writer of a CONTAINS revision, and that door opens one project per task at the DB clock; this
+/// fixture needs two projects holding one task over a fixed historical window, so it writes the statement itself and
+/// the 0249 / 0253 / 0255 triggers judge it as they judge the door's.
 fn relate(
     h: &Handle,
     task: TaskId,
@@ -436,24 +440,29 @@ fn relate(
             .await
             .expect("owner connection");
         let mut txn = gateway_txn(&mut conn, h).await;
-        let edge = RelationEdge {
-            src_id: src,
-            kind: RelationKind::Contains,
-            dst_id: task.0,
-        };
-        let revision = relation_repo::append_revision(
-            &mut txn,
-            &edge,
-            RelationId(relation),
-            expected,
-            valid,
-            &DecidedBy::Principal(PrincipalId(h.user_id)),
-            None,
-            &[],
-            authz,
+        let revision = expected + 1;
+        let (starts, ends): (Vec<i64>, Vec<Option<i64>>) = valid.segments().iter().copied().unzip();
+        sqlx::query(
+            "INSERT INTO private.project_task_relations (tenant_id, relation_id, revision, src_id, dst_id, \
+               relation_kind, valid, decided_by, factual_evidence_ids, authorization_evidence_id) \
+             VALUES (NULLIF(current_setting('humaux.tenant_id', true), '')::uuid, $1, $2, $3, $4, 'CONTAINS', \
+               (SELECT coalesce(range_agg(tstzrange( \
+                  to_timestamp(s / 1000000) + (s % 1000000) * interval '1 microsecond', \
+                  to_timestamp(e / 1000000) + (e % 1000000) * interval '1 microsecond', '[)')), '{}') \
+                  FROM unnest($5::bigint[], $6::bigint[]) AS v(s, e)), \
+               $7, '{}', $8)",
         )
+        .bind(relation)
+        .bind(revision)
+        .bind(src)
+        .bind(task.0)
+        .bind(starts)
+        .bind(ends)
+        .bind(format!("principal:{}", h.user_id))
+        .bind(authz)
+        .execute(&mut *txn)
         .await
-        .expect("append_revision");
+        .expect("insert the CONTAINS revision");
         txn.commit().await.expect("commit the revision");
         revision
     })
@@ -631,7 +640,7 @@ fn projection(h: &mut Handle, w: &World, evidence: &[(&'static str, Uuid)]) -> P
         .collect()
 }
 
-/// Steps 1–2 for one tenant: the fixture, m1–m3 through the real put, both relations through `append_revision`
+/// Steps 1–2 for one tenant: the fixture, m1–m3 through the real put, both relations through `relate`
 /// (authorised by m1's Evidence, the first one in the tenant), and one Distill pass with `provider`. Returns the world,
 /// the Evidence of each message and the pass.
 fn steps_1_2(

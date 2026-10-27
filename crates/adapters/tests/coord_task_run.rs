@@ -2,12 +2,13 @@
 //!   §30.1 state closed set (§78.2) and the ADR-0046 epoch bump on close, plus G-T04a-6..8 (#76): the verification
 //!   judges the run after the task lock is held, and the write-time recheck; against a real Postgres.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(any)
-//!   r=[coord.task_runs_one_open_lease_per_task] w=[control.tenants, coord.task_runs, coord.tasks],
+//!   r=[coord.task_runs_one_open_lease_per_task] w=[control.tenants, control.workspaces, coord.task_runs, coord.tasks],
 //!   PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::coord_repo, adapters::postgres, adapters::retrieve,
-//!   domain::coordination, domain::error, domain::identity, domain::ids, humaux-testkit]
+//!   domain::coordination, domain::error, domain::identity, domain::ids, humaux-testkit, testkit::fixture_purge]
 //! Called-by: [cargo-test]
-//! Invariants: [every test owns a throwaway control.tenants row and deletes its coord rows on drop; lease expiry is
+//! Invariants: [every test owns a throwaway control.tenants row and one workspace (ADR-0102 D-D: submit places a task
+//!   in its workspace's Unfiled project) and purges the tenant on drop; lease expiry is
 //!   moved on the DB clock by SQL, never by sleeping; every rejection case has a passing positive control in the same
 //!   test; a two-connection test proves its block through pg_blocking_pids, never a timed sleep; no DSN or
 //!   unreachable DB goes through the §79.2 three-state skip]
@@ -30,6 +31,7 @@ use humaux_domain::coordination::{FencingToken, TaskRunId, TaskState};
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{TaskId, TenantId, WorkspaceId};
+use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use sqlx::postgres::PgPoolOptions;
@@ -52,24 +54,21 @@ struct Handle {
     /// Owner DSN, for the extra owner connections of the two-connection tests.
     admin_dsn: String,
     tenant_id: Uuid,
+    /// The tenant's only workspace, the one every [`scope`] holds.
+    workspace_id: Uuid,
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        if let Err(error) = self.admin.batch_execute(&format!(
-            "DELETE FROM coord.task_runs WHERE tenant_id = '{0}'; \
-             DELETE FROM coord.tasks WHERE tenant_id = '{0}';",
-            self.tenant_id,
-        )) {
+        // Catalog-driven: the tenant's tasks, runs, Unfiled project (with its slots and marker) and workspace go in FK order.
+        let purged = purge_tenant_fixture_sql(&self.tenant_id.to_string())
+            .and_then(|sql| self.admin.batch_execute(&sql).map_err(|e| e.to_string()));
+        if let Err(error) = purged {
             eprintln!(
                 "coord_task_run cleanup failed for tenant {}: {error}",
                 self.tenant_id
             );
         }
-        let _ = self.admin.batch_execute(&format!(
-            "DELETE FROM control.tenants WHERE tenant_id = '{0}';",
-            self.tenant_id,
-        ));
     }
 }
 
@@ -100,7 +99,14 @@ impl DbIntegrationFixture for CoordFixture {
         let tenant_id: Uuid = admin
             .query_one(
                 "INSERT INTO control.tenants (name) VALUES ($1) RETURNING tenant_id",
-                &[&"coord_task_run.rs throwaway tenant"],
+                &[&"e2e-fixture coord_task_run.rs throwaway tenant"],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
+            .get(0);
+        let workspace_id: Uuid = admin
+            .query_one(
+                "INSERT INTO control.workspaces (tenant_id, name) VALUES ($1, 'w') RETURNING workspace_id",
+                &[&tenant_id],
             )
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
             .get(0);
@@ -147,17 +153,24 @@ impl DbIntegrationFixture for CoordFixture {
             admin,
             admin_dsn: dsn,
             tenant_id,
+            workspace_id,
         })
     }
 }
 
-fn scope(tenant: Uuid) -> AuthorizationScope {
+/// A scope of `tenant` holding the one `workspace`.
+fn scope_in(tenant: Uuid, workspace: Uuid) -> AuthorizationScope {
     AuthorizationScope::new(
         TenantId(tenant),
         PrincipalId::new(),
         None,
-        BoundedSet::new([WorkspaceId::new()]).expect("one workspace"),
+        BoundedSet::new([WorkspaceId(workspace)]).expect("one workspace"),
     )
+}
+
+/// A fresh principal in the fixture tenant's workspace.
+fn scope(h: &Handle) -> AuthorizationScope {
+    scope_in(h.tenant_id, h.workspace_id)
 }
 
 fn submit(h: &Handle, s: &AuthorizationScope) -> TaskId {
@@ -309,7 +322,7 @@ fn task_epoch(h: &mut Handle, task: TaskId) -> i64 {
 #[test]
 fn g_t04a_1_expired_lease_fails_verification() {
     run_db_fixture::<CoordFixture, _>("g_t04a_1_expired_lease_fails_verification", |mut h| {
-        let a = scope(h.tenant_id);
+        let a = scope(&h);
         let task = submit(&h, &a);
         let run = claim(&h, &a, task).expect("claim");
         let verified = verify(&h, &a, run.task_run_id, run.fencing_token).expect("live lease");
@@ -338,8 +351,8 @@ fn g_t04a_1_expired_lease_fails_verification() {
 #[test]
 fn g_t04a_2_reclaim_rejects_old_token() {
     run_db_fixture::<CoordFixture, _>("g_t04a_2_reclaim_rejects_old_token", |mut h| {
-        let a = scope(h.tenant_id);
-        let b = scope(h.tenant_id);
+        let a = scope(&h);
+        let b = scope(&h);
         let task = submit(&h, &a);
         let first = claim(&h, &a, task).expect("first claim");
         assert_eq!(
@@ -373,9 +386,9 @@ fn g_t04a_2_reclaim_rejects_old_token() {
 #[test]
 fn g_t04a_3_non_owner_rejected() {
     run_db_fixture::<CoordFixture, _>("g_t04a_3_non_owner_rejected", |mut h| {
-        let a = scope(h.tenant_id);
-        let b = scope(h.tenant_id);
-        let foreign = scope(TenantId::new().0);
+        let a = scope(&h);
+        let b = scope(&h);
+        let foreign = scope_in(TenantId::new().0, WorkspaceId::new().0);
         let task = submit(&h, &a);
         let run = claim(&h, &a, task).expect("claim");
         let owner: Uuid = h
@@ -450,7 +463,7 @@ fn g_t04a_5_terminal_close_bumps_authorization_epoch() {
     run_db_fixture::<CoordFixture, _>(
         "g_t04a_5_terminal_close_bumps_authorization_epoch",
         |mut h| {
-            let a = scope(h.tenant_id);
+            let a = scope(&h);
             for outcome in [TaskState::Completed, TaskState::Failed] {
                 let task = submit(&h, &a);
                 let before = task_epoch(&mut h, task);
@@ -544,7 +557,7 @@ fn g_t04a_6_verify_waiting_for_a_close_sees_the_close() {
     run_db_fixture::<CoordFixture, _>(
         "g_t04a_6_verify_waiting_for_a_close_sees_the_close",
         |mut h| {
-            let a = scope(h.tenant_id);
+            let a = scope(&h);
             for outcome in [TaskState::Completed, TaskState::Failed] {
                 let task = submit(&h, &a);
                 let run = claim(&h, &a, task).expect("claim");
@@ -583,7 +596,7 @@ fn g_t04a_6_verify_waiting_for_a_close_sees_the_close() {
 #[allow(clippy::excessive_nesting)]
 fn g_t04a_7_close_waits_for_a_held_verification() {
     run_db_fixture::<CoordFixture, _>("g_t04a_7_close_waits_for_a_held_verification", |mut h| {
-        let a = scope(h.tenant_id);
+        let a = scope(&h);
         for outcome in [TaskState::Completed, TaskState::Failed] {
             let task = submit(&h, &a);
             let run = claim(&h, &a, task).expect("claim");
@@ -657,8 +670,8 @@ fn g_t04a_7_close_waits_for_a_held_verification() {
 #[test]
 fn g_t04a_8_recheck_judges_the_lease_again() {
     run_db_fixture::<CoordFixture, _>("g_t04a_8_recheck_judges_the_lease_again", |mut h| {
-        let a = scope(h.tenant_id);
-        let b = scope(h.tenant_id);
+        let a = scope(&h);
+        let b = scope(&h);
         let task = submit(&h, &a);
         let first = claim(&h, &a, task).expect("claim");
         let (id, token) = (first.task_run_id, first.fencing_token);

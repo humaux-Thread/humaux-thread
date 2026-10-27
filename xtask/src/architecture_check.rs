@@ -3853,6 +3853,68 @@ fn m09_1_ticket_doors(root: &Path) -> Verdict {
     )
 }
 
+/// ADR-0102 D-A / D-C: the one home of the task→project authority.
+const M18_TASK_PROJECT_HOME: &str = "crates/adapters/src/coord_task_repo.rs";
+
+/// The door whose absence makes [`m18_task_project_sole_writer`] `not_applicable` (§57.1 rule 2).
+const M18_TASK_PROJECT_DOOR: &str = "pub async fn set_task_project_in_txn(";
+
+/// The CONTAINS writer behind that door: crate-private in `relation_repo`, called once (from the door's home).
+const M18_CONTAINS_WRITER: &str = "append_contains_revision";
+
+/// Door statements of ADR-0102 D-A: the `coord.tasks` INSERT and every write of `project_id` live in the home file.
+const M18_TASK_PROJECT_DOORS: [DoorStatement; 2] = [
+    ("INSERT INTO coord.tasks", M18_TASK_PROJECT_HOME),
+    ("SET project_id", M18_TASK_PROJECT_HOME),
+];
+
+/// M18-3a / G-M18-6, static half (ADR-0102 D-A, D-C): `coord.tasks.project_id` has one writer and the Project CONTAINS
+/// Task relation has one writer behind it. In non-test code, `append_contains_revision(` has `== 1` call site and it is
+/// in `coord_task_repo.rs`; `INSERT INTO coord.tasks` and `SET project_id` each appear once, there. `REFERENCES` is not
+/// gated (D-C). The 注错 is a production call of `append_contains_revision` from another module (`found 2`).
+/// `not_applicable`, naming the door, until `set_task_project_in_txn` exists.
+fn m18_task_project_sole_writer(root: &Path) -> Verdict {
+    let files = door_production_sources(root);
+    if !files
+        .iter()
+        .any(|(_, source)| source.contains(M18_TASK_PROJECT_DOOR))
+    {
+        return Verdict::NotApplicable(format!(
+            "missing object: `{M18_TASK_PROJECT_DOOR}` is not delivered yet (ADR-0102 D-A)"
+        ));
+    }
+    let gate = "M18-3a / G-M18-6";
+    let sites: Vec<(String, usize)> = files
+        .iter()
+        .filter_map(|(disp, source)| {
+            let n = count_call_sites(source, M18_CONTAINS_WRITER);
+            (n > 0).then(|| (disp.clone(), n))
+        })
+        .collect();
+    let total: usize = sites.iter().map(|(_, n)| n).sum();
+    let mut problems = Vec::new();
+    if total != 1 || sites.iter().any(|(disp, _)| disp != M18_TASK_PROJECT_HOME) {
+        problems.push(format!(
+            "{gate}: expected exactly 1 `{M18_CONTAINS_WRITER}(` call in non-test code, in {M18_TASK_PROJECT_HOME}; \
+             found {total}: {sites:?}"
+        ));
+    }
+    if let Verdict::Fail(lines) = sole_door_statements(
+        root,
+        gate,
+        "M18 task-project door",
+        &M18_TASK_PROJECT_DOORS,
+        &[],
+    ) {
+        problems.extend(lines);
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
 // ============================================================================
 // M04 D2 / G-M04-1: plans are data. A plan name, a price and a lease block size are rows of the plan catalogue (seeded
 // from the values file), never Rust: no production source branches on a plan key or states a price (§71.1, §78.1).
@@ -11605,6 +11667,10 @@ pub fn run(_args: &[String]) -> i32 {
             m09_1_ticket_doors(&root),
         ),
         (
+            "M18-3a / G-M18-6 (coord.tasks.project_id has one writer: append_contains_revision has one non-test call, INSERT INTO coord.tasks and SET project_id appear once each, all in coord_task_repo.rs)",
+            m18_task_project_sole_writer(&root),
+        ),
+        (
             "M04 D2 / G-M04-1 (plans are data: no plan_key of the values file and no price_cents / lease_block integer literal in crates and bins non-test code, or in migrations above the scan floor)",
             m04_1_plans_are_data(&root),
         ),
@@ -17216,6 +17282,119 @@ async fn serving_version_in_txn() {}
         };
         assert_eq!(lines.len(), 1);
         fs::remove_dir_all(tmp).unwrap();
+    }
+
+    // -- M18-3a / G-M18-6 (static half): one writer of coord.tasks.project_id --------------------------------------
+
+    const M18_HOME_SOURCE: &str = "pub async fn set_task_project_in_txn() {}\n\
+        async fn append_edge() { relation_repo::append_contains_revision(a, b); }\n\
+        fn sql() { let _ = [\"INSERT INTO coord.tasks (x) VALUES (1)\", \"UPDATE coord.tasks SET project_id = $3\"]; }\n";
+
+    /// The tree as M18-3a leaves it: the door, one CONTAINS call and the two statements, all in the home file.
+    #[test]
+    fn m18_task_project_sole_writer_real_repo() {
+        assert_eq!(m18_task_project_sole_writer(&real_root()), Verdict::Pass);
+    }
+
+    /// Green fixture, plus everything that must NOT count: a definition of the CONTAINS writer, a comment naming it, a
+    /// test tree seeding raw rows, and a call after a trailing `#[cfg(test)] mod`.
+    #[test]
+    fn m18_task_project_sole_writer_passes_and_ignores_definitions_comments_and_tests() {
+        let tmp = fresh_tmp("m18-3a-green");
+        m07_write(&tmp, M18_TASK_PROJECT_HOME, M18_HOME_SOURCE);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/relation_repo.rs",
+            "// append_contains_revision(x) is called once, from coord_task_repo\n\
+             pub(crate) async fn append_contains_revision(a: u8) {}\n\
+             #[cfg(test)]\n\
+             mod tests { fn t() { append_contains_revision(1); } }\n",
+        );
+        m07_write(
+            &tmp,
+            "bins/gateway/tests/seed.rs",
+            "fn seed() { let _ = \"INSERT INTO coord.tasks(tenant_id,title) VALUES($1,'x')\"; }\n",
+        );
+        assert_eq!(m18_task_project_sole_writer(&tmp), Verdict::Pass);
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `not_applicable` names the missing door (§57.1 rule 2).
+    #[test]
+    fn m18_task_project_sole_writer_is_not_applicable_naming_the_door() {
+        let tmp = fresh_tmp("m18-3a-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m18_task_project_sole_writer(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                assert!(detail.contains(M18_TASK_PROJECT_DOOR), "{detail}");
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M18-6, r4): a production call of `append_contains_revision` from `coord_repo.rs` → 红, naming both files.
+    #[test]
+    fn m18_task_project_sole_writer_fails_on_a_second_contains_call() {
+        let tmp = fresh_tmp("m18-3a-red-call");
+        m07_write(&tmp, M18_TASK_PROJECT_HOME, M18_HOME_SOURCE);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/coord_repo.rs",
+            "fn submit() { relation_repo::append_contains_revision(a, b); }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("expected Fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("found 2"), "{lines:?}");
+        assert!(lines[0].contains("coord_repo.rs"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M18-6): the only call moved out of the home file, zero calls, and a stray `coord.tasks` INSERT or
+    /// `project_id` write elsewhere are each 红.
+    #[test]
+    fn m18_task_project_sole_writer_fails_on_a_misplaced_call_or_statement() {
+        let tmp = fresh_tmp("m18-3a-red-place");
+        let without_call =
+            M18_HOME_SOURCE.replace("relation_repo::append_contains_revision(a, b)", "noop()");
+        m07_write(&tmp, M18_TASK_PROJECT_HOME, &without_call);
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("zero calls must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/other.rs",
+            "fn f() { append_contains_revision(a, b); }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("a call outside the home must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        m07_write(&tmp, M18_TASK_PROJECT_HOME, M18_HOME_SOURCE);
+        m07_write(
+            &tmp,
+            "crates/adapters/src/other.rs",
+            "fn f() { let _ = \"UPDATE coord.tasks t SET project_id = $1\"; }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("a project_id write outside the home must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("SET project_id"), "{lines:?}");
+        m07_write(
+            &tmp,
+            "crates/adapters/src/other.rs",
+            "fn f() { let _ = \"INSERT INTO coord.tasks (x) VALUES (1)\"; }\n",
+        );
+        let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
+            panic!("a second coord.tasks INSERT must fail")
+        };
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("INSERT INTO coord.tasks"), "{lines:?}");
+        fs::remove_dir_all(&tmp).ok();
     }
 
     // -- M07 D9 / G-M07-1: one INSERT statement per door ------------------------------------
