@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; ADR-0110 D-C
@@ -8,7 +8,7 @@
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
-//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6) and the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C).
+//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C) and the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -3813,6 +3813,21 @@ fn sole_door_statements(
     } else {
         Verdict::Pass
     }
+}
+
+/// ADR-0092 D-A / #315: the sole caller must perform the caller-scope root check before the freeze door.
+fn m19_freeze_sole_call(root: &Path) -> Verdict {
+    const HOME: &str = "crates/adapters/src/forget_repo.rs";
+    if !root.join(HOME).is_file() {
+        return Verdict::Fail(vec![format!("M19 freeze: missing required input {HOME}")]);
+    }
+    sole_door_statements(
+        root,
+        "M19 freeze",
+        "freeze caller",
+        &[("control.deletion_request_freeze(", HOME)],
+        &[],
+    )
 }
 
 /// M07 D9 / G-M07-1: the Evidence and Memory INSERT doors ([`M07_INSERT_DOORS`]).
@@ -9502,17 +9517,27 @@ fn operation_registry_failures(
         schema_keys,
         &mut failures,
     );
-    let destructive_keys = humaux_domain::confirm::DestructiveOp::ALL
-        .iter()
-        .map(|op| op.operation_key().to_string())
-        .collect();
-    name_diff(
-        "registry omits DestructiveOp",
-        &destructive_keys,
-        &registry,
-        &mut failures,
-    );
+    confirm_wire_registry_failures(&registry, &mut failures);
     failures
+}
+
+/// G-M26-1 / ADR-0092 C-M19-1, both directions, one line per violating op: a `DestructiveOp` whose `wire()` is
+/// `Mcp` must be a registry row; a `McpPending` or `Rest` op must not be one (a pending op never quietly appears
+/// as a live tool before its card adds the row). The per-row effect check stays in [`registry_metadata_failures`].
+fn confirm_wire_registry_failures(registry: &BTreeSet<String>, failures: &mut Vec<String>) {
+    use humaux_domain::confirm::{ConfirmWire, DestructiveOp};
+    for op in DestructiveOp::ALL {
+        let key = op.operation_key();
+        match (op.wire(), registry.contains(key)) {
+            (ConfirmWire::Mcp, true) | (ConfirmWire::McpPending | ConfirmWire::Rest, false) => {}
+            (ConfirmWire::Mcp, false) => {
+                failures.push(format!("registry omits DestructiveOp: `{key}`"));
+            }
+            (wire @ (ConfirmWire::McpPending | ConfirmWire::Rest), true) => {
+                failures.push(format!("registry carries {wire:?} DestructiveOp: `{key}`"));
+            }
+        }
+    }
 }
 
 /// §33 / ADR-0018: registry metadata records enforcement; it cannot grant permissions.
@@ -11568,6 +11593,10 @@ pub fn run(_args: &[String]) -> i32 {
             adr0061_no_box_leak_labels(&root),
         ),
         (
+            "M19 / #315 (freeze door has exactly one Rust call site)",
+            m19_freeze_sole_call(&root),
+        ),
+        (
             "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
             m07_1_insert_doors(&root),
         ),
@@ -12799,6 +12828,50 @@ runs:
         assert_eq!(
             operation_registry_failures(&manifest, &keys, &scopes),
             vec!["registry `memory.archive` effect differs from DestructiveOp::ALL".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_surface_truth_registry_confirm_wire_both_ways() {
+        let root = real_root();
+        let manifest = read_contract(&root.join("contracts/mcp"), "manifest.json").unwrap();
+        let scopes = catalog_operation_scopes(
+            &root.join("contracts/mcp"),
+            manifest["tools"].as_array().unwrap(),
+        )
+        .unwrap();
+        let keys: BTreeSet<String> = scopes.keys().cloned().collect();
+        let template = manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|op| op["op"] == "memory.archive")
+            .unwrap()
+            .clone();
+        // McpPending / Rest op registered (its schema branch admitted, so only the wire rule can fire).
+        for (key, wire) in [("memory.forget", "McpPending"), ("account.delete", "Rest")] {
+            let mut entry = template.clone();
+            entry["op"] = key.into();
+            let mut fixture = manifest.clone();
+            fixture["operations"].as_array_mut().unwrap().push(entry);
+            let mut admitted = keys.clone();
+            admitted.insert(key.to_string());
+            let mut admitted_scopes = scopes.clone();
+            admitted_scopes.insert(key.to_string(), scopes["memory.archive"].clone());
+            assert_eq!(
+                operation_registry_failures(&fixture, &admitted, &admitted_scopes),
+                vec![format!("registry carries {wire} DestructiveOp: `{key}`")]
+            );
+        }
+        // Mcp op dropped from the registry.
+        let mut fixture = manifest.clone();
+        fixture["operations"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|op| op["op"] != "memory.archive");
+        assert!(
+            operation_registry_failures(&fixture, &keys, &scopes)
+                .contains(&"registry omits DestructiveOp: `memory.archive`".to_string())
         );
     }
 
@@ -17108,6 +17181,41 @@ async fn serving_version_in_txn() {}
         .unwrap();
         assert!(matches!(g80_11_source_hash_unique(&tmp), Verdict::Fail(_)));
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #315: the production tree must contain exactly one call in the checked adapter.
+    #[test]
+    fn m19_freeze_sole_call_real_repo() {
+        assert_eq!(m19_freeze_sole_call(&real_root()), Verdict::Pass);
+    }
+
+    /// #315: the same sentinel rejects zero, two, misplaced and missing callers.
+    #[test]
+    fn m19_freeze_sole_call_fixture() {
+        let tmp = fresh_tmp("m19-freeze");
+        let home = "crates/adapters/src/forget_repo.rs";
+        let call = "fn door() { let _ = \"SELECT control.deletion_request_freeze($1,$2,$3)\"; }";
+        m07_write(&tmp, home, call);
+        assert_eq!(m19_freeze_sole_call(&tmp), Verdict::Pass);
+        for source in [String::new(), format!("{call}\n{call}")] {
+            m07_write(&tmp, home, &source);
+            let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+                panic!("expected fail")
+            };
+            assert_eq!(lines.len(), 1);
+        }
+        m07_write(&tmp, home, "fn door() {}");
+        m07_write(&tmp, "crates/adapters/src/other.rs", call);
+        let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+            panic!("expected fail")
+        };
+        assert_eq!(lines.len(), 1);
+        fs::remove_file(tmp.join(home)).unwrap();
+        let Verdict::Fail(lines) = m19_freeze_sole_call(&tmp) else {
+            panic!("expected fail")
+        };
+        assert_eq!(lines.len(), 1);
+        fs::remove_dir_all(tmp).unwrap();
     }
 
     // -- M07 D9 / G-M07-1: one INSERT statement per door ------------------------------------

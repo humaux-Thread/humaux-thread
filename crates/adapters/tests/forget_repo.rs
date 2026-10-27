@@ -237,7 +237,7 @@ fn seed_deletion_request_ago(admin: &mut Client, tenant_id: Uuid, ago_secs: i64)
         )
         .expect("seed requester")
         .get(0);
-    admin
+    let request: Uuid = admin
         .query_one(
             "INSERT INTO control.deletion_requests \
                (tenant_id, scope_kind, scope_id, requested_by, manifest_hash, logical_deleted_at) \
@@ -252,7 +252,9 @@ fn seed_deletion_request_ago(admin: &mut Client, tenant_id: Uuid, ago_secs: i64)
             ],
         )
         .expect("seed control.deletion_requests row")
-        .get(0)
+        .get(0);
+    admin.execute("INSERT INTO control.deletion_targets (request_id,tenant_id,kind,id) VALUES ($1,$2,'MEMORY',$3)", &[&request,&tenant_id,&Uuid::new_v4()]).expect("seed exact target");
+    request
 }
 
 /// One `DONE` stream row of the tenant, settled `settled_ago` seconds ago; tombstone it with [`tombstone_row`].
@@ -556,6 +558,33 @@ fn tombstoned_unpurged_over_sla_goes_red_then_green_on_purge_step() {
     );
 }
 
+/// §41.2 / #315: only a DONE receipt establishes physical erasure.
+#[test]
+fn failed_or_pending_purge_still_counts_as_unpurged() {
+    for outcome in ["FAILED", "EXTERNAL_PENDING", "CANNOT_ERASE"] {
+        run_db_fixture::<ForgetFixture, _>(
+            "failed_or_pending_purge_still_counts_as_unpurged",
+            |mut handle| {
+                let row = seed_done_row(&mut handle, 600);
+                let request = seed_deletion_request_ago(&mut handle.admin, handle.tenant_id, 60);
+                tombstone_row(&handle, &row);
+                handle
+                    .rt
+                    .block_on(forget_repo::record_step(
+                        &handle.maintenance,
+                        handle.tenant_id,
+                        request,
+                        DeletionStep::QdrantPoints,
+                        outcome,
+                        None,
+                    ))
+                    .expect("record non-DONE purge");
+                assert_eq!(over_sla(&handle, 30), 1, "{outcome} is not erasure");
+            },
+        );
+    }
+}
+
 /// Seeds 3 rows settled 3600 s ago under an old (1800 s) request that is purged, then tombstones them.
 fn seed_purged_old_request_with_three_rows(handle: &mut Handle) {
     let rows: Vec<StreamKey> = (0..3).map(|_| seed_done_row(handle, 3600)).collect();
@@ -583,11 +612,11 @@ fn over_sla_gauge_is_zero_when_only_a_fresh_request_is_unpurged() {
     );
 }
 
-/// §41.2 (e): as (d), but the fresh request is past the SLA and unpurged ⇒ 4, the documented tenant-grain over-count.
+/// §41.2 (e): ADR-0092 D-C: an old purged request never contributes targets to another request.
 #[test]
-fn over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged() {
+fn over_sla_gauge_counts_only_the_unpurged_requests_targets() {
     run_db_fixture::<ForgetFixture, _>(
-        "over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged",
+        "over_sla_gauge_counts_only_the_unpurged_requests_targets",
         |mut handle| {
             seed_purged_old_request_with_three_rows(&mut handle);
             let fresh_row = seed_done_row(&mut handle, 300);
@@ -595,9 +624,8 @@ fn over_sla_gauge_overcounts_the_tenant_when_one_request_is_unpurged() {
             tombstone_row(&handle, &fresh_row);
             assert_eq!(
                 over_sla(&handle, 30),
-                4,
-                "documented over-count (fail loud): every tombstoned row of a tenant with a request unpurged past SLA counts, \
-                 including the 3 rows of the purged request; exact attribution waits for M19-3a"
+                1,
+                "only the unpurged request target counts, independently of stream row count"
             );
         },
     );

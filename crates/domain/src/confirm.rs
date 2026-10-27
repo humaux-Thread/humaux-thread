@@ -2,14 +2,16 @@
 //!   fallback is `first call -> confirmation_required + confirm_token`, `second call(confirm_token) -> execute`
 //!   (ADR-0018).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, protocol::mcp_catalog, tests, xtask::architecture_check]
-//! Invariants: []
-//! Spec: Baseline §78.2; §52.1
+//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt, application::archive, application::pin, application::supersede, domain::context, gateway::guard, gateway::mcp_application, gateway::memory, protocol::mcp_catalog, tests, xtask::architecture_check]
+//! Invariants: [DestructiveOp::wire is exhaustive with no wildcard arm: every gated op chooses Mcp | McpPending | Rest]
+//! Spec: Baseline §78.2; §52.1; §33.10
 //!
 //! Two closed types, no strings (§78.2):
 //! - [`DestructiveOp`] is the closed set of operations that go through the gate. Its
 //!   `operation_key` is the *only* place the wire key of a gated operation is spelled; the
 //!   gateway's supported-operation table and its dispatch arm both read it from here.
+//!   [`DestructiveOp::wire`] classifies each op as [`ConfirmWire`], and the M26-1 catalog
+//!   invariant (G-M26-1) reads that class in both directions: only `Mcp` ops are in the registry.
 //! - [`ConfirmToken`] is the 32-byte nonce handed to the client (base64url on the wire,
 //!   sha256 at rest — the server never stores the nonce itself).
 //!
@@ -23,93 +25,95 @@ use sha2::{Digest, Sha256};
 
 use crate::error::ErrorCode;
 
-/// Closed set of MCP operations gated by a confirm token (§33.10 rule 9). Add a variant per
-/// governance op as it is wired; never a string.
+closed_set! { operation_key, parse_operation_key, array;
+        /// Closed confirmation operations (Baseline §33.10 rule 9; ADR-0092 D-B).
+    #[derive(Hash)]
+    DestructiveOp {
+        /// §36 `memory.supersede`: mark one Memory superseded by a successor (G59-4).
+        MemorySupersede => "memory.supersede",
+        /// §36 `memory.pin`: upsert one PINNED `context_bindings` row (ADR-0019).
+        MemoryPin => "memory.pin",
+        /// §36 `memory.unpin`: revoke that binding row only — never Evidence/Memory (ADR-0019).
+        MemoryUnpin => "memory.unpin",
+        /// §36 `memory.restore`: undo a SUPERSEDE within the window (ADR-0020). Not itself
+        /// destructive, but it runs through the same confirm gate (reuse, no second token path).
+        MemoryRestore => "memory.restore",
+        /// §36 `memory.archive`: hide one Memory from recall/context without destroying it
+        /// (ADR-0024, Q3). Sets `archived_at`; not a fifth AuthorityStatus. Runs the same gate.
+        MemoryArchive => "memory.archive",
+        /// §36 `memory.unarchive`: clear `archived_at`, making the Memory visible again
+        /// (ADR-0024). The inverse of archive — never reachable via `memory.restore` (an ARCHIVE
+        /// head is NOT_REVERSIBLE there). Same gate, no successor.
+        MemoryUnarchive => "memory.unarchive",
+        /// §Q4 `memory.correct` (ADR-0025): a user correction — one transaction inserts a new
+        /// Evidence + a new Memory version and supersedes the original (reason USER_CORRECTION).
+        /// Runs the same confirm gate; no successor argument on the wire (the successor is minted
+        /// inside the confirmed transaction, so the token carries no `successor_id`).
+        MemoryCorrect => "memory.correct",
+        /// §36/§10.1 `memory.confirm` (ADR-0026, Card 6): promote a `private.distill_candidates`
+        /// row into `UserConfirmed` Evidence + a new Memory version. Runs the same confirm gate; the
+        /// gate `target_id` is the `candidate_id` (not a memory_id), no successor argument.
+        MemoryConfirm => "memory.confirm",
+        /// §36 `memory.reject` (ADR-0026, Card 6): mark a pending candidate REJECTED. Same gate,
+        /// `target_id` is the candidate_id, no successor; writes no Evidence/Memory.
+        MemoryReject => "memory.reject",
+        /// §25.4.A(8) `memory.bind` (card 22b, ADR-0045): create one MANDATORY
+        /// `context_bindings` row at a TASK scope — the controlled write path the ruling requires
+        /// before `task_explicit_context_v1` can have anything to read. Mirrors `memory.pin`'s
+        /// gate exactly; the difference is the mode (MANDATORY) and the scope kind (TASK), and
+        /// the envelope re-reads the memory's authority/type/evidence basis in the same
+        /// transaction before `domain::context::authorize_mandatory` may mint a grant.
+        MemoryBind => "memory.bind",
+        /// §25.4.A(9) `memory.unbind` (card 22b, ADR-0045): revoke that MANDATORY TASK binding.
+        /// Evidence/Memory untouched, same gate. The A->B authorized replacement is `memory.bind`
+        /// with `replaces_binding_id` (one transaction), not an unbind followed by a bind.
+        MemoryUnbind => "memory.unbind",
+        /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: a confirmed replacement of a note's head version.
+        /// Target = `supersedes`, no successor; the token also binds the replacement intent digest
+        /// (`note::replace_intent_sha256`). A `note_put` create (no `note_id`) never enters the gate.
+        MemoryNoteReplace => "memory.note_put",
+        /// ADR-0092 D-B: confirms one frozen deletion request and its scope digest.
+        MemoryForget => "memory.forget",
+        /// ADR-0092 D-E: reserved for the separately re-authenticated tenant deletion entry.
+        AccountDelete => "account.delete",
+    }
+}
+
+/// How a confirm-gated operation is reachable on the wire (ADR-0092 D-B / C-M19-1). Closed: a new class is
+/// an architecture change, not a default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DestructiveOp {
-    /// §36 `memory.supersede`: mark one Memory superseded by a successor (G59-4).
-    MemorySupersede,
-    /// §36 `memory.pin`: upsert one PINNED `context_bindings` row (ADR-0019).
-    MemoryPin,
-    /// §36 `memory.unpin`: revoke that binding row only — never Evidence/Memory (ADR-0019).
-    MemoryUnpin,
-    /// §36 `memory.restore`: undo a SUPERSEDE within the window (ADR-0020). Not itself
-    /// destructive, but it runs through the same confirm gate (reuse, no second token path).
-    MemoryRestore,
-    /// §36 `memory.archive`: hide one Memory from recall/context without destroying it
-    /// (ADR-0024, Q3). Sets `archived_at`; not a fifth AuthorityStatus. Runs the same gate.
-    MemoryArchive,
-    /// §36 `memory.unarchive`: clear `archived_at`, making the Memory visible again
-    /// (ADR-0024). The inverse of archive — never reachable via `memory.restore` (an ARCHIVE
-    /// head is NOT_REVERSIBLE there). Same gate, no successor.
-    MemoryUnarchive,
-    /// §Q4 `memory.correct` (ADR-0025): a user correction — one transaction inserts a new
-    /// Evidence + a new Memory version and supersedes the original (reason USER_CORRECTION).
-    /// Runs the same confirm gate; no successor argument on the wire (the successor is minted
-    /// inside the confirmed transaction, so the token carries no `successor_id`).
-    MemoryCorrect,
-    /// §36/§10.1 `memory.confirm` (ADR-0026, Card 6): promote a `private.distill_candidates`
-    /// row into `UserConfirmed` Evidence + a new Memory version. Runs the same confirm gate; the
-    /// gate `target_id` is the `candidate_id` (not a memory_id), no successor argument.
-    MemoryConfirm,
-    /// §36 `memory.reject` (ADR-0026, Card 6): mark a pending candidate REJECTED. Same gate,
-    /// `target_id` is the candidate_id, no successor; writes no Evidence/Memory.
-    MemoryReject,
-    /// §25.4.A(8) `memory.bind` (card 22b, ADR-0045): create one MANDATORY
-    /// `context_bindings` row at a TASK scope — the controlled write path the ruling requires
-    /// before `task_explicit_context_v1` can have anything to read. Mirrors `memory.pin`'s
-    /// gate exactly; the difference is the mode (MANDATORY) and the scope kind (TASK), and
-    /// the envelope re-reads the memory's authority/type/evidence basis in the same
-    /// transaction before `domain::context::authorize_mandatory` may mint a grant.
-    MemoryBind,
-    /// §25.4.A(9) `memory.unbind` (card 22b, ADR-0045): revoke that MANDATORY TASK binding.
-    /// Evidence/Memory untouched, same gate. The A->B authorized replacement is `memory.bind`
-    /// with `replaces_binding_id` (one transaction), not an unbind followed by a bind.
-    MemoryUnbind,
-    /// ADR-0067 D-J `memory.note_put` with `note_id` + `supersedes`: a confirmed replacement of a note's head version.
-    /// Target = `supersedes`, no successor; the token also binds the replacement intent digest
-    /// (`note::replace_intent_sha256`). A `note_put` create (no `note_id`) never enters the gate.
-    MemoryNoteReplace,
+pub enum ConfirmWire {
+    /// A live MCP operation: it is in the MCP registry with effect `destructive` (G-M26-1).
+    Mcp,
+    /// Gated, but its MCP registry row has not landed yet: it must NOT be in the registry, so a pending op
+    /// never quietly appears as a live tool.
+    McpPending,
+    /// REST entry only, never an MCP operation: it must NOT be in the registry.
+    Rest,
 }
 
 impl DestructiveOp {
-    /// Every variant, for table-driven lookups.
-    pub const ALL: [DestructiveOp; 12] = [
-        DestructiveOp::MemorySupersede,
-        DestructiveOp::MemoryPin,
-        DestructiveOp::MemoryUnpin,
-        DestructiveOp::MemoryRestore,
-        DestructiveOp::MemoryArchive,
-        DestructiveOp::MemoryUnarchive,
-        DestructiveOp::MemoryCorrect,
-        DestructiveOp::MemoryConfirm,
-        DestructiveOp::MemoryReject,
-        DestructiveOp::MemoryBind,
-        DestructiveOp::MemoryUnbind,
-        DestructiveOp::MemoryNoteReplace,
-    ];
-
-    /// Canonical operation key (contracts/mcp/*.schema.json `x-humaux-operation.operation_key`).
-    pub const fn operation_key(self) -> &'static str {
+    /// The wire class of this op. The match has no `_` arm on purpose: a new `DestructiveOp` variant must choose
+    /// its class here, and the M26-1 catalog invariant then checks the registry against it (§78.2).
+    pub const fn wire(self) -> ConfirmWire {
         match self {
-            DestructiveOp::MemorySupersede => "memory.supersede",
-            DestructiveOp::MemoryPin => "memory.pin",
-            DestructiveOp::MemoryUnpin => "memory.unpin",
-            DestructiveOp::MemoryRestore => "memory.restore",
-            DestructiveOp::MemoryArchive => "memory.archive",
-            DestructiveOp::MemoryUnarchive => "memory.unarchive",
-            DestructiveOp::MemoryCorrect => "memory.correct",
-            DestructiveOp::MemoryConfirm => "memory.confirm",
-            DestructiveOp::MemoryReject => "memory.reject",
-            DestructiveOp::MemoryBind => "memory.bind",
-            DestructiveOp::MemoryUnbind => "memory.unbind",
-            DestructiveOp::MemoryNoteReplace => "memory.note_put",
+            Self::MemorySupersede
+            | Self::MemoryPin
+            | Self::MemoryUnpin
+            | Self::MemoryRestore
+            | Self::MemoryArchive
+            | Self::MemoryUnarchive
+            | Self::MemoryCorrect
+            | Self::MemoryConfirm
+            | Self::MemoryReject
+            | Self::MemoryBind
+            | Self::MemoryUnbind
+            | Self::MemoryNoteReplace => ConfirmWire::Mcp,
+            // ADR-0092 D-B; flips to `Mcp` in card M19-6, which adds its registry row.
+            Self::MemoryForget => ConfirmWire::McpPending,
+            // ADR-0092 D-E / C-M19-1: REST entry, never an MCP op.
+            Self::AccountDelete => ConfirmWire::Rest,
         }
-    }
-
-    /// Reverse lookup from a catalog-validated operation key.
-    pub fn parse_operation_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|op| op.operation_key() == key)
     }
 }
 
@@ -222,6 +226,8 @@ fn base64url_decode_32(wire: &str) -> Result<[u8; CONFIRM_TOKEN_BYTES], ErrorCod
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -234,6 +240,22 @@ mod tests {
         }
         assert_eq!(DestructiveOp::parse_operation_key("memory.get"), None);
         assert_eq!(DestructiveOp::parse_operation_key(""), None);
+    }
+
+    /// The ops whose wire is not `Mcp`, pinned with `==` both ways (ADR-0092 C-M19-1): adding a pending or REST op
+    /// is a reviewed edit of this table, never a silent widening of the M26-1 catalog invariant.
+    #[test]
+    fn non_mcp_wire_ops_are_pinned_exactly() {
+        let pinned: HashSet<(DestructiveOp, ConfirmWire)> = HashSet::from([
+            (DestructiveOp::MemoryForget, ConfirmWire::McpPending),
+            (DestructiveOp::AccountDelete, ConfirmWire::Rest),
+        ]);
+        let actual: HashSet<(DestructiveOp, ConfirmWire)> = DestructiveOp::ALL
+            .iter()
+            .map(|op| (*op, op.wire()))
+            .filter(|(_, wire)| *wire != ConfirmWire::Mcp)
+            .collect();
+        assert_eq!(actual, pinned);
     }
 
     #[test]
