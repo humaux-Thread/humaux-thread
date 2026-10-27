@@ -221,6 +221,7 @@ modules:
 - `xtask::phase`
 - `xtask::r4_fault_manifest`
 - `xtask::rls_check`
+- `xtask::schedule_register`
 - `xtask::serial_lane`
 - `xtask::soak`
 - `xtask::threshold_shape`
@@ -345,6 +346,7 @@ processes:
 modules:
 - `xtask::architecture_check`
 - `xtask::contract_impact`
+- `xtask::schedule_register`
 
 ### `GITLEAKS_CONFIG`
 - witness: literal
@@ -5903,6 +5905,7 @@ modules:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -5972,6 +5975,7 @@ modules:
 - `private-worker::tests::m29_attribution_e2e`
 - `private-worker::tests::start_manual_contribution_command_0131`
 - `private-worker::tests::support::double_spend`
+- `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
