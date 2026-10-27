@@ -555,6 +555,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
+- reads `private.code_active_snapshots`
+- reads `private.code_files`
+- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -3295,6 +3298,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
+- reads `private.code_active_snapshots`
+- reads `private.code_files`
+- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -5594,6 +5600,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
@@ -6515,6 +6522,15 @@ executed by:
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
+### `control.repositories`
+read by:
+- (no process): `adapters::tests::facet_contract`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
+
 ### `control.resolve_contribution_deidentify_shadow`
 read by:
 
@@ -6729,6 +6745,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -6908,6 +6925,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
@@ -6983,6 +7001,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7012,6 +7031,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -8598,6 +8618,37 @@ written by:
 executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `private.code_active_snapshots`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
+
+### `private.code_files`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
+
+### `private.code_snapshots`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
 
 ### `private.comment_only`
 read by:
@@ -12006,6 +12057,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
+- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
@@ -12140,6 +12192,7 @@ executed by:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12811,6 +12864,7 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13343,6 +13397,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13537,6 +13592,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13667,6 +13723,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13728,6 +13785,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -17286,6 +17344,15 @@ services (computed):
 default run:
 
 ### `crates/adapters/tests/candidates.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/code_rls.rs`
 db-bound (default run): yes
 
 services (computed):

@@ -1651,6 +1651,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
@@ -3916,8 +3917,10 @@ grants (runtime roles):
 - role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::code_rls`
 
 executed by:
 
@@ -4442,6 +4445,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -4759,6 +4763,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
@@ -4877,6 +4882,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -4928,6 +4934,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -8523,19 +8530,15 @@ written by:
 
 executed by:
 
-### `private.code_edges`
+### `private.code_active_snapshots`
 - kind: table
 - owner: role_migration_owner
-- RLS: no
-- FORCE: no
-- created in: 0006_private_skeleton
+- RLS: yes
+- FORCE: yes
+- created in: 0284_code_snapshots
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
-- role_gateway: INSERT
 - role_gateway: SELECT
-- role_gateway: UPDATE
-- role_maintenance: SELECT
 - role_migration_owner: DELETE
 - role_migration_owner: INSERT
 - role_migration_owner: MAINTAIN
@@ -8544,14 +8547,13 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: INSERT
-- role_private_worker: SELECT
-- role_private_worker: UPDATE
-- role_retrieval_worker: SELECT
 
 read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::code_rls`
 
 executed by:
 
@@ -8563,11 +8565,7 @@ executed by:
 - created in: 0006_private_skeleton
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
-- role_gateway: INSERT
 - role_gateway: SELECT
-- role_gateway: UPDATE
-- role_maintenance: SELECT
 - role_migration_owner: DELETE
 - role_migration_owner: INSERT
 - role_migration_owner: MAINTAIN
@@ -8576,14 +8574,13 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: INSERT
-- role_private_worker: SELECT
-- role_private_worker: UPDATE
-- role_retrieval_worker: SELECT
 
 read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::code_rls`
 
 executed by:
 
@@ -8595,11 +8592,7 @@ executed by:
 - created in: 0006_private_skeleton
 
 grants (runtime roles):
-- role_consolidation_worker: SELECT
-- role_gateway: INSERT
 - role_gateway: SELECT
-- role_gateway: UPDATE
-- role_maintenance: SELECT
 - role_migration_owner: DELETE
 - role_migration_owner: INSERT
 - role_migration_owner: MAINTAIN
@@ -8608,46 +8601,14 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
-- role_private_worker: INSERT
-- role_private_worker: SELECT
-- role_private_worker: UPDATE
-- role_retrieval_worker: SELECT
 
 read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-
-executed by:
-
-### `private.code_symbols`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0006_private_skeleton
-
-grants (runtime roles):
-- role_consolidation_worker: SELECT
-- role_gateway: INSERT
-- role_gateway: SELECT
-- role_gateway: UPDATE
-- role_maintenance: SELECT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-- role_private_worker: INSERT
-- role_private_worker: SELECT
-- role_private_worker: UPDATE
-- role_retrieval_worker: SELECT
-
-read by:
-
-written by:
+- (no process): `adapters::tests::code_rls`
 
 executed by:
 
