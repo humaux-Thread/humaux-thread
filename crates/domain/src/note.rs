@@ -275,6 +275,32 @@ pub fn note_title(explicit: Option<&str>, body: &NoteBody) -> Result<String, Err
 mod tests {
     use super::*;
 
+    /// How many variants `pub enum NoteKind` declares, counted from this file's own source, so a variant added to the enum
+    /// but not to `NoteKind::ALL` changes the count and fails the test that uses it.
+    fn declared_note_kinds() -> usize {
+        let head = "pub enum NoteKind {\n";
+        let src = include_str!("note.rs");
+        let body = &src[src.find(head).expect("enum declaration") + head.len()..];
+        body[..body.find("\n}").expect("end of enum")]
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//") && line.ends_with(','))
+            .count()
+    }
+
+    #[test]
+    fn note_kind_all_lists_every_variant_once() {
+        assert_eq!(NoteKind::ALL.len(), 12);
+        assert_eq!(
+            NoteKind::ALL.len(),
+            declared_note_kinds(),
+            "a declared variant is missing from NoteKind::ALL"
+        );
+        let wires: std::collections::BTreeSet<&str> =
+            NoteKind::ALL.into_iter().map(NoteKind::wire).collect();
+        assert_eq!(wires.len(), NoteKind::ALL.len(), "a kind is listed twice");
+    }
+
     #[test]
     fn note_kind_wire_round_trips_and_the_set_is_twelve() {
         assert_eq!(NoteKind::ALL.len(), 12);

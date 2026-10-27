@@ -508,21 +508,34 @@ fn plan_catalogue_closed_sets_equal_the_domain_vocabularies() {
     );
 }
 
+/// The definition of one migration-0283 CHECK of `private.memory_records`, or the §57.1 `not_applicable` that names that
+/// very constraint (and the migration that creates it) when it is absent.
+fn constraint_def_or_skip(client: &mut Client, conname: &str) -> Option<String> {
+    let def = constraint_def(client, conname);
+    if def.is_none() {
+        skip_or_fail(
+            NAME,
+            &format!(
+                "missing object: {conname} — run `cargo xtask migrate` (migrations/0283_note_kinds_epistemic_status.sql)"
+            ),
+            ExternalDep::Postgres,
+        );
+    }
+    def
+}
+
 /// G-M07-6 / §78.2 (ADR-0124): `NoteKind::ALL` is the live `note_kind` CHECK, and every kind's `memory_type` is the pair
 /// the binding CHECK lists, in both directions.
 /// Fault: a Rust kind whose label the CHECK lacks (or the reverse), or a kind bound to another type ⇒ the sets differ ⇒ red.
 #[test]
 fn note_kinds_and_their_memory_types_equal_the_db_checks() {
     let Some(mut client) = client() else { return };
-    let (Some(kinds), Some(binding)) = (
-        constraint_def(&mut client, "memory_records_note_kind_check"),
-        constraint_def(&mut client, "memory_records_note_kind_memory_type_check"),
-    ) else {
-        skip_or_fail(
-            NAME,
-            "missing object: memory_records_note_kind_check — run `cargo xtask migrate` (migrations/0283_note_kinds_epistemic_status.sql)",
-            ExternalDep::Postgres,
-        );
+    let Some(kinds) = constraint_def_or_skip(&mut client, "memory_records_note_kind_check") else {
+        return;
+    };
+    let Some(binding) =
+        constraint_def_or_skip(&mut client, "memory_records_note_kind_memory_type_check")
+    else {
         return;
     };
     let wires = NoteKind::ALL.map(NoteKind::wire);
@@ -555,12 +568,8 @@ fn note_kinds_and_their_memory_types_equal_the_db_checks() {
 #[test]
 fn epistemic_status_equals_the_db_check_and_defaults_to_unknown() {
     let Some(mut client) = client() else { return };
-    let Some(def) = constraint_def(&mut client, "memory_records_epistemic_status_check") else {
-        skip_or_fail(
-            NAME,
-            "missing object: memory_records_epistemic_status_check — run `cargo xtask migrate` (migrations/0283_note_kinds_epistemic_status.sql)",
-            ExternalDep::Postgres,
-        );
+    let Some(def) = constraint_def_or_skip(&mut client, "memory_records_epistemic_status_check")
+    else {
         return;
     };
     let wires = EpistemicStatus::ALL.map(EpistemicStatus::as_db_str);

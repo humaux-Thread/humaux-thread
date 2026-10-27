@@ -290,28 +290,26 @@ pub async fn memory_texts_in_txn(
 mod tests {
     use super::*;
 
-    /// ADR-0124 D-B: the mapping as a hand-written table, not computed from [`epistemic_status`]. The nested match has no
-    /// wildcard, so a producer added without a row here fails to compile.
+    /// ADR-0124 D-B: the ruled status of each producer, written out here as its own `match`, not read from
+    /// [`epistemic_status`]. It has no wildcard arm, so a producer added without a ruling here does not compile.
+    const fn ruled(producer: MemoryProducer) -> EpistemicStatus {
+        match producer {
+            MemoryProducer::NotePut => EpistemicStatus::SourceReported,
+            MemoryProducer::Correction => EpistemicStatus::SourceReported,
+            MemoryProducer::Distill => EpistemicStatus::Interpretation,
+            MemoryProducer::Confirm => EpistemicStatus::Interpretation,
+        }
+    }
+
     #[test]
     fn every_producer_maps_to_its_ruled_status() {
-        fn named(producer: MemoryProducer) {
-            match producer {
-                MemoryProducer::NotePut
-                | MemoryProducer::Correction
-                | MemoryProducer::Distill
-                | MemoryProducer::Confirm => {}
-            }
-        }
-        let table = [
-            (MemoryProducer::NotePut, EpistemicStatus::SourceReported),
-            (MemoryProducer::Correction, EpistemicStatus::SourceReported),
-            (MemoryProducer::Distill, EpistemicStatus::Interpretation),
-            (MemoryProducer::Confirm, EpistemicStatus::Interpretation),
-        ];
-        assert_eq!(table.len(), 4);
-        for (producer, expected) in table {
-            named(producer);
-            assert_eq!(epistemic_status(producer), expected, "{producer:?}");
+        for producer in [
+            MemoryProducer::NotePut,
+            MemoryProducer::Correction,
+            MemoryProducer::Distill,
+            MemoryProducer::Confirm,
+        ] {
+            assert_eq!(epistemic_status(producer), ruled(producer), "{producer:?}");
             assert_ne!(
                 epistemic_status(producer),
                 EpistemicStatus::Unknown,

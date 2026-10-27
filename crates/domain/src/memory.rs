@@ -264,14 +264,35 @@ mod tests {
         assert_eq!(MemoryType::parse_wire("STATEFUL"), None);
     }
 
+    /// How many variants `pub enum {name}` declares, counted from this file's own source, so a variant added to the enum
+    /// but not to its `ALL` changes the count and fails the test that uses it.
+    fn declared_variants(name: &str) -> usize {
+        let head = format!("pub enum {name} {{\n");
+        let src = include_str!("memory.rs");
+        let body = &src[src.find(&head).expect("enum declaration") + head.len()..];
+        body[..body.find("\n}").expect("end of enum")]
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//") && line.ends_with(','))
+            .count()
+    }
+
     #[test]
-    fn epistemic_status_labels_are_distinct_upper_snake() {
-        assert_eq!(EpistemicStatus::ALL.len(), 4);
+    fn epistemic_status_all_lists_every_variant_and_labels_are_upper_snake() {
+        assert_eq!(
+            EpistemicStatus::ALL.len(),
+            declared_variants("EpistemicStatus"),
+            "a declared variant is missing from EpistemicStatus::ALL"
+        );
         let labels: std::collections::BTreeSet<&str> = EpistemicStatus::ALL
             .into_iter()
             .map(EpistemicStatus::as_db_str)
             .collect();
-        assert_eq!(labels.len(), 4, "a label is listed twice");
+        assert_eq!(
+            labels.len(),
+            EpistemicStatus::ALL.len(),
+            "a variant is listed twice"
+        );
         assert!(
             labels
                 .iter()
