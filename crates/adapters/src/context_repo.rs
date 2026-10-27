@@ -5,8 +5,11 @@
 //!   from returned rows; both passes re-check readability through `read_gate::readable_memory_ids` (the read gate and
 //!   its six conjuncts live in `adapters::read_gate`, not restated here); a PG error is
 //!   DependencyUnavailable/Internal, never an empty context; memory.enumerate writes at most MANIFEST_CAP manifest
-//!   rows per segment and a cursor at a capped manifest's end mints the next keyset segment with its own census]
-//! Spec: Baseline §25.4; §16.2; §6.2.3; §22.1; ADR-0062 D-K; ADR-0067 D-J2
+//!   rows per segment and a cursor at a capped manifest's end mints the next keyset segment with its own census; the
+//!   enumerate manifest and its census carry no project axis (the census runs with project_id None, the ADR-0110 D-F
+//!   axis lives in `adapters::exact_census`), so the recall.list(project) wire gives the manifest query and the
+//!   census the axis together or its set-equality cross-check fails closed]
+//! Spec: Baseline §25.4; §16.2; §6.2.3; §22.1; ADR-0062 D-K; ADR-0067 D-J2; ADR-0110 D-F
 //!
 //! 判定与类型在 [`humaux_domain::context`]（零 IO），本模块只负责发查询。分工的理由不是
 //! 洁癖：§25.4 那条「不许用 embedding similarity 解释」之所以是拓扑保证，靠的是
@@ -1424,6 +1427,9 @@ async fn mint_census_in_txn(
             subject_id: filter.subject_id,
             before_id: filter.before_id,
             notes: filter.notes,
+            // ponytail: enumerate has no project axis until the recall.list(project) wire card (M26) adds it to
+            // `EnumerationFilter` and the manifest query together; the census alone would break the set-equality below
+            project_id: None,
             readable: Some(readable),
         },
     )
