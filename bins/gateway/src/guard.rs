@@ -398,8 +398,11 @@ impl GatewayGuard {
         )
     }
 
-    fn rate(&self, subjects: &[Subject]) -> Result<(), ErrorCode> {
+    fn rate(&self, context: &McpHttpContext, subjects: &[Subject]) -> Result<(), ErrorCode> {
         self.limiter.check(subjects).map_err(|denial| {
+            if denial.scope == "capacity" {
+                context.mark_capacity_denied();
+            }
             if matches!(
                 denial.code,
                 ErrorCode::RateLimited | ErrorCode::DependencyUnavailable
@@ -475,10 +478,13 @@ impl GatewayGuard {
         let result = if !self.network_allowed(&network, None) {
             Err(ErrorCode::Forbidden)
         } else {
-            self.rate(&[Subject::ip(
-                network.client_ip,
-                self.settings.rates.preauth_ipv6_prefix_bits,
-            )?])
+            self.rate(
+                context,
+                &[Subject::ip(
+                    network.client_ip,
+                    self.settings.rates.preauth_ipv6_prefix_bits,
+                )?],
+            )
         };
         if let Err(code) = result {
             self.audit(
@@ -509,7 +515,7 @@ impl GatewayGuard {
         let result = if !self.network_allowed(&network, Some(auth)) {
             Err(ErrorCode::Forbidden)
         } else {
-            self.postauth_rate(auth, "protocol").await
+            self.postauth_rate(context, auth, "protocol").await
         };
         self.audit(
             context,
@@ -530,6 +536,7 @@ impl GatewayGuard {
     /// Preserve the §72.3 credential/user/account/operation coverage with zero PG rate I/O (ADR-0100).
     async fn postauth_rate(
         &self,
+        context: &McpHttpContext,
         auth: &AuthorizationScope,
         operation: &str,
     ) -> Result<(), ErrorCode> {
@@ -541,7 +548,7 @@ impl GatewayGuard {
         }
         subjects.push(Subject::Account(tenant));
         subjects.push(Subject::Operation(tenant, credential, operation.to_owned()));
-        self.rate(&subjects)
+        self.rate(context, &subjects)
     }
 
     /// Only local reads with no external provider cost can use this entry.
@@ -1238,7 +1245,7 @@ impl GatewayGuard {
             if !self.network_allowed(&network, Some(request.authorization())) {
                 return Err(ErrorCode::Forbidden);
             }
-            self.postauth_rate(request.authorization(), operation.operation_key())
+            self.postauth_rate(context, request.authorization(), operation.operation_key())
                 .await?;
             let facts = request_guard_repo::read_effective_entitlements(
                 &self.pool,

@@ -201,7 +201,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -496,7 +495,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
-- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -555,9 +553,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
-- reads `private.code_active_snapshots`
-- reads `private.code_files`
-- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -684,7 +679,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -1153,8 +1147,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 
 #### `xtask::load`
-- reads `control.rate_buckets`
-- reads `control.workspaces`
 - service `PostgreSQL(any)`
 - service `HTTP(gateway)`
 - service `subprocess(docker)`
@@ -1627,7 +1619,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2132,7 +2123,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2459,7 +2449,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(loopback)`
 
 #### `gateway::mcp_application`
-- reads `control.rate_buckets`
 - reads `private.memory_records`
 - writes `control.w2_test_request_intervals`
 - executes `private.publish_continuity_facet`
@@ -2702,7 +2691,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop`
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.retention_policy_approve`
 - executes `ops.auto_redrive_schema_failed`
 - executes `ops.purge_expired_selection_snapshots`
@@ -2840,7 +2828,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -3240,7 +3227,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
-- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -3299,9 +3285,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
-- reads `private.code_active_snapshots`
-- reads `private.code_files`
-- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -3428,7 +3411,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -3566,9 +3548,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT`
@@ -3906,7 +3885,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -4555,7 +4533,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -5601,7 +5578,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
@@ -6191,17 +6167,6 @@ executed by:
 - process(cargo-xtask): `adapters::plan_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
 
-### `control.purge_idle_rate_buckets`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::maintenance_doors`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-- process(humaux-maintenance): `maintenance::rls_check`
-
 ### `control.quota_windows`
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
@@ -6220,27 +6185,6 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
-- process(cargo-xtask): `adapters::quota_repo`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
-- process(humaux-gateway): `adapters::quota_repo`
-- process(humaux-maintenance): `adapters::quota_repo`
-- process(humaux-private-worker): `adapters::quota_repo`
-- process(humaux-retrieval-worker): `adapters::quota_repo`
-
-executed by:
-
-### `control.rate_buckets`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::load`
-- process(humaux-gateway): `gateway::mcp_application`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::maintenance_doors`
-- (no process): `adapters::tests::quota_and_rate`
-- (no process): `adapters::tests::support::operation_receipt_fixture`
-- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
@@ -6524,15 +6468,6 @@ executed by:
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
-### `control.repositories`
-read by:
-- (no process): `adapters::tests::facet_contract`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
 ### `control.resolve_contribution_deidentify_shadow`
 read by:
 
@@ -6747,7 +6682,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -6928,7 +6862,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
@@ -7004,7 +6937,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7028,13 +6960,11 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(cargo-xtask): `xtask::load`
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
-- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -8622,37 +8552,6 @@ written by:
 executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-
-### `private.code_active_snapshots`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
-### `private.code_files`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
-
-### `private.code_snapshots`
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::code_rls`
-
-executed by:
 
 ### `private.comment_only`
 read by:
@@ -12076,7 +11975,6 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
-- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
@@ -12212,7 +12110,6 @@ executed by:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_task_run`
@@ -12887,7 +12784,6 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13420,7 +13316,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13616,7 +13511,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13748,7 +13642,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13811,7 +13704,6 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
-- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -16612,7 +16504,6 @@ modules naming it:
 - `tests`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
-- `xtask::load`
 - `xtask::mechanism_registry`
 
 ### xtask → `tokio` (normal)
@@ -17379,15 +17270,6 @@ services (computed):
 default run:
 - PostgreSQL
 
-### `crates/adapters/tests/code_rls.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
 ### `crates/adapters/tests/confirm_token_retention.rs`
 db-bound (default run): yes
 
@@ -18073,13 +17955,12 @@ default run:
 - Qdrant
 
 ### `crates/adapters/tests/quota_and_rate.rs`
-db-bound (default run): yes
+db-bound (default run): no
 
 services (computed):
 - PostgreSQL
 
 default run:
-- PostgreSQL
 
 ### `crates/adapters/tests/read_gate_closure.rs`
 db-bound (default run): yes

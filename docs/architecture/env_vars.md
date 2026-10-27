@@ -1748,7 +1748,6 @@ processes:
 - process(humaux-maintenance)
 
 modules:
-- `adapters::tests::code_rls`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::provider_budget`
@@ -3473,47 +3472,6 @@ modules:
 - `maintenance::serve`
 
 ### `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-
-### `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-
-### `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(humaux-maintenance)
-
-modules:
-- `maintenance::serve`
-- `maintenance::tests::serve`
-- `maintenance::tests::support::throwaway`
-
-### `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT`
 - witness: literal
 - registry: raw
 
@@ -5867,7 +5825,6 @@ modules:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
-- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
