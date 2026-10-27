@@ -3,12 +3,13 @@
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq]
-//!   w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users,
-//!   control.workspace_memberships, control.workspaces, private.evidence_objects, private.memory_evidence,
-//!   private.memory_records, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements]
-//!   x=[projection.stream_point_ledger], PostgreSQL(role_gateway), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::postgres, adapters::read_gate, adapters::stream_repo,
-//!   adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db,
+//!   w=[control.api_keys, control.entitlement_snapshots, control.memberships, control.private_reasoning_domains,
+//!   control.tenants, control.users, control.workspace_memberships, control.workspaces, private.evidence_objects,
+//!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log,
+//!   projection.tenant_placements] x=[projection.stream_point_ledger], PostgreSQL(role_gateway),
+//!   PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
+//!   modules=[adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::serving_repo,
+//!   adapters::stream_repo, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db,
 //!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
 //!   domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard,
 //!   gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, humaux-testkit,
@@ -19,12 +20,15 @@
 //!   `projection.stream_log` (leaving only the three columns the get's own tombstone gate reads, read_materialize.rs,
 //!   ADR-0071 D-A) and EXECUTE on `projection.stream_point_ledger`: a `memory.get` that closed the ledger would fail with
 //!   permission denied, which proves the O(1) claim by construction (the closure door, run first as a control and again
-//!   after the restriction, has teeth); the MCP tests run against the isolated operation-receipt fixture
-//!   tenant with a counting Qdrant transport, so "no Qdrant count" is an observed zero and a positive control (a recall
-//!   on the same app) proves the spy sees traffic; no DSN or unreachable DB is a visible SKIP]
+//!   after the restriction, has teeth); the unserved-family case sends a real MCP `memory.get` through the guard and
+//!   `read_scope` against that same restricted throwaway database (an initialised family with no serving version, where
+//!   `UnservedLedger::Read` is denied as a control); the other MCP tests run against the isolated operation-receipt
+//!   fixture tenant with a counting Qdrant transport, so "no Qdrant count" is an observed zero and a positive control (a
+//!   recall on the same app) proves the spy sees traffic; no DSN or unreachable DB is a visible SKIP]
 //! Spec: Baseline §15.5; §23.1; §23.3; §79.2; ADR-0110 D-A
 //!
-//! G-M13-1: get succeeds with `stream_log` unreadable, returns the frontier block, and takes no Qdrant count.
+//! G-M13-1: get succeeds with `stream_log` unreadable, returns the frontier block, and takes no Qdrant count, also on an
+//! initialised family with no serving version (rv-389 P1/P2: `read_scope` passes `UnservedLedger::Skip`).
 //! G-M13-2: a stream with no checkpoint row is `projection: null` with `projection_reason: "no_checkpoint"`, never a
 //! zero frontier. Recall's `pipeline.projection` stays the closure block.
 
@@ -39,11 +43,13 @@ use std::{
 };
 
 use humaux_adapters::{
-    postgres::RuntimeDbPool,
+    postgres::{MaintenanceDbPool, RuntimeDbPool},
+    quota_repo,
     read_gate::{
         MaterializedMemory, MemoryGetTarget, frontier_pipeline_block,
         materialize_memory_get_frontier_target, materialize_memory_get_target,
     },
+    serving_repo::{FamilyReadState, ServingRepoError, UnservedLedger, family_read_state},
     stream_repo::Frontier,
 };
 use humaux_application::retrieval_embedding_port::{
@@ -121,7 +127,14 @@ struct DoorHandle {
     admin: Client,
     ids: Ids,
     /// Dropped last: it drops the whole database.
-    _db: ThrowawayDb,
+    db: ThrowawayDb,
+}
+
+/// `dsn` with `role` as the session's startup role. The throwaway database has no login for the runtime roles, so the
+/// owner connection acts as them, and a REVOKE from the role is what the request path then observes.
+fn as_role(dsn: &str, role: &str) -> String {
+    let sep = if dsn.contains('?') { '&' } else { '?' };
+    format!("{dsn}{sep}options=-c%20role%3D{role}")
 }
 
 struct DoorFixture;
@@ -146,19 +159,16 @@ impl DbIntegrationFixture for DoorFixture {
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
-        let sep = if dsn.contains('?') { '&' } else { '?' };
         let gateway = rt
             // dep: PostgreSQL(role_gateway) — the role `memory.get` runs as
-            .block_on(RuntimeDbPool::connect(&format!(
-                "{dsn}{sep}options=-c%20role%3Drole_gateway"
-            )))
+            .block_on(RuntimeDbPool::connect(&as_role(&dsn, "role_gateway")))
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         Ok(DoorHandle {
             rt,
             gateway,
             admin,
             ids,
-            _db: db,
+            db,
         })
     }
 }
@@ -227,17 +237,17 @@ fn seed_memory_tree(admin: &mut Client, ids: &Ids) -> Result<Uuid, postgres::Err
     Ok(memory_id)
 }
 
-/// Three `DONE` tickets and one `ISSUED` under a checkpoint that issued four with a stored prefix of two, serving: the
-/// frontier (4, 2, true) and the closure's own count (4 expected) are both readable from it, and `behind` (2) differs
-/// from every number it is derived from.
-fn seed_stream(admin: &mut Client, ids: &Ids) {
+/// Three `DONE` tickets and one `ISSUED` under a checkpoint that issued four with a stored prefix of two, `serving` as
+/// asked: the frontier (4, 2, `serving`) and the closure's own count (4 expected) are both readable from it, and
+/// `behind` (2) differs from every number it is derived from.
+fn seed_stream(admin: &mut Client, ids: &Ids, serving: bool) {
     admin
         .execute(
             "INSERT INTO projection.stream_checkpoints \
                (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version, \
                 issued_highwater,projection_highwater,serving) \
-             VALUES($1,'workspace',$2,'knowledge','ingest','v1',4,2,true)",
-            &[&ids.tenant, &ids.workspace],
+             VALUES($1,'workspace',$2,'knowledge','ingest','v1',4,2,$3)",
+            &[&ids.tenant, &ids.workspace, &serving],
         )
         .expect("seed the stream_checkpoints row");
     for seq in 1..=3_i64 {
@@ -352,6 +362,16 @@ impl DoorHandle {
         self.family().with_version("v1")
     }
 
+    /// The admission every read route runs first (`ContextBootstrap::provisioned_request_stream`'s PostgreSQL half).
+    fn family_state(&self, unserved: UnservedLedger) -> Result<FamilyReadState, ServingRepoError> {
+        self.rt.block_on(family_read_state(
+            &self.gateway,
+            &self.auth(),
+            &self.key(),
+            unserved,
+        ))
+    }
+
     /// The door `memory.get` uses (ADR-0110 D-A).
     fn frontier_read(&self) -> Result<MaterializedMemory<Option<Frontier>>, ErrorCode> {
         self.rt.block_on(materialize_memory_get_frontier_target(
@@ -393,7 +413,7 @@ fn get_frontier_door_needs_neither_stream_log_nor_the_point_ledger() {
     run_db_fixture::<DoorFixture, _>(
         "get_frontier_door_needs_neither_stream_log_nor_the_point_ledger",
         |mut h| {
-            seed_stream(&mut h.admin, &h.ids);
+            seed_stream(&mut h.admin, &h.ids, true);
             // Control: before the restriction the closure door works, and counts the four tickets.
             let before = h
                 .closure_read()
@@ -460,7 +480,7 @@ fn a_row_less_stream_is_null_with_no_checkpoint_never_a_zero_frontier() {
             assert_eq!(pipeline["projection_reason"], "no_checkpoint", "{pipeline}");
 
             // Positive control: a row flips both fields, so the null above is the absence and not a fixed shape.
-            seed_stream(&mut h.admin, &h.ids);
+            seed_stream(&mut h.admin, &h.ids, true);
             let with_row = h.frontier_read().expect("a get once the row exists");
             let pipeline = pipeline_json(with_row.ledger);
             assert_eq!(pipeline["projection"]["mode"], "frontier", "{pipeline}");
@@ -577,10 +597,11 @@ struct Gateway {
     app: GatewayMcpApplication,
 }
 
-fn gateway(handle: &Handle) -> Gateway {
+/// The in-process application every test here serves: trusted bootstrap, guard over `runtime`, the fixed policies.
+fn plain_app(reasoning_domain_id: Uuid, runtime: RuntimeDbPool) -> GatewayMcpApplication {
     let policy = RememberPolicy::new(
         ProcessFamily::new("workspace", "knowledge", "ingest", "v1").expect("trusted family"),
-        handle.reasoning_domain_id,
+        reasoning_domain_id,
         Duration::from_secs(60),
         DataClass::Internal,
         VisibilityClass::WorkspaceShared,
@@ -596,6 +617,24 @@ fn gateway(handle: &Handle) -> Gateway {
         Duration::from_secs(60),
     )
     .expect("actual executable identity");
+    GatewayMcpApplication::new(
+        CanonicalCatalog::load().expect("closed canonical MCP catalog"),
+        guard(runtime),
+        policy,
+        RememberEventKind::UserMessage,
+        bootstrap,
+    )
+    .with_confirm_token_ttl(Duration::from_secs(300))
+    .expect("positive confirm-token TTL")
+    .with_undo_window(Duration::from_secs(86_400))
+    .expect("positive undo window")
+    .with_mood_half_life(Duration::from_secs(21_600))
+    .expect("positive mood half-life")
+    .with_enumeration(Duration::from_secs(900), 1000)
+    .expect("positive enumeration policy")
+}
+
+fn gateway(handle: &Handle) -> Gateway {
     let runtime = handle
         .rt
         .block_on(handle.fresh_runtime())
@@ -622,22 +661,7 @@ fn gateway(handle: &Handle) -> Gateway {
         None,
     )
     .expect("semantic runtime");
-    let app = GatewayMcpApplication::new(
-        CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
-        policy,
-        RememberEventKind::UserMessage,
-        bootstrap,
-    )
-    .with_confirm_token_ttl(Duration::from_secs(300))
-    .expect("positive confirm-token TTL")
-    .with_undo_window(Duration::from_secs(86_400))
-    .expect("positive undo window")
-    .with_mood_half_life(Duration::from_secs(21_600))
-    .expect("positive mood half-life")
-    .with_enumeration(Duration::from_secs(900), 1000)
-    .expect("positive enumeration policy")
-    .with_semantic_recall(semantic);
+    let app = plain_app(handle.reasoning_domain_id, runtime).with_semantic_recall(semantic);
     Gateway { spy, app }
 }
 
@@ -876,6 +900,144 @@ fn memory_get_over_mcp_reports_the_frontier_and_makes_no_qdrant_request() {
                     spy.calls.load(Ordering::SeqCst) >= 1,
                     "positive control: the spy counts a recall's Qdrant request"
                 );
+                server.abort();
+            });
+        },
+    );
+}
+
+/// What an MCP `memory.get` needs on the throwaway database beyond the Memory tree: a credential bound to the seeded
+/// user and workspace, and the tenant's current quota window (a read is metered). Returns the `Authorization` header
+/// value.
+fn seed_mcp_credential(h: &mut DoorHandle) -> String {
+    let prefix = format!("d{}", &Uuid::now_v7().simple().to_string()[..12]);
+    let wire = format!("{prefix}.{}", "d".repeat(32));
+    let key_hash = compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire);
+    h.admin
+        .execute(
+            "INSERT INTO control.api_keys \
+               (api_key_id,tenant_id,prefix,key_hash,status,scopes,authorization_version, \
+                user_id,workspace_id,tenant_security_epoch,user_security_epoch) \
+             VALUES($1,$2,$3,$4,'ACTIVE',ARRAY['memory:write','context:read'],1,$5,$6,0,0)",
+            &[
+                &Uuid::new_v4(),
+                &h.ids.tenant,
+                &prefix,
+                &key_hash,
+                &h.ids.user,
+                &h.ids.workspace,
+            ],
+        )
+        .expect("owner seeds the synthetic credential");
+    h.admin
+        .execute(
+            &format!(
+                "INSERT INTO control.entitlement_snapshots(tenant_id,effective,source_grant_ids,computed_at) \
+                 VALUES($1,jsonb_build_object('{bmo}',jsonb_build_object(\
+                   'limit',100,'period','subscription_period','charge_policy','success_only',\
+                   'period_start',to_char((clock_timestamp()-interval '1 second') AT TIME ZONE 'UTC',\
+                     'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),\
+                   'period_end',to_char((clock_timestamp()+interval '1 hour') AT TIME ZONE 'UTC',\
+                     'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))),ARRAY[$2]::uuid[],clock_timestamp())",
+                bmo = quota_repo::BMO_ENTITLEMENT
+            ),
+            &[&h.ids.tenant, &Uuid::new_v4()],
+        )
+        .expect("owner seeds the projected quota facts");
+    let maintenance = h
+        .rt
+        // dep: PostgreSQL(role_maintenance) — issues the tenant's quota window, the one write the gateway never makes
+        .block_on(MaintenanceDbPool::connect(&as_role(
+            &h.db.dsn(),
+            "role_maintenance",
+        )))
+        .expect("role_maintenance pool on the throwaway database");
+    h.rt.block_on(quota_repo::issue_window(
+        &maintenance,
+        TenantId(h.ids.tenant),
+    ))
+    .expect("maintenance issues the quota window");
+    format!("Bearer {wire}")
+}
+
+/// The in-process gateway over the throwaway database: its own `role_gateway` pool behind the guard, and no semantic
+/// lane, because an unserved family never reaches an index.
+fn door_app(h: &DoorHandle) -> GatewayMcpApplication {
+    let runtime = h
+        .rt
+        // dep: PostgreSQL(role_gateway) — the guard's request-path pool on the throwaway database
+        .block_on(RuntimeDbPool::connect(&as_role(
+            &h.db.dsn(),
+            "role_gateway",
+        )))
+        .expect("role_gateway pool for the guard");
+    plain_app(h.ids.domain, runtime)
+}
+
+/// The frontier block of the seeded unserved family: issued 4, stored prefix 2, `serving: false`, no closure keys.
+fn assert_unserved_frontier(content: &Value, memory: Uuid) {
+    assert_eq!(
+        content["items"][0]["memory_id"],
+        memory.to_string(),
+        "{content}"
+    );
+    let projection = &content["pipeline"]["projection"];
+    assert_eq!(projection["mode"], "frontier", "{content}");
+    assert_eq!(projection["issued"], 4, "{content}");
+    assert_eq!(projection["settled_prefix"], 2, "{content}");
+    assert_eq!(projection["behind"], 2, "{content}");
+    assert_eq!(projection["serving"], false, "{content}");
+    assert_eq!(
+        content["pipeline"]["projection_reason"],
+        Value::Null,
+        "{content}"
+    );
+}
+
+/// G-M13-1 through the real route (rv-389 P1/P2): an INITIALISED family with NO serving version, with the closure's
+/// two sources revoked from `role_gateway`. `read_scope` must admit it without the ledger closure, so the get over MCP
+/// succeeds and returns the frontier block (the family has a checkpoint row, so a block and not `null` +
+/// `no_checkpoint`). Controls: before the revoke `UnservedLedger::Read` reads the real ledger, after it `Read` is
+/// denied while `Skip` is not.
+#[test]
+fn memory_get_over_mcp_on_an_unserved_family_never_closes_the_ledger() {
+    run_db_fixture::<DoorFixture, _>(
+        "memory_get_over_mcp_on_an_unserved_family_never_closes_the_ledger",
+        |mut h| {
+            seed_stream(&mut h.admin, &h.ids, false);
+            let bearer = seed_mcp_credential(&mut h);
+
+            let before = h
+                .family_state(UnservedLedger::Read)
+                .expect("the closure admission before the restriction");
+            let (ledger, _) = before
+                .unserved
+                .expect("an initialised, unserved key reads its real ledger under Read");
+            assert_eq!(ledger.counts().expected(), 4);
+
+            restrict_closure_sources(&mut h.admin);
+            let denied = h.family_state(UnservedLedger::Read);
+            assert!(
+                denied.is_err(),
+                "the restriction has teeth for the unserved ledger read: {denied:?}"
+            );
+            let skipped = h
+                .family_state(UnservedLedger::Skip)
+                .expect("Skip must not need stream_log or stream_point_ledger");
+            assert!(skipped.initialized, "{skipped:?}");
+            assert!(skipped.serving.is_none(), "{skipped:?}");
+            assert!(skipped.unserved.is_none(), "{skipped:?}");
+
+            let app = door_app(&h);
+            h.rt.block_on(async {
+                let (address, server) = start(app).await;
+                let arguments = json!({
+                    "action": "get",
+                    "memory_id": h.ids.memory,
+                    "workspace_id": h.ids.workspace,
+                });
+                let response = tool_call(address, "memory", &bearer, arguments).await;
+                assert_unserved_frontier(&ok_content(&response, ToolName::Memory), h.ids.memory);
                 server.abort();
             });
         },

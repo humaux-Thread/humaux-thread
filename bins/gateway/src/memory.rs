@@ -2,7 +2,7 @@
 //! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
 //!   sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
 //!   adapters::distill_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
-//!   adapters::read_gate, adapters::read_materialize,
+//!   adapters::read_gate, adapters::read_materialize, adapters::serving_repo,
 //!   adapters::subject_repo, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap,
 //!   gateway::context, gateway::guard,
@@ -33,6 +33,7 @@ use humaux_adapters::{
         materialize_memory_get_frontier_target,
     },
     read_materialize::{Lifecycle, MaterializedItem, MemoryHistory},
+    serving_repo::UnservedLedger,
     subject_repo,
 };
 use humaux_domain::{
@@ -834,9 +835,11 @@ pub(crate) async fn write_binding(
 /// credential's tenant + that workspace and admit it only if its ledger key was initialised
 /// (`ContextBootstrap::provisioned_request_stream`, ADR-0031 D-A / ADR-0053 D-E). The routes
 /// are PostgreSQL-authoritative and do not need a serving version (it only scopes the §23.1②
-/// visible count). No process pair exists to compare against (ADR-0054 D-D) — one process serves
-/// every provisioned pair; an uninitialised one is `DEPENDENCY_UNAVAILABLE`, and an invisible
-/// object stays `NOT_FOUND`.
+/// visible count). None of them reports an unserved key's ledger, so the admission passes
+/// [`UnservedLedger::Skip`] and an initialised family without a serving version costs no O(stream)
+/// closure (ADR-0110 D-A; `FamilyReadState::unserved` is recall's and context's alone). No process
+/// pair exists to compare against (ADR-0054 D-D) — one process serves every provisioned pair; an
+/// uninitialised one is `DEPENDENCY_UNAVAILABLE`, and an invisible object stays `NOT_FOUND`.
 async fn read_scope(
     pool: &RuntimeDbPool,
     authorization: AuthorizationScope,
@@ -859,7 +862,7 @@ async fn read_scope(
     // visible count is then `null`). §23.1②'s count is scoped to it, not to the ledger key's
     // process-configured version.
     let (family, stream, state) = bootstrap
-        .provisioned_request_stream(pool, &authorization, workspace)
+        .provisioned_request_stream(pool, &authorization, workspace, UnservedLedger::Skip)
         .await?;
     let serving_version = state.serving;
     let scope = Scope {
