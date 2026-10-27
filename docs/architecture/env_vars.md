@@ -1220,6 +1220,71 @@ processes:
 modules:
 - `gateway::bootstrap`
 
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
 - witness: literal
 - registry: gateway

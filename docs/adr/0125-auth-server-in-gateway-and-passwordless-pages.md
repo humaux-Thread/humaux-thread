@@ -166,4 +166,12 @@ another client's key. An unreadable peer keeps key 0.
     `g_m02_3_attempt_after_the_cap_is_rejected_even_with_the_right_code` at `auth_pages.rs:513`: not the mutation but a
     flake in the test, which compared two replies including their `Date` header across a second boundary
     (`00:21:08` vs `00:21:09`). Fixed by comparing `Reply::comparable()`; the run is cited for the logout assertion only.
+  - Review rv-369 reds (same workflow and selector, base `8f482398`, file:line as of that commit):
+    - P2-1 (logout's `same_origin` check deleted, nothing else): run 40441038353 on `60c182f2`;
+      `g_m02_5_logout_with_a_foreign_origin_is_forbidden_even_with_a_live_session_and_token` red at `auth_pages.rs:738`
+      (303 where 403 is required); the other 10 pass, which is the gap the review found: before this test, deleting that
+      one check left every test green.
+    - P2-2 (anonymous callers keyed 0 again): run 40441047043 on `b6f1d244`;
+      `g_m03_1_one_clients_held_requests_do_not_starve_another_clients_login` red at `auth_pages.rs:822` (503 where 200
+      is required for client B); the other 10 pass.
   - Green: the PR's CI on the unmutated branch.
