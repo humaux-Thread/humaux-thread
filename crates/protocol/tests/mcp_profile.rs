@@ -399,15 +399,44 @@ fn g_m26_3_irrelevant_and_optional_nulls_are_dropped() {
 
 #[test]
 fn g_m26_3_action_and_discriminator_rules() {
-    for (tool, args) in [
-        (ToolName::Memory, json!({ "action": "no_such_action" })),
-        (ToolName::Memory, json!({})),
-        (ToolName::Memory, json!({ "action": 7 })),
-        (ToolName::Memory, json!([])),
+    // Only the action check may refuse these: apart from `action` each call is the valid example call of the
+    // tool's first action, so a fallback to that action would decode it (rv-376 P1).
+    let mut seen = BTreeSet::new();
+    for case in cases().into_iter().filter(|case| seen.insert(case.tool)) {
+        let profile = flat_profile(case.tool).expect("flat profile");
+        let mut flat = encode_flat(&case, &profile, &example_call(&case));
+        flat.insert("action".to_owned(), json!("typo"));
+        match validate(case.tool, &Value::Object(flat)) {
+            Ok(call) => panic!(
+                "{}: unknown action decoded as {}",
+                case.tool.as_str(),
+                call.action
+            ),
+            Err(error) => assert!(
+                error.reason().contains("not a registry action"),
+                "{}: {}",
+                case.tool.as_str(),
+                error.reason()
+            ),
+        }
+    }
+    for (tool, args, expected) in [
+        (ToolName::Memory, json!({}), "missing or not a string"),
+        (
+            ToolName::Memory,
+            json!({ "action": 7 }),
+            "missing or not a string",
+        ),
+        (ToolName::Memory, json!([]), "JSON object"),
         // A single-op tool still needs its `action`.
-        (ToolName::Recall, json!({ "query": "q" })),
+        (
+            ToolName::Recall,
+            json!({ "query": "q" }),
+            "missing or not a string",
+        ),
     ] {
-        rejected(tool, args);
+        let reason = rejected(tool, args);
+        assert!(reason.contains(expected), "{}: {reason}", tool.as_str());
     }
     let reason = rejected(
         ToolName::Remember,
