@@ -471,6 +471,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.anonymous_source_lineage`
 - reads `control.api_keys`
 - reads `control.audit_event_identity`
+- reads `control.billing_customers`
+- reads `control.billing_inbox`
+- reads `control.billing_payments`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.contribution_notice_events`
@@ -506,6 +509,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.recovery_codes`
 - reads `control.retention_policies`
 - reads `control.sessions`
+- reads `control.subscription_events`
+- reads `control.subscriptions`
 - reads `control.team_invitations`
 - reads `control.usage_reservations`
 - reads `control.workspace_memberships`
@@ -3257,6 +3262,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.anonymous_source_lineage`
 - reads `control.api_keys`
 - reads `control.audit_event_identity`
+- reads `control.billing_customers`
+- reads `control.billing_inbox`
+- reads `control.billing_payments`
 - reads `control.confirm_tokens`
 - reads `control.contribution_confirmations`
 - reads `control.contribution_notice_events`
@@ -3292,6 +3300,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.recovery_codes`
 - reads `control.retention_policies`
 - reads `control.sessions`
+- reads `control.subscription_events`
+- reads `control.subscriptions`
 - reads `control.team_invitations`
 - reads `control.usage_reservations`
 - reads `control.workspace_memberships`
@@ -5192,6 +5202,40 @@ written by:
 
 executed by:
 
+### `control.billing_customers`
+read by:
+- (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.billing_inbox`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::billing_repo`
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
+### `control.billing_payments`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
 ### `control.bind_reasoning_domain`
 read by:
 
@@ -6021,6 +6065,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
@@ -6031,6 +6076,7 @@ read by:
 - (no process): `adapters::tests::entitlement_projector`
 
 written by:
+- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
@@ -6732,6 +6778,28 @@ executed by:
 - process(cargo-xtask): `adapters::provisioning`
 - process(humaux-maintenance): `adapters::provisioning`
 
+### `control.subscription_events`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
+### `control.subscriptions`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
 ### `control.sweep_confirm_tokens`
 read by:
 
@@ -6776,6 +6844,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
@@ -12219,6 +12288,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
+- `adapters::tests::billing_repo`
 - `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
@@ -12341,6 +12411,7 @@ executed by:
 - `gateway::tests::mcp_gateway`
 
 ### `PostgreSQL(role_gateway)`
+- `adapters::billing_repo`
 - `adapters::coord_tree_repo`
 - `adapters::grep_repo`
 - `adapters::maintenance_repo`
@@ -12360,6 +12431,7 @@ executed by:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
 - `adapters::tests::console_session`
@@ -12845,6 +12917,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::billing_repo`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
@@ -12985,6 +13058,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
+- `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13049,6 +13123,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -13372,6 +13447,7 @@ why: jsonb column binding
 modules naming it:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
+- `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -13412,6 +13488,7 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
@@ -13598,6 +13675,7 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -13684,6 +13762,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
@@ -13804,6 +13883,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
@@ -13945,6 +14025,7 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -14014,6 +14095,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
@@ -14121,6 +14203,7 @@ modules naming it:
 - `adapters::byok`
 - `adapters::postgres`
 - `adapters::stream_repo`
+- `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
@@ -14197,6 +14280,7 @@ modules naming it:
 - `application::affect`
 - `application::archive`
 - `application::auth`
+- `application::billing`
 - `application::confirm`
 - `application::consolidate`
 - `application::continuity`
@@ -14301,6 +14385,7 @@ modules naming it:
 why: object-safe async ports (PrivateReasoningPort et al.)
 
 modules naming it:
+- `application::billing`
 - `application::consolidate`
 - `application::continuity`
 - `application::contribute`
@@ -14312,6 +14397,7 @@ why: entity ids threaded through every use case
 
 modules naming it:
 - `application::affect`
+- `application::billing`
 - `application::confirm`
 - `application::consolidate`
 - `application::continuity`
@@ -14335,6 +14421,7 @@ modules naming it:
 why: OffsetDateTime expiry/ceiling arithmetic of grants
 
 modules naming it:
+- `application::billing`
 - `application::oauth`
 
 ### humaux-application → `tokio` (dev)
@@ -14453,6 +14540,7 @@ why: typed UTC instant for Authority.asserted_at
 
 modules naming it:
 - `domain::authority`
+- `domain::billing`
 - `tests`
 
 ### humaux-domain → `trybuild` (dev)
@@ -17621,6 +17709,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/authority_g59_5.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/billing_repo.rs`
 db-bound (default run): yes
 
 services (computed):
