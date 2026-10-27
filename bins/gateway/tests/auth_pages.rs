@@ -69,7 +69,8 @@ struct Handle {
     /// The test's own `role_gateway` pool for direct door calls; each guard under test owns another.
     reader: RuntimeDbPool,
     admin: Client,
-    user_id: Uuid,
+    /// The throwaway fixture row every statement of the test is scoped to.
+    owner: Uuid,
     email: String,
 }
 
@@ -80,19 +81,23 @@ fn gateway_pool(rt: &tokio::runtime::Runtime, dsn: &str) -> Result<RuntimeDbPool
         .map_err(|e| e.to_string())
 }
 
+/// Children first; each statement takes the fixture user as its one bound parameter.
+const CLEANUP: [&str; 7] = [
+    "DELETE FROM ops.email_delivery_events \
+       WHERE outbox_id IN (SELECT outbox_id FROM ops.email_outbox WHERE user_id = $1)",
+    "DELETE FROM ops.email_outbox WHERE user_id = $1",
+    "DELETE FROM control.auth_events WHERE user_id = $1",
+    "DELETE FROM control.email_challenges WHERE user_id = $1",
+    "DELETE FROM control.sessions WHERE user_id = $1",
+    "DELETE FROM control.user_emails WHERE user_id = $1",
+    "DELETE FROM control.users WHERE user_id = $1",
+];
+
 impl Drop for Handle {
     fn drop(&mut self) {
-        let _ = self.admin.batch_execute(&format!(
-            "DELETE FROM ops.email_delivery_events \
-               WHERE outbox_id IN (SELECT outbox_id FROM ops.email_outbox WHERE user_id = '{0}'); \
-             DELETE FROM ops.email_outbox WHERE user_id = '{0}'; \
-             DELETE FROM control.auth_events WHERE user_id = '{0}'; \
-             DELETE FROM control.email_challenges WHERE user_id = '{0}'; \
-             DELETE FROM control.sessions WHERE user_id = '{0}'; \
-             DELETE FROM control.user_emails WHERE user_id = '{0}'; \
-             DELETE FROM control.users WHERE user_id = '{0}';",
-            self.user_id
-        ));
+        for statement in CLEANUP {
+            let _ = self.admin.execute(statement, &[&self.owner]);
+        }
     }
 }
 
@@ -143,7 +148,7 @@ impl DbIntegrationFixture for PagesFixture {
             dsn,
             reader,
             admin,
-            user_id,
+            owner: user_id,
             email,
         })
     }
@@ -223,11 +228,23 @@ fn serve(h: &Handle) -> SocketAddr {
 }
 
 /// One parsed HTTP/1.1 response: lowercase header names, in wire order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Reply {
     status: u16,
     headers: Vec<(String, String)>,
     body: String,
+}
+
+/// Status and header names only: header values and the body can carry cookies, so a failed assertion never logs them.
+impl std::fmt::Debug for Reply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(key, _)| key.as_str()).collect();
+        f.debug_struct("Reply")
+            .field("status", &self.status)
+            .field("header_names", &names)
+            .field("body_bytes", &self.body.len())
+            .finish()
+    }
 }
 
 impl Reply {
@@ -340,7 +357,7 @@ fn post_login(h: &Handle, address: SocketAddr, email: &str) -> Reply {
     )
 }
 
-fn post_code(h: &Handle, address: SocketAddr, pending: &str, code: &str) -> Reply {
+fn submit_code(h: &Handle, address: SocketAddr, pending: &str, code: &str) -> Reply {
     let cookie = format!("{PENDING_COOKIE}={pending}");
     call(
         h,
@@ -357,7 +374,7 @@ fn emailed_code(h: &mut Handle) -> String {
     h.admin
         .query_one(
             "SELECT payload->>'code' FROM ops.email_outbox WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
-            &[&h.user_id],
+            &[&h.owner],
         )
         .expect("an outbox row with a code must exist")
         .get(0)
@@ -373,7 +390,7 @@ fn count(h: &mut Handle, table: &str) -> i64 {
     h.admin
         .query_one(
             &format!("SELECT count(*) FROM {table} WHERE user_id = $1"),
-            &[&h.user_id],
+            &[&h.owner],
         )
         .expect("count rows")
         .get(0)
@@ -388,7 +405,7 @@ fn sign_in(h: &mut Handle, address: SocketAddr) -> String {
         .cookie_value(PENDING_COOKIE)
         .expect("a pending-login cookie");
     let code = emailed_code(h);
-    let signed_in = post_code(h, address, &pending, &code);
+    let signed_in = submit_code(h, address, &pending, &code);
     assert_eq!(signed_in.status, 303, "{signed_in:?}");
     signed_in
         .cookie_value(SESSION_COOKIE_NAME)
@@ -439,7 +456,7 @@ fn g_m02_3_correct_code_sets_the_session_cookie_and_the_session_authenticates() 
             .cookie_value(PENDING_COOKIE)
             .expect("a pending-login cookie");
         let code = emailed_code(&mut h);
-        let reply = post_code(&h, address, &pending, &code);
+        let reply = submit_code(&h, address, &pending, &code);
 
         assert_eq!(reply.status, 303);
         assert_eq!(reply.header("location"), vec!["/"]);
@@ -486,8 +503,8 @@ fn g_m02_3_consumed_code_replayed_is_rejected() {
             .expect("a pending-login cookie");
         let code = emailed_code(&mut h);
 
-        assert_eq!(post_code(&h, address, &pending, &code).status, 303);
-        let replay = post_code(&h, address, &pending, &code);
+        assert_eq!(submit_code(&h, address, &pending, &code).status, 303);
+        let replay = submit_code(&h, address, &pending, &code);
         assert_eq!(replay.status, 400, "{replay:?}");
         assert!(replay.set_cookie(SESSION_COOKIE_NAME).is_none());
         assert_eq!(count(&mut h, "control.sessions"), 1, "no second session");
@@ -507,14 +524,18 @@ fn g_m02_3_attempt_after_the_cap_is_rejected_even_with_the_right_code() {
         let code = emailed_code(&mut h);
         let wrong = wrong_code(&code);
 
-        let first = post_code(&h, address, &pending, &wrong);
+        let first = submit_code(&h, address, &pending, &wrong);
         assert_eq!(first.status, 400);
         for _ in 1..DEFAULT_ATTEMPTS {
-            assert_eq!(post_code(&h, address, &pending, &wrong), first);
+            assert_eq!(
+                submit_code(&h, address, &pending, &wrong).comparable(),
+                first.comparable()
+            );
         }
-        let after_cap = post_code(&h, address, &pending, &code);
+        let after_cap = submit_code(&h, address, &pending, &code);
         assert_eq!(
-            after_cap, first,
+            after_cap.comparable(),
+            first.comparable(),
             "the right code after the cap is the same rejection"
         );
         assert_eq!(count(&mut h, "control.sessions"), 0);
@@ -622,13 +643,16 @@ fn g_m02_5_logout_needs_the_session_bound_csrf_token() {
     });
 }
 
+/// One request of the hardening sweep: method, path, extra request headers, form body.
+type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>, &'a str);
+
 /// ADR-0125 ruling 5: the four hardening headers are on every route and every outcome, refusals included.
 #[test]
 fn g_m02_3_every_route_carries_the_hardening_headers() {
     run_db_fixture::<PagesFixture, _>("g_m02_3_http_headers", |h| {
         let address = serve(&h);
         let form = format!("email={}", h.email);
-        let cases: Vec<(&str, &str, Vec<(&str, &str)>, &str)> = vec![
+        let cases: Vec<Case<'_>> = vec![
             ("GET", "/auth/login", vec![], ""),
             ("GET", "/auth/code", vec![], ""),
             ("GET", "/auth/logout", vec![], ""),
