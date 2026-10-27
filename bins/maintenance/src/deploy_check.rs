@@ -11,7 +11,7 @@
 //!   `resolved_env_input` (exit 2) before any other parsing; any failing reason ⇒ exit 3; a missing input of a
 //!   check, a mode flag without its value, or no check selected is a usage error (exit 2) naming the flag — the
 //!   release gate is fail-closed and its receipt has no `not_applicable` state (review fix 9, F8 / OP-7)]
-//! Spec: Baseline §4.2; §4.4; §57.1; §67.2; ADR-0066 D-C, D-H, D-J, D-K, D-R
+//! Spec: Baseline §4.2; §4.4; §57.1; §67.2; ADR-0066 D-C, D-H, D-J, D-K, D-R; ADR-0125
 //! dep-map: allow env-undeclared — the HUMAUX_* names here are checked in values files, compose documents and container
 //!   env; this module reads none of them from its own environment
 //!
@@ -174,6 +174,15 @@ fn must_be_set(key: &str) -> bool {
 /// M02-3 / M02 D3: the gateway's auth MAC key. Unlike every other [`must_be_set`] secret it may be empty while
 /// [`AUTH_SURFACE_ENABLED`] is not `true`; once the surface is on, an empty key is `secret_empty` like any secret.
 const AUTH_HMAC_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
+/// M02-7 / ADR-0125 8d: the login-code pepper follows the auth MAC key's rule exactly.
+const LOGIN_CODE_PEPPER: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
+/// The secrets that are optional only while the auth surface is off, and judged for length once it is on.
+const AUTH_SURFACE_SECRETS: [&str; 2] = [AUTH_HMAC_KEY, LOGIN_CODE_PEPPER];
+/// M02-7 / ADR-0125 8a: the one origin a console POST may come from. Bootstrap allows loopback `http` (the gateway has
+/// no dev/test marker), so the release gate holds production to `https` (`public_base_url_not_https`).
+const PUBLIC_BASE_URL: &str = "HUMAUX_GATEWAY_PUBLIC_BASE_URL";
+/// M02-7 / ADR-0125 8a, 8c: the non-secret values the auth surface cannot boot without (`value_empty` when blank).
+const AUTH_SURFACE_VALUES: [&str; 2] = [PUBLIC_BASE_URL, "HUMAUX_GATEWAY_LOGIN_MAIL_FROM"];
 /// The gateway key that turns the auth surface on (`bins/gateway` bootstrap, registered default `false`).
 const AUTH_SURFACE_ENABLED: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
 
@@ -999,14 +1008,26 @@ pub fn presence_reasons(
                 reasons.push(format!("key_missing:{p}:{key}"));
             } else if must_be_set(key)
                 && all.iter().all(String::is_empty)
-                && !(key == AUTH_HMAC_KEY && !auth_surface_enabled(&[values, secrets, compose], p))
+                && !(AUTH_SURFACE_SECRETS.contains(&key.as_str())
+                    && !auth_surface_enabled(&[values, secrets, compose], p))
             {
                 reasons.push(format!("secret_empty:{p}:{key}"));
-            } else if key == AUTH_HMAC_KEY
+            } else if AUTH_SURFACE_SECRETS.contains(&key.as_str())
                 && auth_surface_enabled(&[values, secrets, compose], p)
                 && all.iter().any(|value| auth_key_too_short(value))
             {
                 reasons.push(format!("secret_short:{p}:{key}"));
+            } else if AUTH_SURFACE_VALUES.contains(&key.as_str())
+                && all.iter().all(String::is_empty)
+                && auth_surface_enabled(&[values, secrets, compose], p)
+            {
+                reasons.push(format!("value_empty:{p}:{key}"));
+            } else if key == PUBLIC_BASE_URL
+                && all.iter().any(|value| {
+                    !value.is_empty() && !value.trim().to_ascii_lowercase().starts_with("https://")
+                })
+            {
+                reasons.push(format!("public_base_url_not_https:{p}:{key}"));
             }
         }
     }
@@ -2652,6 +2673,80 @@ mod tests {
         assert_eq!(
             presence_reasons(&examples, &no_values, &secrets(""), &compose),
             vec!["secret_empty:gateway:HUMAUX_GATEWAY_AUTH_HMAC_KEY".to_owned()]
+        );
+    }
+
+    /// M02-7 / ADR-0125 8a, 8c, 8d: with the auth surface on, the login-code pepper is a `secret_empty` / `secret_short`
+    /// secret like the auth MAC key and the public origin and the sender are `value_empty`; with it off all four may be
+    /// blank; a public origin that is not `https` is refused either way. Fault: drop the pepper from
+    /// `AUTH_SURFACE_SECRETS` (it is then judged like any secret even when the surface is off), drop the values check
+    /// or drop the https rule ⇒ red.
+    #[test]
+    fn env_login_values_are_required_only_when_the_auth_surface_is_on() {
+        let examples = files(&[(
+            "example/gateway.env",
+            "gateway",
+            "HUMAUX_GATEWAY_AUTH_HMAC_KEY=\nHUMAUX_GATEWAY_AUTH_SURFACE_ENABLED=\nHUMAUX_GATEWAY_LOGIN_CODE_PEPPER=\n\
+             HUMAUX_GATEWAY_LOGIN_MAIL_FROM=\nHUMAUX_GATEWAY_PG_DSN=\nHUMAUX_GATEWAY_PUBLIC_BASE_URL=\n",
+        )]);
+        let strong = "ab".repeat(32);
+        let reasons = |surface: &str, pepper: &str, origin: &str, from: &str| {
+            let values = files(&[(
+                "values/gateway.env",
+                "gateway",
+                &format!(
+                    "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED={surface}\nHUMAUX_GATEWAY_PUBLIC_BASE_URL={origin}\nHUMAUX_GATEWAY_LOGIN_MAIL_FROM={from}"
+                ),
+            )]);
+            let secrets = files(&[
+                (
+                    "secrets/gateway.secret.env",
+                    "gateway",
+                    &format!(
+                        "HUMAUX_GATEWAY_AUTH_HMAC_KEY={strong}\nHUMAUX_GATEWAY_LOGIN_CODE_PEPPER={pepper}\nHUMAUX_GATEWAY_PG_DSN=d"
+                    ),
+                ),
+                (
+                    "secrets/migrate.secret.env",
+                    "migrate",
+                    "HUMAUX_MIGRATOR_PG_DSN=m",
+                ),
+            ]);
+            presence_reasons(&examples, &values, &secrets, &[])
+        };
+        assert_eq!(reasons("false", "", "", ""), Vec::<String>::new());
+        assert_eq!(
+            reasons("true", &strong, "https://humaux.com", "login@example.test"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            reasons("true", "", "", ""),
+            vec![
+                "secret_empty:gateway:HUMAUX_GATEWAY_LOGIN_CODE_PEPPER".to_owned(),
+                "value_empty:gateway:HUMAUX_GATEWAY_LOGIN_MAIL_FROM".to_owned(),
+                "value_empty:gateway:HUMAUX_GATEWAY_PUBLIC_BASE_URL".to_owned(),
+            ]
+        );
+        assert_eq!(
+            reasons("true", "abcd", "https://humaux.com", "login@example.test"),
+            vec!["secret_short:gateway:HUMAUX_GATEWAY_LOGIN_CODE_PEPPER".to_owned()]
+        );
+        // The release gate holds the public origin to https, surface on or off (P3-6: bootstrap alone allows loopback).
+        let insecure =
+            vec!["public_base_url_not_https:gateway:HUMAUX_GATEWAY_PUBLIC_BASE_URL".to_owned()];
+        assert_eq!(
+            reasons(
+                "true",
+                &strong,
+                "http://localhost:8080",
+                "login@example.test"
+            ),
+            insecure
+        );
+        assert_eq!(reasons("false", "", "http://humaux.com", ""), insecure);
+        assert_eq!(
+            reasons("false", "", "HTTPS://humaux.com", ""),
+            Vec::<String>::new()
         );
     }
 
