@@ -115,3 +115,22 @@ comb-zh-4 :: multi :: zh :: combined_identifiability :: title=女士在深圳 §
 comb-zh-5 :: multi :: zh :: combined_identifiability :: tags=律师 §§ edge_text=住在中山路12号
 comb-zh-6 :: multi :: zh :: combined_identifiability,org_marker :: code_comments=// 星河数据有限公司 §§ body=她是42岁的教授
 comb-zh-7 :: body :: zh :: combined_identifiability :: 他今年50岁，是男性
+# rv-373 P1 review fixtures (honorific name contexts, non-ASCII and mixed-case home paths, form-field age and gender). Invented values only.
+rv-name-zh-1 :: body :: zh :: person_name_zh :: Dr. 王芳 复现了崩溃
+rv-name-zh-2 :: body :: zh :: person_name_zh :: 请联系 Ms. 赵样例 确认修复
+rv-name-zh-3 :: title :: zh :: person_name_zh :: 张样例博士复现的同步回归
+rv-name-en-1 :: body :: en :: person_name_zh :: Prof. 王测试 reproduced the crash on the staging box.
+rv-name-en-2 :: quotes :: en :: person_name_zh :: "Mr. 李示例 filed the ticket," she wrote.
+rv-home-zh-1 :: paths :: zh :: user_home_path :: C:\Users\张伟\Desktop
+rv-home-zh-2 :: paths :: zh :: user_home_path :: /home/张伟/
+rv-home-zh-3 :: code_comments :: zh :: user_home_path :: // 构建产物位于 /Users/王测试/项目/out
+rv-home-zh-4 :: paths :: zh :: user_home_path :: ~张伟/notes/todo.md
+rv-home-en-1 :: paths :: en :: user_home_path :: c:\users\psampleton\
+rv-home-en-2 :: paths :: en :: user_home_path :: D:\USERS\Тестов\Documents
+rv-home-en-3 :: body :: en :: user_home_path :: The installer wrote its log to C:/users/tsampleton/AppData/log.txt on the build box.
+rv-form-zh-1 :: body :: zh :: combined_identifiability :: 性别：女，年龄：34，现居杭州
+rv-form-zh-2 :: multi :: zh :: combined_identifiability :: tags=性别：男 §§ edge_text=年龄：41
+rv-form-zh-3 :: body :: zh :: combined_identifiability :: 性别:女 年龄:29
+rv-form-en-1 :: body :: en :: combined_identifiability :: Gender: F, Age: 34, Hangzhou
+rv-form-en-2 :: multi :: en :: combined_identifiability :: body=Gender: M §§ title=Age: 41
+rv-form-en-3 :: body :: en :: combined_identifiability :: Age:52 and Gender: male in the signup form.
