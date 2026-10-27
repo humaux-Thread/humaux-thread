@@ -1,0 +1,42 @@
+[[concepts]]
+concept_id = "alpha"
+facet = "task"
+status = "ACTIVE"
+definition = "Fixture alpha."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "alpha"
+
+[[concepts]]
+concept_id = "beta"
+facet = "task"
+status = "ACTIVE"
+definition = "Fixture beta."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "beta"
+
+[[concepts]]
+concept_id = "gamma"
+facet = "task"
+status = "ACTIVE"
+definition = "Fixture gamma."
+[[concepts.labels]]
+lang = "en"
+kind = "PREF"
+label = "gamma"
+
+[[relations]]
+from_id = "alpha"
+to_id = "beta"
+kind = "BROADER"
+[[relations]]
+from_id = "beta"
+to_id = "gamma"
+kind = "BROADER"
+[[relations]]
+from_id = "gamma"
+to_id = "beta"
+kind = "BROADER"
