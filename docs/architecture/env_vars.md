@@ -5959,6 +5959,7 @@ modules:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -6014,6 +6015,7 @@ modules:
 - `adapters::tests::visible_index_count`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
