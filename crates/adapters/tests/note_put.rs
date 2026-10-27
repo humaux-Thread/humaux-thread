@@ -11,7 +11,7 @@
 //! Called-by: [cargo-test]
 //! Invariants: [every runtime write is a real role_gateway login; the owner connection only seeds, reads back and injects
 //!   failures into this fixture's tenant; every assertion that guards a decision has a recorded red]
-//! Spec: ADR-0067; ADR-0047
+//! Spec: ADR-0067; ADR-0047; ADR-0124
 //!
 //! Read-back is always from the database row, and the digest is recomputed by PostgreSQL's `sha256` over the read-back text,
 //! so neither the write path nor the Rust digest function can vouch for itself.
@@ -260,6 +260,8 @@ struct Stored {
     authority_class: String,
     status: String,
     facet: Option<String>,
+    /// ADR-0124: `private.memory_records.epistemic_status` as stored.
+    epistemic_status: String,
     /// `sha256(convert_to(key_claim, 'UTF8'))` computed by PostgreSQL over the read-back text.
     pg_digest: Vec<u8>,
     contract_digest: Vec<u8>,
@@ -272,7 +274,8 @@ fn stored(handle: &mut Handle, memory_id: Uuid) -> Stored {
         .query_one(
             "SELECT m.content->>'title', m.content->>'key_claim', m.content->>'representation', \
                     m.memory_type, m.note_kind, m.authority_class, m.status, m.facet, \
-                    sha256(convert_to(m.content->>'key_claim', 'UTF8')), c.body_sha256, c.strategy \
+                    sha256(convert_to(m.content->>'key_claim', 'UTF8')), c.body_sha256, c.strategy, \
+                    m.epistemic_status \
              FROM private.memory_records m \
              JOIN private.identity_note_materializations c \
                ON c.tenant_id = m.tenant_id AND c.output_memory_id = m.memory_id \
@@ -292,6 +295,7 @@ fn stored(handle: &mut Handle, memory_id: Uuid) -> Stored {
         pg_digest: row.get(8),
         contract_digest: row.get(9),
         contract_strategy: row.get(10),
+        epistemic_status: row.get(11),
     }
 }
 
@@ -433,6 +437,8 @@ fn g22_a_three_statement_note_is_one_memory_and_no_candidates() {
             row.title, body,
             "74 scalars < 80: the derived title is the whole first line"
         );
+        // ADR-0124 D-B: the verbatim assertion is SOURCE_REPORTED although the fixed origin is AuthenticatedAgent.
+        assert_eq!(row.epistemic_status, "SOURCE_REPORTED");
     });
 }
 

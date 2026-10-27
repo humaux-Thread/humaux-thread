@@ -1,8 +1,8 @@
 //! `retrieval::signals` — §21 检索质量信号，按 §21.5 逐条点名的六个轴：Similarity / Relevance / Association / Completeness / Temporal
 //!   Freshness / Grounding State.
-//! Depends-on: crates=[humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[domain::grounding,
+//! Depends-on: crates=[humaux-contracts, humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[contracts::freshness, domain::grounding,
 //!   domain::memory, retrieval::completeness, retrieval::envelope]
-//! Called-by: []
+//! Called-by: [tests]
 //! Invariants: []
 //! Spec: §21; §21.5; §8.8; §20; §80.1
 //!
@@ -22,7 +22,7 @@
 //! §21.5 also freezes: freshness "不能用统一 7 天硬编码覆盖所有知识" — [`default_freshness_policy`]
 //! is keyed by [`MemoryType`], not one constant.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Serialize, Serializer};
 
@@ -124,74 +124,52 @@ impl From<&CompletenessBlock> for CompletenessSignal {
 // §21.5 Freshness
 // ============================================================================
 
-/// A freshness policy: the boundary between `Fresh`/`Aging` and `Aging`/`Stale`.
+/// §21.5's versioned thresholds; absent boundaries mean never (ADR-0111).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FreshnessPolicy {
-    pub fresh_within: Duration,
-    pub aging_within: Duration,
+    /// §50 values-file identity (workspace overrides carry their own identity).
+    pub policy_id: &'static str,
+    /// §50 values version.
+    pub version: u32,
+    /// Inclusive fresh boundary; None means no aging.
+    pub aging_after: Option<Duration>,
+    /// Inclusive aging boundary; None means never stale.
+    pub stale_after: Option<Duration>,
 }
 
 impl FreshnessPolicy {
+    /// §21.5 / ADR-0111: thresholds classify age without a clock or rank effect.
     pub fn classify_age(&self, age: Duration) -> FreshnessClass {
-        if age <= self.fresh_within {
-            FreshnessClass::Fresh
-        } else if age <= self.aging_within {
+        if self.stale_after.is_some_and(|boundary| age > boundary) {
+            FreshnessClass::Stale
+        } else if self.aging_after.is_some_and(|boundary| age > boundary) {
             FreshnessClass::Aging
         } else {
-            FreshnessClass::Stale
+            FreshnessClass::Fresh
         }
     }
 }
 
-/// §21.5 per-[`MemoryType`] default policy — **not** one constant for every type. Fast-moving
-/// operational memory (`State`/`Issue`) ages out in hours; decisions/constraints/lessons move
-/// on the order of weeks; long-lived reference material (facts, preferences, procedures,
-/// outcomes, references, notes) is not expected to go stale on any short clock at all.
-///
-/// A workspace-level override always wins over this default when the caller has one (see
-/// [`freshness_policy_for`]) — persisting/administering that override is out of this crate's
-/// reach (no DB access here, §3/§78.3); this function only supplies the fallback when none is
-/// configured.
-// ponytail: §78.1 lists TTL among the forbidden business-config hardcodes, and this match is
-// ten TTL windows keyed by MemoryType — it belongs in the §50 Typed Config Registry
-// (`contracts::config_registry`), not this crate. Registering it there today would still leave
-// no runtime path to supply the values (this crate has no DB access, §3/§78.3, and §50's
-// registry is a schema+fingerprint utility with no store wired to it yet), so per §78.1's
-// escape hatch: owner = `retrieval::signals` (this module), reason = "no live config-store
-// integration exists yet for a DB-less crate to read from; the ten windows below are §21.5's
-// own worked numbers, not arbitrary". Upgrade path: once a config-store read path reaches this
-// crate's caller, move these ten `(fresh_within, aging_within)` pairs into `ConfigEntry` rows
-// keyed by `MemoryType` and have `freshness_policy_for`'s `workspace_override` resolve from it
-// instead of `None` always falling through to this fn.
+/// §50 / §21.5: the release-pinned per-type policy, never a silent missing-type default.
+// ponytail: compile-time embedded values file; threshold changes need a release, not a code change; move to the runtime config store when one reaches the caller (§50).
 pub fn default_freshness_policy(memory_type: MemoryType) -> FreshnessPolicy {
-    const HOUR: u64 = 3600;
-    const DAY: u64 = 24 * HOUR;
-    match memory_type {
-        MemoryType::State | MemoryType::Issue => FreshnessPolicy {
-            fresh_within: Duration::from_secs(6 * HOUR),
-            aging_within: Duration::from_secs(DAY),
-        },
-        MemoryType::Decision
-        | MemoryType::Rejection
-        | MemoryType::Constraint
-        | MemoryType::Lesson => FreshnessPolicy {
-            fresh_within: Duration::from_secs(7 * DAY),
-            aging_within: Duration::from_secs(30 * DAY),
-        },
-        MemoryType::Fact
-        | MemoryType::Preference
-        | MemoryType::Procedure
-        | MemoryType::Outcome
-        | MemoryType::Reference
-        | MemoryType::Note => FreshnessPolicy {
-            fresh_within: Duration::from_secs(30 * DAY),
-            aging_within: Duration::from_secs(180 * DAY),
-        },
+    let types = MemoryType::ALL.map(MemoryType::wire);
+    let table = humaux_contracts::freshness::values(&types)
+        .expect("§50: embedded freshness values must load exhaustively");
+    let row = table
+        .rows
+        .iter()
+        .find(|row| row.name == memory_type.wire())
+        .expect("§21.5: every MemoryType has exactly one policy row");
+    FreshnessPolicy {
+        policy_id: &table.policy_id,
+        version: table.version,
+        aging_after: row.aging_after,
+        stale_after: row.stale_after,
     }
 }
 
-/// §21.5 resolution order: a workspace override (if the caller has one) beats the per-type
-/// default — never the reverse.
+/// §21.5: a workspace override wins over the per-type values file.
 pub fn freshness_policy_for(
     memory_type: MemoryType,
     workspace_override: Option<FreshnessPolicy>,
@@ -199,40 +177,61 @@ pub fn freshness_policy_for(
     workspace_override.unwrap_or_else(|| default_freshness_policy(memory_type))
 }
 
-/// §21.5's four reported quantities: `latest_evidence_at` / `latest_effective_at` /
-/// `state_age` / `freshness_class`.
+/// §21.5's annotation; Evidence time and the caller's snapshot clock are pure input values.
 #[derive(Debug, Clone, Serialize)]
 pub struct FreshnessSignal {
+    /// Independent of completeness and grounding (§21.5).
     pub class: FreshnessClass,
-    pub latest_evidence_at: Option<String>,
+    /// Always present, including unknown and no-decay annotations (ADR-0111 D-C).
+    pub policy_id: &'static str,
+    /// §50 values version used to explain the annotation.
+    pub policy_version: u32,
+    /// Backing Evidence time (§9), never the read or re-embedding time.
+    pub latest_evidence_at: Option<SystemTime>,
+    /// Effective time is an independent axis (§9).
     pub latest_effective_at: Option<String>,
+    /// None for missing Evidence or Evidence later than the supplied snapshot.
     pub state_age_seconds: Option<u64>,
 }
 
-/// Builds [`FreshnessSignal`], applying §21.5's per-type/per-workspace policy. `class` is
-/// `Unknown` whenever `age` itself is unknown (no evidence to age at all) — never guessed at
-/// from a default policy applied to a missing timestamp.
+/// §21.5: computes only an annotation; M13-4b supplies the snapshot's DB clock.
+/// Missing or future Evidence has unknown age, never a fabricated zero (ADR-0111 D-A).
 pub fn compute_freshness(
     memory_type: MemoryType,
-    age: Option<Duration>,
+    latest_evidence_at: Option<SystemTime>,
+    now: SystemTime,
     workspace_override: Option<FreshnessPolicy>,
-    latest_evidence_at: Option<String>,
     latest_effective_at: Option<String>,
 ) -> FreshnessSignal {
-    let Some(age) = age else {
-        return FreshnessSignal {
-            class: FreshnessClass::Unknown,
-            latest_evidence_at,
-            latest_effective_at,
-            state_age_seconds: None,
-        };
-    };
     let policy = freshness_policy_for(memory_type, workspace_override);
+    let age = latest_evidence_at.and_then(|evidence| now.duration_since(evidence).ok());
     FreshnessSignal {
-        class: policy.classify_age(age),
+        class: age.map_or(FreshnessClass::Unknown, |age| policy.classify_age(age)),
+        policy_id: policy.policy_id,
+        policy_version: policy.version,
         latest_evidence_at,
         latest_effective_at,
-        state_age_seconds: Some(age.as_secs()),
+        state_age_seconds: age.map(|age| age.as_secs()),
+    }
+}
+
+/// ADR-0111 D-C: stale wins; otherwise any unknown wins; an empty result is unknown.
+pub fn summarize_freshness(classes: impl IntoIterator<Item = FreshnessClass>) -> FreshnessClass {
+    let mut summary = FreshnessClass::Fresh;
+    let mut any = false;
+    for class in classes {
+        any = true;
+        summary = match (summary, class) {
+            (FreshnessClass::Stale, _) | (_, FreshnessClass::Stale) => FreshnessClass::Stale,
+            (FreshnessClass::Unknown, _) | (_, FreshnessClass::Unknown) => FreshnessClass::Unknown,
+            (FreshnessClass::Aging, _) | (_, FreshnessClass::Aging) => FreshnessClass::Aging,
+            _ => FreshnessClass::Fresh,
+        };
+    }
+    if any {
+        summary
+    } else {
+        FreshnessClass::Unknown
     }
 }
 
@@ -370,54 +369,56 @@ mod tests {
         );
     }
 
-    /// §21.5: `State`/`Issue` get a same-day policy; long-lived types get a much longer one —
-    /// proves there is no single constant shared by every `MemoryType`.
     #[test]
     fn freshness_policy_differs_by_memory_type_not_one_constant() {
         let state = default_freshness_policy(MemoryType::State);
         let fact = default_freshness_policy(MemoryType::Fact);
         assert_ne!(state, fact);
-        assert!(state.fresh_within < fact.fresh_within);
+        assert!(state.aging_after < fact.aging_after);
     }
 
     #[test]
     fn workspace_override_beats_per_type_default() {
         let custom = FreshnessPolicy {
-            fresh_within: Duration::from_secs(1),
-            aging_within: Duration::from_secs(2),
+            policy_id: "workspace-override",
+            version: 2,
+            aging_after: Some(Duration::from_secs(1)),
+            stale_after: Some(Duration::from_secs(2)),
         };
-        let resolved = freshness_policy_for(MemoryType::Fact, Some(custom));
-        assert_eq!(resolved, custom);
-        assert_ne!(resolved, default_freshness_policy(MemoryType::Fact));
+        assert_eq!(freshness_policy_for(MemoryType::Fact, Some(custom)), custom);
+        assert_ne!(custom, default_freshness_policy(MemoryType::Fact));
     }
 
     #[test]
     fn compute_freshness_unknown_when_no_age_available() {
-        let signal = compute_freshness(MemoryType::State, None, None, None, None);
+        let signal = compute_freshness(MemoryType::State, None, SystemTime::UNIX_EPOCH, None, None);
         assert_eq!(signal.class, FreshnessClass::Unknown);
         assert_eq!(signal.state_age_seconds, None);
+        assert_eq!(signal.policy_id, "evidence-per-type");
+        assert_eq!(signal.policy_version, 1);
     }
 
     #[test]
     fn compute_freshness_classifies_within_policy_windows() {
-        let fresh = compute_freshness(
-            MemoryType::State,
-            Some(Duration::from_secs(3600)),
-            None,
-            Some("2026-08-24T12:00:00Z".to_string()),
-            None,
-        );
-        assert_eq!(fresh.class, FreshnessClass::Fresh);
-        assert_eq!(fresh.state_age_seconds, Some(3600));
-
-        let stale = compute_freshness(
-            MemoryType::State,
-            Some(Duration::from_secs(10 * 86400)),
-            None,
-            None,
-            None,
-        );
-        assert_eq!(stale.class, FreshnessClass::Stale);
+        for (seconds, expected) in [
+            (3600, FreshnessClass::Fresh),
+            (86_401, FreshnessClass::Fresh),
+            (7 * 86400, FreshnessClass::Fresh),
+            (7 * 86400 + 1, FreshnessClass::Aging),
+            (10 * 86400, FreshnessClass::Aging),
+            (30 * 86400, FreshnessClass::Aging),
+            (30 * 86400 + 1, FreshnessClass::Stale),
+        ] {
+            let signal = compute_freshness(
+                MemoryType::State,
+                Some(SystemTime::UNIX_EPOCH),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+                None,
+                None,
+            );
+            assert_eq!(signal.class, expected);
+            assert_eq!(signal.state_age_seconds, Some(seconds));
+        }
     }
 
     // ---- §8.8 grounding, and its orthogonality to §21.5 freshness ----
@@ -448,8 +449,8 @@ mod tests {
             },
             freshness: compute_freshness(
                 MemoryType::State,
-                Some(Duration::from_secs(730 * 86_400)),
-                None,
+                Some(SystemTime::UNIX_EPOCH),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(730 * 86_400),
                 None,
                 None,
             ),
@@ -487,8 +488,8 @@ mod tests {
         // to — §8.8's「刚写 5 分钟的 current-state Memory + 代码刚变化 ⇒ RECHECK_REQUIRED」.
         s.freshness = compute_freshness(
             MemoryType::State,
-            Some(Duration::from_secs(300)),
-            None,
+            Some(SystemTime::UNIX_EPOCH),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(300),
             None,
             None,
         );
@@ -522,28 +523,24 @@ mod tests {
         assert!(json.contains(r#""grounding":null"#));
     }
 
-    /// §21.5's own worked example: `STATE` ages out same-day, unlike a uniform 7-day window.
+    /// §21.5 / ADR-0111 supersedes the former same-day State fixture.
     #[test]
-    fn state_is_aging_by_one_day_not_seven() {
-        let one_day_plus = compute_freshness(
+    fn state_is_aging_after_seven_days() {
+        let signal = compute_freshness(
             MemoryType::State,
-            Some(Duration::from_secs(86_401)),
-            None,
+            Some(SystemTime::UNIX_EPOCH),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(7 * 86400 + 1),
             None,
             None,
         );
-        assert_eq!(one_day_plus.class, FreshnessClass::Stale);
-        let six_days = compute_freshness(
+        assert_eq!(signal.class, FreshnessClass::Aging);
+        let fact = compute_freshness(
             MemoryType::Fact,
-            Some(Duration::from_secs(6 * 86_400)),
-            None,
+            Some(SystemTime::UNIX_EPOCH),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(6 * 86400),
             None,
             None,
         );
-        assert_eq!(
-            six_days.class,
-            FreshnessClass::Fresh,
-            "Fact's policy is not the 7-day constant §21.5 forbids either"
-        );
+        assert_eq!(fact.class, FreshnessClass::Fresh);
     }
 }

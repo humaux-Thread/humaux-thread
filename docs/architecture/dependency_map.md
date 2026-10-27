@@ -201,7 +201,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -496,7 +495,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
-- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -684,7 +682,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -883,6 +880,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.resolve_user_reasoning_admission`
 - executes `ops.reasoning_health_observation_reject_mutation`
 - executes `ops.reasoning_model_call_validate`
+- executes `private.memory_in_project`
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
@@ -1154,8 +1152,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 
 #### `xtask::load`
-- reads `control.rate_buckets`
-- reads `control.workspaces`
 - service `PostgreSQL(any)`
 - service `HTTP(gateway)`
 - service `subprocess(docker)`
@@ -1631,7 +1627,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2136,7 +2131,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -2463,7 +2457,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(loopback)`
 
 #### `gateway::mcp_application`
-- reads `control.rate_buckets`
 - reads `private.memory_records`
 - writes `control.w2_test_request_intervals`
 - executes `private.publish_continuity_facet`
@@ -2706,7 +2699,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop`
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.retention_policy_approve`
 - executes `ops.auto_redrive_schema_failed`
 - executes `ops.purge_expired_selection_snapshots`
@@ -2844,7 +2836,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -3244,7 +3235,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_endpoints`
 - reads `control.public_moderator_grants`
 - reads `control.quota_windows`
-- reads `control.rate_buckets`
 - reads `control.reasoning_credential_bindings`
 - reads `control.reasoning_profiles`
 - reads `control.reasoning_route_bindings`
@@ -3432,7 +3422,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.partition_drop_check`
 - executes `control.partition_drop_statements`
 - executes `control.partition_parent`
-- executes `control.purge_idle_rate_buckets`
 - executes `control.reasoning_credential_accounts`
 - executes `control.reasoning_profile_capabilities`
 - executes `control.reasoning_profile_request_extras`
@@ -3570,9 +3559,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_EVERY_SECONDS`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_IDLE_SECONDS`
-- env `HUMAUX_MAINTENANCE_SERVE_RATE_BUCKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT`
@@ -3910,7 +3896,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -4559,7 +4544,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
-- writes `control.rate_buckets`
 - writes `control.usage_reservations`
 - executes `control.issue_quota_window`
 - executes `control.reap_quota_reservations`
@@ -6021,6 +6005,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -6193,17 +6178,6 @@ executed by:
 - process(cargo-xtask): `adapters::plan_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
 
-### `control.purge_idle_rate_buckets`
-read by:
-
-written by:
-
-executed by:
-- (no process): `adapters::tests::maintenance_doors`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::maintenance_repo`
-- process(humaux-maintenance): `maintenance::rls_check`
-
 ### `control.quota_windows`
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
@@ -6222,27 +6196,6 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
-- process(cargo-xtask): `adapters::quota_repo`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
-- process(humaux-gateway): `adapters::quota_repo`
-- process(humaux-maintenance): `adapters::quota_repo`
-- process(humaux-private-worker): `adapters::quota_repo`
-- process(humaux-retrieval-worker): `adapters::quota_repo`
-
-executed by:
-
-### `control.rate_buckets`
-read by:
-- process(cargo-xtask): `maintenance::rls_check`
-- process(cargo-xtask): `xtask::load`
-- process(humaux-gateway): `gateway::mcp_application`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::maintenance_doors`
-- (no process): `adapters::tests::quota_and_rate`
-- (no process): `adapters::tests::support::operation_receipt_fixture`
-- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
@@ -6766,6 +6719,7 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -7017,7 +6971,6 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(cargo-xtask): `xtask::load`
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7033,6 +6986,7 @@ written by:
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -8772,6 +8726,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
 - (no process): `adapters::tests::relation_kernel`
@@ -9209,6 +9164,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -9712,6 +9668,15 @@ written by:
 
 executed by:
 
+### `private.memory_in_project`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::memory_in_project`
+- process(cargo-xtask): `xtask::architecture_check`
+
 ### `private.memory_project_revocations`
 read by:
 - (no process): `adapters::tests::memory_attribution`
@@ -9721,6 +9686,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 
 executed by:
 
@@ -9735,6 +9701,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
@@ -9776,6 +9743,7 @@ read by:
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `adapters::tests::hot_path_indexes`
+- (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
@@ -9887,6 +9855,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::note_history`
@@ -12070,6 +12039,7 @@ executed by:
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::note_put`
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
@@ -12211,6 +12181,7 @@ executed by:
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::note_history`
 - `adapters::tests::note_put`
@@ -12291,6 +12262,7 @@ executed by:
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::maintenance_doors`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
@@ -12356,6 +12328,7 @@ executed by:
 - `adapters::tests::jobs_claim`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
@@ -13417,6 +13390,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13630,6 +13604,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13741,6 +13716,7 @@ modules naming it:
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -13817,6 +13793,7 @@ modules naming it:
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
+- `adapters::tests::memory_in_project`
 - `adapters::tests::memory_security_lifecycle_eval`
 - `adapters::tests::memory_subjects_link`
 - `adapters::tests::minimax_live_smoke`
@@ -14153,6 +14130,7 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 - `contracts::mechanism_registry`
 
 ### humaux-contracts → `toml` (normal)
@@ -14160,6 +14138,7 @@ why: parses the embedded feature registry TOML
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 
 ### humaux-contracts → `sha2` (normal)
 why: sha256 digests for hashes, fingerprints and scope_hash
@@ -14767,6 +14746,7 @@ modules naming it:
 - `retrieval::handoff`
 - `retrieval::request`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `humaux-contracts` (normal)
@@ -14774,6 +14754,8 @@ why: typed retrieval config registry entries request.rs assembles against
 
 modules naming it:
 - `retrieval::request`
+- `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `serde_json` (normal)
@@ -14783,6 +14765,7 @@ modules naming it:
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `sha2` (normal)
@@ -16589,7 +16572,6 @@ modules naming it:
 - `tests`
 - `xtask::e2e_onboard`
 - `xtask::e2e_seed`
-- `xtask::load`
 - `xtask::mechanism_registry`
 
 ### xtask → `tokio` (normal)
@@ -17739,6 +17721,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/memory_in_project.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/memory_security_lifecycle_eval.rs`
 db-bound (default run): yes
 
@@ -18032,13 +18023,12 @@ default run:
 - Qdrant
 
 ### `crates/adapters/tests/quota_and_rate.rs`
-db-bound (default run): yes
+db-bound (default run): no
 
 services (computed):
 - PostgreSQL
 
 default run:
-- PostgreSQL
 
 ### `crates/adapters/tests/read_gate_closure.rs`
 db-bound (default run): yes
@@ -18284,6 +18274,13 @@ services (computed):
 
 default run:
 
+### `crates/contracts/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/domain/tests/authority_policy_g59_6.rs`
 db-bound (default run): no
 
@@ -18492,6 +18489,13 @@ services (computed):
 
 default run:
 
+### `crates/retrieval/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/retrieval/tests/planner_predicate_eval.rs`
 db-bound (default run): no
 
@@ -18590,8 +18594,8 @@ default run:
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:40` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:1944` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2759` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
