@@ -18,6 +18,10 @@
 //!   HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS,
 //!   HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX,
 //!   HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS,
+//!   HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST, HUMAUX_GATEWAY_LOGIN_CODE_PEPPER, HUMAUX_GATEWAY_LOGIN_MAIL_FROM,
+//!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
+//!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
 //!   HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS,
@@ -46,15 +50,15 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
 //!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
-//!   adapters::retrieve, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
+//!   adapters::email, adapters::retrieve, application::auth, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
-//!   gateway::cached_embedding, gateway::context,
+//!   gateway::auth_pages, gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
 //! Called-by: [gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
-//! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7
+//! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
 //!
 //! This module owns process configuration only. Tool arguments never select a
 //! stream version, credential verifier, listener, or rate policy; a tool argument selects a
@@ -73,9 +77,11 @@ use std::{
 
 use humaux_adapters::{
     attribution_repo::AttributionLadder,
+    email::RecipientAllowlist,
     postgres::{PoolSettings, RuntimeDbPool, SessionLock},
     retrieve::{TokenKeys, install_token_keys},
 };
+use humaux_application::auth::{AuthConfig, ChallengePolicy, canonicalize_email};
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_cache::CacheConfig;
 use humaux_contracts::config_registry::{
@@ -101,6 +107,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     admission::{Admission, AdmissionSettings},
+    auth_pages::AuthPagesConfig,
     cached_embedding::{CachedEmbeddingPort, GenerationStamp},
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
@@ -129,6 +136,22 @@ const RERANK_PIN_KEYS: [&str; 5] = [
 const AUTH_SURFACE_ENABLED_KEY: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
 const AUTH_HMAC_KEY_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
 const AUTH_HMAC_KEY_PREVIOUS_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS";
+/// ADR-0125 8a: the one origin a `/auth/*` POST may come from (M02 D9 `PUBLIC_BASE_URL`). Required once the auth surface
+/// is on; deliberately not `HUMAUX_GATEWAY_ALLOWED_ORIGINS`, which is the MCP Host/Origin allowlist.
+const PUBLIC_BASE_URL_KEY: &str = "HUMAUX_GATEWAY_PUBLIC_BASE_URL";
+/// ADR-0125 8c: the sender address of the login mail. Required once the auth surface is on.
+const LOGIN_MAIL_FROM_KEY: &str = "HUMAUX_GATEWAY_LOGIN_MAIL_FROM";
+/// ADR-0125 8d: the keyed-hash key of login codes, hex. Its own secret, so login codes and API keys rotate apart.
+const LOGIN_CODE_PEPPER_KEY: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
+/// ADR-0125 8c: the enqueue-time recipient allowlist of the email door (`adapters::email::RecipientAllowlist`).
+const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST";
+/// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
+/// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
+const AUTH_SESSION_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS";
+const AUTH_SESSION_IDLE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS";
+const AUTH_LOGIN_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS";
+const AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS";
+const AUTH_LOGIN_CODE_COOLDOWN_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS";
 const CREDENTIAL_TOUCH_INTERVAL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS";
 /// Largest accepted credential touch interval: one hour. A technical bound, not a business limit: the stamp feeds the
 /// 24 h activity window of `ops.health_snapshot` (0261), and an interval beyond an hour would blur it by more than a
@@ -266,9 +289,9 @@ pub struct GatewayBootstrap {
     mood_half_life: Duration,
     /// §15.5 / ADR-0059 D-G consistency-token MAC keys, installed process-wide in [`Self::build`].
     token_keys: TokenKeys,
-    /// M02 D3 auth-surface MAC keys; `Some` exactly when `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is true. A separate
-    /// key pair from `token_keys`: one leak must not mint both token families.
-    auth_keys: Option<TokenKeys>,
+    /// M02 D3 / ADR-0125 `/auth/*` configuration; `Some` exactly when `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is true. Its
+    /// MAC keys are a separate pair from `token_keys`: one leak must not mint both token families.
+    auth_pages: Option<AuthPagesConfig>,
     /// ADR-0061 D-B `HUMAUX_GATEWAY_METRICS_ADDR`: the loopback ops listener (`/metrics`, `/status`).
     metrics_addr: SocketAddr,
     /// ADR-0061 D-F `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`.
@@ -324,7 +347,7 @@ pub struct GatewayRuntime {
     metrics_addr: SocketAddr,
     readiness_refresh: Duration,
     effective_config: Value,
-    auth_keys: Option<TokenKeys>,
+    auth_pages: Option<AuthPagesConfig>,
 }
 
 // §67.2 / ADR-0100: a stalled original session is lost; never reconnect or continue serving.
@@ -346,10 +369,10 @@ impl GatewayRuntime {
         }
     }
 
-    /// M02 D3: hands the auth-surface key set to the auth wiring once (`None` when the surface is off, or after the
-    /// first call).
-    pub fn take_auth_keys(&mut self) -> Option<TokenKeys> {
-        self.auth_keys.take()
+    /// M02 D3 / ADR-0125: hands the `/auth/*` configuration to `main` once (`None` when the surface is off, or after
+    /// the first call).
+    pub fn take_auth_pages(&mut self) -> Option<AuthPagesConfig> {
+        self.auth_pages.take()
     }
 
     #[must_use]
@@ -516,6 +539,8 @@ impl GatewayBootstrap {
             }
         }
         let application = Arc::new(application);
+        // ADR-0125: anonymous callers are keyed by the IP the pre-auth bucket charges them.
+        let admission = Admission::new(self.admission).keyed_by_client(Arc::clone(&guard));
         Ok(GatewayRuntime {
             session_lock,
             session_lock_check: self.session_lock_check,
@@ -528,11 +553,11 @@ impl GatewayBootstrap {
                 semantic,
             }),
             guard,
-            admission: Arc::new(Admission::new(self.admission)),
+            admission: Arc::new(admission),
             metrics_addr: self.metrics_addr,
             readiness_refresh: self.readiness_refresh,
             effective_config: self.effective_config,
-            auth_keys: self.auth_keys,
+            auth_pages: self.auth_pages,
         })
     }
 
@@ -560,7 +585,7 @@ impl GatewayBootstrap {
             "HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS",
         )?;
         let token_keys = parse_token_keys(&effective)?;
-        let auth_keys = parse_auth_keys(&effective, &token_keys)?;
+        let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
             required(&effective, READINESS_REFRESH_KEY)?,
@@ -619,7 +644,7 @@ impl GatewayBootstrap {
             undo_window,
             mood_half_life,
             token_keys,
-            auth_keys,
+            auth_pages,
             metrics_addr,
             readiness_refresh,
             task_lease_ttl,
@@ -769,6 +794,210 @@ fn parse_auth_keys(
         ));
     }
     Ok(Some(keys))
+}
+
+/// ADR-0125: the whole `/auth/*` configuration. `None` while the surface is off (the other values may then be blank);
+/// when it is on, [`parse_auth_keys`] runs first and its refusals keep their order, then the origin, the sender and the
+/// pepper are each required and validated. Errors name the key, never a value.
+fn parse_auth_pages(
+    effective: &BTreeMap<String, String>,
+    token_keys: &TokenKeys,
+    guard: &GuardSettings,
+) -> Result<Option<AuthPagesConfig>, BootstrapError> {
+    let Some(keys) = parse_auth_keys(effective, token_keys)? else {
+        return Ok(None);
+    };
+    let public_origin = parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?;
+    let mail_from = parse_login_mail_from(required(effective, LOGIN_MAIL_FROM_KEY)?)?;
+    let code_pepper = parse_login_code_pepper(
+        required(effective, LOGIN_CODE_PEPPER_KEY)?,
+        [token_keys, &keys],
+        guard,
+    )?;
+    // ponytail: the registry cannot tell an unset key from a blank one, so blank allows every recipient at enqueue
+    // (`RecipientAllowlist::parse` would read a present blank as "nobody"); the sender enforces it again at send time.
+    let allowlist = match present(effective, EMAIL_RECIPIENT_ALLOWLIST_KEY)?.trim() {
+        "" => RecipientAllowlist::allow_all(),
+        list => RecipientAllowlist::parse(Some(list)),
+    };
+    Ok(Some(AuthPagesConfig {
+        keys,
+        public_origin,
+        mail_from,
+        code_pepper,
+        allowlist,
+        auth: parse_auth_lifetimes(effective)?,
+    }))
+}
+
+/// `key` as whole seconds (or a count) inside `range`; the bounds catch a unit slip, they are not business limits.
+fn bounded(
+    effective: &BTreeMap<String, String>,
+    key: &str,
+    range: std::ops::RangeInclusive<u64>,
+    reason: &'static str,
+) -> Result<u64, BootstrapError> {
+    required(effective, key)?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|value| range.contains(value))
+        .ok_or_else(|| BootstrapError::new(key, reason))
+}
+
+/// ADR-0125 8e: the session and login-code lifetimes, the attempt cap and the resend cooldown (§78.1). The idle
+/// lifetime may not outlast the absolute one and the cooldown may not outlast the code.
+fn parse_auth_lifetimes(
+    effective: &BTreeMap<String, String>,
+) -> Result<AuthConfig, BootstrapError> {
+    let session = bounded(
+        effective,
+        AUTH_SESSION_TTL_KEY,
+        3_600..=7_776_000,
+        "must be 3600..=7776000 seconds",
+    )?;
+    let idle = bounded(
+        effective,
+        AUTH_SESSION_IDLE_TTL_KEY,
+        300..=7_776_000,
+        "must be 300..=7776000 seconds",
+    )?;
+    if idle > session {
+        return Err(BootstrapError::new(
+            AUTH_SESSION_IDLE_TTL_KEY,
+            "must not exceed HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS",
+        ));
+    }
+    let code_ttl = bounded(
+        effective,
+        AUTH_LOGIN_CODE_TTL_KEY,
+        60..=3_600,
+        "must be 60..=3600 seconds",
+    )?;
+    let attempts = bounded(
+        effective,
+        AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY,
+        1..=10,
+        "must be 1..=10",
+    )?;
+    let cooldown = bounded(
+        effective,
+        AUTH_LOGIN_CODE_COOLDOWN_KEY,
+        1..=3_600,
+        "must be 1..=3600 seconds",
+    )?;
+    if cooldown > code_ttl {
+        return Err(BootstrapError::new(
+            AUTH_LOGIN_CODE_COOLDOWN_KEY,
+            "must not exceed HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS",
+        ));
+    }
+    Ok(AuthConfig {
+        login_challenge: ChallengePolicy {
+            ttl: Duration::from_secs(code_ttl),
+            max_attempts: i32::try_from(attempts).map_err(|_| {
+                BootstrapError::new(AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "must be 1..=10")
+            })?,
+            send_cooldown: Duration::from_secs(cooldown),
+        },
+        session_ttl: Duration::from_secs(session),
+        session_idle_ttl: Duration::from_secs(idle),
+        ..AuthConfig::default()
+    })
+}
+
+/// ADR-0125 8a: an absolute `https` origin, lowercased and without a path; `http` only for a loopback host. The
+/// result is compared byte for byte with a request's `Origin`, which a browser serializes without the scheme's default
+/// port, so `:443` (https) and `:80` (http) are dropped here and an empty, zero or non-numeric port is refused.
+// ponytail: loopback `http` is allowed in any environment (the gateway has no dev/test marker); `deploy-check --env`
+// refuses a non-https value in the production values file instead.
+fn parse_public_origin(value: &str) -> Result<String, BootstrapError> {
+    const REASON: &str = "must be an absolute https origin (http only for a loopback host)";
+    let lowered = value.trim().to_ascii_lowercase();
+    let origin = lowered.strip_suffix('/').unwrap_or(&lowered);
+    let (scheme, authority) = origin
+        .split_once("://")
+        .ok_or_else(|| BootstrapError::new(PUBLIC_BASE_URL_KEY, REASON))?;
+    let well_formed = !authority.is_empty()
+        && authority.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+        });
+    // A bracketed IPv6 host keeps its colons; the port is whatever follows the last colon outside the brackets.
+    let (host, port) = match authority.rfind(':') {
+        Some(at) if !authority[at..].contains(']') => {
+            (&authority[..at], Some(&authority[at + 1..]))
+        }
+        _ => (authority, None),
+    };
+    let port = port
+        .map(|digits| {
+            digits
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .ok_or_else(|| {
+                    BootstrapError::new(PUBLIC_BASE_URL_KEY, "must carry a valid port or none")
+                })
+        })
+        .transpose()?;
+    let host_ok = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .map_or_else(
+            || !host.is_empty() && !host.contains([':', '[', ']']),
+            |inner| inner.parse::<std::net::Ipv6Addr>().is_ok(),
+        );
+    let loopback = ["localhost", "127.0.0.1", "[::1]"].contains(&host);
+    let port = port.filter(|port| !matches!((scheme, *port), ("https", 443) | ("http", 80)));
+    let normalized = match port {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    };
+    match scheme {
+        "https" if well_formed && host_ok => Ok(normalized),
+        "http" if well_formed && host_ok && loopback => Ok(normalized),
+        _ => Err(BootstrapError::new(PUBLIC_BASE_URL_KEY, REASON)),
+    }
+}
+
+/// ADR-0125 8c: a bare address, the same shape `canonicalize_email` accepts, with no whitespace, control character,
+/// angle bracket or comma that could add a header or a second sender.
+fn parse_login_mail_from(value: &str) -> Result<String, BootstrapError> {
+    let value = value.trim();
+    let clean = !value
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ','));
+    if clean && canonicalize_email(value).is_ok() {
+        Ok(value.to_owned())
+    } else {
+        Err(BootstrapError::new(
+            LOGIN_MAIL_FROM_KEY,
+            "must be a bare email address",
+        ))
+    }
+}
+
+/// ADR-0125 8d: hex, at least 32 bytes (the `TokenKeys` floor), and not a byte of key material any other secret of this
+/// process holds: the consistency-token and auth key sets and the credential pepper pair.
+fn parse_login_code_pepper(
+    value: &str,
+    signing: [&TokenKeys; 2],
+    guard: &GuardSettings,
+) -> Result<Vec<u8>, BootstrapError> {
+    let bytes = hex::decode(value)
+        .map_err(|_| BootstrapError::new(LOGIN_CODE_PEPPER_KEY, "invalid hex"))?;
+    let as_keys = TokenKeys::new(bytes.clone(), None)
+        .map_err(|_| BootstrapError::new(LOGIN_CODE_PEPPER_KEY, "shorter than 32 bytes"))?;
+    let reused_pepper = std::iter::once(&guard.credential_pepper)
+        .chain(&guard.credential_pepper_previous)
+        .any(|pepper| *pepper == bytes);
+    if reused_pepper || signing.iter().any(|keys| keys.shares_key_with(&as_keys)) {
+        return Err(BootstrapError::new(
+            LOGIN_CODE_PEPPER_KEY,
+            "must differ from every other key and pepper",
+        ));
+    }
+    Ok(bytes)
 }
 
 /// An optional secret hex key registered with default `""`: empty = absent; otherwise valid hex.
@@ -1360,6 +1589,29 @@ pub fn registry() -> Vec<ConfigEntry> {
         ]
         .into_iter()
         .map(|suffix| entry_with_default(&format!("{PREFIX}{suffix}"), "hex", true, "")),
+    );
+    // ADR-0125: the `/auth/*` values. Blank (the default) is valid while AUTH_SURFACE_ENABLED is false; once it is true
+    // the origin, the sender and the pepper are required (`parse_auth_pages`). A blank allowlist allows every recipient.
+    entries.push(entry_with_default(LOGIN_CODE_PEPPER_KEY, "hex", true, ""));
+    entries.extend(
+        [
+            PUBLIC_BASE_URL_KEY,
+            LOGIN_MAIL_FROM_KEY,
+            EMAIL_RECIPIENT_ALLOWLIST_KEY,
+        ]
+        .map(|name| entry_with_default(name, "string", false, "")),
+    );
+    // ADR-0125 8e: lifetimes, attempt cap and cooldown; the defaults are the values `AuthConfig::default()` carried
+    // (30 d, 7 d, 15 min, 5 attempts, 60 s). Validated only once the auth surface is on.
+    entries.extend(
+        [
+            (AUTH_SESSION_TTL_KEY, "u64", "2592000"),
+            (AUTH_SESSION_IDLE_TTL_KEY, "u64", "604800"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "u64", "900"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "u32", "5"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "u64", "60"),
+        ]
+        .map(|(name, type_name, default)| entry_with_default(name, type_name, false, default)),
     );
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
@@ -2387,7 +2639,248 @@ mod tests {
                 "must differ from the consistency-token keys"
             )
         );
-        assert!(GatewayBootstrap::from_raw(with(&[(AUTH_HMAC_KEY_KEY, &good)])).is_ok());
+        let mut complete = with(&[(AUTH_HMAC_KEY_KEY, &good)]);
+        complete.extend(auth_page_values());
+        assert!(GatewayBootstrap::from_raw(complete).is_ok());
+    }
+
+    /// The three values the auth surface needs beside its MAC key (ADR-0125 8a, 8c, 8d); a fresh pepper per call.
+    fn auth_page_values() -> BTreeMap<String, String> {
+        [
+            (
+                PUBLIC_BASE_URL_KEY,
+                "https://console.example.test".to_owned(),
+            ),
+            (LOGIN_MAIL_FROM_KEY, "login@example.test".to_owned()),
+            (LOGIN_CODE_PEPPER_KEY, generated_key_hex()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
+    }
+
+    /// ADR-0125 8a/8c/8d: with the surface on, the origin, the sender and the pepper are each required and validated, and
+    /// the pepper shares no byte with another key; a blank allowlist allows everyone. With the surface off none is read.
+    /// Fault: reuse the credential pepper as the login-code pepper ⇒ red.
+    #[test]
+    fn auth_page_values_are_required_validated_and_distinct_when_the_surface_is_on() {
+        let refusal = |values: BTreeMap<String, String>| match GatewayBootstrap::from_raw(values) {
+            Err(error) => (error.key.clone(), error.reason, error.to_string()),
+            Ok(_) => panic!("configuration must be rejected"),
+        };
+        let enabled = |overrides: &[(&str, &str)]| {
+            let mut values = raw();
+            values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+            values.insert(AUTH_HMAC_KEY_KEY.into(), generated_key_hex());
+            values.extend(auth_page_values());
+            for (key, value) in overrides {
+                values.insert((*key).to_owned(), (*value).to_owned());
+            }
+            values
+        };
+        // Surface off: blank values boot and nothing is held.
+        let off = GatewayBootstrap::from_raw(raw()).expect("surface off needs none of them");
+        assert!(off.auth_pages.is_none());
+        // Each required value, blank.
+        for key in [
+            PUBLIC_BASE_URL_KEY,
+            LOGIN_MAIL_FROM_KEY,
+            LOGIN_CODE_PEPPER_KEY,
+        ] {
+            let (refused, reason, _) = refusal(enabled(&[(key, "")]));
+            assert_eq!((refused.as_str(), reason), (key, "missing or empty"));
+        }
+        let (key, _, _) = refusal(enabled(&[(
+            PUBLIC_BASE_URL_KEY,
+            "http://console.example.test",
+        )]));
+        assert_eq!(key, PUBLIC_BASE_URL_KEY);
+        let (key, _, _) = refusal(enabled(&[(LOGIN_MAIL_FROM_KEY, "Name <a@example.test>")]));
+        assert_eq!(key, LOGIN_MAIL_FROM_KEY);
+        let short = "ab".repeat(31);
+        let (key, reason, shown) = refusal(enabled(&[(LOGIN_CODE_PEPPER_KEY, &short)]));
+        assert_eq!(
+            (key.as_str(), reason),
+            (LOGIN_CODE_PEPPER_KEY, "shorter than 32 bytes")
+        );
+        assert!(!shown.contains(&short));
+        let (key, reason, _) = refusal(enabled(&[(LOGIN_CODE_PEPPER_KEY, "not hex")]));
+        assert_eq!(
+            (key.as_str(), reason),
+            (LOGIN_CODE_PEPPER_KEY, "invalid hex")
+        );
+        // Distinct from the credential pepper (padded to the floor), the token key and the auth key.
+        let credential = "ab".repeat(32);
+        let mut values = enabled(&[
+            ("HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX", &credential),
+            (LOGIN_CODE_PEPPER_KEY, &credential),
+        ]);
+        let (key, reason, _) = refusal(values.clone());
+        assert_eq!(
+            (key.as_str(), reason),
+            (
+                LOGIN_CODE_PEPPER_KEY,
+                "must differ from every other key and pepper"
+            )
+        );
+        values.insert(
+            LOGIN_CODE_PEPPER_KEY.into(),
+            values["HUMAUX_GATEWAY_TOKEN_HMAC_KEY"].clone(),
+        );
+        values.insert(
+            "HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX".into(),
+            "00112233".into(),
+        );
+        assert_eq!(refusal(values.clone()).0, LOGIN_CODE_PEPPER_KEY);
+        values.insert(
+            LOGIN_CODE_PEPPER_KEY.into(),
+            values[AUTH_HMAC_KEY_KEY].clone(),
+        );
+        assert_eq!(refusal(values).0, LOGIN_CODE_PEPPER_KEY);
+        // Complete: boots, the origin is normalized, a blank allowlist is allow-all.
+        let on = GatewayBootstrap::from_raw(enabled(&[(
+            PUBLIC_BASE_URL_KEY,
+            "HTTPS://Console.Example.Test/",
+        )]))
+        .expect("complete configuration");
+        let pages = on.auth_pages.expect("surface on");
+        assert_eq!(pages.public_origin, "https://console.example.test");
+        assert_eq!(pages.mail_from, "login@example.test");
+    }
+
+    /// ADR-0125 8a: only an absolute `https` origin, or `http` on a loopback host, with no path, query, userinfo or
+    /// whitespace; the stored form is lowercase without a trailing slash.
+    #[test]
+    fn public_origin_is_strict_and_normalized() {
+        for (input, expected) in [
+            ("https://humaux.com", "https://humaux.com"),
+            ("https://humaux.com/", "https://humaux.com"),
+            (" HTTPS://Humaux.COM:8443 ", "https://humaux.com:8443"),
+            ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("http://localhost", "http://localhost"),
+            ("http://[::1]:8080", "http://[::1]:8080"),
+            // A browser serializes an Origin without the scheme's default port, so the configured one must match.
+            ("https://humaux.com:443", "https://humaux.com"),
+            ("http://localhost:80", "http://localhost"),
+            ("https://humaux.com:80", "https://humaux.com:80"),
+            ("http://127.0.0.1:443", "http://127.0.0.1:443"),
+        ] {
+            assert_eq!(
+                parse_public_origin(input).as_deref(),
+                Ok(expected),
+                "{input}"
+            );
+        }
+        for bad in [
+            "",
+            "humaux.com",
+            "http://humaux.com",
+            "http://localhost.evil.test",
+            "ftp://humaux.com",
+            "https://",
+            "https://humaux.com/path",
+            "https://humaux.com?x=1",
+            "https://user@humaux.com",
+            "https://humaux .com",
+            "https://humaux.com:",
+            "https://humaux.com:0",
+            "https://humaux.com:http",
+            "https://humaux.com:65536",
+            "https://humaux.com:1:2",
+            "https://[::1",
+            "https://[]",
+        ] {
+            assert_eq!(
+                parse_public_origin(bad).map_err(|error| error.key),
+                Err(PUBLIC_BASE_URL_KEY.to_owned()),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// ADR-0125 8e (§78.1): the session and login-code lifetimes, the attempt cap and the cooldown are registry keys whose
+    /// defaults are the former `AuthConfig::default()` values; each is bounded and the two orderings hold. Read only
+    /// once the surface is on. Fault: build `AuthConfig::default()` again in `parse_auth_pages` ⇒ red.
+    #[test]
+    fn auth_lifetimes_are_registry_keys_with_the_former_defaults_and_are_bounded() {
+        let enabled = |overrides: &[(&str, &str)]| {
+            let mut values = raw();
+            values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+            values.insert(AUTH_HMAC_KEY_KEY.into(), generated_key_hex());
+            values.extend(auth_page_values());
+            for (key, value) in overrides {
+                values.insert((*key).to_owned(), (*value).to_owned());
+            }
+            values
+        };
+        let refused_key =
+            |overrides: &[(&str, &str)]| match GatewayBootstrap::from_raw(enabled(overrides)) {
+                Err(error) => error.key,
+                Ok(_) => panic!("configuration must be rejected: {overrides:?}"),
+            };
+
+        let default = GatewayBootstrap::from_raw(enabled(&[]))
+            .expect("defaults boot")
+            .auth_pages
+            .expect("surface on")
+            .auth;
+        assert_eq!(
+            default,
+            AuthConfig::default(),
+            "the defaults are the former literals"
+        );
+
+        let tuned = GatewayBootstrap::from_raw(enabled(&[
+            (AUTH_SESSION_TTL_KEY, "86400"),
+            (AUTH_SESSION_IDLE_TTL_KEY, "3600"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "600"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "3"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "30"),
+        ]))
+        .expect("tuned values boot")
+        .auth_pages
+        .expect("surface on")
+        .auth;
+        assert_eq!(tuned.session_ttl, Duration::from_secs(86_400));
+        assert_eq!(tuned.session_idle_ttl, Duration::from_secs(3_600));
+        assert_eq!(tuned.login_challenge.ttl, Duration::from_secs(600));
+        assert_eq!(tuned.login_challenge.max_attempts, 3);
+        assert_eq!(tuned.login_challenge.send_cooldown, Duration::from_secs(30));
+
+        for (key, bad) in [
+            (AUTH_SESSION_TTL_KEY, "0"),
+            (AUTH_SESSION_TTL_KEY, "3599"),
+            (AUTH_SESSION_TTL_KEY, "7776001"),
+            (AUTH_SESSION_TTL_KEY, "30d"),
+            (AUTH_SESSION_IDLE_TTL_KEY, "299"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "59"),
+            (AUTH_LOGIN_CODE_TTL_KEY, "3601"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "0"),
+            (AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY, "11"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "0"),
+            (AUTH_LOGIN_CODE_COOLDOWN_KEY, "3601"),
+        ] {
+            assert_eq!(refused_key(&[(key, bad)]), key, "{key}={bad}");
+        }
+        // Idle may not outlast the absolute lifetime; the cooldown may not outlast the code.
+        assert_eq!(
+            refused_key(&[
+                (AUTH_SESSION_TTL_KEY, "7200"),
+                (AUTH_SESSION_IDLE_TTL_KEY, "7201")
+            ]),
+            AUTH_SESSION_IDLE_TTL_KEY
+        );
+        assert_eq!(
+            refused_key(&[
+                (AUTH_LOGIN_CODE_TTL_KEY, "120"),
+                (AUTH_LOGIN_CODE_COOLDOWN_KEY, "121")
+            ]),
+            AUTH_LOGIN_CODE_COOLDOWN_KEY
+        );
+        // Surface off: a bad value is never read.
+        let mut off = raw();
+        off.insert(AUTH_SESSION_TTL_KEY.into(), "0".into());
+        assert!(GatewayBootstrap::from_raw(off).is_ok());
     }
 
     #[test]
