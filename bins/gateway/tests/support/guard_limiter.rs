@@ -278,8 +278,12 @@ fn proxied_settings() -> GuardSettings {
 }
 
 /// One `tools/list` per `(bearer, client ip)` probe, in order, through a real guard built from `settings`.
-/// A policy refusal is not a rate refusal (§73.3 against §72.3): no probe may move `rate_limit_rejected_total`.
-fn probe(handle: &Handle, settings: GuardSettings, probes: &[(&str, &str)]) -> Vec<(u16, String)> {
+/// The guard comes back so a case can check that a policy refusal moved no `rate_limit_rejected_total` (§73.3, §72.3).
+fn probe(
+    handle: &Handle,
+    settings: GuardSettings,
+    probes: &[(&str, &str)],
+) -> (Vec<(u16, String)>, Arc<GatewayGuard>) {
     let (app, guard) = configured(handle, settings);
     frozen().block_on(async {
         let clock = tokio::spawn(hold_clock());
@@ -290,10 +294,9 @@ fn probe(handle: &Handle, settings: GuardSettings, probes: &[(&str, &str)]) -> V
                 wire_from(addr, Some(bearer), &format!("Forwarded: {ip}\r\n")).await;
             replies.push((status, body));
         }
-        assert_rate_metrics(&guard, "");
         server.abort();
         clock.abort();
-        replies
+        (replies, guard)
     })
 }
 
@@ -306,7 +309,7 @@ fn g_m03_13_global_denylist_is_preauth_and_is_not_a_rate_refusal() {
         settings.global_denylist = vec![DENIED_NET.parse().unwrap()];
         // One token per client: a deny that charged the pre-auth bucket would make the second DENIED_IP probe a 429.
         settings.rates.preauth_ip = RatePolicy::new(1, 1).unwrap();
-        let got = probe(
+        let (got, guard) = probe(
             &handle,
             settings,
             &[
@@ -328,6 +331,7 @@ fn g_m03_13_global_denylist_is_preauth_and_is_not_a_rate_refusal() {
             got[2].0, 200,
             "G-M03-13 the same bearer from another client is served"
         );
+        assert_rate_metrics(&guard, "");
     });
 }
 
@@ -338,7 +342,7 @@ fn g_m03_13_global_denylist_beats_the_emergency_allowlist() {
         let mut settings = proxied_settings();
         settings.global_denylist = vec!["203.0.113.7/32".parse().unwrap()];
         settings.global_emergency_allowlist = vec!["203.0.113.7/32".parse().unwrap()];
-        let got = probe(
+        let (got, _) = probe(
             &handle,
             settings,
             &[(credential.bearer.as_str(), DENIED_IP)],
@@ -373,7 +377,7 @@ fn g_m03_13_emergency_allowlist_beats_the_tenants_own_deny_postauth() {
             settings
         };
         let probes = [(credential.bearer.as_str(), DENIED_IP)];
-        let refused = probe(&handle, settings_for(false), &probes);
+        let (refused, _) = probe(&handle, settings_for(false), &probes);
         // Post-auth: the handler answers, so the code is the JSON-RPC error message, not the pre-auth plain body.
         let error: Value = serde_json::from_str(&refused[0].1).unwrap();
         assert_eq!(
@@ -381,7 +385,7 @@ fn g_m03_13_emergency_allowlist_beats_the_tenants_own_deny_postauth() {
             "G-M03-13 the tenant's own deny refuses without an emergency allow"
         );
         assert_eq!(error["error"]["message"], "FORBIDDEN");
-        let allowed = probe(&handle, settings_for(true), &probes);
+        let (allowed, _) = probe(&handle, settings_for(true), &probes);
         assert_eq!(
             allowed[0].0, 200,
             "G-M03-13 the emergency allow beats the tenant's own deny"
