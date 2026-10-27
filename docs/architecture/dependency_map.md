@@ -14474,7 +14474,9 @@ modules naming it:
 - `protocol::error_map`
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
 - `protocol::tests::mcp_http`
+- `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `tests`
 
@@ -14525,7 +14527,9 @@ why: JSON-RPC bodies and the embedded contracts/mcp catalog documents
 modules naming it:
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
 - `protocol::tests::mcp_http`
+- `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `tests`
 
@@ -14534,6 +14538,9 @@ why: validates the embedded contracts/mcp catalog documents at load time
 
 modules naming it:
 - `protocol::mcp_catalog`
+- `protocol::mcp_profile`
+- `protocol::tests::mcp_profile`
+- `tests`
 
 ### humaux-protocol → `tokio` (normal)
 why: async runtime the Axum/rmcp server and its tests run on
@@ -18418,6 +18425,13 @@ services (computed):
 default run:
 
 ### `crates/protocol/tests/mcp_http.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `crates/protocol/tests/mcp_profile.rs`
 db-bound (default run): no
 
 services (computed):
