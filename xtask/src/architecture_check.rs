@@ -1,7 +1,7 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
 //! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main]
-//! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks]
+//! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
 //! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; ADR-0110 D-C; ADR-0121 D-A
 //! dep-map: allow table-undeclared — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
 //!
@@ -10,8 +10,9 @@
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
 //! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C), the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1),
-//! and the backup-catalog gates G-M23-3 (every table has exactly one KNOWLEDGE/EXCLUDED row) and G-M23-3b (the KNOWLEDGE set is closed under foreign keys;
-//! C-M23-0, ADR-0121 D-A, #332).
+//! and the backup-catalog gates G-M23-3 (every table has exactly one KNOWLEDGE/EXCLUDED row) and G-M23-3b (the KNOWLEDGE set is closed under foreign keys,
+//! and the M23 D5 restore dependencies — revocation fences, their outbox, opt-outs, trigger parents — are KNOWLEDGE rows;
+//! C-M23-0, ADR-0121 D-A and its M23-2 fix 1 amendment, #332).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -11707,6 +11708,49 @@ fn backup_catalog_fk_closure(tables: &[DbTable], rows: &[CatalogRow]) -> Vec<Str
     problems
 }
 
+/// M23 D5 ("Restores never resurrect") and the ADR-0121 D-A amendment (M23-2 fix 1): fences + trigger parents, the
+/// tables a restore must bring back so that a revoked or withdrawn object stays revoked and an opt-out stays off. The
+/// fences are the two revocation facts that serving reads, their NOT NULL parent `ops.outbox` and the email opt-outs;
+/// `staging.sanitized_public_candidates` is the trigger parent of the assessed branch of 0126. Trigger dependencies
+/// are outside G-M23-3b (it reads foreign keys only); the M23-4 drill (withdraw + revoke after restore) covers them.
+const D5_RESTORE_DEPENDENCIES: [&str; 6] = [
+    "ops.public_release_revocations",
+    "ops.anonymous_public_revocations",
+    "ops.outbox",
+    "ops.email_suppressions",
+    "control.notification_preferences",
+    "staging.sanitized_public_candidates",
+];
+
+/// Whether `table` is a KNOWLEDGE row of the parsed catalog.
+fn is_knowledge_row(rows: &[CatalogRow], table: &str) -> bool {
+    rows.iter()
+        .any(|r| r.table == table && r.class == CatalogClass::Knowledge)
+}
+
+/// How many `D5_RESTORE_DEPENDENCIES` entries are a KNOWLEDGE catalog row. The pin holds iff this equals the list length;
+/// it counts parsed rows, never catalog text, so a comment that names a table cannot satisfy it.
+fn d5_restore_dependencies_pinned(rows: &[CatalogRow]) -> usize {
+    D5_RESTORE_DEPENDENCIES
+        .iter()
+        .filter(|table| is_knowledge_row(rows, table))
+        .count()
+}
+
+/// The D5 pin as problems: one per entry that is not a KNOWLEDGE row, named.
+fn backup_catalog_d5_problems(rows: &[CatalogRow]) -> Vec<String> {
+    if d5_restore_dependencies_pinned(rows) == D5_RESTORE_DEPENDENCIES.len() {
+        return Vec::new();
+    }
+    D5_RESTORE_DEPENDENCIES
+        .iter()
+        .filter(|table| !is_knowledge_row(rows, table))
+        .map(|table| {
+            format!("M23 D5 pin: `{table}` must be a KNOWLEDGE row of {BACKUP_CATALOG} (a restore must not resurrect)")
+        })
+        .collect()
+}
+
 /// The problems of one gate over the two file texts; `closure` picks G-M23-3b over G-M23-3. A text that does not
 /// parse is a problem of both gates, so neither can pass on input the other rejects.
 fn backup_catalog_problems(db_objects: &str, catalog: &str, closure: bool) -> Vec<String> {
@@ -11739,7 +11783,12 @@ fn backup_catalog_gate(root: &Path, closure: bool) -> Verdict {
         }
     }
     let gate = if closure { "G-M23-3b" } else { "G-M23-3" };
-    let problems = backup_catalog_problems(&texts[0], &texts[1], closure);
+    let mut problems = backup_catalog_problems(&texts[0], &texts[1], closure);
+    if closure {
+        // An unparseable catalog is already a problem above; the pin needs parsed rows.
+        let pin = parse_backup_catalog(&texts[1]).map(|rows| backup_catalog_d5_problems(&rows));
+        problems.extend(pin.unwrap_or_default());
+    }
     if problems.is_empty() {
         Verdict::Pass
     } else {
@@ -23929,6 +23978,51 @@ mod backup_catalog_tests {
             1
         );
         assert_eq!(own_source_count("backup_catalog_", "gate(&root, true),"), 1);
+    }
+
+    /// The D5 pin counts KNOWLEDGE rows and names every entry that is absent or EXCLUDED.
+    #[test]
+    fn backup_catalog_d5_pin_names_each_missing_or_excluded_entry() {
+        let row = |table: &str, class: CatalogClass| CatalogRow {
+            table: table.to_owned(),
+            class,
+            set_null: Vec::new(),
+        };
+        let all: Vec<CatalogRow> = D5_RESTORE_DEPENDENCIES
+            .iter()
+            .map(|t| row(t, CatalogClass::Knowledge))
+            .collect();
+        assert_eq!(
+            d5_restore_dependencies_pinned(&all),
+            D5_RESTORE_DEPENDENCIES.len()
+        );
+        assert!(backup_catalog_d5_problems(&all).is_empty());
+        let mut weak = all.clone();
+        weak[0].class = CatalogClass::Excluded;
+        weak.remove(1);
+        assert_eq!(
+            d5_restore_dependencies_pinned(&weak),
+            D5_RESTORE_DEPENDENCIES.len() - 2
+        );
+        let found = backup_catalog_d5_problems(&weak);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains(D5_RESTORE_DEPENDENCIES[0]), "{found:?}");
+        assert!(found[1].contains(D5_RESTORE_DEPENDENCIES[1]), "{found:?}");
+    }
+
+    /// The real catalog: every D5 restore dependency is a KNOWLEDGE row (M23 D5, ADR-0121 D-A amendment).
+    /// r6 flips `ops.public_release_revocations` to EXCLUDED and turns this red at its own message.
+    #[test]
+    fn repository_backup_catalog_pins_d5_restore_dependencies() {
+        let text = fs::read_to_string(workspace_root().join(BACKUP_CATALOG))
+            .expect("backup_catalog.toml is readable");
+        let rows = parse_backup_catalog(&text).expect("backup_catalog.toml parses");
+        assert_eq!(
+            d5_restore_dependencies_pinned(&rows),
+            D5_RESTORE_DEPENDENCIES.len(),
+            "M23 D5 pin: {:?}",
+            backup_catalog_d5_problems(&rows)
+        );
     }
 
     /// The real tree: every table of the migrated catalog has a row, and the KNOWLEDGE set is closed under foreign keys.
