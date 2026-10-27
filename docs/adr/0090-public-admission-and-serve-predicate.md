@@ -181,8 +181,8 @@ Baseline §12.1.1, §12.3, §12.6, §7.1, §7.2, §23.3, §52, §57.1; ADR-0083;
 `role_public_worker`, `role_public_disclosure` and `role_retrieval_worker` hold none). It returns the first failure of a fixed
 order, else `ELIGIBLE`: `NOT_FOUND`, `NOT_ACTIVE`, `KIND_NOT_MAPPED`, `NO_NOTICE`, `CATEGORY_NOT_IN_NOTICE`, `NO_EVIDENCE`,
 `DATA_CLASS`, `AFFECT`, `PERSON_OR_CUSTOMER_LINK`, `ELIGIBLE`. The Rust set is
-`humaux_public_pool::eligibility::EligibilityVerdict`; the SQL text is the wire and an unknown string is a decode refusal,
-never `Eligible`.
+`humaux_adapters::contribution_eligibility::EligibilityVerdict`; the SQL text is the wire and an unknown string is `Internal`,
+never `Eligible`. The reader lives in `adapters`, not in `public-pool`, which may not name `private.` (G-M20-23b).
 
 - **Closure.** Every `private.memory_evidence` row of the memory, whatever its role (§8.6). The affect and link checks cover
   the memory and every closure Evidence row; `DATA_CLASS` fails on any closure Evidence above `INTERNAL`.

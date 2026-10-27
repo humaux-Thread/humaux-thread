@@ -68,5 +68,5 @@ select coalesce((select bool_and(strpos(d.def, '''' || u.name || '''') > 0)
  as postcheck_ok
 """
 
-rollback_or_forward_fix = "rollback: DROP FUNCTION private.contribution_eligibility(uuid, uuid), DROP FUNCTION private.contribution_unit_type(text) and ALTER TABLE control.contribution_notices DROP CONSTRAINT contribution_notices_scope_categories_unit_types_check, together with crates/public-pool/src/eligibility.rs and tests/eligibility.rs. No caller exists until M20-6 binds the sweep, so the drop is safe before then; afterwards M20-6 is reverted first."
+rollback_or_forward_fix = "rollback: DROP FUNCTION private.contribution_eligibility(uuid, uuid), DROP FUNCTION private.contribution_unit_type(text) and ALTER TABLE control.contribution_notices DROP CONSTRAINT contribution_notices_scope_categories_unit_types_check, together with crates/adapters/src/contribution_eligibility.rs and tests/contribution_eligibility.rs. No caller exists until M20-6 binds the sweep, so the drop is safe before then; afterwards M20-6 is reverted first."
 backup_restore_requirement = "none: two new functions and one CHECK on an empty platform table; no row is rewritten."

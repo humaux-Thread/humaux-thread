@@ -105,5 +105,6 @@ A notice's `scope_categories` (D-A, D-B) draw from one closed vocabulary: the un
 `contribution_notices_scope_categories_unit_types_check` (`scope_categories <@` those six literals); the manifest precheck
 refuses to run while a row would violate it. A new unit type (`PLAYBOOK` and `DATA` in phase 2) is a new category, hence a
 new notice version under D-A, and its migration widens the CHECK. The `crates/public-pool/tests/notice.rs` placeholder
-`PRIVATE_MEMORY` was never a category; it is now `FIX`. The DB set equals `humaux_public_pool::completeness::UnitType`,
-pinned both ways by a §78.2 contract test in `crates/public-pool/tests/eligibility.rs`.
+`PRIVATE_MEMORY` was never a category; it is now `FIX`. The CHECK's set equals the `units_type_check` set (0275), which
+`crates/public-pool/tests/completeness.rs` pins to `UnitType`; a §78.2 contract test in
+`crates/adapters/tests/contribution_eligibility.rs` pins the two DB sets to each other, both ways.

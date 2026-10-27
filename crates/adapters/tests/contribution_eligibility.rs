@@ -1,36 +1,29 @@
-//! `public-pool::tests::eligibility` — G-M20-5 (ADR-0090 D-A, migration 0286): the public-pool eligibility predicate judges the whole
-//!   M07 closure, one verdict per failing check in a fixed order; applicability is never a licence; the verdict, unit-type and
-//!   category sets equal their Rust sets.
-//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
+//! `adapters::tests::contribution_eligibility` — G-M20-5 (ADR-0090 D-A, migration 0286): the public-pool eligibility predicate
+//!   judges the whole M07 closure, one verdict per failing check in a fixed order; applicability is never a licence; the
+//!   verdict set equals the Rust set and the notice categories equal the unit types.
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio, uuid];
 //!   services=[PostgreSQL(any) r=[] w=[control.contribution_notices, control.private_reasoning_domains, control.tenants,
 //!   control.users, private.evidence_affects, private.evidence_objects, private.evidence_subjects, private.memory_affects,
 //!   private.memory_applicability, private.memory_evidence, private.memory_records, private.memory_subjects,
 //!   private.subject_roles, private.subjects] x=[private.contribution_eligibility, private.contribution_unit_type],
 //!   PostgreSQL(role_gateway), PostgreSQL(role_public_worker)]; env=[HUMAUX_TEST_PG_DSN];
-//!   modules=[domain::authority, domain::dataclass, domain::error, domain::ids, domain::note, humaux-testkit,
-//!   public-pool::completeness, public-pool::eligibility, public-pool::notice, testkit::disposable, testkit::fixture_purge]
+//!   modules=[adapters::contribution_eligibility, domain::authority, domain::dataclass, domain::error, domain::ids,
+//!   domain::note, humaux-testkit, testkit::disposable, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns throwaway tenants, users and the notice versions it publishes, removed on drop; closure links are
 //!   SUPPORTING or CONTRADICTING only, because a PRIMARY link fires the derived-consolidate enqueue and the affect copy hook,
-//!   cluster-global effects this binary must not cause; the notice table is global, so the binary runs in nextest's
-//!   serial-public-notice group beside notice.rs, and plain `cargo test` or targeted.yml must pass `-- --test-threads=1`
-//!   (the no-notice test needs an empty notice table); a missing database is a visible §79.2 skip, a FAIL under
-//!   HUMAUX_REQUIRE_DB]
-//! Spec: Baseline §7.5.1; §78.2; §79.2; ADR-0088 D-A; ADR-0090 D-A; ADR-0096 D-F
+//!   cluster-global effects this binary must not cause; the notice table is global and public-pool's notice binary needs it
+//!   empty, so this binary runs in nextest's serial-public-notice group beside it, and plain `cargo test` or targeted.yml must
+//!   pass `-- --test-threads=1` (the no-notice test needs an empty notice table); the unit types are read from the DB's
+//!   `units_type_check` (0275), which public-pool's completeness test pins to `UnitType`, so this crate holds no copy; a
+//!   missing database is a visible §79.2 skip, a FAIL under HUMAUX_REQUIRE_DB]
+//! Spec: Baseline §7.5.1; §52; §78.2; §79.2; ADR-0088 D-A; ADR-0090 D-A; ADR-0096 D-F
 
 use std::collections::BTreeSet;
 
+use humaux_adapters::contribution_eligibility::{self, EligibilityVerdict};
 use humaux_domain::{
-    authority::MemoryId,
-    dataclass::DataClass,
-    error::ErrorCode,
-    ids::{TenantId, UserId},
-    note::NoteKind,
-};
-use humaux_public_pool::{
-    completeness::UnitType,
-    eligibility::{self, EligibilityVerdict},
-    notice::{self, Refusal},
+    authority::MemoryId, dataclass::DataClass, error::ErrorCode, ids::TenantId, note::NoteKind,
 };
 use humaux_testkit::{
     DbFixtureSkipReason, DbIntegrationFixture, disposable::require_disposable,
@@ -135,8 +128,14 @@ fn supporting(evidence: &[Uuid]) -> Vec<(Uuid, &'static str)> {
     evidence.iter().map(|e| (*e, "SUPPORTING")).collect()
 }
 
-fn unit_names() -> Vec<&'static str> {
-    UnitType::ALL.iter().map(|u| u.as_str()).collect()
+/// The single-quoted literals of a CHECK definition, as a set.
+fn literals(definition: &str) -> BTreeSet<String> {
+    definition
+        .split('\'')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect()
 }
 
 impl Handle {
@@ -191,6 +190,20 @@ impl Handle {
 
     fn publish_notice(&mut self, categories: &[&str]) -> i32 {
         self.try_publish_notice(categories).expect("publish notice")
+    }
+
+    /// The phase-1 unit types as the DB spells them: the literals of `units_type_check` (0275).
+    fn unit_types(&mut self) -> Vec<String> {
+        let definition: String = self
+            .admin
+            .query_one(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+                  WHERE conname = 'units_type_check' AND connamespace = 'public'::regnamespace",
+                &[],
+            )
+            .expect("units_type_check")
+            .get(0);
+        literals(&definition).into_iter().collect()
     }
 
     fn notice_rows(&mut self) -> i64 {
@@ -374,11 +387,11 @@ impl Handle {
         user: Uuid,
         arg_tenant: Uuid,
         memory: Uuid,
-    ) -> Result<EligibilityVerdict, Refusal> {
+    ) -> Result<EligibilityVerdict, ErrorCode> {
         self.rt.block_on(async {
             let mut conn = connect(dsn).await;
             let mut tx = begin(&mut conn, session_tenant, user).await;
-            let verdict = eligibility::contribution_eligibility(
+            let verdict = contribution_eligibility::contribution_eligibility(
                 &mut tx,
                 TenantId(arg_tenant),
                 MemoryId(memory),
@@ -404,9 +417,15 @@ async fn connect(dsn: &str) -> PgConnection {
 async fn begin(conn: &mut PgConnection, tenant: Uuid, user: Uuid) -> Transaction<'_, Postgres> {
     // dep: PostgreSQL(any) — one transaction per predicate call
     let mut tx = conn.begin().await.expect("begin");
-    notice::install_session(&mut tx, TenantId(tenant), UserId(user))
-        .await
-        .expect("install session");
+    // dep: PostgreSQL(any) — the session context the 0286 predicate pins its tenant argument to
+    sqlx::query(
+        "SELECT set_config('humaux.tenant_id', $1, true), set_config('humaux.user_id', $2, true)",
+    )
+    .bind(tenant.to_string())
+    .bind(user.to_string())
+    .execute(&mut *tx)
+    .await
+    .expect("install session");
     tx
 }
 
@@ -558,7 +577,8 @@ fn g_m20_5_f_only_three_note_kinds_have_a_unit_type() {
         |mut h| {
             let t = h.new_tenant();
             let user = h.new_user();
-            h.publish_notice(&unit_names());
+            let unit_types = h.unit_types();
+            h.publish_notice(&unit_types.iter().map(String::as_str).collect::<Vec<_>>());
             let evidence = h.evidence(t, "INTERNAL", None);
             let links = supporting(&[evidence]);
             let lesson = h.memory(t, Some(NoteKind::Lesson), &links);
@@ -644,10 +664,7 @@ fn g_m20_5_h_foreign_tenant_memory_is_not_found() {
             );
             assert_eq!(
                 h.call(&h.gateway_dsn, mine.id, user, theirs.id, foreign),
-                Err(Refusal {
-                    code: ErrorCode::Forbidden,
-                    reason: None
-                })
+                Err(ErrorCode::Forbidden)
             );
         },
     );
@@ -690,10 +707,7 @@ fn g_m20_5_j_public_roles_cannot_execute_the_predicate() {
             let memory = h.memory(t, Some(NoteKind::Fix), &supporting(&[evidence]));
             assert_eq!(
                 h.call(&h.public_dsn, t.id, user, t.id, memory),
-                Err(Refusal {
-                    code: ErrorCode::Forbidden,
-                    reason: None
-                }),
+                Err(ErrorCode::Forbidden),
                 "role_public_worker is refused"
             );
             for (role, expected) in [
@@ -868,7 +882,7 @@ fn verdict_literals_equal_the_rust_set_and_the_function_is_pinned() {
                 .collect();
             let rust: BTreeSet<String> = EligibilityVerdict::ALL
                 .iter()
-                .map(|v| v.as_str().to_owned())
+                .map(|v| v.wire().to_owned())
                 .collect();
             assert_eq!(rust.len(), 10);
             assert_eq!(db, rust);
@@ -928,6 +942,7 @@ fn the_predicate_body_reads_no_applicability_or_public_object() {
 #[test]
 fn unit_type_map_returns_only_unit_types() {
     run_db_fixture::<EligibilityFixture, _>("unit_type_map_returns_only_unit_types", |mut h| {
+        let unit_types = h.unit_types();
         let mut mapped = Vec::new();
         for kind in NoteKind::ALL {
             let unit: Option<String> = h
@@ -937,8 +952,8 @@ fn unit_type_map_returns_only_unit_types() {
                 .get(0);
             if let Some(unit) = unit {
                 assert!(
-                    UnitType::parse(&unit).is_some(),
-                    "{} maps to {unit}, which is no UnitType",
+                    unit_types.contains(&unit),
+                    "{} maps to {unit}, which is no unit type",
                     kind.wire()
                 );
                 mapped.push((kind.wire(), unit));
@@ -961,7 +976,7 @@ fn unit_type_map_returns_only_unit_types() {
     });
 }
 
-/// §78.2: the notice scope-category CHECK equals the UnitType set, both ways, and a notice with any other category (the old
+/// §78.2: the notice scope-category CHECK equals the unit-type set, both ways, and a notice with any other category (the old
 /// placeholder included) is refused by that CHECK.
 #[test]
 fn scope_categories_check_equals_the_unit_types() {
@@ -978,15 +993,9 @@ fn scope_categories_check_equals_the_unit_types() {
                 )
                 .expect(check)
                 .get(0);
-            let db: BTreeSet<String> = def
-                .split('\'')
-                .skip(1)
-                .step_by(2)
-                .map(str::to_owned)
-                .collect();
-            let rust: BTreeSet<String> = unit_names().into_iter().map(str::to_owned).collect();
-            assert_eq!(rust.len(), 6);
-            assert_eq!(db, rust, "{def}");
+            let unit_types: BTreeSet<String> = h.unit_types().into_iter().collect();
+            assert_eq!(unit_types.len(), 6);
+            assert_eq!(literals(&def), unit_types, "{def}");
 
             for categories in [&["PRIVATE_MEMORY"][..], &["FIX", "PLAYBOOK"][..]] {
                 let error = h

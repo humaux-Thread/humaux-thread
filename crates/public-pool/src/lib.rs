@@ -3,16 +3,14 @@
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: [crate(humaux-public-worker)]
 //! Invariants: [`edition = "cloud"`: no core crate (domain, adapters, application, bins of the core edition) depends on
-//!   this crate (G-M01-2); the `public.*` writers run only on `PublicWorkerDbPool`; which private memories may enter the
-//!   pool is decided by one SQL predicate that `eligibility` alone reads (ADR-0090 D-A)]
-//! Spec: Baseline §12.6; §13; ADR-0073 D-B; ADR-0074; ADR-0090 D-A
+//!   this crate (G-M01-2); the `public.*` writers run only on `PublicWorkerDbPool`]
+//! Spec: Baseline §12.6; §13; ADR-0073 D-B; ADR-0074
 //!
 //! Layer direction is cloud → core: this crate reaches the typed pools and `QdrantTransportError` through
 //! `humaux-adapters`. The reverse seam is `humaux_adapters::mechanism_observation::PublicClaimEvaluator`, implemented
 //! here by [`public_repo::PublicRepoEvaluator`].
 
 pub mod completeness;
-pub mod eligibility;
 pub mod notice;
 pub mod policy;
 pub mod public_evolve;

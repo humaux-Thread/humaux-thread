@@ -10,7 +10,7 @@
 -- phase's migration. The table is platform data written only by the migration owner and is expected empty outside tests; the
 -- manifest precheck refuses to run while a row would violate the CHECK.
 --
--- Verdict order (ADR-0090 D-A; the SQL text is the wire, humaux_public_pool::eligibility::EligibilityVerdict is its Rust set):
+-- Verdict order (ADR-0090 D-A; the SQL text is the wire, humaux_adapters::contribution_eligibility::EligibilityVerdict is its Rust set):
 --   NOT_FOUND -> NOT_ACTIVE -> KIND_NOT_MAPPED -> NO_NOTICE -> CATEGORY_NOT_IN_NOTICE -> NO_EVIDENCE -> DATA_CLASS -> AFFECT
 --   -> PERSON_OR_CUSTOMER_LINK -> ELIGIBLE.
 --
@@ -24,7 +24,7 @@
 --     role. An ORGANISATION, BUSINESS, BRAND, PRODUCT or WEBSITE subject without that role is not a person link: reuse needs
 --     entities (ADR-0090 D-A).
 --   * Applicability is never a licence (ADR-0096 D-F): the body reads neither the applicability rows (0273) nor the project
---     attribution rows (0252, 0282). A pg_get_functiondef sentinel in crates/public-pool/tests/eligibility.rs pins that.
+--     attribution rows (0252, 0282). A pg_get_functiondef sentinel in crates/adapters/tests/contribution_eligibility.rs pins that.
 --
 -- Rights. SECURITY DEFINER owned by role_migration_owner, search_path = pg_catalog, pg_temp. The memory row is read through
 -- the owner arm of the memory_records policy (0163), but private.evidence_objects has no owner arm (0163:20-40), so an

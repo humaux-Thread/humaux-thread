@@ -129,7 +129,7 @@ filter = 'binary_id(humaux-adapters::phase9_independence_attestation)'
 test-group = 'serial-phase9-independence-attestation'
 
 [[profile.ci.overrides]]
-filter = 'binary_id(humaux-public-pool::notice) | binary_id(humaux-public-pool::eligibility)'
+filter = 'binary_id(humaux-public-pool::notice) | binary_id(humaux-adapters::contribution_eligibility)'
 test-group = 'serial-public-notice'
 
 [[profile.ci.overrides]]
