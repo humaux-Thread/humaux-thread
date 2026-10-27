@@ -452,6 +452,7 @@ read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::request_guard`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -4413,6 +4414,7 @@ written by:
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
@@ -4472,6 +4474,7 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `adapters::tests::visible_index_count`
@@ -4900,6 +4903,7 @@ written by:
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
@@ -4917,6 +4921,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -8892,18 +8897,22 @@ grants (runtime roles):
 
 read by:
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
+- (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `adapters::tests::support::project_tree_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -11363,12 +11372,32 @@ written by:
 
 executed by:
 
-### `private.project_channels`
+### `private.project_ancestors`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0281_project_tree
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::coord_rls`
+- (no process): `adapters::tests::project_tree`
+
+### `private.project_facets`
 - kind: table
 - owner: role_migration_owner
 - RLS: yes
 - FORCE: yes
-- created in: 0271_project_channels
+- created in: 0281_project_tree
 
 grants (runtime roles):
 - role_migration_owner: DELETE
@@ -11381,12 +11410,53 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
+- (no process): `adapters::tests::project_tree`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 
 executed by:
+
+### `private.project_move`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0281_project_tree
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::project_tree`
+- (no process): `adapters::tests::support::project_tree_fixture`
+
+### `private.project_subtree`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0281_project_tree
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::coord_tree_repo`
+- (no process): `adapters::tests::coord_rls`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.propose_curation_candidate`
 - kind: function (SECURITY DEFINER)
@@ -11499,6 +11569,7 @@ written by:
 
 executed by:
 - (no process): `adapters::project_rollup`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.register_continuity_project`
 - kind: function (SECURITY DEFINER)
@@ -11886,6 +11957,7 @@ written by:
 
 executed by:
 - (no process): `adapters::project_rollup`
+- (no process): `adapters::tests::project_tree`
 
 ### `private.settle_contribution_job_if_live`
 - kind: function (SECURITY DEFINER)
