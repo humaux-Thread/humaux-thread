@@ -6,6 +6,7 @@
 
 pub mod admission;
 pub mod auth;
+pub mod auth_pages;
 pub mod bootstrap;
 pub mod cached_embedding;
 pub mod context;

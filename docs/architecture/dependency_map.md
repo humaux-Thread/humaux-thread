@@ -554,6 +554,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
+- reads `private.code_active_snapshots`
+- reads `private.code_files`
+- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -2010,6 +2013,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
+#### `adapters::email`
+
+#### `adapters::email::outbox`
+- writes `ops.email_delivery_events`
+- writes `ops.email_outbox`
+- writes `ops.email_suppressions`
+- env `CARGO_MANIFEST_DIR`
+- service `PostgreSQL(any)`
+
 #### `adapters::evidence_repo`
 - writes `private.evidence_objects`
 - env `CARGO_MANIFEST_DIR`
@@ -2041,6 +2053,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.finish_derived_work_v2`
 - executes `ops.renew_lease`
 - env `CARGO_MANIFEST_DIR`
+- service `PostgreSQL(any)`
+
+#### `adapters::login_repo`
+- executes `control.login_challenge_claim`
+- executes `control.login_challenge_issue`
+- executes `control.login_challenge_settle`
 - service `PostgreSQL(any)`
 
 #### `adapters::memory_governance_repo`
@@ -2215,6 +2233,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_maintenance)`
 
+#### `adapters::session_repo`
+- executes `control.session_issue`
+- executes `control.session_lookup`
+- executes `control.session_revoke`
+- executes `control.session_touch`
+- service `PostgreSQL(any)`
+
 #### `adapters::stream_repo`
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
@@ -2248,6 +2273,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::archive`
 
+#### `application::auth`
+
 #### `application::confirm`
 
 #### `application::consolidate`
@@ -2256,11 +2283,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::login`
+
 #### `application::pin`
 
 #### `application::retrieval_embedding_port`
 
 #### `application::retrieve`
+
+#### `application::session`
 
 #### `application::signed_token`
 
@@ -2334,6 +2365,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `gateway::auth`
 
+#### `gateway::auth_pages`
+
 #### `gateway::bootstrap`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
@@ -2345,6 +2378,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_ALLOWED_ORIGINS`
 - env `HUMAUX_GATEWAY_AUTH_HMAC_KEY`
 - env `HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS`
+- env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS`
+- env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
 - env `HUMAUX_GATEWAY_BIND_ADDR`
 - env `HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES`
@@ -2360,6 +2398,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX`
 - env `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`
 - env `HUMAUX_GATEWAY_DEPLOYMENT`
+- env `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST`
 - env `HUMAUX_GATEWAY_EMBEDDING_DIMENSION`
 - env `HUMAUX_GATEWAY_EMBEDDING_MODEL_ID`
 - env `HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION`
@@ -2371,6 +2410,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_GLOBAL_DENYLIST`
 - env `HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST`
 - env `HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS`
+- env `HUMAUX_GATEWAY_LOGIN_CODE_PEPPER`
+- env `HUMAUX_GATEWAY_LOGIN_MAIL_FROM`
 - env `HUMAUX_GATEWAY_MAX_FORWARDED_HOPS`
 - env `HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES`
 - env `HUMAUX_GATEWAY_METRICS_ADDR`
@@ -2384,6 +2425,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS`
 - env `HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS`
+- env `HUMAUX_GATEWAY_PUBLIC_BASE_URL`
 - env `HUMAUX_GATEWAY_QDRANT_CIDR`
 - env `HUMAUX_GATEWAY_QDRANT_HOST`
 - env `HUMAUX_GATEWAY_QDRANT_PORT`
@@ -3298,6 +3340,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_owner`
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
+- reads `private.code_active_snapshots`
+- reads `private.code_files`
+- reads `private.code_snapshots`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -5143,6 +5188,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -5423,6 +5469,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -5545,8 +5592,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.login_challenge_issue`
@@ -5555,9 +5602,10 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.login_challenge_settle`
@@ -5566,8 +5614,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.maintenance_tenant_page`
@@ -5609,6 +5657,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::evidence_sources`
@@ -6501,6 +6550,15 @@ executed by:
 - process(humaux-private-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
+### `control.repositories`
+read by:
+- (no process): `adapters::tests::facet_contract`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
+
 ### `control.resolve_contribution_deidentify_shadow`
 read by:
 
@@ -6605,9 +6663,10 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - (no process): `adapters::tests::console_session`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_lookup`
@@ -6616,8 +6675,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_revoke`
@@ -6626,8 +6685,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_touch`
@@ -6636,8 +6695,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.sessions`
@@ -6648,6 +6707,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::console_session`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -6716,6 +6776,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -6866,6 +6927,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -6899,6 +6961,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
@@ -6942,6 +7005,7 @@ written by:
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
+- (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -6975,6 +7039,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::auth_scope_rls`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::exact_census_project`
@@ -7004,6 +7069,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::a2_point_identity`
+- (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_pipeline`
@@ -7571,9 +7637,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -7592,9 +7659,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -7613,8 +7681,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -8598,6 +8666,37 @@ written by:
 executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `private.code_active_snapshots`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
+
+### `private.code_files`
+read by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
+
+### `private.code_snapshots`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+
+executed by:
 
 ### `private.comment_only`
 read by:
@@ -11935,6 +12034,7 @@ executed by:
 - `gateway::admission`
 - `gateway::main`
 - `gateway::tests::admission`
+- `gateway::tests::auth_pages`
 - `gateway::tests::exit_codes`
 - `gateway::tests::ops_listener`
 - `gateway::tests::singleton`
@@ -12083,6 +12183,7 @@ executed by:
 - `contracts::mechanism_registry`
 - `domain::consolidate`
 - `domain::context`
+- `gateway::tests::auth_pages`
 - `maintenance::migrate`
 - `maintenance::projection_serve`
 - `maintenance::rls_check`
@@ -12118,6 +12219,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
+- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
 - `adapters::tests::distill_dispatch_v2`
@@ -12259,6 +12361,7 @@ executed by:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
@@ -12319,6 +12422,7 @@ executed by:
 - `gateway::bootstrap`
 - `gateway::mcp_application`
 - `gateway::status`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -12947,6 +13051,7 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13495,6 +13600,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13699,6 +13805,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13840,6 +13947,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_execution_0131`
@@ -13907,6 +14015,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::candidates`
+- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -15490,6 +15599,7 @@ why: typed PG pools, repositories and wire adapters this package drives
 
 modules naming it:
 - `gateway::auth`
+- `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -15500,6 +15610,7 @@ modules naming it:
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -15516,12 +15627,14 @@ modules naming it:
 why: use-case layer (ports + orchestration) this package wires
 
 modules naming it:
+- `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::continuity`
 - `gateway::guard`
 - `gateway::recall`
 - `gateway::retrieval_embedding_client`
+- `gateway::tests::auth_pages`
 - `gateway::tests::console_csrf`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
@@ -15553,6 +15666,7 @@ why: domain ids, errors and value types shared across layers
 modules naming it:
 - `gateway::admission`
 - `gateway::auth`
+- `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::context`
@@ -15583,11 +15697,13 @@ why: MCP/HTTP edge protocol types and middleware
 
 modules naming it:
 - `gateway::auth`
+- `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::recall`
 - `gateway::tests::admission`
+- `gateway::tests::auth_pages`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -15689,9 +15805,11 @@ why: HTTP/UDS server framework
 
 modules naming it:
 - `gateway::admission`
+- `gateway::auth_pages`
 - `gateway::main`
 - `gateway::mcp_application`
 - `gateway::tests::admission`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -15706,6 +15824,7 @@ modules naming it:
 why: derive (de)serialization for wire/DTO types
 
 modules naming it:
+- `gateway::auth_pages`
 - `gateway::context`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -15793,6 +15912,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::admission`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -15811,6 +15931,7 @@ modules naming it:
 why: UUID ids (v7) and parsing
 
 modules naming it:
+- `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::guard`
@@ -15822,6 +15943,7 @@ modules naming it:
 - `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
+- `gateway::tests::auth_pages`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -15851,6 +15973,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::admission`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -15870,6 +15993,7 @@ why: shared DB-bound test harness (skip_or_fail, fixtures)
 
 modules naming it:
 - `gateway::mcp_application`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -15895,6 +16019,7 @@ why: sync PG client for DB-bound test fixtures
 
 modules naming it:
 - `gateway::mcp_application`
+- `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
@@ -16965,6 +17090,15 @@ services (computed):
 
 default run:
 
+### `bins/gateway/tests/auth_pages.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `bins/gateway/tests/console_csrf.rs`
 db-bound (default run): no
 
@@ -17503,6 +17637,15 @@ services (computed):
 default run:
 
 ### `crates/adapters/tests/candidates.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/code_rls.rs`
 db-bound (default run): yes
 
 services (computed):
