@@ -548,6 +548,105 @@ written by:
 
 executed by:
 
+### `control.billing_customers`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.billing_inbox`
+- kind: table
+- owner: role_migration_owner
+- RLS: no
+- FORCE: no
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_gateway: INSERT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::billing_repo`
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
+### `control.billing_payments`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
+### `control.billing_payments_reject_mutation`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
 ### `control.bind_reasoning_domain`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -2484,6 +2583,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
@@ -2532,6 +2632,7 @@ read by:
 - (no process): `adapters::tests::entitlement_projector`
 
 written by:
+- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
@@ -4286,6 +4387,76 @@ executed by:
 - process(cargo-xtask): `adapters::provisioning`
 - process(humaux-maintenance): `adapters::provisioning`
 
+### `control.subscription_events`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
+### `control.subscription_events_reject_mutation`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
+### `control.subscriptions`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0288_billing_core
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::billing_repo`
+
+executed by:
+
 ### `control.support_access_requests`
 - kind: table
 - owner: role_migration_owner
@@ -4409,6 +4580,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
