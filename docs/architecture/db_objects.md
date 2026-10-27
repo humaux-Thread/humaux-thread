@@ -515,6 +515,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -540,105 +541,6 @@ grants (runtime roles):
 - role_private_worker: SELECT
 - role_public_worker: SELECT
 - role_retrieval_worker: SELECT
-
-read by:
-
-written by:
-
-executed by:
-
-### `control.billing_customers`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::tests::billing_repo`
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-
-executed by:
-
-### `control.billing_inbox`
-- kind: table
-- owner: role_migration_owner
-- RLS: no
-- FORCE: no
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_gateway: INSERT
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::billing_repo`
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
-
-### `control.billing_payments`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
-
-### `control.billing_payments_reject_mutation`
-- kind: function
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_migration_owner: EXECUTE
 
 read by:
 
@@ -1324,6 +1226,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -1655,8 +1558,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.login_challenge_issue`
@@ -1675,9 +1578,10 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.login_challenge_settle`
@@ -1696,8 +1600,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::login_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::login_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.maintenance_tenant_page`
@@ -2580,7 +2484,6 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
-- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 
@@ -2629,7 +2532,6 @@ read by:
 - (no process): `adapters::tests::entitlement_projector`
 
 written by:
-- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 
 executed by:
@@ -4247,9 +4149,10 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - (no process): `adapters::tests::console_session`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_lookup`
@@ -4268,8 +4171,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_revoke`
@@ -4288,8 +4191,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.session_touch`
@@ -4308,8 +4211,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::session_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::session_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.sessions`
@@ -4338,6 +4241,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::console_session`
+- (no process): `gateway::tests::auth_pages`
 
 executed by:
 
@@ -4381,76 +4285,6 @@ executed by:
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `adapters::provisioning`
 - process(humaux-maintenance): `adapters::provisioning`
-
-### `control.subscription_events`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
-
-### `control.subscription_events_reject_mutation`
-- kind: function
-- owner: role_migration_owner
-- RLS: —
-- FORCE: —
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_migration_owner: EXECUTE
-
-read by:
-
-written by:
-
-executed by:
-
-### `control.subscriptions`
-- kind: table
-- owner: role_migration_owner
-- RLS: yes
-- FORCE: yes
-- created in: 0288_billing_core
-
-grants (runtime roles):
-- role_migration_owner: DELETE
-- role_migration_owner: INSERT
-- role_migration_owner: MAINTAIN
-- role_migration_owner: REFERENCES
-- role_migration_owner: SELECT
-- role_migration_owner: TRIGGER
-- role_migration_owner: TRUNCATE
-- role_migration_owner: UPDATE
-
-read by:
-- (no process): `adapters::tests::facet_contract`
-- process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `maintenance::rls_check`
-
-written by:
-- (no process): `adapters::tests::billing_repo`
-
-executed by:
 
 ### `control.support_access_requests`
 - kind: table
@@ -4575,7 +4409,6 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
-- (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -4803,6 +4636,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -4938,6 +4772,7 @@ written by:
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
+- (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -6397,9 +6232,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -6453,9 +6289,10 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
+- (no process): `gateway::tests::auth_pages`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 
@@ -6510,8 +6347,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::email::outbox`
 - (no process): `adapters::tests::email_outbox`
+- process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
 

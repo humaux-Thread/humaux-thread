@@ -1,7 +1,7 @@
 //! `application::session` — M02 D6 console session: the 32-byte cookie secret, its stored digest, the session's
 //!   liveness decision and the session-bound CSRF token. Pure: no SQL, no clock, no HTTP.
 //! Depends-on: crates=[hex, humaux-domain, rand, sha2, uuid]; services=[]; env=[]; modules=[application::auth, application::signed_token, domain::ids]
-//! Called-by: [adapters::session_repo, tests]
+//! Called-by: [adapters::session_repo, gateway::auth_pages, tests]
 //! Invariants: [the secret exists only in the cookie value and is never printed or stored, only its SHA-256 is; a session
 //!   is live only while it is unrevoked, unexpired, inside its idle window AND its epoch snapshot equals the user's
 //!   current epoch; a CSRF token is a function of its own session id, so one minted for session A is not valid for B]
