@@ -1000,6 +1000,18 @@ processes:
 modules:
 - `xtask::dep_map`
 
+### `HUMAUX_COORD_PROJECT_MAX_DEPTH`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+
+modules:
+- `adapters::coord_tree_repo`
+
 ### `HUMAUX_DRILL_CPUS`
 - witness: literal
 - registry: raw
@@ -5830,7 +5842,6 @@ modules:
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
-- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -5839,6 +5850,7 @@ modules:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
+- `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`
@@ -5883,6 +5895,7 @@ modules:
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
+- `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::provider_budget`
@@ -5909,6 +5922,7 @@ modules:
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
+- `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::task_grant_contract`
 - `adapters::tests::tenant_placements_migration`
