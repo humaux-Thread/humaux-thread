@@ -14099,6 +14099,7 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 - `contracts::mechanism_registry`
 
 ### humaux-contracts → `toml` (normal)
@@ -14106,6 +14107,7 @@ why: parses the embedded feature registry TOML
 
 modules naming it:
 - `contracts::feature_registry`
+- `contracts::freshness`
 
 ### humaux-contracts → `sha2` (normal)
 why: sha256 digests for hashes, fingerprints and scope_hash
@@ -14699,6 +14701,7 @@ modules naming it:
 - `retrieval::handoff`
 - `retrieval::request`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `humaux-contracts` (normal)
@@ -14706,6 +14709,8 @@ why: typed retrieval config registry entries request.rs assembles against
 
 modules naming it:
 - `retrieval::request`
+- `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `serde_json` (normal)
@@ -14715,6 +14720,7 @@ modules naming it:
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `sha2` (normal)
@@ -18216,6 +18222,13 @@ services (computed):
 
 default run:
 
+### `crates/contracts/tests/freshness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/domain/tests/authority_policy_g59_6.rs`
 db-bound (default run): no
 
@@ -18409,6 +18422,13 @@ default run:
 - PostgreSQL
 
 ### `crates/retrieval-provider/tests/sealed_type_gate_ui.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `crates/retrieval/tests/freshness.rs`
 db-bound (default run): no
 
 services (computed):

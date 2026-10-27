@@ -1,0 +1,50 @@
+# §21.5 / ADR-0111 D-B: omitted thresholds mean never; boundaries are inclusive.
+policy_id = "evidence-per-type"
+version = 1
+
+[[memory_type]]
+name = "FACT"
+aging_after_days = 365
+
+[[memory_type]]
+name = "PREFERENCE"
+aging_after_days = 180
+
+[[memory_type]]
+name = "DECISION"
+
+[[memory_type]]
+name = "REJECTION"
+
+[[memory_type]]
+name = "STATE"
+aging_after_days = 7
+stale_after_days = 30
+
+[[memory_type]]
+name = "ISSUE"
+aging_after_days = 7
+stale_after_days = 30
+
+[[memory_type]]
+name = "LESSON"
+aging_after_days = 90
+stale_after_days = 365
+
+[[memory_type]]
+name = "CONSTRAINT"
+
+[[memory_type]]
+name = "PROCEDURE"
+aging_after_days = 90
+stale_after_days = 365
+
+[[memory_type]]
+name = "OUTCOME"
+
+[[memory_type]]
+name = "REFERENCE"
+aging_after_days = 365
+
+[[memory_type]]
+name = "NOTE"
