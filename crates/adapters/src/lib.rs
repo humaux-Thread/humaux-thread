@@ -54,6 +54,8 @@ pub mod memory_repo;
 pub mod model_call_ledger;
 pub mod note_repo;
 pub mod oauth_repo;
+/// ADR-0115 / C-M17-2: the `ObjectStore` port, typed keys and the filesystem temp store.
+pub mod object_store;
 pub mod openbao;
 pub mod operation_receipt;
 pub mod placement_repo;
