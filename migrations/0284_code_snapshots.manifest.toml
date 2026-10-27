@@ -1,0 +1,69 @@
+# §46.1 / ADR-0114 D-B, D-C, D-J (M16-2): provider key on control.repositories, three FORCE-RLS code tables, skeleton retirement.
+# Every check names the retired skeletons through to_regclass / query_to_xml text lookups, never a static relation, so
+# migration-rehearsal can EXPLAIN it at a HEAD where code_symbols and code_edges are gone (ADR-0063 D-D 7b).
+# Zero rows is load-bearing: provider and external_id are NOT NULL without a backfill, and the dropped skeletons have no data
+# to move. The postcheck does not pin what G-M16-7 and G-M16-11 judge (the code_files policy, the state CHECK literals, the
+# code_files FK columns): a dropped predicate must be a red gate, not a failed migration (0281 does the same).
+
+migration_id = "0284_code_snapshots"
+class = "FORWARD_ONLY"
+
+precheck = """
+select to_regclass('private.code_active_snapshots') is null
+ and to_regclass('private.code_symbols') is not null
+ and to_regclass('private.code_edges') is not null
+ and exists (select 1 from information_schema.columns
+              where table_schema = 'private' and table_name = 'code_snapshots' and column_name = 'code_snapshot_id')
+ and exists (select 1 from information_schema.columns
+              where table_schema = 'private' and table_name = 'code_files' and column_name = 'code_file_id')
+ and not exists (select 1 from information_schema.columns
+                  where table_schema = 'control' and table_name = 'repositories' and column_name = 'provider')
+ and (select count(*) = 0 from control.repositories)
+ and (select coalesce(sum(((xpath('/row/n/text()',
+          query_to_xml(format('select count(*) as n from %s', t.rel), false, true, '')))[1])::text::bigint), 0) = 0
+        from unnest(array['private.code_edges', 'private.code_symbols', 'private.code_files',
+                          'private.code_snapshots']) as t(rel))
+ as precheck_ok
+"""
+
+postcheck = """
+select (select count(*) = 3 from pg_class
+         where oid in (to_regclass('private.code_snapshots'), to_regclass('private.code_files'),
+                       to_regclass('private.code_active_snapshots'))
+           and relrowsecurity and relforcerowsecurity and relowner = 'role_migration_owner'::regrole)
+ and (select count(*) = 3 from pg_policies
+       where schemaname = 'private' and tablename in ('code_snapshots', 'code_files', 'code_active_snapshots')
+         and cmd = 'ALL' and strpos(qual, 'humaux.tenant_id') > 0 and strpos(with_check, 'humaux.tenant_id') > 0)
+ and (select count(*) = 3 from pg_policies
+       where schemaname = 'private' and tablename in ('code_snapshots', 'code_files', 'code_active_snapshots'))
+ and to_regclass('private.code_symbols') is null
+ and to_regclass('private.code_edges') is null
+ and not exists (select 1 from information_schema.columns
+                  where table_schema = 'private' and table_name in ('code_snapshots', 'code_files')
+                    and column_name in ('code_snapshot_id', 'code_file_id'))
+ and exists (select 1 from pg_indexes
+              where schemaname = 'private' and tablename = 'code_snapshots'
+                and indexname = 'code_snapshots_identity_live_key'
+                and strpos(indexdef, 'UNIQUE') > 0 and strpos(indexdef, '(tenant_id, repository_id, identity_sha256)') > 0
+                and strpos(indexdef, 'BUILDING') > 0 and strpos(indexdef, 'READY') > 0)
+ and (select count(*) = 2 from pg_attribute
+       where attrelid = to_regclass('control.repositories') and attname in ('provider', 'external_id')
+         and attnotnull and not attisdropped)
+ and (select count(*) = 3 from pg_constraint
+       where conrelid = to_regclass('control.repositories')
+         and conname in ('repositories_provider_check', 'repositories_provider_key', 'repositories_tenant_repository_key'))
+ and has_table_privilege('role_gateway', 'control.repositories', 'SELECT')
+ and has_table_privilege('role_gateway', 'control.workspace_memberships', 'SELECT')
+ and not exists (select 1
+       from unnest(array['role_gateway', 'role_private_worker', 'role_consolidation_worker', 'role_public_worker',
+                         'role_retrieval_worker', 'role_batch_issuer', 'role_maintenance', 'role_admin']) as r(role_name)
+       cross join unnest(array['private.code_snapshots', 'private.code_files',
+                               'private.code_active_snapshots']) as t(rel)
+      where has_table_privilege(r.role_name, t.rel, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+         or has_any_column_privilege(r.role_name, t.rel, 'INSERT,UPDATE,REFERENCES')
+         or (r.role_name = 'role_gateway') is distinct from has_table_privilege(r.role_name, t.rel, 'SELECT'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix under ADR-0082. Before deployment: drop the three 0284 tables, re-create the four 0006 skeletons and drop control.repositories provider/external_id (all were empty). After deployment: preserve rows and ship a forward-fix migration; never discard pushed snapshots."
+backup_restore_requirement = "Standard pre-deploy snapshot. The retired skeletons and control.repositories hold zero rows (precheck), so no restore drill is needed. No production action is performed by this card."
