@@ -21,20 +21,21 @@
 //! | `payment_card` | 13-19 digits (single space or dash between groups) that pass the Luhn check |
 //! | `ip_address` | an IPv4 or IPv6 address outside the documentation, loopback, private and unspecified ranges |
 //! | `mac_address` | six hex pairs joined by colons or dashes |
-//! | `user_home_path` | a user-home path under /Users, /home, a Windows drive, or a tilde-user prefix (placeholder names exempt) |
+//! | `user_home_path` | a user-home path under /Users, /home, a Windows drive (any case), or a tilde-user prefix; the user segment may use any script (placeholder names exempt) |
 //! | `url_query` | a URL whose query or fragment carries key=value, or a bare key=value on the url_queries surface |
 //! | `url_userinfo` | a URL authority that carries a user or credentials |
 //! | `person_name_en` | a dictionary given name, or an honorific followed by a capitalised word |
-//! | `person_name_zh` | a name-context marker followed by a dictionary surname and one or two Han characters |
+//! | `person_name_zh` | a name-context marker (including Mr, Ms, Dr, Prof) before, or a courtesy title after, a dictionary surname and one or two Han characters |
 //! | `org_marker` | a legal-entity suffix next to a proper noun |
 //! | `contract_marker` | a confidentiality, NDA, trade-secret or contract-number marker |
 //! | `attribution` | an attribution value other than the literal contributor |
 //! | `combined_identifiability` | at least `COMBINED_FLOOR` distinct quasi-identifier classes in one draft |
 //! | `secret_scan` | the shared pinned secret scanner reported a hit |
 //!
-//! The quasi-identifier classes are a full calendar date, a place below country level, an organisation name, a job title, an age and a
-//! gender word. A software release date is not a quasi-identifier: a date with a release word, a changelog or version word, a `v` plus
-//! digit or a semantic version within `RELEASE_WINDOW` characters on the same line is skipped.
+//! The quasi-identifier classes are a full calendar date, a place below country level, an organisation name, a job title, an age (including
+//! a labelled `age: 34` or `年龄：34` field) and a gender word (including a `Gender: F` or `性别：` field). A software release date is not
+//! a quasi-identifier: a date with a release word, a changelog or version word, a `v` plus digit or a semantic version within
+//! `RELEASE_WINDOW` characters on the same line is skipped.
 
 use crate::completeness::{GateState, RuleReceipt, UnitDraft, closed_set};
 use serde_json::Value;
@@ -932,19 +933,19 @@ fn home_end(c: &[char], i: usize) -> Option<usize> {
     }
     if c[i] == '~' {
         let end = name_end(c, i + 1)?;
-        return (c.get(end) == Some(&'/') && c[i + 1].is_ascii_alphabetic()).then_some(end);
+        return (c.get(end) == Some(&'/') && c[i + 1].is_alphabetic()).then_some(end);
     }
     win_home(c, i)
 }
 
-/// End of a user name starting at `j`, or None when it is empty or a placeholder.
+/// End of a user name starting at `j`, or None when it is empty or a placeholder. Letters and digits of any script count.
 fn name_end(c: &[char], j: usize) -> Option<usize> {
     let mut end = j;
-    while end < c.len() && (c[end].is_ascii_alphanumeric() || matches!(c[end], '.' | '_' | '-')) {
+    while end < c.len() && (c[end].is_alphanumeric() || matches!(c[end], '.' | '_' | '-')) {
         end += 1;
     }
-    let name: String = c[j..end].iter().collect::<String>().to_ascii_lowercase();
-    let first_ok = c.get(j).is_some_and(char::is_ascii_alphanumeric);
+    let name: String = c[j..end].iter().collect::<String>().to_lowercase();
+    let first_ok = c.get(j).is_some_and(|x| x.is_alphanumeric());
     (first_ok && !PLACEHOLDER_USERS.contains(&name.as_str())).then_some(end)
 }
 
@@ -962,7 +963,13 @@ fn win_home(c: &[char], i: usize) -> Option<usize> {
         return None;
     }
     let j = skip_seps(c, i + 2)?;
-    if !starts_with(c, j, "Users") {
+    // Windows paths are case-insensitive: `c:\users\` names the same directory.
+    if !c[j..]
+        .iter()
+        .take(5)
+        .map(char::to_ascii_lowercase)
+        .eq("users".chars())
+    {
         return None;
     }
     name_end(c, skip_seps(c, j + 5)?)
@@ -1081,27 +1088,55 @@ const ZH_NAME_MARKERS: &[&str] = &[
     "申请人",
     "对接人",
     "我的名字是",
+    "Mr",
+    "Mrs",
+    "Ms",
+    "Dr",
+    "Prof",
 ];
+
+/// Courtesy titles that follow a Han name (`王芳博士`, `王先生`).
+const ZH_TITLES: &[&str] = &["先生", "女士", "小姐", "博士", "教授"];
 
 fn names_zh(c: &[char]) -> Vec<Span> {
     let mut out = Vec::new();
     for i in 0..c.len() {
         for marker in ZH_NAME_MARKERS {
-            if starts_with(c, i, marker)
+            // ASCII honorifics start a word; a Han marker may sit inside a sentence.
+            let bounded = !(marker.is_ascii() && prev_is_alnum(c, i));
+            if bounded
+                && starts_with(c, i, marker)
                 && let Some(span) = zh_name_after(c, i + marker.chars().count())
             {
                 out.push(span);
             }
         }
+        out.extend(zh_titled_name(c, i));
     }
     out
+}
+
+/// A dictionary surname, up to two more Han characters, then a courtesy title.
+fn zh_titled_name(c: &[char], i: usize) -> Option<Span> {
+    if !surnames().contains(&c[i]) {
+        return None;
+    }
+    let extra = c[i + 1..]
+        .iter()
+        .take(2)
+        .take_while(|x| is_han(**x))
+        .count();
+    (0..=extra)
+        .rev()
+        .find(|k| ZH_TITLES.iter().any(|t| starts_with(c, i + 1 + k, t)))
+        .map(|k| (i, 1 + k))
 }
 
 fn zh_name_after(c: &[char], start: usize) -> Option<Span> {
     let mut j = start;
     while j < start + 3
         && c.get(j)
-            .is_some_and(|x| matches!(*x, ':' | '：' | ' ' | '是' | '为'))
+            .is_some_and(|x| matches!(*x, ':' | '：' | ' ' | '.' | '是' | '为'))
     {
         j += 1;
     }
@@ -1226,6 +1261,8 @@ const GENDER_WORDS: &[&str] = &[
     "男生",
     "女生",
     "小姐",
+    "性别:",
+    "性别：",
 ];
 
 fn quasi_hits(c: &[char]) -> Vec<(Quasi, usize, usize)> {
@@ -1235,13 +1272,44 @@ fn quasi_hits(c: &[char]) -> Vec<(Quasi, usize, usize)> {
         (Quasi::Org, orgs(c)),
         (Quasi::Role, find_all(c, role_phrases(), true)),
         (Quasi::Age, ages(c)),
-        (Quasi::Gender, find_all(c, GENDER_WORDS, true)),
+        (Quasi::Gender, gender_spans(c)),
     ];
     let mut out = Vec::new();
     for (class, spans) in classes {
         out.extend(spans.into_iter().map(|(start, len)| (class, start, len)));
     }
     out
+}
+
+fn gender_spans(c: &[char]) -> Vec<Span> {
+    let mut out = find_all(c, GENDER_WORDS, true);
+    out.extend(gender_fields(c));
+    out
+}
+
+/// A form field such as `Gender: F`: the label, a colon, optional spaces and a one-letter value.
+fn gender_fields(c: &[char]) -> Vec<Span> {
+    let low: Vec<char> = c.iter().map(char::to_ascii_lowercase).collect();
+    let mut out = Vec::new();
+    for i in 0..low.len() {
+        if !starts_with(&low, i, "gender:") || label_glued(&low, i) {
+            continue;
+        }
+        let mut j = i + 7;
+        while low.get(j) == Some(&' ') {
+            j += 1;
+        }
+        let value = low.get(j).is_some_and(|x| matches!(*x, 'm' | 'f'));
+        if value && !low.get(j + 1).is_some_and(char::is_ascii_alphanumeric) {
+            out.push((i, j + 1 - i));
+        }
+    }
+    out
+}
+
+/// True when the label at `i` is the tail of a longer identifier (`max-age`, `user_gender`).
+fn label_glued(l: &[char], i: usize) -> bool {
+    i > 0 && (l[i - 1].is_ascii_alphanumeric() || matches!(l[i - 1], '-' | '_'))
 }
 
 /// Occurrences of `phrases`; ASCII phrases must be whole words, `fold` compares ASCII case-insensitively (phrases lowercase).
@@ -1527,7 +1595,21 @@ fn ages(c: &[char]) -> Vec<Span> {
     out
 }
 
-/// `34-year-old`, `34 years old`, `34岁` or `aged 34`.
+/// `age: 34` or `年龄：34`: the label, one colon and optional spaces precede the number at `s`.
+fn labelled_age(l: &[char], s: usize) -> bool {
+    let mut p = s;
+    while p > 0 && l[p - 1] == ' ' {
+        p -= 1;
+    }
+    if p == 0 || !matches!(l[p - 1], ':' | '：') {
+        return false;
+    }
+    let colon = p - 1;
+    (colon >= 3 && starts_with(l, colon - 3, "age") && !label_glued(l, colon - 3))
+        || (colon >= 2 && starts_with(l, colon - 2, "年龄"))
+}
+
+/// `34-year-old`, `34 years old`, `34岁`, `aged 34` or a labelled `age: 34`.
 fn age_at(l: &[char], s: usize) -> Option<usize> {
     let n = l[s..]
         .iter()
@@ -1538,7 +1620,7 @@ fn age_at(l: &[char], s: usize) -> Option<usize> {
         return None;
     }
     let suffix = AGE_SUFFIX.iter().find(|p| starts_with(l, s + n, p));
-    let aged = s >= 5 && starts_with(l, s - 5, "aged ");
+    let aged = (s >= 5 && starts_with(l, s - 5, "aged ")) || labelled_age(l, s);
     match (suffix, aged) {
         (Some(p), _) => Some(n + p.chars().count()),
         (None, true) => Some(n),

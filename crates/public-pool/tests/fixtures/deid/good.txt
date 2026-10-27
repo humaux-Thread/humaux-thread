@@ -32,6 +32,8 @@ good-body-27 :: body :: zh :: - :: 先运行迁移，再重启后台任务，确
 good-body-28 :: body :: zh :: - :: 日志级别设为 debug，复现问题后再收集堆栈。
 good-body-29 :: body :: zh :: - :: 依赖固定在 serde 1.0.197，避免锁文件漂移。
 good-body-30 :: body :: zh :: - :: 测试矩阵覆盖三种数据库版本，每个版本跑两遍。
+good-body-31 :: body :: en :: - :: Set Cache-Control to max-age: 60 for the static assets.
+good-body-32 :: body :: en :: - :: The Profile page lists build metrics; Drivers are loaded lazily.
 good-title-01 :: title :: en :: - :: Retry loop never backs off after 5xx responses
 good-title-02 :: title :: en :: - :: Upgrade tokio to 1.37.0
 good-title-03 :: title :: en :: - :: Cache invalidation misses on directory renames
