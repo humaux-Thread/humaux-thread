@@ -301,6 +301,7 @@ kind:
 processes:
 
 modules:
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
 - `maintenance::tests::serve`
@@ -3173,6 +3174,21 @@ modules:
 - `maintenance::drill`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
+
+### `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::i4_scan`
+- `maintenance::tests::support::throwaway`
 
 ### `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - witness: literal
