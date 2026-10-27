@@ -8,8 +8,10 @@
 //!   enqueue trigger skips distill; the authority decision precedes every write; a replacement supersedes exactly the
 //!   CAS-checked head in one guarded UPDATE and moves the head row in the same transaction (ADR-0067 D-J); an exact-duplicate
 //!   note is the same tenant, visibility scope, note_kind and body SHA-256 with an active unarchived first version, and the
-//!   advisory-lock text of that key has exactly one constructor here and carries no principal (ADR-0067 D3, M06-3)]
-//! Spec: Baseline §8.5; §10.1; §34; ADR-0067
+//!   advisory-lock text of that key has exactly one constructor here and carries no principal (ADR-0067 D3, M06-3); the
+//!   Memory's producer is `NotePut`, so its epistemic status is SOURCE_REPORTED whatever the fixed origin class
+//!   `AuthenticatedAgent` or the granted authority (ADR-0124)]
+//! Spec: Baseline §8.5; §10.1; §34; ADR-0067; ADR-0124
 //!
 //! [`NoteIntake`] is everything the gateway edge decided about one note (kind, title, validated body, requested authority);
 //! [`authorize`] is the pure ADR-0067 D-C decision and [`materialize_in_txn`] the two INSERTs that follow the Evidence
@@ -25,7 +27,7 @@ use humaux_domain::note::{
 use sqlx::Row;
 use sqlx::types::Uuid;
 
-use crate::memory_repo::{self, AttributionSource, LoadedEvidence, NewMemory};
+use crate::memory_repo::{self, AttributionSource, LoadedEvidence, MemoryProducer, NewMemory};
 use crate::remember::{RememberCommand, RememberError};
 
 /// One note as the gateway edge validated it (ADR-0067 D-C/D-D/D-E).
@@ -225,6 +227,8 @@ pub(crate) async fn materialize_in_txn(
                 NoteLineage::Replace { note_id, .. } => Some(note_id),
             },
             attribution: AttributionSource::Primary,
+            // ADR-0124 D-B: the caller's verbatim assertion; the fixed AuthenticatedAgent origin above is not the key.
+            producer: MemoryProducer::NotePut,
         },
         attribution,
     )

@@ -292,12 +292,6 @@ owner = "M04"
 basis = "M04:55; D1 principle"
 reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
 
-["control.rate_buckets"]
-class = "EXCLUDED"
-owner = "M04"
-basis = "M04:56; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
-
 ["control.reasoning_credential_bindings"]
 class = "EXCLUDED"
 owner = "M15"
