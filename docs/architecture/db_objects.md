@@ -2573,6 +2573,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -4470,6 +4471,7 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -4942,6 +4944,7 @@ written by:
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -8979,6 +8982,7 @@ read by:
 written by:
 - (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_rollup`
 - (no process): `adapters::tests::project_tree`
@@ -9799,6 +9803,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
@@ -10600,6 +10605,25 @@ written by:
 
 executed by:
 
+### `private.memory_in_project`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0282_memory_in_project
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::memory_in_project`
+- process(cargo-xtask): `xtask::architecture_check`
+
 ### `private.memory_project_revocations`
 - kind: table
 - owner: role_migration_owner
@@ -10627,6 +10651,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 
 executed by:
 
@@ -10661,6 +10686,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::memory_in_project`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
@@ -10863,6 +10889,7 @@ written by:
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
+- (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::note_history`
