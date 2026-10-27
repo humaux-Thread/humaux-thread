@@ -723,6 +723,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.complete_contribution_a_exact`
 - executes `private.complete_contribution_b_exact`
 - executes `private.compute_contribution_source_backing_closure_v1`
+- executes `private.contribution_eligibility`
 - executes `private.contribution_execution_closure_seal_immutable`
 - executes `private.contribution_unregistered_fixture`
 - executes `private.declared_project_visible`
@@ -3456,6 +3457,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.complete_contribution_a_exact`
 - executes `private.complete_contribution_b_exact`
 - executes `private.compute_contribution_source_backing_closure_v1`
+- executes `private.contribution_eligibility`
 - executes `private.contribution_execution_closure_seal_immutable`
 - executes `private.contribution_unregistered_fixture`
 - executes `private.declared_project_visible`
@@ -5225,6 +5227,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `public-pool::tests::eligibility`
 - (no process): `public-pool::tests::notice`
 
 executed by:
@@ -6047,6 +6050,7 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- (no process): `public-pool::tests::eligibility`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
@@ -6778,6 +6782,7 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- (no process): `public-pool::tests::eligibility`
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - (no process): `retrieval-provider::tests::router_rls_integration`
@@ -6922,6 +6927,7 @@ written by:
 - (no process): `maintenance::tests::serve`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -8743,6 +8749,17 @@ written by:
 
 executed by:
 
+### `private.contribution_eligibility`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::eligibility`
+- (no process): `public-pool::tests::eligibility`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `private.contribution_execution_closure_seal_immutable`
 read by:
 
@@ -8795,6 +8812,14 @@ written by:
 - (no process): `maintenance::tests::retention`
 
 executed by:
+
+### `private.contribution_unit_type`
+read by:
+
+written by:
+
+executed by:
+- (no process): `public-pool::tests::eligibility`
 
 ### `private.contribution_unregistered_fixture`
 read by:
@@ -9051,6 +9076,7 @@ read by:
 written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::affect_repo`
 - process(humaux-consolidation-worker): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::affect_repo`
@@ -9213,6 +9239,7 @@ written by:
 - (no process): `maintenance::tests::partitions`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `adapters::evidence_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -9291,6 +9318,7 @@ written by:
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
@@ -9463,6 +9491,7 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::affect_repo`
 - process(humaux-consolidation-worker): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::affect_repo`
@@ -9489,6 +9518,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `public-pool::tests::eligibility`
 
 executed by:
 
@@ -9659,6 +9689,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -9899,6 +9930,7 @@ written by:
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -10051,6 +10083,7 @@ written by:
 - (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `public-pool::tests::eligibility`
 
 executed by:
 
@@ -10470,6 +10503,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::subject_registry_rls`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
@@ -10499,6 +10533,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
+- (no process): `public-pool::tests::eligibility`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
@@ -11973,10 +12008,12 @@ executed by:
 - `maintenance::tests::roles_hygiene`
 - `maintenance::tests::serve`
 - `maintenance::throwaway`
+- `public-pool::eligibility`
 - `public-pool::notice`
 - `public-pool::policy`
 - `public-pool::public_repo`
 - `public-pool::tests::completeness`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
@@ -12208,6 +12245,7 @@ executed by:
 - `private-worker::tests::distill_hop_e2e`
 - `private-worker::tests::m29_attribution_e2e`
 - `public-pool::public_repo`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
 - `public-pool::tests::public_trust`
@@ -12336,6 +12374,7 @@ executed by:
 - `gateway::tests::service_credentials`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_provenance`
 - `public-pool::tests::public_provenance_revocation_eval`
@@ -14512,11 +14551,13 @@ modules naming it:
 why: domain types the public plane reads/returns
 
 modules naming it:
+- `public-pool::eligibility`
 - `public-pool::notice`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
@@ -14541,10 +14582,12 @@ modules naming it:
 why: public-schema queries and transactions
 
 modules naming it:
+- `public-pool::eligibility`
 - `public-pool::notice`
 - `public-pool::policy`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_runtime`
 - `tests`
@@ -14602,6 +14645,7 @@ modules naming it:
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::tests::completeness`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
@@ -14634,6 +14678,7 @@ modules naming it:
 why: three-state DB fixture skip contract
 
 modules naming it:
+- `public-pool::tests::eligibility`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
 - `public-pool::tests::support::public_qdrant_fixture`
@@ -14644,6 +14689,7 @@ why: blocking client for real-Postgres integration tests
 
 modules naming it:
 - `public-pool::tests::completeness`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
@@ -14657,6 +14703,7 @@ modules naming it:
 why: async runtime driving the pool fixtures
 
 modules naming it:
+- `public-pool::tests::eligibility`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
@@ -14674,6 +14721,7 @@ modules naming it:
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::tests::completeness`
+- `public-pool::tests::eligibility`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_projection`
@@ -18348,6 +18396,15 @@ services (computed):
 default run:
 
 ### `crates/public-pool/tests/completeness.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/public-pool/tests/eligibility.rs`
 db-bound (default run): yes
 
 services (computed):
