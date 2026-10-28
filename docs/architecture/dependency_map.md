@@ -16086,18 +16086,31 @@ why: constant-time webhook MAC verification (§71.3)
 
 modules naming it:
 - `billing-worker::signature`
+- `billing-worker::tests::signature`
+- `tests`
 
 ### humaux-billing-worker → `sha2` (normal)
 why: provider SHA256 MAC algorithm (§71.3)
 
 modules naming it:
 - `billing-worker::signature`
+- `billing-worker::tests::signature`
+- `tests`
 
 ### humaux-billing-worker → `hex` (normal)
 why: provider signature hex decoding (§71.3)
 
 modules naming it:
 - `billing-worker::signature`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `uuid` (dev)
+why: runtime-only random HMAC test keys (§79.4)
+
+modules naming it:
+- `billing-worker::tests::signature`
+- `tests`
 
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
 why: humaux-adapters dependency
