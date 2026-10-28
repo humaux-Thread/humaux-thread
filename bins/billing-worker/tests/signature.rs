@@ -9,7 +9,9 @@ use humaux_domain::error::ErrorCode;
 use sha2::Sha256;
 use uuid::Uuid;
 fn random_key() -> Vec<u8> {
-    [Uuid::new_v4().as_bytes(), Uuid::new_v4().as_bytes()].concat()
+    let mut key = Uuid::new_v4().as_bytes().to_vec();
+    key.extend_from_slice(Uuid::new_v4().as_bytes());
+    key
 }
 #[test]
 fn tampered_body_is_refused() {
