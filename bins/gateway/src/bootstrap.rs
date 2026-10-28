@@ -4,9 +4,9 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde_json, sha2, tokio, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
+//!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_OPERATION_MAX_SUBJECTS, HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS, HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY,
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
@@ -51,10 +51,10 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN, HUMAUX_TEST_WEBHOOK_SECRET]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
 //!   adapters::email, adapters::retrieve, application::auth, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
-//!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
-//!   gateway::auth_pages, gateway::oauth_http, gateway::cached_embedding, gateway::context,
+//!   contracts::retrieval_config, domain::billing, domain::context, domain::dataclass, domain::identity, gateway::admission,
+//!   gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
@@ -69,9 +69,10 @@
 //! process. A tenant-specific network-policy loader needs a separate approved
 //! authorization and acceptance gate before this bootstrap can serve it.
 
+use crate::billing_webhook::BillingWebhookConfig;
 use crate::limiter::RatePolicy;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::{IpAddr, SocketAddr},
     sync::Arc,
     time::Duration,
@@ -105,6 +106,7 @@ use humaux_protocol::{
 use humaux_retrieval::rerank::ModelIdentity;
 use uuid::Uuid;
 
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
@@ -135,6 +137,7 @@ const RERANK_PIN_KEYS: [&str; 5] = [
     "HUMAUX_GATEWAY_RERANK_MODEL_SHA256",
     "HUMAUX_GATEWAY_RERANK_TOKENIZER_SHA256",
 ];
+const BILLING_PROVIDERS: &str = "HUMAUX_BILLING_WEBHOOK_PROVIDERS";
 /// M02 D3: `true` enables the auth surface; only then is [`AUTH_HMAC_KEY_KEY`] required (no default, never logged).
 const AUTH_SURFACE_ENABLED_KEY: &str = "HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED";
 const AUTH_HMAC_KEY_KEY: &str = "HUMAUX_GATEWAY_AUTH_HMAC_KEY";
@@ -300,6 +303,7 @@ pub struct GatewayBootstrap {
     /// MAC keys are a separate pair from `token_keys`: one leak must not mint both token families.
     auth_pages: Option<AuthPagesConfig>,
     oauth_http: Option<OAuthHttpConfig>,
+    billing_webhook: Option<HashMap<String, BillingWebhookConfig>>,
     /// ADR-0061 D-B `HUMAUX_GATEWAY_METRICS_ADDR`: the loopback ops listener (`/metrics`, `/status`).
     metrics_addr: SocketAddr,
     /// ADR-0061 D-F `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`.
@@ -357,6 +361,7 @@ pub struct GatewayRuntime {
     effective_config: Value,
     auth_pages: Option<AuthPagesConfig>,
     oauth_http: Option<OAuthHttpConfig>,
+    billing_webhook: Option<HashMap<String, BillingWebhookConfig>>,
 }
 
 // §67.2 / ADR-0100: a stalled original session is lost; never reconnect or continue serving.
@@ -387,6 +392,11 @@ impl GatewayRuntime {
     /// M02-10 routes share the auth-surface switch and admission (ADR-0125).
     pub fn take_oauth_http(&mut self) -> Option<OAuthHttpConfig> {
         self.oauth_http.take()
+    }
+
+    /// §71.3: ingress is independent of the auth-surface switch and handed out once.
+    pub fn take_billing_webhook(&mut self) -> Option<HashMap<String, BillingWebhookConfig>> {
+        self.billing_webhook.take()
     }
 
     #[must_use]
@@ -453,10 +463,20 @@ impl GatewayBootstrap {
         vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
     ) -> Result<Self, BootstrapError> {
         let shared = humaux_contracts::config_registry::continuity_config_registry();
+        let vars: Vec<_> = vars.collect();
+        let providers = webhook_providers(
+            vars.iter()
+                .find(|(k, _)| k == BILLING_PROVIDERS)
+                .and_then(|(_, v)| v.to_str()),
+        )?;
         let raw = vars
+            .into_iter()
             .filter(|(key, _)| {
                 let key = key.to_string_lossy();
-                key.starts_with(PREFIX) || shared.iter().any(|entry| entry.name == key)
+                key.starts_with(PREFIX)
+                    || shared.iter().any(|entry| entry.name == key)
+                    || key == BILLING_PROVIDERS
+                    || providers.values().any(|p| p.secret_env == key)
             })
             .map(|(key, value)| {
                 let key = key
@@ -573,11 +593,16 @@ impl GatewayBootstrap {
             effective_config: self.effective_config,
             auth_pages: self.auth_pages,
             oauth_http: self.oauth_http,
+            billing_webhook: self.billing_webhook,
         })
     }
 
     fn from_raw(raw: BTreeMap<String, String>) -> Result<Self, BootstrapError> {
-        let registry = registry();
+        let mut registry = registry();
+        for provider in webhook_providers(raw.get(BILLING_PROVIDERS).map(String::as_str))?.values()
+        {
+            registry.push(entry_with_default(&provider.secret_env, "string", true, ""));
+        }
         let effective = resolve_effective_config(&registry, &raw)
             .map_err(|error| BootstrapError::new(error.entry_name, "missing or undeclared"))?;
         let continuity_list_merge_attempts = validate_continuity_config(&effective)?;
@@ -602,6 +627,7 @@ impl GatewayBootstrap {
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
         let oauth_http = parse_oauth_http(&effective, &token_keys)?;
+        let billing_webhook = parse_billing_webhook(&effective)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
             required(&effective, READINESS_REFRESH_KEY)?,
@@ -662,6 +688,7 @@ impl GatewayBootstrap {
             token_keys,
             auth_pages,
             oauth_http,
+            billing_webhook,
             metrics_addr,
             readiness_refresh,
             task_lease_ttl,
@@ -876,6 +903,46 @@ fn parse_oauth_http(
         refresh_ttl,
         grant_max_ttl,
     }))
+}
+
+#[derive(Deserialize)]
+struct WebhookProviderEnv {
+    header: String,
+    secret_env: String,
+    event_id_pointer: String,
+    event_type_pointer: String,
+    max_body_bytes: usize,
+}
+
+fn webhook_providers(
+    value: Option<&str>,
+) -> Result<HashMap<String, WebhookProviderEnv>, BootstrapError> {
+    serde_json::from_str(value.unwrap_or("{}"))
+        .map_err(|_| BootstrapError::new(BILLING_PROVIDERS, "invalid provider JSON"))
+}
+
+/// §71.3 / §78.1: secret values follow the same effective-config path as auth keys.
+fn parse_billing_webhook(
+    effective: &BTreeMap<String, String>,
+) -> Result<Option<HashMap<String, BillingWebhookConfig>>, BootstrapError> {
+    // ponytail: env map, one provider; a values-driven registry when a second provider exists
+    let providers = webhook_providers(effective.get(BILLING_PROVIDERS).map(String::as_str))?
+        .into_iter()
+        .map(|(name, p)| {
+            Ok((
+                name,
+                BillingWebhookConfig {
+                    provider: humaux_domain::billing::BillingProviderId::Creem,
+                    signature_header: p.header,
+                    secret: required(effective, &p.secret_env)?.as_bytes().to_vec(),
+                    event_id_pointer: p.event_id_pointer,
+                    event_type_pointer: p.event_type_pointer,
+                    body_max_bytes: p.max_body_bytes,
+                },
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, BootstrapError>>()?;
+    Ok(Some(providers))
 }
 
 /// `key` as whole seconds (or a count) inside `range`; the bounds catch a unit slip, they are not business limits.
@@ -1671,6 +1738,7 @@ pub fn registry() -> Vec<ConfigEntry> {
         ]
         .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
+    entries.push(entry_with_default(BILLING_PROVIDERS, "string", false, "{}"));
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
             .into_iter()
@@ -2194,6 +2262,44 @@ mod tests {
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn webhook_provider_requires_a_nonempty_redacted_secret() {
+        let mut values = raw();
+        values.insert(BILLING_PROVIDERS.into(), r#"{"creem":{"header":"creem-signature","secret_env":"HUMAUX_TEST_WEBHOOK_SECRET","event_id_pointer":"/id","event_type_pointer":"/eventType","max_body_bytes":262144}}"#.into());
+        for secret in [None, Some("")] {
+            if let Some(secret) = secret {
+                values.insert("HUMAUX_TEST_WEBHOOK_SECRET".into(), secret.into());
+            }
+            let error = GatewayBootstrap::from_raw(values.clone())
+                .err()
+                .expect("boot refusal");
+            assert_eq!(
+                error.to_string(),
+                "gateway bootstrap configuration HUMAUX_TEST_WEBHOOK_SECRET: missing or empty"
+            );
+        }
+        values.insert(
+            "HUMAUX_TEST_WEBHOOK_SECRET".into(),
+            "webhook-secret-canary".into(),
+        );
+        let boot = GatewayBootstrap::from_raw(values).expect("enabled boot");
+        assert_eq!(
+            boot.billing_webhook
+                .as_ref()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            [&"creem".to_owned()]
+        );
+        assert!(
+            !boot
+                .effective_config
+                .to_string()
+                .contains("webhook-secret-canary")
+        );
+        assert!(!boot.config_fingerprint.contains("webhook-secret-canary"));
     }
 
     fn raw() -> BTreeMap<String, String> {
