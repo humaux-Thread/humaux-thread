@@ -2,7 +2,7 @@
 //! Depends-on: crates=[]; services=[subprocess(cargo)]; env=[CARGO_MANIFEST_DIR]; modules=[]
 //! Called-by: [xtask::main]
 //! Invariants: [each Witness file is really compiled and run in a throwaway probe package; missing/failing/timed-out witnesses count as 0 passed, never substituted by comment; an unknown argument exits 2 naming it; "exported" is read from each process's real `--metrics-families` output, never from a hand list; a rule-referenced family that no process exports fails unless NOT_YET_PRODUCED names its producer card; a header-only family counts as exported only when ABSENT_UNTIL_FIRST_RUN names it (ADR-0063 D-K)]
-//! Spec: Baseline §80.2; §41.2; §42; ADR-0061 D-H; ADR-0063 D-K; ADR-0072 D-D
+//! Spec: Baseline §80.2; §41.2; §42; ADR-0061 D-H; ADR-0063 D-K; ADR-0072 D-D; ADR-0123 D3
 //!
 //! Modes (ADR-0061 D-H; the strict parser replaces the old `any(--strict)` scan that let
 //! `--check` run the default mode silently, E6): no mode flag = D1–D6; `--check` = D1–D8;
@@ -78,6 +78,10 @@ const ABSENT_UNTIL_FIRST_RUN: &[(&str, &str)] = &[
     (
         "quota_window_horizon_seconds",
         "ADR-0072 D-D: no sample until QUOTA_RENEWAL visited a renewing tenant; a failing call is MaintenanceTaskFailing",
+    ),
+    (
+        "authority_i4_violations",
+        "ADR-0123 D3: no sample until the first AUTHORITY_I4 scan succeeded; a failed scan resets it to absent, never 0",
     ),
     // §41.2 M22-1 (#193): the host gauges are read from `/proc` every sample and a missing source is
     // absent, never 0 (G-M22-1). `--metrics-families` declares them header-only

@@ -724,6 +724,12 @@ owner = "M15"
 basis = "M15:160 reasoning_*_health_observations; D1"
 reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
 
+["ops.repair_findings"]
+class = "EXCLUDED"
+owner = "M21"
+basis = "M21:56; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
 ["ops.restore_drills"]
 class = "EXCLUDED"
 owner = "M23"

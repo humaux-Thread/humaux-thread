@@ -1,0 +1,55 @@
+# §46.1 migration manifest. Card M21-2 / ADR-0123 D3, U3 (§59.1 I4, §65): the append-only report table ops.repair_findings (FORCE RLS,
+# cluster rows tenant_id NULL, role_maintenance SELECT + INSERT only) and the one I4 scan home ops.i4_authority_scan() (owner SECURITY
+# DEFINER, search_path = pg_catalog, pg_temp, EXECUTE role_maintenance only), which replaces the uncalled count-only
+# ops.i4_authority_consistency_scan() of 0004. No DML; the dropped function had no caller and no dependent object (EXPAND_CONTRACT).
+
+migration_id = "0287_repair_findings_i4_scan"
+class = "EXPAND_CONTRACT"
+
+# Refuses a database that already has either new object, one without the 0004 function being replaced, and one without the table
+# the scan reads.
+precheck = """
+select to_regclass('ops.repair_findings') is null
+   and to_regprocedure('ops.i4_authority_scan()') is null
+   and to_regprocedure('ops.i4_authority_consistency_scan()') is not null
+   and to_regclass('private.memory_records') is not null
+ as precheck_ok
+"""
+
+# Fails on: a report table not owner-owned with ENABLE + FORCE RLS and exactly one ALL policy carrying the tenant clause in USING and
+# WITH CHECK; any grantee other than the owner and role_maintenance (PUBLIC included) or any privilege other than SELECT and INSERT
+# on it; a scan that is not owner-owned, SECURITY DEFINER, STABLE, with search_path = pg_catalog, pg_temp; EXECUTE held by PUBLIC or
+# by any runtime role but role_maintenance; or the old 0004 function still present.
+postcheck = """
+select (select pg_get_userbyid(c.relowner) = 'role_migration_owner' and c.relrowsecurity and c.relforcerowsecurity
+          from pg_class c where c.oid = to_regclass('ops.repair_findings'))
+ and (select count(*) = 1 from pg_policies where schemaname = 'ops' and tablename = 'repair_findings'
+        and cmd = 'ALL' and qual like '%humaux.tenant_id%' and with_check like '%humaux.tenant_id%')
+ and has_table_privilege('role_maintenance', 'ops.repair_findings', 'SELECT')
+ and has_table_privilege('role_maintenance', 'ops.repair_findings', 'INSERT')
+ and not has_table_privilege('role_maintenance', 'ops.repair_findings', 'UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+ and not exists (select 1 from pg_class c
+                  cross join lateral aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+                  where c.oid = to_regclass('ops.repair_findings') and a.grantee <> c.relowner
+                    and (a.privilege_type not in ('SELECT', 'INSERT') or a.grantee = 0
+                         or pg_get_userbyid(a.grantee) <> 'role_maintenance'))
+ and (select count(*) = 1 from pg_proc p
+       where p.oid = to_regprocedure('ops.i4_authority_scan()')
+         and p.prosecdef and p.provolatile = 's' and pg_get_userbyid(p.proowner) = 'role_migration_owner'
+         and 'search_path=pg_catalog, pg_temp' = any (coalesce(p.proconfig, array[]::text[])))
+ and has_function_privilege('role_maintenance', 'ops.i4_authority_scan()', 'EXECUTE')
+ and not exists (
+       select 1 from unnest(array['role_gateway', 'role_private_worker', 'role_consolidation_worker',
+                                  'role_public_worker', 'role_retrieval_worker', 'role_batch_issuer',
+                                  'role_admin', 'role_health_reader']) r(role)
+        where has_function_privilege(r.role, 'ops.i4_authority_scan()', 'EXECUTE'))
+ and not exists (
+       select 1 from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+        where p.oid = to_regprocedure('ops.i4_authority_scan()')
+          and x.grantee = 0 and x.privilege_type = 'EXECUTE')
+ and to_regprocedure('ops.i4_authority_consistency_scan()') is null
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "forward-fix only: rollback is DROP FUNCTION ops.i4_authority_scan(); DROP TABLE ops.repair_findings; and recreating ops.i4_authority_consistency_scan() from migrations/0004_private_evidence_memory.sql (a SECURITY DEFINER count(*) over private.memory_records); the dropped function had no caller and no dependent object, and the findings are report rows nothing reads back."
+backup_restore_requirement = "none: a new empty table and a function swap; no existing row is read, copied, rewritten or deleted."

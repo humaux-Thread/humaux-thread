@@ -4957,6 +4957,7 @@ written by:
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::rebuild_cli`
 - (no process): `maintenance::tests::retention`
@@ -7226,21 +7227,27 @@ executed by:
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
-### `ops.i4_authority_consistency_scan`
+### `ops.i4_authority_scan`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
 - RLS: —
 - FORCE: —
-- created in: 0004_private_evidence_memory
+- created in: 0287_repair_findings_i4_scan
 
 grants (runtime roles):
-- PUBLIC (default): EXECUTE
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
 
 read by:
 
 written by:
 
 executed by:
+- (no process): `maintenance::tests::i4_scan`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.jobs`
 - kind: table
@@ -8389,6 +8396,38 @@ executed by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::jobs`
+
+### `ops.repair_findings`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0287_repair_findings_i4_scan
+
+grants (runtime roles):
+- role_maintenance: INSERT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+
+read by:
+- (no process): `maintenance::tests::i4_scan`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `maintenance::tests::i4_scan`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+
+executed by:
 
 ### `ops.requeue_dead_distill`
 - kind: function (SECURITY DEFINER)
@@ -11581,6 +11620,7 @@ read by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -11726,6 +11766,7 @@ written by:
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
