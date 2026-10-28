@@ -259,7 +259,6 @@ impl humaux_testkit::DbIntegrationFixture for Fixture {
         let mut client = postgres::Client::connect(&dsn, postgres::NoTls)
             .map_err(|e| humaux_testkit::DbFixtureSkipReason::ConnectFailed(e.to_string()))?;
         humaux_testkit::disposable::require_disposable(&mut client).expect("disposable database");
-        use humaux_testkit::DbIntegrationFixture;
         Ok(TestHandle(operation_receipt_fixture::Fixture::isolate()?))
     }
 }
