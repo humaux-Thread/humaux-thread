@@ -689,7 +689,7 @@ fn the_tenant_page_walks_every_tenant_once_per_rotation() {
     );
 }
 
-/// One purgeable row per purge door on `tenant`, each older than the one-hour ages of [`keys`].
+/// §15.6 / ADR-0062 D-Q: one due ingest ticket and one row per purge door, past the one-hour ages of [`keys`].
 fn seed_purgeable(db: &mut Db, tenant: &str) {
     db.sql(&format!(
         "WITH u AS (INSERT INTO control.users (user_id) VALUES (gen_random_uuid()) RETURNING user_id), \
@@ -703,7 +703,11 @@ fn seed_purgeable(db: &mut Db, tenant: &str) {
          INSERT INTO ops.selection_snapshots (tenant_id, query_fingerprint, expires_at) \
            VALUES ('{tenant}', 'c35-once', now() - interval '1 minute'); \
          INSERT INTO ops.jobs (tenant_id, job_type, status, idempotency_key, created_at) \
-           VALUES ('{tenant}', 'c35.fixture', 'DONE', gen_random_uuid()::text, now() - interval '2 hours');"
+           VALUES ('{tenant}', 'c35.fixture', 'DONE', gen_random_uuid()::text, now() - interval '2 hours'); \
+         INSERT INTO private.ingest_tickets (tenant_id, scope_kind, scope_id, batch_id, client_batch_id, \
+             ordinal, expires_at) \
+           VALUES ('{tenant}', 'workspace', gen_random_uuid(), gen_random_uuid(), 'once', 1, \
+             now() - interval '1 hour');"
     ));
 }
 
