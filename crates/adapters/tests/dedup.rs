@@ -278,6 +278,7 @@ fn concurrent_expiry_is_rechecked_before_proposal() {
                 .expect("scanner backend");
             let scan_auth = a.clone();
             let task = tokio::spawn(async move {
+                // dep: PostgreSQL(role_gateway) — scan and proposal share the caller transaction
                 let mut tx = conn.begin().await.expect("scan transaction");
                 let result = dedup_repo::scan_and_propose_in_txn(&mut tx, &scan_auth)
                     .await
