@@ -189,6 +189,7 @@ modules:
 - `gateway::tests::no_memory_text_reader`
 - `gateway::tests::semantic_recall_wiring`
 - `maintenance::build`
+- `maintenance::deploy_check`
 - `maintenance::migrate`
 - `maintenance::rls_check`
 - `maintenance::roles`
@@ -448,6 +449,19 @@ modules:
 - `public-pool::tests::mechanism_observation`
 - `xtask::mechanism_registry`
 - `xtask::serial_lane`
+
+### `HUMAUX_ADMIN_PG_POOL_MAX_CONNECTIONS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-admin)
+
+modules:
+- `admin::mechanism`
 
 ### `HUMAUX_ADMIN_PRIVATE_INFERENCE_RPC_SOCKET_PATH`
 - witness: literal
@@ -810,6 +824,19 @@ processes:
 modules:
 - `consolidation-worker::dsn`
 - `consolidation-worker::tests::exit_codes`
+
+### `HUMAUX_CONSOLIDATION_WORKER_PG_POOL_MAX_CONNECTIONS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-consolidation-worker)
+
+modules:
+- `consolidation-worker::main`
 
 ### `HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS`
 - witness: literal
@@ -3273,6 +3300,19 @@ modules:
 - `xtask::serial_lane`
 - `xtask::soak`
 
+### `HUMAUX_MAINTENANCE_PG_POOL_MAX_CONNECTIONS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+
 ### `HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION`
 - witness: literal
 - registry: raw
@@ -4474,6 +4514,19 @@ modules:
 - `private-worker::tests::exit_codes`
 - `xtask::dep_map`
 
+### `HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-private-worker)
+
+modules:
+- `private-worker::main`
+
 ### `HUMAUX_PRIVATE_WORKER_PROVIDER_ID`
 - witness: literal
 - registry: raw
@@ -4644,6 +4697,19 @@ processes:
 modules:
 - `public-worker::main`
 - `public-worker::tests::readyz_probe`
+
+### `HUMAUX_PUBLIC_WORKER_PG_POOL_MAX_CONNECTIONS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-public-worker)
+
+modules:
+- `public-worker::main`
 
 ### `HUMAUX_PUBLIC_WORKER_QDRANT_CIDR`
 - witness: literal
@@ -5360,6 +5426,20 @@ modules:
 - `retrieval-worker::tests::serve_drain`
 - `xtask::e2e_onboard`
 - `xtask::serial_lane`
+
+### `HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-retrieval-worker)
+
+modules:
+- `retrieval-worker::main`
+- `retrieval-worker::rpc`
 
 ### `HUMAUX_RETRIEVAL_WORKER_POLL_INTERVAL_SECS`
 - witness: literal
