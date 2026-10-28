@@ -1428,8 +1428,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_BILLING_CREEM_TEST_BASE_URL`
 - env `HUMAUX_BILLING_PROVIDER_MODE`
 
-#### `humaux-infra-network`
-
 ### process(humaux-consolidation-worker)
 
 #### `adapters::affect_repo`
@@ -15978,12 +15976,6 @@ why: owner-DSN fixtures seeding the throwaway database
 modules naming it:
 - `admin::tests::probes`
 - `tests`
-
-### humaux-billing-worker → `humaux-infra-network` (normal)
-why: shared URL parser
-
-modules naming it:
-- `billing-worker::mode`
 
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
 why: humaux-adapters dependency

@@ -275,7 +275,7 @@ pub struct HttpExternalCall {
     /// pointer, not `Arc<dyn Fn>`: every real classifier (`map_dashscope_status` included) is
     /// a pure function with no state to capture.
     status_classifier: fn(u16) -> ErrorCode,
-    billing: Option<(reqwest::Method, reqwest::header::HeaderName, Vec<String>)>,
+    request_policy: Option<(reqwest::Method, reqwest::header::HeaderName, Vec<String>)>,
 }
 
 impl HttpExternalCall {
@@ -335,12 +335,12 @@ impl HttpExternalCall {
             config,
             credential_source,
             status_classifier,
-            billing: None,
+            request_policy: None,
         })
     }
 
     /// §71.2: billing credentials require a separate instance and an explicit host allowlist.
-    pub fn with_billing(
+    pub fn with_request_policy(
         mut self,
         method: reqwest::Method,
         header: reqwest::header::HeaderName,
@@ -349,7 +349,7 @@ impl HttpExternalCall {
         if !matches!(method, reqwest::Method::GET | reqwest::Method::POST) || hosts.is_empty() {
             return Err(ErrorCode::Forbidden);
         }
-        self.billing = Some((method, header, hosts));
+        self.request_policy = Some((method, header, hosts));
         Ok(self)
     }
 
@@ -358,7 +358,8 @@ impl HttpExternalCall {
         purpose: PrivateDataPurpose,
     ) -> Result<(reqwest::Method, reqwest::header::HeaderName, bool), ErrorCode> {
         if purpose == PrivateDataPurpose::BillingProvider {
-            let (method, header, hosts) = self.billing.as_ref().ok_or(ErrorCode::Forbidden)?;
+            let (method, header, hosts) =
+                self.request_policy.as_ref().ok_or(ErrorCode::Forbidden)?;
             let url = reqwest::Url::parse(&self.endpoint).map_err(|_| ErrorCode::Forbidden)?;
             let host = url.host_str().ok_or(ErrorCode::Forbidden)?;
             // §71.2: destination authorization precedes credential lookup and request construction.
@@ -371,7 +372,7 @@ impl HttpExternalCall {
             }
             return Ok((method.clone(), header.clone(), true));
         }
-        if self.billing.is_some()
+        if self.request_policy.is_some()
             || !matches!(
                 purpose,
                 PrivateDataPurpose::RetrievalEmbedding | PrivateDataPurpose::RetrievalRerank
@@ -538,7 +539,7 @@ mod tests {
         let processor = ProcessorId(Uuid::now_v7());
         let payload = AuthorizedEgressPayload::new(b"x".to_vec());
         let call = call_at(listener.local_addr().unwrap(), processor)
-            .with_billing(
+            .with_request_policy(
                 reqwest::Method::GET,
                 reqwest::header::HeaderName::from_static("x-api-key"),
                 vec!["localhost".into()],
@@ -588,7 +589,7 @@ mod tests {
             let processor = ProcessorId(Uuid::now_v7());
             let payload = AuthorizedEgressPayload::new(b"x".to_vec());
             let mut call = call_at(listener.local_addr().unwrap(), processor)
-                .with_billing(
+                .with_request_policy(
                     method.clone(),
                     reqwest::header::HeaderName::from_static("x-api-key"),
                     vec!["127.0.0.1".into()],
