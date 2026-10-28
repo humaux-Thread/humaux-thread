@@ -6,15 +6,15 @@
 //!   PostgreSQL(role_private_worker), PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker),
 //!   PostgreSQL(owner)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::error]
-//! Called-by: [adapters::processing_status, adapters::affect_repo, adapters::applicability_repo, adapters::batch, adapters::billing_repo, adapters::candidate_repo, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::credential_repo, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::email::outbox, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::health, adapters::jobs, adapters::login_repo, adapters::maintenance_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::model_call_ledger, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::private_inference_rpc, adapters::private_projection_registry, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_embedding_rpc, adapters::retrieval_query_source, adapters::retrieve, adapters::role_hygiene, adapters::scheduler, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::stream_repo, adapters::subject_repo, admin::mechanism, admin::probe, consolidation-worker::inference_client, consolidation-worker::main, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::recall, gateway::retrieval_embedding_client, gateway::status, humaux-consolidation-worker, humaux-private-worker, maintenance::backup, maintenance::drill, maintenance::health_serve, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::roles, maintenance::serve, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, public-pool::public_provenance, public-pool::public_repo, public-pool::vocab, public-worker::main, retrieval-provider::adapters, retrieval-worker::main, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::mechanism_registry]
+//! Called-by: [adapters::affect_repo, adapters::applicability_repo, adapters::batch, adapters::billing_repo, adapters::candidate_repo, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::credential_repo, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::email::outbox, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::health, adapters::jobs, adapters::login_repo, adapters::maintenance_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::model_call_ledger, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::private_inference_rpc, adapters::private_projection_registry, adapters::processing_status, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_embedding_rpc, adapters::retrieval_query_source, adapters::retrieve, adapters::role_hygiene, adapters::scheduler, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::stream_repo, adapters::subject_repo, admin::mechanism, consolidation-worker::inference_client, consolidation-worker::main, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::recall, gateway::retrieval_embedding_client, gateway::status, humaux-consolidation-worker, humaux-private-worker, maintenance::backup, maintenance::drill, maintenance::health_serve, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::roles, maintenance::serve, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, public-pool::public_provenance, public-pool::public_repo, public-pool::vocab, public-worker::main, retrieval-provider::adapters, retrieval-worker::main, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::mechanism_registry]
 //! Invariants: [the only file that names sqlx::PgPool: eight typed pools, one per role (§6.2.3), each connect checks
 //!   current_user and fails with PoolInitError::RoleMismatch on a wrong role; `raw_pool()` leaves the crate only behind `cloud-raw-pool`, which only humaux-public-pool may enable, pinned by G-M01-9;
 //!   the ninth, MigratorDbPool, refuses every §6.2.0 role and any principal without CREATEROLE (ADR-0059 D-E);
 //!   RetentionExecutor wraps it and also refuses a non-SUPERUSER session_user (ADR-0063 D-H); `open` holds the
-//!   workspace's one pool-builder site: PoolSettings (only RuntimeDbPool::connect_with today) sizes the pool and sets
+//!   workspace's one pool-builder site: PoolSettings (gateway and process loaders) sizes the pool and sets
 //!   statement_timeout / idle_in_transaction_session_timeout as startup options (pg_settings source = client), never a
-//!   role GUC (ADR-0065 D-A / D-B); every pool's sessions start with jit = off (ADR-0071 D-B); every other pool keeps the sqlx defaults until card 38b]
-//! Spec: ADR-0100; Baseline §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A / D-B
+//!   role GUC (ADR-0065 D-A / D-B); every pool's sessions start with jit = off (ADR-0071 D-B); process loaders preserve sqlx defaults except the configured ceiling]
+//! Spec: Baseline §48.1; §78.1; §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
 //! Spec canonical path is `crates/adapters/postgres/src/pools.rs`; this repo's crate layout
 //! (§58) flattens adapters into `crates/adapters/src/<name>.rs` modules, so **this file IS
@@ -123,6 +123,26 @@ pub struct PoolSettings {
     pub idle_in_transaction_timeout: Duration,
     /// `application_name` of every session, so `pg_stat_activity` names the process.
     pub application_name: String,
+}
+
+/// §48.1 / §78.1: process pool ceiling; malformed present keys refuse configuration.
+pub fn load_pool_settings(raw: Option<&str>) -> Result<PoolSettings, String> {
+    // ponytail: sqlx 0.8.6 max_connections defaults to 10; remove once every values file carries the key.
+    let max_connections = raw
+        .unwrap_or("10")
+        .parse::<std::num::NonZeroU32>()
+        .map_err(|_| "invalid PG_POOL_MAX_CONNECTIONS".to_owned())?
+        .get();
+    Ok(PoolSettings {
+        max_connections,
+        min_connections: 0,
+        acquire_timeout: Duration::from_secs(30),
+        idle_timeout: Duration::from_secs(600),
+        max_lifetime: Duration::from_secs(1800),
+        statement_timeout: Duration::ZERO,
+        idle_in_transaction_timeout: Duration::ZERO,
+        application_name: String::new(),
+    })
 }
 
 /// The *only* place in the workspace that constructs a bare [`PgPool`]; every wrapper's `connect`
@@ -297,6 +317,13 @@ impl ConsolidationDbPool {
             .map(Self)
     }
 
+    /// §48.1 / ADR-0065 D-A/D-B: sized process pool, preserving the role check.
+    pub async fn connect_with(dsn: &str, settings: &PoolSettings) -> Result<Self, PoolInitError> {
+        connect_checked(dsn, ROLE_CONSOLIDATION_WORKER, Some(settings))
+            .await
+            .map(Self)
+    }
+
     /// T4.6/T4.7 `adapters::consolidate_repo`'s pool accessor — see [`RuntimeDbPool::pool`]'s
     /// doc for why `pub(crate)` keeps G6-DB1's closed set intact. `consolidate_repo.rs` is
     /// this wrapper's first real reader of `.0`.
@@ -312,6 +339,13 @@ impl PrivateWorkerDbPool {
     /// §6.2.3 assertion E: connects and verifies `current_user == "role_private_worker"`.
     pub async fn connect(dsn: &str) -> Result<Self, PoolInitError> {
         connect_checked(dsn, ROLE_PRIVATE_WORKER, None)
+            .await
+            .map(Self)
+    }
+
+    /// §48.1 / ADR-0065 D-A/D-B: sized process pool, preserving the role check.
+    pub async fn connect_with(dsn: &str, settings: &PoolSettings) -> Result<Self, PoolInitError> {
+        connect_checked(dsn, ROLE_PRIVATE_WORKER, Some(settings))
             .await
             .map(Self)
     }
@@ -340,6 +374,13 @@ impl RetrievalWorkerDbPool {
             .map(Self)
     }
 
+    /// §48.1 / ADR-0065 D-A/D-B: sized process pool, preserving the role check.
+    pub async fn connect_with(dsn: &str, settings: &PoolSettings) -> Result<Self, PoolInitError> {
+        connect_checked(dsn, ROLE_RETRIEVAL_WORKER, Some(settings))
+            .await
+            .map(Self)
+    }
+
     /// T3.3 `humaux_adapters::stream_repo`'s pool accessor — see [`RuntimeDbPool::pool`]'s
     /// doc for why `pub(crate)` keeps G6-DB1's closed set intact.
     pub(crate) fn pool(&self) -> &PgPool {
@@ -364,6 +405,13 @@ impl AdminDbPool {
         connect_checked(dsn, ROLE_ADMIN, None).await.map(Self)
     }
 
+    /// §48.1 / ADR-0065 D-A/D-B: sized process pool, preserving the role check.
+    pub async fn connect_with(dsn: &str, settings: &PoolSettings) -> Result<Self, PoolInitError> {
+        connect_checked(dsn, ROLE_ADMIN, Some(settings))
+            .await
+            .map(Self)
+    }
+
     /// Internal access only; callers cannot use an admin handle as a writer pool.
     pub(crate) fn pool(&self) -> &PgPool {
         &self.0
@@ -374,6 +422,13 @@ impl MaintenanceDbPool {
     /// §6.2.3 assertion E: connects and verifies `current_user == "role_maintenance"`.
     pub async fn connect(dsn: &str) -> Result<Self, PoolInitError> {
         connect_checked(dsn, ROLE_MAINTENANCE, None).await.map(Self)
+    }
+
+    /// §48.1 / ADR-0065 D-A/D-B: sized process pool, preserving the role check.
+    pub async fn connect_with(dsn: &str, settings: &PoolSettings) -> Result<Self, PoolInitError> {
+        connect_checked(dsn, ROLE_MAINTENANCE, Some(settings))
+            .await
+            .map(Self)
     }
 
     /// T3.4 `humaux_adapters::stream_repo`'s pool accessor — see [`RuntimeDbPool::pool`]'s
@@ -390,6 +445,13 @@ impl PublicWorkerDbPool {
     /// §6.2.3 assertion E: connects and verifies `current_user == "role_public_worker"`.
     pub async fn connect(dsn: &str) -> Result<Self, PoolInitError> {
         connect_checked(dsn, ROLE_PUBLIC_WORKER, None)
+            .await
+            .map(Self)
+    }
+
+    /// §48.1 / ADR-0065 D-A/D-B: sized process pool, preserving the role check.
+    pub async fn connect_with(dsn: &str, settings: &PoolSettings) -> Result<Self, PoolInitError> {
+        connect_checked(dsn, ROLE_PUBLIC_WORKER, Some(settings))
             .await
             .map(Self)
     }
@@ -546,6 +608,35 @@ mod tests {
     use super::*;
     use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
     use postgres::{Client, NoTls};
+
+    #[test]
+    fn process_pool_loader_defaults_and_present_keys() {
+        let settings = load_pool_settings(None).expect("absent key");
+        assert_eq!(settings.max_connections, 10);
+        assert_eq!(settings.min_connections, 0);
+        assert_eq!(settings.acquire_timeout, Duration::from_secs(30));
+        assert_eq!(settings.idle_timeout, Duration::from_secs(600));
+        assert_eq!(settings.max_lifetime, Duration::from_secs(1800));
+        assert_eq!(settings.statement_timeout, Duration::ZERO);
+        assert_eq!(settings.idle_in_transaction_timeout, Duration::ZERO);
+        assert_eq!(settings.application_name, "");
+        assert_eq!(
+            load_pool_settings(Some("7"))
+                .expect("present key")
+                .max_connections,
+            7
+        );
+        assert_eq!(
+            load_pool_settings(Some("x")).expect_err("malformed present key"),
+            "invalid PG_POOL_MAX_CONNECTIONS"
+        );
+        assert_eq!(
+            include_str!("postgres.rs")
+                .matches(&["PgPoolOptions", "::new()"].concat())
+                .count(),
+            1
+        );
+    }
 
     /// Builds a role-scoped DSN from the shared admin DSN via sqlx's `options[role]=...` query
     /// param (`sqlx-postgres/src/options/parse.rs`: `k if k.starts_with("options[")` — becomes

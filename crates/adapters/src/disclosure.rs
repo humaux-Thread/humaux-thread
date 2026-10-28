@@ -1,5 +1,5 @@
 //! `adapters::disclosure` — `ops.data_disclosures` two-phase ledger writer (§7.4, T4.2).
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[ops.data_disclosure_sources, ops.data_disclosures] x=[ops.attach_retrieval_query_source]]; env=[]; modules=[adapters::postgres, domain::boundary, domain::egress]
+//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[ops.data_disclosure_sources, ops.data_disclosures] x=[ops.attach_retrieval_query_source]]; env=[]; modules=[adapters::postgres, domain::boundary, domain::egress, domain::error]
 //! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::health, adapters::model_call_ledger, adapters::retrieval_query_source, maintenance::health_serve, private-worker::inference_rpc, private-worker::main, retrieval-provider::adapters, retrieval-worker::main, tests]
 //! Invariants: [sole writer of ops.data_disclosures and its sources: reserve inserts the ledger row plus >=1 source
 //!   in one transaction before any external call, finalize records the outcome; empty sources or a payload mismatch
@@ -39,6 +39,7 @@ use sqlx::types::time::OffsetDateTime;
 
 use humaux_domain::boundary::requires_disclosure_record;
 use humaux_domain::egress::{AuthorizedEgressPayload, EgressPermit, PrivateDataPurpose};
+use humaux_domain::error::ErrorCode;
 
 use crate::postgres::{MaintenanceDbPool, PrivateWorkerDbPool, RetrievalWorkerDbPool};
 
@@ -55,6 +56,8 @@ use crate::postgres::{MaintenanceDbPool, PrivateWorkerDbPool, RetrievalWorkerDbP
 #[derive(Debug)]
 pub enum DisclosureError {
     Db(sqlx::Error),
+    /// §71: metadata billing is not a private-data disclosure.
+    Guard(ErrorCode),
     /// §7.3: "Permit 不能被拿去发送另一份正文" — `payload`'s own digest does not match
     /// `permit.payload_sha256()`, so `reserve`'s caller is trying to ledger a body the permit
     /// never authorized.
@@ -94,6 +97,7 @@ impl std::fmt::Display for DisclosureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Db(e) => write!(f, "ops.data_disclosures DB error: {e}"),
+            Self::Guard(e) => write!(f, "disclosure guard: {e:?}"),
             Self::PayloadMismatch => write!(
                 f,
                 "reserve() payload digest does not match the EgressPermit's authorized digest (§7.3)"
@@ -265,6 +269,10 @@ async fn reserve_in_txn(
     sources: &[DisclosureSource],
     allow_query_source: bool,
 ) -> Result<Uuid, DisclosureError> {
+    // §71 external-egress-registry: BILLING is metadata / NetworkPermit, not private-data.
+    if permit.purpose() == PrivateDataPurpose::BillingProvider {
+        return Err(DisclosureError::Guard(ErrorCode::Forbidden));
+    }
     // ADR-0003 second-round correction: the write judgment is `RecipientClass`, never
     // `NetworkRouteClass`/IntraCell/private-IP/protocol (`domain::boundary`'s own doc). This is
     // the one call site that decides whether an `EgressPermit`-backed transfer becomes an

@@ -1,7 +1,7 @@
 //! `retrieval-worker::main` — `humaux-retrieval-worker` 进程入口（最小必要进程集见 §4.2；admin 探针契约见 §4.4）。
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-domain, humaux-infra-cell,
 //!   humaux-local-secret-scan, humaux-retrieval-provider, humaux-telemetry, tokio, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(serve)]; env=[CARGO_PKG_VERSION,
+//!   services=[HTTP(loopback), PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(serve)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID, HUMAUX_RETRIEVAL_WORKER_BACKOFF_BASE_SECS,
 //!   HUMAUX_RETRIEVAL_WORKER_BACKOFF_MAX_SECS, HUMAUX_RETRIEVAL_WORKER_BATCH, HUMAUX_RETRIEVAL_WORKER_CALLER,
 //!   HUMAUX_RETRIEVAL_WORKER_CELL_ID, HUMAUX_RETRIEVAL_WORKER_DIMENSION, HUMAUX_RETRIEVAL_WORKER_EGRESS_PROCESSOR_ID,
@@ -33,7 +33,7 @@
 //!   when the label is bound to another one (ADR-0064 D-C), and exit 2 when the projection's card profile policy row
 //!   is missing or names a profile this build does not know (ADR-0068 D-I); only --serve-rpc reads the rerank keys or
 //!   loads ONNX Runtime, and it does so before the socket binds (ADR-0084 D-B)]
-//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0068 D-I; ADR-0084 D-B
+//! Spec: Baseline §4.2; §4.4; §17.3; §41.2; ADR-0012; ADR-0037; ADR-0052; ADR-0061 D-B; ADR-0061 D-C; ADR-0064 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0068 D-I; ADR-0084 D-B; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
 //! §4.2 (line 818): the owning process of `humaux_adapters::projection_worker::run_once` —
 //! there is no separate `projection-worker` process. Env wiring mirrors
@@ -280,6 +280,21 @@ impl CardEmbedder for EmbedderAdapter {
     }
 }
 
+// §48.1 / ADR-0065 D-A/D-B: all process entry points share one validated ceiling.
+async fn connect_pool(dsn: &str) -> Result<RetrievalWorkerDbPool, String> {
+    let raw = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS");
+    let raw = match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err("invalid HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS".to_owned()),
+    };
+    let settings = humaux_adapters::postgres::load_pool_settings(raw.as_deref())?;
+    // dep: PostgreSQL(role_retrieval_worker) — sized process pool; role identity checked before use
+    RetrievalWorkerDbPool::connect_with(dsn, &settings)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -369,7 +384,7 @@ async fn run() -> Result<(), Outcome> {
 async fn readyz() -> Result<(), Outcome> {
     let dsn = required("HUMAUX_RETRIEVAL_WORKER_PG_DSN")?;
     // dep: PostgreSQL(role_retrieval_worker) — readyz: one live connect as role_retrieval_worker
-    RetrievalWorkerDbPool::connect(&dsn).await.map_err(|e| {
+    connect_pool(&dsn).await.map_err(|e| {
         Outcome::Failed(format!(
             "not ready — missing object: PostgreSQL as role_retrieval_worker ({e})"
         ))
@@ -613,7 +628,7 @@ async fn connect_shared(
     scanner: &Arc<LocalSecretScanner>,
 ) -> Result<SharedProjectionDeps, String> {
     // dep: PostgreSQL(role_retrieval_worker) — the projection runner's claim/settle pool
-    let pool = RetrievalWorkerDbPool::connect(dsn)
+    let pool = connect_pool(dsn)
         .await
         .map_err(|e| format!("retrieval worker database role connection failed: {e}"))?;
     let embedder = build_embedder(dsn, dimension)
@@ -792,7 +807,7 @@ async fn build_embedding_provider(
         sparse_supported: false,
     };
     // dep: PostgreSQL(role_retrieval_worker) — opens a pool for the RPC server's request handling
-    let embedder_pool = RetrievalWorkerDbPool::connect(dsn).await.map_err(|_| {
+    let embedder_pool = connect_pool(dsn).await.map_err(|_| {
         Outcome::Runtime(
             "retrieval worker database role connection failed (embedder pool)".to_owned(),
         )
@@ -824,11 +839,9 @@ async fn build_embedder(
 mod rpc_mode {
     use std::sync::Arc;
 
-    use humaux_adapters::postgres::RetrievalWorkerDbPool;
-
     use super::{
-        Outcome, SERVE_RPC_METRICS_ADDR, build_embedding_provider, build_scanner, ops_listener,
-        parse, required,
+        Outcome, SERVE_RPC_METRICS_ADDR, build_embedding_provider, build_scanner, connect_pool,
+        ops_listener, parse, required,
     };
     use humaux_retrieval_worker::rerank;
     use humaux_retrieval_worker::rpc::{RpcState, router_with_rerank};
@@ -879,7 +892,7 @@ mod rpc_mode {
             build_embedding_provider(&dsn, dimension).await?;
         let scanner = Arc::new(build_scanner()?);
         // dep: PostgreSQL(role_retrieval_worker) — opens a pool for the readiness check
-        let calls = RetrievalWorkerDbPool::connect(&dsn).await.map_err(|_| {
+        let calls = connect_pool(&dsn).await.map_err(|_| {
             Outcome::Runtime(
                 "retrieval worker database role connection failed (rpc pool)".to_owned(),
             )

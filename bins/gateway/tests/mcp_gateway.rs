@@ -4,7 +4,7 @@
 //!   humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio,
 //!   uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events,
 //!   control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events,
-//!   private.evidence_affects, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants,
+//!   private.evidence_affects, private.evidence_sources, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants,
 //!   public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys,
 //!   control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains,
 //!   control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events,
@@ -16417,4 +16417,77 @@ fn subject_guard_runs_only_for_linked_memories() {
             );
         },
     );
+}
+
+/// §52 / ADR-0098: tenant row counts and immutable sourced payload bytes for G-M06-8b.
+fn sourced_wire_state(handle: &mut Handle) -> ([i64; 5], Value) {
+    tokio::task::block_in_place(|| {
+        let row = handle.admin.query_one(
+            "SELECT (SELECT count(*) FROM private.evidence_objects WHERE tenant_id=$1), \
+             (SELECT count(*) FROM private.evidence_sources WHERE tenant_id=$1), \
+             (SELECT count(*) FROM control.operation_receipts WHERE tenant_id=$1), \
+             (SELECT count(*) FROM projection.stream_log WHERE tenant_id=$1), \
+             (SELECT count(*) FROM ops.outbox WHERE tenant_id=$1 AND event_type='EVIDENCE_ACCEPTED'), \
+             (SELECT coalesce(jsonb_agg(jsonb_build_array(encode(eo.payload_sha256,'hex'), \
+                 encode(s.payload_sha256,'hex'), e.payload) ORDER BY eo.evidence_id), '[]')::text \
+              FROM private.evidence_objects eo JOIN private.evidence_sources s \
+              ON s.tenant_id=eo.tenant_id AND s.evidence_id=eo.evidence_id \
+              JOIN private.events e ON e.event_id=eo.evidence_id \
+              WHERE eo.tenant_id=$1)",
+            &[&handle.tenant_id],
+        ).expect("source state");
+        (
+            std::array::from_fn(|i| row.get(i)),
+            serde_json::from_str(&row.get::<_, String>(5)).expect("stored payloads"),
+        )
+    })
+}
+
+/// G-M06-8b (§52 / ADR-0098): a changed EmailMessage version preserves its typed wire refusal and original bytes.
+#[test]
+fn native_mcp_sourced_put_source_version_conflict() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>("native_mcp_sourced_conflict", |mut handle| {
+        handle.assert_gateway_login();
+        let prefix = format!("m06{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "s".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWrite,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            16,
+        );
+        let rt = handle.rt.handle().clone();
+        let runtime = rt.block_on(handle.fresh_runtime()).expect("source runtime");
+        let app = application(&handle, runtime);
+        rt.block_on(async {
+            let (address, server) = start(app).await;
+            let headers = tool_call_headers("remember", credential.bearer.as_str());
+            let before = sourced_wire_state(&mut handle).0;
+            let put = |id, content, key| rpc(id, "tools/call", call_params("remember", json!({
+                "operation":"put", "content":content, "idempotency_key":key,
+                "visibility_class":"USER_PRIVATE",
+                "source":{"kind":"EmailMessage", "object_key":"synthetic-message", "version":"v1"}
+            })));
+            let original = "original email payload";
+            let (status, first) = raw_request(address, &headers, &put(1, original, "source-original")).await;
+            assert_eq!(status, 200, "{first}");
+            assert_tool_response(&first, ToolName::Remember);
+            let accepted = sourced_wire_state(&mut handle);
+            assert_eq!(accepted.0, before.map(|n| n + 1), "one row in each acceptance table");
+            let hash = payload_sha256(serde_json::to_string(original).unwrap().as_bytes()).to_hex();
+            assert_eq!(accepted.1, json!([[hash, hash, original]]), "exact original payload and both hashes");
+            let (status, conflict) = raw_request(address, &headers, &put(2, "changed email payload", "source-changed")).await;
+            assert_eq!(status, 200, "{conflict}");
+            assert_eq!(conflict["result"]["isError"], true);
+            assert_eq!(conflict["result"]["structuredContent"], json!({
+                "code":"CONFLICT", "reason":1301, "reason_label":"SOURCE_VERSION_CONFLICT"
+            }), "G-M06-8b exact sourced conflict wire");
+            assert_eq!(sourced_wire_state(&mut handle), accepted, "refusal changes no rows or payload bytes");
+            stop_server(server).await.expect("server shutdown");
+        });
+    });
 }
