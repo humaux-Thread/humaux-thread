@@ -1,5 +1,5 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-gateway, humaux-protocol,
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, serde_json, time, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(any) w=[control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.tenants, control.users]
@@ -184,6 +184,7 @@ fn guard_settings() -> GuardSettings {
     }
 }
 fn serve(h: &Handle, max: u64) -> SocketAddr {
+    // dep: pg-connect PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
             .expect("gateway pool");

@@ -1,5 +1,5 @@
 //! `gateway::tests::as_metadata` — G-M02-14 exact native AS metadata golden and capability sets.
-//! Depends-on: crates=[humaux-gateway, serde_json]; services=[]; env=[]; modules=[gateway::oauth_http]
+//! Depends-on: crates=[serde_json]; services=[]; env=[]; modules=[gateway::oauth_http]
 //! Called-by: [cargo-test]
 //! Invariants: [byte-equal golden; exact capability and scope sets; unsupported endpoints are absent]
 //! Spec: M02 D9; RFC 8414; MCP 2026-07-28; ADR-0125

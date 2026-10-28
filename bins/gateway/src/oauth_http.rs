@@ -1,5 +1,5 @@
 //! `gateway::oauth_http` — M02 token exchange and authorization-server metadata.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, rand, serde, serde_json, time, uuid];
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, rand, serde, serde_json, time];
 //!   services=[]; env=[]; modules=[adapters::oauth_repo, adapters::postgres, application::oauth,
 //!   application::signed_token, domain::error, gateway::auth_pages, gateway::guard]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
