@@ -1,0 +1,28 @@
+# §46.1 / M04 D11: no existing rows are rewritten.
+migration_id = "0294_cost_margin_view"
+class = "EXPAND_CONTRACT"
+
+precheck = """
+select to_regclass('ops.tenant_cost_events') is not null
+  and to_regclass('control.billing_payments') is not null
+  and to_regclass('ops.tenant_margin_v') is null as precheck_ok
+"""
+
+postcheck = """
+select exists (
+  select 1 from information_schema.columns
+  where table_schema='ops' and table_name='tenant_cost_events' and column_name='period'
+    and column_default is null and is_nullable='NO'
+) and exists (
+  select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+  where n.nspname='ops' and c.relname='tenant_margin_v' and c.relkind='v'
+    and c.relowner='role_migration_owner'::regrole
+    and c.reloptions @> array['security_barrier=true']
+) as postcheck_ok
+"""
+
+rollback_or_forward_fix = """
+rollback: DROP VIEW ops.tenant_margin_v;
+ALTER TABLE ops.tenant_cost_events ALTER COLUMN period SET DEFAULT date_trunc('month', now())::date;
+"""
+backup_restore_requirement = "none (metadata-only view and removal of a default; existing rows unchanged)."

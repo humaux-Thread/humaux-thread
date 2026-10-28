@@ -5401,6 +5401,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::cost_repo`
 
 executed by:
 
@@ -7041,6 +7042,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
+- (no process): `adapters::tests::cost_repo`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::entitlement_projector`
@@ -8900,13 +8902,23 @@ executed by:
 
 ### `ops.tenant_cost_events`
 read by:
+- (no process): `adapters::tests::cost_repo`
 
 written by:
+- (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
 - process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
+
+executed by:
+
+### `ops.tenant_margin_v`
+read by:
+- (no process): `adapters::tests::cost_repo`
+
+written by:
 
 executed by:
 
@@ -12546,6 +12558,7 @@ executed by:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_repo`
 - `adapters::coord_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_repo`
@@ -12681,6 +12694,7 @@ executed by:
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
+- `adapters::tests::cost_repo`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -12988,6 +13002,7 @@ executed by:
 - `xtask::soak`
 
 ### `PostgreSQL(role_migration_owner)`
+- `adapters::tests::cost_repo`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::phase9_independence_attestation`
@@ -13006,6 +13021,7 @@ executed by:
 - `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_repo`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13340,6 +13356,7 @@ modules naming it:
 - `adapters::coord_repo`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -13401,6 +13418,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13487,6 +13505,7 @@ modules naming it:
 - `adapters::coord_repo`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -13551,6 +13570,7 @@ modules naming it:
 - `adapters::tests::contribution_scan`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -14200,6 +14220,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -14535,6 +14556,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -14645,6 +14667,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -18463,6 +18486,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/core_never_auto.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/cost_repo.rs`
 db-bound (default run): yes
 
 services (computed):
