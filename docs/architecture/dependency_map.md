@@ -16165,8 +16165,8 @@ modules naming it:
 - `billing-worker::tests::fetch`
 - `tests`
 
-### humaux-billing-worker → `humaux-infra-network` (normal)
-why: transport URL and method types without a second client (§83.4)
+### humaux-billing-worker → `url` (normal)
+why: the existing canonical URL parser; no Layer 0 dependency or second client (§83.4)
 
 modules naming it:
 - `billing-worker::creem`
