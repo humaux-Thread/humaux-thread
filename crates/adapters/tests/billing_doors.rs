@@ -133,7 +133,7 @@ fn apply_is_idempotent() {
         );
         let before: Value = h
             .admin
-            .query_one("SELECT to_jsonb(s) FROM control.subscriptions s", &[])
+            .query_one("SELECT jsonb_build_object('subscription',to_jsonb(s),'snapshot',(SELECT to_jsonb(e) FROM control.entitlement_snapshots e)) FROM control.subscriptions s", &[])
             .unwrap()
             .get(0);
         assert_eq!(
@@ -151,7 +151,7 @@ fn apply_is_idempotent() {
         );
         let after: Value = h
             .admin
-            .query_one("SELECT to_jsonb(s) FROM control.subscriptions s", &[])
+            .query_one("SELECT jsonb_build_object('subscription',to_jsonb(s),'snapshot',(SELECT to_jsonb(e) FROM control.entitlement_snapshots e)) FROM control.subscriptions s", &[])
             .unwrap()
             .get(0);
         assert_eq!(before, after);
