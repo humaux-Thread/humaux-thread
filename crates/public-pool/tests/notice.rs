@@ -11,7 +11,8 @@
 //! Invariants: [every test owns one throwaway tenant, user and the notice versions it publishes, removed on drop; the notice
 //!   table is global, so the binary runs in nextest's serial-public-notice group, and plain `cargo test` or targeted.yml must
 //!   pass `-- --test-threads=1` (test (i) needs an empty notice table); a missing database is a visible §79.2 skip, a FAIL
-//!   under HUMAUX_REQUIRE_DB]
+//!   under HUMAUX_REQUIRE_DB; a notice's scope categories are unit-type names, so the fixture publishes 'FIX' (migration 0286,
+//!   ADR-0088 amendment of M20-5)]
 //! Spec: Baseline §12.1.1; §78.2; §79.2; ADR-0088 D-A; D-B; D-C
 
 use std::collections::BTreeSet;
@@ -164,7 +165,7 @@ impl Handle {
                 "INSERT INTO control.contribution_notices \
                    (notice_version, text_sha256, scope_categories, licence_text, licence_code, published_at) \
                  SELECT coalesce(max(notice_version), 0) + 1, sha256(convert_to(gen_random_uuid()::text, 'UTF8')), \
-                        ARRAY['PRIVATE_MEMORY'], 'CC-BY-4.0', 'MIT', clock_timestamp() \
+                        ARRAY['FIX'], 'CC-BY-4.0', 'MIT', clock_timestamp() \
                    FROM control.contribution_notices RETURNING notice_version",
                 &[],
             )
