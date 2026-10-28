@@ -12,8 +12,10 @@ not_applicable = { owner = "M21-5", reason = "missing" }
 ["orphan relation scan"]
 not_applicable = { owner = "M21-6", reason = "missing" }
 
+# ADR-0123 D3: report-only. The `AuthorityI4` task appends the owner definer's count to ops.repair_findings and sets the
+# authority_i4_violations gauge; nothing on its path updates a row (Baseline §65 "只报数，不 UPDATE", G-M21-3).
 ["authority superseded_by consistency scan"]
-not_applicable = { owner = "M21-2", reason = "missing" }
+task = "AuthorityI4"
 
 ["projection watermark audit"]
 not_applicable = { owner = "M21-5", reason = "missing" }
