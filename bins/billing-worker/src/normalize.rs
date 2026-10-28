@@ -1,6 +1,6 @@
 //! `billing-worker::normalize` — provider envelope boundary (§71.2).
 //! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::billing, domain::error, domain::plan]
-//! Called-by: [tests]
+//! Called-by: [billing-worker::creem, tests]
 //! Invariants: [no checkout-response money; no status inferred from event type; missing amounts fail closed]
 //! Spec: Baseline §71.2; §71.3; §52; §78.2
 
@@ -25,8 +25,8 @@ pub enum EventKind {
 /// §71.3: integer cents and millisecond period bounds from payload/fetch only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Money {
-    /// §71.3: never defaults to zero.
-    pub amount_cents: i64,
+    /// §71.3: M04-11 stores the explicitly named amount for each direction.
+    pub amount: PaymentAmount,
     /// §78.2: the existing USD-only vocabulary.
     pub currency: Currency,
     /// §71.3: absent tax stays unknown.
@@ -35,8 +35,28 @@ pub struct Money {
     pub period_start: i64,
     /// §71.3: transaction period end in epoch milliseconds.
     pub period_end: i64,
-    /// §71.3: event-specific refund, never aggregate refunded_amount.
-    pub refund_amount: Option<i64>,
+}
+
+/// §71.3: M04-11 writes charged_amount, refund_amount or disputed_amount respectively.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaymentAmount {
+    /// §71.3: CHARGE stores charged_amount.
+    Charge {
+        /// §71.3: charged cents, never defaulted.
+        charged_amount: i64,
+    },
+    /// §71.3: REFUND stores refund_amount, never original_transaction_amount.
+    Refund {
+        /// §71.3: event-specific reversal, not aggregate refunded_amount.
+        refund_amount: i64,
+        /// §71.3: original charge retained separately.
+        original_transaction_amount: i64,
+    },
+    /// §71.3: CHARGEBACK stores disputed_amount from the dispute object.
+    Chargeback {
+        /// §71.3: disputed cents, independent of the original transaction amount.
+        disputed_amount: i64,
+    },
 }
 
 /// §71.3: normalization does not confer signature verification or deduplication.
@@ -52,6 +72,12 @@ pub struct NormalizedEvent {
     pub kind: EventKind,
     /// §71.3: present exactly for payment events.
     pub money: Option<Money>,
+    /// §71.3: M04-11 stores CHARGE transaction id, REFUND refund id, CHARGEBACK dispute id
+    /// in the ledger UNIQUE key; absent on non-payments (M04 ledger-ref ruling).
+    pub provider_txn_ref: Option<String>,
+    /// §71.3: original transaction id for REFUND/CHARGEBACK linking only, never their ledger key.
+    /// Absent on CHARGE and non-payments (M04 ledger-ref ruling).
+    pub original_txn_ref: Option<String>,
 }
 
 /// §71.3: caller supplies the fetched subscription status, never the event type.
@@ -76,20 +102,13 @@ pub fn normalize(
     };
     let object = &envelope["object"];
     let money = if let EventKind::Payment(payment) = kind {
-        let source = match event_type {
-            "checkout.completed" => &object["order"],
-            "subscription.paid" => &object["last_transaction"],
-            _ => &object["transaction"],
-        };
+        let (source, reference) = transaction_source(&envelope)?;
+        if let Some(fetched) = fetched_transaction
+            && text(fetched, "id")? != reference
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
         let field = |key: &str| source.get(key).or_else(|| fetched_transaction?.get(key));
-        let amount_source = if payment == PaymentKind::Chargeback {
-            object
-        } else {
-            source
-        };
-        let amount = amount_source
-            .get("amount")
-            .or_else(|| fetched_transaction?.get("amount"));
         let currency = if payment == PaymentKind::Chargeback {
             object
                 .get("currency")
@@ -107,7 +126,18 @@ pub fn normalize(
             return Err(ErrorCode::InvalidInput);
         }
         Some(Money {
-            amount_cents: cents(amount)?,
+            amount: match payment {
+                PaymentKind::Charge => PaymentAmount::Charge {
+                    charged_amount: cents(field("amount"))?,
+                },
+                PaymentKind::Refund => PaymentAmount::Refund {
+                    refund_amount: cents(object.get("refund_amount"))?,
+                    original_transaction_amount: cents(field("amount"))?,
+                },
+                PaymentKind::Chargeback => PaymentAmount::Chargeback {
+                    disputed_amount: cents(object.get("amount"))?,
+                },
+            },
             currency: Currency::parse_wire(
                 currency
                     .and_then(Value::as_str)
@@ -117,11 +147,6 @@ pub fn normalize(
             tax_amount,
             period_start,
             period_end,
-            refund_amount: if payment == PaymentKind::Refund {
-                Some(cents(object.get("refund_amount"))?)
-            } else {
-                None
-            },
         })
     } else {
         None
@@ -131,8 +156,33 @@ pub fn normalize(
         event_type: event_type.to_owned(),
         created_at: cents(envelope.get("created_at"))?,
         kind,
+        provider_txn_ref: match kind {
+            EventKind::Payment(PaymentKind::Charge) => {
+                Some(transaction_source(&envelope)?.1.to_owned())
+            }
+            EventKind::Payment(_) => Some(text(object, "id")?.to_owned()),
+            _ => None,
+        },
+        original_txn_ref: match kind {
+            EventKind::Payment(PaymentKind::Refund | PaymentKind::Chargeback) => {
+                Some(transaction_source(&envelope)?.1.to_owned())
+            }
+            _ => None,
+        },
         money,
     })
+}
+
+/// §71.3: checkout order ids must never substitute for transaction ids.
+pub(crate) fn transaction_source(envelope: &Value) -> Result<(&Value, &str), ErrorCode> {
+    let object = &envelope["object"];
+    let (source, key) = match text(envelope, "eventType")? {
+        "checkout.completed" => (&object["order"], "transaction"),
+        "subscription.paid" => (&object["last_transaction"], "id"),
+        "refund.created" | "dispute.created" => (&object["transaction"], "id"),
+        _ => return Err(ErrorCode::InvalidInput),
+    };
+    Ok((source, text(source, key)?))
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, ErrorCode> {

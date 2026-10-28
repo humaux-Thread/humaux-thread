@@ -1157,11 +1157,18 @@ dependencies = [
 name = "humaux-billing-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
  "hex",
  "hmac 0.13.0",
+ "humaux-application",
  "humaux-domain",
+ "humaux-infra-egress",
  "serde_json",
  "sha2 0.11.0",
+ "time",
+ "tokio",
+ "url",
  "uuid",
 ]
 
