@@ -1,7 +1,7 @@
 //! `gateway::main` — `humaux-gateway` 进程入口（最小必要进程集见 §4.2；admin 探针契约见 §4.4）。
 //! Depends-on: crates=[axum, humaux-telemetry, tokio]; services=[HTTP(loopback)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_BIND_ADDR]; modules=[gateway::bootstrap,
-//!   gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::guard, gateway::status, humaux-telemetry, telemetry::metrics]
+//!   gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::guard, gateway::status, humaux-telemetry, telemetry::metrics]
 //! Called-by: [process(humaux-gateway)]
 //! Invariants: [/readyz flips to 503 and the accept loop keeps draining for DRAIN_ANNOUNCE_WINDOW before closing, so a k8s readinessProbe never sees ECONNREFUSED confused with a crash; the ops listener stays up through the drain window and closes after it; `--metrics-families` and `--version` read no configuration; `--readyz` / `--livez` read only HUMAUX_GATEWAY_BIND_ADDR; no argument = serve, any other argument = usage and exit 2; a configuration error exits 2, a runtime failure 1 (ADR-0066 D-N)]
 //! Spec: Baseline §4.2; §4.4; §67.2; ADR-0037; ADR-0061 D-B; ADR-0061 D-F; ADR-0065 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0125

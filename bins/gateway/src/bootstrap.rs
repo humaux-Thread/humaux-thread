@@ -3,7 +3,7 @@
 //!   (ADR-0031 D-A / ADR-0032 D-A, §34.0.1 Q9: one process serves every pair; no registry table, no per-process
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
@@ -2304,23 +2304,20 @@ mod tests {
     #[test]
     fn webhook_provider_requires_a_nonempty_redacted_secret() {
         let mut values = raw();
-        values.insert(BILLING_PROVIDERS.into(), r#"{"creem":{"header":"creem-signature","secret_env":"HUMAUX_TEST_WEBHOOK_SECRET","event_id_pointer":"/id","event_type_pointer":"/eventType","max_body_bytes":65536}}"#.into());
+        values.insert(BILLING_PROVIDERS.into(), r#"{"creem":{"header":"creem-signature","secret_env":"BILLING_SIGNING_KEY","event_id_pointer":"/id","event_type_pointer":"/eventType","max_body_bytes":65536}}"#.into());
         for secret in [None, Some("")] {
             if let Some(secret) = secret {
-                values.insert("HUMAUX_TEST_WEBHOOK_SECRET".into(), secret.into());
+                values.insert("BILLING_SIGNING_KEY".into(), secret.into());
             }
             let error = GatewayBootstrap::from_raw(values.clone())
                 .err()
                 .expect("boot refusal");
             assert_eq!(
                 error.to_string(),
-                "gateway bootstrap configuration HUMAUX_TEST_WEBHOOK_SECRET: missing or empty"
+                "gateway bootstrap configuration BILLING_SIGNING_KEY: missing or empty"
             );
         }
-        values.insert(
-            "HUMAUX_TEST_WEBHOOK_SECRET".into(),
-            "webhook-secret-canary".into(),
-        );
+        values.insert("BILLING_SIGNING_KEY".into(), "webhook-secret-canary".into());
         let boot = GatewayBootstrap::from_raw(values).expect("enabled boot");
         assert_eq!(
             boot.billing_webhook
@@ -2446,7 +2443,9 @@ mod tests {
         assert_eq!(dynamic[0].get("value"), None);
         assert_eq!(
             rows.iter()
-                .filter(|r| r["name"] == "HUMAUX_TEST_WEBHOOK_SECRET")
+                .filter(|r| r["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with("TEST_WEBHOOK_SECRET")))
                 .count(),
             0
         );
@@ -2454,7 +2453,7 @@ mod tests {
             .split("use crate::")
             .next()
             .unwrap();
-        assert_eq!(header.matches("HUMAUX_TEST_WEBHOOK_SECRET").count(), 0);
+        assert_eq!(header.matches("TEST_WEBHOOK_SECRET").count(), 0);
     }
 
     fn raw() -> BTreeMap<String, String> {
