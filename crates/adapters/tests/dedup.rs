@@ -241,3 +241,80 @@ fn ineligible_targets_are_excluded() {
         });
     }
 }
+
+#[test]
+fn concurrent_expiry_is_rechecked_before_proposal() {
+    run_db_fixture::<Fixture, _>("m15_p2_444_expiry", |mut h| {
+        let a = auth(&mut h);
+        seed(&mut h, b"same", true, None);
+        let (expired, _) = seed(&mut h, b"same", true, None);
+        let mut owner = h.owner_client().expect("expiry owner connection");
+        let mut expiry = owner.transaction().expect("expiry transaction");
+        let holder: i32 = expiry
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("expiry backend")
+            .get(0);
+        assert_eq!(
+            expiry
+                .execute(
+                    "UPDATE private.memory_records SET status='expired' WHERE memory_id=$1",
+                    &[&expired],
+                )
+                .expect("hold uncommitted expiry"),
+            1
+        );
+        h.rt.block_on(async {
+            let mut conn = PgConnection::connect(h.gateway_dsn_for_process())
+                .await
+                .expect("gateway scan connection");
+            sqlx::query("SET statement_timeout='15s'")
+                .execute(&mut conn)
+                .await
+                .expect("bounded scanner");
+            let scanner: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut conn)
+                .await
+                .expect("scanner backend");
+            let scan_auth = a.clone();
+            let task = tokio::spawn(async move {
+                let mut tx = conn.begin().await.expect("scan transaction");
+                let result = dedup_repo::scan_and_propose_in_txn(&mut tx, &scan_auth)
+                    .await
+                    .expect("concurrent scan");
+                tx.commit().await.expect("commit scan");
+                result
+            });
+            // §79.2: observe the real row-lock barrier before committing expiry, never schedule by sleep.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let blockers: Vec<i32> = expiry
+                    .query_one("SELECT pg_blocking_pids($1)", &[&scanner])
+                    .expect("observe scan barrier")
+                    .get(0);
+                if blockers == vec![holder] {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "scanner never waited for expiry"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            expiry.commit().expect("expiry wins before proposal");
+            let result = task.await.expect("scanner joined within statement timeout");
+            assert_eq!(
+                result,
+                dedup_repo::DedupScan {
+                    proposed: vec![],
+                    skipped: 1
+                },
+                "M15-P2-444: expired target must not enter a duplicate candidate"
+            );
+        });
+        assert_eq!(
+            h.rt.block_on(candidate_repo::list(&h.runtime, &a))
+                .expect("list"),
+            vec![]
+        );
+    });
+}

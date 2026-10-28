@@ -29,22 +29,26 @@ pub async fn scan_and_propose_in_txn(
     auth: &AuthorizationScope,
 ) -> Result<DedupScan, ErrorCode> {
     let workspace = confirm_token_repo::set_write_authorization_local(txn, auth).await?;
+    // §11.6: lock eligible rows before proposing; a concurrent expiry must recheck the scan predicate.
     // dep: PostgreSQL(any) — source identities are unique per owner; RLS bounds both source and target reads
     let groups = sqlx::query(
         "WITH groups AS (
            SELECT tenant_id,owner_user_id,payload_sha256 FROM private.evidence_sources
            GROUP BY tenant_id,owner_user_id,payload_sha256 HAVING count(*) > 1
          ) SELECT g.payload_sha256, ARRAY(
-           SELECT DISTINCT m.memory_id FROM private.evidence_sources s
-           JOIN private.memory_evidence me ON me.evidence_id=s.evidence_id AND me.role='PRIMARY'
-           JOIN private.memory_records m ON m.memory_id=me.memory_id AND m.tenant_id=s.tenant_id
-           WHERE s.tenant_id=g.tenant_id AND s.owner_user_id=g.owner_user_id
-             AND s.payload_sha256=g.payload_sha256
+           SELECT m.memory_id FROM private.memory_records m
+           WHERE m.tenant_id=g.tenant_id
+             AND EXISTS (
+               SELECT 1 FROM private.evidence_sources s
+               JOIN private.memory_evidence me ON me.evidence_id=s.evidence_id AND me.role='PRIMARY'
+               WHERE me.memory_id=m.memory_id AND s.tenant_id=g.tenant_id
+                 AND s.owner_user_id=g.owner_user_id AND s.payload_sha256=g.payload_sha256
+             )
              AND m.status='active' AND m.archived_at IS NULL AND m.note_kind IS NULL
              AND private.memory_subject_visibility_ok(m.tenant_id,m.memory_id)
              AND private.visibility_allowed(m.visibility_class,true,
                    m.visibility_user_id=$1,m.visibility_workspace_id=$2)
-           ORDER BY m.memory_id
+           ORDER BY m.memory_id FOR UPDATE OF m
          ) AS targets FROM groups g ORDER BY g.payload_sha256",
     )
     .bind(auth.user_id().map(|id| id.0))
