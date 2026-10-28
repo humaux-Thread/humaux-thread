@@ -446,6 +446,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -1420,6 +1421,14 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `telemetry::metrics`
 - service `HTTP(loopback)`
 
+### process(humaux-billing-worker)
+
+#### `billing-worker::main`
+
+#### `billing-worker::mode`
+- env `HUMAUX_BILLING_CREEM_TEST_BASE_URL`
+- env `HUMAUX_BILLING_PROVIDER_MODE`
+
 ### process(humaux-consolidation-worker)
 
 #### `adapters::affect_repo`
@@ -1937,6 +1946,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -2002,6 +2012,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.project_task_relations`
 - writes `private.memory_projects`
 - service `PostgreSQL(any)`
+
+#### `adapters::billing_repo`
+- writes `control.billing_inbox`
+- service `PostgreSQL(role_gateway)`
 
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
@@ -2233,6 +2247,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.card_profile_policies`
 - reads `projection.embedding_fingerprints`
 - reads `projection.memory_vectors`
+- reads `projection.private_memory_points`
+- reads `projection.rebuild_tickets`
 - writes `ops.outbox`
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
@@ -2417,6 +2433,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::authority`
 
+#### `domain::billing`
+
 #### `domain::boundary`
 
 #### `domain::confirm`
@@ -2451,6 +2469,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::note`
 
+#### `domain::plan`
+
 #### `domain::policy`
 
 #### `domain::relation`
@@ -2470,7 +2490,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `gateway::auth_pages`
 
+#### `gateway::billing_webhook`
+
 #### `gateway::bootstrap`
+- env `HUMAUX_BILLING_WEBHOOK_PROVIDERS`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_ADMISSION_CONCURRENCY`
@@ -2587,6 +2610,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS`
 - env `HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS`
 - env `HUMAUX_GATEWAY_UNKNOWN`
+- env `HUMAUX_TEST_WEBHOOK_SECRET`
 - service `PostgreSQL(role_gateway)`
 
 #### `gateway::cached_embedding`
@@ -2666,6 +2690,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -2959,6 +2984,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.card_profile_policies`
 - reads `projection.embedding_fingerprints`
 - reads `projection.memory_vectors`
+- reads `projection.private_memory_points`
+- reads `projection.rebuild_tickets`
 - writes `ops.outbox`
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
@@ -3261,6 +3288,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -4335,6 +4363,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -4746,6 +4775,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.card_profile_policies`
 - reads `projection.embedding_fingerprints`
 - reads `projection.memory_vectors`
+- reads `projection.private_memory_points`
+- reads `projection.rebuild_tickets`
 - writes `ops.outbox`
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
@@ -5000,6 +5031,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -5395,8 +5427,9 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::billing_repo`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `gateway::tests::billing_webhook`
+- process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
 
@@ -7080,6 +7113,7 @@ written by:
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::processing_runs_fingerprint_rerun`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -11337,8 +11371,11 @@ read by:
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::soak`
+- process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-retrieval-worker): `adapters::projection_worker`
 
 written by:
 - (no process): `adapters::tests::private_projection_registry`
@@ -11428,15 +11465,18 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
+- process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::rebuild`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
+- process(humaux-retrieval-worker): `adapters::projection_worker`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
@@ -11520,6 +11560,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -11574,6 +11615,7 @@ executed by:
 
 ### `projection.stream_log`
 read by:
+- (no process): `adapters::processing_status`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -11663,6 +11705,7 @@ written by:
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -11736,6 +11779,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::ledger_frontier`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `gateway::tests::memory_get_frontier`
@@ -12506,6 +12550,7 @@ executed by:
 - `gateway::main`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::exit_codes`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
@@ -12659,6 +12704,7 @@ executed by:
 - `domain::consolidate`
 - `domain::context`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::oauth_flow`
 - `maintenance::migrate`
 - `maintenance::projection_serve`
@@ -12720,6 +12766,7 @@ executed by:
 - `adapters::tests::note_put`
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
 - `adapters::tests::projection_lag`
@@ -12884,6 +12931,7 @@ executed by:
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
@@ -12911,6 +12959,7 @@ executed by:
 - `gateway::mcp_application`
 - `gateway::status`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -13081,6 +13130,7 @@ executed by:
 - `adapters::maintenance_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::rebuild`
@@ -13092,6 +13142,7 @@ executed by:
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13251,6 +13302,9 @@ executed by:
 - `admin::tests::probes`
 - `public-pool::tests::mechanism_observation`
 
+### `subprocess(humaux-billing-worker)`
+- `billing-worker::tests::mode_gate`
+
 ### `subprocess(humaux-consolidation-worker)`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
@@ -13391,6 +13445,7 @@ modules naming it:
 - `adapters::postgres`
 - `adapters::private_inference_rpc`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
@@ -13455,6 +13510,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
@@ -13537,6 +13593,7 @@ modules naming it:
 - `adapters::plan_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
@@ -13618,6 +13675,7 @@ modules naming it:
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
@@ -13670,6 +13728,7 @@ modules naming it:
 - `adapters::context_repo`
 - `adapters::continuity_read`
 - `adapters::exact_census`
+- `adapters::processing_status`
 - `adapters::read_gate`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
@@ -13733,6 +13792,7 @@ modules naming it:
 - `adapters::memory_governance_repo`
 - `adapters::model_call_ledger`
 - `adapters::private_inference_rpc`
+- `adapters::processing_status`
 - `adapters::provisioning`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
@@ -13758,6 +13818,7 @@ modules naming it:
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::reasoning_route_runtime`
 - `adapters::tests::support::continuity_0137_fixture`
@@ -13778,6 +13839,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::memory_governance_repo`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::projection_worker`
 - `adapters::provisioning`
 - `adapters::qdrant`
@@ -13805,6 +13867,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13967,6 +14030,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14000,6 +14064,7 @@ modules naming it:
 - `adapters::memory_governance_repo`
 - `adapters::oauth_repo`
 - `adapters::operation_receipt`
+- `adapters::processing_status`
 - `adapters::quota_repo`
 - `adapters::read_gate`
 - `adapters::tests::core_never_auto`
@@ -14017,6 +14082,7 @@ why: serializable onboarding receipts
 modules naming it:
 - `adapters::maintenance_repo`
 - `adapters::plan_repo`
+- `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::provisioning`
 - `adapters::reasoning_route_onboarding`
@@ -14157,6 +14223,7 @@ modules naming it:
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14266,6 +14333,7 @@ modules naming it:
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
@@ -14397,6 +14465,7 @@ modules naming it:
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14514,6 +14583,7 @@ modules naming it:
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14610,6 +14680,7 @@ modules naming it:
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::projection_claim`
@@ -14703,6 +14774,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
@@ -14752,6 +14824,7 @@ modules naming it:
 - `application::notify`
 - `application::oauth`
 - `application::pin`
+- `application::processing_status`
 - `application::referral`
 - `application::retrieval_embedding_port`
 - `application::session`
@@ -15555,6 +15628,7 @@ modules naming it:
 why: envelope/signals/completeness/handoff/request DTO (de)serialization
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::completeness`
 - `retrieval::envelope`
 - `retrieval::handoff`
@@ -15574,6 +15648,7 @@ modules naming it:
 why: pure domain types (MemoryType, authority, selection) this crate's logic is keyed on
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::compiler`
 - `retrieval::completeness`
 - `retrieval::envelope`
@@ -15596,6 +15671,7 @@ modules naming it:
 why: Handoff::canonical_bytes' sole serialization step (G80-31 byte domain)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
@@ -15606,6 +15682,7 @@ modules naming it:
 why: Handoff::sha256 byte fingerprint (G80-31)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -15614,6 +15691,7 @@ modules naming it:
 why: dataset.tsv sha256 manifest verification in the eval harness
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -16152,6 +16230,7 @@ why: typed PG pools, repositories and wire adapters this package drives
 modules naming it:
 - `gateway::auth`
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -16164,6 +16243,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16184,6 +16264,7 @@ why: use-case layer (ports + orchestration) this package wires
 
 modules naming it:
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::continuity`
@@ -16230,6 +16311,7 @@ modules naming it:
 - `gateway::admission`
 - `gateway::auth`
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::context`
@@ -16243,6 +16325,7 @@ modules naming it:
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16271,6 +16354,7 @@ modules naming it:
 - `gateway::recall`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -16379,11 +16463,13 @@ why: HTTP/UDS server framework
 modules naming it:
 - `gateway::admission`
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::main`
 - `gateway::mcp_application`
 - `gateway::oauth_http`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16402,6 +16488,7 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `gateway::auth_pages`
+- `gateway::bootstrap`
 - `gateway::context`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -16413,6 +16500,7 @@ modules naming it:
 why: JSON payloads and envelopes
 
 modules naming it:
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -16426,6 +16514,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::as_metadata`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16450,6 +16539,7 @@ modules naming it:
 - `gateway::guard`
 - `gateway::memory`
 - `gateway::retrieval_embedding_client`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
@@ -16499,6 +16589,7 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16533,6 +16624,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -16572,6 +16664,7 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16595,6 +16688,7 @@ why: shared DB-bound test harness (skip_or_fail, fixtures)
 modules naming it:
 - `gateway::mcp_application`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16624,6 +16718,7 @@ why: sync PG client for DB-bound test fixtures
 modules naming it:
 - `gateway::mcp_application`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_forget`
@@ -17637,6 +17732,15 @@ default run:
 - UDS
 - subprocess
 
+### `bins/billing-worker/tests/mode_gate.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
+- subprocess
+
 ### `bins/consolidation-worker/tests/consolidation_hop_e2e.rs`
 db-bound (default run): yes
 
@@ -17705,6 +17809,15 @@ services (computed):
 default run:
 
 ### `bins/gateway/tests/auth_pages.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `bins/gateway/tests/billing_webhook.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -18966,6 +19079,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/processing_status.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/project_continuity_0136.rs`
 db-bound (default run): yes
 
@@ -19670,9 +19792,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3410` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3415` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3420` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3516` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3521` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3526` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

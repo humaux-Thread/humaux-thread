@@ -12,7 +12,7 @@
 //!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, domain::dataclass, domain::egress, domain::identity,
 //!   projection::stream, retrieval::completeness]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::context_repo,
+//! Called-by: [adapters::processing_status, adapters::affect_repo, adapters::consolidate_repo, adapters::context_repo,
 //!   adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo,
 //!   adapters::memory_governance_repo, adapters::projection_worker, adapters::read_gate, adapters::remember, adapters::retrieve,
 //!   adapters::serving_repo, maintenance::drill, maintenance::serve, retrieval-worker::main, tests,
