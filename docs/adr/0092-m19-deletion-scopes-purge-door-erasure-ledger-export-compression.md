@@ -308,3 +308,6 @@ compression without notice; deleting old memories.
   (`ops.retrieval_query_log`).
 - Module design note M19 §4 (D1–D11), §8 (gates), §10 (UNKNOWNs), §12 (owner questions and red lines); the M23 v2
   follow-up. Module design notes M17 (v2) and M23 (v2) as cited by their module names.
+
+Amended (M19-6): memory.forget is Mcp; round 1 = freeze + preview + token bound to (request_id, confirmation_digest); round 2 = request_id + confirm_token → accept_in_txn; the legacy memory_delete maps to round 1 {memory_id} and is never auto-confirmed (M25-10b)
+M19-6 red records: PENDING (targeted.yml r1–r5).

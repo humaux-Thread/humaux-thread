@@ -12,7 +12,7 @@
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
-//! Invariants: [the canonical catalog validates wire arguments before dispatch runs; a valid contract with no local implementation is denied by GatewayGuard, never silently no-op'd]
+//! Invariants: [no path mints and accepts in one call; the canonical catalog validates wire arguments before dispatch runs; a valid contract with no local implementation is denied by GatewayGuard, never silently no-op'd]
 //! Spec: Baseline §33.10; §34.0.1; §78.1; ADR-0030; ADR-0031
 //!
 //! The canonical catalog validates wire arguments before this fixed dispatch
@@ -113,7 +113,7 @@ use crate::{
 /// have had working dispatch arms since ADR-0025/ADR-0026, while this array still said 15 —
 /// nothing read it, so nothing noticed. The new gate also compares it against the `invoke`
 /// dispatch below, which is what makes that class of drift impossible to repeat.
-pub const SUPPORTED_OPERATION_KEYS: [&str; 28] = [
+pub const SUPPORTED_OPERATION_KEYS: [&str; 29] = [
     "remember.put",
     "memory.note_put",
     "recall.search",
@@ -134,6 +134,7 @@ pub const SUPPORTED_OPERATION_KEYS: [&str; 28] = [
     DestructiveOp::MemoryCorrect.operation_key(),
     DestructiveOp::MemoryConfirm.operation_key(),
     DestructiveOp::MemoryReject.operation_key(),
+    DestructiveOp::MemoryForget.operation_key(),
     SubjectWriteOp::Register.operation_key(),
     SubjectWriteOp::LinkKey.operation_key(),
     AffectWriteOp::Annotate.operation_key(),
@@ -506,6 +507,87 @@ impl GatewayMcpApplication {
         });
         self.catalog.validate_output(ToolName::Memory, &value)?;
         output(value)
+    }
+
+    /// ADR-0092 D-B / §33.10: disjoint root-preview and request-token accept shapes, never auto-confirmed.
+    async fn memory_forget(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        raw_arguments: &str,
+        value: &Value,
+    ) -> Result<ToolOutput, ErrorCode> {
+        let roots = value.get("memory_id").is_some() ^ value.get("evidence_ids").is_some();
+        let accept = value.get("request_id").is_some() && value.get("confirm_token").is_some();
+        if !(roots && value.get("request_id").is_none() && value.get("confirm_token").is_none()
+            || accept && value.get("memory_id").is_none() && value.get("evidence_ids").is_none())
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let Some(ttl) = self.confirm_token_ttl else {
+            return self.reject_unsupported(context, operation, None).await;
+        };
+        let pool = self.runtime_pool.clone();
+        let bootstrap = self.context_bootstrap.clone();
+        let result = if accept {
+            let request_id = wire_uuid(value, "request_id")?;
+            let token = ConfirmToken::decode(
+                value["confirm_token"]
+                    .as_str()
+                    .ok_or(ErrorCode::InvalidInput)?,
+            )?;
+            self.guard
+                .run_confirmed_write(
+                    context,
+                    operation,
+                    None,
+                    raw_arguments,
+                    ConfirmGate {
+                        op: DestructiveOp::MemoryForget,
+                        target_id: request_id,
+                        successor_id: None,
+                        presented: Some(token),
+                        ttl,
+                        request_sha256: None,
+                    },
+                    move |write| memory::forget_accept(pool, write, bootstrap, request_id),
+                )
+                .await?;
+            json!({"forgotten": true, "deletion_request_id": request_id, "restore_supported": false})
+        } else {
+            let memory_id = value
+                .get("memory_id")
+                .map(|_| wire_uuid(value, "memory_id"))
+                .transpose()?;
+            let evidence_ids: Vec<Uuid> = serde_json::from_value(
+                value
+                    .get("evidence_ids")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            )
+            .map_err(|_| ErrorCode::InvalidInput)?;
+            let (token, expires, request_id, preview) = self
+                .guard
+                .run_confirmed_write_prepared(context, operation, ttl, move |request| {
+                    memory::forget_prepare(pool, request, bootstrap, memory_id, evidence_ids)
+                })
+                .await?;
+            json!({"confirmation_required": true, "confirm_token": token.encode(),
+                "operation": operation.operation_key(), "target": {"deletion_request_id": request_id},
+                "expires_at": rfc3339(expires)?, "preview": preview})
+        };
+        self.catalog.validate_output(ToolName::Memory, &result)?;
+        let mut rendered = output(result)?;
+        if roots {
+            rendered.text = format!(
+                "{} memories, {} evidence; not restorable. Next call: {}",
+                rendered.structured_content["preview"]["memory_count"],
+                rendered.structured_content["preview"]["evidence_count"],
+                json!({"action":"forget", "request_id":rendered.structured_content["target"]["deletion_request_id"],
+                    "confirm_token":rendered.structured_content["confirm_token"]})
+            );
+        }
+        Ok(rendered)
     }
 
     /// ADR-0067 D-C: the business refusal `AUTHORITY_CEILING_EXCEEDED` (`isError`), nothing stored.
@@ -2372,6 +2454,10 @@ impl McpApplication for GatewayMcpApplication {
             }
             key if key == DestructiveOp::MemoryConfirm.operation_key() => {
                 self.memory_confirm(context, &operation, &raw_arguments, &value)
+                    .await
+            }
+            key if key == DestructiveOp::MemoryForget.operation_key() => {
+                self.memory_forget(context, &operation, &raw_arguments, &value)
                     .await
             }
             key if key == DestructiveOp::MemoryReject.operation_key() => {

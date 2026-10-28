@@ -5,7 +5,7 @@
 //!   overlay reads a literal/EXACT-channel lane needs ([`count_excluding_tombstoned`], [`state_of`]), sharing this
 //!   module's own `state <> 'TOMBSTONED'` knowledge instead of a caller re-deriving it.
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::confirm_token_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::confirm, domain::error, domain::identity, projection::stream]
-//! Called-by: [tests]
+//! Called-by: [gateway::memory, tests]
 //! Invariants: [maintenance calls open their own transaction and set humaux.tenant_id first; request calls use the caller-owned transaction and set its AuthorizationScope; maintenance tombstones and
 //!   plan-step bookkeeping run on role_maintenance; accept re-judges the frozen roots (never the whole closure) under its own AuthorizationScope before the gateway-only owner door (#346); a PG error aborts the step so the plan stays resumable; a
 //!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes

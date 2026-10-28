@@ -1,7 +1,7 @@
 //! `application::forget` — T4.8: §37 `DeletionPlan` step order, deletion state machine, and `DeletionGraph`
 //!   provenance closure.
 //! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::forget_repo, tests]
+//! Called-by: [gateway::memory, adapters::forget_repo, tests]
 //! Invariants: [a manifest hash is a function of the SET of (kind, id) targets only: order- and duplicate-insensitive, and
 //!   one target more or less changes it; an ImpactPreview is built only from already-visibility-filtered inputs, so a
 //!   count or a title of an unreadable object cannot be expressed]

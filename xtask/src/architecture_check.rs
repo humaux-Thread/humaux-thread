@@ -9065,7 +9065,7 @@ fn w2_continuity_contract_from(
         );
     }
     for needle in [
-        "SUPPORTED_OPERATION_KEYS: [&str; 28]",
+        "SUPPORTED_OPERATION_KEYS: [&str; 29]",
         "\"continuity.get\" =>",
         "\"continuity.publish\" =>",
     ] {
@@ -12676,7 +12676,7 @@ runs:
             (5, "WorkspaceAdmission::PreserveContinuityFilter => None"),
             (5, "operation.operation_key() != \"continuity.get\""),
             (6, "catalog.validate_output(ToolName::Continuity, &value)"),
-            (6, "SUPPORTED_OPERATION_KEYS: [&str; 28]"),
+            (6, "SUPPORTED_OPERATION_KEYS: [&str; 29]"),
             (6, "\"continuity.get\" =>"),
             (6, "\"continuity.publish\" =>"),
         ] {
@@ -12866,8 +12866,8 @@ runs:
             .find(|op| op["op"] == "memory.archive")
             .unwrap()
             .clone();
-        // McpPending / Rest op registered (its schema branch admitted, so only the wire rule can fire).
-        for (key, wire) in [("memory.forget", "McpPending"), ("account.delete", "Rest")] {
+        // Rest op registered (schema branch admitted, so only the wire rule can fire). No McpPending DestructiveOp exists since M19-6 (memory.forget is Mcp); the McpPending arm stays in operation_registry_failures for a future pending op.
+        for (key, wire) in [("account.delete", "Rest")] {
             let mut entry = template.clone();
             entry["op"] = key.into();
             let mut fixture = manifest.clone();
@@ -12905,8 +12905,8 @@ runs:
         let shrunk = dispatch
             .replace("    DestructiveOp::MemoryConfirm.operation_key(),\n", "")
             .replace(
+                "SUPPORTED_OPERATION_KEYS: [&str; 29]",
                 "SUPPORTED_OPERATION_KEYS: [&str; 28]",
-                "SUPPORTED_OPERATION_KEYS: [&str; 27]",
             );
         assert!(
             matches!(
@@ -12918,8 +12918,8 @@ runs:
 
         // (2) the array's declared length stops matching its entries.
         let miscounted = dispatch.replace(
-            "SUPPORTED_OPERATION_KEYS: [&str; 28]",
             "SUPPORTED_OPERATION_KEYS: [&str; 29]",
+            "SUPPORTED_OPERATION_KEYS: [&str; 30]",
         );
         assert!(
             matches!(
