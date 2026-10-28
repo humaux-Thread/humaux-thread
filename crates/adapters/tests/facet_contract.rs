@@ -1,18 +1,24 @@
 //! `adapters::tests::facet_contract` — §78.2 DB<->Rust contract for the §25.4.A(1)/(2) Mandatory facet projection,
 //!   plus the §25.4.A(11) registry-dependency contract (card 22b, ADR-0045), the plan catalogue's closed sets
-//!   (G-M04-14, migration 0262), the M07 closed sets, note kinds and epistemic status (G-M07-6, migration 0283), and the
-//!   code-graph closed sets (G-M16-11, migrations 0284 and 0291).
+//!   (G-M04-14, migration 0262), the billing core's closed sets (G-M04-14, migration 0288), the M07 closed sets, note
+//!   kinds and epistemic status (G-M07-6, migration 0283), and the code-graph closed sets (G-M16-11, migrations 0284
+//!   and 0291).
 //! Depends-on: crates=[humaux-domain, humaux-testkit, postgres]; services=[PostgreSQL(any)
-//!   r=[control.plan_versions, control.repositories, private.code_edges, private.code_snapshots, private.code_symbols, private.context_bindings, private.memory_applicability, private.memory_records] x=[control.issue_quota_window]];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::applicability, domain::code, domain::context, domain::memory, domain::note, domain::plan, humaux-testkit]
+//!   r=[control.billing_customers, control.billing_inbox, control.billing_payments, control.plan_versions,
+//!   control.repositories, control.subscription_events, control.subscriptions, private.code_edges,
+//!   private.code_snapshots, private.code_symbols, private.context_bindings, private.memory_applicability, private.memory_records] x=[control.issue_quota_window]];
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[domain::applicability, domain::billing, domain::code, domain::context,
+//!   domain::memory, domain::note, domain::plan, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [judges the expression the database computes (pg_get_expr), round-trips both closed label sets by set
 //!   equality, and checks REGISTRY columns exist; every closed set of control.plan_versions (currency, interval,
 //!   template keys, provider modes) and the quota issuer's period and charge-policy lists equal the domain::plan
-//!   vocabulary by set equality and by count; `NoteKind::ALL` equals the note_kind CHECK, each kind's memory_type is the
+//!   vocabulary by set equality and by count; the three subscription-state CHECKs, the five provider CHECKs, the payment
+//!   kind, payment currency and inbox status CHECKs of migration 0288 equal the domain::billing and domain::plan
+//!   vocabularies by set equality and by count; `NoteKind::ALL` equals the note_kind CHECK, each kind's memory_type is the
 //!   pair the binding CHECK lists, and `EpistemicStatus::ALL` equals the epistemic_status CHECK whose column default is
 //!   Unknown; missing DB goes through skip_or_fail]
-//! Spec: Baseline §25.4; §71.1; §78.1; §78.2; §79.2; ADR-0072; ADR-0124; ADR-0114 D-B, D-J
+//! Spec: Baseline §25.4; §71.1; §71.2; §78.1; §78.2; §79.2; ADR-0072; ADR-0124; ADR-0114 D-B, D-J
 //!
 //! Three things are pinned here, each with a different failure mode:
 //!
@@ -35,6 +41,7 @@
 //! Read-only: this suite creates nothing and deletes nothing. Three-state per §79.2.
 
 use humaux_domain::applicability::{ApplicabilityScope, ApplicabilityStatus, AssignmentMethod};
+use humaux_domain::billing::{BillingProviderId, InboxStatus, PaymentKind, SubscriptionState};
 use humaux_domain::code::{
     EdgeKind, EvidenceLevel, RepositoryProvider, SnapshotKind, SnapshotState, SymbolKind,
 };
@@ -512,6 +519,46 @@ fn plan_catalogue_closed_sets_equal_the_domain_vocabularies() {
     );
 }
 
+/// The five tables of migration 0288.
+const BILLING_TABLES: [&str; 5] = [
+    "control.billing_customers",
+    "control.subscriptions",
+    "control.subscription_events",
+    "control.billing_payments",
+    "control.billing_inbox",
+];
+
+/// The three CHECKs of migration 0288 that list the eight Baseline §71.2 states, as (table, constraint).
+const BILLING_STATE_CHECKS: [(&str, &str); 3] = [
+    ("control.subscriptions", "subscriptions_state_v1_check"),
+    (
+        "control.subscription_events",
+        "subscription_events_from_state_v1_check",
+    ),
+    (
+        "control.subscription_events",
+        "subscription_events_to_state_v1_check",
+    ),
+];
+
+/// The five `provider` CHECKs of migration 0288, as (table, constraint).
+const BILLING_PROVIDER_CHECKS: [(&str, &str); 5] = [
+    (
+        "control.billing_customers",
+        "billing_customers_provider_v1_check",
+    ),
+    ("control.subscriptions", "subscriptions_provider_v1_check"),
+    (
+        "control.subscription_events",
+        "subscription_events_source_provider_v1_check",
+    ),
+    (
+        "control.billing_payments",
+        "billing_payments_provider_v1_check",
+    ),
+    ("control.billing_inbox", "billing_inbox_provider_v1_check"),
+];
+
 /// The deparsed definition of the named CHECK on `table` (`schema.table`, resolved to a regclass server-side).
 fn table_check_def(client: &mut Client, table: &str, conname: &str) -> String {
     client
@@ -522,6 +569,63 @@ fn table_check_def(client: &mut Client, table: &str, conname: &str) -> String {
         )
         .unwrap_or_else(|e| panic!("{conname} must exist on {table}: {e}"))
         .get(0)
+}
+
+/// G-M04-14 / §78.2: every closed set of the billing core (migration 0288) is the `domain::billing` / `domain::plan`
+/// vocabulary, item by item: the eight §71.2 states in all three state CHECKs, the provider in all five provider CHECKs,
+/// the payment kind, the payment currency (the plan catalogue's currency set) and the inbox status.
+/// Fault: a Rust variant without its CHECK literal (or the reverse) ⇒ the sets differ ⇒ red.
+#[test]
+fn billing_closed_sets_equal_the_domain_vocabularies() {
+    let Some(mut client) = client() else { return };
+    for table in BILLING_TABLES {
+        let present: bool = client
+            .query_one("SELECT to_regclass($1::text) IS NOT NULL", &[&table])
+            .expect("billing table probe")
+            .get(0);
+        if !present {
+            skip_or_fail(
+                NAME,
+                &format!(
+                    "missing object: {table} — run `cargo xtask migrate` (migrations/0288_billing_core.sql)"
+                ),
+                ExternalDep::Postgres,
+            );
+            return;
+        }
+    }
+    let states = SubscriptionState::ALL.map(SubscriptionState::wire);
+    assert_eq!(states.len(), 8, "Baseline §71.2 lists eight states");
+    for (table, conname) in BILLING_STATE_CHECKS {
+        let def = table_check_def(&mut client, table, conname);
+        assert_same_closed_set(conname, &quoted_literals(&def), &states);
+    }
+    let providers = BillingProviderId::ALL.map(BillingProviderId::wire);
+    for (table, conname) in BILLING_PROVIDER_CHECKS {
+        let def = table_check_def(&mut client, table, conname);
+        assert_same_closed_set(conname, &quoted_literals(&def), &providers);
+    }
+    let kinds = PaymentKind::ALL.map(PaymentKind::wire);
+    let def = table_check_def(
+        &mut client,
+        "control.billing_payments",
+        "billing_payments_kind_v1_check",
+    );
+    assert_same_closed_set("payment kind", &quoted_literals(&def), &kinds);
+    let currency = Currency::ALL.map(Currency::wire);
+    let def = table_check_def(
+        &mut client,
+        "control.billing_payments",
+        "billing_payments_currency_v1_check",
+    );
+    assert_same_closed_set("payment currency", &quoted_literals(&def), &currency);
+    let statuses = InboxStatus::ALL.map(InboxStatus::wire);
+    let def = table_check_def(
+        &mut client,
+        "control.billing_inbox",
+        "billing_inbox_status_v1_check",
+    );
+    assert_same_closed_set("inbox status", &quoted_literals(&def), &statuses);
 }
 
 /// The Rust label a code-graph CHECK literal parses to and prints back, by the CHECK that carries it.
