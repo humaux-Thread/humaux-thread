@@ -99,10 +99,10 @@ pub fn normalize(
     let object = &envelope["object"];
     let money = if let EventKind::Payment(payment) = kind {
         let (source, reference) = transaction_source(&envelope)?;
-        if let Some(fetched) = fetched_transaction {
-            if text(fetched, "id")? != reference {
-                return Err(ErrorCode::InvalidInput);
-            }
+        if let Some(fetched) = fetched_transaction
+            && text(fetched, "id")? != reference
+        {
+            return Err(ErrorCode::InvalidInput);
         }
         let field = |key: &str| source.get(key).or_else(|| fetched_transaction?.get(key));
         let currency = if payment == PaymentKind::Chargeback {
