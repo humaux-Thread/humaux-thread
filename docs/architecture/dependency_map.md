@@ -561,8 +561,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
 - reads `private.code_active_snapshots`
+- reads `private.code_edges`
 - reads `private.code_files`
 - reads `private.code_snapshots`
+- reads `private.code_symbols`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -3378,8 +3380,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.xtask_fx_domain_table`
 - reads `private.any_fourth_relation`
 - reads `private.code_active_snapshots`
+- reads `private.code_edges`
 - reads `private.code_files`
 - reads `private.code_snapshots`
+- reads `private.code_symbols`
 - reads `private.comment_only`
 - reads `private.continuity_facet_evidence_links`
 - reads `private.continuity_facet_memory_links`
@@ -6643,6 +6647,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 
 executed by:
 
@@ -6887,6 +6892,7 @@ written by:
 - (no process): `adapters::tests::authority_g59_5`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -8823,6 +8829,18 @@ written by:
 
 executed by:
 
+### `private.code_edges`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
+
+executed by:
+
 ### `private.code_files`
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
@@ -8830,6 +8848,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 
 executed by:
 
@@ -8841,6 +8860,19 @@ read by:
 
 written by:
 - (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
+
+executed by:
+
+### `private.code_symbols`
+read by:
+- (no process): `adapters::tests::facet_contract`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `adapters::tests::code_rls`
+- (no process): `adapters::tests::code_schema`
 
 executed by:
 
@@ -12413,6 +12445,7 @@ executed by:
 - `adapters::tests::applicability`
 - `adapters::tests::billing_repo`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
 - `adapters::tests::distill_dispatch_v2`
@@ -13266,6 +13299,7 @@ modules naming it:
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -13821,6 +13855,7 @@ modules naming it:
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_eligibility`
@@ -14030,6 +14065,7 @@ modules naming it:
 - `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -14174,6 +14210,7 @@ modules naming it:
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
 - `adapters::tests::contribution_eligibility`
@@ -14244,6 +14281,7 @@ modules naming it:
 - `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -17973,6 +18011,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/code_rls.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/code_schema.rs`
 db-bound (default run): yes
 
 services (computed):

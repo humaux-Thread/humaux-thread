@@ -6040,6 +6040,7 @@ modules:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`

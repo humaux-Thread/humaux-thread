@@ -1,0 +1,37 @@
+# §46.1 / ADR-0114 D-B (M16-3): private.code_symbols and private.code_edges, FORCE RLS, gateway read-only.
+# Every check reaches the new tables through to_regclass / catalog lookups, never a static relation, so migration-rehearsal
+# can EXPLAIN it at a HEAD where they do not exist yet (ADR-0063 D-D 7b). The tables are absent before (0284 dropped the 0006
+# skeletons) and there is no data to move. The postcheck does not pin what G-M16-3, G-M16-7 and G-M16-11 judge (the FK columns,
+# the policy's EXISTS, the CHECK literals): a dropped predicate must be a red gate, not a failed migration (0284 does the same).
+
+migration_id = "0291_code_symbols_edges"
+class = "FORWARD_ONLY"
+
+precheck = """
+select to_regclass('private.code_symbols') is null
+ and to_regclass('private.code_edges') is null
+ and to_regclass('private.code_files') is not null
+ as precheck_ok
+"""
+
+postcheck = """
+select (select count(*) = 2 from pg_class
+         where oid in (to_regclass('private.code_symbols'), to_regclass('private.code_edges'))
+           and relrowsecurity and relforcerowsecurity and relowner = 'role_migration_owner'::regrole)
+ and (select count(*) = 2 and count(distinct tablename) = 2 from pg_policies
+       where schemaname = 'private' and tablename in ('code_symbols', 'code_edges'))
+ and (select count(*) = 2 from pg_policies
+       where schemaname = 'private' and tablename in ('code_symbols', 'code_edges')
+         and cmd = 'ALL' and strpos(qual, 'humaux.tenant_id') > 0 and strpos(with_check, 'humaux.tenant_id') > 0)
+ and not exists (select 1
+       from unnest(array['role_gateway', 'role_private_worker', 'role_consolidation_worker', 'role_public_worker',
+                         'role_retrieval_worker', 'role_batch_issuer', 'role_maintenance', 'role_admin']) as r(role_name)
+       cross join unnest(array['private.code_symbols', 'private.code_edges']) as t(rel)
+      where has_table_privilege(r.role_name, t.rel, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+         or has_any_column_privilege(r.role_name, t.rel, 'INSERT,UPDATE,REFERENCES')
+         or (r.role_name = 'role_gateway') is distinct from has_table_privilege(r.role_name, t.rel, 'SELECT'))
+ as postcheck_ok
+"""
+
+rollback_or_forward_fix = "Forward fix under ADR-0082. Before deployment: drop private.code_edges then private.code_symbols (both empty). After deployment: preserve rows and ship a forward-fix migration; never discard pushed snapshots."
+backup_restore_requirement = "Standard pre-deploy snapshot. Both tables are new and empty at this migration, so no restore drill is needed. No production action is performed by this card."
