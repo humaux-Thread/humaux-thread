@@ -72,8 +72,12 @@ pub struct NormalizedEvent {
     pub kind: EventKind,
     /// §71.3: present exactly for payment events.
     pub money: Option<Money>,
-    /// §71.3: payment transaction identity for the ledger UNIQUE key; absent on non-payments.
+    /// §71.3: M04-11 stores CHARGE transaction id, REFUND refund id, CHARGEBACK dispute id
+    /// in the ledger UNIQUE key; absent on non-payments (M04 ledger-ref ruling).
     pub provider_txn_ref: Option<String>,
+    /// §71.3: original transaction id for REFUND/CHARGEBACK linking only, never their ledger key.
+    /// Absent on CHARGE and non-payments (M04 ledger-ref ruling).
+    pub original_txn_ref: Option<String>,
 }
 
 /// §71.3: caller supplies the fetched subscription status, never the event type.
@@ -152,10 +156,18 @@ pub fn normalize(
         event_type: event_type.to_owned(),
         created_at: cents(envelope.get("created_at"))?,
         kind,
-        provider_txn_ref: if money.is_some() {
-            Some(transaction_source(&envelope)?.1.to_owned())
-        } else {
-            None
+        provider_txn_ref: match kind {
+            EventKind::Payment(PaymentKind::Charge) => {
+                Some(transaction_source(&envelope)?.1.to_owned())
+            }
+            EventKind::Payment(_) => Some(text(object, "id")?.to_owned()),
+            _ => None,
+        },
+        original_txn_ref: match kind {
+            EventKind::Payment(PaymentKind::Refund | PaymentKind::Chargeback) => {
+                Some(transaction_source(&envelope)?.1.to_owned())
+            }
+            _ => None,
         },
         money,
     })
