@@ -7108,9 +7108,9 @@ executed by:
 
 ### `control.tenants`
 read by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
-- (no process): `billing-worker::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `xtask::e2e_onboard`
@@ -13106,7 +13106,6 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::visible_index_count`
-- `billing-worker::process`
 - `billing-worker::tests::process`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::service_credentials`
@@ -16280,12 +16279,6 @@ modules naming it:
 - `billing-worker::process`
 - `billing-worker::tests::process`
 - `tests`
-
-### humaux-billing-worker → `sqlx` (normal)
-why: caller transaction savepoints and scoped tenant validation (§71.3)
-
-modules naming it:
-- `billing-worker::process`
 
 ### humaux-billing-worker → `uuid` (normal)
 why: configured plan version and opaque tenant IDs (§78.2)

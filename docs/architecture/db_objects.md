@@ -4954,9 +4954,9 @@ grants (runtime roles):
 foreign keys (outgoing):
 
 read by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
-- (no process): `billing-worker::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `xtask::e2e_onboard`
