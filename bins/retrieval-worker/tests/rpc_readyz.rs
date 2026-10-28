@@ -313,13 +313,12 @@ async fn assert_serial_readiness(path: &str, owner: &str, database: &str) {
         codes.push(probe.await.expect("probe task"));
     }
     assert_eq!(codes, vec![200; 32], "concurrent fresh readiness budget");
-    let mut client = Client::connect(&with_db(owner, "postgres"), NoTls).expect("observer");
-    let row = client.query_one("SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = 'role_retrieval_worker'", &[&database]).expect("session count");
-    assert_eq!(
-        row.get::<_, i64>(0),
-        1,
-        "only the retained RPC pool remains"
-    );
+    let sessions = tokio::task::block_in_place(|| {
+        let mut client = Client::connect(&with_db(owner, "postgres"), NoTls).expect("observer");
+        let row = client.query_one("SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = 'role_retrieval_worker'", &[&database]).expect("session count");
+        row.get::<_, i64>(0)
+    });
+    assert_eq!(sessions, 1, "only the retained RPC pool remains");
     ScratchDb::exec(
         owner,
         &format!("ALTER DATABASE {database} CONNECTION LIMIT -1"),
