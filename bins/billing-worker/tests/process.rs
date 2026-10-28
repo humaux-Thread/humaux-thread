@@ -81,8 +81,8 @@ fn free() -> Value {
     json!({"feature.byok":false})
 }
 fn deliver(h: &mut Handle, id: &str, arrival: &str, tenant: Uuid) {
-    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"last_transaction":{"id":"txn_fixture","amount":500,"currency":"USD","period_start":1000,"period_end":2000}}});
-    // dep: PostgreSQL(owner) — fixture represents the authenticated ingress boundary (§71.3).
+    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture"}}});
+    // dep: PostgreSQL(owner) — authenticated ingress; sparse payment IDs must process before M04-11b money normalization (§71.3).
     let stored = h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,'sub_fixture',$3) ON CONFLICT DO NOTHING", &[&id,&payload["eventType"].as_str().unwrap(),&payload]).unwrap();
     assert_eq!(stored, 1);
 }
