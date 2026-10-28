@@ -354,6 +354,20 @@ fn footprint(h: &mut Handle) -> (i64, i64, i64, i64, i64) {
     (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
 }
 
+/// Every confirmation token and deletion request of the tenant, consumed or not: a refused call must mint neither.
+fn counts(h: &mut Handle) -> (i64, i64) {
+    let tenant = h.tenant_id;
+    let row = h
+        .admin
+        .query_one(
+            "SELECT (SELECT count(*) FROM control.confirm_tokens WHERE tenant_id=$1), \
+             (SELECT count(*) FROM control.deletion_requests WHERE tenant_id=$1)",
+            &[&tenant],
+        )
+        .expect("token and request counts");
+    (row.get(0), row.get(1))
+}
+
 fn get(rig: &Rig, h: &Handle, memory: Uuid) -> (u16, Value) {
     rig.call(h, json!({"action":"get", "memory_id":memory}))
 }
@@ -420,9 +434,20 @@ fn g_m19_2_wire_round_two_without_token_is_invalid_input() {
         |mut h| {
             let memory = seed(&mut h, "m19wirenotoken");
             let rig = Rig::new(&mut h);
-            let (request, _) = prepare(&rig, &h, json!({"action":"forget", "memory_id":memory}));
+            let (request, token) =
+                prepare(&rig, &h, json!({"action":"forget", "memory_id":memory}));
             let result = rig.call(&h, json!({"action":"forget", "request_id":request}));
             assert_eq!(result.1["error"]["code"], -32602);
+            assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
+            // rv-411 P2-1: a root plus a real token is a mixed shape. Only the mcp_application shape guard refuses it;
+            // without the guard it would fall into round one and mint a second token.
+            let before = counts(&mut h);
+            let mixed = rig.call(
+                &h,
+                json!({"action":"forget", "memory_id":memory, "confirm_token":token}),
+            );
+            assert_eq!(mixed.1["error"]["code"], -32602, "{}", mixed.1);
+            assert_eq!(counts(&mut h), before);
             assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
         },
     );
