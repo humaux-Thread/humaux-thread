@@ -23,6 +23,21 @@ sha2 = "0.11"
 # why: provider signature hex decoding (§71.3); used-by: [billing-worker::signature]
 hex = "0.4"
 
+# why: provider-neutral billing port (§71.2); used-by: [billing-worker::creem, tests]
+humaux-application = { path = "../../crates/application" }
+# why: purpose-bound transport and credential sources (§71.2); used-by: [billing-worker::creem, billing-worker::fake_creem, tests]
+humaux-infra-egress = { path = "../../crates/infra-egress" }
+# why: transport URL and method types without a second client (§83.4); used-by: [billing-worker::creem]
+humaux-infra-network = { path = "../../crates/infra-network" }
+# why: object-safe provider port implementation (§71.2); used-by: [billing-worker::creem, billing-worker::fake_creem]
+async-trait = "0.1"
+# why: subscription RFC3339 periods (§71.2); used-by: [billing-worker::creem]
+time = { version = "0.3", features = ["parsing"] }
+
 [dev-dependencies]
 # why: runtime-only random HMAC test keys (§79.4); used-by: [billing-worker::tests::signature, tests]
 uuid = { version = "1.25.0", features = ["v4"] }
+# why: test-only loopback Creem routes (§79.4); used-by: [billing-worker::fake_creem, tests]
+axum = "0.8"
+# why: test HTTP double lifecycle (§79.4); used-by: [billing-worker::fake_creem, tests]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
