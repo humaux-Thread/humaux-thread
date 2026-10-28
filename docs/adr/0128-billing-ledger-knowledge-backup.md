@@ -31,5 +31,8 @@ to reuse matching restored rows with `created=false`. However, a published store
 raises 23505 ("a published version is never a draft again"). `plan_repo::seed` maps that to Conflict and rolls back
 the entire call. All five committed placeholder versions have `published:false`. Reported only; no seeder fix here.
 
-- Injected red: PENDING — `red/m04-8b-r1` excludes only `control.billing_inbox`; must fail naming that table.
+- Injected red: [40670508285](https://github.com/humaux-Thread/humaux-thread/actions/runs/40670508285),
+  `4b446eadd5725b653237b6c5d412fe05bff96fe7`: only `control.billing_inbox` becomes EXCLUDED; compilation succeeds,
+  then G-M04-20 fails naming that table (6 != 7), including through G-M23-3b. A separate source-count fixture
+  failure exposed the new test's call spelling; the green head avoids that incidental match without weakening the pin.
 - Green: this PR's CI, recorded in the PR body at its tested head; no local compilation or test evidence.

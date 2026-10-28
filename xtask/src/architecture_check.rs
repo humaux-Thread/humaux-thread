@@ -25033,7 +25033,8 @@ mod backup_catalog_tests {
             "{:?}",
             backup_catalog_m04_problems(&rows)
         );
-        assert_eq!(backup_catalog_gate(&root, true), Verdict::Pass);
+        let verdict = backup_catalog_gate(&root, true);
+        assert_eq!(verdict, Verdict::Pass);
     }
 
     /// The real tree: every table of the migrated catalog has a row, and the KNOWLEDGE set is closed under foreign keys.
