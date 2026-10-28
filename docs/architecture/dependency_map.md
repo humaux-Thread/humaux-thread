@@ -2241,6 +2241,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.card_profile_policies`
 - reads `projection.embedding_fingerprints`
 - reads `projection.memory_vectors`
+- reads `projection.private_memory_points`
+- reads `projection.rebuild_tickets`
 - writes `ops.outbox`
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
@@ -2968,6 +2970,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.card_profile_policies`
 - reads `projection.embedding_fingerprints`
 - reads `projection.memory_vectors`
+- reads `projection.private_memory_points`
+- reads `projection.rebuild_tickets`
 - writes `ops.outbox`
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
@@ -4754,6 +4758,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.card_profile_policies`
 - reads `projection.embedding_fingerprints`
 - reads `projection.memory_vectors`
+- reads `projection.private_memory_points`
+- reads `projection.rebuild_tickets`
 - writes `ops.outbox`
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
@@ -11345,8 +11351,11 @@ read by:
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::soak`
+- process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-retrieval-worker): `adapters::projection_worker`
 
 written by:
 - (no process): `adapters::tests::private_projection_registry`
@@ -11436,15 +11445,18 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
+- process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::rebuild`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
+- process(humaux-retrieval-worker): `adapters::projection_worker`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 

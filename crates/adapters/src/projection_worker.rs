@@ -4,7 +4,8 @@
 //! Depends-on: crates=[async-trait, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection,
 //!   serde_json, sha2, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects,
 //!   private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects,
-//!   projection.card_profile_policies, projection.embedding_fingerprints, projection.memory_vectors]
+//!   projection.card_profile_policies, projection.embedding_fingerprints, projection.memory_vectors,
+//!   projection.private_memory_points, projection.rebuild_tickets]
 //!   w=[ops.outbox, projection.stream_log],
 //!   PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::affect_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::qdrant, adapters::remember, adapters::stream_repo,
@@ -1088,6 +1089,7 @@ async fn resolve_and_embed(
 
     let (planned, slots) = plan_slots(memories, workspace_id, ctx.policy)?;
     // ADR-0064 D-B stored-first, in the same read transaction and before any sealing.
+    // ponytail: payload-only slots still read PG memory_vectors, M10-4 removes this read.
     let kept_ids: Vec<Uuid> = planned.iter().map(|p| p.memory.memory_id.0).collect();
     let (fingerprint, stored) = stored_vectors(&mut txn, ctx, &kept_ids)
         .await
@@ -1697,6 +1699,65 @@ async fn finish_row(
     (RowTerminal::Done, "")
 }
 
+/// §17 / M10-2: NULL or mismatched bindings, rebuild tickets and missing points require a full upsert.
+async fn payload_only_slot(
+    ctx: &RowCtx<'_>,
+    stream_seq: i64,
+    registration: &PrivateMemoryPointRegistration,
+    stored: Option<&StoredVector>,
+) -> Result<bool, (RowTerminal, &'static str)> {
+    let Some(stored) = stored else {
+        return Ok(false);
+    };
+    // dep: PostgreSQL(any) — tenant-scoped live binding and rebuild-ticket read (§17, ADR-0064 D-N).
+    let mut txn = ctx
+        .pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| pg_failure(&e, "db_begin_failed"))?;
+    set_worker_rls_context(&mut txn, ctx.family.tenant_id.0)
+        .await
+        .map_err(|e| pg_failure(&e, "db_rls_context_failed"))?;
+    let eligible: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM projection.private_memory_points \
+           WHERE tenant_id = $1 AND point_id = $2 AND projection_live \
+             AND fingerprint_sha256 = $3 AND input_sha256 = $4) \
+         AND NOT EXISTS (SELECT 1 FROM projection.rebuild_tickets \
+           WHERE tenant_id = $1 AND scope_kind = $5 AND scope_id = $6 AND domain = $7 \
+             AND projection_kind = $8 AND projection_version = $9 AND stream_seq = $10)",
+    )
+    .bind(ctx.family.tenant_id.0)
+    .bind(registration.point_id.as_uuid())
+    .bind(&stored.fingerprint_sha256[..])
+    .bind(&stored.input_sha256[..])
+    .bind(&ctx.family.scope_kind)
+    .bind(ctx.family.scope_id)
+    .bind(&ctx.family.domain)
+    .bind(&ctx.family.projection_kind)
+    .bind(ctx.projection_version)
+    .bind(stream_seq)
+    .fetch_one(&mut *txn)
+    .await
+    .map_err(|e| pg_failure(&e, "db_resolve_failed"))?;
+    txn.commit()
+        .await
+        .map_err(|e| pg_failure(&e, "db_commit_failed"))?;
+    if !eligible {
+        return Ok(false);
+    }
+    let point = PointId::Uuid(registration.point_id.as_uuid());
+    let observed = qdrant::scroll_by_ids(
+        ctx.transport,
+        ctx.permit,
+        &ctx.placement.collection_name,
+        &[point],
+    )
+    .await
+    .map_err(|_| (RowTerminal::Retry, "visibility_not_confirmed"))?;
+    Ok(observed == [point])
+}
+
 /// (f)-(g) for one slot: the fenced upsert, then the registration with its stored vector. A registration the
 /// registry refuses deletes the point the upsert just landed (ADR-0052 D-E (b)).
 async fn write_slot(
@@ -1717,16 +1778,30 @@ async fn write_slot(
     // as an orphan (ADR-0064 D-F E3); a Qdrant-side tombstone is the upgrade path if it recurs.
     // ponytail: one upsert request per slot (up to 158 for a 64 KiB note); batch the slots of a memory into one fenced
     // request if chunk backfill latency (40d-2) says the round trips matter.
-    if let Err(error) = qdrant::upsert_fenced(
-        ctx.transport,
-        ctx.permit,
-        &ctx.placement.collection_name,
-        (point_id, payload, vector),
-        bm25_text,
-        ha_profile_for(QdrantOperation::NormalImmutableUpsert),
-    )
-    .await
-    {
+    let payload_only = payload_only_slot(ctx, stream_seq, registration, stored).await?;
+    let write = if payload_only {
+        // ponytail: one set_payload request per slot, batch if latency matters (§17.4).
+        // ponytail: sparse bm25 is not refreshed here, rebuild tickets backfill it (ADR-0083 D-B).
+        qdrant::set_payload_fenced(
+            ctx.transport,
+            ctx.permit,
+            &ctx.placement.collection_name,
+            point_id,
+            payload,
+        )
+        .await
+    } else {
+        qdrant::upsert_fenced(
+            ctx.transport,
+            ctx.permit,
+            &ctx.placement.collection_name,
+            (point_id, payload, vector),
+            bm25_text,
+            ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+        )
+        .await
+    };
+    if let Err(error) = write {
         // ADR-0052 D-E: 400/422 (payload, schema, vector width) is permanent; transport, 5xx,
         // 404, 408, 409, 429 are transient. Operator signal: the status class only.
         eprintln!(
@@ -1744,7 +1819,7 @@ async fn write_slot(
         ctx.pool,
         authorization,
         registration,
-        stored,
+        if payload_only { None } else { stored },
     )
     .await
     {
