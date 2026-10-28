@@ -9715,6 +9715,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
@@ -9811,6 +9812,7 @@ executed by:
 
 ### `private.evidence_sources`
 read by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -9822,6 +9824,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::remember`
 
 written by:
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::evidence_sources`
 - process(cargo-xtask): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::remember`
@@ -10102,6 +10105,7 @@ executed by:
 
 ### `private.memory_evidence`
 read by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
@@ -10186,6 +10190,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -10316,12 +10321,14 @@ executed by:
 ### `private.memory_records`
 read by:
 - (no process): `adapters::contribution_repo`
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
@@ -10436,6 +10443,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -10585,6 +10593,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::projection_worker`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -11198,6 +11207,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::subject_registry_rls`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12605,6 +12615,7 @@ executed by:
 - `adapters::coord_repo`
 - `adapters::cost_repo`
 - `adapters::credential_repo`
+- `adapters::dedup_repo`
 - `adapters::disclosure`
 - `adapters::distill_repo`
 - `adapters::email::outbox`
@@ -12741,6 +12752,7 @@ executed by:
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -12894,6 +12906,7 @@ executed by:
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::dedup`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
@@ -13412,6 +13425,7 @@ modules naming it:
 - `adapters::coord_tree_repo`
 - `adapters::cost_repo`
 - `adapters::credential_repo`
+- `adapters::dedup_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
@@ -13474,6 +13488,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13563,6 +13578,7 @@ modules naming it:
 - `adapters::coord_tree_repo`
 - `adapters::cost_repo`
 - `adapters::credential_repo`
+- `adapters::dedup_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
@@ -13628,6 +13644,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -14163,6 +14180,7 @@ modules naming it:
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
 - `adapters::coord_tree_repo`
+- `adapters::dedup_repo`
 - `adapters::distill_reasoner`
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
@@ -14197,6 +14215,7 @@ modules naming it:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_rls`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::dedup`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
@@ -14288,6 +14307,7 @@ modules naming it:
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -14523,6 +14543,7 @@ modules naming it:
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
 - `adapters::coord_tree_repo`
+- `adapters::dedup_repo`
 - `adapters::distill_reasoner`
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
@@ -14557,6 +14578,7 @@ modules naming it:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_rls`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::dedup`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
@@ -14628,6 +14650,7 @@ modules naming it:
 - `adapters::tests::core_never_auto`
 - `adapters::tests::cost_repo`
 - `adapters::tests::credential_grants`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -18619,6 +18642,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/credential_grants.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/dedup.rs`
 db-bound (default run): yes
 
 services (computed):
