@@ -1,0 +1,87 @@
+# E-M20-1 A3 slice (G-M20-7): good technical items that should be admitted (U4 start value: at least 70 percent).
+# Every value is invented and synthetic. The last group (hard-*) holds realistic items the heuristics are expected to refuse; they stay in the
+# denominator on purpose so the printed admit rate is not flattering.
+# Line grammar: id :: surface :: lang :: - :: text
+good-body-01 :: body :: en :: - :: Use /usr/lib/x86_64-linux-gnu/libssl.so.3 when linking against OpenSSL 3.0.13 on Debian.
+good-body-02 :: body :: en :: - :: Pin the dependency to serde = "1.0.197" and rebuild with cargo build --release.
+good-body-03 :: body :: en :: - :: The release v2.4.1 was published on 2024-03-05 and fixes the retry loop.
+good-body-04 :: body :: en :: - :: Requests to http://192.0.2.14:8080/health return 200 within 40 ms.
+good-body-05 :: body :: en :: - :: Set RUST_LOG=debug and run the integration suite twice to confirm the flake is gone.
+good-body-06 :: body :: en :: - :: The parser treats ::1 and 127.0.0.1 as loopback and skips them.
+good-body-07 :: body :: en :: - :: Apply the migration with sqlx migrate run, then restart the worker.
+good-body-08 :: body :: en :: - :: Documented at https://example.com/docs/guide and https://example.org/api/v2/items.
+good-body-09 :: body :: en :: - :: The CI image bumps rustc from 1.98.0 to 1.99.0 and caches ~/.cargo between jobs.
+good-body-10 :: body :: en :: - :: Use a 2 MiB buffer; larger values (4 MiB, 8 MiB) did not change throughput.
+good-body-11 :: body :: en :: - :: Run cargo test -p humaux-public-pool --test admission_deid -- --nocapture to see the printed rate.
+good-body-12 :: body :: en :: - :: If the lockfile drifts, delete it and regenerate with cargo generate-lockfile.
+good-body-13 :: body :: en :: - :: The retry budget is 3 attempts with 200 ms, 400 ms and 800 ms backoff.
+good-body-14 :: body :: en :: - :: Compare the checksum with sha256sum before installing the package.
+good-body-15 :: body :: en :: - :: Changelog entry: 2024-05-01 - bump tokio to 1.37.0, drop the unused feature flag.
+good-body-16 :: body :: en :: - :: Version 3.1.4 was released 2023-11-20; upgrade before the next minor.
+good-body-17 :: body :: en :: - :: Mirror the repo to https://example.com/mirror/project.git for offline builds.
+good-body-18 :: body :: en :: - :: Bind the listener to 0.0.0.0:9000 inside the container and to 127.0.0.1 on the host.
+good-body-19 :: body :: en :: - :: The binary links libc dynamically; check ldd output for missing symbols.
+good-body-20 :: body :: en :: - :: Prefer iterators over indexed loops; the compiler removes bounds checks in both cases.
+good-body-21 :: body :: zh :: - :: 升级到 1.74.0 之后，需要重新生成锁文件并运行全部测试。
+good-body-22 :: body :: zh :: - :: 配置文件位于 /etc/app/config.toml，修改后需要重启服务。
+good-body-23 :: body :: zh :: - :: 示例地址 https://example.com/docs/guide 不带查询参数。
+good-body-24 :: body :: zh :: - :: 文档示例使用 192.0.2.10 作为服务地址。
+good-body-25 :: body :: zh :: - :: 该版本于 2024-03-05 发布（v2.4.1），修复了重试循环。
+good-body-26 :: body :: zh :: - :: 把缓冲区调到 2 MiB，吞吐量没有明显变化。
+good-body-27 :: body :: zh :: - :: 先运行迁移，再重启后台任务，确认队列已清空。
+good-body-28 :: body :: zh :: - :: 日志级别设为 debug，复现问题后再收集堆栈。
+good-body-29 :: body :: zh :: - :: 依赖固定在 serde 1.0.197，避免锁文件漂移。
+good-body-30 :: body :: zh :: - :: 测试矩阵覆盖三种数据库版本，每个版本跑两遍。
+good-body-31 :: body :: en :: - :: Set Cache-Control to max-age: 60 for the static assets.
+good-body-32 :: body :: en :: - :: The Profile page lists build metrics; Drivers are loaded lazily.
+good-title-01 :: title :: en :: - :: Retry loop never backs off after 5xx responses
+good-title-02 :: title :: en :: - :: Upgrade tokio to 1.37.0
+good-title-03 :: title :: en :: - :: Cache invalidation misses on directory renames
+good-title-04 :: title :: en :: - :: Document the /usr/local/lib layout
+good-title-05 :: title :: zh :: - :: 5xx 响应后重试循环没有退避
+good-title-06 :: title :: zh :: - :: 升级 tokio 到 1.37.0
+good-tags-01 :: tags :: en :: - :: rust
+good-tags-02 :: tags :: en :: - :: database-migration
+good-tags-03 :: tags :: en :: - :: v1.4.0
+good-tags-04 :: tags :: zh :: - :: 性能优化
+good-tags-05 :: tags :: zh :: - :: 回归测试
+good-code-01 :: code_comments :: en :: - :: // SAFETY: the pointer is valid for the whole call and never aliased
+good-code-02 :: code_comments :: en :: - :: # retry up to 3 times with exponential backoff, see https://example.com/docs/retry
+good-code-03 :: code_comments :: en :: - :: /* paths: /usr/lib/x86_64-linux-gnu and /var/lib/app */
+good-code-04 :: code_comments :: en :: - :: // TODO(perf): batch the inserts, measured 2.3x faster with 500 rows per statement
+good-code-05 :: code_comments :: zh :: - :: // 注意：这里必须持有锁，否则会出现数据竞争
+good-code-06 :: code_comments :: zh :: - :: # 默认超时 30 秒，可以通过环境变量调整
+good-path-01 :: paths :: en :: - :: /usr/lib/x86_64-linux-gnu/libssl.so.3
+good-path-02 :: paths :: en :: - :: /etc/app/config.toml
+good-path-03 :: paths :: en :: - :: /var/log/app/server.log
+good-path-04 :: paths :: en :: - :: crates/public-pool/src/admission/deid.rs
+good-path-05 :: paths :: zh :: - :: /opt/应用/配置.toml
+good-path-06 :: paths :: en :: - :: /home/user/.cache/app
+good-quote-01 :: quotes :: en :: - :: The docs say: "Idempotent endpoints must return the same status for repeated requests."
+good-quote-02 :: quotes :: en :: - :: "Use a connection pool and release connections promptly."
+good-quote-03 :: quotes :: zh :: - :: 文档原文：“幂等接口对重复请求必须返回相同状态。”
+good-edge-01 :: edge_text :: en :: - :: depends_on tokio
+good-edge-02 :: edge_text :: en :: - :: implements Iterator
+good-edge-03 :: edge_text :: zh :: - :: 依赖于 tokio
+good-num-01 :: numbers :: en :: - :: 3.14159
+good-num-02 :: numbers :: en :: - :: 1.74.0
+good-num-03 :: numbers :: en :: - :: 8080
+good-num-04 :: numbers :: en :: - :: 1024
+good-num-05 :: numbers :: zh :: - :: 0.95
+good-date-01 :: dates :: en :: - :: released 2024-03-05 (v1.4.0)
+good-date-02 :: dates :: en :: - :: Release notes, 2023-11-20
+good-date-03 :: dates :: zh :: - :: 发布于 2024-03-05，版本 v2.4.1
+good-alias-01 :: entity_aliases :: en :: - :: PostgreSQL
+good-alias-02 :: entity_aliases :: en :: - :: pgBouncer
+good-alias-03 :: entity_aliases :: zh :: - :: 连接池
+good-query-01 :: url_queries :: en :: - :: debug
+good-query-02 :: url_queries :: en :: - :: ?
+hard-01 :: body :: en :: - :: Alice sends a message to Bob over an authenticated channel.
+hard-02 :: body :: en :: - :: Clone with git@github.com:example-org/example-repo.git on CI.
+hard-03 :: body :: en :: - :: The payment provider documents the 4242 4242 4242 4242 test card for integration tests.
+hard-04 :: body :: en :: - :: Serve the dashboard from 100.64.0.9 behind the shared-address gateway.
+hard-05 :: body :: en :: - :: The legacy installer reports build 4.8.4.1 and a cache key of 2024-05-01.
+hard-06 :: body :: en :: - :: The CEO app (Customer Engagement Orchestrator) 2.0 shipped on March 5, 2024.
+hard-07 :: body :: en :: - :: Mr. Robot is a fixture name used only inside the unit tests.
+hard-08 :: body :: en :: - :: The on-call runbook for confidential computing covers enclave attestation.
+hard-09 :: body :: en :: - :: Berlin and Paris are the two staging regions; the 34-year-old cluster was retired.
