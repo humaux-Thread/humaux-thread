@@ -14773,7 +14773,6 @@ modules naming it:
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::cost_repo`
-- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
