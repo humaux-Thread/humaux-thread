@@ -93,7 +93,7 @@ impl ScratchDb {
         let name = format!("humaux_thread_c34_rw_{}", std::process::id());
         for sql in [
             format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"),
-            format!("CREATE DATABASE {name}"),
+            format!("CREATE DATABASE {name} WITH CONNECTION LIMIT 2"),
         ] {
             Self::exec(owner_dsn, &sql);
         }
@@ -299,10 +299,6 @@ async fn readyz_reads_the_403_a_server_sent_before_closing_without_reading() {
 
 // §48.1 / ADR-0061 D-F: the retained RPC pool plus exactly one transient session.
 async fn assert_serial_readiness(path: &str, owner: &str, database: &str) {
-    ScratchDb::exec(
-        owner,
-        &format!("ALTER DATABASE {database} CONNECTION LIMIT 2"),
-    );
     let mut probes = Vec::new();
     for _ in 0..32 {
         let path = path.to_owned();
@@ -320,10 +316,6 @@ async fn assert_serial_readiness(path: &str, owner: &str, database: &str) {
         row.get::<_, i64>(0)
     });
     assert_eq!(sessions, 1, "only the retained RPC pool remains");
-    ScratchDb::exec(
-        owner,
-        &format!("ALTER DATABASE {database} CONNECTION LIMIT -1"),
-    );
 }
 
 /// T-W5: 200 while `role_retrieval_worker` connects; after CONNECT is revoked and its sessions are
