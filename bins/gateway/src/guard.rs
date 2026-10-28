@@ -904,12 +904,7 @@ impl GatewayGuard {
             }
             let command = match prepare(&admitted.request) {
                 Ok(command) => command,
-                Err(code) => {
-                    return self
-                        .denied(context, operation, &admitted, code)
-                        .await
-                        .map_err(SourcedPutError::from);
-                }
+                Err(code) => return Ok(self.denied(context, operation, &admitted, code).await?),
             };
             let finished_audit = self.audit_event(
                 context,
