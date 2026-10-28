@@ -377,15 +377,16 @@ mod tests {
         assert_eq!(first.prefix_sha256, second.prefix_sha256);
         assert_ne!(first.tail, second.tail);
         let mut input = empty();
-        input.sections[0] = vec![item("pinned", 20)];
+        input.sections[0] = vec![item("pinned", 30)];
+        input.availability[PREFIX_LEN..].fill(SectionAvailability::NotDelivered);
         let first = assemble(input.clone(), budget(918, 100, 0, 0)).unwrap();
-        input.availability[SectionKind::CurrentState as usize] = SectionAvailability::NotDelivered;
+        input.availability[SectionKind::CurrentState as usize] = SectionAvailability::Available;
         let second = assemble(input, budget(918, 100, 0, 0)).unwrap();
         assert_eq!(first.prefix, second.prefix);
         assert_eq!(first.prefix_sha256, second.prefix_sha256);
         assert_eq!(
             first.prefix.sections[0].content,
-            SectionContent::Items(vec![item("pinned", 20)])
+            SectionContent::Items(vec![])
         );
     }
     #[test]
