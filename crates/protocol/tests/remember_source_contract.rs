@@ -1,5 +1,5 @@
-//! G-M06-8 — source and evidence-ref wire contracts (§33.1; §34; ADR-0098).
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json]; services=[]; env=[];
+//! `protocol::tests::remember_source_contract` — G-M06-8 source and evidence-ref wire contracts (§33.1; §34; ADR-0098).
+//! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[];
 //!   modules=[domain::error, domain::source, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [gateway's canonical validator refuses every malformed source field and extra key; no contract lock]
