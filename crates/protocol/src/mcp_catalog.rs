@@ -804,20 +804,24 @@ mod tests {
         let registry = CanonicalCatalog::load().unwrap().operations().clone();
         assert!(confirm_wire_holds(&registry));
         let template = registry["memory.archive"].clone();
-        for key in ["memory.forget", "account.delete"] {
-            let mut widened = registry.clone();
-            widened.insert(
-                key.to_string(),
-                Operation {
-                    op: key.to_string(),
-                    ..template.clone()
-                },
-            );
-            assert!(!confirm_wire_holds(&widened), "{key} must stay out");
+        // M19-6: memory.forget is Mcp-wire now, so it must be present; account.delete stays REST-only.
+        let mut widened = registry.clone();
+        widened.insert(
+            "account.delete".to_string(),
+            Operation {
+                op: "account.delete".to_string(),
+                ..template
+            },
+        );
+        assert!(
+            !confirm_wire_holds(&widened),
+            "account.delete must stay out"
+        );
+        for key in ["memory.archive", "memory.forget"] {
+            let mut omitted = registry.clone();
+            omitted.remove(key);
+            assert!(!confirm_wire_holds(&omitted), "{key} must stay in");
         }
-        let mut omitted = registry;
-        omitted.remove("memory.archive");
-        assert!(!confirm_wire_holds(&omitted));
     }
 
     fn assert_invalid_registry(fixture: &Value) {

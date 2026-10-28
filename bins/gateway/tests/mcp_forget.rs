@@ -2,7 +2,7 @@
 //! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner)
 //!   r=[control.confirm_tokens, control.deletion_requests, ops.memory_lifecycle_events, private.memory_evidence, private.memory_records, projection.stream_log]
-//!   w=[control.api_keys, control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, private.memory_evidence], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
+//!   w=[control.api_keys, control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, private.memory_evidence, projection.stream_checkpoints], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::forget, contracts::retrieval_config,
 //!   domain::context, domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::limiter,
 //!   gateway::mcp_application, gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog, testkit::disposable]
@@ -215,6 +215,25 @@ impl Rig {
             &[&credential.api_key_id],
         ).expect("owner grants fixture scopes");
         assert_eq!(updated, 1);
+        // ADR-0031 / ADR-0054 D-A: governance writes admit a (tenant, workspace) pair only through its serving `v1`
+        // checkpoint, so the fixture pair is provisioned the way ops does (mcp_gateway.rs `provision_stream_pair`);
+        // unprovisioned, every round reads DEPENDENCY_UNAVAILABLE. The fixture teardown deletes these rows.
+        for statement in [
+            "INSERT INTO projection.stream_checkpoints \
+               (tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version) \
+             VALUES($1,'workspace',$2,'knowledge','ingest','v1') ON CONFLICT DO NOTHING",
+            "UPDATE projection.stream_checkpoints SET serving=true \
+             WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2 \
+               AND domain='knowledge' AND projection_kind='ingest' AND projection_version='v1' \
+               AND NOT EXISTS (SELECT 1 FROM projection.stream_checkpoints \
+                               WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2 \
+                                 AND domain='knowledge' AND projection_kind='ingest' AND serving)",
+        ] {
+            handle
+                .admin
+                .execute(statement, &[&handle.tenant_id, &handle.workspace_id])
+                .expect("owner provisions the fixture stream pair");
+        }
         let application = application(handle);
         let (address, server) = handle.rt.block_on(start(application));
         Self {

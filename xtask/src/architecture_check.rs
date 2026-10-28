@@ -13346,7 +13346,7 @@ runs:
         )
         .unwrap();
         let keys = catalog_operation_keys(&root).unwrap();
-        assert_eq!(keys.len(), 53);
+        assert_eq!(keys.len(), 54);
         let scopes = catalog_operation_scopes(
             &root.join("contracts/mcp"),
             manifest["tools"].as_array().unwrap(),
@@ -13487,7 +13487,8 @@ runs:
             .unwrap()
             .clone();
         // Rest op registered (schema branch admitted, so only the wire rule can fire). No McpPending DestructiveOp exists since M19-6 (memory.forget is Mcp); the McpPending arm stays in operation_registry_failures for a future pending op.
-        for (key, wire) in [("account.delete", "Rest")] {
+        {
+            let key = "account.delete";
             let mut entry = template.clone();
             entry["op"] = key.into();
             let mut fixture = manifest.clone();
@@ -13498,7 +13499,7 @@ runs:
             admitted_scopes.insert(key.to_string(), scopes["memory.archive"].clone());
             assert_eq!(
                 operation_registry_failures(&fixture, &admitted, &admitted_scopes),
-                vec![format!("registry carries {wire} DestructiveOp: `{key}`")]
+                vec![format!("registry carries Rest DestructiveOp: `{key}`")]
             );
         }
         // Mcp op dropped from the registry.
