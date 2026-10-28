@@ -19666,7 +19666,7 @@ default run:
 - `bins/gateway/src/bootstrap.rs:3410` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/gateway/src/bootstrap.rs:3415` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/gateway/src/bootstrap.rs:3420` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/maintenance/src/deploy_check.rs:15` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
+- `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:39` [table-undeclared] (line) — static source-text guard; no DB connection
