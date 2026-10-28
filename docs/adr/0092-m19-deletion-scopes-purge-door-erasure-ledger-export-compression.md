@@ -310,4 +310,10 @@ compression without notice; deleting old memories.
   follow-up. Module design notes M17 (v2) and M23 (v2) as cited by their module names.
 
 Amended (M19-6): memory.forget is Mcp; round 1 = freeze + preview + token bound to (request_id, confirmation_digest); round 2 = request_id + confirm_token → accept_in_txn; the legacy memory_delete maps to round 1 {memory_id} and is never auto-confirmed (M25-10b)
-M19-6 red records: PENDING (targeted.yml r1–r5).
+M19-6 red records (targeted.yml, each on a throwaway branch that was deleted afterwards):
+- r1 run 40650932796 (round one calls accept): g_m19_2_wire_round_one_previews_and_forgets_nothing fails at bins/gateway/tests/mcp_forget.rs:369.
+- r2 run 40651507469 (a door refusal is swallowed): g_m19_2_wire_foreign_token_is_conflict and g_m19_2_wire_closure_grew_is_conflict fail at :441 and :455.
+- r3 run 40652443591 (accept is never called): g_m19_3_wire_accept_hides_memory_from_get_grep_enumerate fails at :557.
+- r4 run 40652943409 (a second `control.deletion_request_accept(` call site): m19_accept_sole_call_real_repo fails at xtask/src/architecture_check.rs:17834.
+- r5 run 40653456537 (MemoryForget back to McpPending): 7 mcp_tool_surface_truth_* tests fail at xtask/src/architecture_check.rs:13327–13644.
+- r6 run 40651949788 (the mcp_application shape guard is skipped): g_m19_2_wire_round_two_without_token_is_invalid_input fails at mcp_forget.rs:449.
