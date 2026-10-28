@@ -12954,6 +12954,7 @@ read by:
 
 written by:
 - (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::project_rollup`
 
 executed by:
