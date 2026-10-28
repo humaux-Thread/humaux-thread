@@ -5992,6 +5992,7 @@ modules:
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`

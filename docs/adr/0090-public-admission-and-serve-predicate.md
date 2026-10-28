@@ -132,7 +132,7 @@ Planned, implementer-owned, tri-state (§57.1); none exists in this PR:
 
 | gate | owner card | injected fault | expected red |
 |---|---|---|---|
-| G-M20-5 eligibility | M20-5 | read direct evidence only; read M14 UNIVERSAL as a licence | a SENSITIVE, affect or customer-linked item, or an applicability-only item, is selected |
+| G-M20-5 eligibility | M20-5 | read direct evidence only; read M14 UNIVERSAL as a licence; drop the CUSTOMER-role branch; drop the category-in-notice check | a SENSITIVE, affect or customer-linked item, or an applicability-only item, is selected (red runs 40503799025 r1 `crates/adapters/tests/contribution_eligibility.rs:473` and :507, :531, :559, :690, :763, :850; 40503804172 r2 :690 and the functiondef sentinel :931; 40503810693 r3 :559; 40503817610 r4 :620, :845 and the verdict-literal contract :888; green 40503792310, 17 passed) |
 | G-M20-6 completeness | M20-7 | drop one required field per type; infer result from tone | a FIX without repro is admitted; `SUCCESS` with `assist = MODEL` (red runs 40303466537 r1, 40303894848 r2, 40323143436 r3) |
 | G-M20-7 rules (A1 to A7, F1 to F4, one each) | M20-8a, -8b, -11 | remove one rule | a fragment, PII in a title/path/URL query/code comment, an AWS key, an unknown licence, "ignore previous instructions" in an alias, or a missing receipt is admitted |
 | G-M20-8 dedupe/conflict | M20-9 | merge variants; vote on a conflict | a variant is lost; one side of a conflict is `SUPPORTED` |
@@ -173,3 +173,76 @@ sending raw private task text to the public lane; a combined trust score on card
 
 Module design note M20 v2, D3' to D9', D15', D16', §8 to §10 and §12; batch-33 public-pool research digest (B33);
 Baseline §12.1.1, §12.3, §12.6, §7.1, §7.2, §23.3, §52, §57.1; ADR-0083; ADR-0084; ADR-0088; ADR-0089; ADR-0091.
+
+## Amendment (M20-5, 2026-10-27) — the D-A predicate and its kind-to-unit-type map (migration 0286)
+
+`private.contribution_eligibility(p_tenant_id, p_memory_id) RETURNS text` is the one D-A predicate (SECURITY DEFINER, owner
+`role_migration_owner`, `search_path = pg_catalog, pg_temp`; EXECUTE for `role_gateway` and `role_private_worker` only, so
+`role_public_worker`, `role_public_disclosure` and `role_retrieval_worker` hold none). It returns the first failure of a fixed
+order, else `ELIGIBLE`: `NOT_FOUND`, `NOT_ACTIVE`, `KIND_NOT_MAPPED`, `NO_NOTICE`, `CATEGORY_NOT_IN_NOTICE`, `NO_EVIDENCE`,
+`DATA_CLASS`, `AFFECT`, `PERSON_OR_CUSTOMER_LINK`, `ELIGIBLE`. The Rust set is
+`humaux_adapters::contribution_eligibility::EligibilityVerdict`; the SQL text is the wire and an unknown string is `Internal`,
+never `Eligible`. The reader lives in `adapters`, not in `public-pool`, which may not name `private.` (G-M20-23b).
+
+- **Closure.** Every `private.memory_evidence` row of the memory, whatever its role (§8.6). The affect and link checks cover
+  the memory and every closure Evidence row; `DATA_CLASS` fails on any closure Evidence above `INTERNAL`.
+- **Active.** `status = 'active'` and `archived_at IS NULL` (the recall gate's lifecycle; `status = 'active'` is tied to
+  `superseded_by IS NULL` by G59-4).
+- **Fail closed on hidden evidence.** `private.evidence_objects` has no owner arm in its policy (0163), so closure Evidence
+  the session cannot see is unknown and reads `DATA_CLASS`. The sweep (M20-6) runs each candidate under its author's session.
+- **Tenant.** The tenant argument must be the session tenant (42501, the 0255 pin); a memory of another tenant reads
+  `NOT_FOUND`, the verdict of an absent id.
+- **Links.** A subject of kind `PERSON`, or any subject holding the `CUSTOMER` role, fails. An `ORGANISATION` (or other
+  non-person kind) without that role does not: reuse needs entities.
+- **Applicability is never a licence.** The body names neither `memory_applicability`, `memory_projects*` nor
+  `memory_in_project`, nor any `public.*` table; a `pg_get_functiondef` sentinel pins it.
+- **Kind map.** One home, `private.contribution_unit_type(note_kind text)`: `fix` to `FIX`, `decision` to `DECISION`,
+  `research` to `RESEARCH`; every other note kind and a non-note memory (NULL) give `KIND_NOT_MAPPED`. `USAGE`, `CHECKLIST`
+  and `FAILURE_CASE` have no source kind yet (M07/M15); a row is added with a contract test when one exists. Rust holds no
+  copy; a §78.2 test asserts every returned unit type is a `UnitType`.
+
+## Amendment 2 (M20-5 fix 1, 2026-10-27) — corrects the amendment above after the rv-394 privacy review
+
+Three statements of the first amendment are corrected; the first text stays as written.
+
+- **Grant.** EXECUTE on `private.contribution_eligibility` is held by `role_private_worker` ONLY, not by `role_gateway` and
+  `role_private_worker`. The predicate reads `private.memory_records` through the owner arm (0163), which ignores the session's
+  memory visibility (0012 `memory_records_tenant_and_visibility`, the 0155 RESTRICTIVE policy), so a user-facing caller would
+  learn the state of memories it may not see inside its own tenant. Its one planned caller is the M20-6 sweep, a system
+  worker. A user-facing caller must first apply the session's visibility inside the definer and read `NOT_FOUND` when hidden.
+  The manifest postcheck pins the set to exactly `{role_private_worker}` (no other runtime role, no `role_public_disclosure`, no
+  PUBLIC) and test (j) asserts it per role.
+- **Verdict order.** `EVIDENCE_DELETED` is a new verdict, checked right after `NO_EVIDENCE`: it fires when ANY closure
+  Evidence is tombstoned. Forgetting tombstones the Evidence's `projection.stream_log` row without revoking the memory, so
+  `NOT_ACTIVE` does not cover it. It is found the way the shared read gate finds it (`crates/adapters/src/read_materialize.rs`
+  `sl.state = 'TOMBSTONED'`: `ops.outbox` by `evidence_id`, `projection.stream_log` by `commit_seq`). The order is now
+  `NOT_FOUND`, `NOT_ACTIVE`, `KIND_NOT_MAPPED`, `NO_NOTICE`, `CATEGORY_NOT_IN_NOTICE`, `NO_EVIDENCE`, `EVIDENCE_DELETED`,
+  `DATA_CLASS`, `AFFECT`, `PERSON_OR_CUSTOMER_LINK`, `ELIGIBLE`.
+- **Links.** D-A's "no person, customer or relationship link" includes the relation hop. Start from every subject linked to
+  the memory or to any closure Evidence and follow `private.subject_relations` outward (`src` to `dst`, kinds `OWNED_BY` and
+  `PART_OF`) transitively; the link exists if ANY reached subject has kind `PERSON` or holds the `CUSTOMER` role. Only the
+  current revision of a relation counts (the highest revision per `relation_id`, as `adapters::relation_repo::current_revision`
+  reads it), and a retracted one (`valid = '{}'`) is skipped. The validity window is not consulted (fail closed): ever-valid
+  current revisions count until the M18 validity reader exists.
+- **Sentinel.** The `pg_get_functiondef` sentinel now rejects `memory_applicability`, `memory_project` (which covers
+  `memory_projects`, `memory_project_revocations` and `memory_projects_live`), `memory_in_project`, `evidence_projects` and `public.`.
+
+### Red records for G-M20-5 after fix 1 (head d27c9793, `targeted.yml`, one throwaway branch per fault)
+
+All lines are `crates/adapters/tests/contribution_eligibility.rs` at the head the runs were taken on. The earlier row of the gate
+table keeps its own runs; the lines there moved when the file grew.
+
+| fault | run | red at |
+|---|---|---|
+| green control (no fault) | 40513603074 | 22 passed, 0 failed |
+| r1 read direct evidence only (closure emptied after `NO_EVIDENCE`) | 40513609136 | (b) :601, (c) :635, (d) :659, (e) :687, (i) :818, (k) :901, (m) :988, (n) :1045, (r) :1164 |
+| r2 read M14 UNIVERSAL as a licence | 40513615880 | (i) :818 and the functiondef sentinel :1251 |
+| r3 drop the CUSTOMER-role branch | 40513625054 | (e) :687, (n) :1045, (o) :1083, (p) :1109, (q) :1142 |
+| r4 drop the category-in-notice check | 40513633087 | (g) :748, (m) :983 and the verdict-literal contract :1207 |
+| r5 drop the relation hop | 40513640504 | (n) :1045, (o) :1083, (p) :1109, (q) :1142 |
+| r6 drop the `EVIDENCE_DELETED` check | 40513648007 | (r) :1169 and the verdict-literal contract :1207 |
+| r7 re-add `GRANT EXECUTE ... TO role_gateway` (manifest postcheck loosened so the migration applies) | 40513654466 | (j) :841, `role_gateway is refused`, left `Ok(Eligible)` |
+| r7p the same grant with the manifest postcheck intact | 40513662459 | the migration itself: `0286_contribution_eligibility: postcheck refused the migration` |
+
+r7 and r7p are two independent reds for one fault: the manifest postcheck refuses the grant at migrate time, and, with the
+postcheck loosened, test (j) still refuses it at run time.
