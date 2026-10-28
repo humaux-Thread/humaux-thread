@@ -598,6 +598,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -701,6 +702,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1593,6 +1595,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 
 executed by:
