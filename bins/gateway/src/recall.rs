@@ -26,7 +26,7 @@ use humaux_adapters::{
         QdrantTransportError, RetrievalFamily, ha_profile_for, query_dense,
         query_dense_groups_bounded, query_sparse_groups,
     },
-    read_materialize::MaterializedItem,
+    read_materialize::{ItemFreshness, MaterializedItem},
     retrieval_query_log::QueryLogCounts,
     retrieve::{
         GatedTexts, IndexFace, MaterializedPrivateReadServing, PointSlots, QueryHmac,
@@ -67,12 +67,12 @@ use humaux_protocol::{
     mcp_catalog::CanonicalCatalog,
 };
 use humaux_retrieval::{
-    completeness::{CensusResult, FreshnessClass, LedgerClosure},
+    completeness::{CensusResult, LedgerClosure},
     envelope::{
-        CompletenessBlock, CompletenessInputs, Envelope, FreshnessBlock, LaneStatus,
-        MandatoryReport, PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock,
-        ProvenanceBlock, ProvenanceValue, build_projection_block, dense_lane_outcome_block,
-        dense_lane_substitution, no_serving_projection_envelope, sparse_lane_unavailable,
+        CompletenessBlock, CompletenessInputs, Envelope, LaneStatus, MandatoryReport,
+        PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock, ProvenanceBlock,
+        ProvenanceValue, build_projection_block, dense_lane_outcome_block, dense_lane_substitution,
+        no_serving_projection_envelope, sparse_lane_unavailable,
     },
     planner::QueryClass,
     rerank::{Executor, RerankFailure, degradations, not_run, settle, unavailable},
@@ -1360,7 +1360,8 @@ fn accepted_output(
     sparse: SparseLeg,
     mut clock: StageClock,
 ) -> Result<(PendingEnvelope<ToolOutput>, QueryLogCounts), ErrorCode> {
-    let items = render_items(materialized.bodies.items);
+    let freshness = materialized.bodies.freshness_summary();
+    let items = render_items(materialized.bodies.items, &materialized.bodies.freshness)?;
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let candidate_count = u32::try_from(candidate_count).map_err(|_| ErrorCode::Internal)?;
     let projection =
@@ -1473,11 +1474,7 @@ fn accepted_output(
                 },
                 pipeline: pipeline.clone(),
                 provenance: provenance.clone(),
-                freshness: FreshnessBlock {
-                    class: FreshnessClass::Unknown,
-                    latest_evidence_at: None,
-                    state_age_seconds: None,
-                },
+                freshness,
                 grounding: materialized.grounding,
                 mandatory: MandatoryReport::NotRun,
                 pinned: PinnedReport::NotRun,
@@ -1514,41 +1511,45 @@ fn accepted_output(
     Ok((pending, counts))
 }
 
-fn render_items(items: Vec<MaterializedItem>) -> Vec<Value> {
+fn render_items(
+    items: Vec<MaterializedItem>,
+    freshness: &HashMap<Uuid, ItemFreshness>,
+) -> Result<Vec<Value>, ErrorCode> {
     items
         .into_iter()
         .map(|item| match item {
-            MaterializedItem::Memory { memory_id, content } => json!({
+            MaterializedItem::Memory { memory_id, content } => Ok(json!({
                 "kind": "memory",
                 "memory_id": memory_id,
                 "content": content,
-            }),
+                "freshness": freshness.get(&memory_id).ok_or(ErrorCode::Internal)?,
+            })),
             MaterializedItem::TemporaryEvidence {
                 evidence_id,
                 stream_seq,
                 processing_state,
                 payload,
                 linked_memory_ids,
-            } => json!({
+            } => Ok(json!({
                 "kind": "temporary_evidence",
                 "evidence_id": evidence_id,
                 "stream_seq": stream_seq,
                 "processing_state": processing_state.as_db_str(),
                 "payload": payload,
                 "linked_memory_ids": linked_memory_ids,
-            }),
+            })),
             MaterializedItem::ArtifactUnavailable {
                 evidence_id,
                 stream_seq,
                 processing_state,
                 linked_memory_ids,
-            } => json!({
+            } => Ok(json!({
                 "kind": "artifact_unavailable",
                 "evidence_id": evidence_id,
                 "stream_seq": stream_seq,
                 "processing_state": processing_state.as_db_str(),
                 "linked_memory_ids": linked_memory_ids,
-            }),
+            })),
         })
         .collect()
 }

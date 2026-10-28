@@ -1313,6 +1313,50 @@ mod tests {
         }
     }
 
+    /// §21.5 / ADR-0111 D-C: the shared Memory item schema stays closed with a complete annotation.
+    #[test]
+    fn memory_item_freshness_contract_is_closed() {
+        let catalog = CanonicalCatalog::load().expect("catalog");
+        let mut envelope = minimal_memory_envelope();
+        envelope["items"] = json!([{
+            "memory_id":"00000000-0000-0000-0000-000000000001", "content":{},
+            "freshness": {"class":"unknown", "policy_id":"evidence-per-type", "policy_version":1,
+                "latest_evidence_at":null, "state_age_seconds":null}
+        }]);
+        assert_eq!(envelope["items"].as_array().expect("items").len(), 1);
+        catalog
+            .validate_output(
+                ToolName::Memory,
+                &json!({
+                    "pagination":{"snapshot_id":"00000000-0000-0000-0000-000000000001","next_cursor":null}, "content":envelope
+                }),
+            )
+            .expect("per-item annotation accepted");
+        let schema = json_document(schema_source("context.output.schema.json").expect("schema"))
+            .expect("json");
+        let item = &schema["properties"]["content"]["properties"]["items"]["items"];
+        assert_eq!(
+            item["required"],
+            json!(["memory_id", "content", "freshness"])
+        );
+        let annotation = &item["properties"]["freshness"];
+        assert_eq!(annotation["additionalProperties"], false);
+        assert_eq!(
+            annotation["properties"].as_object().expect("fields").len(),
+            5
+        );
+        assert_eq!(
+            annotation["required"],
+            json!([
+                "class",
+                "policy_id",
+                "policy_version",
+                "latest_evidence_at",
+                "state_age_seconds"
+            ])
+        );
+    }
+
     fn minimal_memory_envelope() -> Value {
         json!({
             "items": [],
