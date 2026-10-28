@@ -6403,19 +6403,6 @@ processes:
 modules:
 - `adapters::tests::contribution_scan`
 
-### `HUMAUX_TEST_WEBHOOK_SECRET`
-- witness: literal
-- registry: gateway
-
-kind:
-- runtime
-
-processes:
-- process(humaux-gateway)
-
-modules:
-- `gateway::bootstrap`
-
 ### `HUMAUX_W2_V4_DIAGNOSTIC`
 - witness: literal
 - registry: raw
