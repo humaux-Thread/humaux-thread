@@ -505,6 +505,23 @@ fn g_m19_3_wire_accept_hides_memory_from_get_grep_enumerate() {
         |mut h| {
             let memory = seed(&mut h, "m19wireuniquehidden");
             let rig = Rig::new(&mut h);
+            // Positive controls (rv-411 P2): before accept, grep and enumerate both find the memory, so the empty
+            // results after accept are the forget, not a read that never sees this credential's rows.
+            let before = rig.call(
+                &h,
+                json!({"action":"grep", "pattern":"m19wireuniquehidden"}),
+            );
+            assert_eq!(structured(&before)["total_memories"], 1, "{}", before.1);
+            let listed = rig.call(&h, json!({"action":"enumerate"}));
+            assert!(
+                structured(&listed)["content"]["items"]
+                    .as_array()
+                    .expect("enumerate items")
+                    .iter()
+                    .any(|item| item["memory_id"] == memory.to_string()),
+                "{}",
+                listed.1
+            );
             let (request, token) =
                 prepare(&rig, &h, json!({"action":"forget", "memory_id":memory}));
             let response = accept(&rig, &h, request, &token);
