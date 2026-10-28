@@ -27,8 +27,8 @@ hex = "0.4"
 humaux-application = { path = "../../crates/application" }
 # why: purpose-bound transport and credential sources (§71.2); used-by: [billing-worker::creem, billing-worker::fake_creem, tests]
 humaux-infra-egress = { path = "../../crates/infra-egress" }
-# why: transport URL and method types without a second client (§83.4); used-by: [billing-worker::creem]
-humaux-infra-network = { path = "../../crates/infra-network" }
+# why: the existing canonical URL parser; no Layer 0 dependency or second client (§83.4); used-by: [billing-worker::creem]
+url = "2"
 # why: object-safe provider port implementation (§71.2); used-by: [billing-worker::creem, billing-worker::fake_creem]
 async-trait = "0.1"
 # why: subscription RFC3339 periods (§71.2); used-by: [billing-worker::creem]

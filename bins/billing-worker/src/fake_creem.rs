@@ -16,8 +16,6 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 
-/// §79.4: public fixture bytes, not credentials; never used outside tests.
-pub const TEST_SECRET: &str = "public-fixture-signing-bytes";
 /// §79.4: public fixture token, not an API credential.
 pub const TEST_KEY: &str = "public-fixture-api-token";
 /// §79.4: injectable test source, never reads a real key.
@@ -32,8 +30,8 @@ impl RetrievalCredentialSource for FixtureCredential {
     }
 }
 /// §71.3: signature covers the exact supplied bytes, without serializing again.
-pub fn sign(raw: &[u8]) -> String {
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(TEST_SECRET.as_bytes()).unwrap();
+pub fn sign(raw: &[u8], secret: &[u8]) -> String {
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(secret).unwrap();
     mac.update(raw);
     hex::encode(mac.finalize().into_bytes())
 }

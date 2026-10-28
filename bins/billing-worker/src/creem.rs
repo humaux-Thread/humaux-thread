@@ -1,5 +1,5 @@
 //! `billing-worker::creem` — cloud provider boundary (§71.2).
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-infra-egress, humaux-infra-network, serde_json, time]; services=[HTTP(provider)]; env=[]; modules=[application::billing, billing-worker::mode, billing-worker::normalize, billing-worker::signature, domain::billing, domain::dataclass, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-infra-network]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-infra-egress, serde_json, time, url]; services=[HTTP(provider)]; env=[]; modules=[application::billing, billing-worker::mode, billing-worker::normalize, billing-worker::signature, domain::billing, domain::dataclass, domain::egress, domain::error, domain::ids, infra-egress::http]
 //! Called-by: [tests]
 //! Invariants: [explicit allowlist; authenticated raw bodies; no checkout-response money]
 //! Spec: Baseline §71.2; §71.3; §52
@@ -21,10 +21,10 @@ use humaux_domain::{
     ids::TenantId,
 };
 use humaux_infra_egress::http::{HttpEgressConfig, HttpExternalCall, RetrievalCredentialSource};
-use humaux_infra_network::reqwest::{Method, Url, header::HeaderName};
 use serde_json::Value;
 use std::sync::Arc;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use url::Url;
 
 /// §71.2: credentials are injected sources (production uses `EnvCredentialSource`), never URL components.
 pub struct CreemClient {
@@ -93,8 +93,8 @@ impl CreemClient {
         )
         .map_err(|_| ErrorCode::InvalidInput)?
         .with_request_policy(
-            Method::GET,
-            HeaderName::from_static("x-api-key"),
+            "GET".parse().map_err(|_| ErrorCode::InvalidInput)?,
+            "x-api-key".parse().map_err(|_| ErrorCode::InvalidInput)?,
             self.hosts.clone(),
         )?;
         let payload = AuthorizedEgressPayload::new(Vec::new());

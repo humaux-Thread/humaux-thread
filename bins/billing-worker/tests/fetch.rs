@@ -5,7 +5,7 @@
 //! Spec: Baseline §71.2; §71.3; §79.5
 #[path = "../src/fake_creem.rs"]
 mod fake_creem;
-use fake_creem::{FixtureCredential, TEST_KEY, TEST_SECRET};
+use fake_creem::{FixtureCredential, TEST_KEY};
 use humaux_application::billing::{BillingProvider, ExternalSubscriptionRef};
 use humaux_billing_worker::{creem::CreemClient, mode::BillingMode, normalize::PaymentAmount};
 use humaux_domain::{
@@ -15,6 +15,8 @@ use humaux_infra_egress::http::HttpEgressConfig;
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
+// §79.4: fixed public fixture bytes, not a credential; test-only source.
+const TEST_SECRET: &str = "public-fixture-signing-bytes";
 fn client(base: &str, key: &'static str) -> CreemClient {
     CreemClient::new(
         base,
@@ -58,7 +60,7 @@ async fn authoritative_fetch_and_authentication() {
         (1790812800, 1793491200)
     );
     let raw = serde_json::to_vec(&json!({"id":"evt_fixture","eventType":"subscription.paid","created_at":3000,"object":{"id":"sub_fixture","last_transaction":{"id":"txn_fixture"}}})).unwrap();
-    let signed = fake_creem::sign(&raw);
+    let signed = fake_creem::sign(&raw, TEST_SECRET.as_bytes());
     let headers = [("creem-signature", signed.as_str())];
     let normalized = provider.normalize_event(&headers, &raw).await.unwrap();
     assert_eq!(normalized.provider_txn_ref.as_deref(), Some("txn_fixture"));

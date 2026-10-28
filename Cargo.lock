@@ -1164,11 +1164,11 @@ dependencies = [
  "humaux-application",
  "humaux-domain",
  "humaux-infra-egress",
- "humaux-infra-network",
  "serde_json",
  "sha2 0.11.0",
  "time",
  "tokio",
+ "url",
  "uuid",
 ]
 
