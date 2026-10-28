@@ -5073,9 +5073,11 @@ kind:
 
 processes:
 - process(cargo-xtask)
+- process(humaux-gateway)
 - process(humaux-retrieval-worker)
 
 modules:
+- `gateway::bootstrap`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::exit_codes`
 - `retrieval-worker::tests::ops_listener`
@@ -5093,9 +5095,11 @@ kind:
 
 processes:
 - process(cargo-xtask)
+- process(humaux-gateway)
 - process(humaux-retrieval-worker)
 
 modules:
+- `gateway::bootstrap`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::ops_listener`
 - `retrieval-worker::tests::same_uid_boot`
@@ -5274,9 +5278,11 @@ kind:
 
 processes:
 - process(cargo-xtask)
+- process(humaux-gateway)
 - process(humaux-retrieval-worker)
 
 modules:
+- `gateway::bootstrap`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::exit_codes`
 - `retrieval-worker::tests::ops_listener`

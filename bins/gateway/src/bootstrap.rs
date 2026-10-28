@@ -3368,18 +3368,19 @@ mod tests {
         assert!(GatewayBootstrap::from_raw(values).is_err());
     }
 
+    fn values_file_value(text: &str, key: &str) -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("{key} is missing from its values file"))
+            .to_owned()
+    }
+
     /// ADR-0084 D-E: the gateway's pin in `values/gateway.env` and the worker's identity in `values/retrieval-worker.env`
     /// are one identity written twice; this keeps them from drifting. Fault: change one hash digit in either file ⇒ red.
     #[test]
     fn the_gateway_pin_equals_the_workers_identity_in_the_values_files() {
         let gateway = include_str!("../../../deploy/env/values/gateway.env");
         let worker = include_str!("../../../deploy/env/values/retrieval-worker.env");
-        let value = |text: &str, key: &str| {
-            text.lines()
-                .find_map(|line| line.strip_prefix(&format!("{key}=")))
-                .unwrap_or_else(|| panic!("{key} is missing from its values file"))
-                .to_owned()
-        };
         // `RERANK_PIN_KEYS` and the worker's `KEY_*` constants list the five parts in the same order.
         for (gateway_key, worker_key) in RERANK_PIN_KEYS.into_iter().zip([
             KEY_REPO,
@@ -3389,8 +3390,42 @@ mod tests {
             KEY_TOKENIZER_SHA256,
         ]) {
             assert_eq!(
-                value(gateway, gateway_key),
-                value(worker, worker_key),
+                values_file_value(gateway, gateway_key),
+                values_file_value(worker, worker_key),
+                "{gateway_key}"
+            );
+        }
+    }
+
+    /// M12 D4: the gateway's query-cache stamp in values/gateway.env and the worker's embedding identity in
+    /// values/retrieval-worker.env are one identity written twice; this keeps them from drifting. Fault: change one
+    /// stamp value in either file ⇒ red.
+    #[test]
+    fn the_gateway_embedding_stamp_equals_the_workers_identity_in_the_values_files() {
+        let gateway = include_str!("../../../deploy/env/values/gateway.env");
+        let worker = include_str!("../../../deploy/env/values/retrieval-worker.env");
+        for (gateway_key, worker_key) in [
+            (
+                "HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID",
+                // dep-map: allow env-undeclared — a values-file key compared as data; the gateway never reads it
+                "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER",
+            ),
+            (
+                "HUMAUX_GATEWAY_EMBEDDING_MODEL_ID",
+                // dep-map: allow env-undeclared — a values-file key compared as data; the gateway never reads it
+                "HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL",
+            ),
+            (
+                "HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION",
+                // dep-map: allow env-undeclared — a values-file key compared as data; the gateway never reads it
+                "HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION",
+            ),
+        ] {
+            let gateway_value = values_file_value(gateway, gateway_key);
+            assert!(!gateway_value.is_empty(), "{gateway_key}");
+            assert_eq!(
+                gateway_value,
+                values_file_value(worker, worker_key),
                 "{gateway_key}"
             );
         }
