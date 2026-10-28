@@ -15265,6 +15265,7 @@ modules naming it:
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `protocol::tests::page_budget`
+- `protocol::tests::remember_source_contract`
 - `tests`
 
 ### humaux-protocol → `humaux-application` (normal)
@@ -15329,6 +15330,7 @@ modules naming it:
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `protocol::tests::page_budget`
+- `protocol::tests::remember_source_contract`
 - `tests`
 
 ### humaux-protocol → `jsonschema` (normal)
@@ -15574,6 +15576,7 @@ modules naming it:
 why: envelope/signals/completeness/handoff/request DTO (de)serialization
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::completeness`
 - `retrieval::envelope`
 - `retrieval::handoff`
@@ -15593,6 +15596,7 @@ modules naming it:
 why: pure domain types (MemoryType, authority, selection) this crate's logic is keyed on
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::compiler`
 - `retrieval::completeness`
 - `retrieval::envelope`
@@ -15615,6 +15619,7 @@ modules naming it:
 why: Handoff::canonical_bytes' sole serialization step (G80-31 byte domain)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
@@ -15625,6 +15630,7 @@ modules naming it:
 why: Handoff::sha256 byte fingerprint (G80-31)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -15633,6 +15639,7 @@ modules naming it:
 why: dataset.tsv sha256 manifest verification in the eval harness
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -19469,6 +19476,13 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/remember_source_contract.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/public-pool/tests/admission_deid.rs`
 db-bound (default run): no
 
@@ -19694,7 +19708,7 @@ default run:
 - `bins/gateway/src/bootstrap.rs:3410` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/gateway/src/bootstrap.rs:3415` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/gateway/src/bootstrap.rs:3420` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/maintenance/src/deploy_check.rs:15` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
+- `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:39` [table-undeclared] (line) — static source-text guard; no DB connection
