@@ -1,5 +1,5 @@
 //! `adapters::tests::dedup` — G-M15-14: repeated bytes never collapse two genuine messages.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, sqlx, uuid]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.evidence_sources, private.memory_evidence, private.memory_records], PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::candidate_repo, adapters::dedup_repo, adapters::tests::support::operation_receipt_fixture, domain::evidence, domain::identity, domain::ids, domain::knowledge, humaux-testkit]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, sqlx, tokio, uuid]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.evidence_sources, private.memory_evidence, private.memory_records], PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::candidate_repo, adapters::dedup_repo, adapters::tests::support::operation_receipt_fixture, domain::evidence, domain::identity, domain::ids, domain::knowledge, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [owner only seeds; real gateway scan and observations; exact candidate counts and target sets]
 //! Spec: Baseline §11.6; §57.1; §79.2; §80.1; ADR-0050; ADR-0113; M15 D3/D10
@@ -249,6 +249,7 @@ fn concurrent_expiry_is_rechecked_before_proposal() {
         seed(&mut h, b"same", true, None);
         let (expired, _) = seed(&mut h, b"same", true, None);
         let mut owner = h.owner_client().expect("expiry owner connection");
+        // dep: PostgreSQL(owner) — hold expiry uncommitted until the gateway waits on this row
         let mut expiry = owner.transaction().expect("expiry transaction");
         let holder: i32 = expiry
             .query_one("SELECT pg_backend_pid()", &[])
