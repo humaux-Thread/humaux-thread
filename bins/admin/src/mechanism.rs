@@ -3,7 +3,7 @@
 //!   tokio]; services=[PostgreSQL(role_admin)]; env=[CARGO_MANIFEST_DIR,
 //!   HUMAUX_ADMIN_PG_DSN, HUMAUX_ADMIN_PG_POOL_MAX_CONNECTIONS]; modules=[adapters::mechanism_observation, adapters::postgres,
 //!   contracts::mechanism_registry]
-//! Called-by: [admin::main, admin::render]
+//! Called-by: [admin::main, admin::probe, admin::render]
 //! Invariants: [a query against a mechanism the registry does not recognise returns the typed NotFound, never a default row]
 //! Spec: Baseline §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!

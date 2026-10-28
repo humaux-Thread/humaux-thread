@@ -13,7 +13,7 @@
 //!   release gate is fail-closed and its receipt has no `not_applicable` state (review fix 9, F8 / OP-7);
 //!   the pure pool-budget function sums supplied process pools and replicas plus reserves inside the supplied
 //!   connection ceiling, without reading deploy files; --env supplies committed deployment inputs (§48.1 / §78.1)]
-//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B;; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
+//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G;
 //!   ADR-0066 D-C, D-G, D-H, D-J, D-K, D-R; ADR-0100; ADR-0125
 //! dep-map: allow env-undeclared — the HUMAUX_* names here are checked in values files, compose documents and container
 //!   env; this module reads none of them from its own environment

@@ -1,7 +1,7 @@
 //! `admin::probe` — `humaux-admin q <name>`: the §4.4 instant probe catalog (8 Readings, 3 typed refusals).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, serde_json, sha2, time, tokio]; services=[PostgreSQL(role_admin)
 //!   x=[ops.admin_probe_snapshot]]; env=[CARGO_PKG_NAME, CARGO_PKG_VERSION, HUMAUX_ADMIN_PG_DSN,
-//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::health, adapters::postgres, admin::cell_resources,
+//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::health, admin::mechanism, admin::cell_resources,
 //!   admin::ops_status, admin::tls_expiry]
 //! Called-by: [admin::cell_resources, admin::main, admin::ops_status, admin::tls_expiry]
 //! Invariants: [the probe is read-only: every DB probe is one call of the read-only aggregate definer
