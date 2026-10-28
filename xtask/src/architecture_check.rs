@@ -3830,6 +3830,20 @@ fn m19_freeze_sole_call(root: &Path) -> Verdict {
     )
 }
 
+/// ADR-0092 D-B / #358 P2-1: only the checked adapter may enter the accept door (§37.2).
+fn m19_accept_sole_call(root: &Path) -> Verdict {
+    sole_door_statements(
+        root,
+        "M19 accept",
+        "accept caller",
+        &[(
+            "control.deletion_request_accept(",
+            "crates/adapters/src/forget_repo.rs",
+        )],
+        &[],
+    )
+}
+
 /// M07 D9 / G-M07-1: the Evidence and Memory INSERT doors ([`M07_INSERT_DOORS`]).
 fn m07_1_insert_doors(root: &Path) -> Verdict {
     sole_door_statements(
@@ -11597,6 +11611,10 @@ pub fn run(_args: &[String]) -> i32 {
             m19_freeze_sole_call(&root),
         ),
         (
+            "M19 / #358 P2-1 (accept door has exactly one Rust call site)",
+            m19_accept_sole_call(&root),
+        ),
+        (
             "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
             m07_1_insert_doors(&root),
         ),
@@ -17187,6 +17205,12 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m19_freeze_sole_call_real_repo() {
         assert_eq!(m19_freeze_sole_call(&real_root()), Verdict::Pass);
+    }
+
+    /// ADR-0092 D-B / #358 P2-1: exactly one accept caller in the production tree (§37.2).
+    #[test]
+    fn m19_accept_sole_call_real_repo() {
+        assert_eq!(m19_accept_sole_call(&real_root()), Verdict::Pass);
     }
 
     /// #315: the same sentinel rejects zero, two, misplaced and missing callers.
