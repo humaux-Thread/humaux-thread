@@ -1913,16 +1913,32 @@ fn read_compose(source: &str) -> Result<Value, String> {
 /// What a run decided: the checks, or a usage/refusal (exit 2) or an infrastructure failure (exit 1).
 type Outcome = Result<Vec<Value>, (u8, String)>;
 
+// §57.1 / ADR-0066 D-R: full --env inputs; --placement-only needs just the first two.
+const ENV_REQUIRED_FLAGS: [&str; 5] = [
+    "--values-dir",
+    "--secrets-dir",
+    "--examples-dir",
+    "--compose-json",
+    "--sizing-conf",
+];
+
 fn env_checks(
     args: &[String],
     doc: Option<&Value>,
     checks: &mut Vec<Value>,
 ) -> Result<(), (u8, String)> {
     let usage = |m: &str| (2u8, m.to_owned());
+    let [
+        values_flag,
+        secrets_flag,
+        examples_flag,
+        compose_flag,
+        sizing_flag,
+    ] = ENV_REQUIRED_FLAGS;
     let values_dir =
-        flag(args, "--values-dir").ok_or_else(|| usage("--env needs --values-dir DIR"))?;
-    let secrets_dir =
-        flag(args, "--secrets-dir").ok_or_else(|| usage("--env needs --secrets-dir DIR"))?;
+        flag(args, values_flag).ok_or_else(|| usage(&format!("--env needs {values_flag} DIR")))?;
+    let secrets_dir = flag(args, secrets_flag)
+        .ok_or_else(|| usage(&format!("--env needs {secrets_flag} DIR")))?;
     if !Path::new(&values_dir).is_dir() {
         return Err(usage(&format!("missing values dir: {values_dir}")));
     }
@@ -1935,10 +1951,10 @@ fn env_checks(
         // Review P1 (2026-10-08): a missing --examples-dir used to make presence `not_applicable` (exit 0), so the
         // node's only pre-`up` config guard (D-N) never ran. The examples ship in every image (D-T), and the node
         // environment comes from the compose document, so both are required: a caller error, never a quiet pass.
-        let (Some(dir), Some(doc)) = (flag(args, "--examples-dir"), doc) else {
-            return Err(usage(
-                "--env needs --examples-dir DIR and --compose-json FILE|- (or --placement-only)",
-            ));
+        let (Some(dir), Some(doc)) = (flag(args, examples_flag), doc) else {
+            return Err(usage(&format!(
+                "--env needs {examples_flag} DIR and {compose_flag} FILE|- (or --placement-only)"
+            )));
         };
         let examples = read_env_dir(Path::new(&dir), "example", ".env").map_err(|e| (1, e))?;
         if examples.is_empty() {
@@ -1948,8 +1964,8 @@ fn env_checks(
         reasons.extend(presence_reasons(&examples, &values, &secrets, &compose));
         reasons.extend(secret_key_foreign_reasons(&examples, &secrets));
         checks.push(check("env_presence", reasons));
-        let sizing_name =
-            flag(args, "--sizing-conf").ok_or_else(|| usage("--env needs --sizing-conf FILE"))?;
+        let sizing_name = flag(args, sizing_flag)
+            .ok_or_else(|| usage(&format!("--env needs {sizing_flag} FILE")))?;
         let sizing = match std::fs::read_to_string(&sizing_name) {
             Ok(text) => Some(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -2071,6 +2087,58 @@ pub fn run(args: &[String]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §57.1 / §80.1 / G-M03-10: executable runbook callers satisfy the parser's full --env contract.
+    #[test]
+    fn pool_budget_runbook_env_invocations_have_required_flags() {
+        let runbook = include_str!("../../../docs/ops/runbook.md");
+        let mut step = "";
+        let mut shell = false;
+        let mut command = String::new();
+        let mut invocations = Vec::new();
+        for line in runbook.lines() {
+            if let Some(marker) = line.strip_prefix("<!-- step: ") {
+                step = marker.split_whitespace().next().expect("step id");
+            }
+            if line.starts_with("```") {
+                shell = line == "```sh";
+                continue;
+            }
+            if !shell {
+                continue;
+            }
+            let line = line.trim();
+            if let Some(continued) = line.strip_suffix('\\') {
+                command.push_str(continued);
+                command.push(' ');
+                continue;
+            }
+            command.push_str(line);
+            let args: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
+            if has(&args, "deploy-check") && has(&args, "--env") {
+                invocations.push((step, args));
+            }
+            command.clear();
+        }
+        assert_eq!(invocations.len(), 2, "runbook --env invocation count");
+        assert_eq!(
+            invocations
+                .iter()
+                .map(|(step, _)| *step)
+                .collect::<Vec<_>>(),
+            ["R2", "U3"]
+        );
+        for (step, args) in invocations {
+            let present: Vec<_> = ENV_REQUIRED_FLAGS
+                .into_iter()
+                .filter(|name| flag(&args, name).is_some())
+                .collect();
+            assert_eq!(
+                present, ENV_REQUIRED_FLAGS,
+                "{step}: required --env input flags"
+            );
+        }
+    }
 
     fn pool_budget_fixture(private_max: Option<&str>) -> Vec<EnvFile> {
         [

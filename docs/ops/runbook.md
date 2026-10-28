@@ -224,6 +224,7 @@ GOT=$(docker image inspect -f '{{.Id}}' "humaux-dr:$TAG" 2>/dev/null) || GOT="<n
 $C run --rm -T dr deploy-check --release "$TAG" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
 $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr deploy-check --compose-json - --env \
   --values-dir "$(nv HUMAUX_NODE_DEPLOY_DIR)/env/values" --secrets-dir "$(nv HUMAUX_SECRETS_DIR)" \
+  --sizing-conf "$(nv HUMAUX_NODE_DEPLOY_DIR)/postgres/sizing-$HUMAUX_NODE_SIZING.conf" \
   --examples-dir /usr/share/humaux/env/example
 echo "PRECHECK ok $TAG git_sha=$SHA"
 ```
@@ -1208,6 +1209,7 @@ GOT=$(docker image inspect -f '{{.Id}}' "humaux-dr:$NEXT" 2>/dev/null) || GOT="<
 $C run --rm -T dr deploy-check --release "$NEXT" --manifest "$M" --expect-sha "$SHA" --checkout-tree "$(cat CHECKOUT_TREE)"
 $C --profile ops config --format json --no-env-resolution | $C run --rm -T dr deploy-check --compose-json - --env \
   --values-dir "$(nv HUMAUX_NODE_DEPLOY_DIR)/env/values" --secrets-dir "$(nv HUMAUX_SECRETS_DIR)" \
+  --sizing-conf "$(nv HUMAUX_NODE_DEPLOY_DIR)/postgres/sizing-$HUMAUX_NODE_SIZING.conf" \
   --examples-dir /usr/share/humaux/env/example
 echo "PRECHECK ok $NEXT git_sha=$SHA"
 ```
