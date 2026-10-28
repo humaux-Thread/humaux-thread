@@ -11,7 +11,8 @@
 //!   counted as visible; the count takes a VisibleCountFilter (one stream) only, search/scroll take a
 //!   DenseQueryFilter only — a StreamCountFilter reaches the count and the rebuild verifier's scroll
 //!   (scroll_stream_points, ADR-0064 D-F), never search (ADR-0057 D-C); the projection
-//!   worker's point writes and deletes are fenced on source_stream_seq (ADR-0057 D-I); the memory_id backfill
+//!   worker's upserts, full payload-only writes and deletes are fenced on source_stream_seq (ADR-0057 D-I);
+//!   payload-only writes use strong ordering and carry no vectors (§17.5, M10-2); the memory_id backfill
 //!   writes only the memory_id key, by has_id filter, and accepts only one completed result per operation
 //!   (ADR-0068 40d-2a); the bm25 Document is built by bm25_document alone, for the write and for the query, so both
 //!   send identical model and options (ADR-0083 D-A); the sparse leg sends the dense leg's filter value unchanged
@@ -1918,6 +1919,42 @@ pub async fn upsert_fenced(
     .await
 }
 
+/// §17.5 / M10-2: a full payload update for an existing point, strongly ordered and fenced on the ticket seq.
+/// An absent point or one carrying a later seq matches nothing; no dense or sparse vector is sent.
+pub async fn set_payload_fenced(
+    transport: &dyn IntraCellHttpTransport,
+    permit: &CellAccessPermit,
+    collection: &str,
+    point_id: PointId,
+    payload: &IndexablePayload,
+) -> Result<(), QdrantTransportError> {
+    let (path, body) = payload_only_request(collection, point_id, payload)?;
+    call(transport, permit, IntraCellMethod::Post, path, Some(body)).await?;
+    Ok(())
+}
+
+fn payload_only_request(
+    collection: &str,
+    point_id: PointId,
+    payload: &IndexablePayload,
+) -> Result<(String, Value), QdrantTransportError> {
+    validate_collection(collection)?;
+    let profile = ha_profile_for(QdrantOperation::CorrectionDeleteSupersede);
+    Ok((
+        qdrant_path(
+            format!("/collections/{collection}/points/payload"),
+            &[QdrantRequestControl::Wait, profile.write_control()],
+        ),
+        json!({
+            "payload": payload.to_json(),
+            "filter": { "must": [
+                { "has_id": [point_id.to_json()] },
+                seq_fence(payload.payload.source_stream_seq),
+            ] },
+        }),
+    ))
+}
+
 /// ADR-0057 D-I: a point qualifies for a worker write when it carries no `source_stream_seq` or
 /// one `<=` the writer's ticket. Per-stream seqs are allocated under the checkpoint row lock
 /// (`stream_repo::issue_ticket_in_txn`) and every ticket of a memory goes to its home stream
@@ -2508,6 +2545,53 @@ mod lifecycle_prefilter_tests {
             ha_profile_for(QdrantOperation::ReadYourWriteStrict),
         )
         .expect("valid dense query")
+    }
+
+    /// §17 / M10-2: the full key set, including nullable keys, must survive a payload merge; vectors never do.
+    #[test]
+    fn payload_only_request_is_full_fenced_and_strong() {
+        let payload = payload()
+            .into_indexable()
+            .expect("indexable")
+            .with_archived(true)
+            .with_chunk("NoteChunksV1-test", 3);
+        let (path, body) = payload_only_request("test_collection", PointId::Num(7), &payload)
+            .expect("payload request");
+        assert_eq!(
+            path,
+            "/collections/test_collection/points/payload?wait=true&ordering=strong"
+        );
+        assert_eq!(
+            body.as_object().expect("body").keys().collect::<Vec<_>>(),
+            ["filter", "payload"]
+        );
+        assert_eq!(
+            body["payload"]
+                .as_object()
+                .expect("payload")
+                .keys()
+                .collect::<Vec<_>>(),
+            payload
+                .to_json()
+                .as_object()
+                .expect("full payload")
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            body,
+            json!({
+                "payload": payload.to_json(),
+                "filter": { "must": [{ "has_id": [7] }, {
+                    "should": [
+                        { "is_empty": { "key": "source_stream_seq" } },
+                        { "key": "source_stream_seq", "range": { "lte": 7 } },
+                    ],
+                }] },
+            })
+        );
+        assert_eq!(body.to_string().matches("\"vector\"").count(), 0);
+        assert_eq!(body.to_string().matches("\"bm25\"").count(), 0);
     }
 
     #[test]
