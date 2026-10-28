@@ -1,8 +1,7 @@
-//! §71.3 / §76: 0300 processor doors against real PostgreSQL (G-M04-24, G-M04-21).
+//! `adapters::tests::billing_doors` — 0300 processor doors against real PostgreSQL (G-M04-24, G-M04-21).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, time, tokio, uuid];
-//!   services=[PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_snapshots]
-//!   w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)
-//!   x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription]]; env=[];
+//!   services=[PostgreSQL(owner) r=[control.entitlement_grants, control.subscriptions, control.subscription_events, control.entitlement_snapshots]
+//!   w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::billing_repo, adapters::entitlement_repo, adapters::postgres, adapters::tests::support::throwaway_db,
 //!   application::billing, domain::billing, domain::error, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
