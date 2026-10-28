@@ -1162,6 +1162,7 @@ dependencies = [
  "humaux-domain",
  "serde_json",
  "sha2 0.11.0",
+ "uuid",
 ]
 
 [[package]]

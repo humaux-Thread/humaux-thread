@@ -22,3 +22,7 @@ hmac = "0.13"
 sha2 = "0.11"
 # why: provider signature hex decoding (§71.3); used-by: [billing-worker::signature]
 hex = "0.4"
+
+[dev-dependencies]
+# why: runtime-only random HMAC test keys (§79.4); used-by: [tests::signature]
+uuid = { version = "1.25.0", features = ["v4"] }
