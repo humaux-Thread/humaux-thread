@@ -1,6 +1,6 @@
 //! `domain::knowledge` — candidate vocabulary; provenance never grants authority.
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::candidate_repo, tests]
+//! Called-by: [adapters::candidate_repo, adapters::dedup_repo, tests]
 //! Invariants: [closed kinds and states; accepted candidates never apply Memory changes]
 //! Spec: Baseline §6.1.4; §11.6; §78.2; ADR-0113
 

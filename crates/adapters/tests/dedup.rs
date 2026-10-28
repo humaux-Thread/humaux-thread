@@ -1,5 +1,5 @@
 //! `adapters::tests::dedup` — G-M15-14: repeated bytes never collapse two genuine messages.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, uuid]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.evidence_sources, private.memory_evidence, private.memory_records], PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::candidate_repo, adapters::dedup_repo, adapters::tests::support::operation_receipt_fixture, domain::evidence, domain::identity, domain::knowledge, humaux-testkit]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, sqlx, uuid]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.evidence_sources, private.memory_evidence, private.memory_records], PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::candidate_repo, adapters::dedup_repo, adapters::tests::support::operation_receipt_fixture, domain::evidence, domain::identity, domain::ids, domain::knowledge, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [owner only seeds; real gateway scan and observations; exact candidate counts and target sets]
 //! Spec: Baseline §11.6; §57.1; §79.2; §80.1; ADR-0050; ADR-0113; M15 D3/D10
@@ -71,6 +71,7 @@ fn scan(h: &Handle, a: &AuthorizationScope, commit: bool) -> dedup_repo::DedupSc
         let mut conn = PgConnection::connect(h.gateway_dsn_for_process())
             .await
             .expect("actual gateway connection");
+        // dep: PostgreSQL(role_gateway) — caller owns the scan transaction
         let mut tx = conn.begin().await.expect("gateway transaction");
         let result = dedup_repo::scan_and_propose_in_txn(&mut tx, a)
             .await
