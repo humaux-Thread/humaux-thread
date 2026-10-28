@@ -7,7 +7,7 @@
 //!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, telemetry::host, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
-//! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B
+//! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B; ADR-0123 D3
 //!
 //! No metrics crate is linked (ADR-0061 D-A): the exposition is a few `write!` calls, and a
 //! crate's registry would be a second family table next to [`families`]. Label values are
@@ -321,6 +321,15 @@ pub mod families {
     pub const QUOTA_WINDOW_HORIZON_SECONDS: Family = f(
         "quota_window_horizon_seconds",
         "Seconds until the latest issued quota window of the renewing tenant closest to running out ends.",
+        Kind::Gauge,
+        &[],
+    );
+    // §41.2: §65 the AUTHORITY_I4 run of `humaux-maintenance --serve` (card M21-2; emit
+    // `adapters::maintenance_repo::set_authority_i4_violations`, ADR-0123 D3; a failed run renders no sample, never 0).
+    /// `authority_i4_violations`.
+    pub const AUTHORITY_I4_VIOLATIONS: Family = f(
+        "authority_i4_violations",
+        "Memory records violating the §59.1 I4 status/superseded_by biconditional at the last successful scan.",
         Kind::Gauge,
         &[],
     );
