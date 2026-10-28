@@ -9,6 +9,7 @@ BEGIN
   IF p_limit IS NULL OR p_limit <= 0 THEN
     RAISE EXCEPTION 'invalid claim limit' USING ERRCODE = '22023';
   END IF;
+  -- ponytail: §71.3 claim seq scan grows with retained inbox history; add a partial index on received_at WHERE status='RECEIVED' when claim latency grows.
   RETURN QUERY SELECT i.* FROM control.billing_inbox i WHERE i.status = 'RECEIVED'
     ORDER BY i.received_at, i.provider, i.event_id LIMIT p_limit FOR UPDATE SKIP LOCKED;
 END;
@@ -18,7 +19,9 @@ CREATE FUNCTION control.billing_inbox_settle(p_provider text, p_event_id text, p
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 BEGIN
-  IF p_status IS NULL OR p_status NOT IN ('PROCESSED', 'FAILED') THEN
+  IF p_status IS NULL OR p_status NOT IN ('PROCESSED', 'FAILED')
+     OR (p_status = 'FAILED' AND p_error_class IS NULL)
+     OR (p_status = 'PROCESSED' AND p_error_class IS NOT NULL) THEN
     RAISE EXCEPTION 'invalid settlement' USING ERRCODE = '22023';
   END IF;
   UPDATE control.billing_inbox SET status = p_status, error_class = p_error_class, processed_at = clock_timestamp()
@@ -89,7 +92,8 @@ BEGIN
   VALUES (p_tenant, v_id, v_old, p_state, p_provider, p_event_id, p_observed_at);
   -- D13(h): failed payment has no grace. Other sources remain the projector's input (§76).
   UPDATE control.entitlement_grants SET revoked_at = v_now,
-      valid_until = CASE WHEN valid_from < v_now THEN v_now ELSE valid_until END
+      valid_until = CASE WHEN valid_from < v_now AND (valid_until IS NULL OR valid_until > v_now)
+                         THEN v_now ELSE valid_until END
     WHERE tenant_id = p_tenant AND source = 'PLAN' AND revoked_at IS NULL;
   INSERT INTO control.entitlement_grants
     (tenant_id, source, source_ref_id, feature, value, valid_from, valid_until, priority)

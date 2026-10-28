@@ -1,7 +1,7 @@
 //! `adapters::tests::billing_doors` — 0300 processor doors against real PostgreSQL (G-M04-24, G-M04-21).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, time, tokio, uuid];
 //!   services=[PostgreSQL(owner) r=[control.entitlement_grants, control.subscriptions, control.subscription_events, control.entitlement_snapshots]
-//!   w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
+//!   w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox, control.entitlement_grants], PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::billing_repo, adapters::entitlement_repo, adapters::postgres, adapters::tests::support::throwaway_db,
 //!   application::billing, domain::billing, domain::error, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
@@ -69,8 +69,14 @@ fn seed(h: &mut Handle) -> (TenantId, Uuid, Uuid) {
         .unwrap()
         .get(0);
     let mut versions = Vec::new();
-    for (version, enabled) in [(1_i32, true), (2, false)] {
-        versions.push(h.admin.query_one("INSERT INTO control.plan_versions(plan_id,version,price_cents,billing_interval,entitlement_template,lease_block) VALUES ($1,$2,0,'month',$3,1) RETURNING plan_version_id", &[&plan,&version,&json!({"feature.byok": enabled})]).unwrap().get::<_,Uuid>(0));
+    for (version, template) in [
+        (
+            1_i32,
+            json!({"feature.byok": true, "feature.cloud_intelligence": true}),
+        ),
+        (2, json!({"feature.byok": false})),
+    ] {
+        versions.push(h.admin.query_one("INSERT INTO control.plan_versions(plan_id,version,price_cents,billing_interval,entitlement_template,lease_block) VALUES ($1,$2,0,'month',$3,1) RETURNING plan_version_id", &[&plan,&version,&template]).unwrap().get::<_,Uuid>(0));
     }
     assert_eq!(versions.len(), 2);
     (TenantId(tenant), versions[0], versions[1])
@@ -147,7 +153,7 @@ fn apply_is_idempotent() {
                 counts.get::<_, i64>(1),
                 counts.get::<_, i64>(2)
             ),
-            (1, 1, 1)
+            (1, 1, 2)
         );
         let after: Value = h
             .admin
@@ -162,6 +168,7 @@ fn apply_is_idempotent() {
 fn past_due_recomputes_free() {
     run_db_fixture::<Fixture, _>("past_due_recomputes_free", |mut h| {
         let (tenant, paid, free) = seed(&mut h);
+        h.admin.execute("INSERT INTO control.entitlement_grants(tenant_id,source,source_ref_id,feature,value,valid_from,valid_until,priority) VALUES ($1,'PLAN',$2,'feature.byok','true','2000-01-01T00:00:00Z','2001-01-01T00:00:00Z',0)", &[&tenant.0, &paid]).unwrap();
         let states = [
             S::Active,
             S::PastDue,
@@ -185,8 +192,16 @@ fn past_due_recomputes_free() {
                 .get(0);
             assert_eq!(
                 effective,
-                json!({"feature.byok": matches!(state,S::Active|S::CancelAtPeriodEnd)})
+                if matches!(state, S::Active | S::CancelAtPeriodEnd) {
+                    json!({"feature.byok": true, "feature.cloud_intelligence": true})
+                } else {
+                    json!({"feature.byok": false})
+                }
             );
+            if state == S::PastDue {
+                let unrevoked: i64 = h.admin.query_one("SELECT count(*) FROM control.entitlement_grants WHERE tenant_id=$1 AND source='PLAN' AND source_ref_id=$2 AND revoked_at IS NULL", &[&tenant.0, &paid]).unwrap().get(0);
+                assert_eq!(unrevoked, 0);
+            }
         }
         let count: i64 = h
             .admin
@@ -194,6 +209,8 @@ fn past_due_recomputes_free() {
             .unwrap()
             .get(0);
         assert_eq!(count, 5);
+        let expired_until: i64 = h.admin.query_one("SELECT extract(epoch FROM valid_until)::bigint FROM control.entitlement_grants WHERE tenant_id=$1 AND valid_from = '2000-01-01T00:00:00Z'::timestamptz", &[&tenant.0]).unwrap().get(0);
+        assert_eq!(expired_until, 978_307_200);
     });
 }
 /// §71.3: caller transactions retain claim locks; settlement refuses every terminal-to-terminal transition.
@@ -201,6 +218,19 @@ fn past_due_recomputes_free() {
 fn claim_and_settle() {
     run_db_fixture::<Fixture, _>("claim_and_settle", |mut h| {
         h.admin.batch_execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,payload,received_at) VALUES ('creem','first','subscription.active','{}',now()-interval '1 second'),('creem','second','subscription.active','{}',now())").unwrap();
+        for (status, error) in [("FAILED", None), ("PROCESSED", Some("INVALID_INPUT"))] {
+            let refusal = h
+                .admin
+                .query_one(
+                    "SELECT control.billing_inbox_settle('creem','first',$1,$2)",
+                    &[&status, &error],
+                )
+                .unwrap_err();
+            assert_eq!(
+                refusal.code().map(postgres::error::SqlState::code),
+                Some("22023")
+            );
+        }
         h.rt.block_on(async {
             let mut first = repo::begin_processor(&h.pool).await.unwrap();
             let mut second = repo::begin_processor(&h.pool).await.unwrap();
@@ -229,9 +259,31 @@ fn claim_and_settle() {
             let mut txn = repo::begin_processor(&h.pool).await.unwrap();
             assert_eq!(repo::inbox_claim(&mut txn, 2).await.unwrap().len(), 0);
             assert_eq!(
-                repo::inbox_settle(&mut txn, &rows[0].0, InboxStatus::Failed, None).await,
+                repo::inbox_settle(
+                    &mut txn,
+                    &rows[0].0,
+                    InboxStatus::Failed,
+                    Some(ErrorCode::InvalidInput)
+                )
+                .await,
                 Err(ErrorCode::InvalidInput)
             );
+        });
+    });
+}
+/// §6.2.2 / 0267: the apply door rejects a tenant argument different from its caller GUC.
+#[test]
+fn apply_refuses_mismatched_tenant_guc() {
+    run_db_fixture::<Fixture, _>("apply_refuses_mismatched_tenant_guc", |mut h| {
+        let (tenant, paid, free) = seed(&mut h);
+        h.rt.block_on(async {
+            let mut txn = repo::begin_processor(&h.pool).await.unwrap();
+            sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
+                .bind(Uuid::new_v4().to_string()).execute(&mut *txn).await.unwrap();
+            let refusal = sqlx::query("SELECT control.billing_apply_subscription($1,'creem','evt_scope','sub_fixture',$2,$3,'ACTIVE',now(),now()+interval '1 day',now())")
+                .bind(tenant.0).bind(paid).bind(free).fetch_one(&mut *txn).await.unwrap_err();
+            assert_eq!(refusal.as_database_error().and_then(|e| e.code()).as_deref(), Some("42501"));
+            txn.rollback().await.unwrap();
         });
     });
 }
