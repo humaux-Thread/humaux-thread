@@ -38,6 +38,8 @@ pub mod coord_repo;
 pub mod coord_task_repo;
 /// ADR-0101: guarded project-tree reads and moves (§30).
 pub mod coord_tree_repo;
+/// §19 / M04 D11: producer cost events in the business transaction.
+pub mod cost_repo;
 pub mod credential_repo;
 pub mod dashscope;
 pub mod disclosure;
