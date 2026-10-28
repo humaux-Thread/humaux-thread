@@ -9793,6 +9793,7 @@ executed by:
 ### `private.evidence_sources`
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
+- (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::remember`
