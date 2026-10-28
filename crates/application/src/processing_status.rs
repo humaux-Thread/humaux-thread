@@ -1,7 +1,7 @@
-//! Per-account processing-status admission (§78.1, ADR-0110 D-E).
+//! `application::processing_status` — Per-account processing-status admission (§78.1, ADR-0110 D-E).
 //! Depends-on: crates=[humaux-domain]; services=[]; env=[];
 //!   modules=[domain::error, domain::identity, domain::ids]
-//! Called-by: [adapters::processing_status, adapters::tests::processing_status]
+//! Called-by: [adapters::processing_status, tests]
 //! Invariants: [clock and minimum interval are supplied by the caller; no account-wide total]
 //! Spec: §15.6; §78.1; §78.3; ADR-0110 D-E
 

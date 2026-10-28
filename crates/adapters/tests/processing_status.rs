@@ -1,9 +1,10 @@
-//! G-M13-9: row absence, wording, exact detail and account admission.
+//! `adapters::tests::processing_status` — G-M13-9: row absence, wording, exact detail and account admission.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit,
-//!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(owner) w=[control.tenants,
-//!   projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_retrieval_worker)];
+//!   postgres, serde_json, sqlx, tokio, uuid]; services=[PostgreSQL(owner) w=[control.tenants,
+//!   projection.stream_checkpoints, projection.stream_log] x=[projection.stream_point_ledger],
+//!   PostgreSQL(role_retrieval_worker), PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN, CI]; modules=[adapters::processing_status, adapters::postgres,
-//!   adapters::tests::support::throwaway_db, application::processing_status, domain::identity, projection::stream]
+//!   adapters::tests::support::throwaway_db, application::processing_status, domain::identity, domain::error, domain::ids, humaux-testkit, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [isolated real DB; missing DSN fails in CI; exact output sets]
 //! Spec: §15.3; §23.1④; §79.2; §79.3; §80.1; ADR-0110 D-E
@@ -65,13 +66,7 @@ fn processing_status_g_m13_9() {
         let dsn = db.dsn();
         // dep: PostgreSQL(owner) — isolated fixture seeding and permission controls
         let mut admin = Client::connect(&dsn, NoTls).unwrap();
-        let (tenant, other, workspace, empty, denied) = (
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-        );
+        let [tenant, other, workspace, empty, denied] = std::array::from_fn(|_| Uuid::new_v4());
         seed(&mut admin, tenant, workspace);
         seed(&mut admin, other, empty);
         let auth = AuthorizationScope::new(
@@ -100,6 +95,7 @@ fn processing_status_g_m13_9() {
         rt.block_on(async {
             let mut gate = DetailedGate::new(Duration::from_secs(60)).unwrap();
             let now = Instant::now();
+            let boundary = now + Duration::from_secs(60);
             let detail = processing_status_detailed(&pool, &query, &keys, &mut gate, now)
                 .await
                 .unwrap();
@@ -122,10 +118,7 @@ fn processing_status_g_m13_9() {
                 ErrorCode::RateLimited
             );
             assert_eq!(gate.admit(TenantId(other), now), Ok(()));
-            assert_eq!(
-                gate.admit(TenantId(tenant), now + Duration::from_secs(60)),
-                Ok(())
-            );
+            assert_eq!(gate.admit(TenantId(tenant), boundary), Ok(()));
             assert_eq!(
                 gate.admit(TenantId(tenant), now),
                 Err(ErrorCode::RateLimited)
@@ -141,8 +134,8 @@ fn processing_status_g_m13_9() {
             let rows = processing_status(&mut txn, &query, &keys).await.unwrap();
             assert_eq!(rows.len(), 2);
             let rows = to_value(rows).unwrap();
-            assert_eq!(rows[1], json!({"workspace_id":empty,"projection":null,"reason":"no_checkpoint","behind_label":"not_yet_confirmed_processed"}), "row-less workspace must remain absent");
             assert_eq!(rows[0]["behind_label"], json!("not_yet_confirmed_processed"), "behind wording");
+            assert_eq!(rows[1], json!({"workspace_id":empty,"projection":null,"reason":"no_checkpoint","behind_label":"not_yet_confirmed_processed"}), "row-less workspace must remain absent");
             assert_eq!(rows[0], json!({"workspace_id":workspace,"projection":{"mode":"frontier","issued":6,"settled_prefix":2,"behind":4,"serving":true,"observed_at":"2026-01-01T00:00:00Z"},"reason":null,"behind_label":"not_yet_confirmed_processed"}));
             for invalid in [key(other, empty, "reasoning"), key(tenant, denied, "reasoning"), keys[0].clone()] {
                 let bad = [keys[0].clone(), invalid];

@@ -1,10 +1,9 @@
-//! Per-workspace frontier sums and optional ledger detail (ADR-0110 D-E).
+//! `adapters::processing_status` — Per-workspace frontier sums and optional ledger detail (ADR-0110 D-E).
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, sqlx, time];
-//!   services=[PostgreSQL(role_retrieval_worker) r=[projection.stream_checkpoints, projection.stream_log]
-//!   x=[projection.stream_point_ledger]]; env=[];
+//!   services=[PostgreSQL(role_retrieval_worker) r=[projection.stream_log]]; env=[];
 //!   modules=[application::processing_status, domain::error, domain::ids, projection::stream,
 //!   retrieval::envelope, adapters::postgres, adapters::stream_repo]
-//! Called-by: [adapters::tests::processing_status]
+//! Called-by: [tests]
 //! Invariants: [summary never closes a ledger; absent checkpoints never become zero readings;
 //!   caller supplies the stream inventory; only authorized workspace keys are accepted]
 //! Spec: §15.3; §15.6; §23.1④; §78.1; ADR-0110 D-E
@@ -19,8 +18,8 @@ use humaux_projection::stream::StreamKey;
 use humaux_retrieval::envelope::{FrontierBlock, ProjectionAbsence};
 use serde::Serialize;
 use sqlx::{Postgres, Row, Transaction};
-use std::collections::HashSet;
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
+use time::format_description::well_known::Rfc3339;
 
 /// §23.1④: a workspace without checkpoint rows has no numeric reading.
 #[derive(Debug, Serialize)]
@@ -44,8 +43,7 @@ pub struct DetailedStatus {
     retry_wait: u64,
 }
 
-/// Summary on one caller-owned transaction: one primary-key read per supplied stream (§15.3).
-/// The inventory must contain every requested family/version, including row-less keys.
+/// §15.3: one caller transaction, one PK read per stream; inventory includes row-less family/version keys.
 pub async fn processing_status(
     txn: &mut Transaction<'_, Postgres>,
     query: &ProcessingStatusQuery<'_>,
@@ -65,22 +63,18 @@ pub async fn processing_status_detailed(
     now: Instant,
 ) -> Result<Vec<WorkspaceStatus>, ErrorCode> {
     gate.admit(query.authorization.tenant_id(), now)?;
-    let mut txn = pool
-        .pool()
-        .begin()
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *txn)
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let result = read(&mut txn, query, streams, true)
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    txn.commit()
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    Ok(result)
+    async {
+        // dep: PostgreSQL(role_retrieval_worker) — isolated detailed snapshot (§79.2)
+        let mut txn = pool.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *txn)
+            .await?;
+        let result = read(&mut txn, query, streams, true).await?;
+        txn.commit().await?;
+        Ok::<_, sqlx::Error>(result)
+    }
+    .await
+    .map_err(|_| ErrorCode::DependencyUnavailable)
 }
 
 async fn read(
@@ -121,14 +115,8 @@ async fn read(
             sum = Some(match sum {
                 None => row,
                 Some(prev) => Frontier {
-                    issued_hw: prev
-                        .issued_hw
-                        .checked_add(row.issued_hw)
-                        .ok_or(sqlx::Error::Protocol("frontier overflow".into()))?,
-                    projection_hw: prev
-                        .projection_hw
-                        .checked_add(row.projection_hw)
-                        .ok_or(sqlx::Error::Protocol("frontier overflow".into()))?,
+                    issued_hw: add_count(prev.issued_hw, row.issued_hw)?,
+                    projection_hw: add_count(prev.projection_hw, row.projection_hw)?,
                     serving: prev.serving && row.serving,
                     updated_at: prev.updated_at.min(row.updated_at),
                 },
@@ -139,15 +127,13 @@ async fn read(
         }
         let projection = sum
             .map(|f| {
-                let observed = f
-                    .updated_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
                 Ok::<_, sqlx::Error>(FrontierBlock::new(
                     f.issued_hw,
                     f.projection_hw,
                     f.serving,
-                    observed,
+                    f.updated_at
+                        .format(&Rfc3339)
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
                 ))
             })
             .transpose()?;
@@ -185,4 +171,9 @@ async fn add_detail(
     out.waiting_key += row.try_get::<i64, _>("waiting_key")? as u64;
     out.retry_wait += row.try_get::<i64, _>("retry_wait")? as u64;
     Ok(())
+}
+
+fn add_count(a: u64, b: u64) -> Result<u64, sqlx::Error> {
+    a.checked_add(b)
+        .ok_or(sqlx::Error::Protocol("frontier overflow".into()))
 }
