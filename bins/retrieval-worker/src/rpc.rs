@@ -2,13 +2,13 @@
 //!   serves.
 //! Depends-on: crates=[axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
 //!   humaux-retrieval, humaux-retrieval-provider, serde, sha2, tokio, tracing,
-//!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres, adapters::retrieval_embedding_rpc, contracts::retrieval_config, domain::error,
+//!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS]; modules=[adapters::postgres, adapters::retrieval_embedding_rpc, contracts::retrieval_config, domain::error,
 //!   domain::identity, domain::ids, humaux-local-secret-scan, infra-cell::uds, retrieval-provider::contract, retrieval-worker::rerank, retrieval::request]
 //! Called-by: [retrieval-worker::main, tests]
 //! Invariants: [a malformed or unauthenticated RPC frame is rejected before it reaches the embedding provider call;
 //!   the rerank route sits behind the same peer-credential layer, writes no PostgreSQL row, never seals or
 //!   egresses text, and logs counts and timings only, never the query or a document]
-//! Spec: Baseline §2; §6; §7.5; §41.4; ADR-0012; ADR-0056; ADR-0084 D-B; ADR-0084 D-C
+//! Spec: Baseline §2; §6; §7.5; §41.4; ADR-0012; ADR-0056; ADR-0084 D-B; ADR-0084 D-C; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
 //! §决定2: the worker authenticates the **caller process** via the kernel peer credential
 //! (`UnixStream::peer_cred()`), not the request body — [`PeerIdentity::connect_info`] captures
@@ -167,7 +167,24 @@ pub fn router_with_rerank(state: Arc<RpcState>, lane: RerankLane) -> Router {
 /// embedding provider (a paid call per refresh). 503 names the missing object, never the DSN.
 async fn readyz_handler(State(state): State<Arc<RpcState>>) -> Response {
     // dep: PostgreSQL(role_retrieval_worker) — readiness: one fresh connect per check, then dropped
-    match RetrievalWorkerDbPool::connect(&state.pg_dsn).await {
+    let raw = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS");
+    let raw = match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS",
+            )
+                .into_response();
+        }
+    };
+    let settings = humaux_adapters::postgres::load_pool_settings(raw.as_deref());
+    let settings = match settings {
+        Ok(settings) => settings,
+        Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, error).into_response(),
+    };
+    match RetrievalWorkerDbPool::connect_with(&state.pg_dsn, &settings).await {
         Ok(_) => (StatusCode::OK, "ready\n").into_response(),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,

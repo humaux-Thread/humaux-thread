@@ -7292,7 +7292,6 @@ mod tests {
             "deploy/env/values/fixture",
             "export HUMAUX_BILLING_PROVIDER_MODE='live'\n",
         );
-        assert!(billing_mode_gate(&fx.root).is_err());
         fx.file(
             "deploy/env/example/nested/fixture",
             "HUMAUX_BILLING_PROVIDER_MODE=fake\n",

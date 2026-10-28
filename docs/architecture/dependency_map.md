@@ -1352,6 +1352,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `admin::mechanism`
 - env `CARGO_MANIFEST_DIR`
 - env `HUMAUX_ADMIN_PG_DSN`
+- env `HUMAUX_ADMIN_PG_POOL_MAX_CONNECTIONS`
 - service `PostgreSQL(role_admin)`
 
 #### `admin::ops_status`
@@ -1845,6 +1846,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS`
 - env `HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS`
 - env `HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS`
+- env `HUMAUX_CONSOLIDATION_WORKER_PG_POOL_MAX_CONNECTIONS`
 - env `HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS`
 - env `HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID`
 - env `HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH`
@@ -3754,6 +3756,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH`
 - env `HUMAUX_MAINTENANCE_DR_REPO_FS_PATH`
 - env `HUMAUX_MAINTENANCE_PG_DSN`
+- env `HUMAUX_MAINTENANCE_PG_POOL_MAX_CONNECTIONS`
 - env `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS`
@@ -4408,6 +4411,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS`
 - env `HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS`
 - env `HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS`
+- env `HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS`
 - env `HUMAUX_PRIVATE_WORKER_REGIONS`
 - env `HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH`
 - env `HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR`
@@ -4590,6 +4594,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_PUBLIC_WORKER_LEASE_OWNER`
 - env `HUMAUX_PUBLIC_WORKER_LIMIT`
 - env `HUMAUX_PUBLIC_WORKER_PG_DSN`
+- env `HUMAUX_PUBLIC_WORKER_PG_POOL_MAX_CONNECTIONS`
 - env `HUMAUX_PUBLIC_WORKER_QDRANT_CIDR`
 - env `HUMAUX_PUBLIC_WORKER_QDRANT_COLLECTION`
 - env `HUMAUX_PUBLIC_WORKER_QDRANT_HOST`
@@ -5114,6 +5119,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION`
 - env `HUMAUX_RETRIEVAL_WORKER_PER_TENANT_CAP`
 - env `HUMAUX_RETRIEVAL_WORKER_PG_DSN`
+- env `HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS`
 - env `HUMAUX_RETRIEVAL_WORKER_POLL_INTERVAL_SECS`
 - env `HUMAUX_RETRIEVAL_WORKER_QDRANT_CIDR`
 - env `HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST`
@@ -5141,6 +5147,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_RETRIEVAL_WORKER_RETRIEVAL_PROFILE_RERANK_THREADS`
 
 #### `retrieval-worker::rpc`
+- env `HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS`
 - service `PostgreSQL(role_retrieval_worker)`
 
 #### `retrieval::candidate`
@@ -9715,6 +9722,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
@@ -9811,7 +9819,9 @@ executed by:
 
 ### `private.evidence_sources`
 read by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::evidence_sources_dedupe`
+- (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::remember`
@@ -9822,6 +9832,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::remember`
 
 written by:
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::evidence_sources`
 - process(cargo-xtask): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::remember`
@@ -10102,6 +10113,7 @@ executed by:
 
 ### `private.memory_evidence`
 read by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
@@ -10186,6 +10198,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -10316,12 +10329,14 @@ executed by:
 ### `private.memory_records`
 read by:
 - (no process): `adapters::contribution_repo`
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
@@ -10436,6 +10451,7 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
+- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -10585,6 +10601,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::projection_worker`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -11198,6 +11215,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::subject_registry_rls`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12605,6 +12623,7 @@ executed by:
 - `adapters::coord_repo`
 - `adapters::cost_repo`
 - `adapters::credential_repo`
+- `adapters::dedup_repo`
 - `adapters::disclosure`
 - `adapters::distill_repo`
 - `adapters::email::outbox`
@@ -12741,6 +12760,7 @@ executed by:
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -12894,6 +12914,7 @@ executed by:
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::dedup`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
 - `adapters::tests::enumerate_scale`
@@ -13412,6 +13433,7 @@ modules naming it:
 - `adapters::coord_tree_repo`
 - `adapters::cost_repo`
 - `adapters::credential_repo`
+- `adapters::dedup_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
@@ -13474,6 +13496,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13563,6 +13586,7 @@ modules naming it:
 - `adapters::coord_tree_repo`
 - `adapters::cost_repo`
 - `adapters::credential_repo`
+- `adapters::dedup_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
@@ -13628,6 +13652,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -14163,6 +14188,7 @@ modules naming it:
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
 - `adapters::coord_tree_repo`
+- `adapters::dedup_repo`
 - `adapters::distill_reasoner`
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
@@ -14197,6 +14223,7 @@ modules naming it:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_rls`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::dedup`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
@@ -14288,6 +14315,7 @@ modules naming it:
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::cost_repo`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -14523,6 +14551,7 @@ modules naming it:
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
 - `adapters::coord_tree_repo`
+- `adapters::dedup_repo`
 - `adapters::distill_reasoner`
 - `adapters::entitlement_repo`
 - `adapters::membership_repo`
@@ -14557,6 +14586,7 @@ modules naming it:
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_rls`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::dedup`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
@@ -14628,6 +14658,7 @@ modules naming it:
 - `adapters::tests::core_never_auto`
 - `adapters::tests::cost_repo`
 - `adapters::tests::credential_grants`
+- `adapters::tests::dedup`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -18682,6 +18713,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/credential_grants.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/dedup.rs`
 db-bound (default run): yes
 
 services (computed):

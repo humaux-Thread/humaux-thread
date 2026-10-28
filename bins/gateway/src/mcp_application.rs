@@ -404,7 +404,22 @@ impl GatewayMcpApplication {
                     )
                 },
             )
-            .await?;
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let Some(reason) = error.conflict_reason else {
+                    return Err(error.code);
+                };
+                // §52 / ADR-0098: preserve the sourced refusal after guard audit and settlement.
+                let mut refusal = output(json!({
+                    "code": error.code.as_str(), "reason": reason.code(),
+                    "reason_label": reason.label().unwrap_or("UNKNOWN"),
+                }))?;
+                refusal.is_error = true;
+                return Ok(refusal);
+            }
+        };
         let accepted = result.accepted;
         output(json!({
             "evidence_id": accepted.evidence_id,
@@ -490,7 +505,8 @@ impl GatewayMcpApplication {
                     )
                 },
             )
-            .await;
+            .await
+            .map_err(|error| error.code);
         if refused && matches!(result, Err(ErrorCode::Forbidden)) {
             return self.ceiling_refusal(&wire.requested_authority_wire);
         }

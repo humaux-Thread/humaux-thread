@@ -23,7 +23,7 @@ use std::{
 use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
     note_repo::NoteIntake,
-    operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult},
+    operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult, SourcedPutError},
     postgres::RuntimeDbPool,
     quota_repo::{self, QuotaReservation},
     remember::RememberCommand,
@@ -821,7 +821,7 @@ impl GatewayGuard {
         task_run: Option<(TaskRunId, FencingToken)>,
         project: Option<ProjectId>,
         source: Option<SourceIdentity>,
-    ) -> Result<AtomicRememberResult, ErrorCode> {
+    ) -> Result<AtomicRememberResult, SourcedPutError> {
         match (note, source) {
             (Some(note), _) => {
                 operation_receipt::note_put_atomically(
@@ -833,14 +833,15 @@ impl GatewayGuard {
                 )
                 .await
             }
-            (None, Some(source)) => operation_receipt::remember_sourced_atomically(
-                &self.pool,
-                authorization,
-                request,
-                &source,
-            )
-            .await
-            .map_err(|error| error.code),
+            (None, Some(source)) => {
+                return operation_receipt::remember_sourced_atomically(
+                    &self.pool,
+                    authorization,
+                    request,
+                    &source,
+                )
+                .await;
+            }
             (None, None) => {
                 operation_receipt::remember_for_task_run_atomically(
                     &self.pool,
@@ -852,6 +853,7 @@ impl GatewayGuard {
                 .await
             }
         }
+        .map_err(SourcedPutError::from)
     }
 
     /// A local write, its BMO settlement and its success audit share one commit.
@@ -875,7 +877,7 @@ impl GatewayGuard {
         project: Option<ProjectId>,
         source: Option<SourceIdentity>,
         prepare: F,
-    ) -> Result<AtomicRememberResult, ErrorCode>
+    ) -> Result<AtomicRememberResult, SourcedPutError>
     where
         F: FnOnce(&AuthorizedRequest) -> Result<RememberCommand, ErrorCode>,
     {
@@ -897,11 +899,12 @@ impl GatewayGuard {
                         &admitted,
                         ErrorCode::DependencyUnavailable,
                     )
-                    .await;
+                    .await
+                    .map_err(SourcedPutError::from);
             }
             let command = match prepare(&admitted.request) {
                 Ok(command) => command,
-                Err(code) => return self.denied(context, operation, &admitted, code).await,
+                Err(code) => return Ok(self.denied(context, operation, &admitted, code).await?),
             };
             let finished_audit = self.audit_event(
                 context,
@@ -933,7 +936,7 @@ impl GatewayGuard {
                 ),
             )
             .await
-            .unwrap_or(Err(ErrorCode::DependencyUnavailable));
+            .unwrap_or_else(|_| Err(ErrorCode::DependencyUnavailable.into()));
             match &result {
                 Ok(outcome) if !outcome.replayed => {
                     self.metrics
@@ -953,17 +956,17 @@ impl GatewayGuard {
                     )
                     .await?
                 }
-                Err(ErrorCode::DependencyUnavailable) => {
+                Err(error) if error.code == ErrorCode::DependencyUnavailable => {
                     self.observe_unknown(context, operation, &admitted).await;
                 }
-                Err(code) => {
+                Err(error) => {
                     self.audit(
                         context,
                         &admitted.network,
                         Some(admitted.request.authorization()),
                         McpAuditAction::McpRequestFinished,
                         operation.operation_key(),
-                        Some(*code),
+                        Some(error.code),
                     )
                     .await?
                 }
@@ -971,7 +974,7 @@ impl GatewayGuard {
             result
         }
         .await;
-        self.record_request(operation, &result);
+        self.record_request(operation, &result.as_ref().map_err(|error| error.code));
         result
     }
 
