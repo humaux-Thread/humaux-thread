@@ -1,6 +1,6 @@
 //! `domain::source` — ingest source identity and the single source-kind classification table (M06 D1/D2, ADR-0098).
 //! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::dataclass, domain::error, domain::evidence, domain::identity]
-//! Called-by: [adapters::operation_receipt, adapters::remember, tests]
+//! Called-by: [adapters::operation_receipt, adapters::remember, gateway::guard, gateway::mcp_application, gateway::remember, tests]
 //! Invariants: [`classify_source`] is the one place an [`IngestSourceKind`] is mapped to origin, data-class floor, event kind
 //!   and visibility rule; a raw external object/thread key is never stored, only a 16-byte SHA-256 prefix; the identity
 //!   carries no agent, ingest time or project]

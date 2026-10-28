@@ -7,7 +7,7 @@
 //!   adapters::continuity_repo, adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::subject_repo,
 //!   domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity,
-//!   domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject,
+//!   domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject,
 //!   gateway::bootstrap, gateway::context,
 //!   gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp,
 //!   protocol::mcp_catalog]
@@ -61,6 +61,7 @@ use humaux_domain::{
         NoteBody, NoteKind, authorize_note, note_title, parse_requested_authority,
         replace_intent_sha256,
     },
+    source::SourceIdentity,
     subject::{
         SubjectDeclaration, SubjectId, SubjectKey, SubjectKeyKind, SubjectKind, SubjectRole,
         SubjectWriteOp,
@@ -359,6 +360,10 @@ impl GatewayMcpApplication {
         let requested_workspace = wire.workspace_id;
         let policy = self.remember_policy.clone();
         let bootstrap = self.context_bootstrap.clone();
+        let (source, occurred_at) = match wire.source {
+            Some((source, occurred_at)) => (Some(source), occurred_at),
+            None => (None, None),
+        };
         let result = self
             .guard
             .run_atomic_remember(
@@ -372,6 +377,7 @@ impl GatewayMcpApplication {
                 wire.task_run,
                 // ADR-0078 D-D A1: resolved there too; unknown / foreign / archived / invisible is one INVALID_INPUT.
                 wire.project_id,
+                source,
                 move |request| {
                     // An unbound PAT naming no workspace has no route: nothing to write to.
                     let workspace = request
@@ -390,7 +396,7 @@ impl GatewayMcpApplication {
                         &stream,
                         wire.content,
                         classification,
-                        None,
+                        occurred_at,
                         OffsetDateTime::now_utc(),
                         subjects,
                         affects,
@@ -455,6 +461,7 @@ impl GatewayMcpApplication {
                 raw_arguments,
                 wire.idempotency_key,
                 Some(wire.note),
+                None,
                 None,
                 None,
                 move |request| {
@@ -2671,12 +2678,23 @@ struct RawNotePutWire {
     note_id: Option<Uuid>,
     supersedes: Option<Uuid>,
     confirm_token: Option<String>,
+    evidence_refs: Option<Vec<Uuid>>,
 }
 
 impl NotePutWire {
     fn from_raw(raw_arguments: &str, decoded: &Value) -> Result<Self, ErrorCode> {
         let raw: RawNotePutWire =
             serde_json::from_str(raw_arguments).map_err(|_| ErrorCode::InvalidInput)?;
+        let refs = raw.evidence_refs.as_deref().unwrap_or_default();
+        if refs.len() > 16
+            || refs.iter().collect::<std::collections::BTreeSet<_>>().len() != refs.len()
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        if !refs.is_empty() {
+            // ponytail: refused until M06-4 wires evidence refs
+            return Err(ErrorCode::InvalidInput);
+        }
         let content: Value =
             serde_json::from_str(raw.content.get()).map_err(|_| ErrorCode::InvalidInput)?;
         if decoded.get("content") != Some(&content) {
@@ -2812,6 +2830,7 @@ impl NoteReplaceLeg {
 }
 
 struct RememberPutWire {
+    source: Option<(SourceIdentity, Option<OffsetDateTime>)>,
     content: PreparedEvidencePayload,
     idempotency_key: String,
     workspace_id: Option<WorkspaceId>,
@@ -2829,6 +2848,7 @@ struct RememberPutWire {
 
 #[derive(Deserialize)]
 struct RawRememberPutWire {
+    source: Option<RawSourceWire>,
     content: Box<RawValue>,
     idempotency_key: String,
     workspace_id: Option<Uuid>,
@@ -2837,6 +2857,16 @@ struct RawRememberPutWire {
     event_kind: Option<String>,
     task_run: Option<RawTaskRunWire>,
     project_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSourceWire {
+    kind: String,
+    object_key: String,
+    version: Option<String>,
+    thread_key: Option<String>,
+    occurred_at: Option<String>,
 }
 
 /// `remember.schema.json` `task_run`: both fields required, nothing else, so a half pair is unrepresentable.
@@ -2851,12 +2881,28 @@ impl RememberPutWire {
     fn from_raw(raw_arguments: &str, decoded: &Value) -> Result<Self, ErrorCode> {
         let raw: RawRememberPutWire =
             serde_json::from_str(raw_arguments).map_err(|_| ErrorCode::InvalidInput)?;
+        if raw.source.is_some() && (raw.task_run.is_some() || raw.project_id.is_some()) {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let source = raw
+            .source
+            .map(|source| {
+                remember::parse_source(
+                    &source.kind,
+                    &source.object_key,
+                    source.version.as_deref(),
+                    source.thread_key.as_deref(),
+                    source.occurred_at.as_deref(),
+                )
+            })
+            .transpose()?;
         let content: Value =
             serde_json::from_str(raw.content.get()).map_err(|_| ErrorCode::InvalidInput)?;
         if decoded.get("content") != Some(&content) {
             return Err(ErrorCode::InvalidInput);
         }
         Ok(Self {
+            source,
             content: PreparedEvidencePayload::new(raw.content.get().as_bytes().to_vec(), content)?,
             idempotency_key: raw.idempotency_key,
             workspace_id: raw.workspace_id.map(WorkspaceId),
@@ -3075,6 +3121,65 @@ mod operation_receipt_fixture;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remember_source_parse_refuses_incompatible_context() {
+        let mut value = json!({"content":"text", "idempotency_key":"source-parse", "source":{"kind":"AgentNote", "object_key":"key"}});
+        assert!(
+            RememberPutWire::from_raw(&value.to_string(), &value)
+                .unwrap()
+                .source
+                .is_some()
+        );
+        for (field, context) in [
+            ("project_id", json!(Uuid::nil())),
+            (
+                "task_run",
+                json!({"task_run_id":Uuid::nil(), "fencing_token":1}),
+            ),
+        ] {
+            value[field] = context;
+            assert!(matches!(
+                RememberPutWire::from_raw(&value.to_string(), &value),
+                Err(ErrorCode::InvalidInput)
+            ));
+            value.as_object_mut().unwrap().remove(field);
+        }
+        value["source"] = json!({"object_key":"key"});
+        assert!(matches!(
+            RememberPutWire::from_raw(&value.to_string(), &value),
+            Err(ErrorCode::InvalidInput)
+        ));
+        value.as_object_mut().unwrap().remove("source");
+        assert!(
+            RememberPutWire::from_raw(&value.to_string(), &value)
+                .unwrap()
+                .source
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn note_evidence_refs_are_refused_before_admission() {
+        let mut value =
+            json!({"content":"text", "note_kind":"note", "idempotency_key":"refs-parse"});
+        assert!(NotePutWire::from_raw(&value.to_string(), &value).is_ok());
+        value["evidence_refs"] = json!([]);
+        assert!(NotePutWire::from_raw(&value.to_string(), &value).is_ok());
+        let id = Uuid::nil();
+        let cases = [json!([id]), json!([id, id]), json!(vec![id; 17])];
+        let refused = cases
+            .into_iter()
+            .filter(|refs| {
+                value["evidence_refs"] = refs.clone();
+                matches!(
+                    NotePutWire::from_raw(&value.to_string(), &value),
+                    Err(ErrorCode::InvalidInput)
+                )
+            })
+            .count();
+        assert_eq!(refused, 3);
+    }
 
     use std::{
         collections::BTreeMap,

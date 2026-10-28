@@ -3,7 +3,7 @@
 //!   serde_json, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo,
 //!   adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::quota_repo, adapters::remember,
 //!   adapters::request_guard_repo, application::supersede, domain::affect, domain::audit, domain::confirm,
-//!   domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
+//!   domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth,
 //!   gateway::bootstrap, gateway::limiter,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
@@ -38,6 +38,7 @@ use humaux_domain::{
     error::ErrorCode,
     identity::AuthorizationScope,
     ids::WorkspaceId,
+    source::SourceIdentity,
     subject::SubjectWriteOp,
 };
 use humaux_protocol::{
@@ -819,9 +820,10 @@ impl GatewayGuard {
         note: Option<NoteIntake>,
         task_run: Option<(TaskRunId, FencingToken)>,
         project: Option<ProjectId>,
+        source: Option<SourceIdentity>,
     ) -> Result<AtomicRememberResult, ErrorCode> {
-        match note {
-            Some(note) => {
+        match (note, source) {
+            (Some(note), _) => {
                 operation_receipt::note_put_atomically(
                     &self.pool,
                     authorization,
@@ -831,7 +833,15 @@ impl GatewayGuard {
                 )
                 .await
             }
-            None => {
+            (None, Some(source)) => operation_receipt::remember_sourced_atomically(
+                &self.pool,
+                authorization,
+                request,
+                &source,
+            )
+            .await
+            .map_err(|error| error.code),
+            (None, None) => {
                 operation_receipt::remember_for_task_run_atomically(
                     &self.pool,
                     authorization,
@@ -863,6 +873,7 @@ impl GatewayGuard {
         note: Option<NoteIntake>,
         task_run: Option<(TaskRunId, FencingToken)>,
         project: Option<ProjectId>,
+        source: Option<SourceIdentity>,
         prepare: F,
     ) -> Result<AtomicRememberResult, ErrorCode>
     where
@@ -918,6 +929,7 @@ impl GatewayGuard {
                     note,
                     task_run,
                     project,
+                    source,
                 ),
             )
             .await
