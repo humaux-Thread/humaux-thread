@@ -4934,6 +4934,7 @@ written by:
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::processing_runs_fingerprint_rerun`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -14339,6 +14340,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -14446,6 +14448,7 @@ grants (runtime roles):
 foreign keys (outgoing):
 
 read by:
+- (no process): `adapters::processing_status`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -14535,6 +14538,7 @@ written by:
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -14646,6 +14650,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::ledger_frontier`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `gateway::tests::memory_get_frontier`
