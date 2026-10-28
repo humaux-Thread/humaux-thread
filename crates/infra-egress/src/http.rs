@@ -609,6 +609,7 @@ mod tests {
                 vec!["127.0.0.1".into()],
             )
             .unwrap();
+        // dep: HTTP(loopback) — §71.2 purpose rejection precedes dialing.
         let result = call.call(&permit, &payload).await;
         let accepted = usize::from(
             tokio::time::timeout(StdDuration::from_millis(200), listener.accept())
