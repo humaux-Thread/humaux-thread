@@ -7,6 +7,8 @@
 pub mod admission;
 pub mod auth;
 pub mod auth_pages;
+/// §71.3: raw-body verification and inbox ingress.
+pub mod billing_webhook;
 pub mod bootstrap;
 pub mod cached_embedding;
 pub mod context;

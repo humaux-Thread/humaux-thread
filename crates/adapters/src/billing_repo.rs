@@ -3,7 +3,7 @@
 //!   (module design M04 D7, G-M04-13).
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway) w=[control.billing_inbox]];
 //!   env=[]; modules=[adapters::postgres, domain::billing, domain::error]
-//! Called-by: [tests]
+//! Called-by: [gateway::billing_webhook, tests]
 //! Invariants: [the insert is `ON CONFLICT DO NOTHING` with no conflict target and no RETURNING, so the primary key
 //!   (provider, event_id) decides a duplicate and the gateway never needs SELECT on the inbox; a redelivery is the
 //!   result `Duplicate`, never an error and never a second row; the first delivery's payload is kept; this module
