@@ -125,11 +125,11 @@ fn assert_annotations(bodies: &MaterializedBodies, ids: &[Uuid]) {
 
 #[test]
 fn g_m13_4_reads_reembed_and_reimport_never_launder_evidence_time() {
-    run_db_fixture::<Fixture, _>("G-M13-4 freshness laundering", |handle| {
-        let ids = seed(handle);
-        let before = read(handle, &ids);
+    run_db_fixture::<Fixture, _>("G-M13-4 freshness laundering", |mut handle| {
+        let ids = seed(&mut handle);
+        let before = read(&handle, &ids);
         assert_annotations(&before, &ids);
-        let reread = read(handle, &ids);
+        let reread = read(&handle, &ids);
         assert_annotations(&reread, &ids);
         // §9: re-embedding's Memory audit time and dedup re-import's recording time cannot renew Evidence.
         handle
@@ -158,7 +158,7 @@ fn g_m13_4_reads_reembed_and_reimport_never_launder_evidence_time() {
             .admin
             .batch_execute("SET session_replication_role=origin")
             .expect("restore triggers");
-        let after = read(handle, &ids);
+        let after = read(&handle, &ids);
         for id in &ids {
             assert_eq!(
                 reread.freshness[id].latest_evidence_at,
@@ -170,7 +170,7 @@ fn g_m13_4_reads_reembed_and_reimport_never_launder_evidence_time() {
             );
         }
         assert_annotations(&after, &ids);
-        let mut selected = read(handle, &ids);
+        let mut selected = read(&handle, &ids);
         selected.items.retain(|item| {
             matches!(item,
             humaux_adapters::read_materialize::MaterializedItem::Memory { memory_id, .. }
