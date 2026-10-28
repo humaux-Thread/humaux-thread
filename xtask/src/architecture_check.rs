@@ -17436,8 +17436,14 @@ async fn serving_version_in_txn() {}
         let Verdict::Fail(lines) = m18_task_project_sole_writer(&tmp) else {
             panic!("a project_id write outside the home must fail")
         };
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains("SET project_id"), "{lines:?}");
+        // Two independent findings name the same stray UPDATE: the project_id-assignment scan and the
+        // `SET project_id` sole-statement count.
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.iter().all(|l| l.contains("other.rs")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("SET project_id")),
+            "{lines:?}"
+        );
         m07_write(
             &tmp,
             "crates/adapters/src/other.rs",
