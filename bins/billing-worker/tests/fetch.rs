@@ -16,7 +16,11 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 // §79.4: fixed public fixture bytes, not a credential; test-only source.
-const TEST_SECRET: &str = "public-fixture-signing-bytes";
+/// Webhook signing secret, random per test run and shared by the fake signer and the client (no literal key).
+fn test_secret() -> &'static str {
+    static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SECRET.get_or_init(|| Uuid::new_v4().to_string())
+}
 fn client(base: &str, key: &'static str) -> CreemClient {
     CreemClient::new(
         base,
@@ -25,7 +29,7 @@ fn client(base: &str, key: &'static str) -> CreemClient {
         ProcessorId(Uuid::new_v4()),
         HttpEgressConfig::default(),
         Arc::new(FixtureCredential(key)),
-        Arc::new(FixtureCredential(TEST_SECRET)),
+        Arc::new(FixtureCredential(test_secret())),
     )
     .unwrap()
 }
@@ -60,7 +64,7 @@ async fn authoritative_fetch_and_authentication() {
         (1790812800, 1793491200)
     );
     let raw = serde_json::to_vec(&json!({"id":"evt_fixture","eventType":"subscription.paid","created_at":3000,"object":{"id":"sub_fixture","last_transaction":{"id":"txn_fixture"}}})).unwrap();
-    let signed = fake_creem::sign(&raw, TEST_SECRET.as_bytes());
+    let signed = fake_creem::sign(&raw, test_secret().as_bytes());
     let headers = [("creem-signature", signed.as_str())];
     let normalized = provider.normalize_event(&headers, &raw).await.unwrap();
     assert_eq!(normalized.provider_txn_ref.as_deref(), Some("txn_fixture"));
