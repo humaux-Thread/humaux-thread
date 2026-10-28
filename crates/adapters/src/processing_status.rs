@@ -25,7 +25,7 @@ use std::time::Instant;
 /// §23.1④: a workspace without checkpoint rows has no numeric reading.
 #[derive(Debug, Serialize)]
 pub struct WorkspaceStatus {
-    workspace_id: WorkspaceId,
+    workspace_id: sqlx::types::Uuid,
     projection: Option<FrontierBlock>,
     reason: Option<ProjectionAbsence>,
     behind_label: &'static str,
@@ -90,7 +90,13 @@ async fn read(
     detailed: bool,
 ) -> Result<Vec<WorkspaceStatus>, sqlx::Error> {
     let auth = query.authorization;
-    stream_repo::set_tenant_local(txn, auth.tenant_id().0).await?;
+    sqlx::query(
+        "SELECT set_config('humaux.tenant_id', $1, true), set_config('humaux.user_id', $2, true)",
+    )
+    .bind(auth.tenant_id().0.to_string())
+    .bind(auth.user_id().map(|u| u.0.to_string()).unwrap_or_default())
+    .execute(&mut **txn)
+    .await?;
     let mut unique = HashSet::new();
     if streams.iter().any(|k| {
         k.tenant_id != auth.tenant_id()
@@ -104,10 +110,6 @@ async fn read(
             "unauthorized or duplicate processing-status stream".into(),
         ));
     }
-    sqlx::query("SELECT set_config('humaux.user_id', $1, true)")
-        .bind(auth.user_id().map(|u| u.0.to_string()).unwrap_or_default())
-        .execute(&mut **txn)
-        .await?;
     let mut output = Vec::new();
     for workspace_id in auth.allowed_workspace_ids().iter() {
         let mut sum: Option<Frontier> = None;
@@ -150,7 +152,7 @@ async fn read(
             })
             .transpose()?;
         output.push(WorkspaceStatus {
-            workspace_id: *workspace_id,
+            workspace_id: workspace_id.0,
             reason: projection
                 .is_none()
                 .then_some(ProjectionAbsence::NoCheckpoint),
