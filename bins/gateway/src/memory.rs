@@ -736,7 +736,7 @@ pub(crate) async fn reject(
     .await
 }
 
-/// ADR-0092 D-A/D-B / §37: freeze and preview in one gateway transaction; source roots are server-authorized.
+/// ADR-0092 D-A/D-B / §37: freeze and preview in one adapter-owned transaction; source roots are server-authorized.
 pub(crate) async fn forget_prepare(
     pool: Arc<RuntimeDbPool>,
     request: AuthorizedRequest,
@@ -753,22 +753,9 @@ pub(crate) async fn forget_prepare(
         &bootstrap,
     )
     .await?;
-    // dep: PostgreSQL(role_gateway) — caller-owned freeze and preview transaction (§37)
-    let mut txn = pool
-        .pool()
-        .begin()
+    let (frozen, preview) = forget_repo::freeze_and_preview(&pool, &auth, memory_id, &evidence_ids)
         .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let frozen = if let Some(id) = memory_id {
-        forget_repo::freeze_memory_in_txn(&mut txn, &auth, id).await
-    } else {
-        forget_repo::freeze_evidence_closure_in_txn(&mut txn, &auth, &evidence_ids).await
-    }
-    .map_err(forget_error)?;
-    let preview = forget_repo::preview_in_txn(&mut txn, &auth, frozen.request_id).await?;
-    txn.commit()
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        .map_err(forget_error)?;
     let intent = confirmation_digest(preview.scope_kind, &preview.manifest_hash);
     // ponytail: fixed 50-item caps; move to protocol::page Pager in M26-8
     let view = serde_json::json!({
@@ -791,25 +778,10 @@ pub(crate) async fn forget_accept(
     request_id: Uuid,
 ) -> Result<(), ErrorCode> {
     use humaux_adapters::forget_repo;
-    use humaux_application::forget::confirmation_digest;
     let (auth, _) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    // dep: PostgreSQL(role_gateway) — preview binding and accept share the transaction (§37.2)
-    let mut txn = pool
-        .pool()
-        .begin()
+    forget_repo::accept_previewed(&pool, &auth, request_id, &mut write.claim)
         .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    let preview = forget_repo::preview_in_txn(&mut txn, &auth, request_id).await?;
-    write.claim.request_sha256 = Some(confirmation_digest(
-        preview.scope_kind,
-        &preview.manifest_hash,
-    ));
-    forget_repo::accept_in_txn(&mut txn, &auth, request_id, Some(&write.claim))
-        .await
-        .map_err(forget_error)?;
-    txn.commit()
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)
+        .map_err(forget_error)
 }
 
 /// §52.1: refusal codes cross the wire; internal reasons and database details never do.

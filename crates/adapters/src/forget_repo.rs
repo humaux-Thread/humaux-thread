@@ -21,8 +21,10 @@
 //!
 //! Maintenance entry points require [`MaintenanceDbPool`] (`role_maintenance`): 0011 permits only that role to make
 //! the maintenance `* -> TOMBSTONED` edge; ADR-0092 D-C also admits the 0278 accept door. 0054 grants only maintenance the bookkeeping doors. Their transactions install the tenant
-//! before touching FORCE-RLS tables (§6.2). Freeze and preview instead require the caller-owned `role_gateway`
-//! transaction with the caller's AuthorizationScope (ADR-0092 D-A); tenant RLS alone never proves root readability.
+//! before touching FORCE-RLS tables (§6.2). Freeze and preview instead run in a `role_gateway`
+//! transaction with the caller's AuthorizationScope (ADR-0092 D-A); tenant RLS alone never proves root readability. The
+//! gateway reaches them only through [`freeze_and_preview`] and [`accept_previewed`], which own that transaction, so no
+//! SQLx handle leaves this crate (§6.2.3); the `*_in_txn` forms take a caller's transaction.
 
 use sqlx::Row;
 use sqlx::types::Uuid;
@@ -31,7 +33,7 @@ use std::collections::BTreeSet;
 
 use humaux_application::forget::{
     DeletionScopeKind, DeletionStep, DeletionTarget, DeletionTargetKind, ImpactPreview,
-    VisibleMemory, manifest_hash,
+    VisibleMemory, confirmation_digest, manifest_hash,
 };
 use humaux_domain::confirm::DestructiveOp;
 use humaux_domain::error::ErrorCode;
@@ -39,7 +41,7 @@ use humaux_domain::identity::AuthorizationScope;
 use humaux_projection::stream::StreamKey;
 
 use crate::context_repo::{set_authorization_local, visibility_from_row};
-use crate::postgres::MaintenanceDbPool;
+use crate::postgres::{MaintenanceDbPool, RuntimeDbPool};
 use crate::read_gate::{readable_memory_ids, visibility_readable};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -688,6 +690,55 @@ pub async fn accept_in_txn(
         .execute(&mut **txn)
         .await
         .map_err(accept_refusal)?;
+    Ok(())
+}
+
+/// ADR-0092 D-B round 1 (§37): freeze then preview in one `role_gateway` transaction this adapter owns, so no SQLx
+/// handle crosses into the gateway (§6.2.3). `memory_id` selects `MEMORY` scope, else `EVIDENCE_CLOSURE` over `roots`.
+pub async fn freeze_and_preview(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    memory_id: Option<Uuid>,
+    roots: &[Uuid],
+) -> Result<(FrozenDeletion, ImpactPreview), ForgetRepoError> {
+    // dep: PostgreSQL(any) — opens a PostgreSQL transaction
+    let mut txn = pool.pool().begin().await?;
+    let frozen = match memory_id {
+        Some(id) => freeze_memory_in_txn(&mut txn, authorization, id).await?,
+        None => freeze_evidence_closure_in_txn(&mut txn, authorization, roots).await?,
+    };
+    let preview = preview_in_txn(&mut txn, authorization, frozen.request_id)
+        .await
+        .map_err(|code| ForgetRepoError::Refused {
+            code,
+            reason: "preview",
+        })?;
+    txn.commit().await?;
+    Ok((frozen, preview))
+}
+
+/// ADR-0092 D-B round 2 (§37.2): the preview is reloaded, the claim bound to its [`confirmation_digest`] and accepted in
+/// one adapter-owned transaction; on any refusal the transaction is dropped (rolled back), never committed.
+pub async fn accept_previewed(
+    pool: &RuntimeDbPool,
+    authorization: &AuthorizationScope,
+    request_id: Uuid,
+    claim: &mut crate::confirm_token_repo::ConfirmationClaim,
+) -> Result<(), ForgetRepoError> {
+    // dep: PostgreSQL(any) — opens a PostgreSQL transaction
+    let mut txn = pool.pool().begin().await?;
+    let preview = preview_in_txn(&mut txn, authorization, request_id)
+        .await
+        .map_err(|code| ForgetRepoError::Refused {
+            code,
+            reason: "preview",
+        })?;
+    claim.request_sha256 = Some(confirmation_digest(
+        preview.scope_kind,
+        &preview.manifest_hash,
+    ));
+    accept_in_txn(&mut txn, authorization, request_id, Some(claim)).await?;
+    txn.commit().await?;
     Ok(())
 }
 
