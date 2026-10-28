@@ -34,6 +34,7 @@ stream).
 snapshot_id)`, symbols `(tenant, snapshot_id, file_id)`, edges `(…, from_symbol_id)` / `(…, to_symbol_id)`). FORCE RLS: tenant predicate AND repository
 visible; `worktree_overlays` retires (D-H). Closed sets are CHECK **and** Rust enum (§78.2): `edge_kind` = §27's six, `evidence_level` {syntax_candidate,
 semantic_resolved, runtime_observed}, kind {COMMIT, WORKTREE}, state {BUILDING, READY, FAILED, EXPIRED} (note D2, :61-68; lead 03b9aca9).
+Amendment (M16-3): every parsed file has one file-scope MODULE symbol; it is the from end of top-level IMPORTS/REFERENCES, so from_symbol_id is NOT NULL.
 ### D-C  Snapshot identity is one canonical digest
 `identity_sha256` covers repository_id, kind, commit_sha (NULL for a never-committed tree), dirty_tree_sha256, target_key (triple + sorted features),
 lockfile_sha256, generated_code_sha256 (client-declared paths + hashes), tree_sitter_version, grammar_set (sorted `lang=version`), extractor_version; client
@@ -188,3 +189,4 @@ M16-2 (migration 0284). Each red is a targeted.yml run on a throwaway branch car
 - G-M16-7 red (r3): [40458365522](https://github.com/humaux/humaux-thread/actions/runs/40458365522), mutation `f86ef5e5f9e5298475af35a06032efcc7390595b`
   keys the `code_files` FK on `snapshot_id` alone. `crates/adapters/tests/code_rls.rs:489` (`expect_err` in `rejected_fk`, reached from the cross-tenant assertion) fails because tenant B's file naming tenant A's snapshot is accepted.
 - Green on the unmutated card branch before the PR: [40456029676](https://github.com/humaux/humaux-thread/actions/runs/40456029676) (`code_rls` 3 passed, `facet_contract` 7 passed).
+- M16-3 red records (migration 0291): r1 G-M16-3 [40524368500](https://github.com/humaux/humaux-thread/actions/runs/40524368500) `crates/adapters/tests/code_schema.rs:240`; r2 G-M16-7 [40525208754](https://github.com/humaux/humaux-thread/actions/runs/40525208754) `crates/adapters/tests/code_rls.rs:487`; r3 `num_nonnulls` edge-target CHECK dropped [40635287223](https://github.com/humaux/humaux-thread/actions/runs/40635287223) `crates/adapters/tests/code_schema.rs:240`; r4 `CONSTANT` dropped from `code_symbols_kind_check` [40635557275](https://github.com/humaux/humaux-thread/actions/runs/40635557275) `crates/adapters/tests/facet_contract.rs:397`.

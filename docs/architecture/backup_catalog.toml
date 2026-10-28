@@ -828,6 +828,12 @@ owner = "M16"
 basis = "M16:157; D1"
 reason = "re-indexable code graph (D1 code_*)"
 
+["private.code_edges"]
+class = "EXCLUDED"
+owner = "M16"
+basis = "M16:157; D1"
+reason = "re-indexable code graph (D1 code_*)"
+
 ["private.code_files"]
 class = "EXCLUDED"
 owner = "M16"
@@ -838,6 +844,12 @@ reason = "re-indexable code graph (D1 code_*)"
 class = "EXCLUDED"
 owner = "M16"
 basis = "M16:156; D1"
+reason = "re-indexable code graph (D1 code_*)"
+
+["private.code_symbols"]
+class = "EXCLUDED"
+owner = "M16"
+basis = "M16:157; D1"
 reason = "re-indexable code graph (D1 code_*)"
 
 ["private.context_bindings"]
