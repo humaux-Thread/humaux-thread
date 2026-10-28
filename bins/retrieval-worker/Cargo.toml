@@ -58,7 +58,7 @@ serde_json = "1"
 # why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [retrieval-worker::rpc]
 sha2 = "0.11"
 # why: async runtime; used-by: [retrieval-worker::main, retrieval-worker::rpc]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync"] }
 # ADR-0084 D-B: the rerank lane's ONNX Runtime binding, retrieval-worker only. Exact pin: the newest release is a
 # release candidate whose notes report over 30 fixed undefined-behaviour bugs, so a bump is a reviewed change. No
 # `download-binaries`: the shared library is the pinned tarball the image ships, loaded by path (`load-dynamic`);

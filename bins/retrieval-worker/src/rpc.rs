@@ -184,13 +184,20 @@ async fn readyz_handler(State(state): State<Arc<RpcState>>) -> Response {
         Ok(settings) => settings,
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, error).into_response(),
     };
-    match RetrievalWorkerDbPool::connect_with(&state.pg_dsn, &settings).await {
-        Ok(_) => (StatusCode::OK, "ready\n").into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("missing object: PostgreSQL as role_retrieval_worker ({e})\n"),
-        )
-            .into_response(),
+    // §48.1: cancellation of the HTTP request cannot release the lease before session close.
+    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let probe = tokio::spawn(async move {
+        let _lease = PROBE.lock().await;
+        RetrievalWorkerDbPool::probe_fresh(&state.pg_dsn, &settings).await
+    })
+    .await
+    .map_err(|_| "missing object: PostgreSQL readiness task\n".to_owned())
+    .and_then(|result| {
+        result.map_err(|e| format!("missing object: PostgreSQL as role_retrieval_worker ({e})\n"))
+    });
+    match probe {
+        Ok(()) => (StatusCode::OK, "ready\n").into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
     }
 }
 
