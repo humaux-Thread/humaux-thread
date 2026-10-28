@@ -363,8 +363,7 @@ impl HttpExternalCall {
             let url = reqwest::Url::parse(&self.endpoint).map_err(|_| ErrorCode::Forbidden)?;
             let host = url.host_str().ok_or(ErrorCode::Forbidden)?;
             // §71.2: destination authorization precedes credential lookup and request construction.
-            if host.trim_end_matches('.') == "api.creem.io"
-                || !hosts.iter().any(|h| h == host)
+            if !hosts.iter().any(|h| h == host)
                 || !url.username().is_empty()
                 || url.password().is_some()
             {
@@ -558,6 +557,66 @@ mod tests {
             accepted, 0,
             "non-allowlisted host must accept zero connections"
         );
+        assert_eq!(result, Err(ErrorCode::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn billing_configured_host_has_no_provider_specific_transport_deny() {
+        let processor = ProcessorId(Uuid::now_v7());
+        let call = HttpExternalCall::new(
+            "https://api.creem.io/x",
+            processor,
+            HttpEgressConfig::default(),
+            std::sync::Arc::new(FixedCredential),
+            test_status_classifier,
+        )
+        .unwrap()
+        .with_request_policy(
+            reqwest::Method::GET,
+            reqwest::header::HeaderName::from_static("x-api-key"),
+            vec!["api.creem.io".into()],
+        )
+        .unwrap();
+        // dep: HTTP(provider) — §71.2 checks configured authorization without sending.
+        assert_eq!(
+            call.request_parts(PrivateDataPurpose::BillingProvider),
+            Ok((
+                reqwest::Method::GET,
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                true
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieval_permit_on_billing_instance_is_refused_before_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let processor = ProcessorId(Uuid::now_v7());
+        let payload = AuthorizedEgressPayload::new(b"x".to_vec());
+        let permit = authorize(
+            TenantId::new(),
+            processor,
+            PrivateDataPurpose::RetrievalEmbedding,
+            DataClass::Private,
+            &payload,
+            StdDuration::from_secs(60),
+        )
+        .unwrap();
+        let call = call_at(listener.local_addr().unwrap(), processor)
+            .with_request_policy(
+                reqwest::Method::GET,
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                vec!["127.0.0.1".into()],
+            )
+            .unwrap();
+        // dep: HTTP(loopback) — §71.2 purpose rejection precedes dialing.
+        let result = call.call(&permit, &payload).await;
+        let accepted = usize::from(
+            tokio::time::timeout(StdDuration::from_millis(200), listener.accept())
+                .await
+                .is_ok(),
+        );
+        assert_eq!(accepted, 0);
         assert_eq!(result, Err(ErrorCode::Forbidden));
     }
 

@@ -5,7 +5,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.data_disclosure_sources,
 //!   ops.data_disclosures, private.evidence_objects], PostgreSQL(role_maintenance), PostgreSQL(role_private_worker)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::postgres, domain::dataclass, domain::egress,
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::postgres, domain::dataclass, domain::egress, domain::error,
 //!   domain::ids, adapters::tests::support::truncate_probe, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [reserve writes the ledger row and its sources before the call and finalize records the outcome; no
@@ -385,6 +385,50 @@ fn reserve_rejects_a_non_recipient_classified_purpose_before_any_write() {
                 row_count, 0,
                 "reserve must not write any ops.data_disclosures row for a rejected purpose"
             );
+        },
+    );
+}
+
+#[test]
+fn billing_metadata_is_refused_before_disclosure_write() {
+    run_db_fixture::<DisclosureFixture, _>(
+        "billing_metadata_is_refused_before_disclosure_write",
+        |mut handle| {
+            let payload = AuthorizedEgressPayload::new(b"billing metadata".to_vec());
+            let permit = egress::authorize(
+                TenantId(handle.tenant_id),
+                ProcessorId(Uuid::now_v7()),
+                PrivateDataPurpose::BillingProvider,
+                DataClass::Private,
+                &payload,
+                Duration::from_secs(300),
+            )
+            .unwrap();
+            let evidence_id = seed_evidence(&mut handle);
+            let err = handle
+                .rt
+                .block_on(disclosure::reserve_private(
+                    &handle.private_worker,
+                    &permit,
+                    "cn-hangzhou",
+                    &payload,
+                    None,
+                    &[DisclosureSource::Evidence(evidence_id)],
+                ))
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                disclosure::DisclosureError::Guard(humaux_domain::error::ErrorCode::Forbidden)
+            ));
+            let count: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                    &[&handle.tenant_id],
+                )
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 0);
         },
     );
 }

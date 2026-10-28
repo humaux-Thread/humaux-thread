@@ -65,10 +65,23 @@ fn explicit_modes_and_destination_sets() {
         None,
         Some("https://api.creem.io"),
         Some("http://other.invalid"),
+        Some("http://127.0.0.2:1234"),
     ] {
         assert_eq!(
             fake.allowed_hosts(base).err().as_deref(),
             Some("fake billing requires an explicit loopback base URL")
         );
     }
+    for (base, host) in [
+        ("http://localhost:1234", "localhost"),
+        ("http://[::1]:1234", "[::1]"),
+        ("http://127.0.0.1", "127.0.0.1"),
+        ("http://localhost", "localhost"),
+        ("http://[::1]", "[::1]"),
+    ] {
+        assert_eq!(fake.allowed_hosts(Some(base)).unwrap(), vec![host]);
+    }
+    let hosts = BillingMode::parse(Some("test"), Some("https://test-api.creem.io/"))
+        .and_then(|mode| mode.allowed_hosts(None));
+    assert_eq!(hosts, Ok(vec!["test-api.creem.io".to_string()]));
 }
