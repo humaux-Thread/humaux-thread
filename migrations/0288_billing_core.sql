@@ -163,6 +163,14 @@ $$;
 CREATE TRIGGER billing_payments_reject_mutation BEFORE UPDATE OR DELETE ON control.billing_payments
 FOR EACH ROW EXECUTE FUNCTION control.billing_payments_reject_mutation();
 
+-- A FOR EACH ROW trigger never fires on TRUNCATE (the 0101 credit_ledger defect), and no foreign key points at either
+-- table, so a plain TRUNCATE would empty them. Both functions RAISE without touching OLD/NEW, so they serve the
+-- statement-level guard unchanged.
+CREATE TRIGGER subscription_events_reject_truncate BEFORE TRUNCATE ON control.subscription_events
+FOR EACH STATEMENT EXECUTE FUNCTION control.subscription_events_reject_mutation();
+CREATE TRIGGER billing_payments_reject_truncate BEFORE TRUNCATE ON control.billing_payments
+FOR EACH STATEMENT EXECUTE FUNCTION control.billing_payments_reject_mutation();
+
 ALTER TABLE control.billing_customers OWNER TO role_migration_owner;
 ALTER TABLE control.subscriptions OWNER TO role_migration_owner;
 ALTER TABLE control.subscription_events OWNER TO role_migration_owner;

@@ -63,9 +63,10 @@ select (select count(*) = 5 from t join pg_class c on c.oid = to_regclass(t.name
                          'billing_payments_currency_v1_check', 'billing_payments_txn_unique',
                          'billing_inbox_provider_v1_check', 'billing_inbox_status_v1_check'))
  and to_regclass('control.subscriptions_one_live_per_tenant') is not null
- and (select count(*) = 2 from pg_trigger tg
+ and (select count(*) = 4 from pg_trigger tg
        where tg.tgrelid in (to_regclass('control.subscription_events'), to_regclass('control.billing_payments'))
-         and tg.tgname in ('subscription_events_reject_mutation', 'billing_payments_reject_mutation')
+         and tg.tgname in ('subscription_events_reject_mutation', 'billing_payments_reject_mutation',
+                           'subscription_events_reject_truncate', 'billing_payments_reject_truncate')
          and tg.tgenabled = 'O' and not tg.tgisinternal)
  and not exists (
        select 1 from t cross join r cross join v

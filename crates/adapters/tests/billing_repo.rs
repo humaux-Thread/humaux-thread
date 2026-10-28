@@ -328,7 +328,8 @@ fn the_gateway_holds_insert_on_the_inbox_and_nothing_else() {
 
 /// M04 D7: an applied fact and a payment are never rewritten or removed, not even by the database owner (the
 /// reject-mutation trigger, not a missing grant), and one provider transaction is one row per kind.
-/// Fault: drop either trigger ⇒ the owner's UPDATE or DELETE succeeds ⇒ red.
+/// Fault: drop any of the four triggers ⇒ the owner's UPDATE, DELETE or TRUNCATE succeeds ⇒ red (TRUNCATE needs the
+/// statement-level guard: a row trigger never fires on it, the 0101 defect).
 #[test]
 fn the_applied_facts_are_append_only_even_for_the_owner() {
     run_db_fixture::<BillingFixture, _>(
@@ -350,6 +351,8 @@ fn the_applied_facts_are_append_only_even_for_the_owner() {
                 "DELETE FROM control.billing_payments",
                 "UPDATE control.subscription_events SET to_state = 'CANCELED'",
                 "DELETE FROM control.subscription_events",
+                "TRUNCATE control.billing_payments",
+                "TRUNCATE control.subscription_events",
             ] {
                 let refused = h.admin.execute(statement, &[]).expect_err(statement);
                 assert_eq!(
