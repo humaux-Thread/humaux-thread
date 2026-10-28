@@ -81,6 +81,8 @@
 No gate exists in this PR (docs only). Each gate exists when M14-3a / M14-3b land with its §80.1 inject → red → fix →
 green record, and that record is added to this ADR.
 
+- §80.1 G-M14-3 (M14-3a pure): targeted run [40677507806](https://github.com/humaux-Thread/humaux-thread/actions/runs/40677507806), mutation `updated_at` derived from NEXT_ACTIONS in the prefix; compiled, then `g_m14_3_prefix_matches_exact_serialization` and `g_m14_3_tail_only_change_keeps_prefix_sha` failed their equality assertions. Green: M14-3a PR CI.
+
 ## Open numbers and owner-gated items
 
 - No research is open for the brief: the design note records none, and the open items are measurements, not research.
