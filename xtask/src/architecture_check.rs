@@ -13,6 +13,7 @@
 //! and the backup-catalog gates G-M23-3 (every table has exactly one KNOWLEDGE/EXCLUDED row) and G-M23-3b (the KNOWLEDGE set is closed under foreign keys,
 //! and the M23 D5 restore dependencies — revocation fences, their outbox, opt-outs, trigger parents — are KNOWLEDGE rows;
 //! C-M23-0, ADR-0121 D-A and its M23-2 fix 1 amendment, #332).
+//! G-M04-20 pins seven billing/plan tables as KNOWLEDGE inside G-M23-3b (ADR-0128; §44 / §71 Plan Versioning).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -12088,6 +12089,39 @@ fn backup_catalog_d5_problems(rows: &[CatalogRow]) -> Vec<String> {
         .collect()
 }
 
+/// ADR-0128 / §44 / §71: reconciliation and grandfathering require these seven non-rebuildable tables after restore.
+const M04_BILLING_BACKUP_TABLES: [&str; 7] = [
+    "control.plans",
+    "control.plan_versions",
+    "control.billing_customers",
+    "control.subscriptions",
+    "control.subscription_events",
+    "control.billing_payments",
+    "control.billing_inbox",
+];
+
+/// G-M04-20 counts parsed KNOWLEDGE rows; absent and EXCLUDED entries cannot satisfy the ADR-0128 pin (§44).
+fn m04_billing_backup_pinned(rows: &[CatalogRow]) -> usize {
+    M04_BILLING_BACKUP_TABLES
+        .iter()
+        .filter(|table| is_knowledge_row(rows, table))
+        .count()
+}
+
+/// ADR-0128 / §44: every missing or EXCLUDED billing dependency must be named, even with no incoming FK.
+fn backup_catalog_m04_problems(rows: &[CatalogRow]) -> Vec<String> {
+    if m04_billing_backup_pinned(rows) == M04_BILLING_BACKUP_TABLES.len() {
+        return Vec::new();
+    }
+    M04_BILLING_BACKUP_TABLES
+        .iter()
+        .filter(|table| !is_knowledge_row(rows, table))
+        .map(|table| {
+            format!("G-M04-20: `{table}` must be a KNOWLEDGE row of {BACKUP_CATALOG} (ADR-0128)")
+        })
+        .collect()
+}
+
 /// The problems of one gate over the two file texts; `closure` picks G-M23-3b over G-M23-3. A text that does not
 /// parse is a problem of both gates, so neither can pass on input the other rejects.
 fn backup_catalog_problems(db_objects: &str, catalog: &str, closure: bool) -> Vec<String> {
@@ -12123,7 +12157,11 @@ fn backup_catalog_gate(root: &Path, closure: bool) -> Verdict {
     let mut problems = backup_catalog_problems(&texts[0], &texts[1], closure);
     if closure {
         // An unparseable catalog is already a problem above; the pin needs parsed rows.
-        let pin = parse_backup_catalog(&texts[1]).map(|rows| backup_catalog_d5_problems(&rows));
+        let pin = parse_backup_catalog(&texts[1]).map(|rows| {
+            let mut found = backup_catalog_d5_problems(&rows);
+            found.extend(backup_catalog_m04_problems(&rows));
+            found
+        });
         problems.extend(pin.unwrap_or_default());
     }
     if problems.is_empty() {
@@ -24861,12 +24899,14 @@ mod backup_catalog_tests {
         fs::create_dir_all(dir.join("docs/architecture")).unwrap();
         let sections: Vec<(&str, &str, &[&str])> = D5_RESTORE_DEPENDENCIES
             .iter()
+            .chain(M04_BILLING_BACKUP_TABLES.iter())
             .map(|t| (*t, "table", &[] as &[&str]))
             .collect();
         fs::write(dir.join(DB_OBJECTS), bc_db(&sections)).unwrap();
         let catalog = |excluded: &str| {
             let rows: Vec<(&str, &str)> = D5_RESTORE_DEPENDENCIES
                 .iter()
+                .chain(M04_BILLING_BACKUP_TABLES.iter())
                 .map(|t| {
                     (
                         *t,
@@ -24945,6 +24985,55 @@ mod backup_catalog_tests {
             "M23 D5 pin: {:?}",
             backup_catalog_d5_problems(&rows)
         );
+    }
+
+    /// G-M04-20 / ADR-0128: each absent or EXCLUDED entry fails independently with an exact named failure (§44).
+    #[test]
+    fn backup_catalog_m04_pin_names_each_missing_or_excluded_entry() {
+        let all: Vec<CatalogRow> = M04_BILLING_BACKUP_TABLES
+            .iter()
+            .map(|table| CatalogRow {
+                table: (*table).to_owned(),
+                class: CatalogClass::Knowledge,
+                set_null: Vec::new(),
+            })
+            .collect();
+        assert_eq!(M04_BILLING_BACKUP_TABLES.len(), 7);
+        assert_eq!(m04_billing_backup_pinned(&all), 7);
+        assert_eq!(backup_catalog_m04_problems(&all), Vec::<String>::new());
+        for (index, table) in M04_BILLING_BACKUP_TABLES.iter().enumerate() {
+            for missing in [false, true] {
+                let mut weak = all.clone();
+                if missing {
+                    weak.remove(index);
+                } else {
+                    weak[index].class = CatalogClass::Excluded;
+                }
+                assert_eq!(m04_billing_backup_pinned(&weak), 6);
+                assert_eq!(
+                    backup_catalog_m04_problems(&weak),
+                    vec![format!(
+                        "G-M04-20: `{table}` must be a KNOWLEDGE row of {BACKUP_CATALOG} (ADR-0128)"
+                    )]
+                );
+            }
+        }
+    }
+
+    /// G-M04-20 / ADR-0128: the real gate must enforce the seven-table pin (§44); r1 excludes billing_inbox.
+    #[test]
+    fn repository_backup_catalog_pins_m04_billing_tables() {
+        let root = workspace_root();
+        let text =
+            fs::read_to_string(root.join(BACKUP_CATALOG)).expect("backup_catalog.toml is readable");
+        let rows = parse_backup_catalog(&text).expect("backup_catalog.toml parses");
+        assert_eq!(
+            m04_billing_backup_pinned(&rows),
+            7,
+            "{:?}",
+            backup_catalog_m04_problems(&rows)
+        );
+        assert_eq!(backup_catalog_gate(&root, true), Verdict::Pass);
     }
 
     /// The real tree: every table of the migrated catalog has a row, and the KNOWLEDGE set is closed under foreign keys.
