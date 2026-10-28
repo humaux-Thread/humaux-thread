@@ -367,37 +367,30 @@ impl PrivateWorkerDbPool {
 pub struct RetrievalWorkerDbPool(PgPool);
 
 impl RetrievalWorkerDbPool {
-    /// §48.1 / ADR-0061 D-F: one fresh role-checked session per probe, closed before the
-    /// next probe. The owned task retains the serial lease even if its caller is cancelled.
+    /// §48.1 / ADR-0061 D-F: one fresh role-checked session, explicitly closed before return.
+    /// The RPC caller owns serialization and shields this future from request cancellation.
     pub async fn probe_fresh(dsn: &str, settings: &PoolSettings) -> Result<(), PoolInitError> {
-        static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-        let dsn = dsn.to_owned();
         let mut settings = settings.clone();
         settings.max_connections = 1;
         settings.min_connections = 0;
-        tokio::spawn(async move {
-            let _lease = PROBE.lock().await;
-            let pool = open(&dsn, Some(&settings)).await?;
-            let result = async {
-                let actual: String = sqlx::query_scalar("SELECT current_user")
-                    // dep: PostgreSQL(role_retrieval_worker) — fresh readiness identity check
-                    .fetch_one(&pool)
-                    .await
-                    .map_err(PoolInitError::Connect)?;
-                if actual != ROLE_RETRIEVAL_WORKER {
-                    return Err(PoolInitError::RoleMismatch {
-                        expected: ROLE_RETRIEVAL_WORKER,
-                        actual,
-                    });
-                }
-                Ok(())
+        let pool = open(dsn, Some(&settings)).await?;
+        let result = async {
+            let actual: String = sqlx::query_scalar("SELECT current_user")
+                // dep: PostgreSQL(role_retrieval_worker) — fresh readiness identity check
+                .fetch_one(&pool)
+                .await
+                .map_err(PoolInitError::Connect)?;
+            if actual != ROLE_RETRIEVAL_WORKER {
+                return Err(PoolInitError::RoleMismatch {
+                    expected: ROLE_RETRIEVAL_WORKER,
+                    actual,
+                });
             }
-            .await;
-            pool.close().await;
-            result
-        })
-        .await
-        .map_err(|e| PoolInitError::Connect(sqlx::Error::Protocol(e.to_string())))?
+            Ok(())
+        }
+        .await;
+        pool.close().await;
+        result
     }
 
     /// §6.2.3 assertion E: connects and verifies `current_user == "role_retrieval_worker"`.
