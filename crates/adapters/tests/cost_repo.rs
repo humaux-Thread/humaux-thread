@@ -1,5 +1,5 @@
 //! `adapters::tests::cost_repo` — M04-15 real PostgreSQL refusal, margin and ACL contracts.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(owner) w=[control.tenants, control.billing_payments, ops.tenant_cost_events] r=[ops.tenant_margin_v], PostgreSQL(role_private_worker), PostgreSQL(role_migration_owner)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::cost_repo, adapters::tests::support::throwaway_db, domain::error, humaux-testkit]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, sqlx, tokio]; services=[PostgreSQL(owner) w=[control.tenants, control.billing_payments] r=[ops.tenant_cost_events, ops.tenant_margin_v], PostgreSQL(role_private_worker), PostgreSQL(role_migration_owner)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::cost_repo, adapters::tests::support::throwaway_db, domain::error, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [each DB test owns a migrated throwaway database; missing DSN fails; exact rows and all runtime ACLs]
 //! Spec: Baseline §19; §76; §78.2; §79.2; M04 D11, D13(b)
@@ -70,7 +70,9 @@ fn g_m04_15a_missing_period_refused() {
             // dep: PostgreSQL(owner) — connection to this test's migrated throwaway database
             let mut conn = PgConnection::connect(&db.dsn()).await.unwrap();
             let tenant = tenant(&mut conn).await;
+            // dep: PostgreSQL(owner) — transaction in the isolated database
             let mut txn = conn.begin().await.unwrap();
+            // dep: PostgreSQL(role_private_worker) — exercise the producer role
             sqlx::query("SET LOCAL ROLE role_private_worker").execute(&mut *txn).await.unwrap();
             assert_eq!(cost_repo::record_in_txn(&mut txn, event(tenant, 1.0, None)).await,
                 Err(ErrorCode::InvalidInput), "G-M04-15a: missing period refusal");
@@ -104,7 +106,9 @@ async fn seed_payments(conn: &mut PgConnection, tenant: Uuid) {
 }
 
 async fn margin_rows(conn: &mut PgConnection, tenant: Uuid) -> Vec<(String, i64, f64, f64)> {
+    // dep: PostgreSQL(owner) — read transaction in the isolated database
     let mut txn = conn.begin().await.unwrap();
+    // dep: PostgreSQL(role_migration_owner) — FORCE RLS owner execution
     // §76: the consumer role is not granted SELECT; judge owner execution under FORCE RLS.
     sqlx::query("SET LOCAL ROLE role_migration_owner")
         .execute(&mut *txn)
@@ -153,7 +157,9 @@ fn g_m04_15b_view_sums_and_privileges() {
             seed_payments(&mut conn, a).await;
             let month =
                 Date::from_calendar_date(2026, sqlx::types::time::Month::October, 1).unwrap();
+            // dep: PostgreSQL(owner) — transaction in the isolated database
             let mut txn = conn.begin().await.unwrap();
+            // dep: PostgreSQL(role_private_worker) — exercise the producer role
             sqlx::query("SET LOCAL ROLE role_private_worker")
                 .execute(&mut *txn)
                 .await
