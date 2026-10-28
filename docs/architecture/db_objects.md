@@ -744,6 +744,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `adapters::membership_repo`
 - process(humaux-maintenance): `adapters::membership_repo`
 
@@ -2069,6 +2070,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -2088,8 +2090,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_register`
@@ -2108,8 +2110,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_registrations`
@@ -2139,6 +2141,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -2158,9 +2161,9 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - (no process): `adapters::tests::oauth_persistence`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_code_issue`
@@ -2179,8 +2182,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_issue`
@@ -2199,8 +2202,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_lookup`
@@ -2219,8 +2222,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_revoke`
@@ -2239,8 +2242,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grants`
@@ -2274,6 +2277,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -2293,8 +2297,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_rotate`
@@ -2313,8 +2317,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_tokens`
@@ -2345,6 +2349,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -4960,6 +4965,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
@@ -5267,6 +5273,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`

@@ -15,6 +15,8 @@ pub mod guard;
 pub mod limiter;
 pub mod mcp_application;
 mod memory;
+/// M02 token exchange and authorization-server discovery.
+pub mod oauth_http;
 pub mod recall;
 pub mod remember;
 pub mod rerank_client;

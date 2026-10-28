@@ -1,8 +1,8 @@
 //! `application::oauth` — M02 OAuth 2.1 authorization-server state machine: authorize-request validation, code issuance
 //!   terms, code-exchange validation, refresh-rotation decisions and grant lifetime/epoch checks. Pure: no SQL, no clock,
 //!   no randomness; `now`, row snapshots and every lifetime come in as arguments.
-//! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[domain::error, domain::ids]
-//! Called-by: []
+//! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[application::signed_token, domain::error, domain::ids]
+//! Called-by: [gateway::oauth_http, tests]
 //! Invariants: [PKCE is S256 only; a redirect URI is accepted only when it is exactly registered and is https, loopback
 //!   http or a private-use scheme; `resource` is mandatory and allowlisted; a reused refresh token yields a decision that
 //!   revokes its family and grant; a grant is live only before its ceiling and while both epoch snapshots equal the live
@@ -15,6 +15,8 @@
 
 use std::time::Duration;
 
+use crate::signed_token::{FIELD_SEP, TokenLabel};
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use humaux_domain::error::ErrorCode;
@@ -22,6 +24,45 @@ use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Baseline recommended OAuth scopes: one application table (M02 §14).
+pub const SUPPORTED_SCOPES: [&str; 5] = [
+    "context:read",
+    "memory:write",
+    "artifact:manage",
+    "code:manage",
+    "coordination:manage",
+];
+/// M02 D3 domain separation; kid label follows the page-token convention.
+pub const ACCESS_TOKEN_LABEL: TokenLabel = TokenLabel::new(b"oauth-at@1", b"oauth-at.kid@1");
+
+/// M02 D3 claims; client is last so splitn(5) preserves every byte of its identifier.
+pub fn access_token_payload(access: &AccessTerms) -> String {
+    format!(
+        "{}{FIELD_SEP}{}{FIELD_SEP}{}{FIELD_SEP}{}{FIELD_SEP}{}",
+        access.grant_id,
+        access.expires_at.unix_timestamp(),
+        access.resource,
+        access.scopes.join(" "),
+        access.client_id
+    )
+}
+
+/// Decodes claims only after the caller verifies the MAC (M02-12); validity still requires the live grant.
+pub fn parse_access_token_payload(payload: &str) -> Option<AccessTerms> {
+    let mut fields = payload.splitn(5, FIELD_SEP);
+    Some(AccessTerms {
+        grant_id: fields.next()?.parse().ok()?,
+        expires_at: OffsetDateTime::from_unix_timestamp(fields.next()?.parse().ok()?).ok()?,
+        resource: fields.next()?.to_owned(),
+        scopes: fields
+            .next()?
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        client_id: fields.next()?.to_owned(),
+    })
+}
 
 /// RFC 7636 §4.1: a code verifier is 43..=128 unreserved characters.
 const VERIFIER_LEN: std::ops::RangeInclusive<usize> = 43..=128;
@@ -962,6 +1003,21 @@ pub fn decide_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_token_payload_round_trip_preserves_client_separator() {
+        let access = AccessTerms {
+            grant_id: Uuid::from_u128(1),
+            client_id: "client\u{1}suffix".to_owned(),
+            resource: "https://resource.example.test/mcp".to_owned(),
+            scopes: vec!["context:read".to_owned()],
+            expires_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
+        };
+        assert_eq!(
+            parse_access_token_payload(&access_token_payload(&access)),
+            Some(access)
+        );
+    }
 
     /// RFC 7636 Appendix B vector.
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

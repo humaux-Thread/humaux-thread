@@ -2,7 +2,7 @@
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
 //! Depends-on: crates=[humaux-domain, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, domain::error, domain::ids]
-//! Called-by: [tests]
+//! Called-by: [gateway::oauth_http, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
 //!   at most one succeeds; a reused refresh token revokes its family and grant and the transaction still commits; a

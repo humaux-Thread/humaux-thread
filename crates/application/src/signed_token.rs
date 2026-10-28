@@ -1,7 +1,7 @@
 //! `application::signed_token` — HMAC-SHA256 key set and the labelled sign/verify wire shared by every
 //!   self-contained token the gateway issues (RYW `consistency_token` today; M02 access tokens and `context_ref` next).
 //! Depends-on: crates=[hex, hmac, rand, sha2]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::retrieve, application::session, gateway::auth_pages, protocol::page, tests]
+//! Called-by: [adapters::retrieve, application::oauth, application::session, gateway::auth_pages, gateway::oauth_http, protocol::page, tests]
 //! Invariants: [a key is ≥ 32 bytes and `previous != current`; `Debug` and every error name a key id or a rule, never
 //!   key bytes; the token kind lives only in its [`TokenLabel`], so two kinds under one key never share a MAC or a kid;
 //!   a token is MAC-verified before any caller sees one payload byte]

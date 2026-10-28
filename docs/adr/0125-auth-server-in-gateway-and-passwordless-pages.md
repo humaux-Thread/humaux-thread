@@ -175,3 +175,14 @@ another client's key. An unreadable peer keeps key 0.
       `g_m03_1_one_clients_held_requests_do_not_starve_another_clients_login` red at `auth_pages.rs:822` (503 where 200
       is required for client B); the other 10 pass.
   - Green: the PR's CI on the unmutated branch.
+
+## M02-10 — token endpoint and AS metadata
+
+- Scope: token exchange and native AS metadata; authorize/consent/revoke belong to M02-10b, register to M02-10c.
+- D3: `application::oauth` owns the five scopes and `oauth-at@1` claims: grant, expiry, resource, scopes, client last.
+- Exchange commits spent codes; refresh revoking denies commit, other denies roll back. Requested refresh scope is ignored (RFC 6749 §6).
+- RFC 8414 metadata uses the public origin and S256/none; no registration, revocation or CIMD capability is advertised.
+- G-M02-7: bins/gateway/tests/oauth_flow.rs — code exchange bindings and precheck; red r1 [40641872872](https://github.com/humaux-Thread/humaux-thread/actions/runs/40641872872): the four `exchange_code` comparisons disabled, so `g_m02_7_resource_redirect_and_client_are_bound` and `g_m02_7_wrong_verifier_spends_the_code` fail at `oauth_flow.rs:351` (200 where the 400 refusal is required).
+- G-M02-8: bins/gateway/tests/oauth_flow.rs — rotation, reuse and live access rejection; red r2 [40642632361](https://github.com/humaux-Thread/humaux-thread/actions/runs/40642632361): a revoking deny drops the transaction instead, so `g_m02_8_reuse_revokes_successor_and_both_access_tokens` fails at `oauth_flow.rs:351` and `g_m02_8_reused_access_tokens_fail_the_live_grant_check` at `:585` (the grant stays live); the G-M02-9 epoch revocations share the path and fail too (`:425`).
+- G-M02-9: bins/gateway/tests/oauth_flow.rs — epochs and absolute ceiling; red r3 [40643124515](https://github.com/humaux-Thread/humaux-thread/actions/runs/40643124515): live epochs read from the snapshots, so `g_m02_9_user_epoch_revokes` and `g_m02_9_tenant_epoch_revokes` fail at `oauth_flow.rs:351` (the bumped-epoch refresh is accepted).
+- G-M02-14: bins/gateway/tests/as_metadata.rs — exact metadata golden; red r4 [40643432618](https://github.com/humaux-Thread/humaux-thread/actions/runs/40643432618): issuer emitted with a trailing `/`, so `g_m02_14_metadata_matches_golden` fails at `as_metadata.rs:12` and `g_m02_14_metadata_capabilities_are_exact` at `:22`.
