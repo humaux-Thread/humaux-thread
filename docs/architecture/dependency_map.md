@@ -15237,6 +15237,7 @@ modules naming it:
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `protocol::tests::page_budget`
+- `protocol::tests::remember_source_contract`
 - `tests`
 
 ### humaux-protocol → `humaux-application` (normal)
@@ -15301,6 +15302,7 @@ modules naming it:
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `protocol::tests::page_budget`
+- `protocol::tests::remember_source_contract`
 - `tests`
 
 ### humaux-protocol → `jsonschema` (normal)
@@ -19426,6 +19428,13 @@ services (computed):
 default run:
 
 ### `crates/protocol/tests/page_budget.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `crates/protocol/tests/remember_source_contract.rs`
 db-bound (default run): no
 
 services (computed):

@@ -2,7 +2,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, serde_json, time,
 //!   uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::remember,
 //!   domain::affect, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids,
-//!   domain::subject, projection::stream]
+//!   domain::source, domain::subject, projection::stream]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
 //! Invariants: [the protocol layer decodes wire input and the request guard produces the AuthorizationScope; this module never deserializes either boundary itself]
 //! Spec: Baseline §11.2.1; §15.5; §78.2; ADR-0020; ADR-0032; ADR-0054
@@ -20,11 +20,44 @@ use humaux_domain::error::ErrorCode;
 use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
 use humaux_domain::identity::{AuthorizationScope, VisibilityClass};
 use humaux_domain::ids::WorkspaceId;
+use humaux_domain::source::{IngestSourceKind, SourceIdentity};
 use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Maps the required §34 source spelling; no default or unknown kind is accepted (ADR-0098).
+pub(crate) fn parse_source_kind(value: &str) -> Result<IngestSourceKind, ErrorCode> {
+    match value {
+        "AgentNote" => Ok(IngestSourceKind::AgentNote),
+        "EmailMessage" => Ok(IngestSourceKind::EmailMessage),
+        "ChatMessage" => Ok(IngestSourceKind::ChatMessage),
+        "CalendarItem" => Ok(IngestSourceKind::CalendarItem),
+        "ConversationTurn" => Ok(IngestSourceKind::ConversationTurn),
+        "LegacyImport" => Ok(IngestSourceKind::LegacyImport),
+        _ => Err(ErrorCode::InvalidInput),
+    }
+}
+
+/// Ends raw external keys at ingress (§34; ADR-0098 D1); only digests cross into the receipt path.
+pub(crate) fn parse_source(
+    kind: &str,
+    object_key: &str,
+    version: Option<&str>,
+    thread_key: Option<&str>,
+    occurred_at: Option<&str>,
+) -> Result<(SourceIdentity, Option<OffsetDateTime>), ErrorCode> {
+    if object_key.chars().count() > 512 || thread_key.is_some_and(|key| key.chars().count() > 512) {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let source = SourceIdentity::new(parse_source_kind(kind)?, object_key, version, thread_key)?;
+    let occurred_at = occurred_at
+        .map(|value| OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339))
+        .transpose()
+        .map_err(|_| ErrorCode::InvalidInput)?;
+    Ok((source, occurred_at))
+}
 
 /// The frozen `private.events.event_kind` vocabulary accepted by `remember`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,6 +376,86 @@ mod tests {
     use super::*;
     use humaux_domain::identity::{BoundedSet, PrincipalId};
     use humaux_domain::ids::{TenantId, UserId};
+
+    #[test]
+    fn source_kind_spellings_are_exact() {
+        let names = [
+            "AgentNote",
+            "EmailMessage",
+            "ChatMessage",
+            "CalendarItem",
+            "ConversationTurn",
+            "LegacyImport",
+        ];
+        let parsed: Vec<_> = names.into_iter().map(parse_source_kind).collect();
+        assert_eq!(parsed, IngestSourceKind::ALL.map(Ok));
+        assert_eq!(
+            parse_source_kind("email_message"),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn source_mapping_round_trip() {
+        let (actual, at) = parse_source(
+            "EmailMessage",
+            "message-key",
+            Some("v1"),
+            Some("thread-key"),
+            Some("2026-10-28T12:34:56Z"),
+        )
+        .unwrap();
+        let expected = SourceIdentity::new(
+            IngestSourceKind::EmailMessage,
+            "message-key",
+            Some("v1"),
+            Some("thread-key"),
+        )
+        .unwrap();
+        assert_eq!(actual.kind(), expected.kind());
+        assert_eq!(actual.object_key_d16(), expected.object_key_d16());
+        assert_eq!(actual.version(), expected.version());
+        assert_eq!(actual.thread_key_d16(), expected.thread_key_d16());
+        assert_eq!(actual, expected);
+        assert_eq!(
+            at,
+            Some(
+                OffsetDateTime::parse(
+                    "2026-10-28T12:34:56Z",
+                    &time::format_description::well_known::Rfc3339
+                )
+                .unwrap()
+            )
+        );
+        let (minimal, at) = parse_source("AgentNote", "key", None, None, None).unwrap();
+        assert_eq!(
+            minimal,
+            SourceIdentity::new(IngestSourceKind::AgentNote, "key", None, None).unwrap()
+        );
+        assert_eq!(at, None);
+    }
+
+    #[test]
+    fn invalid_source_values_fail_closed() {
+        let cases = [
+            ("", None, None, None),
+            ("key", Some(""), None, None),
+            ("key", None, Some(""), None),
+            ("key", None, None, Some("invalid")),
+        ];
+        let refused = cases
+            .into_iter()
+            .filter(|(key, version, thread, at)| {
+                parse_source("AgentNote", key, *version, *thread, *at)
+                    == Err(ErrorCode::InvalidInput)
+            })
+            .count();
+        assert_eq!(refused, 4);
+        assert_eq!(
+            parse_source("AgentNote", "key", Some(&"v".repeat(65)), None, None),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
 
     fn authorization(
         tenant: TenantId,
