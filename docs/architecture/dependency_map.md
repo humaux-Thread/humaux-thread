@@ -683,6 +683,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.attest_reasoning_route_health`
 - executes `control.audit_event_identity_claim`
 - executes `control.audit_event_identity_release`
+- executes `control.billing_apply_subscription`
+- executes `control.billing_inbox_claim`
+- executes `control.billing_inbox_settle`
 - executes `control.bind_reasoning_domain`
 - executes `control.credential_pepper_epoch`
 - executes `control.credential_pepper_epoch_advance`
@@ -2015,7 +2018,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::billing_repo`
 - writes `control.billing_inbox`
+- executes `control.billing_apply_subscription`
+- executes `control.billing_inbox_claim`
+- executes `control.billing_inbox_settle`
 - service `PostgreSQL(role_gateway)`
+- service `PostgreSQL(role_maintenance)`
 
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
@@ -2389,6 +2396,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::archive`
 
 #### `application::auth`
+
+#### `application::billing`
 
 #### `application::confirm`
 
@@ -3607,6 +3616,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.attest_reasoning_route_health`
 - executes `control.audit_event_identity_claim`
 - executes `control.audit_event_identity_release`
+- executes `control.billing_apply_subscription`
+- executes `control.billing_inbox_claim`
+- executes `control.billing_inbox_settle`
 - executes `control.bind_reasoning_domain`
 - executes `control.credential_pepper_epoch`
 - executes `control.credential_pepper_epoch_advance`
@@ -5409,6 +5421,17 @@ written by:
 
 executed by:
 
+### `control.billing_apply_subscription`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::billing_doors`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::billing_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_customers`
 read by:
 - (no process): `adapters::tests::billing_repo`
@@ -5427,11 +5450,33 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
+
+### `control.billing_inbox_claim`
+read by:
+
+written by:
+
+executed by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::billing_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.billing_inbox_settle`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::billing_doors`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::billing_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_payments`
 read by:
@@ -5776,11 +5821,13 @@ executed by:
 
 ### `control.entitlement_grants`
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 
 executed by:
@@ -5799,6 +5846,7 @@ executed by:
 
 ### `control.entitlement_snapshots`
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -6288,6 +6336,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
@@ -6299,6 +6348,7 @@ read by:
 - (no process): `adapters::tests::entitlement_projector`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 
@@ -7006,6 +7056,7 @@ executed by:
 
 ### `control.subscription_events`
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7017,6 +7068,7 @@ executed by:
 
 ### `control.subscriptions`
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7070,6 +7122,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::code_schema`
@@ -12756,6 +12809,7 @@ executed by:
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::code_rls`
 - `adapters::tests::code_schema`
@@ -13004,6 +13058,7 @@ executed by:
 - `retrieval-provider::tests::router_rls_integration`
 
 ### `PostgreSQL(role_maintenance)`
+- `adapters::billing_repo`
 - `adapters::entitlement_repo`
 - `adapters::health`
 - `adapters::maintenance_repo`
@@ -13019,6 +13074,7 @@ executed by:
 - `adapters::serving_repo`
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::billing_doors`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::contribution_eligibility`
 - `adapters::tests::core_never_auto`
@@ -13490,6 +13546,7 @@ modules naming it:
 - `adapters::stream_repo`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::billing_doors`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13638,6 +13695,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
@@ -13796,6 +13854,7 @@ why: pure application-layer types/logic this adapter wraps in SQL
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::billing_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
@@ -13821,6 +13880,7 @@ modules naming it:
 - `adapters::retrieve`
 - `adapters::session_repo`
 - `adapters::tests::auth_contract`
+- `adapters::tests::billing_doors`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -14015,6 +14075,7 @@ modules naming it:
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
@@ -14088,6 +14149,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::quota_repo`
 - `adapters::read_gate`
+- `adapters::tests::billing_doors`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
@@ -14183,6 +14245,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::audit_sink`
+- `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -14207,6 +14270,7 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
@@ -14298,6 +14362,7 @@ modules naming it:
 - `adapters::tests::applicability`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
@@ -14424,6 +14489,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -14546,6 +14612,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::audit_sink`
+- `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -14570,6 +14637,7 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
@@ -14644,6 +14712,7 @@ modules naming it:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -14758,6 +14827,7 @@ modules naming it:
 - `adapters::byok`
 - `adapters::postgres`
 - `adapters::stream_repo`
+- `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::confirm_token_retention`
@@ -18547,6 +18617,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/authority_g59_5.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/billing_doors.rs`
 db-bound (default run): yes
 
 services (computed):

@@ -582,6 +582,27 @@ written by:
 
 executed by:
 
+### `control.billing_apply_subscription`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0300_billing_processor_doors
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::billing_doors`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::billing_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_customers`
 - kind: table
 - owner: role_migration_owner
@@ -638,11 +659,53 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
+
+### `control.billing_inbox_claim`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0300_billing_processor_doors
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::billing_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.billing_inbox_settle`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0300_billing_processor_doors
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::billing_doors`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::billing_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_payments`
 - kind: table
@@ -1526,11 +1589,13 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 
 executed by:
@@ -1600,6 +1665,7 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -2749,6 +2815,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
@@ -2800,6 +2867,7 @@ read by:
 - (no process): `adapters::tests::entitlement_projector`
 
 written by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 
@@ -4702,6 +4770,7 @@ foreign keys (outgoing):
 - fk: tenant_id, subscription_id -> control.subscriptions (NOT NULL)
 
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -4749,6 +4818,7 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -4892,6 +4962,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::authority_g59_5`
+- (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::code_schema`
