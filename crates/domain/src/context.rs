@@ -909,6 +909,62 @@ impl ContextBudget {
     }
 }
 
+/// §78.1: registry-supplied brief limits have no domain defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BriefBudget {
+    cap_tokens: u32,
+    prefix_share_percent: u8,
+    prevention_cap: usize,
+    reuse_cap: usize,
+}
+
+impl BriefBudget {
+    /// §78.1: configuration must be validated before assembly.
+    ///
+    /// # Errors
+    /// Returns [`ErrorCode::InvalidInput`] for a share outside `0..=100`.
+    pub const fn new(
+        cap_tokens: u32,
+        prefix_share_percent: u8,
+        prevention_cap: usize,
+        reuse_cap: usize,
+    ) -> Result<Self, ErrorCode> {
+        if prefix_share_percent > 100 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Self {
+            cap_tokens,
+            prefix_share_percent,
+            prevention_cap,
+            reuse_cap,
+        })
+    }
+
+    /// §25.5: Mandatory and optional sections share this total cap.
+    #[must_use]
+    pub const fn cap_tokens(self) -> u32 {
+        self.cap_tokens
+    }
+
+    /// §25.5: the prefix share limits optional items only.
+    #[must_use]
+    pub const fn optional_prefix_tokens(self) -> u64 {
+        (self.cap_tokens as u64 * self.prefix_share_percent as u64) / 100
+    }
+
+    /// §78.1: prevention quotas come from the registry.
+    #[must_use]
+    pub const fn prevention_cap(self) -> usize {
+        self.prevention_cap
+    }
+
+    /// §78.1: reuse quotas come from the registry.
+    #[must_use]
+    pub const fn reuse_cap(self) -> usize {
+        self.reuse_cap
+    }
+}
+
 /// 补充位可用的 token 预算。
 ///
 /// 私有字段、无 `Default`、无 `From<u32>`、无第二构造点——只能由
