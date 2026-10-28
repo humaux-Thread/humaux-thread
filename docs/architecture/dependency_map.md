@@ -446,6 +446,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -1419,6 +1420,16 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `telemetry::metrics`
 - service `HTTP(loopback)`
 
+### process(humaux-billing-worker)
+
+#### `billing-worker::main`
+
+#### `billing-worker::mode`
+- env `HUMAUX_BILLING_CREEM_TEST_BASE_URL`
+- env `HUMAUX_BILLING_PROVIDER_MODE`
+
+#### `humaux-infra-network`
+
 ### process(humaux-consolidation-worker)
 
 #### `adapters::affect_repo`
@@ -1935,6 +1946,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -2664,6 +2676,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -3259,6 +3272,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -4332,6 +4346,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -4995,6 +5010,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -13228,6 +13244,9 @@ executed by:
 - `admin::tests::probes`
 - `public-pool::tests::mechanism_observation`
 
+### `subprocess(humaux-billing-worker)`
+- `billing-worker::tests::mode_gate`
+
 ### `subprocess(humaux-consolidation-worker)`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
@@ -15960,6 +15979,12 @@ modules naming it:
 - `admin::tests::probes`
 - `tests`
 
+### humaux-billing-worker → `humaux-infra-network` (normal)
+why: shared URL parser
+
+modules naming it:
+- `billing-worker::mode`
+
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
 why: humaux-adapters dependency
 
@@ -17603,6 +17628,15 @@ services (computed):
 default run:
 - PostgreSQL
 - UDS
+- subprocess
+
+### `bins/billing-worker/tests/mode_gate.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
 - subprocess
 
 ### `bins/consolidation-worker/tests/consolidation_hop_e2e.rs`
